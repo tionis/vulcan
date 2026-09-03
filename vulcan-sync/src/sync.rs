@@ -810,9 +810,9 @@ fn sync_error_from_git(error: &GitSyncError) -> SyncError {
             | GitEngineError::InvalidObjectId(_)
             | GitEngineError::InvalidRefName(_),
         ) => (SyncErrorCategory::Invariant, false),
-        GitSyncError::Git(GitEngineError::CommandFailed { .. }) => {
-            (SyncErrorCategory::Repository, false)
-        }
+        GitSyncError::Git(
+            GitEngineError::CommandFailed { .. } | GitEngineError::ApplyWouldOverwrite { .. },
+        ) => (SyncErrorCategory::Repository, false),
     };
     SyncError::new(category, error.to_string(), retryable)
 }

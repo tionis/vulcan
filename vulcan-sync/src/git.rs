@@ -1189,6 +1189,9 @@ pub enum GitEngineError {
     UnsupportedRepository {
         detail: String,
     },
+    ApplyWouldOverwrite {
+        paths: Vec<String>,
+    },
     WorktreeChanged,
     Io(std::io::Error),
 }
@@ -1230,6 +1233,16 @@ impl Display for GitEngineError {
             Self::InvalidRefName(value) => write!(formatter, "invalid Git ref name: `{value}`"),
             Self::InvalidRemote(value) => write!(formatter, "invalid Git remote: `{value}`"),
             Self::UnsupportedRepository { detail } => formatter.write_str(detail),
+            Self::ApplyWouldOverwrite { paths } => write!(
+                formatter,
+                "applying the accepted tree would overwrite untracked worktree files excluded by Git ignore rules; move or remove them first: {}",
+                paths
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::WorktreeChanged => formatter.write_str(
                 "the working tree changed repeatedly while it was being captured; retry the sync",
             ),
@@ -1249,6 +1262,7 @@ impl Error for GitEngineError {
             | Self::InvalidRefName(_)
             | Self::InvalidRemote(_)
             | Self::UnsupportedRepository { .. }
+            | Self::ApplyWouldOverwrite { .. }
             | Self::WorktreeChanged => None,
         }
     }
@@ -3503,7 +3517,7 @@ impl GitEngine for GitCliEngine {
         if self.tree_oid(repository, expected_worktree)? != actual_tree {
             return Err(GitEngineError::WorktreeChanged);
         }
-
+        self.reject_ignored_collisions(repository, &index_path, &plan)?;
         self.index_output(
             repository,
             &index_path,
@@ -3662,6 +3676,50 @@ impl GitEngine for GitCliEngine {
 }
 
 impl GitCliEngine {
+    /// Rejects tree applications that would silently overwrite ignored
+    /// worktree files. After the fully staged verification inside
+    /// `apply_tree`, every remaining `--others` entry is an ignored file;
+    /// `read-tree --reset -u` offers no untracked-file protection, so the
+    /// check must be explicit.
+    fn reject_ignored_collisions(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+        plan: &GitTreeApplyPlan,
+    ) -> Result<(), GitEngineError> {
+        let written = plan
+            .paths
+            .iter()
+            .filter(|path| {
+                matches!(
+                    path.action,
+                    GitTreeApplyAction::Add | GitTreeApplyAction::TypeChange
+                )
+            })
+            .map(|path| path.path.as_str())
+            .collect::<Vec<_>>();
+        let mut collisions = Vec::new();
+        for chunk in written.chunks(128) {
+            let mut command = self.index_command(repository, index_path)?;
+            command
+                .arg("--literal-pathspecs")
+                .args(["ls-files", "--others", "-z", "--"])
+                .args(chunk);
+            let output =
+                ensure_success("list ignored worktree collisions", self.execute(command)?)?;
+            collisions.extend(
+                nul_fields("list ignored worktree collisions", &output.stdout)?
+                    .into_iter()
+                    .map(ToString::to_string),
+            );
+        }
+        if collisions.is_empty() {
+            Ok(())
+        } else {
+            Err(GitEngineError::ApplyWouldOverwrite { paths: collisions })
+        }
+    }
+
     fn inspect_path_filters(
         &self,
         repository: &GitRepository,
@@ -6835,6 +6893,56 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temporary.path().join("Removed.md")).expect("removed"),
             "remove me\n"
+        );
+    }
+
+    #[test]
+    fn applying_a_tree_rejects_ignored_files_at_written_paths() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join(".gitignore"), "private.md\n").expect("ignore file");
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        let head = commit_all(temporary.path(), "initial");
+        // An accepted tree that adds a file at a path the local worktree
+        // keeps as an ignored untracked file.
+        fs::write(temporary.path().join("private.md"), "remote\n").expect("remote file");
+        run_git(temporary.path(), &["add", "--force", "private.md"]);
+        run_git(temporary.path(), &["commit", "--quiet", "-m", "accepted"]);
+        let accepted = GitOid::parse(run_git_capture(temporary.path(), &["rev-parse", "HEAD"]))
+            .expect("accepted commit");
+        run_git(temporary.path(), &["reset", "--soft", "HEAD~1"]);
+        run_git(
+            temporary.path(),
+            &["rm", "--cached", "--quiet", "private.md"],
+        );
+        fs::write(temporary.path().join("private.md"), "local\n").expect("local private file");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let error = engine
+            .apply_tree(&repository, &head, &accepted)
+            .expect_err("ignored collision must reject the apply");
+        match &error {
+            GitEngineError::ApplyWouldOverwrite { paths } => {
+                assert_eq!(paths, &vec!["private.md".to_string()]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(error.to_string().contains("private.md"));
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("private.md")).expect("preserved file"),
+            "local\n"
+        );
+
+        fs::remove_file(temporary.path().join("private.md")).expect("clear collision");
+        engine
+            .apply_tree(&repository, &head, &accepted)
+            .expect("apply succeeds without the collision");
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("private.md")).expect("applied file"),
+            "remote\n"
         );
     }
 
