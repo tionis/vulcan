@@ -1519,8 +1519,7 @@ impl GitCliEngine {
                 .expect("the sync index path always has a parent"),
         )?;
         let regular_index = std::fs::symlink_metadata(index_path)
-            .map(|metadata| metadata.file_type().is_file())
-            .unwrap_or(false);
+            .is_ok_and(|metadata| metadata.file_type().is_file());
         if let Some(base) = base.filter(|_| regular_index) {
             let mut command = self.index_command(repository, index_path)?;
             command
@@ -3200,7 +3199,7 @@ impl GitCliEngine {
             });
         }
         let mut filters = BTreeMap::<String, usize>::new();
-        for triple in fields.chunks_exact(3) {
+        for triple in fields.as_chunks::<3>().0 {
             let value = triple[2];
             if !matches!(value, "unspecified" | "unset" | "set" | "") {
                 *filters.entry(value.to_string()).or_default() += 1;
@@ -3875,7 +3874,9 @@ fn parse_merge_tree_output(
     conflict_paths.sort();
     conflict_paths.dedup();
     let details = fields[separator + 1..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter_map(|record| (!record[3].is_empty()).then_some(record[3].trim()))
         .collect::<Vec<_>>();
     let diagnostics = details.join("\n");
@@ -4169,9 +4170,9 @@ fn parse_tree_application_paths(bytes: &[u8]) -> Result<Vec<GitTreeApplyPath>, G
         });
     }
     let fields = nul_fields(OPERATION, bytes)?;
-    let mut chunks = fields.chunks_exact(2);
+    let (chunks, remainder) = fields.as_chunks::<2>();
     let mut paths = Vec::with_capacity(chunks.len());
-    for chunk in &mut chunks {
+    for chunk in chunks {
         let header = chunk[0]
             .strip_prefix(':')
             .ok_or_else(|| GitEngineError::InvalidOutput {
@@ -4216,7 +4217,7 @@ fn parse_tree_application_paths(bytes: &[u8]) -> Result<Vec<GitTreeApplyPath>, G
             target,
         });
     }
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         return Err(GitEngineError::InvalidOutput {
             operation: OPERATION,
             detail: "raw diff metadata is missing its path".to_string(),
