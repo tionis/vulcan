@@ -1583,6 +1583,13 @@ impl GitCliEngine {
 
     fn repository_command(&self, repository: &GitRepository) -> Command {
         let mut command = self.command();
+        if let Some(work_tree) = &repository.work_tree {
+            // Anchor every repository command at the worktree root. Prefix-
+            // relative pathspecs such as `.` and `:(exclude)` otherwise
+            // resolve against the caller's working directory, which silently
+            // scopes capture and verification to a subdirectory.
+            command.current_dir(work_tree);
+        }
         command
             .arg("--git-dir")
             .arg(git_cli_path(&repository.git_dir));
@@ -5829,6 +5836,77 @@ mod tests {
         assert!(GitRefName::parse("-c core.fsmonitor=true").is_err());
         assert!(GitRemote::parse("origin").is_ok());
         assert!(GitRemote::parse("--upload-pack=evil").is_err());
+    }
+
+    #[test]
+    fn capture_covers_the_complete_worktree_from_a_subdirectory_cwd() {
+        struct CwdGuard(PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                std::env::set_current_dir(&self.0).expect("restore the test working directory");
+            }
+        }
+        static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::create_dir(temporary.path().join("sub")).expect("subdirectory");
+        fs::write(temporary.path().join("root.md"), "initial\n").expect("root note");
+        fs::write(temporary.path().join("sub/note.md"), "initial\n").expect("nested note");
+        let head = commit_all(temporary.path(), "initial");
+        fs::write(temporary.path().join("root.md"), "updated\n").expect("root update");
+        fs::write(temporary.path().join("sub/note.md"), "updated\n").expect("nested update");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let lock = CWD_LOCK.lock().expect("cwd lock");
+        let original = std::env::current_dir().expect("current dir");
+        let cwd_guard = CwdGuard(original);
+        std::env::set_current_dir(temporary.path().join("sub"))
+            .expect("enter the repository subdirectory");
+        let snapshot = engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("subdirectory cwd snapshot");
+        let local_ref = GitRefName::parse("refs/vulcan/sync/cwd/live").expect("ref");
+        let capture = engine
+            .capture_worktree(
+                &repository,
+                &GitCaptureRequest {
+                    base: Some(head.clone()),
+                    target_ref: local_ref,
+                    target_before: Some(head.clone()),
+                    message: "vulcan sync snapshot\n".to_string(),
+                },
+            )
+            .expect("capture from subdirectory cwd");
+        let unchanged = engine
+            .worktree_matches_tree(&repository, &capture.commit)
+            .expect("worktree comparison from subdirectory cwd");
+        drop(cwd_guard);
+        drop(lock);
+
+        let root_object = engine
+            .path_object(&repository, &capture.commit, "root.md")
+            .expect("root object query")
+            .expect("root note in the capture");
+        let nested_object = engine
+            .path_object(&repository, &capture.commit, "sub/note.md")
+            .expect("nested object query")
+            .expect("nested note in the capture");
+
+        assert!(capture.created);
+        assert!(unchanged);
+        assert_ne!(
+            snapshot,
+            engine.tree_oid(&repository, &head).expect("head tree")
+        );
+        assert_eq!(capture.tree, snapshot);
+        // The discriminative assertion: changes outside the caller's cwd
+        // must still enter the capture.
+        assert_eq!(root_object.data.as_deref(), Some(b"updated\n".as_slice()));
+        assert_eq!(nested_object.data.as_deref(), Some(b"updated\n".as_slice()));
     }
 
     #[test]
