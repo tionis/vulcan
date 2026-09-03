@@ -953,6 +953,13 @@ pub fn sync_git_vault_with_observer_and_engine(
     delegate: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
     check_sync_start(cancellation)?;
+    // Resolve the repository root before keying any durable state: invoking
+    // from a vault subdirectory must not fragment the journal identity or
+    // miss the root-anchored config and cache below the root. A failed
+    // discovery keeps the invocation path so the retained error journal
+    // still reports the underlying engine failure.
+    let resolved_paths = resolved_repository_paths(engine, paths);
+    let paths = &resolved_paths;
     let options = configured_git_sync_options(paths, options)?;
     let mut journal = SyncJournal::preparing(
         paths.vault_root(),
@@ -1060,6 +1067,16 @@ fn check_sync_start(cancellation: &SyncCancellationToken) -> Result<(), AppError
     } else {
         Ok(())
     }
+}
+
+/// Resolves the vault paths anchored at the discovered repository root, or
+/// the invocation path when discovery cannot complete.
+fn resolved_repository_paths(engine: &dyn GitEngine, paths: &VaultPaths) -> VaultPaths {
+    engine
+        .discover_repository(paths.vault_root())
+        .ok()
+        .and_then(|repository| repository.work_tree.as_deref().map(VaultPaths::new))
+        .unwrap_or_else(|| paths.clone())
 }
 
 /// Applies the shared vault merge policy and device-local automation ceiling.
@@ -1608,6 +1625,23 @@ mod tests {
             reader,
             store,
         }
+    }
+
+    #[test]
+    fn subdirectory_invocation_keys_state_on_the_repository_root() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        let expected_key = crate::sync_state::repository_state_key(
+            &fs::canonicalize(&fixture.writer).expect("canonical writer"),
+        );
+        fs::create_dir(fixture.writer.join("sub")).expect("subdirectory");
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(fixture.writer.join("sub")),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("subdirectory sync");
+        assert_eq!(report.state.repository_key, expected_key);
+        drop(fixture);
     }
 
     fn assert_conflict_read_workflows(
