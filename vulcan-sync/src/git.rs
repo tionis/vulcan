@@ -2616,7 +2616,9 @@ impl GitEngine for GitCliEngine {
             validate_repository_path(path)?;
         }
         let mut command = self.repository_command(repository);
-        command.args([
+        // Patch paths name exact files; git pathspecs glob by default, which
+        // would silently widen the patch for names containing metacharacters.
+        command.arg("--literal-pathspecs").args([
             "diff",
             "--binary",
             "--no-ext-diff",
@@ -6818,6 +6820,31 @@ mod tests {
         assert!(parse_git_changes(b"R101\0Old.md\0New.md\0").is_err());
         assert!(parse_git_changes(b"C100\0Old.md\0New.md\0").is_err());
         assert!(parse_git_changes(b"M\0Note.md").is_err());
+    }
+
+    #[test]
+    fn diff_patch_treats_paths_as_literal_file_names() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("a*b.md"), "star before\n").expect("star note");
+        fs::write(temporary.path().join("axb.md"), "cousin before\n").expect("cousin note");
+        let base = commit_all(temporary.path(), "initial");
+        fs::write(temporary.path().join("a*b.md"), "star after\n").expect("star update");
+        fs::write(temporary.path().join("axb.md"), "cousin after\n").expect("cousin update");
+        let target = commit_all(temporary.path(), "target");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let patch = engine
+            .diff_patch(&repository, &base, &target, &["a*b.md".to_string()])
+            .expect("literal patch");
+
+        assert!(patch.contains("a*b.md"));
+        assert!(!patch.contains("axb.md"));
+        assert!(patch.contains("star after"));
+        assert!(!patch.contains("cousin after"));
     }
 
     #[test]
