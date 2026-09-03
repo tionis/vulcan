@@ -42,6 +42,11 @@ const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
+    // Environment-injected configuration would silently change engine
+    // behavior (aliases, filters, protocol settings) for every command.
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG",
 ];
 
 /// A typed boundary over the repository implementation used by Git-backed sync.
@@ -4218,8 +4223,9 @@ fn write_gitdir_pointer(work_tree: &Path, git_dir: &Path) -> Result<(), GitEngin
     let git_dir = git_cli_path(git_dir);
     let git_dir = git_dir
         .to_str()
+        .filter(|git_dir| !git_dir.bytes().any(|byte| byte.is_ascii_control()))
         .ok_or_else(|| GitEngineError::UnsupportedRepository {
-            detail: "the detached Git directory path must be valid UTF-8 for the Git pointer file"
+            detail: "the detached Git directory path must be single-line valid UTF-8 for the Git pointer file"
                 .to_string(),
         })?;
     let pointer = work_tree.join(".git");
@@ -5923,6 +5929,39 @@ mod tests {
         assert!(GitRefName::parse("-c core.fsmonitor=true").is_err());
         assert!(GitRemote::parse("origin").is_ok());
         assert!(GitRemote::parse("--upload-pack=evil").is_err());
+    }
+
+    #[test]
+    fn repository_commands_scrub_repository_and_config_environment() {
+        let engine = GitCliEngine::default();
+        let command = engine.command();
+        let scrubbed = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for variable in [
+            "GIT_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_WORK_TREE",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG",
+        ] {
+            assert!(
+                scrubbed.iter().any(|key| key == variable),
+                "missing scrubbed environment variable {variable}"
+            );
+        }
+    }
+
+    #[test]
+    fn detached_pointer_rejects_control_characters_in_paths() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let error = write_gitdir_pointer(temporary.path(), Path::new("/tmp/vulcan\nnewline"))
+            .expect_err("control characters must be rejected");
+        assert!(error.to_string().contains("single-line"));
+        assert!(!temporary.path().join(".git").exists());
     }
 
     #[test]
