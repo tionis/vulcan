@@ -60,7 +60,10 @@ refs move, following the repository's own pull configuration (`pull.ff`, `pull.r
 the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
 `pull.ff=only`, interactive rebase, or a merge/rebase conflict left for ordinary Git),
 `deferred` (dirty worktree, retried next cycle), or `skipped` (no upstream, detached HEAD, or
-bare repository). The branch is never pushed; publication stays in the semantic lane.
+bare repository). After a successful file lane, the branch tip is published to its upstream
+with the observed tracking ref as an exact lease — never force-pushed. A moved remote reports
+for the next cycle; transport or policy failures record `push_detail` without failing the
+converged file lane, and `pushed` tells whether publication happened.
 
 ## Review preserved conflicts
 
