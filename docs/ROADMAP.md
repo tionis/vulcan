@@ -5274,7 +5274,7 @@ semantic checkpoints continue to use the normal branch.
 
 **Depends on:** Phase 10 (daemon), Phase 11 (git versioning for conflict-aware sync).
 
-**Design references:** `references/Near-Realtime Git Working-Tree Synchronization with Forgejo.md`, especially its alternate-index capture, hidden-ref, capture-before-apply, compare-and-swap, semantic-history, retention, and failure-recovery requirements; `docs/specs/event-relay-protocol.md`; `docs/specs/git-realtime-events.md`; and `docs/specs/event-relay-implementation-plan.md`. The generic notification relay is not a prerequisite for finite synchronization: manual triggers and polling use the same engine.
+**Design references:** `references/Near-Realtime Git Working-Tree Synchronization with Forgejo.md`, especially its alternate-index capture, hidden-ref, capture-before-apply, compare-and-swap, semantic-history, retention, and failure-recovery requirements; and `docs/specs/realtime-sync-notifications.md`. Realtime notification is not a prerequisite for finite synchronization: manual triggers and polling use the same engine.
 
 **Boundary:** A sync backend answers "how does this vault directory reach another device or storage service?" It may replicate Markdown, attachments, intentional shared configuration, and explicitly managed sync artifacts, but it does not translate documents, select a publication subset, bind one note to an external object, or relay one remote wiki into another. Those are connector/route responsibilities in Phase 15. Every backend must materialize a coherent local working tree before Vulcan scans it, and `.vulcan/cache.db` remains disposable local state.
 
@@ -5512,43 +5512,29 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Add deterministic sync performance gates that measure top-level Git process work instead of flaky wall-clock timing. An unchanged cycle uses the persistent private index and hidden local ref to bypass full capture and its redundant `HEAD` lookup, is limited to one remote query, no redundant fetch or accepted-ref rewrite, cached-stat verification, cached filter-path and immutable-tree platform analysis, batched repository discovery, requirement-environment inspection, and hidden-ref reads, and at most 23 Git subprocesses even with fresh Git and Git LFS readiness probes. Long-running daemon workers reuse the validated Git installation across timeout-specific engine clones and reduce that ceiling to 22; changed worktrees retain the stable two-pass capture, platform caches are keyed by immutable revision and exact policy, and changed accepted refs retain one atomic transaction. Stuck Git/filter/transport process groups have a tested configurable timeout, and direct interactive progress is transient by default with durable diagnostics behind `--verbose`.
 - [x] Require these safety invariants before multi-writer release: tests enforce capture before apply and remote contact where required; every push/ref deletion uses an exact lease; conflicts preserve every side; alternate indexes protect the normal index; durable apply markers and exact post-application verification precede cache scanning; semantic proposal tips exactly reproduce the selected live tree; and retry/recovery/apply/reject/retention paths are idempotent. See `docs/investigations/git-sync-acceptance.md` for the evidence and the still-external platform/deployment release gates.
 
-### 12.13 Generic realtime Git event relay
+### 12.13 Realtime Git wake-up notifications
 
-**Goal:** Reduce remote-update latency by consuming a forge-neutral Git event profile over a generic CloudEvents relay. The relay is an independent event service rather than Vulcan infrastructure; notifications are untrusted hints that enqueue the existing finite sync transaction, while polling remains the correctness fallback.
+**Goal:** Reduce remote-update latency with one forge-neutral ephemeral HTTP wake-up endpoint per repository. Notifications are content-free, untrusted hints that enqueue the existing finite sync transaction; startup and periodic polling remain the correctness path.
 
-**Specifications and plan:** `docs/specs/event-relay-protocol.md`, `docs/specs/git-realtime-events.md`, and `docs/specs/event-relay-implementation-plan.md`.
+**Specification:** `docs/specs/realtime-sync-notifications.md`.
 
-#### 12.13.1 Protocol baseline
+#### 12.13.1 Minimal advertisement contract
 
-- [x] Define an application-neutral Event Relay Protocol over CloudEvents 1.0, including opaque channels, public source descriptors, confidential subscription bundles, retention classes, NATS binding rules, delivery semantics, limits, extensibility, and conformance requirements.
-- [x] Define the initial `bearer_capability` subscription profile with per-subscriber read-only authority, hash/verifier-only relay storage, exact-channel scope, redaction, rotation, and revocation. Keep publisher/webhook authority separate and reserve stronger identity-based profiles without making them an MVP dependency.
-- [x] Define the forge-neutral Git Realtime Events profile for multi-ref `refs.updated` receive results and retained `ref.state`, including explicit atomicity claims, stable opaque repository identity, full ref names, SHA-1/SHA-256 OIDs, create/delete/force-update semantics, deterministic webhook deduplication, explicit remote binding, and fetch-to-verify consumer behavior.
-- [x] Keep discovery explicit in version 1 through source descriptors and private subscription-bundle import. Record Git protocol v2 capability advertisement as a future interoperable extension rather than assigning an unimplemented capability name.
-- [x] Define extension rules so unrelated domain profiles and future NATS/MQTT/WebSocket/HTTP bindings can reuse the relay without importing Git or Vulcan semantics. Keep commands and RPC in a separately authorized profile.
+- [x] Define the versioned `notification.json` advertisement carried by `refs/vulcan/notifications`, with an HTTPS long-poll URL, bounded parsing, confidential URL handling, exact-ref discovery, and no custom Git protocol.
+- [x] Keep webhook publication authority separate from the advertised subscription capability. The forge receives the publish-only URL; repository readers receive only the subscribe URL through ordinary Git access.
+- [x] Define content-free consumer semantics: any successful response is a wake-up, response bytes never select Git state or local paths, and missing/malformed advertisements degrade to periodic polling.
+- [x] Explicitly defer CloudEvents, brokers, replay, registration, connection aggregation, mobile push, and a management control plane until measured deployments require them.
 
-#### 12.13.2 Independent reference server
+#### 12.13.2 Vulcan client
 
-- [x] Document the extraction boundary, recommended architecture, phased delivery, storage split, security model, operator surface, packaging, adapter fixtures, and conformance gates for a standalone generic reference server.
-- [ ] Create the independent reference-server project with protocol schemas/fixtures, versioning, CI, license, release process, and a conformance runner consumable by non-Vulcan clients.
-- [ ] Implement generic authenticated CloudEvent ingress, opaque channel management, descriptor publication, one-time subscription export, per-subscriber capability issuance/revocation, and bounded audit records with no secret or event-body leakage.
-- [ ] Integrate NATS/JetStream structured CloudEvents delivery. Use exact-channel subject permissions, NATS authentication callout or equivalently scoped generated credentials, TLS, rate/size limits, bounded-log retention, and latest-by-subject state.
-- [ ] Implement the Forgejo webhook adapter with HMAC verification, stable repository mapping, deterministic duplicate normalization, multi-ref transaction handling, and both Git profile event types.
-- [ ] Package a container image plus example Compose and systemd deployments, migrations, health checks, backup/restore guidance, and safe initial operator CLI workflows.
-- [ ] Add Gitea, GitHub, GitLab, and native `post-receive` publishers only through adapter conformance. Add OIDC/public-key authorization and MQTT/WebSocket bindings as later profiles driven by deployments.
-
-#### 12.13.3 Vulcan client
-
-- [x] Add dependency-light strict models and validators for descriptors, subscription bundles, CloudEvents, and the Git profile. Secret wrappers must redact debug/serialization output by default and perform no network I/O.
-- [x] Add atomic device-local subscription storage and explicit repository-source/ref-to-wiki bindings outside the vault and `cache.db`; store tokens only through a platform credential store or permission-restricted secret file.
-- [x] Add `vulcan sync notifications import/list/show/remove/test/status` with JSON output, dry-run for mutations, stdin/file bundle import rather than command-line secrets, complete pre-storage validation, and truthful daemon-required listening status.
-- [ ] Add a daemon-owned NATS connection manager that multiplexes only compatible endpoint/TLS/credential groups, uses bounded exponential reconnect with jitter, exposes health without credentials, and shuts down cooperatively with the existing runtime.
-- [ ] Validate and route events by the configured channel, repository `source`, and full ref binding. Invalid, unknown, unauthorized, oversized, or mismatched events must never invoke Git; permanent poison events must not redeliver forever.
-- [ ] A valid event may only enqueue `SyncJobTrigger::RemoteNotification` for matching active registrations. Acknowledge after durable routing, rely on supervisor coalescing for work deduplication, and never wait for or duplicate the finite sync transaction in the event client.
-- [ ] Preserve periodic polling and startup/resume reconciliation. Retained `ref.state` improves reconnect latency but is not synchronization authority.
-- [ ] Apply each registration's network/Git permission profile before endpoint connection and job enqueueing. Validate TLS endpoints, disallow credential-bearing URLs and silent authority-changing redirects, and keep event-provided URLs or names from selecting local paths.
-- [ ] Add mock-transport unit tests plus reference-server end-to-end tests from authenticated Forgejo webhook through normalized CloudEvent and NATS delivery to one coalesced ordinary sync job. Cover duplicates, bursts, reconnect, revocation, mismatches, malformed events, broker outage, daemon restart, and secret-free logs/JSON/companion output.
-- [ ] Document Linux/Windows daemon behavior and Android's finite JobScheduler fallback. Treat a persistent Termux connection or later native push bridge as a latency optimization over the same trigger, not a second synchronization engine.
-- [ ] Review and update the bundled `sync-workflow`, `configuration-and-permissions`, and `diagnostics-and-repair` skills when the client commands ship; roadmap-only protocol planning does not yet change their executable guidance.
+- [ ] Replace the generic relay crate, imported bundle store, CloudEvent router, and notification-management CLI with a dependency-light advertisement parser and exact Git-ref reader.
+- [ ] Add a daemon-owned interruptible HTTP long-poll listener per active advertised Git wiki, with bounded reconnect/backoff, no redirects, endpoint redaction, and cooperative shutdown.
+- [ ] Route every successful response directly to one coalesced `SyncJobTrigger::RemoteNotification`; retain the fetch-first remote observation optimization and the ordinary finite sync/conflict path.
+- [ ] Refresh advertisements at startup, after wake-up, and during periodic reconciliation so rotation and missed ephemeral events repair automatically.
+- [ ] Apply each registration's Git and network permission profile before discovery/connection. Keep endpoint data from selecting repository paths, remotes, or refs.
+- [ ] Add parser, Git discovery, mock HTTP, reconnect, coalescing, shutdown, missing/malformed advertisement, rotation, and secret-redaction tests.
+- [ ] Document Linux/Windows daemon behavior and Android's finite JobScheduler fallback. A persistent Termux listener remains an optional latency optimization over the same finite sync trigger.
+- [ ] Review and update the bundled `sync-workflow`, `configuration-and-permissions`, and `diagnostics-and-repair` skills when the listener ships; roadmap-only planning does not yet change their executable guidance.
 
 ### 12.14 macOS daemon lifecycle and release packaging
 
