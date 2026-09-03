@@ -400,6 +400,8 @@ fn handle_notification_sync_command(
             subscribe_url,
             remote,
             expected,
+            sign,
+            signing_key,
             dry_run,
         } => Some(run_sync_advertise(
             cli,
@@ -408,6 +410,8 @@ fn handle_notification_sync_command(
             subscribe_url,
             remote,
             expected.as_deref(),
+            *sign,
+            signing_key.as_deref(),
             *dry_run,
         )),
         SyncCommand::Unadvertise {
@@ -1288,6 +1292,7 @@ fn print_sync_checkpoint(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_sync_advertise(
     cli: &Cli,
     selected_paths: &VaultPaths,
@@ -1295,6 +1300,8 @@ fn run_sync_advertise(
     subscribe_url: &str,
     remote: &str,
     expected: Option<&str>,
+    sign: bool,
+    signing_key: Option<&str>,
     dry_run: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
@@ -1305,6 +1312,8 @@ fn run_sync_advertise(
             subscribe_url: subscribe_url.to_string(),
             remote: GitRemote::parse(remote).map_err(CliError::operation)?,
             expected: expected.map(str::to_string),
+            sign,
+            signing_key: signing_key.map(str::to_string),
             dry_run,
         },
     )
@@ -1343,6 +1352,9 @@ fn print_sync_advertise(
         report.advertisement_ref,
         report.revision.as_deref().unwrap_or("unknown"),
     );
+    if report.signed {
+        println!("The advertisement commit is signed.");
+    }
     if let Some(previous) = &report.previous_revision {
         println!("Replaced revision {previous}.");
     }

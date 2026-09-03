@@ -9918,6 +9918,31 @@
                 ]
               },
               {
+                "help": "GPG/SSH-sign the advertisement commit with the default configured key",
+                "id": "sign",
+                "long": "sign",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SIGN"
+                ]
+              },
+              {
+                "help": "GPG/SSH-sign with this explicit key (implies --sign)",
+                "id": "signing_key",
+                "long": "signing-key",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEYID"
+                ]
+              },
+              {
                 "help": "Validate and report without creating objects or pushing",
                 "id": "dry_run",
                 "long": "dry-run",

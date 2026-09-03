@@ -1,6 +1,6 @@
 use crate::{
-    GitEngine, GitEngineError, GitOid, GitPushResult, GitRefDeleteResult, GitRefName, GitRemote,
-    GitRepository,
+    CommitSigning, GitEngine, GitEngineError, GitOid, GitPushResult, GitRefDeleteResult,
+    GitRefName, GitRemote, GitRepository,
 };
 use serde::Deserialize;
 use std::error::Error;
@@ -242,12 +242,16 @@ fn advertisement_payload(
 /// compare-and-swap lease, so concurrent publishers fail with a stale error
 /// instead of silently overwriting each other; only a genuinely absent ref
 /// pushes without a lease. Pass an explicit revision for a strict lease.
+/// Pass signing to GPG/SSH-sign with the publisher's own Git configuration;
+/// signing requires a working agent or cached credentials and fails loudly
+/// otherwise. Signatures are an audit nicety: discovery does not verify them.
 pub fn publish_notification_advertisement(
     engine: &dyn GitEngine,
     repository: &GitRepository,
     remote: &GitRemote,
     subscribe_url: &str,
     expected: Option<&GitOid>,
+    signing: Option<&CommitSigning>,
 ) -> Result<DiscoveredNotificationAdvertisement, NotificationAdvertisementError> {
     let (payload, advertisement) = advertisement_payload(subscribe_url)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
@@ -265,6 +269,7 @@ pub fn publish_notification_advertisement(
         &tree,
         &[],
         NOTIFICATION_ADVERTISEMENT_COMMIT_MESSAGE,
+        signing,
     )?;
     match engine.push_ref(repository, remote, &revision, &advertisement_ref, lease.as_ref())? {
         GitPushResult::Updated => Ok(DiscoveredNotificationAdvertisement {
@@ -523,6 +528,7 @@ mod tests {
             remote,
             &format!("https://patch.example/h/{channel}?pubsub=true"),
             expected,
+            None,
         )
         .expect("publish advertisement")
     }
@@ -606,6 +612,100 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    fn configure_stub_signer(repository: &GitRepository, program: &str) {
+        let work_tree = repository
+            .work_tree
+            .as_ref()
+            .expect("publishing repository has a worktree");
+        run_git(work_tree, &["config", "user.signingkey", "test-key"]);
+        run_git(work_tree, &["config", "gpg.program", program]);
+    }
+
+    #[cfg(unix)]
+    fn write_stub_signer(directory: &Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Mimics the two channels real gpg uses: a SIG_CREATED status line on
+        // fd 2 (which Git requires) and armor on stdout (which Git embeds).
+        let stub = directory.join("stub-gpg");
+        fs::write(
+            &stub,
+            "#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '[GNUPG:] SIG_CREATED D 1 22 01 0 stub' >&2\nprintf '%s\\n' '-----BEGIN PGP SIGNATURE-----' '' 'stub-signature' '-----END PGP SIGNATURE-----'\n",
+        )
+        .expect("stub signer");
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("stub executable");
+        stub.to_str().expect("stub path").to_string()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signed_advertisement_embeds_a_signature_and_still_refreshes() {
+        let (temporary, engine, repository, remote) = init_publish_fixture();
+        let stub = write_stub_signer(temporary.path());
+        configure_stub_signer(&repository, &stub);
+        for signing in [
+            CommitSigning::DefaultKey,
+            CommitSigning::Key("test-key".to_string()),
+        ] {
+            let published = publish_notification_advertisement(
+                &engine,
+                &repository,
+                &remote,
+                "https://patch.example/h/signed?pubsub=true",
+                None,
+                Some(&signing),
+            )
+            .expect("signed publish");
+            let work_tree = repository
+                .work_tree
+                .as_ref()
+                .expect("publishing repository has a worktree");
+            let commit =
+                run_git_stdout(work_tree, &["cat-file", "-p", published.revision.as_str()]);
+            assert!(
+                commit.contains("gpgsig ") && commit.contains("stub-signature"),
+                "signed advertisement should embed the signature"
+            );
+            // Discovery ignores signatures and keeps working.
+            let refreshed = refresh_notification_advertisement(&engine, &repository, &remote)
+                .expect("refresh advertisement")
+                .expect("advertisement should exist");
+            assert_eq!(refreshed.revision, published.revision);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_signing_fails_the_publish_loudly() {
+        let (_temporary, engine, repository, remote) = init_publish_fixture();
+        configure_stub_signer(&repository, "false");
+        let error = publish_notification_advertisement(
+            &engine,
+            &repository,
+            &remote,
+            "https://patch.example/h/unsigned?pubsub=true",
+            None,
+            Some(&CommitSigning::DefaultKey),
+        )
+        .expect_err("failed signing should fail the publish");
+        assert!(
+            error.to_string().contains("sign"),
+            "signing failure should say so: {error}"
+        );
+        assert_eq!(
+            engine
+                .remote_ref(
+                    &repository,
+                    &remote,
+                    &GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF).expect("ref")
+                )
+                .expect("read remote ref"),
+            None,
+            "failed signing must not publish"
+        );
+    }
+
     #[test]
     fn rotates_with_exact_lease_and_rejects_stale_leases() {
         let (_temporary, engine, repository, remote) = init_publish_fixture();
@@ -631,6 +731,7 @@ mod tests {
             &remote,
             "https://patch.example/h/stale?pubsub=true",
             Some(&first.revision),
+            None,
         )
         .expect_err("stale lease should be rejected");
         assert!(stale.to_string().contains("changed"));
@@ -652,6 +753,7 @@ mod tests {
             &repository,
             &remote,
             "http://patch.example/h/insecure?pubsub=true",
+            None,
             None,
         )
         .expect_err("insecure endpoint should be rejected");

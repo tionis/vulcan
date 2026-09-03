@@ -26,6 +26,10 @@ pub struct SyncNotificationPublishOptions {
     pub remote: GitRemote,
     pub expected: Option<String>,
     pub dry_run: bool,
+    /// Sign with the default key from the publisher's Git configuration.
+    pub sign: bool,
+    /// Sign with this explicit key id. Implies signing when set.
+    pub signing_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +43,9 @@ pub struct SyncNotificationPublishReport {
     pub revision: Option<String>,
     pub origin: String,
     pub fingerprint: String,
+    /// Whether the published commit is signed; under `--dry-run`, whether it
+    /// would be signed.
+    pub signed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +99,7 @@ pub fn publish_sync_notification_advertisement(
             revision: None,
             origin: advertisement.endpoint.origin().to_string(),
             fingerprint: advertisement.endpoint.fingerprint().to_string(),
+            signed: signing_requested(options),
         });
     }
     let published = publish_notification_advertisement(
@@ -100,6 +108,12 @@ pub fn publish_sync_notification_advertisement(
         &options.remote,
         &options.subscribe_url,
         parse_expected(options.expected.clone())?.as_ref(),
+        signing_requested(options)
+            .then(|| match &options.signing_key {
+                Some(key_id) => vulcan_sync::CommitSigning::Key(key_id.clone()),
+                None => vulcan_sync::CommitSigning::DefaultKey,
+            })
+            .as_ref(),
     )
     .map_err(AppError::operation)?;
     Ok(SyncNotificationPublishReport {
@@ -112,7 +126,14 @@ pub fn publish_sync_notification_advertisement(
         revision: Some(published.revision.to_string()),
         origin: published.advertisement.endpoint.origin().to_string(),
         fingerprint: published.advertisement.endpoint.fingerprint().to_string(),
+        signed: signing_requested(options),
     })
+}
+
+/// Whether the publish options request a signature. An explicit key implies
+/// signing even without the flag.
+fn signing_requested(options: &SyncNotificationPublishOptions) -> bool {
+    options.sign || options.signing_key.is_some()
 }
 
 /// Removes the notification advertisement for one vault's repository under an
@@ -382,6 +403,8 @@ mod tests {
                 remote,
                 expected: None,
                 dry_run: true,
+                sign: false,
+                signing_key: None,
             },
         )
         .expect("dry-run publish");
@@ -413,6 +436,8 @@ mod tests {
                 remote: remote.clone(),
                 expected: None,
                 dry_run: false,
+                sign: false,
+                signing_key: None,
             },
         )
         .expect("publish");
@@ -426,6 +451,8 @@ mod tests {
                 remote: remote.clone(),
                 expected: Some(revision.clone()),
                 dry_run: false,
+                sign: false,
+                signing_key: None,
             },
         )
         .expect("rotate");
@@ -507,6 +534,8 @@ mod tests {
                 remote: remote.clone(),
                 expected: None,
                 dry_run: false,
+                sign: false,
+                signing_key: None,
             },
         )
         .expect("publish");
@@ -565,6 +594,8 @@ mod tests {
                 remote: remote.clone(),
                 expected: None,
                 dry_run: false,
+                sign: false,
+                signing_key: None,
             },
         )
         .expect("publish");
@@ -619,6 +650,8 @@ mod tests {
                 remote: remote.clone(),
                 expected: None,
                 dry_run: false,
+                sign: false,
+                signing_key: None,
             },
         )
         .expect("publish");
@@ -634,5 +667,57 @@ mod tests {
         assert_eq!(netted.network_allowed, Some(false));
         assert!(!netted.eligible);
         assert!(netted.reasons.contains(&"network-denied".to_string()));
+    }
+
+    #[cfg(unix)]
+    fn configure_stub_signer(vault: &std::path::Path, temporary: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let stub = temporary.join("stub-gpg");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '[GNUPG:] SIG_CREATED D 1 22 01 0 stub' >&2\nprintf '%s\\n' '-----BEGIN PGP SIGNATURE-----' '' 'stub-signature' '-----END PGP SIGNATURE-----'\n",
+        )
+        .expect("stub signer");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("stub executable");
+        run_git(vault, &["config", "user.signingkey", "test-key"]);
+        run_git(
+            vault,
+            &["config", "gpg.program", stub.to_str().expect("stub path")],
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signed_publish_embeds_a_signature() {
+        let (temporary, paths, remote) = publish_fixture();
+        configure_stub_signer(paths.vault_root(), temporary.path());
+        for (sign, signing_key) in [(true, None), (false, Some("test-key".to_string()))] {
+            let report = publish_sync_notification_advertisement(
+                &paths,
+                &SyncNotificationPublishOptions {
+                    subscribe_url: "https://patch.example/h/signed-app?pubsub=true".to_string(),
+                    remote: remote.clone(),
+                    expected: None,
+                    dry_run: false,
+                    sign,
+                    signing_key: signing_key.clone(),
+                },
+            )
+            .expect("signed publish");
+            assert!(report.signed);
+            let revision = report.revision.expect("published revision");
+            let output = std::process::Command::new("git")
+                .args(["cat-file", "-p", &revision])
+                .current_dir(paths.vault_root())
+                .output()
+                .expect("run Git");
+            let commit = String::from_utf8(output.stdout).expect("commit should be UTF-8");
+            assert!(
+                commit.contains("gpgsig ") && commit.contains("stub-signature"),
+                "signed advertisement should embed the signature"
+            );
+        }
     }
 }

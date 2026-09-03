@@ -5687,6 +5687,73 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
 }
 
 #[test]
+#[cfg(unix)]
+fn sync_advertise_signs_with_a_configured_signer() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault directory");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(vault.join("Home.md"), "home\n").expect("home note");
+    let stub = temporary.path().join("stub-gpg");
+    fs::write(
+        &stub,
+        "#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '[GNUPG:] SIG_CREATED D 1 22 01 0 stub' >&2\nprintf '%s\\n' '-----BEGIN PGP SIGNATURE-----' '' 'stub-signature' '-----END PGP SIGNATURE-----'\n",
+    )
+    .expect("stub signer");
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("stub executable");
+    run_git_ok(&vault, &["config", "user.signingkey", "test-key"]);
+    run_git_ok(
+        &vault,
+        &["config", "gpg.program", stub.to_str().expect("stub path")],
+    );
+
+    let published = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "sync",
+            "advertise",
+            "--subscribe-url",
+            "https://patch.example/h/cli-smoke-signed?pubsub=true",
+            "--sign",
+        ])
+        .assert()
+        .success();
+    let published = parse_stdout_json(&published);
+    assert_eq!(published["signed"], true);
+    let revision = published["revision"].as_str().expect("published revision");
+    let commit = run_git_stdout(&remote, &["cat-file", "-p", revision]);
+    assert!(
+        commit.contains("gpgsig ") && commit.contains("stub-signature"),
+        "advertised commit should carry the signature"
+    );
+}
+
+#[test]
 fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_ancestry() {
     let temporary = TempDir::new().expect("temp dir");
     let state_home = temporary.path().join("state");

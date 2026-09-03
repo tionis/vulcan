@@ -4165,6 +4165,17 @@ pub enum SyncCommand {
             help = "Exact advertised revision to replace; omit to lease the current one"
         )]
         expected: Option<String>,
+        #[arg(
+            long,
+            help = "GPG/SSH-sign the advertisement commit with the default configured key"
+        )]
+        sign: bool,
+        #[arg(
+            long,
+            value_name = "KEYID",
+            help = "GPG/SSH-sign with this explicit key (implies --sign)"
+        )]
+        signing_key: Option<String>,
         #[arg(long, help = "Validate and report without creating objects or pushing")]
         dry_run: bool,
     },

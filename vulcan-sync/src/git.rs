@@ -313,12 +313,14 @@ pub trait GitEngine: Send + Sync {
     /// configuration falling back to global and system configuration, exactly
     /// as ordinary Git resolves it. Used for human-administered commits such
     /// as notification advertisements, where authorship is the audit trail.
+    /// Pass signing to GPG/SSH-sign with the publisher's own configuration.
     fn create_commit_with_user_identity(
         &self,
         repository: &GitRepository,
         tree: &GitOid,
         parents: &[GitOid],
         message: &str,
+        signing: Option<&CommitSigning>,
     ) -> Result<GitOid, GitEngineError>;
 
     /// Writes blob bytes directly to the object store without touching the
@@ -1150,6 +1152,17 @@ enum CommitIdentity {
     User,
 }
 
+/// How to sign a human-attributed commit. Signing reuses the publisher's own
+/// Git signing configuration (`user.signingkey`, `gpg.format`); Vulcan never
+/// manages keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitSigning {
+    /// Sign with the default key from the user's Git configuration.
+    DefaultKey,
+    /// Sign with an explicit key id.
+    Key(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct GitCliEngine {
     executable: PathBuf,
@@ -1791,6 +1804,7 @@ impl GitCliEngine {
             parents,
             message,
             CommitIdentity::Vulcan { reproducible },
+            None,
         )
     }
 
@@ -1801,6 +1815,7 @@ impl GitCliEngine {
         parents: &[GitOid],
         message: &str,
         identity: CommitIdentity,
+        signing: Option<&CommitSigning>,
     ) -> Result<GitOid, GitEngineError> {
         let mut command = self.repository_command(repository);
         command.arg("commit-tree").arg(tree.as_str());
@@ -1817,6 +1832,15 @@ impl GitCliEngine {
                 command
                     .env("GIT_AUTHOR_DATE", "@0 +0000")
                     .env("GIT_COMMITTER_DATE", "@0 +0000");
+            }
+        }
+        match signing {
+            None => {}
+            Some(CommitSigning::DefaultKey) => {
+                command.arg("--gpg-sign");
+            }
+            Some(CommitSigning::Key(key_id)) => {
+                command.arg(format!("--gpg-sign={key_id}"));
             }
         }
         let output = self.execute_with_input(command, "create a commit", message.as_bytes())?;
@@ -2903,8 +2927,16 @@ impl GitEngine for GitCliEngine {
         tree: &GitOid,
         parents: &[GitOid],
         message: &str,
+        signing: Option<&CommitSigning>,
     ) -> Result<GitOid, GitEngineError> {
-        self.commit_tree_with_identity(repository, tree, parents, message, CommitIdentity::User)
+        self.commit_tree_with_identity(
+            repository,
+            tree,
+            parents,
+            message,
+            CommitIdentity::User,
+            signing,
+        )
     }
 
     fn write_blob(
