@@ -563,6 +563,47 @@ Examples:
   vulcan vault set personal --group mobile --remove-group desktop
   vulcan vault remove personal --dry-run";
 
+const VAULT_ADD_AFTER_HELP: &str = "\
+Notes:
+  Registration tells Vulcan this vault exists on this device. `vulcan sync <wiki>`
+  and the daemon operate on registered wikis; plain `--vault <path>` commands
+  keep working without registration.
+  IDs are at most 64 characters: lowercase letters, digits, `-`, and `_`.
+  The path must already exist; Git sync additionally needs a Git repository
+  with the live remote configured.
+  Preview with --dry-run first; --dry-run never writes registry state.
+
+Examples:
+  vulcan vault add personal ~/vaults/personal --dry-run
+  vulcan vault add personal ~/vaults/personal
+  vulcan vault list
+  vulcan sync status personal
+  vulcan daemon start";
+
+const VAULT_CLONE_AFTER_HELP: &str = "\
+Notes:
+  Clones the remote, then registers the new worktree exactly like `vault add`.
+  The ID defaults to the destination directory name and follows the same rules.
+  Preview with --dry-run first; --dry-run clones nothing and registers nothing.
+
+Examples:
+  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run
+  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal
+  vulcan vault list
+  vulcan sync status personal";
+
+const DAEMON_START_AFTER_HELP: &str = "\
+Notes:
+  The daemon only syncs registered wikis: `vulcan vault list` shows them,
+  `vulcan vault add` and `vulcan vault clone` register more.
+  Add --verbose, before or after `start`, for per-sync operational lines.
+
+Examples:
+  vulcan daemon start
+  vulcan --verbose daemon start
+  vulcan daemon start --detach
+  vulcan daemon status";
+
 const DAEMON_COMMAND_AFTER_HELP: &str = "\
 Notes:
   The daemon watches and periodically reconciles registered Git-backed wikis.
@@ -4228,7 +4269,10 @@ pub enum DaemonCommand {
         )]
         dry_run: bool,
     },
-    #[command(about = "Start the multi-wiki synchronization daemon")]
+    #[command(
+        about = "Start the multi-wiki synchronization daemon",
+        after_help = DAEMON_START_AFTER_HELP
+    )]
     Start {
         #[arg(
             long,
@@ -4366,13 +4410,19 @@ pub enum ClonePlatformArg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum VaultCommand {
-    #[command(about = "Clone and register a Git-backed wiki")]
+    #[command(
+        about = "Clone a Git remote and register it as a wiki",
+        after_help = VAULT_CLONE_AFTER_HELP
+    )]
     Clone {
         #[arg(help = "Git remote URL or local repository path")]
         remote: String,
         #[arg(help = "New worktree directory to create")]
         path: PathBuf,
-        #[arg(long, help = "Device-local wiki ID; defaults to the destination name")]
+        #[arg(
+            long,
+            help = "Device-local wiki ID (lowercase, digits, `-`/`_`, max 64 chars); defaults to the destination name"
+        )]
         id: Option<String>,
         #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
         group: Vec<String>,
@@ -4402,11 +4452,14 @@ pub enum VaultCommand {
         )]
         dry_run: bool,
     },
-    #[command(about = "Register an existing local wiki")]
+    #[command(
+        about = "Register an existing local vault so sync and the daemon can use it",
+        after_help = VAULT_ADD_AFTER_HELP
+    )]
     Add {
-        #[arg(help = "URL-safe device-local wiki ID")]
+        #[arg(help = "Device-local wiki ID (lowercase, digits, `-`/`_`, max 64 chars)")]
         id: String,
-        #[arg(help = "Existing materialized vault path")]
+        #[arg(help = "Existing vault directory to register")]
         path: PathBuf,
         #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
         group: Vec<String>,

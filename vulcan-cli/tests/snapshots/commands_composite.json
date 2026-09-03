@@ -10094,6 +10094,7 @@
           },
           {
             "about": "Start the multi-wiki synchronization daemon",
+            "after_help": "Notes:\n  The daemon only syncs registered wikis: `vulcan vault list` shows them,\n  `vulcan vault add` and `vulcan vault clone` register more.\n  Add --verbose, before or after `start`, for per-sync operational lines.\n\nExamples:\n  vulcan daemon start\n  vulcan --verbose daemon start\n  vulcan daemon start --detach\n  vulcan daemon status",
             "name": "start",
             "options": [
               {
@@ -10456,7 +10457,8 @@
         "options": [],
         "subcommands": [
           {
-            "about": "Clone and register a Git-backed wiki",
+            "about": "Clone a Git remote and register it as a wiki",
+            "after_help": "Notes:\n  Clones the remote, then registers the new worktree exactly like `vault add`.\n  The ID defaults to the destination directory name and follows the same rules.\n  Preview with --dry-run first; --dry-run clones nothing and registers nothing.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault list\n  vulcan sync status personal",
             "name": "clone",
             "options": [
               {
@@ -10482,7 +10484,7 @@
                 ]
               },
               {
-                "help": "Device-local wiki ID; defaults to the destination name",
+                "help": "Device-local wiki ID (lowercase, digits, `-`/`_`, max 64 chars); defaults to the destination name",
                 "id": "id",
                 "long": "id",
                 "possible_values": [],
@@ -10600,11 +10602,12 @@
             "subcommands": []
           },
           {
-            "about": "Register an existing local wiki",
+            "about": "Register an existing local vault so sync and the daemon can use it",
+            "after_help": "Notes:\n  Registration tells Vulcan this vault exists on this device. `vulcan sync <wiki>`\n  and the daemon operate on registered wikis; plain `--vault <path>` commands\n  keep working without registration.\n  IDs are at most 64 characters: lowercase letters, digits, `-`, and `_`.\n  The path must already exist; Git sync additionally needs a Git repository\n  with the live remote configured.\n  Preview with --dry-run first; --dry-run never writes registry state.\n\nExamples:\n  vulcan vault add personal ~/vaults/personal --dry-run\n  vulcan vault add personal ~/vaults/personal\n  vulcan vault list\n  vulcan sync status personal\n  vulcan daemon start",
             "name": "add",
             "options": [
               {
-                "help": "URL-safe device-local wiki ID",
+                "help": "Device-local wiki ID (lowercase, digits, `-`/`_`, max 64 chars)",
                 "id": "id",
                 "long": null,
                 "possible_values": [],
@@ -10615,7 +10618,7 @@
                 ]
               },
               {
-                "help": "Existing materialized vault path",
+                "help": "Existing vault directory to register",
                 "id": "path",
                 "long": null,
                 "possible_values": [],
