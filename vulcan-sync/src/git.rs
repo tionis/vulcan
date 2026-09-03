@@ -3385,7 +3385,9 @@ impl GitEngine for GitCliEngine {
     ) -> Result<RebaseOutcome, GitEngineError> {
         repository.require_work_tree()?;
         let mut command = self.repository_command(repository);
-        command.arg("rebase");
+        // Never stash implicitly: rebase.autoStash configuration must not
+        // hide user state in automation; dirty trees report BlockedDirty.
+        command.arg("rebase").arg("--no-autostash");
         if merges {
             command.arg("--rebase-merges");
         }
@@ -5114,6 +5116,42 @@ mod tests {
     }
 
     #[test]
+    fn merge_branch_refuses_rather_than_clobbers_staged_work() {
+        let (temporary, remote, writer) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        fs::write(writer.join("Staged.md"), "staged\n").expect("staged note");
+        run_git(&writer, &["add", "Staged.md"]);
+        let staged_before = run_git_capture(&writer, &["rev-parse", ":Staged.md"]);
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine
+                .merge_branch(&repository, &fetched, false)
+                .expect("merge with staged work"),
+            MergeBranchOutcome::BlockedDirty
+        );
+        assert_eq!(
+            run_git_capture(&writer, &["rev-parse", ":Staged.md"]),
+            staged_before,
+            "refused merge must leave staged work alone"
+        );
+        assert!(writer.join("Staged.md").exists());
+    }
+
+    #[test]
     fn merge_branch_merges_cleanly_and_reports_conflicts() {
         let (temporary, remote, writer) = init_branch_remote();
         let (engine, repository, remote_name, branch) = branch_fixture(&writer);
@@ -5162,6 +5200,40 @@ mod tests {
             MergeBranchOutcome::Conflicted
         );
         assert!(repository.git_dir.join("MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn rebase_branch_never_stashes_implicitly() {
+        let (temporary, remote, writer) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        run_git(&writer, &["config", "rebase.autostash", "true"]);
+        fs::write(writer.join("Home.md"), "dirty\n").expect("dirty note");
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine
+                .rebase_branch(&repository, &fetched, false)
+                .expect("dirty rebase"),
+            RebaseOutcome::BlockedDirty
+        );
+        assert_eq!(
+            run_git_capture(&writer, &["stash", "list"]),
+            "",
+            "rebase.autostash configuration must not stash in automation"
+        );
     }
 
     #[test]

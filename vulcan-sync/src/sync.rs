@@ -1137,8 +1137,16 @@ fn pull_branch_lane(
     ) {
         Ok(tip) => tip,
         Err(error) => {
-            lane.action = GitBranchSyncAction::Failed;
-            lane.detail = Some(error.to_string());
+            // A deleted upstream branch is a skip, not a failure: there is
+            // nothing to pull. Other fetch failures stay Failed.
+            let message = error.to_string();
+            if message.contains("couldn't find remote ref") {
+                lane.action = GitBranchSyncAction::Skipped;
+                lane.detail = Some("upstream ref is absent on the remote".to_string());
+            } else {
+                lane.action = GitBranchSyncAction::Failed;
+                lane.detail = Some(message);
+            }
             report.branch = Some(lane);
             return Ok(());
         }
@@ -1322,9 +1330,9 @@ fn preview_branch_pull(
             (
                 GitBranchSyncAction::Planned,
                 Some(format!(
-                    "would pull {} into {} via {strategy}",
-                    upstream.merge_ref.as_str(),
+                    "would reconcile {} with {} via {strategy}; publishes local commits when ahead",
                     branch.as_str(),
+                    upstream.merge_ref.as_str(),
                 )),
             )
         }
@@ -4505,6 +4513,42 @@ mod tests {
         );
         let repository = engine.discover_repository(&writer).expect("repository");
         assert!(repository.git_dir.join("MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn branch_lane_skips_a_deleted_upstream_branch() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        run_git(
+            temporary.path(),
+            &[
+                "--git-dir",
+                remote.to_str().expect("remote path"),
+                "symbolic-ref",
+                "HEAD",
+                "refs/heads/unborn",
+            ],
+        );
+        run_git(&writer, &["push", "--quiet", "origin", ":refs/heads/main"]);
+        assert!(git_stdout(
+            &writer,
+            &[
+                "ls-remote",
+                remote.to_str().expect("remote"),
+                "refs/heads/main"
+            ]
+        )
+        .is_empty());
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with deleted upstream");
+
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Skipped);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("absent")),
+            "skip detail should explain the missing upstream"
+        );
     }
 
     #[test]
