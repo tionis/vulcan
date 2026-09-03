@@ -78,7 +78,14 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
 - Treat the complete subscribe URL as confidential repository capability data. Never print it,
   copy it into a note, or expose it in logs. Repository administrators configure the separate
   publish-only URL or secret directly in the forge webhook; that value never belongs in the Git
-  advertisement.
+  advertisement. `sync advertise`/`unadvertise` reports carry only the endpoint origin and
+  fingerprint for this reason.
+- Publish or rotate the advertisement with
+  `vulcan sync advertise --subscribe-url <https-url> [--remote origin] [--expected <rev>]`.
+  Preview with `--dry-run` first. Without `--expected`, the current remote revision is leased
+  opportunistically; with it, a diverged ref fails instead of overwriting. Remove it with
+  `vulcan sync unadvertise [--expected <rev>]`. Publication builds a parentless commit with
+  object-store plumbing only, so the worktree and user index are never touched.
 - The daemon starts one listener per active advertised Git wiki. A stopped daemon, missing ref,
   malformed advertisement, or unavailable endpoint only increases latency; direct and periodic
   synchronization continue normally.

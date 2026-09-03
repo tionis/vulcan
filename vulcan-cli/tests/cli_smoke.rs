@@ -13935,6 +13935,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("`refs/vulcan/notifications`"));
     assert!(sync_skill.contains("there is no subscription-bundle import"));
     assert!(sync_skill.contains("Notifications are untrusted hints"));
+    assert!(sync_skill.contains("vulcan sync advertise --subscribe-url"));
+    assert!(sync_skill.contains("vulcan sync unadvertise"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
     assert!(sync_skill.contains("never replace a rejected push with unconditional force"));
