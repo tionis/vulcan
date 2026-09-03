@@ -28,9 +28,17 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Review `git diff` or `changes` before writing a commit message.
 - Use `git log` or `git blame` when provenance matters.
 - Commit only after the note or refactor workflow is understood.
-- Run `vulcan sync status` before a sync when staged changes or an in-progress Git operation may be present.
+- Run `vulcan sync status` before a sync when an in-progress Git operation may be present.
+  Staged changes need no special handling: they sync as ordinary worktree bytes while the
+  normal index is left untouched.
 - Daemon and companion status use explicit states: `dirty` means watcher work is queued; `capture_pending`, `capturing`, `captured_unpushed`, `fetching`, `fetched`, `merging`, `pushing`, and `applying` describe an active or recoverable transaction; `conflicted`, `paused`, `offline`, and `error` require the indicated review or retry. Durable journal/apply evidence takes precedence over stale terminal job state after restart.
-- If a finite cycle reports `paused`, inspect `pause.reason`: `staged_changes`, `operation_in_progress`, or `head_moved`. Vulcan has already captured current bytes and fetched an existing remote tip, but it has not reconciled or applied while that state is unsafe. Resolve the normal Git state yourself, then rerun sync; do not delete the retained journal or Vulcan refs.
+- If a finite cycle reports `paused`, inspect `pause.reason`: `operation_in_progress` or
+  `head_moved`. Vulcan has already captured current bytes and fetched an existing remote tip,
+  but it has not reconciled or applied while that state is unsafe. Resolve the normal Git
+  state yourself, then rerun sync; do not delete the retained journal or Vulcan refs. A
+  `branch` report with action `paused` concerns only the branch lane (diverged past
+  `pull.ff=only`, interactive rebase, or a merge/rebase conflict); the file lane proceeds
+  independently.
 - Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, cache-coherence, and target-platform check. A registered wiki uses its recorded platform profile rather than the current host. Inspect `platform_preflight`: case-fold, canonical-Unicode, or Windows-reserved-name errors make the selected tree unsafe to materialize, while executable-bit, link-file symlink, and long-path warnings describe explicit target-filesystem limitations. `healthy: false` means at least one error-level invariant failed.
 - Finite sync carries that same recorded profile through direct registered and daemon jobs. Successful JSON reports retain `local_platform_preflight` and `accepted_platform_preflight`. A platform rejection after local capture is recoverable from the local candidate ref and `captured` journal and occurs before remote contact; a rejected fetched or merged tree is neither published nor applied. Do not change the registration profile merely to bypass incompatible path diagnostics.
 - Successful sync JSON also retains `requirements.required_filters` with clean, smudge, process, and executable readiness. A declared filter without a complete round-trip driver—or Git LFS without its executable—is a configuration error before capture or remote access. Install/configure the driver; do not remove `.gitattributes` merely to make synchronization proceed.
@@ -75,7 +83,9 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Do not write a commit message before inspecting what actually changed.
 - Treat unrelated dirty worktree state as a coordination issue, not something to silently overwrite.
 - Prefer explicit commits over assuming auto-commit covers every workflow.
-- Do not reset or discard staged state to make synchronization proceed. Vulcan preserves and reports it, captures the worktree, fetches safely, and pauses before reconciliation/application until the user resolves that state.
+- Do not reset or discard staged state to make synchronization proceed. Vulcan syncs staged
+  worktree bytes as ordinary filesystem state and never stages, resets, or rewrites the
+  normal index itself.
 - Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, `provenance_revision`, and `preserved_refs` are stable; the `record` ref names a Git-reachable trailer-bearing creation record, while `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, run mutating resolution, delete the record, or edit Vulcan-owned refs without explicit user direction. A preservation ref mismatch is evidence of unexpected mutation and must fail closed.
 - A conflicted report may include `conflict.materialization` and the durable record includes matching metadata. When `published` and `applied` are true, the live ref and worktree contain its exact safe tree: accepted remote bytes remain at original conflicted paths, local copies live under `.sync-conflicts/<id>/local/`, and clean merged paths continue synchronizing. Review either copy, but do not move, rename, edit, check out, or push conflict artifacts manually; use `sync resolve` so publication leases the materialized provenance commit and removes the hidden directory atomically. Structural conflicts may omit materialization and remain fully preserved by refs and device-local artifacts.
 - A device-local automation ceiling may turn an otherwise deterministic structured resolution into a preserved conflict, but it must never produce a different accepted tree. Do not infer that two devices disagree merely because one requires additional review.

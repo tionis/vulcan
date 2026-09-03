@@ -28,7 +28,8 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 2. Classify the problem as source-note content, derived cache/index state, config/permission state, or unsupported syntax.
 3. Use dry-run repair/fix modes when available.
 4. Only patch source notes after identifying the smallest concrete fix.
-5. For Git-backed device sync, run `vulcan sync doctor [<wiki>]` before mutation, then `vulcan sync status` for the proposed finite cycle. Doctor distinguishes unavailable Git, unsupported layout, unreadable or divergent refs, offline remotes, active locks, retained journals, missing ignore rules, filter/LFS requirements, cache drift, and target-platform incompatibilities. A registered wiki uses its recorded platform profile even when doctor runs on another host. Case-fold, canonical-Unicode, and Windows-reserved-name errors mean the tree cannot be represented safely; executable-bit, link-file symlink, and long-path warnings require target-device review. A paused status identifies staged or in-progress Git state; a conflicted result preserves both candidate commits and local bytes for review.
+5. For Git-backed device sync, run `vulcan sync doctor [<wiki>]` before mutation, then `vulcan sync status` for the proposed finite cycle. Doctor distinguishes unavailable Git, unsupported layout, unreadable or divergent refs, offline remotes, active locks, retained journals, missing ignore rules, filter/LFS requirements, cache drift, and target-platform incompatibilities. A registered wiki uses its recorded platform profile even when doctor runs on another host. Case-fold, canonical-Unicode, and Windows-reserved-name errors mean the tree cannot be represented safely; executable-bit, link-file symlink, and long-path   warnings require target-device review. A paused status identifies in-progress Git state or
+  unexpected HEAD movement; a conflicted result preserves both candidate commits and local bytes for review.
 6. For missing background updates, run `vulcan daemon status`. It authenticates a live loopback capability request and reports the runtime address, PID, uptime, and registrations; a stale runtime record is reported as stopped. Review `vulcan daemon install --dry-run` and refresh the native service after moving or upgrading the executable. Restart with `vulcan daemon start --detach` only after confirming no service is live, and use `vulcan daemon stop` for graceful watcher/worker shutdown. Direct `vulcan sync run` remains a valid diagnostic and recovery path without the daemon.
    Realtime wake-up is optional: a missing, malformed, permission-denied, or unavailable advertised
    endpoint produces a redacted daemon diagnostic and falls back to startup/periodic polling. Check
@@ -51,7 +52,9 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - For bulk repairs, inspect changed paths and commit separately from unrelated edits.
 - Do not weaken update signature or version policy to make a failed update check pass. Confirm the
   installation owner, selected channel, target, current version, and configured project key first.
-- Do not clear staged state, rewrite Vulcan-owned refs, or pick a conflict side merely to make synchronization continue.
+- Do not clear staged state, rewrite Vulcan-owned refs, or pick a conflict side merely to
+  make synchronization continue. Staged bytes sync as ordinary worktree state while the index
+  is left untouched.
 - Do not remove `vulcan-sync/apply.json` as a repair shortcut. It is durable evidence that mutation began and verification may not have completed.
 - For a sync conflict, retain the immutable conflict ID and inspect its base/local/remote revisions and path records. The original commits remain Git-reachable and file artifacts live in device-local sync state, so cache repair and note cleanup must never delete them.
 - Start conflict investigation with `vulcan sync conflicts`, then use `vulcan sync conflicts <id>` to inspect per-side object IDs, modes, hashes, byte counts, and artifact locations. This read-only command is safe before deciding how to resolve the conflict.
