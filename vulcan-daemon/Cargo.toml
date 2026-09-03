@@ -26,7 +26,6 @@ tower.workspace = true
 ulid.workspace = true
 vulcan-app = { path = "../vulcan-app", version = "0.1.0", default-features = false }
 vulcan-core = { path = "../vulcan-core", version = "0.1.0", default-features = false }
-vulcan-event-relay = { path = "../vulcan-event-relay", version = "0.1.0" }
 vulcan-sync = { path = "../vulcan-sync", version = "0.1.0" }
 
 [lints]

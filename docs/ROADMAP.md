@@ -5527,7 +5527,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 #### 12.13.2 Vulcan client
 
-- [ ] Replace the generic relay crate, imported bundle store, CloudEvent router, and notification-management CLI with a dependency-light advertisement parser and exact Git-ref reader.
+- [x] Replace the generic relay crate, imported bundle store, CloudEvent router, and notification-management CLI with a dependency-light advertisement parser and exact Git-ref reader.
 - [ ] Add a daemon-owned interruptible HTTP long-poll listener per active advertised Git wiki, with bounded reconnect/backoff, no redirects, endpoint redaction, and cooperative shutdown.
 - [ ] Route every successful response directly to one coalesced `SyncJobTrigger::RemoteNotification`; retain the fetch-first remote observation optimization and the ordinary finite sync/conflict path.
 - [ ] Refresh advertisements at startup, after wake-up, and during periodic reconciliation so rotation and missed ephemeral events repair automatically.

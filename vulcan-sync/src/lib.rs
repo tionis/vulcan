@@ -13,6 +13,7 @@ pub mod conformance;
 mod contracts;
 mod git;
 mod merge_policy;
+mod notifications;
 mod platform;
 mod refs;
 mod structured_merge;
@@ -40,6 +41,11 @@ pub use git::{
 pub use merge_policy::{
     MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyDecision,
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
+};
+pub use notifications::{
+    refresh_notification_advertisement, DiscoveredNotificationAdvertisement,
+    NotificationAdvertisement, NotificationAdvertisementError, NotificationEndpoint,
+    NotificationTransport, NOTIFICATION_ADVERTISEMENT_FILE, NOTIFICATION_ADVERTISEMENT_REF,
 };
 pub use platform::{
     inspect_git_tree_platform, GitPlatformDiagnostic, GitPlatformDiagnosticSeverity,

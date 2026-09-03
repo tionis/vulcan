@@ -437,12 +437,12 @@ pub use cli::{
     RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
     SearchBackendArg, SearchMode, SearchSortArg, SemanticGroupingArg, SiteCommand, SkillCommand,
     SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg,
-    SyncNotificationsCommand, SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg,
-    TextBundleCommand, ToolCommand, ToolInitTemplateArg, TrustCommand, UpdateChannelArg,
-    UpdateChannelArgs, UpdateCommand, VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode, WikiPackageCommand,
+    SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand, TasksListSourceArg,
+    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg, TextBundleCommand,
+    ToolCommand, ToolInitTemplateArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs,
+    UpdateCommand, VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    WikiPackageCommand,
 };
 
 #[must_use]

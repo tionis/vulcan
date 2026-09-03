@@ -24,7 +24,6 @@ pub(crate) mod runtime;
 pub(crate) mod skill;
 pub(crate) mod status;
 pub(crate) mod sync;
-pub(crate) mod sync_notifications;
 pub(crate) mod tasks;
 pub(crate) mod template;
 pub(crate) mod textbundle;

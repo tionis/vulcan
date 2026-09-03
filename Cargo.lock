@@ -4479,7 +4479,6 @@ dependencies = [
  "vulcan-app",
  "vulcan-core",
  "vulcan-daemon",
- "vulcan-event-relay",
  "zip",
 ]
 
@@ -4543,7 +4542,6 @@ dependencies = [
  "ulid",
  "vulcan-app",
  "vulcan-core",
- "vulcan-event-relay",
  "vulcan-sync",
 ]
 
@@ -4560,16 +4558,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vulcan-event-relay"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
 name = "vulcan-sync"
 version = "0.1.0"
 dependencies = [
@@ -4583,6 +4571,7 @@ dependencies = [
  "tempfile",
  "ulid",
  "unicode-normalization",
+ "url",
 ]
 
 [[package]]
