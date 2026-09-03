@@ -184,6 +184,7 @@ where
                 });
             }
             Ok((_, Err(error))) if notify_error_is_internal(&paths, &error) => {}
+            Ok((_, Err(error))) if error_paths_are_symlinks(&error) => {}
             Ok((source, Err(error))) => batch.push_watcher_error(
                 Instant::now(),
                 format!("{} watcher: {error}", source.label()),
@@ -427,6 +428,21 @@ fn notify_error_is_internal(paths: &VaultPaths, error: &notify::Error) -> bool {
             .all(|path| normalize_watch_path(paths, path).is_none())
 }
 
+/// Returns true when every path attached to a watcher error is a symlink.
+/// Git versions the link itself — target path as blob content, never
+/// resolved — so content observed *through* a link is irrelevant to sync:
+/// link creation, deletion, and retargeting are all visible in the parent
+/// directory scan without reading through the link, and a dangling link has
+/// no observable content at all. Such scan errors (the polling watcher reads
+/// file contents to compare) carry no sync signal and must not schedule
+/// safety rescans; other errors keep the existing rescan behavior.
+fn error_paths_are_symlinks(error: &notify::Error) -> bool {
+    !error.paths.is_empty()
+        && error.paths.iter().all(|path| {
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        })
+}
+
 fn relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
     paths
         .relative_to_vault(path)
@@ -590,6 +606,40 @@ mod tests {
         assert!(batch.is_ready(start + maximum, debounce, maximum));
         assert_eq!(batch.take_metadata().event_count, 4);
         assert!(!batch.is_ready(start + maximum, debounce, maximum));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_scan_errors_carry_no_sync_signal() {
+        use std::os::unix::fs::symlink;
+
+        fn scan_error(paths: Vec<PathBuf>) -> notify::Error {
+            notify::Error {
+                kind: notify::ErrorKind::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No such file or directory",
+                )),
+                paths,
+            }
+        }
+
+        let temporary = tempdir().expect("temporary directory");
+        let dangling = temporary.path().join("dead-link");
+        symlink("/nonexistent-target", &dangling).expect("symlink");
+        let target = temporary.path().join("target");
+        std::fs::write(&target, "contents").expect("target");
+        let healthy = temporary.path().join("live-link");
+        symlink(&target, &healthy).expect("symlink");
+        let regular = temporary.path().join("note.md");
+        std::fs::write(&regular, "note").expect("note");
+
+        assert!(error_paths_are_symlinks(&scan_error(vec![dangling])));
+        assert!(error_paths_are_symlinks(&scan_error(vec![healthy])));
+        assert!(!error_paths_are_symlinks(&scan_error(vec![regular])));
+        assert!(!error_paths_are_symlinks(&scan_error(vec![temporary
+            .path()
+            .join("missing.md")])));
+        assert!(!error_paths_are_symlinks(&scan_error(Vec::new())));
     }
 
     #[test]
