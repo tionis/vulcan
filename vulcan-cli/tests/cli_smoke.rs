@@ -5427,6 +5427,157 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
 }
 
 #[test]
+fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault directory");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(vault.join("Home.md"), "home\n").expect("home note");
+    let vault_str = vault.to_str().expect("vault path");
+
+    let status = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_str,
+            "--output",
+            "json",
+            "sync",
+            "notifications",
+        ])
+        .assert()
+        .success();
+    let status = parse_stdout_json(&status);
+    assert_eq!(status["advertised"], false);
+    assert_eq!(status["would_listen"], false);
+    assert!(status["reasons"]
+        .as_array()
+        .expect("reasons")
+        .iter()
+        .any(|reason| reason == "missing-advertisement"));
+
+    let published = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_str,
+            "--output",
+            "json",
+            "sync",
+            "advertise",
+            "--subscribe-url",
+            "https://patch.example/h/cli-smoke-status-check?pubsub=true",
+        ])
+        .assert()
+        .success();
+    let revision = parse_stdout_json(&published)["revision"]
+        .as_str()
+        .expect("published revision")
+        .to_string();
+
+    let eligible = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_str,
+            "--output",
+            "json",
+            "sync",
+            "notifications",
+        ])
+        .assert()
+        .success();
+    let redacted = String::from_utf8_lossy(&eligible.get_output().stdout).into_owned()
+        + &String::from_utf8_lossy(&eligible.get_output().stderr);
+    assert!(
+        !redacted.contains("cli-smoke-status-check"),
+        "notification status must redact the subscribe URL"
+    );
+    let eligible = parse_stdout_json(&eligible);
+    assert_eq!(eligible["advertised"], true);
+    assert_eq!(eligible["valid"], true);
+    assert_eq!(eligible["revision"], revision.as_str());
+    assert_eq!(eligible["origin"], "https://patch.example");
+    assert_eq!(eligible["git_allowed"], true);
+    assert_eq!(eligible["network_allowed"], true);
+    assert_eq!(eligible["eligible"], true);
+    // No daemon runs in the test environment, so eligibility holds while the
+    // verdict reflects the stopped daemon.
+    assert_eq!(eligible["daemon_running"], false);
+    assert_eq!(eligible["would_listen"], false);
+    assert!(eligible["reasons"]
+        .as_array()
+        .expect("reasons")
+        .iter()
+        .any(|reason| reason == "daemon-stopped"));
+
+    let scratch = temporary.path().join("scratch");
+    fs::create_dir(&scratch).expect("scratch directory");
+    init_git_repo(&scratch);
+    run_git_ok(
+        &scratch,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(scratch.join("notification.json"), "not json").expect("raw advertisement");
+    run_git_ok(&scratch, &["add", "notification.json"]);
+    run_git_ok(&scratch, &["commit", "-m", "raw advertisement"]);
+    run_git_ok(
+        &scratch,
+        &[
+            "push",
+            "--force",
+            "origin",
+            "HEAD:refs/vulcan/notifications",
+        ],
+    );
+    let invalid = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_str,
+            "--output",
+            "json",
+            "sync",
+            "notifications",
+        ])
+        .assert()
+        .success();
+    let invalid = parse_stdout_json(&invalid);
+    assert_eq!(invalid["advertised"], true);
+    assert_eq!(invalid["valid"], false);
+    assert_eq!(invalid["eligible"], false);
+    assert!(invalid["reasons"]
+        .as_array()
+        .expect("reasons")
+        .iter()
+        .any(|reason| reason == "invalid-advertisement"));
+}
+
+#[test]
 fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_ancestry() {
     let temporary = TempDir::new().expect("temp dir");
     let state_home = temporary.path().join("state");
@@ -13937,6 +14088,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("Notifications are untrusted hints"));
     assert!(sync_skill.contains("vulcan sync advertise --subscribe-url"));
     assert!(sync_skill.contains("vulcan sync unadvertise"));
+    assert!(sync_skill.contains("vulcan sync notifications"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
     assert!(sync_skill.contains("never replace a rejected push with unconditional force"));
@@ -22682,6 +22834,7 @@ fn describe_json_output_exposes_runtime_command_schema() {
         "semantic-plan",
         "advertise",
         "unadvertise",
+        "notifications",
     ] {
         assert!(sync["subcommands"]
             .as_array()

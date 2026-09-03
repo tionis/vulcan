@@ -9,11 +9,13 @@ use crate::AppError;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
-use vulcan_core::VaultPaths;
+use vulcan_core::{
+    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+};
 use vulcan_sync::{
     preview_notification_advertisement, publish_notification_advertisement,
     refresh_notification_advertisement, remove_notification_advertisement, GitEngine, GitOid,
-    GitRefDeleteResult, GitRemote, NOTIFICATION_ADVERTISEMENT_REF,
+    GitRefDeleteResult, GitRemote, NotificationAdvertisementError, NOTIFICATION_ADVERTISEMENT_REF,
 };
 
 pub const SYNC_NOTIFICATION_REPORT_VERSION: u32 = 1;
@@ -188,6 +190,148 @@ fn parse_expected(expected: Option<String>) -> Result<Option<GitOid>, AppError> 
         .map_err(AppError::operation)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncNotificationStatusOptions {
+    pub remote: GitRemote,
+    /// Effective permission profile name. `None` resolves the default profile.
+    pub permissions_profile: Option<String>,
+    /// Registration pause state. `None` for direct-vault inspections.
+    pub paused: Option<bool>,
+    /// Whether the registration uses the Git backend. `None` for direct-vault.
+    pub git_backend: Option<bool>,
+    pub daemon_running: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct SyncNotificationStatusReport {
+    pub version: u32,
+    pub vault: PathBuf,
+    pub remote: GitRemote,
+    pub advertisement_ref: String,
+    pub advertised: bool,
+    pub revision: Option<String>,
+    pub origin: Option<String>,
+    pub fingerprint: Option<String>,
+    pub valid: bool,
+    pub detail: String,
+    pub git_allowed: bool,
+    pub network_allowed: Option<bool>,
+    pub paused: Option<bool>,
+    pub git_backend: Option<bool>,
+    pub daemon_running: bool,
+    pub eligible: bool,
+    pub would_listen: bool,
+    pub reasons: Vec<String>,
+}
+
+/// Inspects whether Vulcan would use a notification server for one vault.
+///
+/// This fetches the advertisement ref through the configured remote — the
+/// same device-local fetch the daemon performs — but never publishes.
+/// Reasons are stable machine-readable codes; `detail` carries the human
+/// message. Endpoint identity is origin and fingerprint only.
+pub fn notification_status(
+    paths: &VaultPaths,
+    options: &SyncNotificationStatusOptions,
+) -> Result<SyncNotificationStatusReport, AppError> {
+    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let engine = vulcan_sync::GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&vault)
+        .map_err(AppError::operation)?;
+    let selection = resolve_permission_profile(paths, options.permissions_profile.as_deref())
+        .map_err(AppError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    let git_allowed = guard.check_git().is_ok();
+
+    let mut report = SyncNotificationStatusReport {
+        version: SYNC_NOTIFICATION_REPORT_VERSION,
+        vault,
+        remote: options.remote.clone(),
+        advertisement_ref: NOTIFICATION_ADVERTISEMENT_REF.to_string(),
+        advertised: false,
+        revision: None,
+        origin: None,
+        fingerprint: None,
+        valid: false,
+        detail: String::new(),
+        git_allowed,
+        network_allowed: None,
+        paused: options.paused,
+        git_backend: options.git_backend,
+        daemon_running: options.daemon_running,
+        eligible: false,
+        would_listen: false,
+        reasons: Vec::new(),
+    };
+
+    match refresh_notification_advertisement(&engine, &repository, &options.remote) {
+        Ok(Some(discovered)) => {
+            report.advertised = true;
+            report.valid = true;
+            report.revision = Some(discovered.revision.to_string());
+            report.origin = Some(discovered.advertisement.endpoint.origin().to_string());
+            report.fingerprint = Some(discovered.advertisement.endpoint.fingerprint().to_string());
+            report.detail = "the notification advertisement is valid".to_string();
+            report.network_allowed = Some(
+                guard
+                    .check_network(discovered.advertisement.endpoint.origin())
+                    .is_ok(),
+            );
+        }
+        Ok(None) => {
+            report.detail = format!(
+                "no notification advertisement is advertised on `{}`",
+                options.remote.as_str()
+            );
+        }
+        Err(NotificationAdvertisementError::Invalid(detail)) => {
+            report.advertised = true;
+            report.valid = false;
+            report.detail = detail;
+            if let Ok(reference) = vulcan_sync::GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF) {
+                if let Ok(Some(revision)) =
+                    engine.remote_ref(&repository, &options.remote, &reference)
+                {
+                    report.revision = Some(revision.to_string());
+                }
+            }
+        }
+        Err(error) => return Err(AppError::operation(error)),
+    }
+
+    if !report.advertised {
+        report.reasons.push("missing-advertisement".to_string());
+    }
+    if report.advertised && !report.valid {
+        report.reasons.push("invalid-advertisement".to_string());
+    }
+    if !report.git_allowed {
+        report.reasons.push("git-denied".to_string());
+    }
+    if report.network_allowed == Some(false) {
+        report.reasons.push("network-denied".to_string());
+    }
+    if report.paused == Some(true) {
+        report.reasons.push("paused".to_string());
+    }
+    if report.git_backend == Some(false) {
+        report.reasons.push("non-git-backend".to_string());
+    }
+    report.eligible = report.advertised
+        && report.valid
+        && report.git_allowed
+        && report.network_allowed == Some(true)
+        && report.paused != Some(true)
+        && report.git_backend != Some(false);
+    if report.eligible && !report.daemon_running {
+        report.reasons.push("daemon-stopped".to_string());
+    }
+    report.would_listen = report.eligible && report.daemon_running;
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +465,174 @@ mod tests {
         .expect("remove absent");
         assert!(!removed.deleted);
         assert_eq!(removed.previous_revision, None);
+    }
+
+    fn status_options(remote: &GitRemote) -> SyncNotificationStatusOptions {
+        SyncNotificationStatusOptions {
+            remote: remote.clone(),
+            permissions_profile: None,
+            paused: None,
+            git_backend: None,
+            daemon_running: true,
+        }
+    }
+
+    fn push_raw_advertisement(vault: &std::path::Path, contents: &str) {
+        std::fs::write(vault.join("notification.json"), contents).expect("raw advertisement");
+        run_git(vault, &["add", "notification.json"]);
+        run_git(vault, &["commit", "-m", "raw advertisement"]);
+        run_git(vault, &["push", "origin", "HEAD:refs/vulcan/notifications"]);
+    }
+
+    #[test]
+    fn status_reports_missing_advertisement() {
+        let (_temporary, paths, remote) = publish_fixture();
+        let report =
+            notification_status(&paths, &status_options(&remote)).expect("notification status");
+        assert!(!report.advertised);
+        assert!(!report.valid);
+        assert!(!report.eligible);
+        assert!(!report.would_listen);
+        assert_eq!(report.reasons, ["missing-advertisement"]);
+        assert!(report.detail.contains("origin"));
+    }
+
+    #[test]
+    fn status_reports_valid_advertisement_as_listenable() {
+        let (_temporary, paths, remote) = publish_fixture();
+        let published = publish_sync_notification_advertisement(
+            &paths,
+            &SyncNotificationPublishOptions {
+                subscribe_url: "https://patch.example/h/status-channel?pubsub=true".to_string(),
+                remote: remote.clone(),
+                expected: None,
+                dry_run: false,
+            },
+        )
+        .expect("publish");
+        let report =
+            notification_status(&paths, &status_options(&remote)).expect("notification status");
+        assert!(report.advertised);
+        assert!(report.valid);
+        assert_eq!(
+            report.revision, published.revision,
+            "status should report the published revision"
+        );
+        assert_eq!(report.origin.as_deref(), Some("https://patch.example"));
+        assert!(report.git_allowed);
+        assert_eq!(report.network_allowed, Some(true));
+        assert!(report.eligible);
+        assert!(report.would_listen);
+        assert!(report.reasons.is_empty());
+        assert!(!format!("{report:?}").contains("status-channel"));
+
+        let stopped = notification_status(
+            &paths,
+            &SyncNotificationStatusOptions {
+                daemon_running: false,
+                ..status_options(&remote)
+            },
+        )
+        .expect("stopped status");
+        assert!(stopped.eligible);
+        assert!(!stopped.would_listen);
+        assert_eq!(stopped.reasons, ["daemon-stopped"]);
+    }
+
+    #[test]
+    fn status_reports_invalid_advertisement_with_revision() {
+        let (_temporary, paths, remote) = publish_fixture();
+        push_raw_advertisement(paths.vault_root(), "not json");
+        let report =
+            notification_status(&paths, &status_options(&remote)).expect("notification status");
+        assert!(report.advertised);
+        assert!(!report.valid);
+        assert!(report.revision.is_some());
+        assert!(!report.eligible);
+        assert!(!report.would_listen);
+        assert!(report
+            .reasons
+            .contains(&"invalid-advertisement".to_string()));
+    }
+
+    #[test]
+    fn status_reports_pause_and_backend_blocks() {
+        let (_temporary, paths, remote) = publish_fixture();
+        publish_sync_notification_advertisement(
+            &paths,
+            &SyncNotificationPublishOptions {
+                subscribe_url: "https://patch.example/h/paused?pubsub=true".to_string(),
+                remote: remote.clone(),
+                expected: None,
+                dry_run: false,
+            },
+        )
+        .expect("publish");
+        let paused = notification_status(
+            &paths,
+            &SyncNotificationStatusOptions {
+                paused: Some(true),
+                ..status_options(&remote)
+            },
+        )
+        .expect("paused status");
+        assert!(!paused.eligible);
+        assert!(paused.reasons.contains(&"paused".to_string()));
+
+        let foreign = notification_status(
+            &paths,
+            &SyncNotificationStatusOptions {
+                git_backend: Some(false),
+                ..status_options(&remote)
+            },
+        )
+        .expect("backend status");
+        assert!(!foreign.eligible);
+        assert!(foreign.reasons.contains(&"non-git-backend".to_string()));
+    }
+
+    #[test]
+    fn status_reports_denied_git_and_network() {
+        let (_temporary, paths, remote) = publish_fixture();
+        let denied = notification_status(
+            &paths,
+            &SyncNotificationStatusOptions {
+                permissions_profile: Some("readonly".to_string()),
+                ..status_options(&remote)
+            },
+        )
+        .expect("denied status");
+        assert!(!denied.git_allowed);
+        assert!(!denied.eligible);
+        assert!(denied.reasons.contains(&"git-denied".to_string()));
+
+        std::fs::create_dir_all(paths.vault_root().join(".vulcan")).expect("vulcan dir");
+        std::fs::write(
+            paths.vault_root().join(".vulcan/config.local.toml"),
+            "[permissions.profiles.netdenied]\ngit = \"allow\"\nnetwork = \"deny\"\n",
+        )
+        .expect("custom profile");
+        publish_sync_notification_advertisement(
+            &paths,
+            &SyncNotificationPublishOptions {
+                subscribe_url: "https://patch.example/h/netted?pubsub=true".to_string(),
+                remote: remote.clone(),
+                expected: None,
+                dry_run: false,
+            },
+        )
+        .expect("publish");
+        let netted = notification_status(
+            &paths,
+            &SyncNotificationStatusOptions {
+                permissions_profile: Some("netdenied".to_string()),
+                ..status_options(&remote)
+            },
+        )
+        .expect("netted status");
+        assert!(netted.git_allowed);
+        assert_eq!(netted.network_allowed, Some(false));
+        assert!(!netted.eligible);
+        assert!(netted.reasons.contains(&"network-denied".to_string()));
     }
 }

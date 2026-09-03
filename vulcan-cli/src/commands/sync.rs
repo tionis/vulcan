@@ -22,9 +22,10 @@ use vulcan_app::sync_conflicts::{
     SyncConflictResolutionSide,
 };
 use vulcan_app::sync_notifications::{
-    publish_sync_notification_advertisement, remove_sync_notification_advertisement,
-    SyncNotificationPublishOptions, SyncNotificationPublishReport, SyncNotificationRemoveOptions,
-    SyncNotificationRemoveReport,
+    notification_status, publish_sync_notification_advertisement,
+    remove_sync_notification_advertisement, SyncNotificationPublishOptions,
+    SyncNotificationPublishReport, SyncNotificationRemoveOptions, SyncNotificationRemoveReport,
+    SyncNotificationStatusOptions, SyncNotificationStatusReport,
 };
 use vulcan_app::sync_proposals::{
     approve_resolution_proposal, create_resolution_proposal, prepare_editor_resolution,
@@ -57,6 +58,7 @@ use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
+use vulcan_daemon::process::{daemon_status, DaemonProcessContext};
 use vulcan_daemon::registry::{UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry};
 use vulcan_daemon::sync::{sync_registered_wikis, RegisteredSyncReport, RegisteredSyncSelection};
 use vulcan_daemon::termux_scheduler::{
@@ -315,7 +317,9 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Resume { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), false, *dry_run)
         }
-        SyncCommand::Advertise { .. } | SyncCommand::Unadvertise { .. } => {
+        SyncCommand::Advertise { .. }
+        | SyncCommand::Unadvertise { .. }
+        | SyncCommand::Notifications { .. } => {
             unreachable!("notification commands are dispatched before the general sync match")
         }
         SyncCommand::Doctor { wiki, target } => {
@@ -419,6 +423,9 @@ fn handle_notification_sync_command(
             expected.as_deref(),
             *dry_run,
         )),
+        SyncCommand::Notifications { wiki, remote } => {
+            Some(run_sync_notifications(cli, paths, wiki.as_deref(), remote))
+        }
         _ => None,
     }
 }
@@ -1406,6 +1413,97 @@ fn print_sync_unadvertise(
             report.remote.as_str(),
         );
     }
+    Ok(())
+}
+
+fn run_sync_notifications(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    remote: &str,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, paused) = resolve_notification_paths(selected_paths, wiki)?;
+    let daemon_running = DaemonProcessContext::user_default()
+        .ok()
+        .and_then(|context| daemon_status(&context).ok())
+        .is_some_and(|status| status.running);
+    let report = notification_status(
+        &paths,
+        &SyncNotificationStatusOptions {
+            remote: GitRemote::parse(remote).map_err(CliError::operation)?,
+            permissions_profile: cli
+                .permissions
+                .as_deref()
+                .or(registration_profile.as_deref())
+                .map(str::to_string),
+            paused,
+            git_backend: wiki.map(|_| true),
+            daemon_running,
+        },
+    )
+    .map_err(CliError::operation)?;
+    print_sync_notifications(cli.output, &report)
+}
+
+/// Resolves the vault, effective permission profile, and pause state for a
+/// notification inspection. Unlike mutating commands, a denied Git capability
+/// is a report finding rather than an error, so no permission gate applies.
+fn resolve_notification_paths(
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+) -> Result<(VaultPaths, Option<String>, Option<bool>), CliError> {
+    let Some(wiki) = wiki else {
+        return Ok((selected_paths.clone(), None, None));
+    };
+    let id = WikiId::parse(wiki).map_err(CliError::operation)?;
+    let registration = WikiRegistry::user_default()
+        .map_err(CliError::operation)?
+        .show(&id)
+        .map_err(CliError::operation)?
+        .registration;
+    if registration
+        .sync_backend
+        .as_deref()
+        .is_some_and(|backend| backend != "git")
+    {
+        return Err(CliError::operation(format!(
+            "wiki `{id}` uses unsupported sync backend `{}`",
+            registration.sync_backend.as_deref().unwrap_or_default()
+        )));
+    }
+    Ok((
+        VaultPaths::new(registration.path),
+        registration.permissions_profile,
+        Some(registration.sync_paused),
+    ))
+}
+
+fn print_sync_notifications(
+    output: OutputFormat,
+    report: &SyncNotificationStatusReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.would_listen {
+        println!(
+            "Would use notification server {} ({}) at revision {} via {}.",
+            report.origin.as_deref().unwrap_or("unknown"),
+            report.fingerprint.as_deref().unwrap_or("unknown"),
+            report.revision.as_deref().unwrap_or("unknown"),
+            report.remote.as_str(),
+        );
+        return Ok(());
+    }
+    println!(
+        "Would not use a notification server: {}.",
+        if report.reasons.is_empty() {
+            "unknown reason".to_string()
+        } else {
+            report.reasons.join(", ")
+        },
+    );
+    println!("Detail: {}", report.detail);
     Ok(())
 }
 

@@ -9987,6 +9987,35 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Show whether a notification server would be used",
+            "name": "notifications",
+            "options": [
+              {
+                "help": "Optional registered wiki ID; omit to use the selected vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Git remote carrying the advertisement ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },

@@ -4186,6 +4186,17 @@ pub enum SyncCommand {
         #[arg(long, help = "Validate and report without deleting the remote ref")]
         dry_run: bool,
     },
+    #[command(about = "Show whether a notification server would be used")]
+    Notifications {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[arg(
+            long,
+            default_value = "origin",
+            help = "Git remote carrying the advertisement ref"
+        )]
+        remote: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
