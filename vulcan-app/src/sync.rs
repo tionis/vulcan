@@ -1241,6 +1241,8 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
 
 const MAX_VALIDATED_MARKDOWN_FILES: usize = 100_000;
 const MAX_VALIDATED_MARKDOWN_BYTES: usize = 512 * 1024 * 1024;
+const MAX_VALIDATED_CANVAS_FILES: usize = 10_000;
+const MAX_VALIDATED_CANVAS_BYTES: usize = 64 * 1024 * 1024;
 
 struct VaultTreeValidator {
     config: VaultConfig,
@@ -1389,7 +1391,22 @@ fn analyze_git_tree(
         .collect::<Vec<_>>();
     let resolver = ResolverIndex::build(&resolver_documents);
     let mut link_problems = BTreeSet::new();
-    for (path, parsed) in &parsed_documents {
+    resolve_document_links(&resolver, config, &parsed_documents, &mut link_problems);
+    let canvas_references = canvas_file_references(engine, repository, revision, &paths)?;
+    resolve_canvas_links(&resolver, config, &canvas_references, &mut link_problems);
+    Ok(GitTreeAnalysis {
+        paths,
+        link_problems,
+    })
+}
+
+fn resolve_document_links(
+    resolver: &ResolverIndex,
+    config: &VaultConfig,
+    parsed_documents: &[(String, vulcan_core::ParsedDocument)],
+    link_problems: &mut BTreeSet<LinkProblemKey>,
+) {
+    for (path, parsed) in parsed_documents {
         for link in &parsed.links {
             let resolution = resolver.resolve(
                 &ResolverLink {
@@ -1419,10 +1436,37 @@ fn analyze_git_tree(
             });
         }
     }
-    Ok(GitTreeAnalysis {
-        paths,
-        link_problems,
-    })
+}
+
+fn resolve_canvas_links(
+    resolver: &ResolverIndex,
+    config: &VaultConfig,
+    references: &[(String, String)],
+    link_problems: &mut BTreeSet<LinkProblemKey>,
+) {
+    for (path, target) in references {
+        let resolution = resolver.resolve(
+            &ResolverLink {
+                source_document_id: path.clone(),
+                source_path: path.clone(),
+                target_path_candidate: Some(target.clone()),
+                link_kind: vulcan_core::LinkKind::Wikilink,
+            },
+            config.link_resolution,
+        );
+        let Some(problem) = resolution.problem else {
+            continue;
+        };
+        link_problems.insert(LinkProblemKey {
+            source_path: path.clone(),
+            target: target.clone(),
+            kind: "canvas",
+            problem: match problem {
+                LinkResolutionProblem::Unresolved => "unresolved",
+                LinkResolutionProblem::Ambiguous(_) => "ambiguous",
+            },
+        });
+    }
 }
 
 fn markdown_path(path: &str) -> bool {
@@ -1432,6 +1476,73 @@ fn markdown_path(path: &str) -> bool {
         .is_some_and(|extension| {
             matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
         })
+}
+
+fn canvas_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("canvas"))
+}
+
+/// Collects `file` references from Canvas node objects so whole-tree link
+/// validation covers embedded note references alongside Markdown links.
+fn canvas_file_references(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    revision: &vulcan_sync::GitOid,
+    paths: &BTreeSet<String>,
+) -> Result<Vec<(String, String)>, GitSyncObserverError> {
+    let canvas_paths = paths
+        .iter()
+        .filter(|path| canvas_path(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    if canvas_paths.len() > MAX_VALIDATED_CANVAS_FILES {
+        return Err(GitSyncObserverError::new(format!(
+            "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_FILES} Canvas-file validation limit"
+        )));
+    }
+    let mut references = Vec::new();
+    let mut total_bytes = 0_usize;
+    for path in canvas_paths {
+        let object = engine
+            .path_object(repository, revision, &path)
+            .map_err(|error| GitSyncObserverError::new(error.to_string()))?
+            .ok_or_else(|| GitSyncObserverError::new(format!("tree omitted `{path}`")))?;
+        if object.kind != "blob" {
+            return Err(GitSyncObserverError::new(format!(
+                "Canvas path `{path}` is not a regular Git blob"
+            )));
+        }
+        let data = object
+            .data
+            .ok_or_else(|| GitSyncObserverError::new(format!("blob `{path}` has no data")))?;
+        total_bytes = total_bytes.saturating_add(data.len());
+        if total_bytes > MAX_VALIDATED_CANVAS_BYTES {
+            return Err(GitSyncObserverError::new(format!(
+                "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_BYTES}-byte Canvas validation limit"
+            )));
+        }
+        let source = std::str::from_utf8(&data).map_err(|_| {
+            GitSyncObserverError::new(format!("Canvas path `{path}` is not valid UTF-8"))
+        })?;
+        let canvas: serde_json::Value = serde_json::from_str(source).map_err(|error| {
+            GitSyncObserverError::new(format!("Canvas path `{path}` is not valid JSON: {error}"))
+        })?;
+        let nodes = canvas
+            .get("nodes")
+            .and_then(|nodes| nodes.as_array())
+            .ok_or_else(|| {
+                GitSyncObserverError::new(format!("Canvas path `{path}` has no nodes array"))
+            })?;
+        for node in nodes {
+            if let Some(file) = node.get("file").and_then(|file| file.as_str()) {
+                references.push((path.clone(), file.to_string()));
+            }
+        }
+    }
+    Ok(references)
 }
 
 #[cfg(test)]
@@ -2109,6 +2220,47 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("conflict")
             .diagnostics
             .contains("introduces a new ambiguous wikilink link-resolution problem"));
+    }
+
+    #[test]
+    fn clean_merge_with_new_canvas_ambiguity_is_preserved_as_a_conflict() {
+        // The canvas references Widget.md while each side holds exactly one
+        // same-name note; the clean merge leaves two, so the embedded
+        // reference is newly ambiguous and must block the automatic merge.
+        let fixture = structured_sync_fixture(&[("Board.canvas", "{\"nodes\":[],\"edges\":[]}")]);
+        fs::write(
+            fixture.writer.join("Board.canvas"),
+            "{\"nodes\":[{\"id\":\"n1\",\"type\":\"file\",\"file\":\"Widget.md\"}],\"edges\":[]}",
+        )
+        .expect("writer canvas");
+        fs::create_dir(fixture.writer.join("Writer")).expect("writer folder");
+        fs::write(fixture.writer.join("Writer/Widget.md"), "writer widget\n")
+            .expect("writer widget");
+        fs::create_dir(fixture.reader.join("Reader")).expect("reader folder");
+        fs::write(fixture.reader.join("Reader/Widget.md"), "reader widget\n")
+            .expect("reader widget");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer push");
+
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("validation conflict");
+
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
+        assert!(report
+            .sync
+            .conflict
+            .as_ref()
+            .expect("conflict")
+            .diagnostics
+            .contains("introduces a new ambiguous canvas link-resolution problem"));
     }
 
     #[test]
