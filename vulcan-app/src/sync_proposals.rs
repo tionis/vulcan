@@ -1386,15 +1386,21 @@ pub fn create_resolution_proposal_with_provider(
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
-    let _lock = ProposalLock::acquire(&repository)?;
-    ensure_no_existing_proposal(state_store, &repository_key, conflict_id)?;
-    verify_preserved_conflict_refs(&engine, &repository, &record)?;
-    let refs_before = preserved_ref_snapshot(&engine, &repository, &record)?;
-    let local_revision = conflict_worktree_revision(&record)?;
-    let worktree_before = engine
-        .snapshot_worktree_tree(&repository, Some(&local_revision))
-        .map_err(AppError::operation)?;
-    let request = build_agent_request(paths, &engine, &repository, &record, options)?;
+    // Serialize the pre-generation checks, then release the repository
+    // lock across the unbounded provider network call: holding it would
+    // stall every other sync transaction for minutes. The post-generation
+    // checks below re-run under a fresh lock, so a concurrent generation
+    // or worktree edit fails cleanly instead of corrupting state.
+    let inputs = locked_generation_inputs(
+        &repository,
+        paths,
+        &engine,
+        &record,
+        options,
+        state_store,
+        conflict_id,
+        &repository_key,
+    )?;
     let ProviderRun {
         identity,
         output,
@@ -1404,21 +1410,64 @@ pub fn create_resolution_proposal_with_provider(
         paths,
         permission_guard,
         options,
-        &request,
+        &inputs.request,
         provider,
         cancellation,
     )?;
-    let prepared = prepare_output(
+    let _lock = ProposalLock::acquire(&repository)?;
+    cancellation_check(cancellation)?;
+    ensure_no_existing_proposal(state_store, &repository_key, conflict_id)?;
+    persist_generated_proposal(
+        paths,
         &engine,
         &repository,
         &record,
-        &supplied_context,
-        output,
-        tool_calls,
+        &repository_key,
+        options,
+        state_store,
+        base_revision,
+        &inputs,
+        ProviderRun {
+            identity,
+            output,
+            tool_calls,
+            supplied_context,
+        },
+    )
+}
+
+struct GenerationInputs {
+    refs_before: Vec<(String, Option<String>)>,
+    worktree_before: vulcan_sync::GitOid,
+    request: ResolutionAgentRequest,
+}
+
+/// Persists a generated proposal after re-running every post-generation
+/// check under the repository lock.
+#[allow(clippy::too_many_arguments)]
+fn persist_generated_proposal(
+    paths: &VaultPaths,
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    record: &SyncConflictRecord,
+    repository_key: &str,
+    options: &ResolutionProposalOptions,
+    state_store: &SyncStateStore,
+    base_revision: &str,
+    inputs: &GenerationInputs,
+    run: ProviderRun,
+) -> Result<ResolutionProposal, AppError> {
+    let prepared = prepare_output(
+        engine,
+        repository,
+        record,
+        &run.supplied_context,
+        run.output,
+        run.tool_calls,
     )?;
     let proposal_tree = engine
         .resolve_merge_tree_with_paths(
-            &repository,
+            repository,
             &GitContentMergeResolutionRequest {
                 base: GitOid::parse(base_revision).map_err(AppError::operation)?,
                 accepted_remote: GitOid::parse(&record.remote_revision)
@@ -1429,12 +1478,12 @@ pub fn create_resolution_proposal_with_provider(
             },
         )
         .map_err(AppError::operation)?;
-    verify_tree_objects(&engine, &repository, &proposal_tree, &prepared.git_paths)?;
-    let conflict_paths = conflict_path_names(&record);
+    verify_tree_objects(engine, repository, &proposal_tree, &prepared.git_paths)?;
+    let conflict_paths = conflict_path_names(record);
     validate_proposal_whole_tree_inputs(
         paths,
-        &engine,
-        &repository,
+        engine,
+        repository,
         base_revision,
         &record.local_revision,
         &record.remote_revision,
@@ -1442,26 +1491,26 @@ pub fn create_resolution_proposal_with_provider(
         &conflict_paths,
     )?;
     verify_no_external_mutation(
-        &engine,
-        &repository,
-        &record,
-        &worktree_before,
-        &refs_before,
+        engine,
+        repository,
+        record,
+        &inputs.worktree_before,
+        &inputs.refs_before,
     )?;
     let patch = engine
         .diff_patch(
-            &repository,
+            repository,
             &GitOid::parse(&record.remote_revision).map_err(AppError::operation)?,
             &proposal_tree,
             &conflict_paths,
         )
         .map_err(AppError::operation)?;
     let proposal = assemble_proposal(
-        &record,
-        repository_key,
-        identity,
+        record,
+        repository_key.to_string(),
+        run.identity,
         options,
-        &request.focused_context,
+        &inputs.request.focused_context,
         prepared,
         ProposalTree {
             oid: proposal_tree,
@@ -1477,6 +1526,35 @@ struct AgentScope {
     repository_key: String,
     record: SyncConflictRecord,
     permission_guard: ProfilePermissionGuard,
+}
+
+/// Captures the pre-generation inputs under the repository lock. The caller
+/// releases the lock across the provider call and re-validates afterwards.
+#[allow(clippy::too_many_arguments)]
+fn locked_generation_inputs(
+    repository: &vulcan_sync::GitRepository,
+    paths: &VaultPaths,
+    engine: &dyn GitEngine,
+    record: &SyncConflictRecord,
+    options: &ResolutionProposalOptions,
+    state_store: &SyncStateStore,
+    conflict_id: &str,
+    repository_key: &str,
+) -> Result<GenerationInputs, AppError> {
+    let _pre_lock = ProposalLock::acquire(repository)?;
+    ensure_no_existing_proposal(state_store, repository_key, conflict_id)?;
+    verify_preserved_conflict_refs(engine, repository, record)?;
+    let refs_before = preserved_ref_snapshot(engine, repository, record)?;
+    let local_revision = conflict_worktree_revision(record)?;
+    let worktree_before = engine
+        .snapshot_worktree_tree(repository, Some(&local_revision))
+        .map_err(AppError::operation)?;
+    let request = build_agent_request(paths, engine, repository, record, options)?;
+    Ok(GenerationInputs {
+        refs_before,
+        worktree_before,
+        request,
+    })
 }
 
 fn prepare_agent_scope(
@@ -3247,6 +3325,10 @@ struct ProposalLock {
     _file: File,
 }
 
+/// Bounded acquisition retries; see `ProposalLock::acquire`.
+const LOCK_ACQUIRE_RETRIES: usize = 100;
+const LOCK_ACQUIRE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+
 impl ProposalLock {
     fn acquire(repository: &vulcan_sync::GitRepository) -> Result<Self, AppError> {
         let path = repository.git_dir.join("vulcan-sync/sync.lock");
@@ -3262,6 +3344,23 @@ impl ProposalLock {
             .write(true)
             .open(path)
             .map_err(AppError::operation)?;
+        // A forked-but-not-yet-exec'd child (spawned by any thread) can
+        // transiently hold an inherited copy of the lock fd, making a
+        // single try_lock spuriously fail even when no live holder exists.
+        // Spin briefly so only genuine contention surfaces as busy.
+        for _ in 0..LOCK_ACQUIRE_RETRIES {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
+                    std::thread::sleep(LOCK_ACQUIRE_RETRY_DELAY);
+                }
+                Err(_) => {
+                    return Err(AppError::operation(
+                        "another repository mutation is in progress",
+                    ));
+                }
+            }
+        }
         file.try_lock_exclusive()
             .map_err(|_| AppError::operation("another repository mutation is in progress"))?;
         Ok(Self { _file: file })
