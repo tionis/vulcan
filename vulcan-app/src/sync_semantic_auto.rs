@@ -83,9 +83,10 @@ pub fn run_semantic_auto(
     now_unix_ms: u64,
 ) -> Result<SemanticAutoReport, AppError> {
     validate_options(options, provider)?;
+    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = GitCliEngine::default();
     let repository = engine
-        .discover_repository(paths.vault_root())
+        .discover_repository(&vault)
         .map_err(AppError::operation)?;
     let source = engine
         .read_ref(&repository, &options.semantic_ref)
@@ -97,7 +98,7 @@ pub fn run_semantic_auto(
             ))
         })?;
     let target = accepted_target(&engine, &repository, options)?;
-    let state_path = semantic_auto_state_path(store, paths.vault_root());
+    let state_path = semantic_auto_state_path(store, &vault);
     if engine
         .tree_oid(&repository, &source)
         .map_err(AppError::operation)?
