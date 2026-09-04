@@ -2075,6 +2075,43 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn clean_merge_with_new_link_ambiguity_is_preserved_as_a_conflict() {
+        // Disjoint same-name additions merge cleanly in Git but leave
+        // [[Widget]] newly ambiguous: the base and both candidates only
+        // ever see zero or one candidate, so the ambiguity must block the
+        // automatic merge even though Git reports no conflicts.
+        let fixture = structured_sync_fixture(&[("Home.md", "[[Widget]]\n")]);
+        fs::create_dir(fixture.writer.join("Writer")).expect("writer folder");
+        fs::write(fixture.writer.join("Writer/Widget.md"), "writer widget\n")
+            .expect("writer widget");
+        fs::create_dir(fixture.reader.join("Reader")).expect("reader folder");
+        fs::write(fixture.reader.join("Reader/Widget.md"), "reader widget\n")
+            .expect("reader widget");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer push");
+
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("validation conflict");
+
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
+        assert!(report
+            .sync
+            .conflict
+            .as_ref()
+            .expect("conflict")
+            .diagnostics
+            .contains("introduces a new ambiguous wikilink link-resolution problem"));
+    }
+
+    #[test]
     fn cache_refresh_failure_does_not_fail_a_successful_sync() {
         let temporary = tempdir().expect("temporary directory");
         let remote = temporary.path().join("remote.git");

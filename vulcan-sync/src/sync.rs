@@ -2253,6 +2253,30 @@ fn resolve_merge_candidate_tree(
     merge: &mut crate::GitMerge,
 ) -> Option<GitOid> {
     if merge.clean {
+        // Clean Git merges skip structured resolution but must still pass
+        // the whole-tree link and deletion gates: a clean rename plus an
+        // unrelated new link can otherwise silently break references.
+        if let (Some(base), Some(tree)) = (merge.base.as_ref(), merge.tree.clone()) {
+            let candidate = AutomaticMergeCandidate {
+                repository: &report.repository,
+                base,
+                local,
+                remote,
+                tree: &tree,
+            };
+            if let Err(detail) = validate_automatic_tree(control, engine, &candidate, &mut []) {
+                if !merge.diagnostics.is_empty() {
+                    merge.diagnostics.push('\n');
+                }
+                write!(
+                    merge.diagnostics,
+                    "Vulcan automatic merge validation: {detail}"
+                )
+                .expect("writing to a String cannot fail");
+                return None;
+            }
+            return Some(tree);
+        }
         return merge.tree.clone();
     }
     match try_structured_merge(
@@ -2493,6 +2517,12 @@ fn build_conflict_materialization(
     let Some(base) = base else {
         return Ok(None);
     };
+    // A clean merge rejected by whole-tree validation names no conflicted
+    // paths; there is nothing to materialize, but the preserved-refs
+    // record below still anchors the decision.
+    if conflict_paths.is_empty() {
+        return Ok(None);
+    }
     let directory = format!(".sync-conflicts/{conflict_id}");
     let directory_prefix = format!("{directory}/");
     if conflict_paths
