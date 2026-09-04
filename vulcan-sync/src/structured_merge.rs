@@ -212,6 +212,9 @@ fn merge_markdown_bytes(
     else {
         return Ok(None);
     };
+    if frontmatter.as_ref().is_some_and(|value| !value.is_object()) {
+        return Err("merged Markdown frontmatter must be a mapping".to_string());
+    }
     let mut output = String::new();
     if let Some(frontmatter) = frontmatter {
         let yaml: serde_yaml::Value =
@@ -270,19 +273,17 @@ fn merge_value(
             remote_identity,
             depth + 1,
         ),
-        (Some(Value::Array(base)), Some(Value::Array(local)), Some(Value::Array(remote))) => Ok(
-            merge_arrays(base, local, remote, local_identity, remote_identity)
-                .map_or(MergeOutcome::Unresolved, |value| {
-                    MergeOutcome::Resolved(Some(Value::Array(value)))
-                }),
-        ),
+        (Some(Value::Array(base)), Some(Value::Array(local)), Some(Value::Array(remote))) => {
+            let merged = merge_arrays(base, local, remote, local_identity, remote_identity, depth)?;
+            Ok(merged.map_or(MergeOutcome::Unresolved, |value| {
+                MergeOutcome::Resolved(Some(Value::Array(value)))
+            }))
+        }
         (None, Some(Value::Array(local)), Some(Value::Array(remote))) => {
-            Ok(
-                merge_arrays(&[], local, remote, local_identity, remote_identity)
-                    .map_or(MergeOutcome::Unresolved, |value| {
-                        MergeOutcome::Resolved(Some(Value::Array(value)))
-                    }),
-            )
+            let merged = merge_arrays(&[], local, remote, local_identity, remote_identity, depth)?;
+            Ok(merged.map_or(MergeOutcome::Unresolved, |value| {
+                MergeOutcome::Resolved(Some(Value::Array(value)))
+            }))
         }
         _ => Ok(MergeOutcome::Unresolved),
     }
@@ -330,12 +331,13 @@ fn merge_arrays(
     remote: &[Value],
     local_identity: &str,
     remote_identity: &str,
-) -> Option<Vec<Value>> {
+    depth: usize,
+) -> Result<Option<Vec<Value>>, String> {
     if arrays_have_stable_ids(base, local, remote) {
-        return merge_keyed_arrays(base, local, remote, local_identity, remote_identity);
+        return merge_keyed_arrays(base, local, remote, local_identity, remote_identity, depth);
     }
     if !local.starts_with(base) || !remote.starts_with(base) {
-        return None;
+        return Ok(None);
     }
     let (first, second) = if local_identity <= remote_identity {
         (&local[base.len()..], &remote[base.len()..])
@@ -348,7 +350,7 @@ fn merge_arrays(
             merged.push(value.clone());
         }
     }
-    Some(merged)
+    Ok(Some(merged))
 }
 
 fn arrays_have_stable_ids(base: &[Value], local: &[Value], remote: &[Value]) -> bool {
@@ -367,7 +369,8 @@ fn merge_keyed_arrays(
     remote: &[Value],
     local_identity: &str,
     remote_identity: &str,
-) -> Option<Vec<Value>> {
+    depth: usize,
+) -> Result<Option<Vec<Value>>, String> {
     fn keyed(values: &[Value]) -> Option<std::collections::BTreeMap<&str, &Value>> {
         let mut result = std::collections::BTreeMap::new();
         for value in values {
@@ -379,33 +382,44 @@ fn merge_keyed_arrays(
         Some(result)
     }
 
-    let base = keyed(base)?;
-    let local = keyed(local)?;
-    let remote = keyed(remote)?;
-    let ids = base
-        .keys()
-        .chain(local.keys())
-        .chain(remote.keys())
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let mut merged = Vec::new();
-    for id in ids {
-        match merge_value(
-            base.get(id).copied(),
-            local.get(id).copied(),
-            remote.get(id).copied(),
-            local_identity,
-            remote_identity,
-            1,
-        )
-        .ok()?
-        {
-            MergeOutcome::Resolved(Some(value)) => merged.push(value),
-            MergeOutcome::Resolved(None) => {}
-            MergeOutcome::Unresolved => return None,
+    let missing_id = || "keyed merge requires unique string entry ids".to_string();
+    let base_map = keyed(base).ok_or_else(missing_id)?;
+    let local_map = keyed(local).ok_or_else(missing_id)?;
+    let remote_map = keyed(remote).ok_or_else(missing_id)?;
+    // Preserve the base order for surviving entries so order-sensitive
+    // arrays are not rewritten; concurrently added entries follow in a
+    // deterministic sorted order that does not depend on local/remote roles.
+    let mut ordered_ids = Vec::new();
+    let mut seen = BTreeSet::new();
+    for value in base {
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("stable ids are checked before keyed merging");
+        if seen.insert(id) {
+            ordered_ids.push(id);
         }
     }
-    Some(merged)
+    let mut added_ids: BTreeSet<&str> =
+        local_map.keys().chain(remote_map.keys()).copied().collect();
+    added_ids.retain(|id| !base_map.contains_key(id));
+    ordered_ids.extend(added_ids);
+    let mut merged = Vec::new();
+    for id in ordered_ids {
+        match merge_value(
+            base_map.get(id).copied(),
+            local_map.get(id).copied(),
+            remote_map.get(id).copied(),
+            local_identity,
+            remote_identity,
+            depth + 1,
+        )? {
+            MergeOutcome::Resolved(Some(value)) => merged.push(value),
+            MergeOutcome::Resolved(None) => {}
+            MergeOutcome::Unresolved => return Ok(None),
+        }
+    }
+    Ok(Some(merged))
 }
 
 fn merge_scalar<'a, T: PartialEq + ?Sized>(
@@ -478,6 +492,82 @@ mod tests {
             serde_json::from_slice::<Value>(&first.expect("content")).expect("JSON"),
             serde_json::json!({"items": [1, 3, 2]})
         );
+    }
+
+    #[test]
+    fn keyed_arrays_preserve_base_order_and_sort_concurrent_additions() {
+        let merged = resolved(merge_structured_path(
+            MergeFileKind::Json,
+            Some(br#"{"items":[{"id":"b","v":0},{"id":"a","v":0}]}"#),
+            Some(br#"{"items":[{"id":"b","v":1},{"id":"a","v":0},{"id":"c","v":0}]}"#),
+            Some(br#"{"items":[{"id":"b","v":0},{"id":"a","v":2},{"id":"d","v":0}]}"#),
+            "local",
+            "remote",
+        ))
+        .expect("content");
+        let value: Value = serde_json::from_slice(&merged).expect("JSON");
+        let ids = value["items"]
+            .as_array()
+            .expect("items array")
+            .iter()
+            .map(|entry| entry["id"].as_str().expect("id").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["b", "a", "c", "d"]);
+        assert_eq!(value["items"][0]["v"], 1);
+        assert_eq!(value["items"][1]["v"], 2);
+    }
+
+    #[test]
+    fn keyed_array_nesting_respects_the_depth_limit() {
+        // Every level carries a concurrent disjoint edit on each side so no
+        // fast path prunes the recursion before the depth cap trips.
+        fn level(index: usize, last: usize, left: i64, right: i64) -> Value {
+            let mut node = serde_json::json!({
+                "id": format!("level{index}"),
+                "edit_left": left,
+                "edit_right": right,
+            });
+            if index < last {
+                node["items"] = Value::Array(vec![level(index + 1, last, left, right)]);
+            }
+            node
+        }
+        // Forty object/array levels exceed this merger's depth cap of 64
+        // while staying below serde_json's own 128-level recursion limit.
+        let last = 40;
+        let base = level(0, last, 0, 0);
+        let local = level(0, last, 1, 0);
+        let remote = level(0, last, 0, 1);
+        let error = merge_structured_path(
+            MergeFileKind::Json,
+            Some(serde_json::to_vec(&base).expect("base").as_slice()),
+            Some(serde_json::to_vec(&local).expect("local").as_slice()),
+            Some(serde_json::to_vec(&remote).expect("remote").as_slice()),
+            "local",
+            "remote",
+        )
+        .expect_err("over-deep keyed nesting must fail");
+        assert!(error.contains("depth limit"));
+    }
+
+    #[test]
+    fn markdown_rejects_non_mapping_merged_frontmatter() {
+        // Both sides agree on a scalar frontmatter while the body still
+        // needs merging: emitting it between --- markers would produce
+        // invalid frontmatter, so the merge must fail closed.
+        let base = b"---\ntitle: Home\n---\n# Home\n";
+        let local = b"---\n- just\n- a\n- list\n---\n# Home\n";
+        let remote = b"---\n- just\n- a\n- list\n---\n# Remote\n";
+        let error = merge_structured_path(
+            MergeFileKind::Markdown,
+            Some(base),
+            Some(local),
+            Some(remote),
+            "local",
+            "remote",
+        )
+        .expect_err("scalar frontmatter must not merge");
+        assert!(error.contains("must be a mapping"));
     }
 
     #[test]
