@@ -1,4 +1,8 @@
 [tools]
+# Mirrors rust-toolchain.toml so `mise install` provisions the pinned
+# toolchain on machines without rustup; rustup shims (and CI) keep
+# honoring rust-toolchain.toml itself.
+rust = "1.88.0"
 gitleaks = "8.30.1"
 osv-scanner = "2.4.0"
 trufflehog = "3.95.9"
