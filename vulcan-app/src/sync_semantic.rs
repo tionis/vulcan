@@ -1190,10 +1190,12 @@ fn release_semantic_proposal_ref(
     proposal_ref: &GitRefName,
     tip: &GitOid,
 ) -> Result<(), AppError> {
+    // An already-absent ref is the goal state, not a failure; only a ref
+    // pointing elsewhere indicates unexpected concurrent mutation.
     if engine
         .delete_ref(repository, proposal_ref, tip)
         .map_err(AppError::operation)?
-        != GitRefDeleteResult::Deleted
+        == GitRefDeleteResult::Stale
     {
         return Err(AppError::operation(
             "semantic proposal ref changed while releasing the applied plan",
