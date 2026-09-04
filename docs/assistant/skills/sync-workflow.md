@@ -49,7 +49,9 @@ Interpret `paused` as preserved work, not failure: an in-progress Git
 operation or unexplained HEAD movement was captured before reconciliation stopped. Resolve that
 ordinary Git state and rerun. Staged changes are not a pause condition: they sync as ordinary
 worktree bytes while the normal index is left untouched. `offline` likewise retains the local
-candidate. Never delete journals,
+candidate. A successful sync that only failed to refresh the rebuildable cache reports a
+`cache_refresh_error` warning instead of failing; the vault is fully synced and the next refresh
+heals the cache. Never delete journals,
 apply markers, or `refs/vulcan/**` to make a status look clean.
 
 ## Branch lane
@@ -74,6 +76,8 @@ they commit.
 
 - List records with `vulcan sync conflicts`; inspect one immutable record with
   `vulcan sync conflicts <conflict-id>`. Keep its base/local/remote refs and device-local artifacts.
+  A fully applied resolution prunes its artifact copies automatically (newest 32 retained); the
+  immutable refs remain the durable byte archive.
 - Never choose a winner implicitly. Preview one explicit side with
   `vulcan sync resolve <id> --side base|local|remote --dry-run`.
 - For reviewed content, use complete `--file '<conflict-path>=<source>'` inputs, a reviewed
@@ -86,6 +90,10 @@ they commit.
 - A published conflict materialization keeps accepted remote bytes at the original path and local
   copies under `.sync-conflicts/<id>/local/`. Do not edit or push that managed tree manually; a
   reviewed Vulcan resolution removes it atomically.
+- A sync cycle that fails with "would overwrite untracked worktree files excluded by Git ignore
+  rules" refuses to apply the accepted tree over a device-local ignored file that shares a path
+  with an incoming file. Move or remove the named ignored files, then rerun; never delete them
+  automatically.
 
 ## Daemon and Obsidian companion
 
