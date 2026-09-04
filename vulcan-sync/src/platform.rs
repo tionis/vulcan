@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 
-pub const GIT_PLATFORM_PREFLIGHT_VERSION: u32 = 1;
+pub const GIT_PLATFORM_PREFLIGHT_VERSION: u32 = 2;
 const MAX_EXAMPLE_PATHS: usize = 20;
 const LONG_PATH_WARNING_BYTES: usize = 240;
 const LONG_COMPONENT_WARNING_BYTES: usize = 240;
@@ -65,6 +65,7 @@ pub fn inspect_git_tree_platform(
     diagnostics.push(reserved_name_diagnostic(entries, &policy));
     diagnostics.push(executable_bit_diagnostic(entries, &policy));
     diagnostics.push(symlink_diagnostic(entries, &policy));
+    diagnostics.push(submodule_diagnostic(entries));
     diagnostics.push(path_length_diagnostic(entries));
 
     let compatible = diagnostics
@@ -190,6 +191,27 @@ fn symlink_diagnostic(
         )
     };
     diagnostic("platform.symlink", severity, paths, message)
+}
+
+fn submodule_diagnostic(entries: &[GitTreeEntry]) -> GitPlatformDiagnostic {
+    let paths = matching_paths(entries, |entry| {
+        entry.mode == "160000" || entry.kind == "commit"
+    });
+    if paths.is_empty() {
+        diagnostic(
+            "platform.submodule",
+            GitPlatformDiagnosticSeverity::Pass,
+            paths,
+            "tree contains no submodule bindings",
+        )
+    } else {
+        diagnostic(
+            "platform.submodule",
+            GitPlatformDiagnosticSeverity::Error,
+            paths,
+            "tree contains submodule bindings, which synchronize as empty directories instead of vault content",
+        )
+    }
 }
 
 fn path_length_diagnostic(entries: &[GitTreeEntry]) -> GitPlatformDiagnostic {
@@ -364,6 +386,47 @@ mod tests {
                 vec!["CON.txt"]
             );
         }
+    }
+
+    #[test]
+    fn submodule_bindings_fail_the_preflight_on_every_profile() {
+        let entries = vec![
+            entry("Notes/Home.md", "100644"),
+            GitTreeEntry {
+                path: "vendor/notes".to_string(),
+                oid: GitOid::parse("1111111111111111111111111111111111111111").expect("oid"),
+                mode: "160000".to_string(),
+                kind: "commit".to_string(),
+            },
+        ];
+        for profile in [
+            GitPlatformProfile::LinuxNative,
+            GitPlatformProfile::WindowsNative,
+            GitPlatformProfile::AndroidShared,
+        ] {
+            let report = inspect(&entries, profile);
+            assert!(!report.compatible);
+            let diagnostic = report
+                .diagnostics
+                .iter()
+                .find(|item| item.code == "platform.submodule")
+                .expect("submodule diagnostic");
+            assert_eq!(diagnostic.severity, GitPlatformDiagnosticSeverity::Error);
+            assert_eq!(diagnostic.paths, vec!["vendor/notes"]);
+        }
+        let clean = inspect(
+            &[entry("Notes/Home.md", "100644")],
+            GitPlatformProfile::LinuxNative,
+        );
+        assert_eq!(
+            clean
+                .diagnostics
+                .iter()
+                .find(|item| item.code == "platform.submodule")
+                .expect("submodule diagnostic")
+                .severity,
+            GitPlatformDiagnosticSeverity::Pass
+        );
     }
 
     #[test]
