@@ -12,10 +12,13 @@
 //! forked-but-not-yet-exec'd child can transiently hold an inherited copy of
 //! the lock fd, making a single attempt spuriously fail even when no live
 //! holder exists. Genuine contention still surfaces after the budget.
-//! Read-only probes (such as the sync doctor) must use `try_acquire`, which
-//! never waits.
+//! `try_acquire` is the single-attempt primitive for latency-sensitive
+//! paths; read-only probes that must not create any state (such as the sync
+//! doctor) keep their own open flags instead.
 
 use fs2::FileExt;
+use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,19 +33,19 @@ pub enum RepositoryLockError {
     Io(io::Error),
 }
 
-impl std::fmt::Display for RepositoryLockError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for RepositoryLockError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Locked => {
                 formatter.write_str("another Vulcan mutation holds the repository lock")
             }
-            Self::Io(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Io(error) => Display::fmt(error, formatter),
         }
     }
 }
 
-impl std::error::Error for RepositoryLockError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl Error for RepositoryLockError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Locked => None,
             Self::Io(error) => Some(error),
