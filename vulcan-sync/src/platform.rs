@@ -205,11 +205,16 @@ fn submodule_diagnostic(entries: &[GitTreeEntry]) -> GitPlatformDiagnostic {
             "tree contains no submodule bindings",
         )
     } else {
+        // A submodule binding materializes as an empty directory rather
+        // than vault content, but unlike case collisions or reserved names
+        // it cannot alias or destroy other paths. Warn (like lossy
+        // symlink/executable-bit handling) instead of blocking the whole
+        // vault sync over, typically, an Obsidian plugin directory.
         diagnostic(
             "platform.submodule",
-            GitPlatformDiagnosticSeverity::Error,
+            GitPlatformDiagnosticSeverity::Warning,
             paths,
-            "tree contains submodule bindings, which synchronize as empty directories instead of vault content",
+            "tree contains submodule bindings, which materialize as empty directories instead of vault content",
         )
     }
 }
@@ -389,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn submodule_bindings_fail_the_preflight_on_every_profile() {
+    fn submodule_bindings_warn_on_every_profile_without_blocking() {
         let entries = vec![
             entry("Notes/Home.md", "100644"),
             GitTreeEntry {
@@ -405,13 +410,13 @@ mod tests {
             GitPlatformProfile::AndroidShared,
         ] {
             let report = inspect(&entries, profile);
-            assert!(!report.compatible);
+            assert!(report.compatible);
             let diagnostic = report
                 .diagnostics
                 .iter()
                 .find(|item| item.code == "platform.submodule")
                 .expect("submodule diagnostic");
-            assert_eq!(diagnostic.severity, GitPlatformDiagnosticSeverity::Error);
+            assert_eq!(diagnostic.severity, GitPlatformDiagnosticSeverity::Warning);
             assert_eq!(diagnostic.paths, vec!["vendor/notes"]);
         }
         let clean = inspect(
