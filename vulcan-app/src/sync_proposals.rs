@@ -1292,7 +1292,7 @@ fn prepare_manual_resolution_scope(
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     if conflict_store
         .get_resolution(&repository_key, conflict_id)?
-        .is_some()
+        .is_some_and(|resolution| !resolution.is_abandoned())
     {
         return Err(AppError::operation(
             "the conflict already has a resolution in progress or applied",
@@ -1804,7 +1804,9 @@ pub fn approve_resolution_proposal_with_state_store(
     verify_preserved_conflict_refs(&engine, &repository, &record)?;
     revalidate_proposal_tree(&engine, &repository, &record, &proposal, false)?;
     revalidate_proposal_whole_tree(paths, &engine, &repository, &proposal)?;
-    let existing = store.get_resolution(&repository_key, conflict_id)?;
+    let existing = store
+        .get_resolution(&repository_key, conflict_id)?
+        .filter(|resolution| !resolution.is_abandoned());
     validate_existing_proposal_resolution(existing.as_ref(), &record, &proposal)?;
     if existing
         .as_ref()
@@ -1927,7 +1929,8 @@ fn apply_approved_proposal(
     cancellation_check(cancellation)?;
     let existing = context
         .store
-        .get_resolution(context.repository_key, &context.record.id)?;
+        .get_resolution(context.repository_key, &context.record.id)?
+        .filter(|resolution| !resolution.is_abandoned());
     validate_existing_proposal_resolution(existing.as_ref(), context.record, context.proposal)?;
     verify_approval_preconditions(
         engine,
@@ -2534,7 +2537,7 @@ fn ensure_proposal_has_no_resolution(
 ) -> Result<(), AppError> {
     if store
         .get_resolution(repository_key, &proposal.conflict_id)?
-        .is_some()
+        .is_some_and(|resolution| !resolution.is_abandoned())
     {
         Err(AppError::operation(
             "the conflict already has a resolution in progress or applied",
@@ -3971,6 +3974,76 @@ mod tests {
                 ],
             ),
             refs_before
+        );
+    }
+
+    #[test]
+    fn abandoned_resolutions_do_not_block_rejection_or_side_switches() {
+        use crate::sync_conflicts::{ResolveSyncConflictOptions, SyncConflictResolutionSide};
+        let fixture = conflict_fixture();
+        let proposal = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("proposal");
+        // Simulate a failed approval whose push was rejected: the durable
+        // record exists but never published and never applied.
+        let store = SyncConflictStore::from_state_store(&fixture.store);
+        store
+            .save_resolution(
+                &fixture.record.repository_key,
+                &SyncConflictResolutionRecord {
+                    version: SYNC_CONFLICT_RESOLUTION_VERSION,
+                    conflict_id: fixture.record.id.clone(),
+                    side: None,
+                    proposal_id: Some(proposal.proposal_id.clone()),
+                    base_revision: fixture.record.base_revision.clone().unwrap_or_default(),
+                    local_revision: fixture.record.local_revision.clone(),
+                    remote_revision: fixture.record.remote_revision.clone(),
+                    live_input_revision: None,
+                    recovery_revision: fixture.record.local_revision.clone(),
+                    resolved_tree: proposal.proposal_tree.clone(),
+                    resolution_commit: fixture.record.remote_revision.clone(),
+                    published: false,
+                    applied: false,
+                },
+            )
+            .expect("abandoned resolution");
+
+        let rejection = reject_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            true,
+            &fixture.store,
+        )
+        .expect("rejection must not be blocked by an abandoned resolution");
+        assert_eq!(rejection.outcome, RejectResolutionProposalOutcome::Planned);
+
+        let sync_options = GitSyncOptions::default();
+        let planned = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolveSyncConflictOptions {
+                side: SyncConflictResolutionSide::Local,
+                remote: sync_options.remote.clone(),
+                live_ref: sync_options.live_ref.clone(),
+                dry_run: true,
+            },
+            &fixture.store,
+        )
+        .expect("side switch must not be blocked by an abandoned resolution");
+        assert_eq!(
+            planned.outcome,
+            crate::sync_conflicts::ResolveSyncConflictOutcome::Planned
         );
     }
 

@@ -161,6 +161,17 @@ pub struct SyncConflictResolutionRecord {
     pub applied: bool,
 }
 
+impl SyncConflictResolutionRecord {
+    /// A resolution that never published and never applied is a failed
+    /// attempt, not an in-progress resolution. Guards must not let it block
+    /// rejection, side switches, or competing proposals; the next attempt
+    /// overwrites the stale record.
+    #[must_use]
+    pub fn is_abandoned(&self) -> bool {
+        !self.published && !self.applied
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolveSyncConflictOutcome {
@@ -294,7 +305,9 @@ pub fn resolve_sync_conflict_with_state_store(
             "sync conflict record does not belong to the selected worktree",
         ));
     }
-    let existing_resolution = store.get_resolution(&repository_key, conflict_id)?;
+    let existing_resolution = store
+        .get_resolution(&repository_key, conflict_id)?
+        .filter(|resolution| !resolution.is_abandoned());
     if let Some(existing) = &existing_resolution {
         if existing.side != Some(options.side) || existing.proposal_id.is_some() {
             return Err(AppError::operation(format!(
@@ -394,7 +407,9 @@ fn resolve_sync_conflict_locked(
         .map_err(AppError::operation)?;
     reject_unsafe_resolution(&safety)?;
 
-    let existing = store.get_resolution(&context.repository_key, &context.conflict_id)?;
+    let existing = store
+        .get_resolution(&context.repository_key, &context.conflict_id)?
+        .filter(|resolution| !resolution.is_abandoned());
     verify_remote_for_resolution(&engine, repository, record, options, existing.as_ref())?;
     let resolution = if let Some(existing) = existing {
         resume_resolution(&engine, repository, record, &capture, options, existing)?
