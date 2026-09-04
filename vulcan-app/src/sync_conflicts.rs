@@ -478,11 +478,16 @@ fn publish_and_apply_resolution(
         ..GitSyncOptions::default()
     })
     .map_err(AppError::operation)?;
-    for reference in [&refs.local, &refs.fetched, &refs.pending] {
-        engine
-            .update_ref(repository, reference, &resolution_commit)
-            .map_err(AppError::operation)?;
-    }
+    engine
+        .update_refs(
+            repository,
+            &[
+                (&refs.local, &resolution_commit),
+                (&refs.fetched, &resolution_commit),
+                (&refs.pending, &resolution_commit),
+            ],
+        )
+        .map_err(AppError::operation)?;
     let cache_refresh = if paths.cache_db().is_file() {
         Some(refresh_cache_incrementally(paths)?)
     } else {

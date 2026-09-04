@@ -482,13 +482,14 @@ fn rollover_live_epoch(
         .map_err(AppError::operation)?;
     publish_epoch_root(engine, repository, options, &previous, &root)?;
     engine
-        .update_ref(repository, &refs.local, &root)
-        .map_err(AppError::operation)?;
-    engine
-        .update_ref(repository, &refs.fetched, &root)
-        .map_err(AppError::operation)?;
-    engine
-        .update_ref(repository, &refs.pending, &root)
+        .update_refs(
+            repository,
+            &[
+                (&refs.local, &root),
+                (&refs.fetched, &root),
+                (&refs.pending, &root),
+            ],
+        )
         .map_err(AppError::operation)?;
     Ok(SyncEpochRolloverReport {
         epoch_id,

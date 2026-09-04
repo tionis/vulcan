@@ -2463,11 +2463,16 @@ fn update_sync_refs(
     })
     .map_err(AppError::operation)?;
     let commit = GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?;
-    for reference in [&refs.local, &refs.fetched, &refs.pending] {
-        engine
-            .update_ref(repository, reference, &commit)
-            .map_err(AppError::operation)?;
-    }
+    engine
+        .update_refs(
+            repository,
+            &[
+                (&refs.local, &commit),
+                (&refs.fetched, &commit),
+                (&refs.pending, &commit),
+            ],
+        )
+        .map_err(AppError::operation)?;
     Ok(())
 }
 
