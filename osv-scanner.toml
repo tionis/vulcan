@@ -1,0 +1,11 @@
+# Documented osv-scanner exceptions. Mirrors the reasoning in deny.toml, which
+# cargo-deny enforces in CI; osv-scanner has no deny.toml integration, so the
+# same decisions are recorded here for `mise run audit`.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = "jsonwebtoken uses rsa only for external JWT public-key verification; Vulcan performs no RSA private-key signing or decryption, and local tokens use HS256"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0253"
+reason = "Unsound lru::LruCache::pop needs panicking Drop keys under catch_unwind; Vulcan reaches lru only through ratatui-core TUI caches. Revisit when ratatui moves past its lru 0.16 requirement"

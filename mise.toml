@@ -1,0 +1,35 @@
+[tools]
+gitleaks = "8.30.1"
+osv-scanner = "2.4.0"
+trufflehog = "3.95.9"
+
+[tasks.fmt]
+description = "Format all crates (writes changes)"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Verify formatting without changing files"
+run = "cargo fmt --all --check"
+
+[tasks.lint]
+description = "Lint all targets, denying warnings"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.test]
+description = "Run the full workspace test suite"
+run = "cargo test --workspace"
+
+[tasks.verify]
+description = "CI-equivalent gate: format check, lint, tests"
+depends = ["fmt-check", "lint", "test"]
+
+[tasks.scan-secrets]
+description = "Scan git history and tree for secrets (gitleaks + trufflehog)"
+run = [
+  "gitleaks detect --source . --no-banner --redact",
+  "trufflehog git file://. --only-verified --fail --no-update",
+]
+
+[tasks.audit]
+description = "Scan locked dependencies for known vulnerabilities"
+run = "osv-scanner --lockfile Cargo.lock --config osv-scanner.toml"
