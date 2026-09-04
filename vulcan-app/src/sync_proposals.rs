@@ -1290,8 +1290,8 @@ fn prepare_manual_resolution_scope(
         .map_err(AppError::operation)?;
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     if conflict_store
-        .get_resolution(&repository_key, conflict_id)?
-        .is_some_and(|resolution| !resolution.is_abandoned())
+        .get_effective_resolution(&repository_key, conflict_id)?
+        .is_some()
     {
         return Err(AppError::operation(
             "the conflict already has a resolution in progress or applied",
@@ -1895,9 +1895,7 @@ pub fn approve_resolution_proposal_with_state_store(
     verify_preserved_conflict_refs(&engine, &repository, &record)?;
     revalidate_proposal_tree(&engine, &repository, &record, &proposal, false)?;
     revalidate_proposal_whole_tree(paths, &engine, &repository, &proposal)?;
-    let existing = store
-        .get_resolution(&repository_key, conflict_id)?
-        .filter(|resolution| !resolution.is_abandoned());
+    let existing = store.get_effective_resolution(&repository_key, conflict_id)?;
     validate_existing_proposal_resolution(existing.as_ref(), &record, &proposal)?;
     if existing
         .as_ref()
@@ -2020,8 +2018,7 @@ fn apply_approved_proposal(
     cancellation_check(cancellation)?;
     let existing = context
         .store
-        .get_resolution(context.repository_key, &context.record.id)?
-        .filter(|resolution| !resolution.is_abandoned());
+        .get_effective_resolution(context.repository_key, &context.record.id)?;
     validate_existing_proposal_resolution(existing.as_ref(), context.record, context.proposal)?;
     verify_approval_preconditions(
         engine,
@@ -2632,8 +2629,8 @@ fn ensure_proposal_has_no_resolution(
     proposal: &ResolutionProposal,
 ) -> Result<(), AppError> {
     if store
-        .get_resolution(repository_key, &proposal.conflict_id)?
-        .is_some_and(|resolution| !resolution.is_abandoned())
+        .get_effective_resolution(repository_key, &proposal.conflict_id)?
+        .is_some()
     {
         Err(AppError::operation(
             "the conflict already has a resolution in progress or applied",

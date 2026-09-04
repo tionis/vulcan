@@ -303,9 +303,7 @@ pub fn resolve_sync_conflict_with_state_store(
             "sync conflict record does not belong to the selected worktree",
         ));
     }
-    let existing_resolution = store
-        .get_resolution(&repository_key, conflict_id)?
-        .filter(|resolution| !resolution.is_abandoned());
+    let existing_resolution = store.get_effective_resolution(&repository_key, conflict_id)?;
     if let Some(existing) = &existing_resolution {
         if existing.side != Some(options.side) || existing.proposal_id.is_some() {
             return Err(AppError::operation(format!(
@@ -405,9 +403,7 @@ fn resolve_sync_conflict_locked(
         .map_err(AppError::operation)?;
     reject_unsafe_resolution(&safety)?;
 
-    let existing = store
-        .get_resolution(&context.repository_key, &context.conflict_id)?
-        .filter(|resolution| !resolution.is_abandoned());
+    let existing = store.get_effective_resolution(&context.repository_key, &context.conflict_id)?;
     verify_remote_for_resolution(&engine, repository, record, options, existing.as_ref())?;
     let resolution = if let Some(existing) = existing {
         resume_resolution(&engine, repository, record, &capture, options, existing)?
@@ -1153,6 +1149,20 @@ impl SyncConflictStore {
             ));
         }
         Ok(Some(resolution))
+    }
+
+    /// Loads the durable resolution unless it is an abandoned attempt that
+    /// never published and never applied. Guards must use this instead of
+    /// `get_resolution` so a failed attempt cannot block rejection, side
+    /// switches, or competing proposals.
+    pub fn get_effective_resolution(
+        &self,
+        repository_key: &str,
+        conflict_id: &str,
+    ) -> Result<Option<SyncConflictResolutionRecord>, AppError> {
+        Ok(self
+            .get_resolution(repository_key, conflict_id)?
+            .filter(|resolution| !resolution.is_abandoned()))
     }
 
     pub fn save_resolution(
