@@ -1,2 +1,6 @@
 # Historical public Discord user-principal example, not an application credential.
 003b8e504620de5a75b14b53b5556a122a5909c3:docs/ROADMAP.md:discord-client-id:4184
+# Published rolling-channel Ed25519 public key and its fingerprint (public by design; the private
+# key lives only on the signing machine and in the SOPS-encrypted admin secret).
+d5a764eb71bf863f448c4cc0e8fff9c971992488:docs/specs/update-channels.md:generic-api-key:178
+a13cc49afeee40bda348c124ada1f8111bac9739:docs/specs/update-channels.md:generic-api-key:131
