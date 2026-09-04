@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 
-pub const GIT_PLATFORM_PREFLIGHT_VERSION: u32 = 2;
+/// Version of the platform preflight verdict schema. The sync cycle trusts
+/// cached verdicts without recomputing them, so this MUST be bumped on ANY
+/// change to the diagnostics: new or removed checks, code renames, severity
+/// changes, message changes, or threshold changes. Forgetting the bump
+/// silently preserves stale compatible/incompatible verdicts per tree.
+pub const GIT_PLATFORM_PREFLIGHT_VERSION: u32 = 3;
 const MAX_EXAMPLE_PATHS: usize = 20;
 const LONG_PATH_WARNING_BYTES: usize = 240;
 const LONG_COMPONENT_WARNING_BYTES: usize = 240;
