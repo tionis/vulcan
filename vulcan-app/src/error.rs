@@ -33,3 +33,14 @@ impl From<io::Error> for AppError {
         Self::operation(error)
     }
 }
+
+impl From<vulcan_sync::RepositoryLockError> for AppError {
+    fn from(error: vulcan_sync::RepositoryLockError) -> Self {
+        match error {
+            vulcan_sync::RepositoryLockError::Locked => {
+                Self::operation("another synchronization operation holds the repository lock")
+            }
+            vulcan_sync::RepositoryLockError::Io(error) => Self::operation(error),
+        }
+    }
+}

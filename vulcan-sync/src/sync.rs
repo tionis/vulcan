@@ -11,12 +11,11 @@ use crate::{
     SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION,
     SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self};
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -883,7 +882,13 @@ pub fn sync_git_once_with_control(
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
-    let _lock = RepositoryLock::acquire(&report.repository)?;
+    let _lock =
+        crate::RepositoryLock::acquire(&report.repository.git_dir).map_err(
+            |error| match error {
+                crate::RepositoryLockError::Locked => GitSyncError::Locked,
+                crate::RepositoryLockError::Io(error) => GitSyncError::Io(error),
+            },
+        )?;
     sweep_stale_sync_locks(&report.repository);
     engine.persist_repository_requirements_cache(&report.repository)?;
     let attempts = options.max_retries.max(1);
@@ -3062,10 +3067,6 @@ fn sync_trailers(refs: &GitSyncRefs, options: &GitSyncOptions, source: &str) -> 
     )
 }
 
-struct RepositoryLock {
-    _file: File,
-}
-
 /// Removes stale lock files left in Vulcan-owned Git namespaces by a
 /// force-terminated cycle. Only reachable while the repository lock is
 /// held, so no other Vulcan process can legitimately hold these locks.
@@ -3091,7 +3092,7 @@ fn remove_lock_files(directory: &Path, depth: usize) {
             remove_lock_files(&entry.path(), depth - 1);
         } else if file_type.is_file()
             && entry.file_name().to_string_lossy().ends_with(".lock")
-            // The fs2 repository lock is not a stale Git lock.
+            // The repository lock itself is not a stale Git lock.
             && entry.file_name() != "sync.lock"
         {
             let _ = fs::remove_file(entry.path());
@@ -3099,36 +3100,13 @@ fn remove_lock_files(directory: &Path, depth: usize) {
     }
 }
 
-impl RepositoryLock {
-    fn acquire(repository: &GitRepository) -> Result<Self, GitSyncError> {
-        let lock_path = repository.git_dir.join("vulcan-sync/sync.lock");
-        fs::create_dir_all(
-            lock_path
-                .parent()
-                .expect("the sync lock path always has a parent"),
-        )?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(lock_path)?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == fs2::lock_contended_error().kind() {
-                GitSyncError::Locked
-            } else {
-                GitSyncError::Io(error)
-            }
-        })?;
-        Ok(Self { _file: file })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::GitCliEngine;
+    use fs2::FileExt;
     use std::fs;
+    use std::fs::OpenOptions;
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;

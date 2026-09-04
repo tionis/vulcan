@@ -9,10 +9,9 @@ use crate::sync_conflicts::{
 };
 use crate::sync_state::{repository_state_key, SyncStateStore};
 use crate::AppError;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 #[cfg(feature = "web")]
 use std::io::Read;
 use std::io::Write;
@@ -1414,7 +1413,7 @@ pub fn create_resolution_proposal_with_provider(
         provider,
         cancellation,
     )?;
-    let _lock = ProposalLock::acquire(&repository)?;
+    let _lock = acquire_proposal_lock(&repository)?;
     cancellation_check(cancellation)?;
     ensure_no_existing_proposal(state_store, &repository_key, conflict_id)?;
     persist_generated_proposal(
@@ -1434,6 +1433,20 @@ pub fn create_resolution_proposal_with_provider(
             supplied_context,
         },
     )
+}
+
+/// Acquires the shared repository mutation lock, preserving this
+/// workflow's historical contention message.
+fn acquire_proposal_lock(
+    repository: &vulcan_sync::GitRepository,
+) -> Result<vulcan_sync::RepositoryLock, AppError> {
+    vulcan_sync::RepositoryLock::acquire(&repository.git_dir).map_err(|error| {
+        if matches!(error, vulcan_sync::RepositoryLockError::Locked) {
+            AppError::operation("another repository mutation is in progress")
+        } else {
+            AppError::from(error)
+        }
+    })
 }
 
 struct GenerationInputs {
@@ -1541,7 +1554,7 @@ fn locked_generation_inputs(
     conflict_id: &str,
     repository_key: &str,
 ) -> Result<GenerationInputs, AppError> {
-    let _pre_lock = ProposalLock::acquire(repository)?;
+    let _pre_lock = acquire_proposal_lock(repository)?;
     ensure_no_existing_proposal(state_store, repository_key, conflict_id)?;
     verify_preserved_conflict_refs(engine, repository, record)?;
     let refs_before = preserved_ref_snapshot(engine, repository, record)?;
@@ -1816,7 +1829,7 @@ pub fn reject_resolution_proposal_with_state_store(
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
-    let _lock = ProposalLock::acquire(&repository)?;
+    let _lock = acquire_proposal_lock(&repository)?;
     ensure_proposal_has_no_resolution(&conflict_store, &repository_key, &proposal)?;
     if load_proposal_audit(state_store, &rejection)?.is_some() {
         return Ok(rejection_report(
@@ -1970,7 +1983,7 @@ fn apply_approved_proposal(
     repository: &vulcan_sync::GitRepository,
     cancellation: &SyncCancellationToken,
 ) -> Result<ApproveResolutionProposalReport, AppError> {
-    let _lock = ProposalLock::acquire(repository)?;
+    let _lock = acquire_proposal_lock(repository)?;
     cancellation_check(cancellation)?;
     ensure_proposal_not_rejected(context.state_store, context.proposal)?;
     verify_preserved_conflict_refs(engine, repository, context.record)?;
@@ -3323,52 +3336,6 @@ fn cancellation_check(cancellation: &SyncCancellationToken) -> Result<(), AppErr
         ))
     } else {
         Ok(())
-    }
-}
-
-struct ProposalLock {
-    _file: File,
-}
-
-/// Bounded acquisition retries; see `ProposalLock::acquire`.
-const LOCK_ACQUIRE_RETRIES: usize = 100;
-const LOCK_ACQUIRE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
-
-impl ProposalLock {
-    fn acquire(repository: &vulcan_sync::GitRepository) -> Result<Self, AppError> {
-        let path = repository.git_dir.join("vulcan-sync/sync.lock");
-        fs::create_dir_all(
-            path.parent()
-                .expect("the proposal lock path always has a parent"),
-        )
-        .map_err(AppError::operation)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(AppError::operation)?;
-        // A forked-but-not-yet-exec'd child (spawned by any thread) can
-        // transiently hold an inherited copy of the lock fd, making a
-        // single try_lock spuriously fail even when no live holder exists.
-        // Spin briefly so only genuine contention surfaces as busy.
-        for _ in 0..LOCK_ACQUIRE_RETRIES {
-            match file.try_lock_exclusive() {
-                Ok(()) => return Ok(Self { _file: file }),
-                Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
-                    std::thread::sleep(LOCK_ACQUIRE_RETRY_DELAY);
-                }
-                Err(_) => {
-                    return Err(AppError::operation(
-                        "another repository mutation is in progress",
-                    ));
-                }
-            }
-        }
-        file.try_lock_exclusive()
-            .map_err(|_| AppError::operation("another repository mutation is in progress"))?;
-        Ok(Self { _file: file })
     }
 }
 

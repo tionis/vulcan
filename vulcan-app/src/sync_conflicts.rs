@@ -3,10 +3,8 @@
 use crate::scan::refresh_cache_incrementally;
 use crate::sync_state::{same_work_tree, SyncStateStore};
 use crate::AppError;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -371,7 +369,7 @@ fn resolve_sync_conflict_locked(
     repository: &GitRepository,
     context: &ResolutionContext,
 ) -> Result<ResolveSyncConflictReport, AppError> {
-    let _lock = ConflictResolutionLock::acquire(repository)?;
+    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     let engine = vulcan_sync::GitCliEngine::default();
     let device_id = state_store
         .load_or_create_device_id(true)?
@@ -911,36 +909,6 @@ fn resume_resolution(
     }
     resolution.recovery_revision = capture.commit.to_string();
     Ok(resolution)
-}
-
-struct ConflictResolutionLock {
-    _file: File,
-}
-
-impl ConflictResolutionLock {
-    fn acquire(repository: &GitRepository) -> Result<Self, AppError> {
-        let path = repository.git_dir.join("vulcan-sync/sync.lock");
-        fs::create_dir_all(
-            path.parent()
-                .expect("the sync repository lock always has a parent"),
-        )
-        .map_err(AppError::operation)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(path)
-            .map_err(AppError::operation)?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == fs2::lock_contended_error().kind() {
-                AppError::operation("another synchronization operation holds the repository lock")
-            } else {
-                AppError::operation(error)
-            }
-        })?;
-        Ok(Self { _file: file })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

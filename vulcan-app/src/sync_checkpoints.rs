@@ -1,9 +1,8 @@
 //! Deliberate Git-reachable checkpoints for accepted live synchronization state.
 
 use crate::AppError;
-use fs2::FileExt;
 use serde::Serialize;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::path::PathBuf;
 use ulid::Ulid;
 use vulcan_core::VaultPaths;
@@ -82,7 +81,7 @@ pub fn create_sync_checkpoint(
             &accepted,
         ));
     }
-    let _lock = CheckpointLock::acquire(&repository)?;
+    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     let accepted = accepted_revision(&engine, &repository, &refs)?;
     let remote = engine
         .remote_ref(&repository, &options.remote, &options.live_ref)
@@ -149,36 +148,6 @@ fn checkpoint_report(
         dry_run: options.dry_run,
         checkpoint_ref,
         revision: revision.to_string(),
-    }
-}
-
-struct CheckpointLock {
-    _file: File,
-}
-
-impl CheckpointLock {
-    fn acquire(repository: &GitRepository) -> Result<Self, AppError> {
-        let path = repository.git_dir.join("vulcan-sync/sync.lock");
-        fs::create_dir_all(
-            path.parent()
-                .expect("the sync repository lock always has a parent"),
-        )
-        .map_err(AppError::operation)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(path)
-            .map_err(AppError::operation)?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == fs2::lock_contended_error().kind() {
-                AppError::operation("another synchronization operation holds the repository lock")
-            } else {
-                AppError::operation(error)
-            }
-        })?;
-        Ok(Self { _file: file })
     }
 }
 

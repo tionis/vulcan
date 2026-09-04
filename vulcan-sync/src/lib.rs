@@ -12,6 +12,7 @@
 pub mod conformance;
 mod contracts;
 mod git;
+mod lock;
 mod merge_policy;
 mod notifications;
 mod platform;
@@ -39,6 +40,7 @@ pub use git::{
     GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
     GitTreeEntry, GitVersion, MergeBranchOutcome, PullFastForward, PullRebase, RebaseOutcome,
 };
+pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{
     MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyDecision,
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,

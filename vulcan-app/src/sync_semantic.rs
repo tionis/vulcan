@@ -3,10 +3,9 @@
 use crate::sync::SyncCancellationToken;
 use crate::sync_state::{repository_state_key, SyncStateStore};
 use crate::AppError;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 #[cfg(feature = "web")]
 use std::io::Read;
 use std::io::Write;
@@ -509,7 +508,7 @@ fn create_semantic_plan_internal(
         return Ok(report);
     }
 
-    let _lock = SemanticLock::acquire(&repository)?;
+    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     validate_plan_inputs(&engine, &repository, options, &source, &target)?;
     report.status = SemanticPlanStatus::Prepared;
     save_plan(store, &report, true)?;
@@ -606,7 +605,7 @@ pub fn publish_semantic_plan_with_state_store(
             "semantic plan vault identity no longer matches its repository key",
         ));
     }
-    let _lock = SemanticLock::acquire(&repository)?;
+    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     let source = GitOid::parse(plan.source_revision.clone()).map_err(AppError::operation)?;
     let tip = GitOid::parse(
         plan.proposal_tip
@@ -730,7 +729,7 @@ pub fn reject_semantic_plan_with_state_store(
             "semantic plan vault identity no longer matches its repository key",
         ));
     }
-    let _lock = SemanticLock::acquire(&repository)?;
+    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     let mut plan = load_semantic_plan_with_state_store(plan_id, store)?;
     if matches!(
         plan.status,
@@ -843,7 +842,7 @@ pub fn apply_semantic_plan_with_state_store(
             "semantic plan vault identity no longer matches its repository key",
         ));
     }
-    let _lock = SemanticLock::acquire(&repository)?;
+    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     let source = GitOid::parse(plan.source_revision.clone()).map_err(AppError::operation)?;
     let target = GitOid::parse(plan.target_revision.clone()).map_err(AppError::operation)?;
     let tip = GitOid::parse(
@@ -1983,36 +1982,6 @@ fn validate_plan_id(plan_id: &str) -> Result<(), AppError> {
         ));
     }
     Ok(())
-}
-
-struct SemanticLock {
-    _file: File,
-}
-
-impl SemanticLock {
-    fn acquire(repository: &GitRepository) -> Result<Self, AppError> {
-        let path = repository.git_dir.join("vulcan-sync/sync.lock");
-        fs::create_dir_all(
-            path.parent()
-                .expect("the sync repository lock always has a parent"),
-        )
-        .map_err(AppError::operation)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(path)
-            .map_err(AppError::operation)?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == fs2::lock_contended_error().kind() {
-                AppError::operation("another synchronization operation holds the repository lock")
-            } else {
-                AppError::operation(error)
-            }
-        })?;
-        Ok(Self { _file: file })
-    }
 }
 
 #[cfg(test)]
