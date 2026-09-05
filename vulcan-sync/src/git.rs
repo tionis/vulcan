@@ -369,9 +369,8 @@ pub trait GitEngine: Send + Sync {
         expected: &GitOid,
     ) -> Result<GitRefDeleteResult, GitEngineError>;
 
-    /// Resolves the configured upstream of a local branch from
-    /// `branch.<name>.remote` and `branch.<name>.merge`. Returns `None` when
-    /// the branch tracks nothing or the tracking ref cannot be derived.
+    /// Resolves the configured upstream of a local branch using Git's native
+    /// refspec mapping. Returns `None` when the branch tracks nothing.
     fn branch_upstream(
         &self,
         repository: &GitRepository,
@@ -2023,7 +2022,7 @@ impl GitCliEngine {
             .map(|value| value.trim().to_string())
     }
 
-    /// Reads branch-upstream and pull-strategy configuration in one process.
+    /// Reads branch and repository pull-strategy configuration in one process.
     /// Keys are matched exactly in code, so branch names with pattern
     /// characters need no escaping.
     fn git_pull_config_map(
@@ -2034,7 +2033,7 @@ impl GitCliEngine {
         command.args([
             "config",
             "--get-regexp",
-            r"^(branch\..+\.(remote|merge|rebase)|pull\.(ff|rebase))$",
+            r"^(branch\..+\.rebase|pull\.(ff|rebase))$",
         ]);
         let output = self.execute(command)?;
         if !output.status.success() && output.status.code() != Some(1) {
@@ -3285,47 +3284,69 @@ impl GitEngine for GitCliEngine {
         repository: &GitRepository,
         branch: &GitRefName,
     ) -> Result<Option<GitBranchUpstream>, GitEngineError> {
-        let short = branch
-            .as_str()
-            .strip_prefix("refs/heads/")
-            .filter(|short| !short.is_empty() && !short.contains(".."));
-        let Some(short) = short else {
+        if !branch.as_str().starts_with("refs/heads/") {
+            return Ok(None);
+        }
+        let mut command = self.repository_command(repository);
+        command
+            .args([
+                "for-each-ref",
+                "--format=%(upstream:remotename)%00%(upstream)%00%(upstream:remoteref)",
+                "--count=1",
+                "--",
+            ])
+            .arg(branch.as_str());
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            return Err(command_failed("resolve the branch upstream", &output));
+        }
+        let stdout = decode_stdout("resolve the branch upstream", output.stdout)?;
+        let record = stdout.strip_suffix('\n').unwrap_or(&stdout);
+        let record = record.strip_suffix('\r').unwrap_or(record);
+        if record.is_empty() {
+            return Ok(None);
+        }
+        let mut fields = record.split('\0');
+        let Some(remote) = fields.next() else {
             return Ok(None);
         };
-        let config = self.git_pull_config_map(repository)?;
-        let remote = match config.get(&format!("branch.{short}.remote")) {
-            Some(remote) => {
-                GitRemote::parse(remote.clone()).map_err(|value| GitEngineError::InvalidOutput {
-                    operation: "resolve the branch upstream",
-                    detail: format!("invalid configured remote `{value}`"),
-                })?
-            }
-            None => return Ok(None),
+        let Some(tracking) = fields.next() else {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "resolve the branch upstream",
+                detail: "Git omitted the local tracking ref".to_string(),
+            });
         };
-        let Some(merge) = config.get(&format!("branch.{short}.merge")) else {
+        let Some(merge) = fields.next() else {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "resolve the branch upstream",
+                detail: "Git omitted the remote merge ref".to_string(),
+            });
+        };
+        if remote.is_empty() && tracking.is_empty() && merge.is_empty() {
             return Ok(None);
-        };
-        let tracked =
-            merge
-                .strip_prefix("refs/heads/")
-                .ok_or_else(|| GitEngineError::InvalidOutput {
-                    operation: "resolve the branch upstream",
-                    detail: format!("unsupported merge ref `{merge}`"),
-                })?;
+        }
+        if fields.next().is_some() || remote.is_empty() || tracking.is_empty() || merge.is_empty() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "resolve the branch upstream",
+                detail: "Git returned an incomplete upstream description".to_string(),
+            });
+        }
         Ok(Some(GitBranchUpstream {
             branch: branch.clone(),
-            remote: remote.clone(),
-            merge_ref: GitRefName::parse(merge.clone()).map_err(|value| {
+            remote: GitRemote::parse(remote).map_err(|value| GitEngineError::InvalidOutput {
+                operation: "resolve the branch upstream",
+                detail: format!("invalid configured remote `{value}`"),
+            })?,
+            merge_ref: GitRefName::parse(merge).map_err(|value| GitEngineError::InvalidOutput {
+                operation: "resolve the branch upstream",
+                detail: format!("invalid merge ref `{value}`"),
+            })?,
+            tracking_ref: GitRefName::parse(tracking).map_err(|value| {
                 GitEngineError::InvalidOutput {
                     operation: "resolve the branch upstream",
-                    detail: format!("invalid merge ref `{value}`"),
+                    detail: format!("invalid tracking ref `{value}`"),
                 }
             })?,
-            tracking_ref: GitRefName::parse(format!("refs/remotes/{}/{tracked}", remote.as_str()))
-                .map_err(|value| GitEngineError::InvalidOutput {
-                    operation: "resolve the branch upstream",
-                    detail: format!("invalid tracking ref `{value}`"),
-                })?,
         }))
     }
 
@@ -5188,6 +5209,57 @@ mod tests {
                 .expect("upstream query"),
             None
         );
+    }
+
+    #[test]
+    fn branch_upstream_uses_git_refspec_mapping() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        run_git(
+            &writer,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/custom/origin/*",
+            ],
+        );
+        let (engine, repository, remote, branch) = branch_fixture(&writer);
+
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+
+        assert_eq!(upstream.remote, remote);
+        assert_eq!(upstream.merge_ref.as_str(), "refs/heads/main");
+        assert_eq!(upstream.tracking_ref.as_str(), "refs/custom/origin/main");
+    }
+
+    #[test]
+    fn branch_upstream_supports_the_local_dot_remote() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "home\n").expect("note");
+        commit_all(temporary.path(), "initial");
+        run_git(temporary.path(), &["branch", "local-base"]);
+        run_git(temporary.path(), &["config", "branch.main.remote", "."]);
+        run_git(
+            temporary.path(),
+            &["config", "branch.main.merge", "refs/heads/local-base"],
+        );
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let branch = GitRefName::parse("refs/heads/main").expect("branch");
+
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("local upstream");
+
+        assert_eq!(upstream.remote.as_str(), ".");
+        assert_eq!(upstream.merge_ref.as_str(), "refs/heads/local-base");
+        assert_eq!(upstream.tracking_ref.as_str(), "refs/heads/local-base");
     }
 
     #[test]
