@@ -161,7 +161,7 @@ fn import_artifact_unlocked(
                 .outline
                 .as_ref()
                 .ok_or_else(|| AppError::operation("--hierarchy outline requires outline.json"))?;
-            let headings = aligned_outline_headings(outline)?;
+            let headings = aligned_outline_headings(outline, markdown.len())?;
             plan_document_decomposition_with_aligned_outline(
                 &virtual_source,
                 markdown,
@@ -174,13 +174,27 @@ fn import_artifact_unlocked(
     .map_err(AppError::operation)?;
     ensure_plan_is_contained(&plan, &destination)?;
 
+    let root_title = artifact
+        .manifest
+        .as_ref()
+        .and_then(|manifest| manifest.title.as_deref())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| destination.rsplit('/').next().unwrap_or(&destination));
+    if let Some(root) = plan
+        .notes
+        .iter_mut()
+        .find(|note| note.path == plan.root_path)
+    {
+        root.title = root_title.to_string();
+    }
+
     let assets = artifact_assets(&artifact, &destination);
     let parsed = parse_document(markdown, &config);
     let mut rewrite_diagnostics = Vec::new();
     let mut rewritten_files = Vec::new();
     let routing_plan = plan.clone();
     for note in &mut plan.notes {
-        let (content, changes) = rewrite_import_links(
+        let (content, mut changes) = rewrite_import_links(
             &note.content,
             &note.path,
             &note.link_placements,
@@ -191,12 +205,33 @@ fn import_artifact_unlocked(
             &config,
             &mut rewrite_diagnostics,
         )?;
+        let (content, reference_changes) = rewrite_plain_source_references(
+            &content,
+            note,
+            markdown,
+            &parsed.links,
+            artifact.source_map.as_ref(),
+            &routing_plan,
+            &mut rewrite_diagnostics,
+        )?;
+        changes.extend(reference_changes);
         note.content = add_source_frontmatter(
             &content,
             &artifact.identity,
             &note.source_spans,
             artifact.source_map.as_ref(),
         )?;
+        if note.path == routing_plan.root_path {
+            let (frontmatter, body) =
+                parse_frontmatter_document(&note.content, false).map_err(AppError::operation)?;
+            let mut frontmatter = frontmatter.unwrap_or_default();
+            let title = frontmatter
+                .entry(YamlValue::String("title".to_string()))
+                .or_insert_with(|| YamlValue::String(root_title.to_string()));
+            note.title = title.as_str().unwrap_or(root_title).to_string();
+            note.content =
+                render_note_from_parts(Some(&frontmatter), &body).map_err(AppError::operation)?;
+        }
         if !changes.is_empty() {
             rewritten_files.push(ArtifactRewrittenFile {
                 path: note.path.clone(),
@@ -206,12 +241,34 @@ fn import_artifact_unlocked(
     }
     rewritten_files.sort_by(|left, right| left.path.cmp(&right.path));
 
-    let mut diagnostics = plan
+    let mut diagnostics = artifact
         .diagnostics
         .iter()
-        .map(import_decomposition_diagnostic)
+        .map(|diagnostic| ArtifactImportDiagnostic {
+            code: diagnostic.code.clone(),
+            message: diagnostic.message.clone(),
+            path: diagnostic.path.clone(),
+        })
+        .chain(plan.diagnostics.iter().map(import_decomposition_diagnostic))
         .chain(rewrite_diagnostics)
         .collect::<Vec<_>>();
+    let root_bytes = plan
+        .notes
+        .iter()
+        .find(|note| note.path == plan.root_path)
+        .map_or(0, |note| {
+            note.source_spans
+                .iter()
+                .map(|span| span.end - span.start)
+                .sum::<usize>()
+        });
+    if markdown.len() > 16_384 && root_bytes > markdown.len() / 4 {
+        diagnostics.push(ArtifactImportDiagnostic {
+            code: "large_root_remainder".to_string(),
+            message: format!("{root_bytes} of {} source bytes remain in the root note; review hierarchy authority and level selection", markdown.len()),
+            path: Some(plan.root_path.clone()),
+        });
+    }
     diagnostics.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -331,10 +388,13 @@ fn format_invalid_artifact(diagnostics: &[MdafDiagnostic]) -> String {
     format!("artifact validation failed: {details}")
 }
 
-fn aligned_outline_headings(outline: &MdafOutline) -> Result<Vec<AlignedOutlineHeading>, AppError> {
+fn aligned_outline_headings(
+    outline: &MdafOutline,
+    markdown_len: usize,
+) -> Result<Vec<AlignedOutlineHeading>, AppError> {
     let mut stack = Vec::<(&str, u32)>::new();
     let mut headings = Vec::with_capacity(outline.nodes.len());
-    for node in &outline.nodes {
+    for (index, node) in outline.nodes.iter().enumerate() {
         if node.heading.start != node.section.start {
             return Err(AppError::operation(format!(
                 "outline node `{}` cannot be selected as hierarchy authority because its section starts before its heading",
@@ -348,6 +408,17 @@ fn aligned_outline_headings(outline: &MdafOutline) -> Result<Vec<AlignedOutlineH
             return Err(AppError::operation(format!(
                 "outline node `{}` has a parent relation that cannot be represented as a Markdown hierarchy",
                 node.id
+            )));
+        }
+        let expected_end = outline
+            .nodes
+            .iter()
+            .skip(index + 1)
+            .find(|next| next.level <= node.level)
+            .map_or(markdown_len, |next| next.section.start);
+        if node.section.end != expected_end {
+            return Err(AppError::operation(format!(
+                "outline node `{}` has a section end that cannot be represented by heading decomposition; bounded section tails are not supported", node.id
             )));
         }
         let level = u8::try_from(node.level).map_err(AppError::operation)?;
@@ -494,16 +565,21 @@ fn import_link_target(
         })
         .collect::<Vec<_>>();
     if references.len() != 1 {
+        if !references.is_empty() {
+            diagnostics.push(ArtifactImportDiagnostic {
+                code: "source_reference_unresolved".into(),
+                message: format!(
+                    "link at Markdown byte {} overlaps {} source references and was preserved",
+                    raw.byte_offset,
+                    references.len()
+                ),
+                path: None,
+            });
+        }
         return None;
     }
     let reference = references[0];
-    let targets = source_map
-        .mappings
-        .iter()
-        .filter(|mapping| source_locators_overlap(&mapping.source, &reference.target))
-        .filter_map(|mapping| plan.note_for_source_offset(mapping.document.start))
-        .map(|note| note.path.clone())
-        .collect::<BTreeSet<_>>();
+    let targets = source_reference_targets(source_map, &reference.target, plan);
     if targets.len() == 1 {
         return Some((targets.into_iter().next()?, None, None));
     }
@@ -517,6 +593,152 @@ fn import_link_target(
         path: None,
     });
     None
+}
+
+fn source_reference_targets(
+    source_map: &MdafSourceMap,
+    target: &ArtifactSourceLocator,
+    plan: &DecompositionPlan,
+) -> BTreeSet<String> {
+    source_map
+        .mappings
+        .iter()
+        .filter(|mapping| source_locators_overlap(&mapping.source, target))
+        .flat_map(|mapping| {
+            plan.notes.iter().filter(move |note| {
+                note.source_spans.iter().any(|span| {
+                    span.start < mapping.document.end && mapping.document.start < span.end
+                })
+            })
+        })
+        .map(|note| note.path.clone())
+        .collect()
+}
+
+fn plain_text_ranges(content: &str) -> Vec<std::ops::Range<usize>> {
+    let mut protected_depth = 0_u32;
+    pulldown_cmark::Parser::new_ext(content, vulcan_core::parser::parser_options())
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            use pulldown_cmark::{Event, Tag, TagEnd};
+            match event {
+                Event::Start(Tag::CodeBlock(_) | Tag::Link { .. } | Tag::Image { .. }) => {
+                    protected_depth += 1;
+                    None
+                }
+                Event::End(TagEnd::CodeBlock | TagEnd::Link | TagEnd::Image) => {
+                    protected_depth = protected_depth.saturating_sub(1);
+                    None
+                }
+                Event::Text(_) if protected_depth == 0 => Some(range),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rewrite_plain_source_references(
+    content: &str,
+    note: &vulcan_core::DecompositionNotePlan,
+    markdown: &str,
+    links: &[RawLink],
+    source_map: Option<&MdafSourceMap>,
+    plan: &DecompositionPlan,
+    diagnostics: &mut Vec<ArtifactImportDiagnostic>,
+) -> Result<(String, Vec<LinkChange>), AppError> {
+    let Some(source_map) = source_map else {
+        return Ok((content.to_string(), Vec::new()));
+    };
+    let text_ranges = plain_text_ranges(content);
+    let mut edits = Vec::new();
+    let mut changes = Vec::new();
+    for reference in &source_map.references {
+        let span = reference.document;
+        if !note
+            .source_spans
+            .iter()
+            .any(|owned| owned.start <= span.start && span.end <= owned.end)
+        {
+            if note
+                .source_spans
+                .iter()
+                .any(|owned| owned.start <= span.start && span.start < owned.end)
+            {
+                diagnostics.push(ArtifactImportDiagnostic {
+                    code: "source_reference_unresolved".into(),
+                    message: format!(
+                        "source reference at byte {} crosses a note boundary and was preserved",
+                        span.start
+                    ),
+                    path: Some(note.path.clone()),
+                });
+            }
+            continue;
+        }
+        if links.iter().any(|link| {
+            link.byte_offset < span.end && span.start < link.byte_offset + link.raw_text.len()
+        }) {
+            continue;
+        }
+        let original = &markdown[span.start..span.end];
+        let positions = content
+            .match_indices(original)
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>();
+        let targets = source_reference_targets(source_map, &reference.target, plan);
+        if positions.len() != 1 || targets.len() != 1 {
+            diagnostics.push(ArtifactImportDiagnostic {
+                code: "source_reference_unresolved".into(),
+                message: format!("plain source reference at byte {} has {} output placements and {} candidate notes; preserved", span.start, positions.len(), targets.len()),
+                path: Some(note.path.clone()),
+            });
+            continue;
+        }
+        let start = positions[0];
+        let end = start + original.len();
+        if !text_ranges
+            .iter()
+            .any(|range| range.start <= start && end <= range.end)
+            || edits
+                .iter()
+                .any(|edit: &TextEdit| edit.start < end && start < edit.end)
+        {
+            diagnostics.push(ArtifactImportDiagnostic {
+                code: "source_reference_unresolved".into(),
+                message: format!(
+                    "source reference at byte {} is not an unambiguous plain text span; preserved",
+                    span.start
+                ),
+                path: Some(note.path.clone()),
+            });
+            continue;
+        }
+        let target = targets.first().expect("one target");
+        let relative = vulcan_core::move_rewrite::relative_path_from_source(&note.path, target);
+        let label = original
+            .replace('\\', "\\\\")
+            .replace('[', "\\[")
+            .replace(']', "\\]");
+        let replacement = format!(
+            "[{label}](<{}>)",
+            relative
+                .replace('%', "%25")
+                .replace('#', "%23")
+                .replace('<', "%3C")
+                .replace('>', "%3E")
+        );
+        edits.push(TextEdit {
+            start,
+            end,
+            replacement: replacement.clone(),
+        });
+        changes.push(LinkChange {
+            before: original.to_string(),
+            after: replacement,
+        });
+    }
+    Ok((apply_edits(content, &edits, &note.path)?, changes))
 }
 
 fn source_locators_overlap(left: &ArtifactSourceLocator, right: &ArtifactSourceLocator) -> bool {
@@ -815,7 +1037,7 @@ mod tests {
             "version":1,
             "activities":[{
                 "id":"extract","kind":"synthetic","tools":[{"name":"fixture","version":"1"}],
-                "models":[],"inputs":["source:fixture"],
+                "models":[{"provider":"synthetic","identifier":"alias","resolution":"mutable-alias"}],"inputs":["source:fixture"],
                 "outputs":["text.md","assets/map.png","provenance.json"],"depends_on":[],
                 "parameters":parameters,"parameters_digest":digest(b"{}")
             }],"redactions":[]
@@ -856,7 +1078,7 @@ mod tests {
             member["digest"] = serde_json::json!(digest(&updated));
         }
         let info = serde_json::json!({
-            "format":"mdaf","version":1,
+            "format":"mdaf","version":1,"title":"Fixture Rules",
             "markdown":{"path":"text.md","digest":digest(markdown.as_bytes()),"media_type":"text/markdown"},
             "producer":{"name":"synthetic","version":"1"},"members":members,
             "sources":[{"id":"fixture","media_type":"application/octet-stream","digest":digest(b"fixture")}],
@@ -891,6 +1113,13 @@ mod tests {
         assert_eq!(preview.assets.len(), 1);
         request.dry_run = false;
         let report = import_artifact(&paths, &request).expect("import");
+        assert_eq!(report.notes[0].title, "Fixture Rules");
+        let root = fs::read_to_string(paths.vault_root().join(&report.root_path)).unwrap();
+        assert!(root.contains("title: Fixture Rules"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "model_not_pinned"));
         assert!(paths
             .vault_root()
             .join("Imported/Rules/assets/map.png")
@@ -1020,6 +1249,10 @@ mod tests {
             .expect("unique target");
         assert_eq!(target.0, "Book/Magic.md");
         assert!(diagnostics.is_empty());
+        let mut ambiguous = source_map;
+        ambiguous.references.push(ambiguous.references[0].clone());
+        assert!(import_link_target(link, &plan, &[], Some(&ambiguous), &mut diagnostics).is_none());
+        assert_eq!(diagnostics[0].code, "source_reference_unresolved");
     }
 
     #[test]
@@ -1129,5 +1362,82 @@ mod tests {
         let assets = artifact_assets(&artifact, "Rollback");
         assert!(apply_import(&paths, &artifact, &plan, &assets, "Rollback").is_err());
         assert!(!paths.vault_root().join("Rollback").exists());
+    }
+}
+#[cfg(test)]
+mod pipeline_regressions {
+    use super::*;
+    #[test]
+    fn plain_references_require_safe_text_and_unambiguous_mapping_coverage() {
+        for (body, rewrite) in [
+            ("See (p. 2).", true),
+            ("Code `(p. 2)`.", false),
+            ("```text\n(p. 2)\n```", false),
+            ("Repeated (p. 2), (p. 2).", false),
+        ] {
+            let markdown = format!("# Book\n{body}\n\n## One\nText.\n\n## Two\nTarget.\n");
+            let config = vulcan_core::VaultConfig::default();
+            let plan = plan_document_decomposition(
+                "Book.md",
+                &markdown,
+                &config,
+                &DecompositionOptions {
+                    from_level: 2,
+                    through_level: 2,
+                    destination_root: "Book".into(),
+                    navigation: false,
+                },
+            )
+            .unwrap();
+            let start = markdown.find("(p. 2)").unwrap();
+            let mapping_start = markdown.find("## Two").unwrap();
+            let mut source_map: MdafSourceMap = serde_json::from_value(serde_json::json!({
+                "version": 1, "document_digest": "unused",
+                "mappings": [{"document": {"start": mapping_start, "end": markdown.len()},
+                    "source": {"source_id": "doc", "selectors": [{"type":"interval","unit":"page","start":1,"end":2}]}}],
+                "references": [{"document": {"start": start, "end": start + 6},
+                    "target": {"source_id": "doc", "selectors": [{"type":"interval","unit":"page","start":1,"end":2}]}}]
+            })).unwrap();
+            let note = &plan.notes[0];
+            let mut diagnostics = Vec::new();
+            let (content, changes) = rewrite_plain_source_references(
+                &note.content,
+                note,
+                &markdown,
+                &[],
+                Some(&source_map),
+                &plan,
+                &mut diagnostics,
+            )
+            .unwrap();
+            assert_eq!(changes.len(), usize::from(rewrite), "{body}");
+            if rewrite {
+                assert!(content.contains("[(p. 2)](<Two.md>)"), "{content}");
+            } else {
+                assert_eq!(content, note.content);
+                assert!(!diagnostics.is_empty());
+            }
+            source_map.mappings[0].document.start = markdown.find("## One").unwrap();
+            assert_eq!(
+                source_reference_targets(&source_map, &source_map.references[0].target, &plan)
+                    .len(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn outline_section_tails_are_not_silently_reassigned() {
+        let mut outline: MdafOutline = serde_json::from_value(serde_json::json!({
+            "version":1,"document_digest":"unused","nodes":[
+                {"id":"a","level":2,"title":"A","heading":{"start":0,"end":3},"section":{"start":0,"end":10}},
+                {"id":"b","level":2,"title":"B","heading":{"start":10,"end":13},"section":{"start":10,"end":20}}
+            ]
+        })).unwrap();
+        assert!(aligned_outline_headings(&outline, 20).is_ok());
+        outline.nodes[0].section.end = 9;
+        assert!(aligned_outline_headings(&outline, 20).is_err());
+        outline.nodes[0].section.end = 10;
+        assert!(aligned_outline_headings(&outline, 21).is_err());
     }
 }

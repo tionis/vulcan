@@ -7,7 +7,8 @@ mod semantic_pass;
 mod tag_extractor;
 pub mod types;
 
-pub(crate) use options::{fragment_parser_options, parser_options};
+pub(crate) use options::fragment_parser_options;
+pub use options::parser_options;
 pub use types::{
     ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument,
     RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField, RawLink,

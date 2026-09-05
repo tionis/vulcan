@@ -71,9 +71,15 @@ Numbers must be finite. Intervals, rectangles, grids, and polygons must be non-e
 
 Source-reference resolution is conservative. A target selector must be matched by a compatible mapping selector for the same declared source; all target selectors must overlap or identify the same segment. Ambiguous or unsupported matches remain authored Markdown and produce a diagnostic rather than an inferred link.
 
+A reference's document span may identify plain prose, not only an existing Markdown link. A consumer may wrap an exactly placed plain-text reference in a link after resolving its target. It must preserve code, existing link syntax, and ambiguous or overlapping placements. A coarse mapping that overlaps multiple materialized notes represents all those candidates: using only the note containing the mapping's first byte invents unsupported precision. Display labels do not change numeric selector coordinates and must not be inferred from a filename or a presumed page-number offset. Producers should leave externally qualified citations and unproven targets unbound.
+
 ## Alternative outline
 
 `outline.json` conforms to `outline.schema.json` and binds to `text.md`. Nodes form one ordered forest with stable IDs, parent IDs, levels, titles, heading spans, section spans, and optional source locators. Section spans must be ordered and either disjoint or properly nested; a heading span lies inside its section. Selecting the outline as import authority requires complete valid alignment. Markdown headings remain the default authority, and consumers never merge authorities silently.
+
+An outline title is routing metadata; it need not equal an authored Markdown heading or create a Markdown fragment with that name. A producer may combine a split chapter title or describe a front-matter section without changing primary Markdown. Existing authored heading/HTML-anchor targets remain valid and must route to their owning output note even when omitted from the selected outline.
+
+Consumers must honor declared section boundaries or reject an unsupported alignment before mutation. Vulcan's heading decomposition currently accepts outlines whose section starts equal heading starts, whose parents match the preceding level stack, and whose section ends equal the next node at the same or a shallower level (or the document end). Bounded tails or gaps require a different materialization algorithm; they must not be silently expanded. Levels two and three are a useful producer convention for major sections and nested topics, but their meaning is not prescribed by MDAF and does not select an import authority automatically.
 
 ## Native evidence and extensions
 
@@ -96,3 +102,5 @@ Transport secrets, credentials, signed URLs, and private endpoint topology are f
 Consumers validate schemas, members, hashes, normalized semantics, and provenance relationships before mutation. Unknown namespaced extensions and native renditions are accepted and ignored. A new extractor requires only a producer adapter that emits the normalized core and declares its native evidence; it never requires a Vulcan code branch or an MDAF version change.
 
 Vulcan imports an artifact into a required vault-relative destination. The output Markdown tree becomes canonical vault content. The artifact itself remains external. Vulcan may materialize normalized source ranges and uniquely resolvable source references, but it never projects opaque native evidence into notes or the rebuildable cache.
+
+Import reports retain validation warnings alongside materialization diagnostics. Root display metadata uses the artifact title when available, with existing canonical frontmatter preserved; the virtual primary filename `text.md` is not the book title. Consumers should surface unusually large root remainders so a structurally valid artifact is not mistaken for a useful hierarchy. Improving hierarchy or metadata creates a new immutable derivative with explicit transformation provenance, not an in-place artifact edit. These clarifications use the existing v1 fields and require no schema version change.

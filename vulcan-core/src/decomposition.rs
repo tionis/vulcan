@@ -242,7 +242,8 @@ pub fn plan_document_decomposition_with_aligned_outline(
         }
         previous = Some(heading.byte_offset);
     }
-    let mut parsed = validated_parsed_document(source, config)?;
+    let original = validated_parsed_document(source, config)?;
+    let mut parsed = original.clone();
     parsed.headings = headings
         .iter()
         .map(|heading| RawHeading {
@@ -251,7 +252,15 @@ pub fn plan_document_decomposition_with_aligned_outline(
             byte_offset: heading.byte_offset,
         })
         .collect();
-    plan_parsed_document_decomposition(source_path, source, config, options, &parsed, false)
+    let mut plan =
+        plan_parsed_document_decomposition(source_path, source, config, options, &parsed, false)?;
+    // Outline titles are routing metadata, not authored Markdown anchors. Keep
+    // every real heading target, including headings omitted by a sparse outline.
+    plan.heading_targets = build_heading_targets(&original, &[], &plan.notes)?;
+    plan.diagnostics = duplicate_heading_diagnostics(&original);
+    plan.diagnostics
+        .extend(duplicate_anchor_diagnostics(&explicit_html_anchors(source)));
+    Ok(plan)
 }
 
 fn validated_parsed_document(
@@ -1207,5 +1216,35 @@ mod tests {
         )
         .expect_err("HTML asset should fail closed");
         assert!(html_error.to_string().contains("line 3"));
+    }
+}
+#[cfg(test)]
+mod outline_regressions {
+    use super::*;
+    #[test]
+    fn sparse_outline_preserves_authored_heading_targets() {
+        let source = "# Book\n\n## Original\nBody\n\n### Retained\nSee [section](#Retained).\n";
+        let plan = plan_document_decomposition_with_aligned_outline(
+            "Book.md",
+            source,
+            &VaultConfig::default(),
+            &DecompositionOptions {
+                from_level: 2,
+                through_level: 2,
+                destination_root: "Book".into(),
+                navigation: true,
+            },
+            &[AlignedOutlineHeading {
+                level: 2,
+                title: "Alternative".into(),
+                byte_offset: source.find("## Original").unwrap(),
+            }],
+        )
+        .unwrap();
+        assert!(plan.heading_target("Alternative").is_none());
+        let retained = plan.heading_target("Retained").unwrap();
+        assert!(retained.path.ends_with("Alternative.md"));
+        assert_eq!(retained.fragment.as_deref(), Some("Retained"));
+        assert!(plan.heading_target("Original").is_some());
     }
 }

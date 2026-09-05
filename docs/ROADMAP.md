@@ -7154,6 +7154,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add an atomic application import workflow that requires an explicit destination, copies declared assets, materializes either Markdown-heading or explicitly selected aligned-outline hierarchy, propagates `vulcan.source` frontmatter, rewrites uniquely resolvable source references, refreshes the cache, and rolls back on failure.
 - [x] Add `vulcan artifact inspect`, `validate`, and `import` with dry-run, JSON output, decomposition controls, auto-commit integration, deterministic diagnostics, documentation, and bundled agent guidance.
 - [x] Cover directory/ZIP parity, multiple synthetic producer shapes, native metadata retention, multi-tool/version provenance, derivatives, unsafe archives, assets, hierarchy selection, reference resolution, collisions, rollback, reindexing, and CLI snapshots without committing real source documents or corpus identities.
+- [x] Repair full-book import routing: preserve authored anchors under alternative outlines, reject unsupported section tails, retain validation warnings and root titles, flag large root remainders, and resolve plain references conservatively across all overlapping note spans. Clarify MDAF v1 and bundled agent guidance; validate new producer derivatives end-to-end.
 
 ---
 
