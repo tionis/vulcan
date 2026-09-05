@@ -1533,6 +1533,13 @@ fn run_attempt(
     control: &mut AttemptControl<'_>,
 ) -> Result<AttemptResult, GitSyncError> {
     control.check()?;
+
+    // Reconcile the checked-out branch before taking the file-lane snapshot.
+    // A successful pull can rewrite the worktree; capturing first would make
+    // that intentional rewrite look concurrent and force a redundant retry.
+    pull_branch_lane(engine, report)?;
+
+    control.check()?;
     control.emit(GitSyncPhase::Capturing, report, None)?;
     let refs_before = read_attempt_refs(engine, report)?;
     let capture = capture_local_worktree(engine, options, report, refs_before.local)?;
@@ -1542,8 +1549,6 @@ fn run_attempt(
     }
     control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
     require_local_platform(engine, options, report, &capture.commit)?;
-
-    pull_branch_lane(engine, report)?;
 
     control.check()?;
     control.emit(GitSyncPhase::Fetching, report, None)?;
@@ -4609,6 +4614,10 @@ mod tests {
 
         let (action, _) = branch_action(&report);
         assert_eq!(action, GitBranchSyncAction::FastForwarded);
+        assert_eq!(
+            report.retries, 0,
+            "the post-pull snapshot must converge on the first attempt"
+        );
         let lane = report.branch.as_ref().expect("branch lane report");
         assert!(!lane.pushed, "nothing remains to publish after a pull");
         assert_eq!(lane.branch.as_str(), "refs/heads/main");
