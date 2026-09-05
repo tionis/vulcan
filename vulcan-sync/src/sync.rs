@@ -3693,11 +3693,19 @@ mod tests {
                 .filter(|line| line.contains(" config --get-regexp"))
                 .count(),
             1,
-            "the branch lane should resolve upstream and pull strategy in one config read: {commands}"
+            "an untracked branch should require one fallback config read: {commands}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" for-each-ref --format=%(upstream:"))
+                .count(),
+            1,
+            "the branch lane should ask Git to resolve its upstream: {commands}"
         );
         assert!(
-            lines.len() <= 23,
-            "reused-engine sync exceeded its 23-process budget ({}): {commands}",
+            lines.len() <= 24,
+            "reused-engine sync exceeded its 24-process budget ({}): {commands}",
             lines.len()
         );
     }
@@ -3723,7 +3731,15 @@ mod tests {
                 .filter(|line| line.contains(" config --get-regexp"))
                 .count(),
             1,
-            "the branch lane should resolve upstream and pull strategy in one config read: {commands}"
+            "an untracked branch should require one fallback config read: {commands}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" for-each-ref --format=%(upstream:"))
+                .count(),
+            1,
+            "the branch lane should ask Git to resolve its upstream: {commands}"
         );
     }
 
@@ -3897,8 +3913,8 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 24,
-            "steady sync exceeded its 24-process budget ({}): {commands}",
+            lines.len() <= 25,
+            "steady sync exceeded its 25-process budget ({}): {commands}",
             lines.len()
         );
         assert_direct_engine_probes(&lines, &commands);

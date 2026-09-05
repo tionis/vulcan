@@ -2042,7 +2042,7 @@ impl GitCliEngine {
         command.args([
             "config",
             "--get-regexp",
-            r"^(branch\..+\.rebase|pull\.(ff|rebase))$",
+            r"^(branch\..+\.(remote|merge|rebase)|pull\.(ff|rebase))$",
         ]);
         let output = self.execute(command)?;
         if !output.status.success() && output.status.code() != Some(1) {
@@ -3312,6 +3312,19 @@ impl GitEngine for GitCliEngine {
             });
         };
         if remote.is_empty() && tracking.is_empty() && merge.is_empty() {
+            let short = branch
+                .as_str()
+                .strip_prefix("refs/heads/")
+                .expect("branch prefix was checked above");
+            let config = self.git_pull_config_map(repository)?;
+            if config.contains_key(&format!("branch.{short}.remote"))
+                || config.contains_key(&format!("branch.{short}.merge"))
+            {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: "resolve the branch upstream",
+                    detail: "the configured upstream cannot be resolved by Git".to_string(),
+                });
+            }
             return Ok(None);
         }
         if fields.next().is_some() || remote.is_empty() || tracking.is_empty() || merge.is_empty() {
