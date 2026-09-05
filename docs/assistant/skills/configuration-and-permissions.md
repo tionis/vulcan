@@ -50,7 +50,8 @@ permission profiles, or diagnoses permission and trust failures.
 - Treat the complete advertised notification subscribe URL as a repository-scoped read capability.
   It may exist only in the dedicated Git advertisement, not in ordinary vault content, CLI
   arguments, logs, or device registration state. Pipe it to
-  `sync advertise --subscribe-url-file -` or use a protected regular file. Configure the separate
+  `sync advertise --subscribe-url-file -`; on Unix, a protected regular file with no symlinked
+  path component is also accepted. Other platforms must use stdin. Configure the separate
   publish-only webhook URL directly in the forge.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.

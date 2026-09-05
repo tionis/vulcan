@@ -47,6 +47,10 @@ const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_PARAMETERS",
     "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "XDG_CONFIG_HOME",
 ];
 
 /// A typed boundary over the repository implementation used by Git-backed sync.
@@ -6123,6 +6127,10 @@ mod tests {
             "GIT_CONFIG_PARAMETERS",
             "GIT_CONFIG_COUNT",
             "GIT_CONFIG",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_NOSYSTEM",
+            "XDG_CONFIG_HOME",
         ] {
             assert!(
                 scrubbed.iter().any(|key| key == variable),

@@ -387,6 +387,13 @@ pub fn secure_read(root: &Path, relative_path: &Path) -> Result<Vec<u8>, std::io
     Ok(contents)
 }
 
+/// Opens an existing path below `root` without following symlinks in
+/// any component. Callers can inspect descriptor metadata and perform bounded
+/// streaming reads without reopening the path.
+pub fn secure_open_read(root: &Path, relative_path: &Path) -> Result<fs::File, std::io::Error> {
+    secure_open(root, relative_path, SecureOpenMode::Read)
+}
+
 pub fn secure_write(
     root: &Path,
     relative_path: &Path,
@@ -917,6 +924,7 @@ mod tests {
             .expect("directory symlink should exist");
 
         assert!(secure_read_to_string(root.path(), Path::new("linked.md")).is_err());
+        assert!(secure_open_read(root.path(), Path::new("linked-dir/secret.md")).is_err());
         assert!(secure_write(root.path(), Path::new("linked.md"), "changed").is_err());
         assert!(secure_write(root.path(), Path::new("linked-dir/new.md"), "changed").is_err());
         assert_eq!(

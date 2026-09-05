@@ -1338,16 +1338,15 @@ fn read_subscribe_url(source: &std::path::Path) -> Result<String, CliError> {
             .read_to_end(&mut bytes)
             .map_err(CliError::operation)?;
     } else {
-        let metadata = std::fs::symlink_metadata(source).map_err(CliError::operation)?;
-        if !metadata.file_type().is_file() {
+        let file = open_subscribe_url_file(source)?;
+        let metadata = file.metadata().map_err(CliError::operation)?;
+        if !metadata.is_file() {
             return Err(CliError::operation(
                 "the notification subscribe URL source must be a regular file",
             ));
         }
         require_private_subscribe_url_file(&metadata)?;
-        std::fs::File::open(source)
-            .map_err(CliError::operation)?
-            .take((MAX_SUBSCRIBE_URL_INPUT_BYTES + 3) as u64)
+        file.take((MAX_SUBSCRIBE_URL_INPUT_BYTES + 3) as u64)
             .read_to_end(&mut bytes)
             .map_err(CliError::operation)?;
     }
@@ -1372,6 +1371,31 @@ fn read_subscribe_url(source: &std::path::Path) -> Result<String, CliError> {
 }
 
 #[cfg(unix)]
+fn open_subscribe_url_file(source: &std::path::Path) -> Result<std::fs::File, CliError> {
+    let absolute = if source.is_absolute() {
+        source.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(CliError::operation)?
+            .join(source)
+    };
+    let relative = absolute
+        .strip_prefix(std::path::Path::new("/"))
+        .map_err(|_| {
+            CliError::operation("notification subscribe URL path is not an absolute Unix path")
+        })?;
+    vulcan_core::paths::secure_open_read(std::path::Path::new("/"), relative)
+        .map_err(CliError::operation)
+}
+
+#[cfg(not(unix))]
+fn open_subscribe_url_file(_source: &std::path::Path) -> Result<std::fs::File, CliError> {
+    Err(CliError::operation(
+        "notification subscribe URL files require Unix privacy modes; use --subscribe-url-file - with piped stdin on this platform",
+    ))
+}
+
+#[cfg(unix)]
 fn require_private_subscribe_url_file(metadata: &std::fs::Metadata) -> Result<(), CliError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1385,7 +1409,7 @@ fn require_private_subscribe_url_file(metadata: &std::fs::Metadata) -> Result<()
 
 #[cfg(not(unix))]
 fn require_private_subscribe_url_file(_metadata: &std::fs::Metadata) -> Result<(), CliError> {
-    Ok(())
+    unreachable!("non-Unix file inputs are rejected before metadata validation")
 }
 
 fn print_sync_advertise(
@@ -2687,6 +2711,42 @@ mod sync_report_tests {
             .expect_err("multiple lines must fail")
             .to_string()
             .contains("exactly one line"));
+
+        std::fs::write(&source, vec![b'x'; MAX_SUBSCRIBE_URL_INPUT_BYTES + 1])
+            .expect("oversized secret");
+        assert!(read_subscribe_url(&source)
+            .expect_err("oversized input must fail")
+            .to_string()
+            .contains("4096-byte limit"));
+
+        let target = temporary.path().join("target");
+        std::fs::write(&target, "https://patch.example/h/symlink?pubsub=true")
+            .expect("symlink target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("private target permissions");
+        let symlink = temporary.path().join("subscribe-url-symlink");
+        std::os::unix::fs::symlink(&target, &symlink).expect("secret symlink");
+        assert!(
+            read_subscribe_url(&symlink).is_err(),
+            "the checked path must not be followed after validation"
+        );
+        let real_directory = temporary.path().join("real-directory");
+        std::fs::create_dir(&real_directory).expect("real secret directory");
+        let nested_target = real_directory.join("subscribe-url");
+        std::fs::write(
+            &nested_target,
+            "https://patch.example/h/parent-symlink?pubsub=true",
+        )
+        .expect("nested secret");
+        std::fs::set_permissions(&nested_target, std::fs::Permissions::from_mode(0o600))
+            .expect("private nested permissions");
+        let linked_directory = temporary.path().join("linked-directory");
+        std::os::unix::fs::symlink(&real_directory, &linked_directory)
+            .expect("secret directory symlink");
+        assert!(
+            read_subscribe_url(&linked_directory.join("subscribe-url")).is_err(),
+            "intermediate path components must not redirect the secret read"
+        );
 
         std::fs::write(&source, "https://patch.example/h/private").expect("valid secret again");
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644))

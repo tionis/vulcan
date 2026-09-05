@@ -5615,7 +5615,7 @@ fn sync_advertise_checks_git_permission_before_reading_the_secret() {
 }
 
 #[test]
-fn sync_advertise_attributes_the_publisher_git_identity() {
+fn sync_advertise_uses_home_git_identity_and_ignores_config_redirects() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let remote = temporary.path().join("remote.git");
     run_git_ok(
@@ -5630,7 +5630,8 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
     let vault = temporary.path().join("wiki");
     fs::create_dir(&vault).expect("vault directory");
     // Deliberately no repository-local user.name/user.email: identity must
-    // resolve through Git configuration like an ordinary commit.
+    // resolve through normal HOME-based Git configuration like an ordinary
+    // commit, without trusting environment redirects to arbitrary files.
     run_git_ok(&vault, &["-c", "init.defaultBranch=main", "init"]);
     run_git_ok(&vault, &["config", "core.autocrlf", "false"]);
     run_git_ok(
@@ -5645,14 +5646,35 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
     fs::write(vault.join("Home.md"), "home\n").expect("home note");
     let vault_str = vault.to_str().expect("vault path");
 
-    let global_config = temporary.path().join("global.gitconfig");
+    let home = temporary.path().join("home");
+    fs::create_dir(&home).expect("home directory");
     fs::write(
-        &global_config,
-        "[user]\n\tname = Global Publisher\n\temail = global@example.invalid\n",
+        home.join(".gitconfig"),
+        "[user]\n\tname = Home Publisher\n\temail = home@example.invalid\n",
     )
-    .expect("global config");
-    let system_config = temporary.path().join("system.gitconfig");
-    fs::write(&system_config, "").expect("system config");
+    .expect("home config");
+    let redirected_global = temporary.path().join("redirected-global.gitconfig");
+    fs::write(
+        &redirected_global,
+        "[user]\n\tname = Redirected Global\n\temail = redirected-global@example.invalid\n",
+    )
+    .expect("redirected global config");
+    let redirected_system = temporary.path().join("redirected-system.gitconfig");
+    fs::write(
+        &redirected_system,
+        "[user]\n\tname = Redirected System\n\temail = redirected-system@example.invalid\n",
+    )
+    .expect("redirected system config");
+    let redirected_xdg = temporary.path().join("redirected-xdg");
+    fs::create_dir_all(redirected_xdg.join("git")).expect("redirected XDG directory");
+    fs::write(
+        redirected_xdg.join("git/config"),
+        format!(
+            "[url \"missing-vulcan-transport://blocked/\"]\n\tinsteadOf = {}\n",
+            remote.display()
+        ),
+    )
+    .expect("redirected XDG config");
     let advertise = |subscribe_url: &str, args: &[&str]| {
         let mut full = vec![
             "--vault",
@@ -5667,8 +5689,11 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
         full.extend(args);
         Command::cargo_bin("vulcan")
             .expect("binary should build")
-            .env("GIT_CONFIG_GLOBAL", &global_config)
-            .env("GIT_CONFIG_SYSTEM", &system_config)
+            .env("HOME", &home)
+            .env("GIT_CONFIG_GLOBAL", &redirected_global)
+            .env("GIT_CONFIG_SYSTEM", &redirected_system)
+            .env("GIT_CONFIG_NOSYSTEM", "0")
+            .env("XDG_CONFIG_HOME", &redirected_xdg)
             .args(&full)
             .write_stdin(subscribe_url)
             .assert()
@@ -5697,8 +5722,8 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
         .to_string();
     assert_eq!(
         identity(&first),
-        "Global Publisher\x00global@example.invalid\x00Global Publisher\x00global@example.invalid",
-        "advertisement should attribute the global Git identity"
+        "Home Publisher\x00home@example.invalid\x00Home Publisher\x00home@example.invalid",
+        "advertisement should use HOME configuration, not redirected config files"
     );
 
     run_git_ok(&vault, &["config", "user.name", "Local Override"]);

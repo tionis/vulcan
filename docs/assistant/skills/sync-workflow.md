@@ -116,7 +116,8 @@ they commit.
 - Publish or rotate the advertisement by piping the capability without exposing it in process
   arguments or shell history:
   `secret-manager read notification-subscribe-url | vulcan sync advertise --subscribe-url-file - [--remote origin] [--expected <rev>]`.
-  A mode-`0600` regular file may be named instead of `-` when piping is impractical.
+  On Unix, a mode-`0600` regular file with no symlinked path component may be named instead of
+  `-` when piping is impractical. Other platforms must use piped stdin.
   Notification advertisement publication and discovery currently require the `origin` remote;
   alternate sync remotes are rejected so CLI status and the daemon cannot observe different refs.
   Preview with `--dry-run` first. Without `--expected`, the current remote revision is leased
