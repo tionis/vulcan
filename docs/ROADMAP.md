@@ -7144,6 +7144,10 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ## Phase 9.36: Evidence-preserving Markdown artifacts and wiki import
 
+- [x] Add explicit descendant-size import granularity with complete ownership,
+  contextual repeated-heading routing, occurrence-aware normalized citations,
+  installed-skill guidance and end-to-end post-processing release verification.
+
 **Goal:** Define and consume an extractor- and source-format-neutral Markdown Artifact Format (`.mdaf`) that carries one primary Markdown document, assets, normalized source mappings, alternative hierarchy evidence, complete native extractor output, and reproducible conversion provenance into Vulcan's canonical wiki-tree workflow.
 
 **Boundary:** Vulcan specifies, validates, inspects, and imports MDAF artifacts. It does not run extraction or branch on source media type, Marker, Mistral, DeepSeek, Docling, or any other extractor. Producer-specific responses remain lossless declared renditions or namespaced extensions; only the minimal Markdown/source-selector/outline contract is normalized. BlobForge production and legacy-artifact repackaging follow after this Vulcan-first slice, and `pdf-to-wiki` receives no further architectural investment.

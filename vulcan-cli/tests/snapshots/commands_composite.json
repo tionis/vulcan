@@ -15022,6 +15022,17 @@
             "name": "import",
             "options": [
               {
+                "help": "Keep smaller descendant section subtrees inline (source bytes); 0 splits every selected heading. First selected level is always retained.",
+                "id": "min_section_bytes",
+                "long": "min-section-bytes",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "MIN_SECTION_BYTES"
+                ]
+              },
+              {
                 "help": "MDAF directory or ZIP path",
                 "id": "artifact",
                 "long": null,

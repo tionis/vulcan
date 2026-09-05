@@ -22,6 +22,8 @@ static HTML_ANCHOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecompositionOptions {
+    /// Keep smaller descendant subtrees inline; zero preserves every selected heading.
+    pub min_section_bytes: usize,
     pub from_level: u8,
     pub through_level: u8,
     pub destination_root: String,
@@ -104,6 +106,46 @@ pub struct DecompositionPlan {
 }
 
 impl DecompositionPlan {
+    /// Resolve a repeated fragment only within the nearest owning note subtree.
+    /// Multiple candidates in that scope stay ambiguous, never first-match wins.
+    #[must_use]
+    pub fn contextual_fragment_target(
+        &self,
+        fragment: &str,
+        offset: usize,
+    ) -> Option<&DecompositionSubpathTarget> {
+        let mut scope = self.note_for_source_offset(offset)?;
+        loop {
+            let mut paths = BTreeSet::from([scope.path.clone()]);
+            loop {
+                let before = paths.len();
+                for note in &self.notes {
+                    if note
+                        .parent_path
+                        .as_ref()
+                        .is_some_and(|parent| paths.contains(parent))
+                    {
+                        paths.insert(note.path.clone());
+                    }
+                }
+                if paths.len() == before {
+                    break;
+                }
+            }
+            let targets = self
+                .heading_targets
+                .iter()
+                .chain(&self.anchor_targets)
+                .filter(|target| target.source_text == fragment && paths.contains(&target.path))
+                .collect::<Vec<_>>();
+            if !targets.is_empty() {
+                return (targets.len() == 1).then(|| targets[0]);
+            }
+            let parent = scope.parent_path.as_ref()?;
+            scope = self.notes.iter().find(|note| &note.path == parent)?;
+        }
+    }
+
     #[must_use]
     pub fn note_for_source_offset(&self, offset: usize) -> Option<&DecompositionNotePlan> {
         self.notes
@@ -306,8 +348,18 @@ fn plan_parsed_document_decomposition(
     let selected_flags = parsed
         .headings
         .iter()
-        .map(|heading| {
-            heading.level >= options.from_level && heading.level <= options.through_level
+        .enumerate()
+        .map(|(index, heading)| {
+            let end = parsed
+                .headings
+                .iter()
+                .skip(index + 1)
+                .find(|next| next.level <= heading.level)
+                .map_or(source.len(), |next| next.byte_offset);
+            heading.level >= options.from_level
+                && heading.level <= options.through_level
+                && (heading.level == options.from_level
+                    || end.saturating_sub(heading.byte_offset) >= options.min_section_bytes)
         })
         .collect::<Vec<_>>();
     if !selected_flags.iter().any(|selected| *selected) {
@@ -340,7 +392,32 @@ fn plan_parsed_document_decomposition(
         .iter()
         .map(|heading| heading.source_span.clone())
         .collect::<Vec<_>>();
-    let root_spans = complement_spans(source.len(), &selected_spans)?;
+    let mut root_spans = complement_spans(source.len(), &selected_spans)?;
+    let mut inline_spans: BTreeMap<usize, Vec<SourceByteSpan>> = BTreeMap::new();
+    if options.min_section_bytes > 0 {
+        root_spans.retain(|span| {
+            let owner = selected
+                .iter()
+                .enumerate()
+                .filter(|(_, selected)| {
+                    let heading = &parsed.headings[selected.heading_index];
+                    let end = parsed
+                        .headings
+                        .iter()
+                        .skip(selected.heading_index + 1)
+                        .find(|next| next.level <= heading.level)
+                        .map_or(source.len(), |next| next.byte_offset);
+                    heading.byte_offset <= span.start && span.end <= end
+                })
+                .max_by_key(|(_, selected)| parsed.headings[selected.heading_index].level);
+            if let Some((index, _)) = owner {
+                inline_spans.entry(index).or_default().push(span.clone());
+                false
+            } else {
+                true
+            }
+        });
+    }
 
     let anchors = explicit_html_anchors(source);
     let mut diagnostics = duplicate_heading_diagnostics(parsed);
@@ -363,15 +440,18 @@ fn plan_parsed_document_decomposition(
         &selected,
     )?);
 
-    for heading in &selected {
+    for (index, heading) in selected.iter().enumerate() {
         let parsed_heading = &parsed.headings[heading.heading_index];
+        let mut spans = vec![heading.source_span.clone()];
+        spans.extend(inline_spans.remove(&index).unwrap_or_default());
+        spans.sort_by_key(|span| span.start);
         notes.push(build_note_plan(
             source,
             parsed,
             &heading.path,
             &parsed_heading.text,
             normalize_heading_markers.then_some(parsed_heading.level),
-            vec![heading.source_span.clone()],
+            spans,
             heading
                 .children
                 .iter()
@@ -997,11 +1077,82 @@ mod tests {
 
     fn options() -> DecompositionOptions {
         DecompositionOptions {
+            min_section_bytes: 0,
             from_level: 2,
             through_level: 3,
             destination_root: "Rulebook".to_string(),
             navigation: true,
         }
+    }
+
+    #[test]
+    fn small_subsections_stay_with_parent_without_loss_or_root_remainder() {
+        let source = format!(
+            "## Chapter\nIntro.\n### Large\n{}\n### Tiny\nKeep me.\n## Next\nEnd.\n",
+            "Long prose. ".repeat(100)
+        );
+        let plan = plan_document_decomposition(
+            "Book.md",
+            &source,
+            &VaultConfig::default(),
+            &DecompositionOptions {
+                min_section_bytes: 200,
+                through_level: 3,
+                ..options()
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.notes.len(), 4);
+        let parent = plan
+            .notes
+            .iter()
+            .find(|note| note.title == "Chapter")
+            .unwrap();
+        assert!(parent.content.contains("Keep me."));
+        assert!(plan.notes[0].source_spans.is_empty());
+        verify_complete_coverage(source.len(), &plan.notes).unwrap();
+        let exact = plan_document_decomposition(
+            "Book.md",
+            &source,
+            &VaultConfig::default(),
+            &DecompositionOptions {
+                through_level: 3,
+                ..options()
+            },
+        )
+        .unwrap();
+        assert_eq!(exact.notes.len(), 5);
+    }
+
+    #[test]
+    fn repeated_fragments_resolve_only_in_unique_local_scope() {
+        let source = "## One\nSee [Details](#Details).\n### Details\nA.\n## Two\n### Details\nB.\n";
+        let plan =
+            plan_document_decomposition("Book.md", source, &VaultConfig::default(), &options())
+                .unwrap();
+        assert_eq!(plan.fragment_target_count("Details"), 2);
+        let target = plan
+            .contextual_fragment_target("Details", source.find("See").unwrap())
+            .unwrap();
+        assert_eq!(
+            target.source_byte_offset,
+            source.find("### Details").unwrap()
+        );
+        assert!(plan.contextual_fragment_target("Details", 0).is_some());
+        let ambiguous = "## One\nSee [Details](#Details).\n### Details\nA.\n### Details\nB.\n";
+        let plan = plan_document_decomposition(
+            "Book.md",
+            ambiguous,
+            &VaultConfig::default(),
+            &DecompositionOptions {
+                through_level: 2,
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(plan
+            .contextual_fragment_target("Details", ambiguous.find("See").unwrap())
+            .is_none());
     }
 
     #[test]
@@ -1059,6 +1210,7 @@ mod tests {
             source,
             &VaultConfig::default(),
             &DecompositionOptions {
+                min_section_bytes: 0,
                 from_level: 1,
                 through_level: 2,
                 destination_root: "Artifact".to_string(),
@@ -1099,6 +1251,7 @@ mod tests {
             "# Rules\n\n## Combat\nText\n\n### Damage\nMore\n",
             &config,
             &DecompositionOptions {
+                min_section_bytes: 0,
                 destination_root: "Books/Rules".to_string(),
                 ..options()
             },
@@ -1117,6 +1270,7 @@ mod tests {
             "# Rules\n## A/B: C?\nOne\n## A/B: C?\nTwo\n## CON\nThree\n",
             &VaultConfig::default(),
             &DecompositionOptions {
+                min_section_bytes: 0,
                 through_level: 2,
                 ..options()
             },
@@ -1160,6 +1314,7 @@ mod tests {
             source,
             &VaultConfig::default(),
             &DecompositionOptions {
+                min_section_bytes: 0,
                 through_level: 2,
                 navigation: false,
                 ..options()
@@ -1229,6 +1384,7 @@ mod outline_regressions {
             source,
             &VaultConfig::default(),
             &DecompositionOptions {
+                min_section_bytes: 0,
                 from_level: 2,
                 through_level: 2,
                 destination_root: "Book".into(),

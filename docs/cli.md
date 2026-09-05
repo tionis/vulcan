@@ -529,6 +529,14 @@ The source note is replaced by default. `--keep-source` retains it as an archiva
 
 `vulcan artifact` consumes extractor- and source-format-neutral Markdown Artifact Format (MDAF) directories and `.mdaf` ZIP files. Sources may be PDFs, images, audiovisual media, web or office documents, structured data, text, compound media, or future formats; Markdown is the normalized output. The versioned format specification and schemas live in [`docs/specs/mdaf/v1/`](specs/mdaf/v1/). Vulcan validates hashes, archive safety, composable source selectors, aligned outline evidence, and tool/model provenance without interpreting extractor-native renditions or extensions.
 
+Fine-grained imports default to `--min-section-bytes 2048`: small descendant
+section subtrees stay inline with their nearest selected ancestor. The first
+selected level always materializes, so chapter-only imports are unchanged.
+Use `--min-section-bytes 0` for exact depth-only splitting. This is a presentation
+policy, not a quality score or a change to the artifact's outline. Plain source
+references use safe occurrence correspondence, and duplicate fragment targets
+may resolve in a unique enclosing-note subtree; remaining ambiguity is reported.
+
 ```bash
 vulcan --output json artifact inspect ./book.mdaf
 vulcan artifact validate ./book.mdaf

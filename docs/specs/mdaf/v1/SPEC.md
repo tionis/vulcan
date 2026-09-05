@@ -99,6 +99,23 @@ Transport secrets, credentials, signed URLs, and private endpoint topology are f
 
 ## Consumer behavior
 
+Materialization granularity is independent of outline authority. Consumers may
+retain small descendant sections inline in their nearest materialized ancestor,
+provided source coverage stays complete and non-overlapping, relative hierarchy
+is preserved, and the policy is explicit and reproducible. Such coarsening does
+not rewrite the immutable outline or assert that a small section is erroneous.
+Repeated reference text is not intrinsically ambiguous when normalized source
+spans identify distinct occurrences and their safe output placements correspond.
+Repeated heading labels may use unique enclosing-section context; unresolved
+targets must not be chosen by first-match ordering.
+
+Producers should distinguish structural alignment from confidence in inferred
+boundaries. Conflicting contents-page and authored-title evidence must be
+reconciled or reported as unresolved; an inferred page offset is not itself
+proof of an individual section boundary. Inferred hierarchy alignment must not
+be relabeled as an observed source label. These are v1 semantic clarifications,
+not new required fields or a schema revision.
+
 Consumers validate schemas, members, hashes, normalized semantics, and provenance relationships before mutation. Unknown namespaced extensions and native renditions are accepted and ignored. A new extractor requires only a producer adapter that emits the normalized core and declares its native evidence; it never requires a Vulcan code branch or an MDAF version change.
 
 Vulcan imports an artifact into a required vault-relative destination. The output Markdown tree becomes canonical vault content. The artifact itself remains external. Vulcan may materialize normalized source ranges and uniquely resolvable source references, but it never projects opaque native evidence into notes or the rebuildable cache.

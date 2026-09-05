@@ -10018,6 +10018,39 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
     assert!(preview_json["assets"][0].get("sha256").is_none());
     assert!(!vault_root.join("Imported").exists());
 
+    for (minimum, expected) in [("2048", 2), ("0", 3)] {
+        let result = Command::cargo_bin("vulcan")
+            .expect("binary")
+            .args([
+                "--vault",
+                vault_root.to_str().unwrap(),
+                "--output",
+                "json",
+                "artifact",
+                "import",
+                fixture.to_str().unwrap(),
+                "--destination",
+                "Granularity",
+                "--from-level",
+                "1",
+                "--through-level",
+                "2",
+                "--min-section-bytes",
+                minimum,
+                "--dry-run",
+            ])
+            .assert()
+            .success();
+        assert_eq!(
+            parse_stdout_json(&result)["notes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            expected
+        );
+        assert!(!vault_root.join("Granularity").exists());
+    }
+
     let applied = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -14707,6 +14740,7 @@ fn skill_list_and_get_surface_bundled_skills() {
         .expect("artifact import skill should be installed");
     assert!(artifact_import.contains("artifact import <artifact> --destination <new-folder>"));
     assert!(artifact_import.contains("--hierarchy outline"));
+    assert!(artifact_import.contains("--min-section-bytes 0"));
     assert!(artifact_import.contains("vulcan.source"));
 
     let portable_exchange = fs::read_to_string(installed_skills.join("portable-exchange/SKILL.md"))

@@ -125,6 +125,7 @@ fn split_note_unlocked(
         &source,
         &config,
         &DecompositionOptions {
+            min_section_bytes: 0,
             from_level: request.from_level,
             through_level: request.through_level,
             destination_root: destination_root.clone(),

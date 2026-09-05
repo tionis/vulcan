@@ -5350,6 +5350,12 @@ pub enum ArtifactCommand {
     },
     #[command(about = "Import a validated MDAF artifact as a Markdown wiki tree")]
     Import {
+        #[arg(
+            long,
+            default_value_t = 2048,
+            help = "Keep smaller descendant section subtrees inline (source bytes); 0 splits every selected heading. First selected level is always retained."
+        )]
+        min_section_bytes: usize,
         #[arg(help = "MDAF directory or ZIP path")]
         artifact: PathBuf,
         #[arg(

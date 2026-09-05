@@ -31,6 +31,7 @@ pub enum ArtifactHierarchyAuthority {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactImportRequest {
+    pub min_section_bytes: usize,
     pub artifact: PathBuf,
     pub destination: String,
     pub hierarchy: ArtifactHierarchyAuthority,
@@ -146,6 +147,7 @@ fn import_artifact_unlocked(
         .ok_or_else(|| AppError::operation("validated artifact has no primary Markdown"))?;
     let config = load_vault_config(paths).config;
     let options = DecompositionOptions {
+        min_section_bytes: request.min_section_bytes,
         from_level: request.from_level,
         through_level: request.through_level,
         destination_root: destination.clone(),
@@ -544,6 +546,9 @@ fn import_link_target(
                 let target = plan.fragment_target(heading)?;
                 return Some((target.path.clone(), target.fragment.clone(), None));
             }
+            if let Some(target) = plan.contextual_fragment_target(heading, raw.byte_offset) {
+                return Some((target.path.clone(), target.fragment.clone(), None));
+            }
         }
         if let Some(block) = raw.target_block.as_deref() {
             let target = plan.block_target(block)?;
@@ -637,6 +642,30 @@ fn plain_text_ranges(content: &str) -> Vec<std::ops::Range<usize>> {
         .collect()
 }
 
+fn plain_reference_positions(
+    content: &str,
+    label: &str,
+    ranges: &[std::ops::Range<usize>],
+    owned: Option<&[SourceByteSpan]>,
+) -> Vec<usize> {
+    content
+        .match_indices(label)
+        .map(|(offset, _)| offset)
+        .filter(|offset| {
+            ranges
+                .iter()
+                .any(|range| range.start <= *offset && *offset + label.len() <= range.end)
+        })
+        .filter(|offset| {
+            owned.is_none_or(|spans| {
+                spans
+                    .iter()
+                    .any(|span| span.start <= *offset && *offset + label.len() <= span.end)
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn rewrite_plain_source_references(
     content: &str,
@@ -651,6 +680,7 @@ fn rewrite_plain_source_references(
         return Ok((content.to_string(), Vec::new()));
     };
     let text_ranges = plain_text_ranges(content);
+    let source_text_ranges = plain_text_ranges(markdown);
     let mut edits = Vec::new();
     let mut changes = Vec::new();
     for reference in &source_map.references {
@@ -682,12 +712,18 @@ fn rewrite_plain_source_references(
             continue;
         }
         let original = &markdown[span.start..span.end];
-        let positions = content
-            .match_indices(original)
-            .map(|(offset, _)| offset)
-            .collect::<Vec<_>>();
+        let positions = plain_reference_positions(content, original, &text_ranges, None);
+        let source_positions = plain_reference_positions(
+            markdown,
+            original,
+            &source_text_ranges,
+            Some(&note.source_spans),
+        );
+        let occurrence = source_positions
+            .iter()
+            .position(|offset| *offset == span.start);
         let targets = source_reference_targets(source_map, &reference.target, plan);
-        if positions.len() != 1 || targets.len() != 1 {
+        if occurrence.is_none() || positions.len() != source_positions.len() || targets.len() != 1 {
             diagnostics.push(ArtifactImportDiagnostic {
                 code: "source_reference_unresolved".into(),
                 message: format!("plain source reference at byte {} has {} output placements and {} candidate notes; preserved", span.start, positions.len(), targets.len()),
@@ -695,7 +731,7 @@ fn rewrite_plain_source_references(
             });
             continue;
         }
-        let start = positions[0];
+        let start = positions[occurrence.expect("source occurrence was checked")];
         let end = start + original.len();
         if !text_ranges
             .iter()
@@ -1100,6 +1136,7 @@ mod tests {
         initialize_vulcan_dir(&paths).expect("init");
         scan_vault(&paths, ScanMode::Full).expect("scan");
         let mut request = ArtifactImportRequest {
+            min_section_bytes: 0,
             artifact: artifact_dir.path().to_path_buf(),
             destination: "Imported/Rules".to_string(),
             hierarchy: ArtifactHierarchyAuthority::Markdown,
@@ -1142,6 +1179,7 @@ mod tests {
         let paths = VaultPaths::new(vault.path());
         initialize_vulcan_dir(&paths).expect("init");
         let request = ArtifactImportRequest {
+            min_section_bytes: 0,
             artifact: artifact_dir.path().to_path_buf(),
             destination: "Outline".to_string(),
             hierarchy: ArtifactHierarchyAuthority::Outline,
@@ -1165,6 +1203,7 @@ mod tests {
         initialize_vulcan_dir(&paths).expect("init");
         fs::create_dir(paths.vault_root().join("Existing")).expect("existing");
         let request = ArtifactImportRequest {
+            min_section_bytes: 0,
             artifact: artifact_dir.path().to_path_buf(),
             destination: "New".to_string(),
             hierarchy: ArtifactHierarchyAuthority::Markdown,
@@ -1176,6 +1215,7 @@ mod tests {
         assert!(import_artifact(&paths, &request).is_err());
         assert!(!paths.vault_root().join("New").exists());
         let collision = ArtifactImportRequest {
+            min_section_bytes: 0,
             destination: "existing".to_string(),
             dry_run: true,
             ..request
@@ -1193,6 +1233,7 @@ mod tests {
             markdown,
             &config,
             &DecompositionOptions {
+                min_section_bytes: 0,
                 from_level: 2,
                 through_level: 2,
                 destination_root: "Book".to_string(),
@@ -1352,6 +1393,7 @@ mod tests {
             artifact.markdown.as_deref().expect("Markdown"),
             &config,
             &DecompositionOptions {
+                min_section_bytes: 0,
                 from_level: 2,
                 through_level: 3,
                 destination_root: "Rollback".to_string(),
@@ -1373,7 +1415,7 @@ mod pipeline_regressions {
             ("See (p. 2).", true),
             ("Code `(p. 2)`.", false),
             ("```text\n(p. 2)\n```", false),
-            ("Repeated (p. 2), (p. 2).", false),
+            ("Repeated (p. 2), (p. 2).", true),
         ] {
             let markdown = format!("# Book\n{body}\n\n## One\nText.\n\n## Two\nTarget.\n");
             let config = vulcan_core::VaultConfig::default();
@@ -1382,6 +1424,7 @@ mod pipeline_regressions {
                 &markdown,
                 &config,
                 &DecompositionOptions {
+                    min_section_bytes: 0,
                     from_level: 2,
                     through_level: 2,
                     destination_root: "Book".into(),

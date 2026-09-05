@@ -54,6 +54,7 @@ pub(crate) fn handle_artifact_command(
             }
         }
         ArtifactCommand::Import {
+            min_section_bytes,
             artifact,
             destination,
             hierarchy,
@@ -71,6 +72,7 @@ pub(crate) fn handle_artifact_command(
             let report = import_artifact(
                 paths,
                 &ArtifactImportRequest {
+                    min_section_bytes: *min_section_bytes,
                     artifact: artifact.clone(),
                     destination: destination.clone(),
                     hierarchy: core_hierarchy(*hierarchy),
