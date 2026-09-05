@@ -80,6 +80,9 @@ they commit.
   immutable refs remain the durable byte archive.
 - Never choose a winner implicitly. Preview one explicit side with
   `vulcan sync resolve <id> --side base|local|remote --dry-run`.
+  For a `tree_validation` conflict with no individual conflict paths, the selected side replaces
+  the complete candidate tree; this is the explicit escape hatch when Git merged cleanly but
+  Vulcan's whole-tree link or deletion policy rejected the result.
 - For reviewed content, use complete `--file '<conflict-path>=<source>'` inputs, a reviewed
   `--patch <file>`, or `--editor`; preview every mode first. The editor writes markers only in a
   private temporary directory.

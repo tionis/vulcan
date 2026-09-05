@@ -266,6 +266,7 @@ pub struct GitConflictRefs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSyncConflict {
     pub id: String,
+    pub scope: GitConflictScope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<GitOid>,
     pub remote: GitOid,
@@ -280,6 +281,13 @@ pub struct GitSyncConflict {
     pub materialization: Option<GitConflictMaterialization>,
     pub merge_tree: Option<GitOid>,
     pub diagnostics: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitConflictScope {
+    Paths,
+    TreeValidation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2446,6 +2454,11 @@ fn build_sync_conflict(
     materialization_remote: Option<&GitOid>,
     merge: crate::GitMerge,
 ) -> Result<GitSyncConflict, GitSyncError> {
+    let scope = if merge.clean && merge.conflict_paths.is_empty() && merge.tree.is_some() {
+        GitConflictScope::TreeValidation
+    } else {
+        GitConflictScope::Paths
+    };
     let classifications = classify_conflicts(
         engine,
         options,
@@ -2495,6 +2508,7 @@ fn build_sync_conflict(
     )?;
     Ok(GitSyncConflict {
         id,
+        scope,
         base: merge.base,
         remote,
         local: capture.commit.clone(),

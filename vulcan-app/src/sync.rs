@@ -1554,7 +1554,7 @@ mod tests {
     use std::process::{Command, Stdio};
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, properties::load_note_index, scan_vault, ScanMode};
-    use vulcan_sync::{MergeAutomation, MergeResolution};
+    use vulcan_sync::{GitConflictScope, MergeAutomation, MergeResolution};
 
     struct StructuredSyncFixture {
         _temporary: tempfile::TempDir,
@@ -2213,13 +2213,31 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         .expect("validation conflict");
 
         assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
-        assert!(report
-            .sync
-            .conflict
-            .as_ref()
-            .expect("conflict")
+        let conflict = report.sync.conflict.as_ref().expect("conflict");
+        assert_eq!(conflict.scope, GitConflictScope::TreeValidation);
+        assert!(conflict
             .diagnostics
             .contains("introduces a new ambiguous wikilink link-resolution problem"));
+
+        let resolved = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: false,
+            },
+            &fixture.store,
+        )
+        .expect("resolve whole-tree validation conflict");
+        assert_eq!(
+            resolved.outcome,
+            crate::sync_conflicts::ResolveSyncConflictOutcome::Resolved
+        );
+        assert!(fixture.reader.join("Reader/Widget.md").exists());
+        assert!(!fixture.reader.join("Writer/Widget.md").exists());
     }
 
     #[test]

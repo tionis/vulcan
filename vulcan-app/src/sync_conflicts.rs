@@ -11,9 +11,9 @@ use tempfile::NamedTempFile;
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{
     conflict_recovery_ref, conflict_resolved_ref, GitCaptureRequest, GitConflictClassification,
-    GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest,
-    GitOid, GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict,
-    GitSyncOptions, GitSyncRefs,
+    GitConflictScope, GitConflictSide, GitContentMergeResolutionRequest, GitEngine,
+    GitMergeResolutionRequest, GitOid, GitPushResult, GitRefName, GitRemote, GitRepository,
+    GitResolvedPath, GitSyncConflict, GitSyncOptions, GitSyncRefs,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 1;
@@ -34,6 +34,8 @@ pub struct SyncConflictRecord {
     pub base_revision: Option<String>,
     pub local_revision: String,
     pub remote_revision: String,
+    #[serde(default = "default_conflict_scope")]
+    pub scope: GitConflictScope,
     pub policy_version: u32,
     pub policy_hash: String,
     pub preserved_base_ref: Option<String>,
@@ -98,6 +100,7 @@ pub struct SyncConflictSideRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncConflictSummary {
     pub id: String,
+    pub scope: GitConflictScope,
     pub paths: Vec<String>,
     pub base_revision: Option<String>,
     pub local_revision: String,
@@ -111,6 +114,10 @@ pub struct SyncConflictSummary {
 pub enum SyncConflictResolutionState {
     Unresolved,
     Resolved,
+}
+
+const fn default_conflict_scope() -> GitConflictScope {
+    GitConflictScope::Paths
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,10 +234,12 @@ pub fn list_sync_conflicts_with_state_store(
         .into_iter()
         .map(|record| {
             let resolution = store.resolution_state(&repository_key, &record.id)?;
+            let scope = effective_conflict_scope(&record);
             Ok(
                 (resolution == SyncConflictResolutionState::Unresolved).then_some(
                     SyncConflictSummary {
                         id: record.id,
+                        scope,
                         paths: record.paths.into_iter().map(|path| path.path).collect(),
                         base_revision: record.base_revision,
                         local_revision: record.local_revision,
@@ -798,7 +807,9 @@ fn prepare_resolution(
         .and_then(|value| GitOid::parse(value).map_err(AppError::operation))?;
     let remote = GitOid::parse(&record.remote_revision).map_err(AppError::operation)?;
     let live_input = GitOid::parse(conflict_live_input(record)?).map_err(AppError::operation)?;
-    let tree = if record
+    let tree = if effective_conflict_scope(record) == GitConflictScope::TreeValidation {
+        resolve_tree_validation_conflict(engine, repository, record, options.side)?
+    } else if record
         .materialization
         .as_ref()
         .is_some_and(|item| item.applied)
@@ -859,6 +870,34 @@ fn prepare_resolution(
         published: false,
         applied: false,
     })
+}
+
+fn effective_conflict_scope(record: &SyncConflictRecord) -> GitConflictScope {
+    if record.scope == GitConflictScope::TreeValidation || record.paths.is_empty() {
+        GitConflictScope::TreeValidation
+    } else {
+        GitConflictScope::Paths
+    }
+}
+
+fn resolve_tree_validation_conflict(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    record: &SyncConflictRecord,
+    side: SyncConflictResolutionSide,
+) -> Result<GitOid, AppError> {
+    let selected = match side {
+        SyncConflictResolutionSide::Base => record
+            .base_revision
+            .as_deref()
+            .ok_or_else(|| AppError::operation("this conflict has no merge base to select"))?,
+        SyncConflictResolutionSide::Local => &record.local_revision,
+        SyncConflictResolutionSide::Remote => &record.remote_revision,
+    };
+    let selected = GitOid::parse(selected).map_err(AppError::operation)?;
+    engine
+        .tree_oid(repository, &selected)
+        .map_err(AppError::operation)
 }
 
 const fn resolution_side_name(side: SyncConflictResolutionSide) -> &'static str {
@@ -991,6 +1030,7 @@ impl SyncConflictStore {
             base_revision: conflict.base.as_ref().map(ToString::to_string),
             local_revision: conflict.local.to_string(),
             remote_revision: conflict.remote.to_string(),
+            scope: conflict.scope,
             policy_version: conflict.policy_version,
             policy_hash: conflict.policy_hash.clone(),
             preserved_base_ref: conflict
@@ -1350,6 +1390,7 @@ fn verify_record_inputs(
     if record.base_revision.as_deref() != conflict.base.as_ref().map(GitOid::as_str)
         || record.local_revision != conflict.local.as_str()
         || record.remote_revision != conflict.remote.as_str()
+        || effective_conflict_scope(record) != conflict.scope
         || record.policy_version != conflict.policy_version
         || record.policy_hash != conflict.policy_hash
         || record

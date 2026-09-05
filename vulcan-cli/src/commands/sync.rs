@@ -2202,9 +2202,10 @@ fn print_sync_conflict_list(
     println!("Preserved sync conflicts: {}", report.count);
     for conflict in &report.conflicts {
         println!(
-            "{}\t{:?}\t{}",
+            "{}\t{:?}\t{:?}\t{}",
             conflict.id,
             conflict.resolution,
+            conflict.scope,
             conflict.paths.join(", ")
         );
     }
@@ -2219,6 +2220,7 @@ fn print_sync_conflict_detail(
         return print_json(report);
     }
     println!("Conflict {} ({:?})", report.record.id, report.resolution);
+    println!("Scope:  {:?}", report.record.scope);
     println!("Local:  {}", report.record.local_revision);
     println!("Remote: {}", report.record.remote_revision);
     if let Some(base) = &report.record.base_revision {

@@ -68,8 +68,8 @@ pub use sync::{
     GitAutomaticMergeValidation, GitAutomaticResolution, GitAutomaticResolutionValidation,
     GitAutomaticValidationCheck, GitBranchSync, GitBranchSyncAction, GitConflictClass,
     GitConflictClassification, GitConflictCopy, GitConflictMaterialization, GitConflictRefs,
-    GitLiveEpoch, GitRemoteObservation, GitSyncAction, GitSyncBackend, GitSyncConflict,
-    GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
-    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs,
-    GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    GitConflictScope, GitLiveEpoch, GitRemoteObservation, GitSyncAction, GitSyncBackend,
+    GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError,
+    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
+    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
 };
