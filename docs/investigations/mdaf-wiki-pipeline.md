@@ -48,6 +48,46 @@ unchanged. Keep original MDAFs archived outside imported note trees.
 
 ## Verification
 
+### Expanded corpus and producer tuning
+
+The follow-up evaluates nine distinct native responses across ten supplied
+filenames. Blobforge's opt-in wiki-v5/profile wiki-v4 uses structural contents
+detection, numbered TOC series, explicit TOC groups, and relative geometry as
+a review-required fallback. It handles localized/combined contents labels,
+wrapped same-column titles, split headings, and page-aligned entries with
+missing title blocks. Inferred offsets are recorded as hierarchy evidence and
+never become observed labels or extra citation targets. MDAF v1 and Vulcan's
+provider-neutral consumer need no further schema or runtime changes.
+
+| Book | Major sections | Chapter import notes | Assets |
+| --- | ---: | ---: | ---: |
+| Changeling 2e | 13 | 15 | 74 |
+| Chronicles of Darkness | 13 | 15 | 92 |
+| Cortex Prime | 7 | 9 | 332 |
+| Cthulhu 7 German | 22 | 24 | 328 |
+| Curseborne Omnibus | 13 | 15 | 8 |
+| London Falling | 6 | 8 | 32 |
+| Shadowrun 5E Core | 16 | 18 | 330 |
+| Rigger 5.0 | 13 | 15 | 174 |
+| Storypath Ultra | 7 | 9 | 55 |
+
+Major sections include introductions, appendices, or back matter where selected;
+import counts additionally include root and front matter. Applied imports at
+levels two and three verify disjoint/full byte coverage, zero source bytes in
+roots, 1,425 byte-identical assets per depth, and valid generated navigation and
+citation targets. Original Markdown/native response bytes remain unchanged.
+
+The geometry sweep compared ratios 0.55/0.65/0.75; eight books were stable, while
+Chronicles lost valid chapters at 0.75. The retained 0.65 setting still requires
+review for flattened TOCs. These books are now development evidence, not an
+independent holdout; note counts and valid links do not prove semantic accuracy.
+The producer's `scripts/evaluate_book_outlines.py` reproduces the comparison;
+`docs/mdaf_hierarchy_experiments.md` records choices and limitations. Review of
+the bundled artifact-import skill found its existing authority/depth workflow
+and immutable-source guardrails remain appropriate. No skill change is needed.
+
+### Consumer regression gates
+
 Synthetic Rust regressions cover alternative-outline anchor preservation,
 section-boundary rejection, root titles, surfaced validation warnings, protected
 prose, repeated placements, and coarse source mappings. CLI preview/apply
