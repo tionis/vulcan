@@ -49,8 +49,9 @@ permission profiles, or diagnoses permission and trust failures.
 - Never copy a revealed companion token into vault content, `.obsidian/plugins/*/data.json`, logs, shell history, or source control.
 - Treat the complete advertised notification subscribe URL as a repository-scoped read capability.
   It may exist only in the dedicated Git advertisement, not in ordinary vault content, CLI
-  arguments, logs, or device registration state. Configure the separate publish-only webhook URL
-  directly in the forge.
+  arguments, logs, or device registration state. Pipe it to
+  `sync advertise --subscribe-url-file -` or use a protected regular file. Configure the separate
+  publish-only webhook URL directly in the forge.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.

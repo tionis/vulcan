@@ -4193,8 +4193,12 @@ pub enum SyncCommand {
     Advertise {
         #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
         wiki: Option<String>,
-        #[arg(long, help = "HTTPS long-poll subscribe URL to advertise")]
-        subscribe_url: String,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Read the confidential HTTPS subscribe URL from a protected file, or '-' for piped stdin"
+        )]
+        subscribe_url_file: std::path::PathBuf,
         #[arg(
             long,
             default_value = "origin",

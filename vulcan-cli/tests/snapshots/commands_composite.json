@@ -9885,14 +9885,14 @@
                 ]
               },
               {
-                "help": "HTTPS long-poll subscribe URL to advertise",
-                "id": "subscribe_url",
-                "long": "subscribe-url",
+                "help": "Read the confidential HTTPS subscribe URL from a protected file, or '-' for piped stdin",
+                "id": "subscribe_url_file",
+                "long": "subscribe-url-file",
                 "possible_values": [],
                 "required": true,
                 "short": null,
                 "value_names": [
-                  "SUBSCRIBE_URL"
+                  "PATH"
                 ]
               },
               {

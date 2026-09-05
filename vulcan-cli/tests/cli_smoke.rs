@@ -5269,6 +5269,7 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
         .is_some_and(|advertised| advertised == revision)
     };
 
+    let dry_url = subscribe_url("cli-smoke-advertise-dry");
     let dry_run = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -5278,10 +5279,11 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
             "json",
             "sync",
             "advertise",
-            "--subscribe-url",
-            &subscribe_url("cli-smoke-advertise-dry"),
+            "--subscribe-url-file",
+            "-",
             "--dry-run",
         ])
+        .write_stdin(dry_url)
         .assert()
         .success();
     let dry_run = parse_stdout_json(&dry_run);
@@ -5295,6 +5297,7 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
     )
     .is_empty());
 
+    let first_url = subscribe_url("cli-smoke-advertise-1");
     let published = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -5304,9 +5307,10 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
             "json",
             "sync",
             "advertise",
-            "--subscribe-url",
-            &subscribe_url("cli-smoke-advertise-1"),
+            "--subscribe-url-file",
+            "-",
         ])
+        .write_stdin(first_url)
         .assert()
         .success();
     let redacted = String::from_utf8_lossy(&published.get_output().stdout).into_owned()
@@ -5334,6 +5338,7 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
         "notification.json"
     );
 
+    let second_url = subscribe_url("cli-smoke-advertise-2");
     let rotated = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -5343,11 +5348,12 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
             "json",
             "sync",
             "advertise",
-            "--subscribe-url",
-            &subscribe_url("cli-smoke-advertise-2"),
+            "--subscribe-url-file",
+            "-",
             "--expected",
             &first,
         ])
+        .write_stdin(second_url)
         .assert()
         .success();
     let rotated = parse_stdout_json(&rotated);
@@ -5359,6 +5365,7 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
     assert_eq!(rotated["previous_revision"], first.as_str());
     assert!(advertised_ref(&second));
 
+    let stale_url = subscribe_url("cli-smoke-advertise-3");
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -5366,11 +5373,12 @@ fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it(
             vault.to_str().expect("vault path"),
             "sync",
             "advertise",
-            "--subscribe-url",
-            &subscribe_url("cli-smoke-advertise-3"),
+            "--subscribe-url-file",
+            "-",
             "--expected",
             &first,
         ])
+        .write_stdin(stale_url)
         .assert()
         .failure()
         .stderr(predicate::str::contains("changed"));
@@ -5488,9 +5496,10 @@ fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
             "json",
             "sync",
             "advertise",
-            "--subscribe-url",
-            "https://patch.example/h/cli-smoke-status-check?pubsub=true",
+            "--subscribe-url-file",
+            "-",
         ])
+        .write_stdin("https://patch.example/h/cli-smoke-status-check?pubsub=true")
         .assert()
         .success();
     let revision = parse_stdout_json(&published)["revision"]
@@ -5584,6 +5593,28 @@ fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
 }
 
 #[test]
+fn sync_advertise_checks_git_permission_before_reading_the_secret() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let missing_secret = temporary.path().join("does-not-exist");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            temporary.path().to_str().expect("vault path"),
+            "--permissions",
+            "readonly",
+            "sync",
+            "advertise",
+            "--subscribe-url-file",
+            missing_secret.to_str().expect("secret path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("git").and(predicate::str::contains("denied")))
+        .stderr(predicate::str::contains("No such file").not());
+}
+
+#[test]
 fn sync_advertise_attributes_the_publisher_git_identity() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let remote = temporary.path().join("remote.git");
@@ -5622,7 +5653,7 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
     .expect("global config");
     let system_config = temporary.path().join("system.gitconfig");
     fs::write(&system_config, "").expect("system config");
-    let advertise = |args: &[&str]| {
+    let advertise = |subscribe_url: &str, args: &[&str]| {
         let mut full = vec![
             "--vault",
             vault_str,
@@ -5630,6 +5661,8 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
             "json",
             "sync",
             "advertise",
+            "--subscribe-url-file",
+            "-",
         ];
         full.extend(args);
         Command::cargo_bin("vulcan")
@@ -5637,6 +5670,7 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
             .env("GIT_CONFIG_GLOBAL", &global_config)
             .env("GIT_CONFIG_SYSTEM", &system_config)
             .args(&full)
+            .write_stdin(subscribe_url)
             .assert()
             .success()
     };
@@ -5653,10 +5687,10 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
         )
     };
 
-    let published = advertise(&[
-        "--subscribe-url",
+    let published = advertise(
         "https://patch.example/h/global-attribution?pubsub=true",
-    ]);
+        &[],
+    );
     let first = parse_stdout_json(&published)["revision"]
         .as_str()
         .expect("published revision")
@@ -5669,12 +5703,10 @@ fn sync_advertise_attributes_the_publisher_git_identity() {
 
     run_git_ok(&vault, &["config", "user.name", "Local Override"]);
     run_git_ok(&vault, &["config", "user.email", "local@example.invalid"]);
-    let rotated = advertise(&[
-        "--subscribe-url",
+    let rotated = advertise(
         "https://patch.example/h/local-attribution?pubsub=true",
-        "--expected",
-        &first,
-    ]);
+        &["--expected", &first],
+    );
     let second = parse_stdout_json(&rotated)["revision"]
         .as_str()
         .expect("rotated revision")
@@ -5737,10 +5769,11 @@ fn sync_advertise_signs_with_a_configured_signer() {
             "json",
             "sync",
             "advertise",
-            "--subscribe-url",
-            "https://patch.example/h/cli-smoke-signed?pubsub=true",
+            "--subscribe-url-file",
+            "-",
             "--sign",
         ])
+        .write_stdin("https://patch.example/h/cli-smoke-signed?pubsub=true")
         .assert()
         .success();
     let published = parse_stdout_json(&published);
@@ -14297,7 +14330,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("`refs/vulcan/notifications`"));
     assert!(sync_skill.contains("there is no subscription-bundle import"));
     assert!(sync_skill.contains("Notifications are untrusted hints"));
-    assert!(sync_skill.contains("vulcan sync advertise --subscribe-url"));
+    assert!(sync_skill.contains("vulcan sync advertise --subscribe-url-file -"));
     assert!(sync_skill.contains("vulcan sync unadvertise"));
     assert!(sync_skill.contains("vulcan sync notifications"));
     assert!(sync_skill.contains("## Branch lane"));

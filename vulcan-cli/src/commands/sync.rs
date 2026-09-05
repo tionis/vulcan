@@ -5,7 +5,7 @@ use crate::{
     SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs, TermuxNetworkArg,
 };
 use serde::Serialize;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault_with_progress, GitBranchSync,
@@ -397,7 +397,7 @@ fn handle_notification_sync_command(
     match command {
         SyncCommand::Advertise {
             wiki,
-            subscribe_url,
+            subscribe_url_file,
             remote,
             expected,
             sign,
@@ -407,7 +407,7 @@ fn handle_notification_sync_command(
             cli,
             paths,
             wiki.as_deref(),
-            subscribe_url,
+            subscribe_url_file,
             remote,
             expected.as_deref(),
             *sign,
@@ -1297,7 +1297,7 @@ fn run_sync_advertise(
     cli: &Cli,
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
-    subscribe_url: &str,
+    subscribe_url_file: &std::path::Path,
     remote: &str,
     expected: Option<&str>,
     sign: bool,
@@ -1306,10 +1306,11 @@ fn run_sync_advertise(
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let subscribe_url = read_subscribe_url(subscribe_url_file)?;
     let report = publish_sync_notification_advertisement(
         &paths,
         &SyncNotificationPublishOptions {
-            subscribe_url: subscribe_url.to_string(),
+            subscribe_url,
             remote: GitRemote::parse(remote).map_err(CliError::operation)?,
             expected: expected.map(str::to_string),
             sign,
@@ -1319,6 +1320,72 @@ fn run_sync_advertise(
     )
     .map_err(CliError::operation)?;
     print_sync_advertise(cli.output, &report)
+}
+
+const MAX_SUBSCRIBE_URL_INPUT_BYTES: usize = 4 * 1024;
+
+fn read_subscribe_url(source: &std::path::Path) -> Result<String, CliError> {
+    let mut bytes = Vec::new();
+    if source == std::path::Path::new("-") {
+        if io::stdin().is_terminal() {
+            return Err(CliError::operation(
+                "--subscribe-url-file - requires piped stdin; interactive secret entry is not supported",
+            ));
+        }
+        io::stdin()
+            .lock()
+            .take((MAX_SUBSCRIBE_URL_INPUT_BYTES + 3) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(CliError::operation)?;
+    } else {
+        let metadata = std::fs::symlink_metadata(source).map_err(CliError::operation)?;
+        if !metadata.file_type().is_file() {
+            return Err(CliError::operation(
+                "the notification subscribe URL source must be a regular file",
+            ));
+        }
+        require_private_subscribe_url_file(&metadata)?;
+        std::fs::File::open(source)
+            .map_err(CliError::operation)?
+            .take((MAX_SUBSCRIBE_URL_INPUT_BYTES + 3) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(CliError::operation)?;
+    }
+    if bytes.ends_with(b"\r\n") {
+        bytes.truncate(bytes.len() - 2);
+    } else if bytes.ends_with(b"\n") {
+        bytes.pop();
+    }
+    if bytes.len() > MAX_SUBSCRIBE_URL_INPUT_BYTES {
+        return Err(CliError::operation(
+            "notification subscribe URL input exceeds the 4096-byte limit",
+        ));
+    }
+    let value = String::from_utf8(bytes)
+        .map_err(|_| CliError::operation("notification subscribe URL input is not valid UTF-8"))?;
+    if value.contains(['\r', '\n']) {
+        return Err(CliError::operation(
+            "notification subscribe URL input must contain exactly one line",
+        ));
+    }
+    Ok(value)
+}
+
+#[cfg(unix)]
+fn require_private_subscribe_url_file(metadata: &std::fs::Metadata) -> Result<(), CliError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(CliError::operation(
+            "notification subscribe URL files must not be accessible by group or other users",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_private_subscribe_url_file(_metadata: &std::fs::Metadata) -> Result<(), CliError> {
+    Ok(())
 }
 
 fn print_sync_advertise(
@@ -2596,5 +2663,37 @@ mod sync_report_tests {
             branch_push_message(&pushed),
             Some("Branch main was not pushed: remote advanced first; retry later.".to_string())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subscribe_url_file_must_be_private_bounded_and_single_line() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source = temporary.path().join("subscribe-url");
+        std::fs::write(&source, "https://patch.example/h/private?pubsub=true\n")
+            .expect("secret file");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600))
+            .expect("private permissions");
+        assert_eq!(
+            read_subscribe_url(&source).expect("URL"),
+            "https://patch.example/h/private?pubsub=true"
+        );
+
+        std::fs::write(&source, "https://one.example\nhttps://two.example\n")
+            .expect("multiline secret");
+        assert!(read_subscribe_url(&source)
+            .expect_err("multiple lines must fail")
+            .to_string()
+            .contains("exactly one line"));
+
+        std::fs::write(&source, "https://patch.example/h/private").expect("valid secret again");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644))
+            .expect("public permissions");
+        assert!(read_subscribe_url(&source)
+            .expect_err("public secret file must fail")
+            .to_string()
+            .contains("group or other users"));
     }
 }

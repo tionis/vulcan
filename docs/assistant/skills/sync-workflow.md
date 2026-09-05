@@ -113,8 +113,10 @@ they commit.
   publish-only URL or secret directly in the forge webhook; that value never belongs in the Git
   advertisement. `sync advertise`/`unadvertise` reports carry only the endpoint origin and
   fingerprint for this reason.
-- Publish or rotate the advertisement with
-  `vulcan sync advertise --subscribe-url <https-url> [--remote origin] [--expected <rev>]`.
+- Publish or rotate the advertisement by piping the capability without exposing it in process
+  arguments or shell history:
+  `secret-manager read notification-subscribe-url | vulcan sync advertise --subscribe-url-file - [--remote origin] [--expected <rev>]`.
+  A mode-`0600` regular file may be named instead of `-` when piping is impractical.
   Preview with `--dry-run` first. Without `--expected`, the current remote revision is leased
   opportunistically; with it, a diverged ref fails instead of overwriting. Remove it with
   `vulcan sync unadvertise [--expected <rev>]`. Publication builds a parentless commit with
