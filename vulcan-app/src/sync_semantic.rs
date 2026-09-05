@@ -1,5 +1,6 @@
 //! Reviewable semantic histories derived from immutable accepted sync snapshots.
 
+use crate::durable_file::{self, DurableCreate};
 use crate::sync::SyncCancellationToken;
 use crate::sync_state::{repository_state_key, SyncStateStore};
 use crate::AppError;
@@ -8,9 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(feature = "web")]
 use std::io::Read;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
@@ -1889,27 +1888,22 @@ fn save_plan(
         .parent()
         .ok_or_else(|| AppError::operation("semantic plan path has no parent"))?;
     fs::create_dir_all(parent).map_err(AppError::operation)?;
-    let bytes = serde_json::to_vec_pretty(plan).map_err(AppError::operation)?;
+    let mut bytes = serde_json::to_vec_pretty(plan).map_err(AppError::operation)?;
     if bytes.len() as u64 > MAX_SEMANTIC_PLAN_BYTES {
         return Err(AppError::operation(format!(
             "semantic plan exceeds the {MAX_SEMANTIC_PLAN_BYTES} byte limit"
         )));
     }
-    let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-    temporary.write_all(&bytes).map_err(AppError::operation)?;
-    temporary.write_all(b"\n").map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
+    bytes.push(b'\n');
     if create {
-        temporary
-            .persist_noclobber(path)
-            .map_err(|error| AppError::operation(error.error))?;
+        if durable_file::create(&path, &bytes)? == DurableCreate::AlreadyExists {
+            return Err(AppError::operation(format!(
+                "semantic plan already exists at {}",
+                path.display()
+            )));
+        }
     } else {
-        temporary
-            .persist(path)
-            .map_err(|error| AppError::operation(error.error))?;
+        durable_file::replace(&path, &bytes)?;
     }
     Ok(())
 }

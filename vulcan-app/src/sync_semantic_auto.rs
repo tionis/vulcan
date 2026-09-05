@@ -1,5 +1,6 @@
 //! Debounced, finite semantic-history automation for daemons and CI schedulers.
 
+use crate::durable_file;
 use crate::sync::{GitRefName, GitRemote, SyncCancellationToken};
 use crate::sync_semantic::{
     apply_semantic_plan_with_state_store, create_semantic_plan_with_provider_and_state_store,
@@ -11,9 +12,7 @@ use crate::sync_state::{repository_state_key, SyncStateStore};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{GitCliEngine, GitEngine, GitOid, GitSyncOptions, GitSyncRefs};
 
@@ -368,27 +367,13 @@ fn save_state(path: &Path, state: &SemanticAutoState) -> Result<(), AppError> {
         .parent()
         .ok_or_else(|| AppError::operation("semantic automation state has no parent"))?;
     fs::create_dir_all(parent).map_err(AppError::operation)?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-    temporary
-        .write_all(&serde_json::to_vec_pretty(state).map_err(AppError::operation)?)
-        .map_err(AppError::operation)?;
-    temporary.write_all(b"\n").map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
-    temporary
-        .persist(path)
-        .map_err(|error| AppError::operation(error.error))?;
-    Ok(())
+    let mut bytes = serde_json::to_vec_pretty(state).map_err(AppError::operation)?;
+    bytes.push(b'\n');
+    durable_file::replace(path, &bytes)
 }
 
 fn remove_state(path: &Path) -> Result<(), AppError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AppError::operation(error)),
-    }
+    durable_file::remove(path).map(|_| ())
 }
 
 #[cfg(test)]

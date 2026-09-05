@@ -1,5 +1,6 @@
 //! Isolated, review-first agent resolution proposals for preserved Git conflicts.
 
+use crate::durable_file::{self, DurableCreate};
 use crate::scan::refresh_cache_incrementally;
 use crate::sync::{load_validated_sync_config, validate_git_merge_tree};
 use crate::sync_conflicts::{
@@ -14,9 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(feature = "web")]
 use std::io::Read;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
     execute_query_report_with_filter, paths::secure_read, query_backlinks_with_filter,
@@ -2606,7 +2605,7 @@ fn save_proposal_audit(
         .join("audit");
     fs::create_dir_all(&directory).map_err(AppError::operation)?;
     let path = directory.join(format!("{}.json", record.event_id));
-    write_json_noclobber(&directory, &path, record)
+    write_json_noclobber(&path, record)
 }
 
 fn ensure_proposal_not_rejected(
@@ -3159,33 +3158,23 @@ fn save_proposal(store: &SyncStateStore, proposal: &ResolutionProposal) -> Resul
             "resolution proposal record exceeds its byte limit",
         ));
     }
-    write_bytes_noclobber(&directory, &path, &bytes)
+    write_bytes_noclobber(&path, &bytes)
 }
 
-fn write_json_noclobber(
-    directory: &Path,
-    path: &Path,
-    value: &impl Serialize,
-) -> Result<(), AppError> {
+fn write_json_noclobber(path: &Path, value: &impl Serialize) -> Result<(), AppError> {
     let bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
     if bytes.len() > MAX_PROPOSAL_RECORD_BYTES {
         return Err(AppError::operation(
             "resolution proposal state exceeds its byte limit",
         ));
     }
-    write_bytes_noclobber(directory, path, &bytes)
+    write_bytes_noclobber(path, &bytes)
 }
 
-fn write_bytes_noclobber(directory: &Path, path: &Path, bytes: &[u8]) -> Result<(), AppError> {
-    let mut temporary = NamedTempFile::new_in(directory).map_err(AppError::operation)?;
-    temporary.write_all(bytes).map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
-    match temporary.persist_noclobber(path) {
-        Ok(_) => Ok(()),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+fn write_bytes_noclobber(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    match durable_file::create(path, bytes)? {
+        DurableCreate::Created => Ok(()),
+        DurableCreate::AlreadyExists => {
             let existing = fs::read(path).map_err(AppError::operation)?;
             if existing == bytes {
                 Ok(())
@@ -3193,7 +3182,6 @@ fn write_bytes_noclobber(directory: &Path, path: &Path, bytes: &[u8]) -> Result<
                 Err(AppError::operation("resolution proposal ID collision"))
             }
         }
-        Err(error) => Err(AppError::operation(error.error)),
     }
 }
 

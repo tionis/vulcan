@@ -4,14 +4,11 @@
 //! below the platform user-state directory rather than in the rebuildable
 //! per-vault cache or the synchronized worktree.
 
+use crate::durable_file::{self, DurableCreate};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use std::fs;
-#[cfg(unix)]
-use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_sync::GitSyncDeviceId;
 
@@ -179,23 +176,16 @@ impl SyncStateStore {
             version: SYNC_DEVICE_IDENTITY_VERSION,
             device_id: Ulid::new().to_string().to_ascii_lowercase(),
         };
-        let bytes = serde_json::to_vec_pretty(&identity).map_err(AppError::operation)?;
-        let mut temporary = NamedTempFile::new_in(&self.root).map_err(AppError::operation)?;
-        temporary.write_all(&bytes).map_err(AppError::operation)?;
-        temporary.write_all(b"\n").map_err(AppError::operation)?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(AppError::operation)?;
-        match temporary.persist_noclobber(&path) {
-            Ok(_) => GitSyncDeviceId::parse(identity.device_id)
+        let mut bytes = serde_json::to_vec_pretty(&identity).map_err(AppError::operation)?;
+        bytes.push(b'\n');
+        match durable_file::create(&path, &bytes)? {
+            DurableCreate::Created => GitSyncDeviceId::parse(identity.device_id)
                 .map(Some)
                 .map_err(AppError::operation),
-            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            DurableCreate::AlreadyExists => {
                 parse_device_identity(&path, &fs::read(&path).map_err(AppError::operation)?)
                     .map(Some)
             }
-            Err(error) => Err(AppError::operation(error.error)),
         }
     }
 
@@ -254,29 +244,14 @@ impl SyncStateStore {
             .parent()
             .ok_or_else(|| AppError::operation("sync journal path has no parent directory"))?;
         fs::create_dir_all(parent).map_err(AppError::operation)?;
-        let bytes = serde_json::to_vec_pretty(journal).map_err(AppError::operation)?;
-        let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-        temporary.write_all(&bytes).map_err(AppError::operation)?;
-        temporary.write_all(b"\n").map_err(AppError::operation)?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(AppError::operation)?;
-        temporary
-            .persist(&path)
-            .map_err(|error| AppError::operation(error.error))?;
-        #[cfg(unix)]
-        sync_parent_directory(parent)?;
-        Ok(())
+        let mut bytes = serde_json::to_vec_pretty(journal).map_err(AppError::operation)?;
+        bytes.push(b'\n');
+        durable_file::replace(&path, &bytes)
     }
 
     pub fn clear(&self, repository_key: &str) -> Result<(), AppError> {
         let path = self.journal_path(repository_key)?;
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(AppError::operation(error)),
-        }
+        durable_file::remove(&path).map(|_| ())
     }
 
     pub fn load_apply_marker(&self, git_dir: &Path) -> Result<Option<SyncApplyMarker>, AppError> {
@@ -313,42 +288,15 @@ impl SyncStateStore {
     ) -> Result<(), AppError> {
         validate_apply_marker(Path::new("sync apply marker"), marker)?;
         let path = apply_marker_path(git_dir, true)?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| AppError::operation("sync apply marker path has no parent"))?;
-        let bytes = serde_json::to_vec_pretty(marker).map_err(AppError::operation)?;
-        let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-        temporary.write_all(&bytes).map_err(AppError::operation)?;
-        temporary.write_all(b"\n").map_err(AppError::operation)?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(AppError::operation)?;
-        temporary
-            .persist(&path)
-            .map_err(|error| AppError::operation(error.error))?;
-        #[cfg(unix)]
-        sync_parent_directory(parent)?;
-        Ok(())
+        let mut bytes = serde_json::to_vec_pretty(marker).map_err(AppError::operation)?;
+        bytes.push(b'\n');
+        durable_file::replace(&path, &bytes)
     }
 
     pub fn clear_apply_marker(&self, git_dir: &Path) -> Result<(), AppError> {
         let path = apply_marker_path(git_dir, false)?;
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(AppError::operation(error)),
-        }
+        durable_file::remove(&path).map(|_| ())
     }
-}
-
-/// Fsyncs a directory after an atomic rename so the replacement itself is
-/// durable across a crash, not just the replaced file's bytes.
-#[cfg(unix)]
-fn sync_parent_directory(directory: &Path) -> Result<(), AppError> {
-    File::open(directory)
-        .and_then(|directory| directory.sync_all())
-        .map_err(AppError::operation)
 }
 
 fn apply_marker_path(git_dir: &Path, create: bool) -> Result<PathBuf, AppError> {

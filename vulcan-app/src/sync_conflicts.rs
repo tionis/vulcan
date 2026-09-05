@@ -1,13 +1,12 @@
 //! Durable device-local conflict records and preserved file artifacts.
 
+use crate::durable_file::{self, DurableCreate};
 use crate::scan::refresh_cache_incrementally;
 use crate::sync_state::{same_work_tree, SyncStateStore};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{
     conflict_recovery_ref, conflict_resolved_ref, GitCaptureRequest, GitConflictClassification,
@@ -1305,21 +1304,15 @@ fn preserve_side(
 }
 
 fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), AppError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AppError::operation("conflict record has no parent directory"))?;
-    let bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-    temporary.write_all(&bytes).map_err(AppError::operation)?;
-    temporary.write_all(b"\n").map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
-    temporary
-        .persist_noclobber(path)
-        .map_err(|error| AppError::operation(error.error))?;
-    Ok(())
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
+    bytes.push(b'\n');
+    match durable_file::create(path, &bytes)? {
+        DurableCreate::Created => Ok(()),
+        DurableCreate::AlreadyExists => Err(AppError::operation(format!(
+            "sync conflict record already exists at {}",
+            path.display()
+        ))),
+    }
 }
 
 fn write_json_replace(path: &Path, value: &SyncConflictResolutionRecord) -> Result<(), AppError> {
@@ -1327,18 +1320,9 @@ fn write_json_replace(path: &Path, value: &SyncConflictResolutionRecord) -> Resu
         .parent()
         .ok_or_else(|| AppError::operation("conflict resolution has no parent directory"))?;
     fs::create_dir_all(parent).map_err(AppError::operation)?;
-    let bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-    temporary.write_all(&bytes).map_err(AppError::operation)?;
-    temporary.write_all(b"\n").map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
-    temporary
-        .persist(path)
-        .map_err(|error| AppError::operation(error.error))?;
-    Ok(())
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
+    bytes.push(b'\n');
+    durable_file::replace(path, &bytes)
 }
 
 fn write_bytes_noclobber(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
@@ -1352,19 +1336,20 @@ fn write_bytes_noclobber(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
             path.display()
         )));
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| AppError::operation("conflict artifact has no parent directory"))?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-    temporary.write_all(bytes).map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
-    temporary
-        .persist_noclobber(path)
-        .map_err(|error| AppError::operation(error.error))?;
-    Ok(())
+    match durable_file::create(path, bytes)? {
+        DurableCreate::Created => Ok(()),
+        DurableCreate::AlreadyExists => {
+            let existing = fs::read(path).map_err(AppError::operation)?;
+            if existing == bytes {
+                Ok(())
+            } else {
+                Err(AppError::operation(format!(
+                    "immutable conflict artifact differs at {}",
+                    path.display()
+                )))
+            }
+        }
+    }
 }
 
 fn validate_record(

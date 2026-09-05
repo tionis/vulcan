@@ -28,6 +28,7 @@
 //! launching, or direct stdout/stderr rendering. Those concerns belong in
 //! `vulcan-cli` or a future daemon transport adapter.
 
+mod durable_file;
 mod error;
 
 pub mod artifact;
