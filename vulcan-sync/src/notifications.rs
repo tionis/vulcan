@@ -1,6 +1,6 @@
 use crate::{
     CommitSigning, GitEngine, GitEngineError, GitOid, GitPushResult, GitRefDeleteResult,
-    GitRefName, GitRemote, GitRepository,
+    GitRefName, GitRemote, GitRepository, RepositoryLock, RepositoryLockError,
 };
 use serde::Deserialize;
 use std::error::Error;
@@ -149,6 +149,7 @@ pub fn refresh_notification_advertisement(
     repository: &GitRepository,
     remote: &GitRemote,
 ) -> Result<Option<DiscoveredNotificationAdvertisement>, NotificationAdvertisementError> {
+    let _lock = RepositoryLock::acquire(&repository.git_dir)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
     let remote_revision = engine.remote_ref(repository, remote, &advertisement_ref)?;
     let local_revision = engine.read_ref(repository, &advertisement_ref)?;
@@ -254,6 +255,7 @@ pub fn publish_notification_advertisement(
     signing: Option<&CommitSigning>,
 ) -> Result<DiscoveredNotificationAdvertisement, NotificationAdvertisementError> {
     let (payload, advertisement) = advertisement_payload(subscribe_url)?;
+    let _lock = RepositoryLock::acquire(&repository.git_dir)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
     let lease = match expected {
         Some(revision) => Some(revision.clone()),
@@ -291,6 +293,7 @@ pub fn remove_notification_advertisement(
     remote: &GitRemote,
     expected: &GitOid,
 ) -> Result<GitRefDeleteResult, NotificationAdvertisementError> {
+    let _lock = RepositoryLock::acquire(&repository.git_dir)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
     Ok(engine.delete_remote_ref(repository, remote, &advertisement_ref, expected)?)
 }
@@ -298,6 +301,7 @@ pub fn remove_notification_advertisement(
 #[derive(Debug)]
 pub enum NotificationAdvertisementError {
     Git(GitEngineError),
+    Lock(RepositoryLockError),
     Invalid(String),
 }
 
@@ -305,6 +309,7 @@ impl Display for NotificationAdvertisementError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Git(error) => Display::fmt(error, formatter),
+            Self::Lock(error) => Display::fmt(error, formatter),
             Self::Invalid(detail) => formatter.write_str(detail),
         }
     }
@@ -314,6 +319,7 @@ impl Error for NotificationAdvertisementError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Git(error) => Some(error),
+            Self::Lock(error) => Some(error),
             Self::Invalid(_) => None,
         }
     }
@@ -325,6 +331,12 @@ impl From<GitEngineError> for NotificationAdvertisementError {
     }
 }
 
+impl From<RepositoryLockError> for NotificationAdvertisementError {
+    fn from(error: RepositoryLockError) -> Self {
+        Self::Lock(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +344,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn parse(value: &str) -> Result<NotificationAdvertisement, NotificationAdvertisementError> {
@@ -476,6 +490,30 @@ mod tests {
             engine.read_ref(&repository, &reference).expect("read ref"),
             None
         );
+    }
+
+    #[test]
+    fn advertisement_refresh_waits_for_the_shared_repository_lock() {
+        let (_temporary, engine, repository, remote) = init_publish_fixture();
+        let held = RepositoryLock::acquire(&repository.git_dir).expect("repository lock");
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(refresh_notification_advertisement(
+                    &engine,
+                    &repository,
+                    &remote,
+                ))
+                .expect("send refresh result");
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(held);
+        assert!(receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("refresh should finish after the lock is released")
+            .expect("refresh should succeed")
+            .is_none());
     }
 
     fn write_advertisement(repository: &Path, channel: &str) {
