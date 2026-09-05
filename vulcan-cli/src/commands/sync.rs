@@ -2508,20 +2508,25 @@ fn branch_lane_message(branch: &GitBranchSync) -> Option<String> {
     }
 }
 
-/// Renders the branch publication line, if the branch tip was pushed.
+/// Renders a branch publication success or failure. A lane that did not need
+/// publication stays quiet.
 fn branch_push_message(branch: &GitBranchSync) -> Option<String> {
-    if !branch.pushed {
-        return None;
-    }
-    Some(format!(
-        "Pushed branch {} to {}.",
+    let name = branch
+        .branch
+        .as_str()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch.branch.as_str());
+    if branch.pushed {
+        Some(format!(
+            "Pushed branch {name} to {}.",
+            branch.remote.as_ref().map_or("unknown", GitRemote::as_str),
+        ))
+    } else {
         branch
-            .branch
-            .as_str()
-            .strip_prefix("refs/heads/")
-            .unwrap_or(branch.branch.as_str()),
-        branch.remote.as_ref().map_or("unknown", GitRemote::as_str),
-    ))
+            .push_detail
+            .as_deref()
+            .map(|detail| format!("Branch {name} was not pushed: {detail}."))
+    }
 }
 
 #[cfg(test)]
@@ -2584,6 +2589,12 @@ mod sync_report_tests {
         assert_eq!(
             branch_push_message(&pushed),
             Some("Pushed branch main to origin.".to_string())
+        );
+        pushed.pushed = false;
+        pushed.push_detail = Some("remote advanced first; retry later".to_string());
+        assert_eq!(
+            branch_push_message(&pushed),
+            Some("Branch main was not pushed: remote advanced first; retry later.".to_string())
         );
     }
 }

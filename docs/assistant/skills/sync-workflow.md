@@ -66,6 +66,8 @@ detached HEAD, or bare repository). After a successful file lane, the branch tip
 to its upstream with the observed tracking ref as an exact lease — never force-pushed. A moved
 remote reports for the next cycle; transport or policy failures record `push_detail` without
 failing the converged file lane, and `pushed` tells whether publication happened.
+Human output also prints `push_detail` whenever branch publication was rejected or failed; do not
+interpret a successful file-lane summary as proof that the checked-out branch was published.
 Caveats: `rebase.autostash` is neutralized (automation never stashes implicitly); a
 `commit.gpgsign` setup needs a working agent or unattended merges fail loudly; triangular
 push remotes (`branch.<name>.pushremote`, `remote.pushdefault`) are not honored — the pull
