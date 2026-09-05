@@ -257,10 +257,6 @@ pub fn notification_status(
     options: &SyncNotificationStatusOptions,
 ) -> Result<SyncNotificationStatusReport, AppError> {
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&vault)
-        .map_err(AppError::operation)?;
     let selection = resolve_permission_profile(paths, options.permissions_profile.as_deref())
         .map_err(AppError::operation)?;
     let guard = ProfilePermissionGuard::new(paths, selection);
@@ -268,7 +264,7 @@ pub fn notification_status(
 
     let mut report = SyncNotificationStatusReport {
         version: SYNC_NOTIFICATION_REPORT_VERSION,
-        vault,
+        vault: vault.clone(),
         remote: options.remote.clone(),
         advertisement_ref: NOTIFICATION_ADVERTISEMENT_REF.to_string(),
         advertised: false,
@@ -286,6 +282,18 @@ pub fn notification_status(
         would_listen: false,
         reasons: Vec::new(),
     };
+
+    if !git_allowed {
+        report.detail =
+            "Git permission is denied; the notification advertisement was not inspected"
+                .to_string();
+        return Ok(finalize_notification_status(report, false));
+    }
+
+    let engine = vulcan_sync::GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&vault)
+        .map_err(AppError::operation)?;
 
     match refresh_notification_advertisement(&engine, &repository, &options.remote) {
         Ok(Some(discovered)) => {
@@ -322,7 +330,14 @@ pub fn notification_status(
         Err(error) => return Err(AppError::operation(error)),
     }
 
-    if !report.advertised {
+    Ok(finalize_notification_status(report, true))
+}
+
+fn finalize_notification_status(
+    mut report: SyncNotificationStatusReport,
+    advertisement_inspected: bool,
+) -> SyncNotificationStatusReport {
+    if advertisement_inspected && !report.advertised {
         report.reasons.push("missing-advertisement".to_string());
     }
     if report.advertised && !report.valid {
@@ -350,7 +365,7 @@ pub fn notification_status(
         report.reasons.push("daemon-stopped".to_string());
     }
     report.would_listen = report.eligible && report.daemon_running;
-    Ok(report)
+    report
 }
 
 #[cfg(test)]
@@ -624,7 +639,9 @@ mod tests {
 
     #[test]
     fn status_reports_denied_git_and_network() {
-        let (_temporary, paths, remote) = publish_fixture();
+        let temporary = tempdir().expect("temporary directory");
+        let paths = VaultPaths::new(temporary.path());
+        let remote = GitRemote::parse("origin").expect("remote name");
         let denied = notification_status(
             &paths,
             &SyncNotificationStatusOptions {
@@ -635,7 +652,11 @@ mod tests {
         .expect("denied status");
         assert!(!denied.git_allowed);
         assert!(!denied.eligible);
-        assert!(denied.reasons.contains(&"git-denied".to_string()));
+        assert_eq!(denied.reasons, ["git-denied"]);
+        assert!(!denied.advertised);
+        assert!(denied.revision.is_none());
+
+        let (_temporary, paths, remote) = publish_fixture();
 
         std::fs::create_dir_all(paths.vault_root().join(".vulcan")).expect("vulcan dir");
         std::fs::write(

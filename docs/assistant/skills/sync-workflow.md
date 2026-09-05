@@ -123,8 +123,9 @@ they commit.
   cached credentials and fails loudly otherwise. Signatures are not verified by discovery.
 - Check whether Vulcan would use a notification server with
   `vulcan sync notifications [--wiki <id>]`: it fetches the advertisement through the
-  configured remote (the same device-local fetch the daemon performs, never a publish),
-  validates it, applies the effective Git and network permission checks, and reports stable
+  configured remote (the same device-local fetch the daemon performs, never a publish), but only
+  after the effective profile allows Git. It then validates the advertisement, applies the
+  endpoint network permission check, and reports stable
   reason codes (`missing-advertisement`, `invalid-advertisement`, `git-denied`,
   `network-denied`, `paused`, `non-git-backend`, `daemon-stopped`) plus the `would_listen`
   verdict. Endpoint identity stays origin plus fingerprint.
