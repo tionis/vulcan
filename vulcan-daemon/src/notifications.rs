@@ -444,7 +444,8 @@ fn refresh_for_registration(
     let repository = engine
         .discover_repository(&registration.path)
         .map_err(|error| error.to_string())?;
-    let remote = GitRemote::parse("origin").map_err(|error| error.to_string())?;
+    let remote =
+        GitRemote::parse(vulcan_sync::NOTIFICATION_REMOTE).map_err(|error| error.to_string())?;
     let discovered = refresh_notification_advertisement(&engine, &repository, &remote)
         .map_err(|error| error.to_string())?;
     if let Some(discovered) = &discovered {

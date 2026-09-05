@@ -117,6 +117,8 @@ they commit.
   arguments or shell history:
   `secret-manager read notification-subscribe-url | vulcan sync advertise --subscribe-url-file - [--remote origin] [--expected <rev>]`.
   A mode-`0600` regular file may be named instead of `-` when piping is impractical.
+  Notification advertisement publication and discovery currently require the `origin` remote;
+  alternate sync remotes are rejected so CLI status and the daemon cannot observe different refs.
   Preview with `--dry-run` first. Without `--expected`, the current remote revision is leased
   opportunistically; with it, a diverged ref fails instead of overwriting. Remove it with
   `vulcan sync unadvertise [--expected <rev>]`. Publication builds a parentless commit with

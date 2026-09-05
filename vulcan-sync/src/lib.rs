@@ -48,9 +48,9 @@ pub use merge_policy::{
 pub use notifications::{
     preview_notification_advertisement, publish_notification_advertisement,
     refresh_notification_advertisement, remove_notification_advertisement,
-    DiscoveredNotificationAdvertisement, NotificationAdvertisement, NotificationAdvertisementError,
-    NotificationEndpoint, NotificationTransport, NOTIFICATION_ADVERTISEMENT_FILE,
-    NOTIFICATION_ADVERTISEMENT_REF,
+    validate_notification_remote, DiscoveredNotificationAdvertisement, NotificationAdvertisement,
+    NotificationAdvertisementError, NotificationEndpoint, NotificationTransport,
+    NOTIFICATION_ADVERTISEMENT_FILE, NOTIFICATION_ADVERTISEMENT_REF, NOTIFICATION_REMOTE,
 };
 pub use platform::{
     inspect_git_tree_platform, GitPlatformDiagnostic, GitPlatformDiagnosticSeverity,

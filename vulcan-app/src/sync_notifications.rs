@@ -76,6 +76,7 @@ pub fn publish_sync_notification_advertisement(
     paths: &VaultPaths,
     options: &SyncNotificationPublishOptions,
 ) -> Result<SyncNotificationPublishReport, AppError> {
+    vulcan_sync::validate_notification_remote(&options.remote).map_err(AppError::operation)?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = vulcan_sync::GitCliEngine::default();
     let repository = engine
@@ -144,6 +145,7 @@ pub fn remove_sync_notification_advertisement(
     paths: &VaultPaths,
     options: &SyncNotificationRemoveOptions,
 ) -> Result<SyncNotificationRemoveReport, AppError> {
+    vulcan_sync::validate_notification_remote(&options.remote).map_err(AppError::operation)?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = vulcan_sync::GitCliEngine::default();
     let repository = engine
@@ -256,6 +258,7 @@ pub fn notification_status(
     paths: &VaultPaths,
     options: &SyncNotificationStatusOptions,
 ) -> Result<SyncNotificationStatusReport, AppError> {
+    vulcan_sync::validate_notification_remote(&options.remote).map_err(AppError::operation)?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let selection = resolve_permission_profile(paths, options.permissions_profile.as_deref())
         .map_err(AppError::operation)?;
@@ -439,6 +442,27 @@ mod tests {
                 .expect("refresh")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn notification_workflows_reject_a_remote_the_daemon_will_not_read() {
+        let (_temporary, paths, _remote) = publish_fixture();
+        let error = publish_sync_notification_advertisement(
+            &paths,
+            &SyncNotificationPublishOptions {
+                subscribe_url: "https://patch.example/h/secret-channel?pubsub=true".to_string(),
+                remote: GitRemote::parse("backup").expect("remote"),
+                expected: None,
+                dry_run: true,
+                sign: false,
+                signing_key: None,
+            },
+        )
+        .expect_err("unsupported advertisement remote");
+
+        assert!(error
+            .to_string()
+            .contains("CLI and daemon discovery cannot diverge"));
     }
 
     #[test]

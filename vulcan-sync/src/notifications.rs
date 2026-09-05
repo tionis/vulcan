@@ -9,6 +9,7 @@ use url::{Host, Url};
 
 pub const NOTIFICATION_ADVERTISEMENT_REF: &str = "refs/vulcan/notifications";
 pub const NOTIFICATION_ADVERTISEMENT_FILE: &str = "notification.json";
+pub const NOTIFICATION_REMOTE: &str = "origin";
 const NOTIFICATION_ADVERTISEMENT_VERSION: u32 = 1;
 const NOTIFICATION_ADVERTISEMENT_TRANSPORT: &str = "http_long_poll";
 const NOTIFICATION_ADVERTISEMENT_COMMIT_MESSAGE: &str = "vulcan sync notification advertisement\n";
@@ -149,6 +150,7 @@ pub fn refresh_notification_advertisement(
     repository: &GitRepository,
     remote: &GitRemote,
 ) -> Result<Option<DiscoveredNotificationAdvertisement>, NotificationAdvertisementError> {
+    validate_notification_remote(remote)?;
     let _lock = RepositoryLock::acquire(&repository.git_dir)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
     let remote_revision = engine.remote_ref(repository, remote, &advertisement_ref)?;
@@ -255,6 +257,7 @@ pub fn publish_notification_advertisement(
     signing: Option<&CommitSigning>,
 ) -> Result<DiscoveredNotificationAdvertisement, NotificationAdvertisementError> {
     let (payload, advertisement) = advertisement_payload(subscribe_url)?;
+    validate_notification_remote(remote)?;
     let _lock = RepositoryLock::acquire(&repository.git_dir)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
     let lease = match expected {
@@ -293,9 +296,22 @@ pub fn remove_notification_advertisement(
     remote: &GitRemote,
     expected: &GitOid,
 ) -> Result<GitRefDeleteResult, NotificationAdvertisementError> {
+    validate_notification_remote(remote)?;
     let _lock = RepositoryLock::acquire(&repository.git_dir)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
     Ok(engine.delete_remote_ref(repository, remote, &advertisement_ref, expected)?)
+}
+
+pub fn validate_notification_remote(
+    remote: &GitRemote,
+) -> Result<(), NotificationAdvertisementError> {
+    if remote.as_str() == NOTIFICATION_REMOTE {
+        Ok(())
+    } else {
+        Err(NotificationAdvertisementError::Invalid(format!(
+            "notification advertisements currently require the `{NOTIFICATION_REMOTE}` remote so CLI and daemon discovery cannot diverge"
+        )))
+    }
 }
 
 #[derive(Debug)]
@@ -365,6 +381,20 @@ mod tests {
         let debug = format!("{advertisement:?}");
         assert!(!debug.contains("private"));
         assert!(!debug.contains("pubsub"));
+    }
+
+    #[test]
+    fn notification_remote_is_fixed_to_the_daemon_source() {
+        assert!(validate_notification_remote(
+            &GitRemote::parse(NOTIFICATION_REMOTE).expect("origin")
+        )
+        .is_ok());
+        assert!(
+            validate_notification_remote(&GitRemote::parse("backup").expect("backup"))
+                .expect_err("alternate remote must fail")
+                .to_string()
+                .contains("CLI and daemon discovery cannot diverge")
+        );
     }
 
     #[test]
