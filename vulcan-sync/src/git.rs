@@ -168,6 +168,14 @@ pub trait GitEngine: Send + Sync {
         path: &str,
     ) -> Result<Option<GitPathObject>, GitEngineError>;
 
+    /// Reads a set of known blob objects through one repository command.
+    /// Duplicate object IDs are collapsed in the returned map.
+    fn read_blobs(
+        &self,
+        repository: &GitRepository,
+        objects: &[GitOid],
+    ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError>;
+
     fn changed_paths(
         &self,
         repository: &GitRepository,
@@ -2489,6 +2497,28 @@ impl GitEngine for GitCliEngine {
         Ok(Some(object))
     }
 
+    fn read_blobs(
+        &self,
+        repository: &GitRepository,
+        objects: &[GitOid],
+    ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+        let objects = objects.iter().cloned().collect::<BTreeSet<_>>();
+        if objects.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let mut input = String::new();
+        for object in &objects {
+            writeln!(input, "{object}").expect("writing to a String cannot fail");
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["cat-file", "--batch"]);
+        let output = ensure_success(
+            "read Git blobs in a batch",
+            self.execute_with_input(command, "read Git blobs in a batch", input.as_bytes())?,
+        )?;
+        parse_batch_blobs(&objects.into_iter().collect::<Vec<_>>(), &output.stdout)
+    }
+
     fn changed_paths(
         &self,
         repository: &GitRepository,
@@ -4742,6 +4772,78 @@ fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<GitTreeEntry>, GitEngineError>
     Ok(entries)
 }
 
+fn parse_batch_blobs(
+    expected: &[GitOid],
+    bytes: &[u8],
+) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+    const OPERATION: &str = "read Git blobs in a batch";
+    let mut offset = 0_usize;
+    let mut blobs = BTreeMap::new();
+    for expected_oid in expected {
+        let header_end = bytes[offset..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|position| offset + position)
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "batch response omitted an object header terminator".to_string(),
+            })?;
+        let header = std::str::from_utf8(&bytes[offset..header_end]).map_err(|error| {
+            GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: error.to_string(),
+            }
+        })?;
+        let mut fields = header.split_whitespace();
+        let oid = fields.next().unwrap_or_default();
+        let kind = fields.next().unwrap_or_default();
+        let size = fields.next().unwrap_or_default();
+        if fields.next().is_some() || oid != expected_oid.as_str() || kind != "blob" {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!("unexpected batch object header `{header}`"),
+            });
+        }
+        let size = size
+            .parse::<usize>()
+            .map_err(|error| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!("invalid blob size in batch header: {error}"),
+            })?;
+        if size > MAX_CONFLICT_BLOB_BYTES {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!(
+                    "blob `{expected_oid}` exceeds the {MAX_CONFLICT_BLOB_BYTES} byte preservation limit"
+                ),
+            });
+        }
+        let data_start = header_end + 1;
+        let data_end =
+            data_start
+                .checked_add(size)
+                .ok_or_else(|| GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: "batch blob size overflowed the response offset".to_string(),
+                })?;
+        if bytes.get(data_end) != Some(&b'\n') {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "batch response omitted a blob content terminator".to_string(),
+            });
+        }
+        blobs.insert(expected_oid.clone(), bytes[data_start..data_end].to_vec());
+        offset = data_end + 1;
+    }
+    if offset != bytes.len() {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: "batch response contained unexpected trailing data".to_string(),
+        });
+    }
+    Ok(blobs)
+}
+
 fn parse_tree_application_paths(bytes: &[u8]) -> Result<Vec<GitTreeApplyPath>, GitEngineError> {
     const OPERATION: &str = "plan worktree application";
     if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
@@ -6646,6 +6748,36 @@ mod tests {
         assert_eq!(targets.get(&direct), Some(&commit));
         assert_eq!(targets.get(&annotated), Some(&commit));
         assert!(!targets.contains_key(&missing));
+    }
+
+    #[test]
+    fn batch_blob_reads_preserve_binary_contents_and_collapse_duplicates() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let first = engine
+            .write_blob(&repository, b"first\0blob\n")
+            .expect("first blob");
+        let second = engine
+            .write_blob(&repository, b"second blob")
+            .expect("second blob");
+
+        let blobs = engine
+            .read_blobs(&repository, &[second.clone(), first.clone(), first.clone()])
+            .expect("batch blobs");
+
+        assert_eq!(blobs.len(), 2);
+        assert_eq!(
+            blobs.get(&first).map(Vec::as_slice),
+            Some(b"first\0blob\n".as_slice())
+        );
+        assert_eq!(
+            blobs.get(&second).map(Vec::as_slice),
+            Some(b"second blob".as_slice())
+        );
     }
 
     #[test]

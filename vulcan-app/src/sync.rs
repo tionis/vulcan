@@ -5,7 +5,7 @@ use crate::sync_state::{SyncApplyMarker, SyncJournal, SyncJournalPhase, SyncStat
 use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::path::Path;
 use vulcan_core::{
@@ -1263,23 +1263,27 @@ impl VaultTreeValidator {
             .tree_validation
             .validate()
             .map_err(GitSyncObserverError::new)?;
+        let mut cache = GitTreeAnalysisCache::default();
         let local = analyze_git_tree(
             engine,
             request.repository,
             request.local_candidate,
             &self.config,
+            &mut cache,
         )?;
         let remote = analyze_git_tree(
             engine,
             request.repository,
             request.accepted_remote,
             &self.config,
+            &mut cache,
         )?;
         let merged = analyze_git_tree(
             engine,
             request.repository,
             request.merged_tree,
             &self.config,
+            &mut cache,
         )?;
 
         let candidate_paths = local
@@ -1318,6 +1322,22 @@ struct GitTreeAnalysis {
     link_problems: BTreeSet<LinkProblemKey>,
 }
 
+#[derive(Default)]
+struct GitTreeAnalysisCache {
+    markdown: BTreeMap<vulcan_sync::GitOid, CachedMarkdown>,
+    canvas: BTreeMap<vulcan_sync::GitOid, CachedCanvas>,
+}
+
+struct CachedMarkdown {
+    bytes: usize,
+    parsed: vulcan_core::ParsedDocument,
+}
+
+struct CachedCanvas {
+    bytes: usize,
+    references: Vec<String>,
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct LinkProblemKey {
     source_path: String,
@@ -1331,48 +1351,57 @@ fn analyze_git_tree(
     repository: &vulcan_sync::GitRepository,
     revision: &vulcan_sync::GitOid,
     config: &VaultConfig,
+    cache: &mut GitTreeAnalysisCache,
 ) -> Result<GitTreeAnalysis, GitSyncObserverError> {
-    let paths = engine
-        .tree_paths(repository, revision)
-        .map_err(|error| GitSyncObserverError::new(error.to_string()))?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let markdown_paths = paths
+    let entries = engine
+        .tree_entries(repository, revision)
+        .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+    let paths = entries
         .iter()
-        .filter(|path| markdown_path(path))
-        .cloned()
+        .map(|entry| entry.path.clone())
+        .collect::<BTreeSet<_>>();
+    let markdown_entries = entries
+        .iter()
+        .filter(|entry| markdown_path(&entry.path))
         .collect::<Vec<_>>();
-    if markdown_paths.len() > MAX_VALIDATED_MARKDOWN_FILES {
+    if markdown_entries.len() > MAX_VALIDATED_MARKDOWN_FILES {
         return Err(GitSyncObserverError::new(format!(
             "automatic merge tree exceeds the {MAX_VALIDATED_MARKDOWN_FILES} Markdown-file validation limit"
         )));
     }
+    let canvas_entries = entries
+        .iter()
+        .filter(|entry| canvas_path(&entry.path))
+        .collect::<Vec<_>>();
+    if canvas_entries.len() > MAX_VALIDATED_CANVAS_FILES {
+        return Err(GitSyncObserverError::new(format!(
+            "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_FILES} Canvas-file validation limit"
+        )));
+    }
 
-    let mut parsed_documents = Vec::with_capacity(markdown_paths.len());
+    cache_tree_content(
+        engine,
+        repository,
+        &markdown_entries,
+        &canvas_entries,
+        config,
+        cache,
+    )?;
+
+    let mut parsed_documents = Vec::with_capacity(markdown_entries.len());
     let mut total_bytes = 0_usize;
-    for path in markdown_paths {
-        let object = engine
-            .path_object(repository, revision, &path)
-            .map_err(|error| GitSyncObserverError::new(error.to_string()))?
-            .ok_or_else(|| GitSyncObserverError::new(format!("tree omitted `{path}`")))?;
-        if object.kind != "blob" {
-            return Err(GitSyncObserverError::new(format!(
-                "Markdown path `{path}` is not a regular Git blob"
-            )));
-        }
-        let data = object
-            .data
-            .ok_or_else(|| GitSyncObserverError::new(format!("blob `{path}` has no data")))?;
-        total_bytes = total_bytes.saturating_add(data.len());
+    for entry in markdown_entries {
+        let cached = cache
+            .markdown
+            .get(&entry.oid)
+            .expect("every requested Markdown blob was cached");
+        total_bytes = total_bytes.saturating_add(cached.bytes);
         if total_bytes > MAX_VALIDATED_MARKDOWN_BYTES {
             return Err(GitSyncObserverError::new(format!(
                 "automatic merge tree exceeds the {MAX_VALIDATED_MARKDOWN_BYTES}-byte Markdown validation limit"
             )));
         }
-        let source = std::str::from_utf8(&data).map_err(|_| {
-            GitSyncObserverError::new(format!("Markdown path `{path}` is not valid UTF-8"))
-        })?;
-        parsed_documents.push((path, parse_document(source, config)));
+        parsed_documents.push((entry.path.clone(), cached.parsed.clone()));
     }
 
     let resolver_documents = parsed_documents
@@ -1392,12 +1421,109 @@ fn analyze_git_tree(
     let resolver = ResolverIndex::build(&resolver_documents);
     let mut link_problems = BTreeSet::new();
     resolve_document_links(&resolver, config, &parsed_documents, &mut link_problems);
-    let canvas_references = canvas_file_references(engine, repository, revision, &paths)?;
+    let mut canvas_references = Vec::new();
+    let mut canvas_bytes = 0_usize;
+    for entry in canvas_entries {
+        let cached = cache
+            .canvas
+            .get(&entry.oid)
+            .expect("every requested Canvas blob was cached");
+        canvas_bytes = canvas_bytes.saturating_add(cached.bytes);
+        if canvas_bytes > MAX_VALIDATED_CANVAS_BYTES {
+            return Err(GitSyncObserverError::new(format!(
+                "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_BYTES}-byte Canvas validation limit"
+            )));
+        }
+        canvas_references.extend(
+            cached
+                .references
+                .iter()
+                .cloned()
+                .map(|target| (entry.path.clone(), target)),
+        );
+    }
     resolve_canvas_links(&resolver, config, &canvas_references, &mut link_problems);
     Ok(GitTreeAnalysis {
         paths,
         link_problems,
     })
+}
+
+fn cache_tree_content(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    markdown_entries: &[&vulcan_sync::GitTreeEntry],
+    canvas_entries: &[&vulcan_sync::GitTreeEntry],
+    config: &VaultConfig,
+    cache: &mut GitTreeAnalysisCache,
+) -> Result<(), GitSyncObserverError> {
+    for entry in markdown_entries.iter().chain(canvas_entries) {
+        if entry.kind != "blob" {
+            let label = if markdown_path(&entry.path) {
+                "Markdown"
+            } else {
+                "Canvas"
+            };
+            return Err(GitSyncObserverError::new(format!(
+                "{label} path `{}` is not a regular Git blob",
+                entry.path
+            )));
+        }
+    }
+    let missing = markdown_entries
+        .iter()
+        .filter(|entry| !cache.markdown.contains_key(&entry.oid))
+        .chain(
+            canvas_entries
+                .iter()
+                .filter(|entry| !cache.canvas.contains_key(&entry.oid)),
+        )
+        .map(|entry| entry.oid.clone())
+        .collect::<BTreeSet<_>>();
+    let blobs = engine
+        .read_blobs(repository, &missing.into_iter().collect::<Vec<_>>())
+        .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+
+    for entry in markdown_entries {
+        if cache.markdown.contains_key(&entry.oid) {
+            continue;
+        }
+        let data = require_cached_blob(&blobs, entry)?;
+        let source = std::str::from_utf8(data).map_err(|_| {
+            GitSyncObserverError::new(format!("Markdown path `{}` is not valid UTF-8", entry.path))
+        })?;
+        cache.markdown.insert(
+            entry.oid.clone(),
+            CachedMarkdown {
+                bytes: data.len(),
+                parsed: parse_document(source, config),
+            },
+        );
+    }
+    for entry in canvas_entries {
+        if cache.canvas.contains_key(&entry.oid) {
+            continue;
+        }
+        let data = require_cached_blob(&blobs, entry)?;
+        cache.canvas.insert(
+            entry.oid.clone(),
+            CachedCanvas {
+                bytes: data.len(),
+                references: parse_canvas_file_references(&entry.path, data)?,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn require_cached_blob<'a>(
+    blobs: &'a BTreeMap<vulcan_sync::GitOid, Vec<u8>>,
+    entry: &vulcan_sync::GitTreeEntry,
+) -> Result<&'a [u8], GitSyncObserverError> {
+    blobs
+        .get(&entry.oid)
+        .map(Vec::as_slice)
+        .ok_or_else(|| GitSyncObserverError::new(format!("blob `{}` has no data", entry.path)))
 }
 
 fn resolve_document_links(
@@ -1487,59 +1613,26 @@ fn canvas_path(path: &str) -> bool {
 
 /// Collects `file` references from Canvas node objects so whole-tree link
 /// validation covers embedded note references alongside Markdown links.
-fn canvas_file_references(
-    engine: &dyn GitEngine,
-    repository: &vulcan_sync::GitRepository,
-    revision: &vulcan_sync::GitOid,
-    paths: &BTreeSet<String>,
-) -> Result<Vec<(String, String)>, GitSyncObserverError> {
-    let canvas_paths = paths
-        .iter()
-        .filter(|path| canvas_path(path))
-        .cloned()
-        .collect::<Vec<_>>();
-    if canvas_paths.len() > MAX_VALIDATED_CANVAS_FILES {
-        return Err(GitSyncObserverError::new(format!(
-            "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_FILES} Canvas-file validation limit"
-        )));
-    }
+fn parse_canvas_file_references(
+    path: &str,
+    data: &[u8],
+) -> Result<Vec<String>, GitSyncObserverError> {
     let mut references = Vec::new();
-    let mut total_bytes = 0_usize;
-    for path in canvas_paths {
-        let object = engine
-            .path_object(repository, revision, &path)
-            .map_err(|error| GitSyncObserverError::new(error.to_string()))?
-            .ok_or_else(|| GitSyncObserverError::new(format!("tree omitted `{path}`")))?;
-        if object.kind != "blob" {
-            return Err(GitSyncObserverError::new(format!(
-                "Canvas path `{path}` is not a regular Git blob"
-            )));
-        }
-        let data = object
-            .data
-            .ok_or_else(|| GitSyncObserverError::new(format!("blob `{path}` has no data")))?;
-        total_bytes = total_bytes.saturating_add(data.len());
-        if total_bytes > MAX_VALIDATED_CANVAS_BYTES {
-            return Err(GitSyncObserverError::new(format!(
-                "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_BYTES}-byte Canvas validation limit"
-            )));
-        }
-        let source = std::str::from_utf8(&data).map_err(|_| {
-            GitSyncObserverError::new(format!("Canvas path `{path}` is not valid UTF-8"))
+    let source = std::str::from_utf8(data).map_err(|_| {
+        GitSyncObserverError::new(format!("Canvas path `{path}` is not valid UTF-8"))
+    })?;
+    let canvas: serde_json::Value = serde_json::from_str(source).map_err(|error| {
+        GitSyncObserverError::new(format!("Canvas path `{path}` is not valid JSON: {error}"))
+    })?;
+    let nodes = canvas
+        .get("nodes")
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| {
+            GitSyncObserverError::new(format!("Canvas path `{path}` has no nodes array"))
         })?;
-        let canvas: serde_json::Value = serde_json::from_str(source).map_err(|error| {
-            GitSyncObserverError::new(format!("Canvas path `{path}` is not valid JSON: {error}"))
-        })?;
-        let nodes = canvas
-            .get("nodes")
-            .and_then(|nodes| nodes.as_array())
-            .ok_or_else(|| {
-                GitSyncObserverError::new(format!("Canvas path `{path}` has no nodes array"))
-            })?;
-        for node in nodes {
-            if let Some(file) = node.get("file").and_then(|file| file.as_str()) {
-                references.push((path.clone(), file.to_string()));
-            }
+    for node in nodes {
+        if let Some(file) = node.get("file").and_then(|file| file.as_str()) {
+            references.push(file.to_string());
         }
     }
     Ok(references)
@@ -2085,6 +2178,79 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(error
             .to_string()
             .contains("exceeding the shared limits of 0 paths and 0 percent"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn whole_tree_validation_batches_git_work_independent_of_note_count() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempdir().expect("temporary directory");
+        git(
+            temporary.path(),
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(temporary.path(), &["config", "user.name", "Vulcan Test"]);
+        git(
+            temporary.path(),
+            &["config", "user.email", "vulcan@example.invalid"],
+        );
+        for index in 0..200 {
+            fs::write(
+                temporary.path().join(format!("Note-{index}.md")),
+                format!("# Note {index}\n\n[[Note-{}]]\n", (index + 1) % 200),
+            )
+            .expect("note");
+        }
+        git(temporary.path(), &["add", "--all", "--", "."]);
+        git(temporary.path(), &["commit", "--quiet", "-m", "notes"]);
+
+        let trace = temporary.path().join("git-trace");
+        let wrapper = temporary.path().join("git-wrapper");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                trace.display()
+            ),
+        )
+        .expect("Git wrapper");
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))
+            .expect("wrapper permissions");
+        let engine = vulcan_sync::GitCliEngine::new(&wrapper);
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let commit =
+            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
+                .expect("commit");
+        let tree = engine.tree_oid(&repository, &commit).expect("tree");
+        fs::write(&trace, "").expect("reset trace");
+
+        VaultTreeValidator::new(VaultConfig::default())
+            .validate(
+                &engine,
+                &GitAutomaticMergeValidation {
+                    repository: &repository,
+                    base: &commit,
+                    local_candidate: &commit,
+                    accepted_remote: &commit,
+                    merged_tree: &tree,
+                    resolved_paths: &[],
+                },
+            )
+            .expect("validation");
+
+        let commands = fs::read_to_string(&trace).expect("trace");
+        assert_eq!(commands.lines().count(), 4, "commands:\n{commands}");
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|command| command.contains("cat-file --batch"))
+                .count(),
+            1,
+            "commands:\n{commands}"
+        );
     }
 
     #[test]
