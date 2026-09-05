@@ -804,6 +804,9 @@ fn sync_error_from_git(error: &GitSyncError) -> SyncError {
         GitSyncError::Git(
             GitEngineError::ExecutableUnavailable { .. } | GitEngineError::InvalidRemote(_),
         ) => (SyncErrorCategory::Configuration, false),
+        GitSyncError::Git(GitEngineError::RemoteRefMissing { .. }) => {
+            (SyncErrorCategory::Network, true)
+        }
         GitSyncError::Git(GitEngineError::CommandFailed { operation, .. })
             if operation.contains("remote")
                 || operation.contains("fetch")
@@ -1217,13 +1220,12 @@ fn pull_branch_lane(
         Err(error) => {
             // A deleted upstream branch is a skip, not a failure: there is
             // nothing to pull. Other fetch failures stay Failed.
-            let message = error.to_string();
-            if message.contains("couldn't find remote ref") {
+            if matches!(error, GitEngineError::RemoteRefMissing { .. }) {
                 lane.action = GitBranchSyncAction::Skipped;
                 lane.detail = Some("upstream ref is absent on the remote".to_string());
             } else {
                 lane.action = GitBranchSyncAction::Failed;
-                lane.detail = Some(message);
+                lane.detail = Some(error.to_string());
             }
             report.branch = Some(lane);
             return Ok(());

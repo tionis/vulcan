@@ -1193,6 +1193,10 @@ pub enum GitEngineError {
         operation: &'static str,
         timeout: Duration,
     },
+    RemoteRefMissing {
+        remote: GitRemote,
+        reference: GitRefName,
+    },
     InvalidOutput {
         operation: &'static str,
         detail: String,
@@ -1237,6 +1241,10 @@ impl Display for GitEngineError {
                 "Git timed out while trying to {operation} after {:.3} seconds",
                 timeout.as_secs_f64()
             ),
+            Self::RemoteRefMissing { remote, reference } => write!(
+                formatter,
+                "Git remote `{remote}` does not contain `{reference}`"
+            ),
             Self::InvalidOutput { operation, detail } => {
                 write!(
                     formatter,
@@ -1271,6 +1279,7 @@ impl Error for GitEngineError {
             Self::ExecutableUnavailable { source, .. } | Self::Io(source) => Some(source),
             Self::CommandFailed { .. }
             | Self::CommandTimedOut { .. }
+            | Self::RemoteRefMissing { .. }
             | Self::InvalidOutput { .. }
             | Self::InvalidObjectId(_)
             | Self::InvalidRefName(_)
@@ -2359,12 +2368,7 @@ impl GitEngine for GitCliEngine {
         if output.status.success() {
             return Ok(GitRefCreateResult::Created);
         }
-        let detail = format!(
-            "{}\n{}",
-            bounded_lossy(&output.stdout),
-            bounded_lossy(&output.stderr)
-        );
-        if detail.contains("cannot lock ref") && detail.contains("reference already exists") {
+        if matches!(self.read_ref(repository, reference), Ok(Some(_))) {
             Ok(GitRefCreateResult::Exists)
         } else {
             Err(command_failed("create a local Git ref", &output))
@@ -2386,21 +2390,17 @@ impl GitEngine for GitCliEngine {
         if output.status.success() {
             return Ok(GitRefUpdateResult::Updated);
         }
-        let detail = format!(
-            "{}\n{}",
-            bounded_lossy(&output.stdout),
-            bounded_lossy(&output.stderr)
-        );
-        if detail.contains("cannot lock ref")
-            && (detail.contains("is at")
-                || detail.contains("reference already exists")
-                || detail.contains("reference is missing")
-                || detail.contains("unable to resolve reference"))
-        {
-            Ok(GitRefUpdateResult::Stale)
-        } else {
-            Err(command_failed("compare and swap a local Git ref", &output))
+        if let Ok(current) = self.read_ref(repository, reference) {
+            let still_expected = match (current.as_ref(), expected) {
+                (Some(current), Some(expected)) => current == expected,
+                (None, None) => true,
+                _ => false,
+            };
+            if !still_expected {
+                return Ok(GitRefUpdateResult::Stale);
+            }
         }
+        Err(command_failed("compare and swap a local Git ref", &output))
     }
 
     fn delete_ref(
@@ -2422,20 +2422,13 @@ impl GitEngine for GitCliEngine {
         if output.status.success() {
             return Ok(GitRefDeleteResult::Deleted);
         }
-        let detail = format!(
-            "{}\n{}",
-            bounded_lossy(&output.stdout),
-            bounded_lossy(&output.stderr)
-        );
-        if detail.contains("cannot lock ref")
-            && (detail.contains("is at")
-                || detail.contains("reference is missing")
-                || detail.contains("unable to resolve reference"))
+        if self
+            .read_ref(repository, reference)
+            .is_ok_and(|current| current.as_ref().is_none_or(|current| current != expected))
         {
-            Ok(GitRefDeleteResult::Stale)
-        } else {
-            Err(command_failed("delete a local Git ref with lease", &output))
+            return Ok(GitRefDeleteResult::Stale);
         }
+        Err(command_failed("delete a local Git ref with lease", &output))
     }
 
     fn tree_oid(
@@ -2886,7 +2879,18 @@ impl GitEngine for GitCliEngine {
             OsString::from(remote.as_str()),
             OsString::from(refspec),
         ];
-        self.repository_output(repository, "fetch the live sync ref", arguments)?;
+        let mut command = self.repository_command(repository);
+        command.args(arguments);
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            if matches!(self.remote_ref(repository, remote, source), Ok(None)) {
+                return Err(GitEngineError::RemoteRefMissing {
+                    remote: remote.clone(),
+                    reference: source.clone(),
+                });
+            }
+            return Err(command_failed("fetch the live sync ref", &output));
+        }
         self.read_ref(repository, destination)?
             .ok_or_else(|| GitEngineError::InvalidOutput {
                 operation: "fetch the live sync ref",
@@ -3214,19 +3218,9 @@ impl GitEngine for GitCliEngine {
         if output.status.success() {
             return Ok(GitPushResult::Updated);
         }
-        let combined = format!(
-            "{}\n{}",
-            bounded_lossy(&output.stdout),
-            bounded_lossy(&output.stderr)
-        );
-        if [
-            "stale info",
-            "[rejected]",
-            "fetch first",
-            "non-fast-forward",
-        ]
-        .iter()
-        .any(|needle| combined.contains(needle))
+        if self
+            .remote_ref(repository, remote, destination)
+            .is_ok_and(|current| current.as_ref() != expected)
         {
             return Ok(GitPushResult::Rejected);
         }
@@ -3262,14 +3256,9 @@ impl GitEngine for GitCliEngine {
         if output.status.success() {
             return Ok(GitRefDeleteResult::Deleted);
         }
-        let combined = format!(
-            "{}\n{}",
-            bounded_lossy(&output.stdout),
-            bounded_lossy(&output.stderr)
-        );
-        if ["stale info", "fetch first", "non-fast-forward"]
-            .iter()
-            .any(|needle| combined.contains(needle))
+        if self
+            .remote_ref(repository, remote, reference)
+            .is_ok_and(|current| current.as_ref() != Some(expected))
         {
             return Ok(GitRefDeleteResult::Stale);
         }
@@ -6553,6 +6542,14 @@ mod tests {
                 .expect("fetch"),
             head.clone()
         );
+        fs::write(worktree.join("Home.md"), "changed\n").expect("changed note");
+        let changed = commit_all(&worktree, "changed");
+        assert_eq!(
+            engine
+                .push_ref(&repository, &remote, &changed, &live, None)
+                .expect("stale creation lease"),
+            GitPushResult::Rejected
+        );
         let stale = GitOid::parse("1111111111111111111111111111111111111111")
             .expect("valid stale object ID");
         assert_eq!(
@@ -6573,6 +6570,13 @@ mod tests {
                 .expect("repeated deletion"),
             GitRefDeleteResult::Missing
         );
+        assert!(matches!(
+            engine.fetch_ref(&repository, &remote, &live, &fetched),
+            Err(GitEngineError::RemoteRefMissing {
+                remote: missing_remote,
+                reference: missing_ref,
+            }) if missing_remote == remote && missing_ref == live
+        ));
     }
 
     #[test]
