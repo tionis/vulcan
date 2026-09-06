@@ -798,10 +798,13 @@ mod tests {
     #[allow(clippy::used_underscore_binding)] // Inspect watcher lifetime guards in regression tests.
     fn native_watcher_detects_changes_without_content_polling() {
         let temporary = tempdir().expect("temporary directory");
-        let note = temporary.path().join("note.md");
+        // Match registry registration: FSEvents reports canonical paths, while
+        // macOS temporary directories can be reached through /var aliases.
+        let root = temporary.path().canonicalize().expect("canonical vault");
+        let note = root.join("note.md");
         std::fs::write(&note, "alpha\n").expect("initial note");
         let (sender, receiver) = mpsc::channel();
-        let watchers = register_watchers(temporary.path(), &sender, Duration::from_millis(25))
+        let watchers = register_watchers(&root, &sender, Duration::from_millis(25))
             .expect("register native watcher");
         assert!(watchers._native.is_some());
         assert!(
@@ -811,7 +814,7 @@ mod tests {
         std::fs::write(&note, "bravo\n").expect("same-size update");
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut batch = WatchBatch::default();
-        let paths = VaultPaths::new(temporary.path());
+        let paths = VaultPaths::new(&root);
         while Instant::now() < deadline {
             if let Ok((source, Ok(event))) = receiver.recv_timeout(Duration::from_millis(50)) {
                 assert_eq!(source, WatchSource::Native);
