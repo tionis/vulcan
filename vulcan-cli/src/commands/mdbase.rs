@@ -5,6 +5,7 @@ use vulcan_app::mdbase::{
     build_mdbase_types_report, build_mdbase_validate_report, MdbaseContractsReport,
     MdbaseReadReport, MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
 };
+use vulcan_core::mdbase::{MdbaseCompleteRecord, MdbaseDiagnosticLevel, MdbaseOperationResult};
 use vulcan_core::VaultPaths;
 
 pub(crate) fn handle_mdbase_command(
@@ -39,7 +40,11 @@ pub(crate) fn handle_mdbase_command(
 
 fn print_status(output: OutputFormat, report: &MdbaseStatusReport) -> Result<(), CliError> {
     if output == OutputFormat::Json {
-        return print_json(report);
+        return print_json(&MdbaseOperationResult::new(
+            report.valid,
+            report,
+            report.diagnostics.clone(),
+        ));
     }
     println!("Collection: {}", report.collection_root);
     println!("Spec:       {}", report.spec_version);
@@ -53,7 +58,15 @@ fn print_status(output: OutputFormat, report: &MdbaseStatusReport) -> Result<(),
 
 fn print_types(output: OutputFormat, report: &MdbaseTypesReport) -> Result<(), CliError> {
     if output == OutputFormat::Json {
-        return print_json(report);
+        let valid = report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != MdbaseDiagnosticLevel::Error);
+        return print_json(&MdbaseOperationResult::new(
+            valid,
+            report,
+            report.diagnostics.clone(),
+        ));
     }
     for definition in &report.types {
         println!("{}\t{}", definition.name, definition.path);
@@ -64,7 +77,15 @@ fn print_types(output: OutputFormat, report: &MdbaseTypesReport) -> Result<(), C
 
 fn print_contracts(output: OutputFormat, report: &MdbaseContractsReport) -> Result<(), CliError> {
     if output == OutputFormat::Json {
-        return print_json(report);
+        let valid = report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != MdbaseDiagnosticLevel::Error);
+        return print_json(&MdbaseOperationResult::new(
+            valid,
+            report,
+            report.diagnostics.clone(),
+        ));
     }
     for entry in &report.contracts {
         println!(
@@ -81,7 +102,18 @@ fn print_contracts(output: OutputFormat, report: &MdbaseContractsReport) -> Resu
 
 fn print_validate(output: OutputFormat, report: &MdbaseValidateReport) -> Result<(), CliError> {
     if output == OutputFormat::Json {
-        return print_json(report);
+        let mut diagnostics = report.diagnostics.clone();
+        diagnostics.extend(
+            report
+                .records
+                .iter()
+                .flat_map(|record| record.diagnostics.iter().cloned()),
+        );
+        return print_json(&MdbaseOperationResult::new(
+            report.valid,
+            report,
+            diagnostics,
+        ));
     }
     println!("Valid: {}", report.valid);
     for record in &report.records {
@@ -99,7 +131,11 @@ fn print_validate(output: OutputFormat, report: &MdbaseValidateReport) -> Result
 
 fn print_read(output: OutputFormat, report: &MdbaseReadReport) -> Result<(), CliError> {
     if output == OutputFormat::Json {
-        return print_json(report);
+        return print_json(&MdbaseOperationResult::new(
+            report.valid,
+            MdbaseCompleteRecord::from(&report.record),
+            report.diagnostics.clone(),
+        ));
     }
     println!("Path:     {}", report.record.path);
     println!("Revision: {}", report.record.revision);

@@ -30774,8 +30774,9 @@ fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
             .stdout,
     )
     .expect("status JSON");
-    assert_eq!(status["records"], 1);
-    assert_eq!(status["types"], 1);
+    assert_eq!(status["valid"], true);
+    assert_eq!(status["result"]["records"], 1);
+    assert_eq!(status["result"]["types"], 1);
 
     let read_output = Command::cargo_bin("vulcan")
         .expect("binary")
@@ -30792,8 +30793,10 @@ fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
         .expect("read runs");
     assert!(read_output.status.success());
     let read: Value = serde_json::from_slice(&read_output.stdout).expect("read JSON");
-    assert!(read["record"].get("document").is_none());
-    assert_eq!(read["record"]["effective_frontmatter"]["status"], "open");
+    assert!(read["result"].get("document").is_none());
+    assert!(read["result"].get("display").is_none());
+    assert!(read["result"].get("diagnostics").is_none());
+    assert_eq!(read["result"]["effective_frontmatter"]["status"], "open");
 
     let source_output = Command::cargo_bin("vulcan")
         .expect("binary")
@@ -30810,7 +30813,7 @@ fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
         .output()
         .expect("source read runs");
     let source: Value = serde_json::from_slice(&source_output.stdout).expect("source JSON");
-    assert!(source["record"]["document"]
+    assert!(source["result"]["document"]
         .as_str()
         .expect("document")
         .contains("Body"));
