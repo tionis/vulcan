@@ -8008,7 +8008,11 @@ fn sync_clone_supplies_the_android_detached_git_layout() {
     ]);
     let dry_run = command.assert().success();
     let report = parse_stdout_json(&dry_run);
-    let expected_git_dir = data_home.join("vulcan/git/mobile.git");
+    let expected_git_dir = temporary
+        .path()
+        .canonicalize()
+        .expect("temporary directory should be canonicalized")
+        .join("data/vulcan/git/mobile.git");
     assert_eq!(report["platform_policy"]["profile"], "android_shared");
     assert_eq!(report["proposed_registration"]["id"], "mobile");
     assert_eq!(
