@@ -14,7 +14,9 @@ use vulcan_core::VaultPaths;
 use vulcan_sync::{GitCliEngine, GitEngine, GitEngineError, SyncJobTrigger};
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const WATCH_SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+// Content comparison reads the whole worktree. Use it only as a fallback,
+// at a modest cadence; the runtime also schedules periodic reconciliation.
+const WATCH_FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Minimum interval between Recovery wake-ups for an unchanged watcher error
 /// set. A persistently failing path (dangling symlink, denied file) must not
 /// schedule a full sync on every poll scan; one retry per cooldown preserves
@@ -155,7 +157,7 @@ where
     }
 
     let (sender, receiver) = mpsc::channel::<(WatchSource, notify::Result<Event>)>();
-    let _watchers = register_watchers(&registration.path, &sender, WATCH_SAFETY_POLL_INTERVAL)?;
+    let _watchers = register_watchers(&registration.path, &sender, WATCH_FALLBACK_POLL_INTERVAL)?;
     drop(sender);
 
     let paths = VaultPaths::new(&registration.path);
@@ -230,7 +232,7 @@ fn suppress_unchanged_error_batch(
 fn register_watchers(
     path: &Path,
     sender: &mpsc::Sender<(WatchSource, notify::Result<Event>)>,
-    safety_poll_interval: Duration,
+    fallback_poll_interval: Duration,
 ) -> Result<RegisteredWatchers, notify::Error> {
     let native_sender = sender.clone();
     let native = notify::recommended_watcher(move |event| {
@@ -241,13 +243,33 @@ fn register_watchers(
         Ok(watcher)
     });
 
+    finish_watcher_registration(path, sender, fallback_poll_interval, native)
+}
+
+fn finish_watcher_registration(
+    path: &Path,
+    sender: &mpsc::Sender<(WatchSource, notify::Result<Event>)>,
+    fallback_poll_interval: Duration,
+    native: Result<RecommendedWatcher, notify::Error>,
+) -> Result<RegisteredWatchers, notify::Error> {
+    // Do not construct a PollWatcher when native registration succeeded:
+    // filtering its events cannot avoid the recursive reads and hashing.
+    let native_error = match native {
+        Ok(native) => {
+            return Ok(RegisteredWatchers {
+                _native: Some(native),
+                _polling: None,
+            })
+        }
+        Err(error) => error,
+    };
     let polling_sender = sender.clone();
     let polling = PollWatcher::new(
         move |event| {
             let _ = polling_sender.send((WatchSource::Polling, event));
         },
         Config::default()
-            .with_poll_interval(safety_poll_interval)
+            .with_poll_interval(fallback_poll_interval)
             .with_compare_contents(true),
     )
     .and_then(|mut watcher| {
@@ -255,20 +277,12 @@ fn register_watchers(
         Ok(watcher)
     });
 
-    match (native, polling) {
-        (Ok(native), Ok(polling)) => Ok(RegisteredWatchers {
-            _native: Some(native),
-            _polling: Some(polling),
-        }),
-        (Ok(native), Err(_)) => Ok(RegisteredWatchers {
-            _native: Some(native),
-            _polling: None,
-        }),
-        (Err(_), Ok(polling)) => Ok(RegisteredWatchers {
+    match polling {
+        Ok(polling) => Ok(RegisteredWatchers {
             _native: None,
             _polling: Some(polling),
         }),
-        (Err(native_error), Err(_)) => Err(native_error),
+        Err(_) => Err(native_error),
     }
 }
 
@@ -689,7 +703,7 @@ mod tests {
             )
             .expect("watcher runs");
         });
-        // Several poll scans elapse here; each one trips on the dead link.
+        // Allow watcher batches to settle without generating recovery work.
         std::thread::sleep(Duration::from_secs(5));
         stop.store(true, Ordering::Release);
         watcher.join().expect("watcher thread");
@@ -780,13 +794,53 @@ mod tests {
     }
 
     #[test]
-    fn polling_backup_detects_same_size_content_changes() {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[allow(clippy::used_underscore_binding)] // Inspect watcher lifetime guards in regression tests.
+    fn native_watcher_detects_changes_without_content_polling() {
         let temporary = tempdir().expect("temporary directory");
         let note = temporary.path().join("note.md");
         std::fs::write(&note, "alpha\n").expect("initial note");
         let (sender, receiver) = mpsc::channel();
-        let _watchers = register_watchers(temporary.path(), &sender, Duration::from_millis(25))
-            .expect("register at least one watcher");
+        let watchers = register_watchers(temporary.path(), &sender, Duration::from_millis(25))
+            .expect("register native watcher");
+        assert!(watchers._native.is_some());
+        assert!(
+            watchers._polling.is_none(),
+            "native watching must not hash the worktree on a timer"
+        );
+        std::fs::write(&note, "bravo\n").expect("same-size update");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut batch = WatchBatch::default();
+        let paths = VaultPaths::new(temporary.path());
+        while Instant::now() < deadline {
+            if let Ok((source, Ok(event))) = receiver.recv_timeout(Duration::from_millis(50)) {
+                assert_eq!(source, WatchSource::Native);
+                if batch.push_event(&paths, &event, Instant::now(), || Ok(None))
+                    && batch.paths.contains("note.md")
+                {
+                    return;
+                }
+            }
+        }
+        panic!("native watcher did not detect the content change");
+    }
+
+    #[test]
+    #[allow(clippy::used_underscore_binding)] // Inspect watcher lifetime guards in regression tests.
+    fn polling_fallback_detects_same_size_content_changes() {
+        let temporary = tempdir().expect("temporary directory");
+        let note = temporary.path().join("note.md");
+        std::fs::write(&note, "alpha\n").expect("initial note");
+        let (sender, receiver) = mpsc::channel();
+        let watchers = finish_watcher_registration(
+            temporary.path(),
+            &sender,
+            Duration::from_millis(25),
+            Err(notify::Error::generic("native backend unavailable")),
+        )
+        .expect("register fallback watcher");
+        assert!(watchers._native.is_none());
+        assert!(watchers._polling.is_some());
         drop(sender);
         std::thread::sleep(Duration::from_millis(100));
         std::fs::write(&note, "bravo\n").expect("same-size update");

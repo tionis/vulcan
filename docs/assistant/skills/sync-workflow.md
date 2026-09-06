@@ -163,6 +163,10 @@ they commit.
 - Start the daemon explicitly with `vulcan daemon start` or `--detach`. On Linux, macOS, and
   Windows the running daemon owns advertised long-poll listeners; watcher, notification, startup,
   poll, and companion triggers coalesce through one per-wiki supervisor.
+- Daemon sync watchers use native filesystem notifications when available. Content-comparing
+  polling runs only if native watcher setup fails, with a 30-second interval; it can be costly
+  on large worktrees. Periodic sync reconciliation (every five minutes by default) repairs
+  missed notifications. To request reconciliation immediately, use `vulcan sync run <wiki>`.
 - The daemon is quiet by default. Run `vulcan --verbose daemon start` (or with `--detach`,
   which carries the flag to the background child and its `daemon.log`) for operational stderr
   lines: one per completed sync job with wiki, triggers, state/outcome, watch-trigger detail,

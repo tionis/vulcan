@@ -14487,6 +14487,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("sync workflow skill should be readable");
     assert!(sync_skill.contains("name: sync-workflow"));
+    assert!(sync_skill.contains("vulcan sync run <wiki>"));
     assert!(sync_skill.contains("`safe.directory`"));
     assert!(sync_skill.contains("managed: true"));
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
