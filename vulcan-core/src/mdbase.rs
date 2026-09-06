@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 
 mod contracts;
 pub use contracts::*;
+mod records;
+pub use records::*;
 
 pub const MDBASE_CONFIG_FILE_NAME: &str = "mdbase.yaml";
 pub const MDBASE_LOCK_FILE_NAME: &str = "mdbase.lock.yaml";
