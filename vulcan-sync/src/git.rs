@@ -2175,7 +2175,35 @@ impl GitEngine for GitCliEngine {
                 &request.source,
             ));
         }
-        self.discover_repository(&request.work_tree)
+        match self.discover_repository(&request.work_tree) {
+            Err(GitEngineError::CommandFailed {
+                exit_code: Some(128),
+                ref stderr,
+                ..
+            }) if stderr.starts_with("fatal: detected dubious ownership in repository at ") => {
+                // Shared filesystems (notably Android storage) can report a different
+                // owner even for a checkout we just created. Trust only this successful
+                // clone, never arbitrary repositories encountered during discovery.
+                let work_tree = request
+                    .work_tree
+                    .canonicalize()
+                    .map_err(GitEngineError::Io)?;
+                let mut command = self.command();
+                // Git interprets a trailing `/*` as a trust wildcard, so it
+                // cannot safely represent this unusual literal directory name.
+                if work_tree.file_name() == Some(OsStr::new("*")) {
+                    return Err(GitEngineError::UnsupportedRepository {
+                        detail: "cannot automatically trust a worktree named `*`; choose a different clone destination".to_string(),
+                    });
+                }
+                command
+                    .args(["config", "--global", "--add", "safe.directory"])
+                    .arg(git_cli_path(&work_tree));
+                ensure_success("trust the cloned Git worktree", self.execute(command)?)?;
+                self.discover_repository(&request.work_tree)
+            }
+            result => result,
+        }
     }
 
     fn read_ref(
@@ -5754,6 +5782,90 @@ mod tests {
                 .expect("canonical discovered Git directory"),
             git_dir.canonicalize().expect("canonical Git directory")
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn clone_repairs_ownership_only_for_its_new_worktree() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for detached in [false, true] {
+            let temporary = TempDir::new().expect("temporary directory");
+            let source = temporary.path().join("source");
+            fs::create_dir(&source).expect("source directory");
+            init_repo(&source);
+            fs::write(source.join("Home.md"), "# Home\n").expect("note");
+            commit_all(&source, "initial");
+            // Keep the real Git ownership check, but simulate Android ownership
+            // without chown, root, process-global environment changes, or touching
+            // the developer's Git configuration.
+            let wrapper = temporary.path().join("git-wrapper");
+            fs::write(
+                &wrapper,
+                r#"#!/bin/sh
+test_root=$(dirname "$0")
+export GIT_CONFIG_GLOBAL="$test_root/global.config"
+export GIT_CONFIG_NOSYSTEM=1
+if test "$1" != clone && test -e "$test_root/different-owner"; then
+    export GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+fi
+exec git "$@"
+"#,
+            )
+            .expect("wrapper");
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).expect("executable");
+            let engine = GitCliEngine::new(&wrapper);
+            let global = temporary.path().join("global.config");
+            fs::write(&global, "[safe]\n\tdirectory = /unrelated/trusted\n").expect("config");
+            let original_config = fs::read(&global).expect("original config");
+            let request = |name: &str| GitCloneRequest {
+                source: source.display().to_string(),
+                work_tree: temporary.path().join(name),
+                git_dir: detached.then(|| temporary.path().join(format!("{name}.git"))),
+                platform: GitPlatformProfile::AndroidShared,
+            };
+            engine
+                .clone_repository(&request("normal"))
+                .expect("normal clone");
+            assert_eq!(fs::read(&global).expect("config"), original_config);
+
+            fs::write(temporary.path().join("different-owner"), "").expect("ownership marker");
+            assert!(engine.discover_repository(&source).is_err());
+            assert_eq!(fs::read(&global).expect("config"), original_config);
+            let mut invalid = request("failed");
+            invalid.source = temporary.path().join("missing").display().to_string();
+            assert!(engine.clone_repository(&invalid).is_err());
+            assert_eq!(fs::read(&global).expect("config"), original_config);
+
+            let clone = request("shared vault ' quoted");
+            let repository = engine.clone_repository(&clone).expect("ownership repaired");
+            let expected = clone.work_tree.canonicalize().expect("canonical worktree");
+            assert_eq!(repository.work_tree, Some(expected.clone()));
+            assert_eq!(
+                engine
+                    .capture(
+                        "read trust entries",
+                        None,
+                        ["config", "--global", "--get-all", "safe.directory"]
+                    )
+                    .expect("trust entries"),
+                format!("/unrelated/trusted\n{}\n", expected.display())
+            );
+            let repaired_config = fs::read(&global).expect("config");
+            GitCliEngine::new(&wrapper)
+                .discover_repository(&clone.work_tree)
+                .expect("trust persists");
+            assert_eq!(fs::read(&global).expect("config"), repaired_config);
+            assert!(engine.discover_repository(&source).is_err());
+
+            let literal_star = request("*");
+            assert!(matches!(
+                engine.clone_repository(&literal_star),
+                Err(GitEngineError::UnsupportedRepository { .. })
+            ));
+            assert!(engine.discover_repository(&source).is_err());
+            assert_eq!(fs::read(&global).expect("config"), repaired_config);
+        }
     }
 
     #[test]

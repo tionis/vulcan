@@ -14368,6 +14368,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));
+    assert!(git_skill.contains("`safe.directory`"));
     assert!(git_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(git_skill.contains("state.apply-marker"));
     assert!(git_skill.contains("vulcan-sync/apply.json"));
@@ -14419,6 +14420,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("sync workflow skill should be readable");
     assert!(sync_skill.contains("name: sync-workflow"));
+    assert!(sync_skill.contains("`safe.directory`"));
     assert!(sync_skill.contains("managed: true"));
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
     assert!(sync_skill.contains("vulcan sync conflicts <conflict-id>"));

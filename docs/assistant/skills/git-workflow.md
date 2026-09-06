@@ -114,4 +114,5 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Pause future automatic sync from inside a registered vault with `vulcan sync pause --dry-run`, then apply it without `--dry-run` after review.
 - Turn accepted live snapshots into reviewable commits with `vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run`, create the plan after review, and explicitly validate/apply its returned plan ID.
 - Preview a detached Android layout from Termux with `vulcan sync clone <remote> /storage/emulated/0/Documents/wiki --dry-run`; use `--git-dir` or `--platform` only for an intentional override.
+- If Git rejects ownership of a successfully created checkout, `vault clone` and `sync clone` add its canonical worktree path to the user's global `safe.directory` entries and retry. Dry runs do not write trust entries, and ordinary discovery never automatically trusts an existing repository.
 - Recover that registered layout after private Git-data loss with `vulcan vault recover-git <wiki> <remote> --dry-run`, inspect the warning, then apply without `--dry-run`.

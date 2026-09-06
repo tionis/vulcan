@@ -194,6 +194,10 @@ they commit.
   the Android build compile.
 - Under Termux, keep the worktree in shared storage and the detached Git directory in Termux-private
   storage. `vulcan sync clone <remote> <shared-path> --dry-run` selects both defaults automatically.
+- After a successful clone, an ownership rejection from Git automatically adds only the canonical
+  new worktree path to the user's global `safe.directory` entries and retries discovery. This also
+  applies to `vault clone`; dry runs do not change Git configuration. Existing repositories are
+  never automatically trusted by discovery, status, or sync.
 - One-shot `sync status`, `sync doctor`, and `sync run` are the supported baseline and require no
   daemon. Android shared storage cannot faithfully represent executable bits or symlinks.
 - For an Android-managed periodic safety net, preview `vulcan sync termux-install <wiki>
