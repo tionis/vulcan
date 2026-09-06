@@ -53,9 +53,9 @@ pub const MDBASE_V03_VALID_TASK: &str =
 pub const MDBASE_V03_CONFLICTING_TASKNOTES_CONTRACT: &str = include_str!(
     "../resources/mdbase/v0.3/upstream/tests/fixtures/data-contracts/conflicting-tasknotes.task.md"
 );
-const MDBASE_SCHEMA_MAX_FILES: usize = 64;
-const MDBASE_SCHEMA_MAX_DEPTH: usize = 32;
-const MDBASE_SCHEMA_MAX_BYTES: u64 = 1024 * 1024;
+pub const MDBASE_SCHEMA_MAX_FILES: usize = 64;
+pub const MDBASE_SCHEMA_MAX_DEPTH: usize = 32;
+pub const MDBASE_SCHEMA_MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdbaseBundledSchema {

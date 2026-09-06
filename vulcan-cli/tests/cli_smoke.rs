@@ -30843,9 +30843,39 @@ fn mdbase_conformance_command_emits_pinned_machine_readable_evidence() {
         report["result"]["upstream_commit"],
         "68b9a97969bf9472f0d42b8faf8a2e349553f4ea"
     );
-    assert!(report["result"]["profiles"]
-        .as_array()
-        .expect("profiles")
-        .iter()
-        .all(|profile| profile["supported"] == true));
+    let profiles = report["result"]["profiles"].as_array().expect("profiles");
+    assert!(profiles.iter().any(|profile| {
+        profile["profile"] == "core_read"
+            && profile["evaluated"] == true
+            && profile["supported"] == true
+    }));
+    assert!(profiles.iter().any(|profile| {
+        profile["profile"] == "cel"
+            && profile["evaluated"] == false
+            && profile["supported"] == false
+    }));
+}
+
+#[test]
+fn mdbase_conformance_claim_is_canonical_and_verified() {
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["--output", "json", "mdbase", "conformance", "--claim"])
+        .output()
+        .expect("conformance claim runs");
+    assert!(
+        output.status.success(),
+        "conformance claim failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let claim: Value = serde_json::from_slice(&output.stdout).expect("claim JSON");
+    assert_eq!(claim["valid"], true);
+    assert_eq!(claim["result"]["kind"], "mdbase.conformance");
+    assert_eq!(claim["result"]["status"], "verified");
+    assert_eq!(
+        claim["result"]["profiles"],
+        serde_json::json!(["core_read", "collection_semantics"])
+    );
+    assert_eq!(claim["result"]["json_schema"]["remote_refs"], false);
+    assert_eq!(claim["result"]["evidence"][0]["result"], "pass");
 }

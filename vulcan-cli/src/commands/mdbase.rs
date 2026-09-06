@@ -6,7 +6,8 @@ use vulcan_app::mdbase::{
     MdbaseReadReport, MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
 };
 use vulcan_app::mdbase_conformance::{
-    run_mdbase_core_read_conformance, MdbaseConformanceEvidenceReport,
+    build_mdbase_conformance_claim, run_mdbase_core_read_conformance, MdbaseConformanceClaim,
+    MdbaseConformanceEvidenceReport,
 };
 use vulcan_core::mdbase::{MdbaseCompleteRecord, MdbaseDiagnosticLevel, MdbaseOperationResult};
 use vulcan_core::VaultPaths;
@@ -38,10 +39,31 @@ pub(crate) fn handle_mdbase_command(
             cli.output,
             &build_mdbase_read_report(paths, path, *source, filter.as_ref())?,
         ),
-        MdbaseCommand::Conformance => {
-            print_conformance(cli.output, &run_mdbase_core_read_conformance()?)
+        MdbaseCommand::Conformance { claim } => {
+            let report = run_mdbase_core_read_conformance()?;
+            if *claim {
+                print_conformance_claim(cli.output, &build_mdbase_conformance_claim(&report)?)
+            } else {
+                print_conformance(cli.output, &report)
+            }
         }
     }
+}
+
+fn print_conformance_claim(
+    output: OutputFormat,
+    claim: &MdbaseConformanceClaim,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(&MdbaseOperationResult::new(true, claim, Vec::new()));
+    }
+    println!(
+        "Verified mdbase {} profiles: {}",
+        claim.spec_version,
+        claim.profiles.join(", ")
+    );
+    println!("Evidence: {}", claim.evidence[0].artifact);
+    Ok(())
 }
 
 fn print_conformance(
@@ -64,7 +86,9 @@ fn print_conformance(
         println!(
             "{}\t{}\t{} passed, {} failed, {} unsupported",
             profile.profile,
-            if profile.supported {
+            if !profile.evaluated {
+                "not evaluated"
+            } else if profile.supported {
                 "supported"
             } else {
                 "unsupported"

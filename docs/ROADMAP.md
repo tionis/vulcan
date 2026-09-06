@@ -7261,7 +7261,7 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 - [x] Add `vulcan mdbase status|types|contracts|validate|read` over reusable core/app services, with `--output json`, permission filtering, exact source opt-in, canonical diagnostics, and no implicit mutation.
 - [x] Return the canonical mdbase complete-record and operation envelopes from explicit mdbase commands while keeping existing Vulcan JSON contracts backward compatible.
 - [x] Add a spec-fixture adapter and evidence command that runs the upstream v0.3 `core_read` and `collection_semantics` suites against Vulcan.
-- [ ] Publish a machine-readable conformance claim only after every required fixture passes on the pinned artifact; report unsupported profiles explicitly instead of approximating them.
+- [x] Publish a machine-readable conformance claim only after every required fixture passes on the pinned artifact; report unsupported profiles explicitly instead of approximating them.
 
 #### MDB.5 CEL and canonical mdbase querying
 

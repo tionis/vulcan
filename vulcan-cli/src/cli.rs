@@ -2044,7 +2044,13 @@ pub enum MdbaseCommand {
         source: bool,
     },
     #[command(about = "Run pinned v0.3 core-read conformance fixtures and emit evidence")]
-    Conformance,
+    Conformance {
+        #[arg(
+            long,
+            help = "Emit a canonical verified claim; withheld unless every required fixture passes"
+        )]
+        claim: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

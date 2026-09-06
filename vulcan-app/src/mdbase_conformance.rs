@@ -1,15 +1,19 @@
 //! Adapter for the pinned upstream mdbase v0.3 semantic fixture DSL.
 
 use crate::AppError;
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::time::SystemTime;
 use vulcan_core::mdbase::{
     compose_mdbase_type_behavior, load_mdbase_collection, load_mdbase_contract_registry,
     load_mdbase_records_with_contracts, load_mdbase_type_registry, project_mdbase_contract_view,
-    render_mdbase_path_pattern, MdbaseRecordDiagnostic, MDBASE_BUNDLED_ASSET_DIGEST,
-    MDBASE_SPEC_UPSTREAM_COMMIT, MDBASE_SPEC_VERSION, MDBASE_V03_CONFLICTING_TASKNOTES_CONTRACT,
+    render_mdbase_path_pattern, validate_mdbase_schema_value, MdbaseRecordDiagnostic,
+    MDBASE_BUNDLED_ASSET_DIGEST, MDBASE_CANONICAL_SCHEMA_BASE, MDBASE_SCHEMA_MAX_BYTES,
+    MDBASE_SCHEMA_MAX_DEPTH, MDBASE_SCHEMA_MAX_FILES, MDBASE_SPEC_UPSTREAM_COMMIT,
+    MDBASE_SPEC_VERSION, MDBASE_V03_CONFLICTING_TASKNOTES_CONTRACT,
     MDBASE_V03_CORE_COLLECTION_SUITE, MDBASE_V03_DATA_CONTRACTS_SUITE, MDBASE_V03_MANIFEST,
     MDBASE_V03_TASKNOTES_CONTRACT, MDBASE_V03_TASKNOTES_TYPE, MDBASE_V03_VALID_TASK,
 };
@@ -39,6 +43,7 @@ pub struct MdbaseConformanceCaseResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MdbaseConformanceProfileResult {
     pub profile: String,
+    pub evaluated: bool,
     pub supported: bool,
     pub passed: usize,
     pub failed: usize,
@@ -54,6 +59,45 @@ pub struct MdbaseConformanceEvidenceReport {
     pub artifact_digest: String,
     pub profiles: Vec<MdbaseConformanceProfileResult>,
     pub cases: Vec<MdbaseConformanceCaseResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseConformanceClaim {
+    pub kind: String,
+    pub status: String,
+    pub implementation: MdbaseConformanceImplementation,
+    pub spec_version: String,
+    pub profiles: Vec<String>,
+    pub json_schema: MdbaseConformanceJsonSchema,
+    pub limits: BTreeMap<String, serde_json::Value>,
+    pub evidence: Vec<MdbaseConformanceEvidence>,
+    #[serde(rename = "x-vulcan-upstream-commit")]
+    pub upstream_commit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseConformanceImplementation {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub language: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseConformanceJsonSchema {
+    pub dialect: String,
+    pub keywords: Vec<String>,
+    pub formats: Vec<String>,
+    pub remote_refs: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseConformanceEvidence {
+    pub kind: String,
+    pub command: String,
+    pub result: String,
+    pub verified_at: String,
+    pub artifact: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,11 +208,30 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
     }
     results.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let profiles = TARGET_PROFILES
+    let profiles = manifest
+        .claim_profiles
         .iter()
-        .map(|profile| build_profile_result(profile, &manifest, &results))
+        .map(|entry| {
+            if TARGET_PROFILES.contains(&entry.id.as_str()) {
+                build_profile_result(&entry.id, &manifest, &results)
+            } else {
+                MdbaseConformanceProfileResult {
+                    profile: entry.id.clone(),
+                    evaluated: false,
+                    supported: false,
+                    passed: 0,
+                    failed: 0,
+                    unsupported: 0,
+                    missing_requirements: entry.requirements.clone(),
+                }
+            }
+        })
         .collect::<Vec<_>>();
-    let valid = profiles.iter().all(|profile| profile.supported);
+    let valid = profiles
+        .iter()
+        .filter(|profile| profile.evaluated)
+        .all(|profile| profile.supported)
+        && profiles.iter().filter(|profile| profile.evaluated).count() == TARGET_PROFILES.len();
     Ok(MdbaseConformanceEvidenceReport {
         valid,
         spec_version: MDBASE_SPEC_VERSION.to_string(),
@@ -177,6 +240,163 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
         profiles,
         cases: results,
     })
+}
+
+/// Build the canonical claim only from a completely passing pinned evidence
+/// report. A future regression therefore removes the claim instead of leaving
+/// stale compatibility metadata behind.
+pub fn build_mdbase_conformance_claim(
+    report: &MdbaseConformanceEvidenceReport,
+) -> Result<MdbaseConformanceClaim, AppError> {
+    let verified_at =
+        DateTime::<Utc>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Secs, true);
+    build_mdbase_conformance_claim_at(report, &verified_at)
+}
+
+fn build_mdbase_conformance_claim_at(
+    report: &MdbaseConformanceEvidenceReport,
+    verified_at: &str,
+) -> Result<MdbaseConformanceClaim, AppError> {
+    if !claimable_report(report) {
+        return Err(AppError::operation(
+            "mdbase conformance claim withheld because required pinned fixtures did not pass",
+        ));
+    }
+    let claim = MdbaseConformanceClaim {
+        kind: "mdbase.conformance".to_string(),
+        status: "verified".to_string(),
+        implementation: MdbaseConformanceImplementation {
+            id: "vulcan".to_string(),
+            name: "Vulcan".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            language: "Rust".to_string(),
+        },
+        spec_version: MDBASE_SPEC_VERSION.to_string(),
+        profiles: TARGET_PROFILES.iter().map(ToString::to_string).collect(),
+        json_schema: claim_json_schema(),
+        limits: claim_limits(),
+        evidence: vec![MdbaseConformanceEvidence {
+            kind: "conformance_suite".to_string(),
+            command: "vulcan mdbase conformance --output json".to_string(),
+            result: "pass".to_string(),
+            verified_at: verified_at.to_string(),
+            artifact: format!(
+                "mdbase-spec@{}#blake3:{}",
+                report.upstream_commit, MDBASE_BUNDLED_ASSET_DIGEST
+            ),
+        }],
+        upstream_commit: report.upstream_commit.clone(),
+    };
+    validate_claim(&claim)?;
+    Ok(claim)
+}
+
+fn claimable_report(report: &MdbaseConformanceEvidenceReport) -> bool {
+    report.valid
+        && report.spec_version == MDBASE_SPEC_VERSION
+        && report.upstream_commit == MDBASE_SPEC_UPSTREAM_COMMIT
+        && report.artifact_digest == format!("blake3:{MDBASE_BUNDLED_ASSET_DIGEST}")
+        && report
+            .cases
+            .iter()
+            .all(|case| case.status == MdbaseConformanceCaseStatus::Pass)
+        && TARGET_PROFILES.iter().all(|profile| {
+            report.profiles.iter().any(|result| {
+                result.profile == *profile
+                    && result.evaluated
+                    && result.supported
+                    && result.failed == 0
+                    && result.unsupported == 0
+                    && result.missing_requirements.is_empty()
+            })
+        })
+}
+
+fn claim_json_schema() -> MdbaseConformanceJsonSchema {
+    MdbaseConformanceJsonSchema {
+        dialect: "https://json-schema.org/draft/2020-12/schema".to_string(),
+        keywords: [
+            "$defs",
+            "$ref",
+            "additionalProperties",
+            "allOf",
+            "anyOf",
+            "const",
+            "default",
+            "description",
+            "else",
+            "enum",
+            "examples",
+            "exclusiveMaximum",
+            "exclusiveMinimum",
+            "if",
+            "items",
+            "maxItems",
+            "maxLength",
+            "maximum",
+            "minItems",
+            "minLength",
+            "minimum",
+            "multipleOf",
+            "not",
+            "oneOf",
+            "pattern",
+            "properties",
+            "required",
+            "then",
+            "title",
+            "type",
+            "uniqueItems",
+        ]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect(),
+        formats: ["date", "date-time", "time"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect(),
+        remote_refs: false,
+    }
+}
+
+fn claim_limits() -> BTreeMap<String, serde_json::Value> {
+    BTreeMap::from([
+        (
+            "local_schema_max_bytes".to_string(),
+            serde_json::json!(MDBASE_SCHEMA_MAX_BYTES),
+        ),
+        (
+            "local_schema_max_depth".to_string(),
+            serde_json::json!(MDBASE_SCHEMA_MAX_DEPTH),
+        ),
+        (
+            "local_schema_max_files".to_string(),
+            serde_json::json!(MDBASE_SCHEMA_MAX_FILES),
+        ),
+    ])
+}
+
+fn validate_claim(claim: &MdbaseConformanceClaim) -> Result<(), AppError> {
+    let schema = vulcan_core::mdbase::bundled_mdbase_schema(&format!(
+        "{MDBASE_CANONICAL_SCHEMA_BASE}conformance-claim.schema.json"
+    ))
+    .expect("the conformance-claim schema is part of the pinned bundle");
+    let schema: serde_json::Value =
+        serde_json::from_str(schema.json).map_err(AppError::operation)?;
+    let value = serde_json::to_value(claim).map_err(AppError::operation)?;
+    let diagnostics = validate_mdbase_schema_value(&schema, &value).map_err(AppError::operation)?;
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::operation(format!(
+            "generated mdbase conformance claim is invalid: {}",
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )))
+    }
 }
 
 fn target_cover(cover: &str) -> bool {
@@ -233,6 +453,7 @@ fn build_profile_result(
         .count();
     MdbaseConformanceProfileResult {
         profile: profile.to_string(),
+        evaluated: true,
         supported: failed == 0 && unsupported == 0 && missing_requirements.is_empty(),
         passed,
         failed,
@@ -681,6 +902,35 @@ mod tests {
             .cases
             .iter()
             .any(|case| case.id == "data-contract-projection"));
+        assert!(report
+            .profiles
+            .iter()
+            .any(|profile| profile.profile == "cel" && !profile.evaluated && !profile.supported));
+    }
+
+    #[test]
+    fn canonical_claim_is_schema_valid_and_pins_passing_evidence() {
+        let report = run_mdbase_core_read_conformance().expect("conformance runs");
+        let claim = build_mdbase_conformance_claim_at(&report, "2026-09-06T12:00:00Z")
+            .expect("passing report should produce a claim");
+
+        assert_eq!(claim.kind, "mdbase.conformance");
+        assert_eq!(claim.status, "verified");
+        assert_eq!(claim.profiles, TARGET_PROFILES);
+        assert_eq!(claim.evidence[0].result, "pass");
+        assert!(claim.evidence[0]
+            .artifact
+            .contains(MDBASE_SPEC_UPSTREAM_COMMIT));
+    }
+
+    #[test]
+    fn conformance_claim_is_withheld_after_any_required_failure() {
+        let mut report = run_mdbase_core_read_conformance().expect("conformance runs");
+        report.cases[0].status = MdbaseConformanceCaseStatus::Fail;
+
+        let error = build_mdbase_conformance_claim_at(&report, "2026-09-06T12:00:00Z")
+            .expect_err("failed evidence must not produce a claim");
+        assert!(error.to_string().contains("claim withheld"));
     }
 
     #[test]
