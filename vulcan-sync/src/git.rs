@@ -7094,16 +7094,40 @@ mod tests {
     fn diff_patch_treats_paths_as_literal_file_names() {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
-        fs::write(temporary.path().join("a*b.md"), "star before\n").expect("star note");
-        fs::write(temporary.path().join("axb.md"), "cousin before\n").expect("cousin note");
-        let base = commit_all(temporary.path(), "initial");
-        fs::write(temporary.path().join("a*b.md"), "star after\n").expect("star update");
-        fs::write(temporary.path().join("axb.md"), "cousin after\n").expect("cousin update");
-        let target = commit_all(temporary.path(), "target");
         let engine = GitCliEngine::default();
         let repository = engine
             .discover_repository(temporary.path())
             .expect("repository");
+        let create_tree = |star: &[u8], cousin: &[u8]| {
+            let star = engine.write_blob(&repository, star).expect("star blob");
+            let cousin = engine.write_blob(&repository, cousin).expect("cousin blob");
+            let input = format!(
+                "100644 blob {}\ta*b.md\0100644 blob {}\taxb.md\0",
+                star.as_str(),
+                cousin.as_str()
+            );
+            let mut command = engine.repository_command(&repository);
+            command.args(["mktree", "-z"]);
+            let output = engine
+                .execute_with_input(command, "create literal-path test tree", input.as_bytes())
+                .expect("Git should create the test tree");
+            let output = ensure_success("create literal-path test tree", output)
+                .expect("valid test tree entries");
+            GitOid::parse(
+                decode_stdout("create literal-path test tree", output.stdout)
+                    .expect("tree object ID should be UTF-8")
+                    .trim(),
+            )
+            .expect("tree object ID")
+        };
+        let base_tree = create_tree(b"star before\n", b"cousin before\n");
+        let base = engine
+            .create_reproducible_commit(&repository, &base_tree, &[], "initial\n")
+            .expect("base commit");
+        let target_tree = create_tree(b"star after\n", b"cousin after\n");
+        let target = engine
+            .create_reproducible_commit(&repository, &target_tree, &[base.clone()], "target\n")
+            .expect("target commit");
 
         let patch = engine
             .diff_patch(&repository, &base, &target, &["a*b.md".to_string()])
