@@ -70,6 +70,7 @@ pub struct MdbaseCelProgram {
     source: String,
     program: Program,
     stats: MdbaseCelProgramStats,
+    projection_dependencies: BTreeSet<String>,
 }
 
 impl MdbaseCelProgram {
@@ -81,6 +82,10 @@ impl MdbaseCelProgram {
     #[must_use]
     pub const fn stats(&self) -> MdbaseCelProgramStats {
         self.stats
+    }
+
+    pub fn projection_dependencies(&self) -> impl Iterator<Item = &str> {
+        self.projection_dependencies.iter().map(String::as_str)
     }
 }
 
@@ -169,6 +174,8 @@ impl MdbaseCelEngine {
             })?
             .map_err(|error| MdbaseCelError::new("expression_compile_error", error.to_string()))?;
         let stats = inspect_ast(&expression, &self.limits)?;
+        let mut projection_dependencies = BTreeSet::new();
+        collect_projection_dependencies(&expression, &mut projection_dependencies);
         let program = catch_unwind(AssertUnwindSafe(|| Program::compile(source)))
             .map_err(|_| {
                 MdbaseCelError::new(
@@ -181,6 +188,7 @@ impl MdbaseCelEngine {
             source: source.to_string(),
             program,
             stats,
+            projection_dependencies,
         })
     }
 
@@ -304,6 +312,52 @@ impl MdbaseCelEngine {
         MdbaseCelLinkBudget {
             remaining: self.limits.max_link_traversal,
         }
+    }
+}
+
+fn collect_projection_dependencies(expression: &IdedExpr, dependencies: &mut BTreeSet<String>) {
+    match &expression.expr {
+        Expr::Select(select) => {
+            if matches!(&select.operand.expr, Expr::Ident(name) if name == "projection") {
+                dependencies.insert(select.field.clone());
+            }
+            collect_projection_dependencies(&select.operand, dependencies);
+        }
+        Expr::Call(call) => {
+            if let Some(target) = &call.target {
+                collect_projection_dependencies(target, dependencies);
+            }
+            for argument in &call.args {
+                collect_projection_dependencies(argument, dependencies);
+            }
+        }
+        Expr::Comprehension(comprehension) => {
+            for child in [
+                &comprehension.iter_range,
+                &comprehension.accu_init,
+                &comprehension.loop_cond,
+                &comprehension.loop_step,
+                &comprehension.result,
+            ] {
+                collect_projection_dependencies(child, dependencies);
+            }
+        }
+        Expr::List(list) => {
+            for child in &list.elements {
+                collect_projection_dependencies(child, dependencies);
+            }
+        }
+        Expr::Map(map) => {
+            for child in entry_children(&map.entries) {
+                collect_projection_dependencies(child, dependencies);
+            }
+        }
+        Expr::Struct(map) => {
+            for child in entry_children(&map.entries) {
+                collect_projection_dependencies(child, dependencies);
+            }
+        }
+        Expr::Ident(_) | Expr::Literal(_) | Expr::Unspecified => {}
     }
 }
 

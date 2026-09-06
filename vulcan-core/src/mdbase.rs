@@ -22,6 +22,8 @@ mod contracts;
 pub use contracts::*;
 mod cel;
 pub use cel::*;
+mod query;
+pub use query::*;
 mod api;
 pub use api::*;
 mod records;

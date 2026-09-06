@@ -167,6 +167,130 @@ pub enum QueryProjection {
     Fields(Vec<String>),
 }
 
+/// Expression dialect carried by an advanced query plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryExpressionLanguage {
+    Cel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryExpressionSpec {
+    pub language: QueryExpressionLanguage,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryNamedExpression {
+    pub name: String,
+    pub expression: QueryExpressionSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QuerySelection {
+    Field {
+        field: String,
+        output_name: String,
+    },
+    Expression {
+        name: String,
+        expression: QueryExpressionSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryDirection {
+    #[default]
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryOrderKey {
+    pub field: String,
+    #[serde(default)]
+    pub direction: QueryDirection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuerySummarySpec {
+    pub field: String,
+    pub function: String,
+    pub output_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryFrontmatterMode {
+    #[default]
+    Effective,
+    Persisted,
+    Both,
+}
+
+/// Rich internal plan shared by frontends whose semantics exceed the compact
+/// `QueryAst`. Frontends retain ownership of their syntax and compile into this
+/// representation rather than making their dialect Vulcan's canonical syntax.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredQueryPlan {
+    pub source: QuerySource,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_context: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named_projections: Vec<QueryNamedExpression>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<QueryExpressionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Vec<QuerySelection>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order_by: Vec<QueryOrderKey>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_by: Vec<QueryOrderKey>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summary_functions: Vec<QueryNamedExpression>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summaries: Vec<QuerySummarySpec>,
+    #[serde(default)]
+    pub frontmatter_mode: QueryFrontmatterMode,
+    #[serde(default)]
+    pub include_body: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredQueryGroupMeta {
+    pub values: serde_json::Map<String, serde_json::Value>,
+    pub count: usize,
+    pub summaries: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredQueryPageMeta {
+    pub total_count: usize,
+    pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<StructuredQueryGroupMeta>>,
+}
+
 /// The canonical query AST.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryAst {
