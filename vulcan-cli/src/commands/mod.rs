@@ -13,6 +13,7 @@ pub(crate) mod graph;
 pub(crate) mod inbox;
 pub(crate) mod index;
 pub(crate) mod kanban;
+pub(crate) mod mdbase;
 pub(crate) mod note;
 pub(crate) mod open;
 pub(crate) mod periodic;

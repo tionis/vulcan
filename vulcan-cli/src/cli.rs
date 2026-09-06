@@ -2021,6 +2021,31 @@ pub enum CacheCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum MdbaseCommand {
+    #[command(about = "Inspect collection discovery and registry health")]
+    Status,
+    #[command(about = "List portable mdbase type definitions")]
+    Types,
+    #[command(about = "List portable data contracts and implementations")]
+    Contracts,
+    #[command(about = "Validate all readable records or one collection-relative path")]
+    Validate {
+        #[arg(help = "Optional collection-relative record path")]
+        path: Option<String>,
+    },
+    #[command(about = "Read one complete mdbase record without changing the collection")]
+    Read {
+        #[arg(help = "Collection-relative record path")]
+        path: String,
+        #[arg(
+            long,
+            help = "Include the exact source document in addition to parsed fields"
+        )]
+        source: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SuggestCommand {
     #[command(about = "Rank composite link suggestions")]
     Links {
@@ -6149,6 +6174,11 @@ pub struct TemplateRenderArgs {
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
+    #[command(about = "Inspect and validate an mdbase typed Markdown collection")]
+    Mdbase {
+        #[command(subcommand)]
+        command: MdbaseCommand,
+    },
     #[command(about = "Initialize, scan, rebuild, repair, watch, and serve index state")]
     Index {
         #[command(subcommand)]

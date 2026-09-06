@@ -7,6 +7,7 @@ use super::{
 use crate::config::VaultConfig;
 use crate::parser::{parse_document, ParseDiagnosticKind};
 use crate::paths::secure_read_to_string;
+use crate::permissions::PermissionFilter;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -130,10 +131,27 @@ pub fn load_mdbase_records(
     types: &MdbaseTypeRegistry,
     include_source: bool,
 ) -> Result<MdbaseRecordSet, MdbaseRecordError> {
+    load_mdbase_records_filtered(collection, types, include_source, None)
+}
+
+/// Load every readable record in deterministic collection-path order.
+///
+/// Filtering happens before collection-wide validation so diagnostics cannot
+/// reveal denied records through uniqueness relationships.
+pub fn load_mdbase_records_filtered(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    include_source: bool,
+    filter: Option<&PermissionFilter>,
+) -> Result<MdbaseRecordSet, MdbaseRecordError> {
     let discovery = discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
     let mut records = discovery
         .records
         .iter()
+        .filter(|path| match filter {
+            Some(filter) => filter.is_allowed(path),
+            None => true,
+        })
         .map(|path| load_mdbase_record(collection, types, path, include_source))
         .collect::<Result<Vec<_>, _>>()?;
     if collection.config.settings.validation != MdbaseValidationLevel::Off {
@@ -149,7 +167,18 @@ pub fn load_mdbase_records_with_contracts(
     contracts: &MdbaseContractRegistry,
     include_source: bool,
 ) -> Result<MdbaseRecordSet, MdbaseRecordError> {
-    let mut set = load_mdbase_records(collection, types, include_source)?;
+    load_mdbase_records_with_contracts_filtered(collection, types, contracts, include_source, None)
+}
+
+/// Load readable records and their exact-version contract projections.
+pub fn load_mdbase_records_with_contracts_filtered(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    include_source: bool,
+    filter: Option<&PermissionFilter>,
+) -> Result<MdbaseRecordSet, MdbaseRecordError> {
+    let mut set = load_mdbase_records_filtered(collection, types, include_source, filter)?;
     for record in &mut set.records {
         apply_contract_views(
             collection,

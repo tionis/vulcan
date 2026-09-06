@@ -429,7 +429,7 @@ pub use cli::{
     ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
     FolderNotePlacementArg, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
     IntegrationCommand, KanbanCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg,
-    NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
+    MdbaseCommand, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
     OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg, OutlineCollectionsCommand,
     OutlineCommand, OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
@@ -5016,6 +5016,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Status => {
             let report = commands::status::run_status_command(&paths)?;
             commands::status::print_status_report(cli.output, &report, use_stdout_color)
+        }
+        Command::Mdbase { ref command } => {
+            commands::mdbase::handle_mdbase_command(cli, &paths, command)
         }
         Command::Mcp {
             ref tool_pack,

@@ -30739,3 +30739,84 @@ fn fish_bases_eval_completion_uses_selected_vault_outside_cwd() {
         "bases eval should not complete files from the current working directory, got: {text}"
     );
 }
+
+#[test]
+fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("collection");
+    fs::create_dir_all(vault_root.join("_types")).expect("types directory");
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+    fs::write(
+        vault_root.join("_types/task.md"),
+        "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [type, title]\n    properties:\n      type: {const: task}\n      title: {type: string}\ncollection:\n  read_defaults: {status: open}\n---\n",
+    )
+    .expect("type");
+    fs::write(
+        vault_root.join("record.md"),
+        "---\ntype: task\ntitle: Test\n---\nBody\n",
+    )
+    .expect("record");
+    let before = fs::read(vault_root.join("record.md")).expect("record bytes");
+
+    let status: Value = serde_json::from_slice(
+        &Command::cargo_bin("vulcan")
+            .expect("binary")
+            .args([
+                "--vault",
+                vault_root.to_str().expect("path"),
+                "--output",
+                "json",
+                "mdbase",
+                "status",
+            ])
+            .output()
+            .expect("status runs")
+            .stdout,
+    )
+    .expect("status JSON");
+    assert_eq!(status["records"], 1);
+    assert_eq!(status["types"], 1);
+
+    let read_output = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("path"),
+            "--output",
+            "json",
+            "mdbase",
+            "read",
+            "record.md",
+        ])
+        .output()
+        .expect("read runs");
+    assert!(read_output.status.success());
+    let read: Value = serde_json::from_slice(&read_output.stdout).expect("read JSON");
+    assert!(read["record"].get("document").is_none());
+    assert_eq!(read["record"]["effective_frontmatter"]["status"], "open");
+
+    let source_output = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("path"),
+            "--output",
+            "json",
+            "mdbase",
+            "read",
+            "record.md",
+            "--source",
+        ])
+        .output()
+        .expect("source read runs");
+    let source: Value = serde_json::from_slice(&source_output.stdout).expect("source JSON");
+    assert!(source["record"]["document"]
+        .as_str()
+        .expect("document")
+        .contains("Body"));
+    assert_eq!(
+        fs::read(vault_root.join("record.md")).expect("record bytes"),
+        before
+    );
+    assert!(!vault_root.join(".vulcan").exists());
+}
