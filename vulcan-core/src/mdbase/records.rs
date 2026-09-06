@@ -1,8 +1,8 @@
 use super::{
-    compose_mdbase_type_behavior, discover_mdbase_files, match_mdbase_record_types, mdbase_glob,
-    project_mdbase_contract_view, resolve_match_field,
-    validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseContractRegistry,
-    MdbaseContractView, MdbaseTypeRegistry, MdbaseValidationLevel,
+    compose_mdbase_type_behavior, discover_mdbase_files, match_mdbase_record_types_with_context,
+    mdbase_glob, project_mdbase_contract_view, resolve_match_field,
+    validate_mdbase_schema_value_with_local_refs, MdbaseCelClock, MdbaseCollection,
+    MdbaseContractRegistry, MdbaseContractView, MdbaseTypeRegistry, MdbaseValidationLevel,
 };
 use crate::config::VaultConfig;
 use crate::parser::{parse_document, ParseDiagnosticKind};
@@ -145,6 +145,7 @@ pub fn load_mdbase_records_filtered(
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseRecordSet, MdbaseRecordError> {
     let discovery = discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
+    let clock = operation_clock(collection);
     let mut records = discovery
         .records
         .iter()
@@ -152,7 +153,7 @@ pub fn load_mdbase_records_filtered(
             Some(filter) => filter.is_allowed(path),
             None => true,
         })
-        .map(|path| load_mdbase_record(collection, types, path, include_source))
+        .map(|path| load_mdbase_record_at_clock(collection, types, path, include_source, &clock))
         .collect::<Result<Vec<_>, _>>()?;
     if collection.config.settings.validation != MdbaseValidationLevel::Off {
         validate_cross_file_uniqueness(collection, types, &mut records);
@@ -197,6 +198,17 @@ pub fn load_mdbase_record(
     path: &str,
     include_source: bool,
 ) -> Result<MdbaseRecordDocument, MdbaseRecordError> {
+    let clock = operation_clock(collection);
+    load_mdbase_record_at_clock(collection, types, path, include_source, &clock)
+}
+
+fn load_mdbase_record_at_clock(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    include_source: bool,
+    clock: &MdbaseCelClock,
+) -> Result<MdbaseRecordDocument, MdbaseRecordError> {
     let source = secure_read_to_string(&collection.root, Path::new(path)).map_err(|source| {
         MdbaseRecordError::Read {
             path: collection.root.join(path),
@@ -215,6 +227,7 @@ pub fn load_mdbase_record(
         source,
         &metadata,
         include_source,
+        clock,
     ))
 }
 
@@ -225,6 +238,7 @@ fn build_mdbase_record(
     source: String,
     metadata: &fs::Metadata,
     include_source: bool,
+    clock: &MdbaseCelClock,
 ) -> MdbaseRecordDocument {
     let parse_source = source.strip_prefix('\u{feff}').unwrap_or(&source);
     let parsed = parse_document(parse_source, &VaultConfig::default());
@@ -256,7 +270,9 @@ fn build_mdbase_record(
         serde_json::json!({})
     };
 
-    let matched = match_mdbase_record_types(collection, types, path, &frontmatter);
+    let body = record_body(&source).to_string();
+    let matched =
+        match_mdbase_record_types_with_context(collection, types, path, &frontmatter, &body, clock);
     diagnostics.extend(matched.diagnostics.into_iter().map(|diagnostic| {
         record_diagnostic(
             severity,
@@ -296,7 +312,6 @@ fn build_mdbase_record(
     }
     let effective_frontmatter = apply_mdbase_read_defaults(&frontmatter, &behavior.read_defaults);
     let revision = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
-    let body = record_body(&source).to_string();
     let file = file_metadata(path, metadata);
     sort_record_diagnostics(&mut diagnostics);
     MdbaseRecordDocument {
@@ -312,6 +327,19 @@ fn build_mdbase_record(
         contract_views: Vec::new(),
         diagnostics,
     }
+}
+
+fn operation_clock(collection: &MdbaseCollection) -> MdbaseCelClock {
+    MdbaseCelClock::new(
+        DateTime::<Utc>::from(SystemTime::now()),
+        collection
+            .config
+            .settings
+            .timezone
+            .as_deref()
+            .unwrap_or("UTC"),
+    )
+    .expect("collection loading validates its IANA timezone")
 }
 
 fn apply_contract_views(

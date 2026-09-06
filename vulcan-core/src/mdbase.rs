@@ -7,7 +7,7 @@
 use crate::config::VaultConfig;
 use crate::parser::parse_document;
 use crate::paths::{normalize_relative_input_path, secure_read_to_string, RelativePathOptions};
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::Regex;
@@ -44,6 +44,8 @@ pub const MDBASE_V03_CORE_COLLECTION_SUITE: &str =
     include_str!("../resources/mdbase/v0.3/upstream/tests/core/core-collection.yaml");
 pub const MDBASE_V03_DATA_CONTRACTS_SUITE: &str =
     include_str!("../resources/mdbase/v0.3/upstream/tests/data-contracts/data-contracts.yaml");
+pub const MDBASE_V03_CEL_SUITE: &str =
+    include_str!("../resources/mdbase/v0.3/upstream/tests/cel/cel-profile.yaml");
 pub const MDBASE_V03_TASKNOTES_CONTRACT: &str = include_str!(
     "../resources/mdbase/v0.3/upstream/examples/v0.3/tasknotes-migration/v0.3/_contracts/tasknotes.task.md"
 );
@@ -884,6 +886,34 @@ pub fn match_mdbase_record_types(
     record_path: &str,
     frontmatter: &serde_json::Value,
 ) -> MdbaseTypeMatchResult {
+    let clock = MdbaseCelClock::new(
+        DateTime::<Utc>::from(std::time::SystemTime::now()),
+        collection
+            .config
+            .settings
+            .timezone
+            .as_deref()
+            .unwrap_or("UTC"),
+    )
+    .expect("collection loading validates its IANA timezone");
+    match_mdbase_record_types_with_context(
+        collection,
+        registry,
+        record_path,
+        frontmatter,
+        "",
+        &clock,
+    )
+}
+
+pub(crate) fn match_mdbase_record_types_with_context(
+    collection: &MdbaseCollection,
+    registry: &MdbaseTypeRegistry,
+    record_path: &str,
+    frontmatter: &serde_json::Value,
+    body: &str,
+    clock: &MdbaseCelClock,
+) -> MdbaseTypeMatchResult {
     let Ok(record_path) = normalize_relative_input_path(
         record_path,
         RelativePathOptions {
@@ -925,7 +955,7 @@ pub fn match_mdbase_record_types(
     {
         return match_explicit_types(collection, registry, &record_path, frontmatter);
     }
-    match_inferred_types(registry, &record_path, frontmatter)
+    match_inferred_types(registry, &record_path, frontmatter, body, clock)
 }
 
 /// Compose collection behavior for an already ordered set of matched types.
@@ -1291,28 +1321,37 @@ fn match_inferred_types(
     registry: &MdbaseTypeRegistry,
     record_path: &str,
     frontmatter: &serde_json::Map<String, serde_json::Value>,
+    body: &str,
+    clock: &MdbaseCelClock,
 ) -> MdbaseTypeMatchResult {
     let mut types = Vec::new();
+    let mut diagnostics = Vec::new();
     for definition in registry.iter() {
         let Some(rule) = definition.frontmatter.get("match") else {
             continue;
         };
-        if inferred_rule_matches(rule, record_path, frontmatter) {
-            types.push(definition.name.clone());
+        match inferred_rule_matches(definition, rule, record_path, frontmatter, body, clock) {
+            Ok(true) => types.push(definition.name.clone()),
+            Ok(false) => {}
+            Err(diagnostic) => diagnostics.push(diagnostic),
         }
     }
+    sort_match_diagnostics(&mut diagnostics);
     MdbaseTypeMatchResult {
         types,
         mode: MdbaseTypeMatchMode::Inferred,
-        diagnostics: Vec::new(),
+        diagnostics,
     }
 }
 
 fn inferred_rule_matches(
+    definition: &MdbaseTypeDefinition,
     rule: &serde_json::Value,
     record_path: &str,
     frontmatter: &serde_json::Map<String, serde_json::Value>,
-) -> bool {
+    body: &str,
+    clock: &MdbaseCelClock,
+) -> Result<bool, MdbaseTypeMatchDiagnostic> {
     let rule = rule
         .as_object()
         .expect("type-file validation guarantees a match object");
@@ -1323,7 +1362,7 @@ fn inferred_rule_matches(
                 .compile_matcher()
                 .is_match(record_path)
         }) {
-            return false;
+            return Ok(false);
         }
     }
     if let Some(fields) = rule.get("fields_present") {
@@ -1341,11 +1380,67 @@ fn inferred_rule_matches(
             .iter()
             .any(|value| !value.is_null())
         }) {
-            return false;
+            return Ok(false);
         }
     }
-    rule.get("where")
-        .is_none_or(|predicates| structured_where_matches(predicates, frontmatter))
+    if rule
+        .get("where")
+        .is_some_and(|predicates| !structured_where_matches(predicates, frontmatter))
+    {
+        return Ok(false);
+    }
+    let Some(source) = rule
+        .get("expr")
+        .and_then(|value| value.get("$expr"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(true);
+    };
+    let known_fields = definition
+        .schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(serde_json::Map::keys)
+        .cloned();
+    let context = MdbaseCelContext::inferred_candidate(
+        record_path,
+        &serde_json::Value::Object(frontmatter.clone()),
+        body,
+        known_fields,
+        clock.clone(),
+    );
+    let engine = MdbaseCelEngine::default();
+    let program = engine.compile(source).map_err(|error| {
+        match_diagnostic(
+            record_path,
+            error.code,
+            error.message,
+            "match.expr",
+            Some(definition.name.clone()),
+        )
+    })?;
+    let evaluation = engine
+        .evaluate_context(&program, &context)
+        .map_err(|error| {
+            match_diagnostic(
+                record_path,
+                error.code,
+                error.message,
+                "match.expr",
+                Some(definition.name.clone()),
+            )
+        })?;
+    if let Some(diagnostic) = evaluation.diagnostics.first() {
+        return Err(match_diagnostic(
+            record_path,
+            &diagnostic.code,
+            &diagnostic.message,
+            "match.expr",
+            Some(definition.name.clone()),
+        ));
+    }
+    Ok(evaluation.value == serde_json::Value::Bool(true))
 }
 
 #[derive(Debug)]
@@ -1824,13 +1919,19 @@ fn validate_type_match_rule(
         return Vec::new();
     };
     let mut diagnostics = Vec::new();
-    if rule.contains_key("expr") {
-        diagnostics.push(type_diagnostic(
-            path,
-            "unsupported_profile",
-            "match.expr requires the cel_match profile, which is not enabled",
-            "/match/expr",
-        ));
+    if let Some(source) = rule
+        .get("expr")
+        .and_then(|value| value.get("$expr"))
+        .and_then(serde_json::Value::as_str)
+    {
+        if let Err(error) = MdbaseCelEngine::default().compile(source) {
+            diagnostics.push(type_diagnostic(
+                path,
+                error.code,
+                error.message,
+                "/match/expr/$expr",
+            ));
+        }
     }
     if let Some(patterns) = rule.get("path_glob") {
         for pattern in match_glob_patterns(patterns) {
@@ -2945,7 +3046,7 @@ schema:
     }
 
     #[test]
-    fn invalid_match_patterns_and_unsupported_expr_exclude_types() {
+    fn invalid_match_patterns_and_expression_syntax_exclude_types() {
         let directory = tempdir().expect("temporary collection should exist");
         write_config(directory.path(), "spec_version: \"0.3.0\"\n");
         write_matching_type(
@@ -2968,6 +3069,12 @@ schema:
         );
         write_matching_type(
             directory.path(),
+            "_types/invalid-expr.md",
+            "InvalidCel",
+            "  expr: {$expr: 'status =='}\n",
+        );
+        write_matching_type(
+            directory.path(),
             "_types/valid.md",
             "Valid",
             "  fields_present: [title]\n",
@@ -2978,15 +3085,85 @@ schema:
 
         let registry = load_mdbase_type_registry(&collection).expect("registry should load");
 
-        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.len(), 2);
         assert!(registry.get("valid").is_some());
+        assert!(registry.get("needsCel").is_some());
         assert_eq!(
             registry
                 .diagnostics
                 .iter()
                 .map(|diagnostic| diagnostic.code.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["match_pattern_invalid", "unsupported_profile"])
+            BTreeSet::from(["expression_compile_error", "match_pattern_invalid"])
+        );
+    }
+
+    #[test]
+    fn cel_match_uses_raw_schema_fields_and_combines_structured_members_with_and() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_type_file(
+            directory.path(),
+            "_types/selected.md",
+            "kind: mdbase.type\nname: selected\nversion: 1\nmatch:\n  path_glob: 'items/**/*.md'\n  expr: {$expr: 'present.raw.marker && marker == \"selected\" && status == null'}\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      marker: {type: string}\n      status: {type: string}\ncollection:\n  read_defaults: {status: open}\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let selected = match_mdbase_record_types(
+            &collection,
+            &registry,
+            "items/selected.md",
+            &serde_json::json!({"marker": "selected"}),
+        );
+        let rejected_value = match_mdbase_record_types(
+            &collection,
+            &registry,
+            "items/rejected.md",
+            &serde_json::json!({"marker": "other"}),
+        );
+        let rejected_path = match_mdbase_record_types(
+            &collection,
+            &registry,
+            "other/selected.md",
+            &serde_json::json!({"marker": "selected"}),
+        );
+
+        assert_eq!(selected.types, ["selected"]);
+        assert!(selected.diagnostics.is_empty());
+        assert!(rejected_value.types.is_empty());
+        assert!(rejected_path.types.is_empty());
+    }
+
+    #[test]
+    fn cel_match_evaluation_errors_are_diagnostics_and_non_matches() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_matching_type(
+            directory.path(),
+            "_types/bad-evaluation.md",
+            "BadEvaluation",
+            "  expr: {$expr: 'title + 1'}\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("type should load");
+
+        let result = match_mdbase_record_types(
+            &collection,
+            &registry,
+            "note.md",
+            &serde_json::json!({"title": "text"}),
+        );
+
+        assert!(result.types.is_empty());
+        assert_eq!(result.diagnostics[0].code, "expression_evaluation_error");
+        assert_eq!(
+            result.diagnostics[0].type_name.as_deref(),
+            Some("BadEvaluation")
         );
     }
 

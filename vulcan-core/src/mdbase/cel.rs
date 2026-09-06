@@ -7,6 +7,7 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 pub const MDBASE_CEL_RESERVED_BINDINGS: [&str; 16] = [
@@ -159,11 +160,22 @@ impl MdbaseCelEngine {
             ));
         }
 
-        let expression = cel_parser::Parser::new()
-            .parse(source)
+        let expression = catch_unwind(AssertUnwindSafe(|| cel_parser::Parser::new().parse(source)))
+            .map_err(|_| {
+                MdbaseCelError::new(
+                    "expression_compile_error",
+                    "CEL parser rejected malformed input",
+                )
+            })?
             .map_err(|error| MdbaseCelError::new("expression_compile_error", error.to_string()))?;
         let stats = inspect_ast(&expression, &self.limits)?;
-        let program = Program::compile(source)
+        let program = catch_unwind(AssertUnwindSafe(|| Program::compile(source)))
+            .map_err(|_| {
+                MdbaseCelError::new(
+                    "expression_compile_error",
+                    "CEL compiler rejected malformed input",
+                )
+            })?
             .map_err(|error| MdbaseCelError::new("expression_compile_error", error.to_string()))?;
         Ok(MdbaseCelProgram {
             source: source.to_string(),
@@ -473,6 +485,42 @@ impl MdbaseCelContext {
         }
     }
 
+    pub fn inferred_candidate(
+        path: &str,
+        frontmatter: &serde_json::Value,
+        body: &str,
+        known_fields: impl IntoIterator<Item = String>,
+        clock: MdbaseCelClock,
+    ) -> Self {
+        let known_fields = known_fields.into_iter().collect::<BTreeSet<_>>();
+        let raw = materialize_record_fields(frontmatter, &known_fields);
+        let present = presence_map(frontmatter, &known_fields);
+        let file = candidate_file_value(path, frontmatter, body);
+        let mut bindings = BTreeMap::from([
+            ("record".to_string(), raw.clone()),
+            ("note".to_string(), raw.clone()),
+            ("raw".to_string(), raw.clone()),
+            (
+                "present".to_string(),
+                serde_json::json!({"raw": present.clone(), "record": present}),
+            ),
+            ("file".to_string(), file),
+        ]);
+        if let Some(fields) = raw.as_object() {
+            for (name, value) in fields {
+                if !MDBASE_CEL_RESERVED_BINDINGS.contains(&name.as_str()) {
+                    bindings.insert(name.clone(), value.clone());
+                }
+            }
+        }
+        Self {
+            kind: MdbaseCelContextKind::InferredMatch,
+            bindings,
+            clock,
+            path: Some(path.to_string()),
+        }
+    }
+
     pub fn system(
         kind: MdbaseCelContextKind,
         bindings: BTreeMap<String, serde_json::Value>,
@@ -631,8 +679,51 @@ fn presence_map(value: &serde_json::Value, known_fields: &BTreeSet<String>) -> s
 }
 
 fn file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
+    let tags = collect_tags(&record.frontmatter, &record.body);
+    serde_json::json!({
+        "path": record.path,
+        "name": record.file.name,
+        "basename": record.file.basename,
+        "ext": record.file.ext,
+        "folder": record.file.folder,
+        "size": record.file.size,
+        "mtime": record.file.mtime,
+        "ctime": record.file.ctime,
+        "body": record.body,
+        "tags": tags,
+        "links": [],
+        "embeds": [],
+    })
+}
+
+fn candidate_file_value(
+    path: &str,
+    frontmatter: &serde_json::Value,
+    body: &str,
+) -> serde_json::Value {
+    let (folder, name) = path
+        .rsplit_once('/')
+        .map_or(("", path), |(folder, name)| (folder, name));
+    let (basename, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+    serde_json::json!({
+        "path": path,
+        "name": name,
+        "basename": basename,
+        "ext": ext,
+        "folder": folder,
+        "size": null,
+        "mtime": null,
+        "ctime": null,
+        "body": body,
+        "tags": collect_tags(frontmatter, body),
+        "links": [],
+        "embeds": [],
+    })
+}
+
+fn collect_tags(frontmatter: &serde_json::Value, body: &str) -> BTreeSet<String> {
     let mut tags = BTreeSet::new();
-    if let Some(value) = record.frontmatter.get("tags") {
+    if let Some(value) = frontmatter.get("tags") {
         match value {
             serde_json::Value::String(value) => {
                 tags.extend(value.split([',', ' ']).filter_map(normalize_tag));
@@ -649,25 +740,12 @@ fn file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
         }
     }
     tags.extend(
-        crate::parser::parse_document(&record.body, &crate::config::VaultConfig::default())
+        crate::parser::parse_document(body, &crate::config::VaultConfig::default())
             .tags
             .into_iter()
             .map(|tag| tag.tag_text),
     );
-    serde_json::json!({
-        "path": record.path,
-        "name": record.file.name,
-        "basename": record.file.basename,
-        "ext": record.file.ext,
-        "folder": record.file.folder,
-        "size": record.file.size,
-        "mtime": record.file.mtime,
-        "ctime": record.file.ctime,
-        "body": record.body,
-        "tags": tags,
-        "links": [],
-        "embeds": [],
-    })
+    tags
 }
 
 fn normalize_tag(value: &str) -> Option<String> {
