@@ -6,7 +6,7 @@ use super::{
 use crate::config::VaultConfig;
 use crate::parser::parse_document;
 use crate::paths::secure_read_to_string;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
@@ -21,7 +21,7 @@ pub enum MdbaseContractType {
     Action,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct MdbaseContractIdentity {
     pub id: String,
     pub version: String,
@@ -52,7 +52,7 @@ pub struct MdbaseContractImplementation {
     pub digest: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MdbaseContractDiagnostic {
     pub code: String,
     pub message: String,
@@ -141,7 +141,7 @@ impl Display for MdbaseContractRegistryError {
 
 impl std::error::Error for MdbaseContractRegistryError {}
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MdbaseContractView {
     pub contract: MdbaseContractIdentity,
     pub contract_digest: String,

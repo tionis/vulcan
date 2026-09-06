@@ -231,6 +231,7 @@ mod tests {
             "property_values",
             "property_list_items",
             "property_catalog",
+            "mdbase_record_cache",
             "kanban_boards",
             "events",
             "vector_index_state",

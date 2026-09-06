@@ -105,6 +105,11 @@ impl MigrationRegistry {
                 "add graph confidence, clusters, and link suggestions",
                 schema::apply_schema_v17,
             ),
+            Migration::new(
+                18,
+                "add versioned mdbase record projections",
+                schema::apply_schema_v18,
+            ),
         ])
     }
 

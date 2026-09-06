@@ -1,7 +1,8 @@
 use super::{
     compose_mdbase_type_behavior, discover_mdbase_files, match_mdbase_record_types, mdbase_glob,
-    resolve_match_field, validate_mdbase_schema_value_with_local_refs, MdbaseCollection,
-    MdbaseTypeRegistry, MdbaseValidationLevel,
+    project_mdbase_contract_view, resolve_match_field,
+    validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseContractRegistry,
+    MdbaseContractView, MdbaseTypeRegistry, MdbaseValidationLevel,
 };
 use crate::config::VaultConfig;
 use crate::parser::{parse_document, ParseDiagnosticKind};
@@ -61,6 +62,8 @@ pub struct MdbaseRecordDocument {
     pub file: MdbaseRecordFileMetadata,
     /// Advisory metadata from the first matched type, never a validator.
     pub display: Option<serde_json::Value>,
+    #[serde(default)]
+    pub contract_views: Vec<MdbaseContractView>,
     pub diagnostics: Vec<MdbaseRecordDiagnostic>,
 }
 
@@ -137,6 +140,25 @@ pub fn load_mdbase_records(
         validate_cross_file_uniqueness(collection, types, &mut records);
     }
     Ok(MdbaseRecordSet { records })
+}
+
+/// Load records and materialize every exact record-contract view implemented by their types.
+pub fn load_mdbase_records_with_contracts(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    include_source: bool,
+) -> Result<MdbaseRecordSet, MdbaseRecordError> {
+    let mut set = load_mdbase_records(collection, types, include_source)?;
+    for record in &mut set.records {
+        apply_contract_views(
+            collection,
+            record,
+            contracts,
+            validation_severity(collection.config.settings.validation),
+        );
+    }
+    Ok(set)
 }
 
 /// Load one collection-relative record without consulting Dataview inline fields.
@@ -258,8 +280,66 @@ fn build_mdbase_record(
         document: include_source.then_some(source),
         file,
         display: behavior.display,
+        contract_views: Vec::new(),
         diagnostics,
     }
+}
+
+fn apply_contract_views(
+    collection: &MdbaseCollection,
+    record: &mut MdbaseRecordDocument,
+    contracts: &MdbaseContractRegistry,
+    severity: MdbaseRecordDiagnosticSeverity,
+) {
+    for contract in contracts.iter() {
+        for implementation in
+            contracts.implementations(&contract.identity.id, &contract.identity.version)
+        {
+            if !record
+                .types
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&implementation.type_name))
+            {
+                continue;
+            }
+            let view = project_mdbase_contract_view(
+                collection,
+                contracts,
+                &contract.identity.id,
+                &contract.identity.version,
+                &implementation.type_name,
+                &record.effective_frontmatter,
+            );
+            record
+                .diagnostics
+                .extend(
+                    view.diagnostics
+                        .iter()
+                        .map(|diagnostic| MdbaseRecordDiagnostic {
+                            severity,
+                            code: diagnostic.code.clone(),
+                            message: diagnostic.message.clone(),
+                            path: record.path.clone(),
+                            field: diagnostic.field.clone(),
+                            type_name: diagnostic.type_name.clone(),
+                            schema_path: None,
+                            related_paths: diagnostic.related_paths.clone(),
+                        }),
+                );
+            record.contract_views.push(view);
+        }
+    }
+    record.contract_views.sort_by(|left, right| {
+        left.contract
+            .cmp(&right.contract)
+            .then_with(|| {
+                left.type_name
+                    .to_ascii_lowercase()
+                    .cmp(&right.type_name.to_ascii_lowercase())
+            })
+            .then_with(|| left.implementation_digest.cmp(&right.implementation_digest))
+    });
+    sort_record_diagnostics(&mut record.diagnostics);
 }
 
 /// Render and validate the portable `{field}` path-pattern grammar.
@@ -881,5 +961,41 @@ mod tests {
                 .code,
             "path_traversal"
         );
+    }
+
+    #[test]
+    fn contract_views_project_from_effective_values() {
+        let directory = tempdir().expect("collection directory");
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(
+            &directory.path().join("_contracts/note.md"),
+            "---\nkind: mdbase.contract\ncontract_type: record\nid: example.note\nversion: 1.0.0\nrecord_schema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [title, status]\n    properties:\n      title: {type: string}\n      status: {type: string}\n---\n",
+        );
+        write(
+            &directory.path().join("_types/note.md"),
+            "---\nkind: mdbase.type\nname: note\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      type: {const: note}\n      headline: {type: string}\n      state: {type: string}\ncollection:\n  read_defaults: {state: open}\nimplements:\n  - contract: example.note\n    version: 1.0.0\n    fields: {title: headline, status: state}\n---\n",
+        );
+        write(
+            &directory.path().join("item.md"),
+            "---\ntype: note\nheadline: Hello\n---\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("collection should load")
+            .expect("collection should exist");
+        let types = load_mdbase_type_registry(&collection).expect("types should load");
+        let contracts = super::super::load_mdbase_contract_registry(&collection, &types)
+            .expect("contracts should load");
+
+        let records = load_mdbase_records_with_contracts(&collection, &types, &contracts, false)
+            .expect("records should load");
+        let record = records.get("item.md").expect("record");
+
+        assert_eq!(record.contract_views.len(), 1);
+        assert_eq!(record.contract_views[0].view["title"], "Hello");
+        assert_eq!(record.contract_views[0].view["status"], "open");
+        assert!(record.contract_views[0].diagnostics.is_empty());
     }
 }

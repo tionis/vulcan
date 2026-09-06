@@ -1,6 +1,7 @@
 use rusqlite::Transaction;
 
 pub const TABLES_TO_CLEAR: &[&str] = &[
+    "mdbase_record_cache",
     "link_suggestions",
     "graph_clusters",
     "kanban_boards",
@@ -763,6 +764,30 @@ pub fn apply_schema_v17(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
         ",
     )?;
 
+    Ok(())
+}
+
+pub fn apply_schema_v18(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS mdbase_record_cache (
+            collection_root TEXT NOT NULL,
+            path TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            dependency_digest TEXT NOT NULL,
+            record_model_version INTEGER NOT NULL,
+            types_json TEXT NOT NULL,
+            effective_frontmatter_json TEXT NOT NULL,
+            display_json TEXT,
+            contract_views_json TEXT NOT NULL,
+            diagnostics_json TEXT NOT NULL,
+            PRIMARY KEY (collection_root, path)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mdbase_record_cache_dependency
+            ON mdbase_record_cache(collection_root, dependency_digest);
+        ",
+    )?;
     Ok(())
 }
 
