@@ -258,6 +258,7 @@ class ReleasePackagingTests(unittest.TestCase):
         )
         uname.chmod(0o755)
         environment = os.environ.copy()
+        environment.pop("TERMUX_VERSION", None)
         environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
         install_prefix = self.root / "data/data/com.termux/files/usr"
         environment["PREFIX"] = str(install_prefix)
@@ -724,6 +725,72 @@ class ReleasePackagingTests(unittest.TestCase):
             self.assertIn(
                 "RUSTFLAGS=-Cllvm-args=--vectorize-slp=false", android_setup
             )
+
+            android_linkage = workflow.split(
+                "- name: Verify Android architecture and QuickJS linkage", maxsplit=1
+            )[1].split("- name: Build canonical archive", maxsplit=1)[0]
+            self.assertIn("llvm-readelf", android_linkage)
+            self.assertIn("Machine:.*AArch64", android_linkage)
+            self.assertIn("JS_NewRuntime", android_linkage)
+            self.assertIn("JS_Eval", android_linkage)
+
+    def test_android_termux_smoke_exercises_full_feature_binary(self) -> None:
+        smoke = SCRIPT_ROOT / "smoke_android_termux.sh"
+        subprocess.run(["sh", "-n", str(smoke)], check=True)
+
+        fake_bin = self.root / "android-smoke-bin"
+        fake_bin.mkdir()
+        uname = fake_bin / "uname"
+        uname.write_text(
+            '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo aarch64 ;; *) exit 2 ;; esac\n',
+            encoding="utf-8",
+        )
+        uname.chmod(0o755)
+        git = fake_bin / "git"
+        git.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        git.chmod(0o755)
+        vulcan = fake_bin / "vulcan"
+        vulcan.write_text(
+            """#!/usr/bin/env python3
+import sys
+
+if "--version" in sys.argv:
+    print("vulcan 1.2.3")
+elif "run" in sys.argv:
+    print("2")
+""",
+            encoding="utf-8",
+        )
+        vulcan.chmod(0o755)
+        prefix = self.root / "data/data/com.termux/files/usr"
+        (prefix / "tmp").mkdir(parents=True)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+        environment["PREFIX"] = str(prefix)
+
+        result = subprocess.run(
+            ["sh", str(smoke), str(vulcan)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+
+        self.assertIn("Android runtime smoke passed", result.stdout)
+        self.assertIn("QuickJS, vectors, and sync doctor", result.stdout)
+
+        environment["PREFIX"] = str(self.root / "ordinary-prefix")
+        rejected = subprocess.run(
+            ["sh", str(smoke), str(vulcan)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("must run inside Termux", rejected.stderr)
 
 
 if __name__ == "__main__":

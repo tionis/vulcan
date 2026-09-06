@@ -169,6 +169,18 @@ jobs:
       - name: Build locked release binary
         run: cargo build --release --locked --target ${{ matrix.target }} -p vulcan-cli ${{ matrix.cargo_flags }}
 
+      - name: Verify Android architecture and QuickJS linkage
+        if: matrix.target == 'aarch64-linux-android'
+        shell: bash
+        run: |
+          toolchain="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          binary="target/${{ matrix.target }}/release/vulcan"
+          "$toolchain/llvm-readelf" -h "$binary" > "$RUNNER_TEMP/vulcan-android-elf.txt"
+          grep -Eq 'Machine:.*AArch64' "$RUNNER_TEMP/vulcan-android-elf.txt"
+          "$toolchain/llvm-nm" --defined-only "$binary" > "$RUNNER_TEMP/vulcan-android-symbols.txt"
+          grep -Eq ' [Tt] JS_NewRuntime$' "$RUNNER_TEMP/vulcan-android-symbols.txt"
+          grep -Eq ' [Tt] JS_Eval$' "$RUNNER_TEMP/vulcan-android-symbols.txt"
+
       - name: Build canonical archive
         shell: bash
         env:

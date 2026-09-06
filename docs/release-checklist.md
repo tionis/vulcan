@@ -31,9 +31,12 @@ workspace test gate and every archive build succeed.
   x86_64 Windows. Manually validate aarch64 Linux on native hardware or a declared emulator before
   describing that artifact as exercised rather than cross-compiled.
 - [ ] Install the Android/Bionic archive in Termux on a real aarch64 Android device. Verify the
-  installer selects `aarch64-linux-android`, then exercise `sync clone`, status, doctor, push/pull,
-  conflict review, detached recovery, path portability, symlink/link-file behavior, scheduling,
-  and uninstall-loss recovery before describing the release as Android-certified.
+  installer selects `aarch64-linux-android`, run `scripts/release/smoke_android_termux.sh
+  "$(command -v vulcan)"` from the matching source tag to exercise QuickJS, vectors, and sync
+  diagnostics, then exercise `sync clone`, status, push/pull, conflict review, detached recovery,
+  path portability, symlink/link-file behavior, scheduling, and uninstall-loss recovery before
+  describing the release as Android-certified. The cross-build's ELF/QuickJS linkage check is not
+  a substitute for this runtime gate.
 - [ ] Test `vulcan --version`, a direct vault command, `sync doctor`, and `daemon install --dry-run`
   from each extracted native archive.
 - [ ] From a disposable portable prefix, run `self-update check` and `self-update apply --dry-run`,

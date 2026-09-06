@@ -65,6 +65,7 @@ RUSTFLAGS='-Cllvm-args=--vectorize-slp=false' \
   cargo build --release --locked -p vulcan-cli \
   --no-default-features \
   --features 'js_runtime,oauth,vectors,web,rquickjs/bindgen'
+./scripts/release/smoke_android_termux.sh target/release/vulcan
 ```
 
 ### Update channels and portable self-update
