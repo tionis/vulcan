@@ -3533,6 +3533,8 @@ mod tests {
         run_git(path, &["config", "user.name", "Vulcan Test"]);
         run_git(path, &["config", "user.email", "vulcan@example.invalid"]);
         run_git(path, &["config", "core.autocrlf", "false"]);
+        run_git(path, &["config", "pull.rebase", "false"]);
+        run_git(path, &["config", "pull.ff", "true"]);
     }
 
     fn commit_all(path: &Path, message: &str) {
