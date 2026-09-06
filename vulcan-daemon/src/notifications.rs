@@ -620,11 +620,11 @@ mod tests {
     #[test]
     fn exponential_backoff_is_bounded_and_jittered() {
         assert_eq!(
-            jittered_delay(Duration::from_millis(1_000), 0),
+            jittered_delay(Duration::from_secs(1), 0),
             Duration::from_millis(750)
         );
         assert_eq!(
-            jittered_delay(Duration::from_millis(1_000), 500),
+            jittered_delay(Duration::from_secs(1), 500),
             Duration::from_millis(1_250)
         );
         let mut backoff = Backoff::new(Duration::from_millis(100), Duration::from_millis(200));
