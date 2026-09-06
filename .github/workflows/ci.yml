@@ -59,7 +59,7 @@ jobs:
       - name: Test PowerShell installer dry run
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/install.ps1 -Version 0.1.0 -DryRun
+        run: ./scripts/install.ps1 -Version 0.2.0 -DryRun
 
   test:
     strategy:

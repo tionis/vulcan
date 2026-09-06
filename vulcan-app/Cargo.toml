@@ -34,8 +34,8 @@ tar.workspace = true
 toml.workspace = true
 ulid.workspace = true
 unicode-normalization.workspace = true
-vulcan-core = { path = "../vulcan-core", version = "0.1.0", default-features = false }
-vulcan-sync = { path = "../vulcan-sync", version = "0.1.0" }
+vulcan-core = { path = "../vulcan-core", version = "0.2.0", default-features = false }
+vulcan-sync = { path = "../vulcan-sync", version = "0.2.0" }
 rquickjs = { workspace = true, optional = true }
 zip.workspace = true
 

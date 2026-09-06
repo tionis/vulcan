@@ -196,11 +196,12 @@ python scripts/release/sign_stable_release.py \
   --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem
 ```
 
-The first stable release containing this public key is the trust bootstrap. Older binaries cannot
-authenticate that release and need one out-of-band checksummed archive/package installation; do not
-teach them to accept the signature by weakening channel policy. After bootstrap, stable signatures
-are the default portable-update path. The currently published `v0.1.0` release predates this
-descriptor contract, so there is no existing stable descriptor to retrofit or sign.
+The `v0.2.0` release is the first stable release containing this public key and is therefore the
+trust bootstrap. Older binaries cannot authenticate that release and need one out-of-band
+checksummed archive/package installation; do not teach them to accept the signature by weakening
+channel policy. After bootstrap, stable signatures are the default portable-update path. The
+previous `v0.1.0` release predates this descriptor contract, so there is no older stable descriptor
+to retrofit or sign.
 
 Rotation uses an overlap release whose envelope carries signatures from both the retiring and new
 stable keys while clients embed both public keys. A later out-of-band release removes the retiring

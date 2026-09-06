@@ -25,19 +25,19 @@ provide native amd64/arm64 Debian packages. The checksum-verifying installers re
 version and do not enable the daemon:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.1.0/scripts/install.sh | \
-  sh -s -- --version 0.1.0 --dry-run
+curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.2.0/scripts/install.sh | \
+  sh -s -- --version 0.2.0 --dry-run
 ```
 
 On Windows, download `scripts/install.ps1` from the matching tag and run
-`./install.ps1 -Version 0.1.0 -DryRun`. Review [the installation guide](docs/installation.md) before
+`./install.ps1 -Version 0.2.0 -DryRun`. Review [the installation guide](docs/installation.md) before
 removing `--dry-run`; Git remains a separate runtime dependency for synchronization.
 
 Manual portable installs can check the stable stream with `vulcan self-update check`. A bounded
-rolling build from eligible `main` commits is available through `--channel main`; update descriptors
-are currently unsigned, so either stream requires the explicit `--allow-unsigned` checksum-only
-opt-in until project signing keys are configured. Package-managed installations should update only
-through their package manager. See the [update-channel specification](docs/specs/update-channels.md).
+rolling build from eligible `main` commits is available through `--channel main`. Release metadata
+is signed after publication with separate channel-scoped keys; self-update fails closed while a
+new descriptor is awaiting its signature. Package-managed installations should update only through
+their package manager. See the [update-channel specification](docs/specs/update-channels.md).
 
 Vulcan requires Rust 1.88 or newer. With `rustup`, the checked-in `rust-toolchain.toml` installs and selects the supported toolchain automatically. Build the CLI:
 
