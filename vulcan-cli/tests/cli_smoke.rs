@@ -217,7 +217,7 @@ fn successful_process_json(output: &ProcessOutput) -> Value {
     serde_json::from_slice(&output.stdout).expect("daemon stdout should be JSON")
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 fn assert_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -228,7 +228,7 @@ fn assert_executable(path: &Path) {
     assert_ne!(mode & 0o111, 0, "{} should be executable", path.display());
 }
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), target_os = "android"))]
 fn assert_executable(_path: &Path) {}
 
 fn path_with_vulcan_bin() -> OsString {
@@ -244,10 +244,10 @@ fn path_with_vulcan_bin() -> OsString {
 }
 
 fn skill_script_process(script_path: &Path, path: &OsString) -> ProcessCommand {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     let mut command = ProcessCommand::new(script_path);
 
-    #[cfg(not(unix))]
+    #[cfg(any(not(unix), target_os = "android"))]
     let mut command = {
         let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
         command.arg("skill").arg("exec").arg(script_path);
@@ -15741,6 +15741,15 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     assert!(direct_output.status.success());
     let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
     assert!(direct_stdout.contains("AI/Conversations/2026-05-09-dry-run-chat.md"));
+
+    // Shared Android storage cannot provide executable bits. The ordinary
+    // skill command must still execute the installed script through the runtime.
+    #[cfg(all(unix, not(target_os = "android")))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o600))
+            .expect("remove OS execute permission");
+    }
 
     let structured_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

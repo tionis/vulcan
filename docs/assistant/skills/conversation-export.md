@@ -322,6 +322,10 @@ metadata:
 
 # Conversation Export
 
+On Android/Termux, `vulcan agent install` installs the bundled script without requiring
+executable bits on shared storage. Use `vulcan skill run conversation-export export` or
+`vulcan skill exec <script>` to run it through Vulcan's runtime.
+
 Use this skill when a user wants to save a chat transcript into the vault as an Obsidian-readable Markdown note.
 
 The `export` command accepts pasted plain text, JSON arrays, JSONL-style message logs, or structured `messages`/`turns` arrays. Structured turns may include `role`, `content`, `thinking`/`reasoning`, `tool_uses`, `tool_results`, or typed `content` parts such as `text`, `thinking`, `tool_use`, and `tool_result`. It writes a note under `AI/Conversations/` by default using `[!user]`, `[!assistant]`, `[!system]`, `[!tool]`, and nested `[!thinking]` callouts with frontmatter describing the source and message count.

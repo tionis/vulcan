@@ -706,7 +706,9 @@ fn write_bundled_text_file(
     let destination = bundled_text_file_destination(paths, file);
     let status = write_bundled_text_contents(&destination, file.contents, overwrite)?;
     #[cfg(unix)]
-    if bundled_text_file_should_be_executable(file) && destination.exists() {
+    if bundled_text_file_should_be_executable(file, cfg!(target_os = "android"))
+        && destination.exists()
+    {
         set_executable_permissions(&destination)?;
     }
     Ok(SupportFileReport {
@@ -717,8 +719,11 @@ fn write_bundled_text_file(
 }
 
 #[cfg(unix)]
-fn bundled_text_file_should_be_executable(file: &BundledTextFile) -> bool {
-    file.target == BundledFileTarget::SkillsFolder
+fn bundled_text_file_should_be_executable(file: &BundledTextFile, android: bool) -> bool {
+    // Android shared storage cannot reliably set executable bits. These scripts
+    // are loaded by Vulcan's JS runtime and need no OS execute permission.
+    !android
+        && file.target == BundledFileTarget::SkillsFolder
         && Path::new(file.relative_path)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("js"))
@@ -1724,4 +1729,23 @@ fn shell_quote(path: &Path) -> String {
 
 fn path_to_forward_slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(all(test, unix))]
+mod install_platform_tests {
+    use super::*;
+
+    #[test]
+    fn android_installs_runtime_scripts_without_requiring_executable_bits() {
+        let script = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|file| file.relative_path == "conversation-export/scripts/export-conversation.js")
+            .expect("bundled runtime script");
+        assert!(!bundled_text_file_should_be_executable(script, true));
+        assert!(bundled_text_file_should_be_executable(script, false));
+        assert!(!bundled_text_file_should_be_executable(
+            &BUNDLED_AGENT_TEMPLATE,
+            false
+        ));
+    }
 }

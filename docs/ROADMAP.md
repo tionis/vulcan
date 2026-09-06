@@ -1732,6 +1732,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 
 - [x] Treat vault `AGENTS.md`, the configured prompts folder, and `.agents/skills/*/SKILL.md` as the primary durable prompt surface
 - [x] Keep bundled default skills written by `vulcan init --agent-files` or `vulcan agent install`; user-defined skills remain plain vault files
+  - [x] Install runtime-loaded bundled JavaScript on Android without requiring executable bits on shared storage; verify installed conversation export still runs without OS execute permission.
 - [x] Runtime integrations inject only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
 - [x] Publish a runtime-integration usage guide with recommended permission profiles and common pitfalls
 - [x] Optional follow-up wrapper command: `vulcan agent print-config --runtime <name>` or similar to emit ready-to-paste setup snippets once the contract is stable
