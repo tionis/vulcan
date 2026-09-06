@@ -246,6 +246,46 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertTrue(os.access(installed, os.X_OK))
         self.assertTrue((prefix / "share/man/man1/vulcan.1").is_file())
 
+    def test_posix_installer_selects_the_android_archive_in_termux(self) -> None:
+        self.package("aarch64-linux-android")
+        manifest_script.aggregate(self.output, "1.2.3")
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        uname = fake_bin / "uname"
+        uname.write_text(
+            '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo aarch64 ;; *) exit 2 ;; esac\n',
+            encoding="utf-8",
+        )
+        uname.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+        install_prefix = self.root / "data/data/com.termux/files/usr"
+        environment["PREFIX"] = str(install_prefix)
+
+        result = subprocess.run(
+            [
+                "sh",
+                str(SCRIPT_ROOT.parent / "install.sh"),
+                "--version",
+                "1.2.3",
+                "--base-url",
+                self.output.as_uri(),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+
+        self.assertIn("Target: aarch64-linux-android", result.stdout)
+        self.assertIn(f"Prefix: {install_prefix}", result.stdout)
+        self.assertIn("vulcan-1.2.3-aarch64-linux-android.tar.gz", result.stdout)
+        self.assertIn("vulcan sync clone <remote>", result.stdout)
+        installed = install_prefix / "bin/vulcan"
+        self.assertEqual(installed.read_bytes(), self.binary.read_bytes())
+        self.assertTrue(os.access(installed, os.X_OK))
+
     def test_package_channel_metadata_uses_canonical_archives(self) -> None:
         for target in manifest_script.EXPECTED_TARGETS:
             self.package(target)
@@ -289,7 +329,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(envelope["signatures"], [])
         self.assertEqual(payload["channel"], "main")
         self.assertTrue(payload["prerelease"])
-        self.assertEqual(len(payload["artifacts"]), 5)
+        self.assertEqual(len(payload["artifacts"]), len(update_channel_script.TARGET_FORMATS))
         self.assertTrue(
             all(
                 artifact["url"].startswith("https://releases.example/main/")

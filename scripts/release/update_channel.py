@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 
 TARGET_FORMATS = {
+    "aarch64-linux-android": "tar.gz",
     "aarch64-apple-darwin": "tar.gz",
     "aarch64-unknown-linux-gnu": "tar.gz",
     "x86_64-apple-darwin": "tar.gz",
@@ -90,8 +91,10 @@ def generate(
         for artifact in manifest["artifacts"]
         if artifact.get("kind", "archive") == "archive"
     ]
-    if len(archives) != 5:
-        raise ValueError("update channels require exactly five portable archives")
+    if len(archives) != len(TARGET_FORMATS):
+        raise ValueError(
+            f"update channels require exactly {len(TARGET_FORMATS)} portable archives"
+        )
     if {artifact["target"] for artifact in archives} != set(TARGET_FORMATS):
         raise ValueError("update channel archive targets do not match the supported target set")
     artifacts = []

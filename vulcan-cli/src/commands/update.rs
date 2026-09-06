@@ -197,7 +197,7 @@ fn trusted_update_keys() -> Result<Vec<TrustedUpdateKey>, CliError> {
 
 #[cfg(all(test, feature = "web"))]
 mod tests {
-    use super::{trusted_update_keys, MAIN_CHANNEL_URL};
+    use super::{release_target, trusted_update_keys, MAIN_CHANNEL_URL};
 
     #[test]
     fn main_channel_uses_a_tag_distinct_from_the_main_branch() {
@@ -218,23 +218,33 @@ mod tests {
         assert!(keys.iter().all(|key| key.public_key.len() == 32));
         assert_ne!(keys[0].public_key, keys[1].public_key);
     }
+
+    #[test]
+    fn android_uses_the_bionic_release_artifact() {
+        assert_eq!(
+            release_target("android", "aarch64"),
+            Some("aarch64-linux-android")
+        );
+        assert_eq!(release_target("android", "x86_64"), None);
+    }
 }
 
 #[cfg(feature = "web")]
 fn current_target() -> Result<&'static str, CliError> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Ok("x86_64-unknown-linux-gnu")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Ok("aarch64-unknown-linux-gnu")
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Ok("x86_64-apple-darwin")
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Ok("aarch64-apple-darwin")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Ok("x86_64-pc-windows-msvc")
-    } else {
-        Err(CliError::operation(
-            "this platform does not have a portable Vulcan update artifact",
-        ))
+    release_target(std::env::consts::OS, std::env::consts::ARCH).ok_or_else(|| {
+        CliError::operation("this platform does not have a portable Vulcan update artifact")
+    })
+}
+
+#[cfg(feature = "web")]
+fn release_target(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("android", "aarch64") => Some("aarch64-linux-android"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        _ => None,
     }
 }

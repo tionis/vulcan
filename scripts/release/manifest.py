@@ -9,6 +9,7 @@ import json
 import pathlib
 
 EXPECTED_TARGETS = {
+    "aarch64-linux-android",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",

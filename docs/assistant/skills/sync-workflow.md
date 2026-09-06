@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 6
+version: 7
 metadata:
   vulcan:
     managed: true
@@ -187,8 +187,10 @@ they commit.
 
 ## Android and detached Git data
 
+- Install a checksummed `aarch64-linux-android` release through the version-matched POSIX installer;
+  never substitute the `aarch64-unknown-linux-gnu` archive, which targets a different runtime.
 - Under Termux, keep the worktree in shared storage and the detached Git directory in Termux-private
-  storage. Clone with both `--git-dir <private-path>` and `--platform android-shared`.
+  storage. `vulcan sync clone <remote> <shared-path> --dry-run` selects both defaults automatically.
 - One-shot `sync status`, `sync doctor`, and `sync run` are the supported baseline and require no
   daemon. Android shared storage cannot faithfully represent executable bits or symlinks.
 - For an Android-managed periodic safety net, preview `vulcan sync termux-install <wiki>

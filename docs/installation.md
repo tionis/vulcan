@@ -12,6 +12,7 @@ shell completions, the `vulcan(1)` man page, README, installation notes, and lic
 
 The supported target names are:
 
+- `aarch64-linux-android` (Termux on 64-bit ARM Android)
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
 - `x86_64-apple-darwin`
@@ -21,6 +22,36 @@ The supported target names are:
 Place the executable in a stable path on `PATH`, such as `~/.local/bin/vulcan`. A stable path matters
 when a native daemon service refers to it across upgrades. Replace the executable atomically, then
 run `vulcan daemon install` again after an upgrade to refresh the native service definition.
+
+### Android and Termux
+
+Install Termux, then install Git and grant shared-storage access:
+
+```sh
+pkg install git
+termux-setup-storage
+```
+
+The POSIX installer detects Termux and selects the Android/Bionic archive rather than the
+incompatible GNU/Linux arm64 archive. It also installs to Termux's existing `$PREFIX` by default,
+so no additional `PATH` setup is needed. Preview and then apply an explicit release version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v<version>/scripts/install.sh | \
+  sh -s -- --version <version> --dry-run
+curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v<version>/scripts/install.sh | \
+  sh -s -- --version <version>
+```
+
+Then preview the complete detached layout without spelling out platform or private Git paths:
+
+```sh
+vulcan sync clone <remote> /storage/emulated/0/Documents/<vault> --dry-run
+```
+
+See the [Git synchronization guide](guide/git-sync.md) before applying the clone or enabling the
+optional Termux:API scheduler. Termux:API is not needed for one-shot `sync` commands. Android
+release candidates remain subject to the documented real-device certification gate.
 
 ### Update channels and portable self-update
 

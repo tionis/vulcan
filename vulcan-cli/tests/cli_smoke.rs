@@ -14408,7 +14408,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("managed: true"));
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
     assert!(sync_skill.contains("vulcan sync conflicts <conflict-id>"));
-    assert!(sync_skill.contains("--platform android-shared"));
+    assert!(sync_skill.contains("detached private Git directory"));
+    assert!(sync_skill.contains("`android-shared` policy"));
+    assert!(sync_skill.contains("aarch64-linux-android"));
+    assert!(sync_skill.contains("vulcan sync clone <remote> <shared-path> --dry-run"));
     assert!(sync_skill.contains("vulcan daemon install --dry-run"));
     assert!(sync_skill.contains("vulcan daemon uninstall --dry-run"));
     assert!(sync_skill.contains("macOS installs a restartable per-user LaunchAgent"));
@@ -14478,9 +14481,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("vulcan vault recover-git <wiki> <remote> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
-    assert!(git_skill.contains(
-        "vulcan sync clone <remote> /storage/emulated/0/Documents/wiki --dry-run"
-    ));
+    assert!(git_skill
+        .contains("vulcan sync clone <remote> /storage/emulated/0/Documents/wiki --dry-run"));
     assert!(git_skill.contains("supported baseline is one-shot direct execution"));
     assert!(git_skill.contains("do not require or start the daemon"));
     assert!(git_skill.contains("case-only renames require an intermediate path"));

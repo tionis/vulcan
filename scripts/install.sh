@@ -2,7 +2,7 @@
 set -eu
 
 version=${VULCAN_VERSION:-}
-prefix=${VULCAN_INSTALL_PREFIX:-"$HOME/.local"}
+prefix=${VULCAN_INSTALL_PREFIX:-}
 base_url=${VULCAN_RELEASE_BASE_URL:-}
 dry_run=false
 
@@ -30,8 +30,29 @@ case "$version" in
     ''|*[!0-9A-Za-z.+-]*) printf '%s\n' 'A valid --version is required.' >&2; exit 2 ;;
 esac
 
+termux=false
+case "${PREFIX:-}" in
+    */com.termux/files/usr) termux=true ;;
+esac
+if [ -n "${TERMUX_VERSION:-}" ]; then
+    termux=true
+fi
+if [ -z "$prefix" ]; then
+    if [ "$termux" = true ] && [ -n "${PREFIX:-}" ]; then
+        prefix=$PREFIX
+    else
+        prefix="$HOME/.local"
+    fi
+fi
+
 case "$(uname -s)" in
-    Linux) os=unknown-linux-gnu ;;
+    Linux)
+        if [ "$termux" = true ]; then
+            os=linux-android
+        else
+            os=unknown-linux-gnu
+        fi
+        ;;
     Darwin) os=apple-darwin ;;
     *) printf 'Unsupported operating system: %s\n' "$(uname -s)" >&2; exit 2 ;;
 esac
@@ -40,6 +61,10 @@ case "$(uname -m)" in
     aarch64|arm64) arch=aarch64 ;;
     *) printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2; exit 2 ;;
 esac
+if [ "$termux" = true ] && [ "$arch" != aarch64 ]; then
+    printf 'Unsupported Termux architecture: %s (Vulcan currently publishes aarch64 only).\n' "$arch" >&2
+    exit 2
+fi
 
 target="$arch-$os"
 archive="vulcan-$version-$target.tar.gz"
@@ -104,4 +129,9 @@ install -m 0644 "$root/completions/vulcan.fish" "$prefix/share/fish/vendor_compl
 install -m 0644 "$root/completions/_vulcan" "$prefix/share/zsh/site-functions/_vulcan"
 
 printf 'Installed Vulcan %s at %s/bin/vulcan.\n' "$version" "$prefix"
-printf '%s\n' 'The daemon was not enabled. Run vulcan daemon install --dry-run to review it.'
+if [ "$termux" = true ]; then
+    printf '%s\n' 'Run termux-setup-storage once, install Git with pkg install git, then preview:'
+    printf '%s\n' '  vulcan sync clone <remote> /storage/emulated/0/Documents/<vault> --dry-run'
+else
+    printf '%s\n' 'The daemon was not enabled. Run vulcan daemon install --dry-run to review it.'
+fi

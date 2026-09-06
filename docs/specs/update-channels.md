@@ -157,7 +157,7 @@ step exits. A manual dispatch with an explicit full commit ID provides an idempo
 
 The signer fails closed unless both CI and the rolling workflow succeeded for the exact commit
 named by the `rolling-main` tag. It downloads the complete published release and independently checks the
-release inventory, canonical manifest, exact five-archive/two-Debian artifact set, sizes, SHA-256
+release inventory, canonical manifest, exact six-archive/two-Debian artifact set, sizes, SHA-256
 hashes, `SHA256SUMS`, rolling version, source commit, channel, timestamp, URLs, layouts, and
 canonical unsigned payload. It then rechecks the release for races, replaces only
 `vulcan-update-channel.json`, and reads the uploaded bytes back. An already-valid signature is an

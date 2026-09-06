@@ -9,10 +9,10 @@ workspace test gate and every archive build succeed.
 - [ ] Build release assets and one local archive with `scripts/release/generate_assets.py` and
   `scripts/release/package.py`; inspect the stable top-level directory, binary mode, completions,
   man page, install notes, README, and both license files.
-- [ ] Confirm the release manifest contains exactly the five advertised targets and that
+- [ ] Confirm the release manifest contains exactly the six advertised targets and that
   `SHA256SUMS` verifies every archive and both Debian packages.
 - [ ] Decode `vulcan-update-channel.json`, verify its exact payload signature against a documented
-  trusted key, and confirm the stable channel, version, source commit, timestamp, five archive URLs,
+  trusted key, and confirm the stable channel, version, source commit, timestamp, six archive URLs,
   sizes, hashes, formats, and top-level directories match the canonical manifest.
 - [ ] After the version-tag workflow succeeds, independently resolve the immutable tag to its full
   commit ID. Run `scripts/release/sign_stable_release.py` first with `--dry-run`, then without it,
@@ -30,6 +30,10 @@ workspace test gate and every archive build succeed.
 - [ ] Confirm native archive smoke tests pass on x86_64 Linux, x86_64 macOS, aarch64 macOS, and
   x86_64 Windows. Manually validate aarch64 Linux on native hardware or a declared emulator before
   describing that artifact as exercised rather than cross-compiled.
+- [ ] Install the Android/Bionic archive in Termux on a real aarch64 Android device. Verify the
+  installer selects `aarch64-linux-android`, then exercise `sync clone`, status, doctor, push/pull,
+  conflict review, detached recovery, path portability, symlink/link-file behavior, scheduling,
+  and uninstall-loss recovery before describing the release as Android-certified.
 - [ ] Test `vulcan --version`, a direct vault command, `sync doctor`, and `daemon install --dry-run`
   from each extracted native archive.
 - [ ] From a disposable portable prefix, run `self-update check` and `self-update apply --dry-run`,
