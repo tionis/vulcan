@@ -7231,7 +7231,12 @@ mod tests {
             .expect("base commit");
         let target_tree = create_tree(b"star after\n", b"cousin after\n");
         let target = engine
-            .create_reproducible_commit(&repository, &target_tree, &[base.clone()], "target\n")
+            .create_reproducible_commit(
+                &repository,
+                &target_tree,
+                std::slice::from_ref(&base),
+                "target\n",
+            )
             .expect("target commit");
 
         let patch = engine
