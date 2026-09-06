@@ -3,7 +3,7 @@ use crate::templates::{
 };
 use crate::AppError;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::artifact::{
@@ -48,6 +48,7 @@ pub struct ArtifactImportNote {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_path: Option<String>,
     pub source_spans: Vec<SourceByteSpan>,
+    pub source_bytes: usize,
     pub children: Vec<String>,
     pub rewritten_links: usize,
 }
@@ -77,8 +78,21 @@ pub struct ArtifactImportReport {
     pub assets: Vec<ArtifactImportAsset>,
     pub rewritten_files: Vec<ArtifactRewrittenFile>,
     pub diagnostics: Vec<ArtifactImportDiagnostic>,
+    pub review: ArtifactImportReview,
     #[serde(skip_serializing)]
     pub changed_paths: Vec<String>,
+}
+
+/// Review measurements, not a semantic quality score or publication approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ArtifactImportReview {
+    pub source_bytes: usize,
+    pub source_coverage_complete: bool,
+    pub largest_note_source_bytes: usize,
+    pub large_note_threshold_bytes: usize,
+    pub large_note_count: usize,
+    pub diagnostic_counts: BTreeMap<String, usize>,
+    pub semantic_review_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -271,6 +285,7 @@ fn import_artifact_unlocked(
             path: Some(plan.root_path.clone()),
         });
     }
+    let review = review_import_plan(&plan, markdown.len(), &mut diagnostics);
     diagnostics.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -297,6 +312,11 @@ fn import_artifact_unlocked(
             title: note.title.clone(),
             parent_path: note.parent_path.clone(),
             source_spans: note.source_spans.clone(),
+            source_bytes: note
+                .source_spans
+                .iter()
+                .map(|span| span.end - span.start)
+                .sum(),
             children: note.children.clone(),
             rewritten_links: rewritten_files
                 .iter()
@@ -314,8 +334,60 @@ fn import_artifact_unlocked(
         assets,
         rewritten_files,
         diagnostics,
+        review,
         changed_paths,
     })
+}
+
+fn review_import_plan(
+    plan: &DecompositionPlan,
+    source_bytes: usize,
+    diagnostics: &mut Vec<ArtifactImportDiagnostic>,
+) -> ArtifactImportReview {
+    const LARGE_NOTE_THRESHOLD_BYTES: usize = 50_000;
+    let mut largest_note_source_bytes = 0;
+    let mut large_note_count = 0;
+    let mut spans = Vec::new();
+    for note in &plan.notes {
+        let bytes = note
+            .source_spans
+            .iter()
+            .map(|span| span.end - span.start)
+            .sum();
+        spans.extend(note.source_spans.iter().map(|span| (span.start, span.end)));
+        largest_note_source_bytes = largest_note_source_bytes.max(bytes);
+        if bytes > LARGE_NOTE_THRESHOLD_BYTES {
+            large_note_count += 1;
+            diagnostics.push(ArtifactImportDiagnostic {
+                code: "large_note_source".to_string(),
+                message: format!("{bytes} source bytes in this note; review topic ownership and split levels (size alone does not establish hierarchy)"),
+                path: Some(note.path.clone()),
+            });
+        }
+    }
+    spans.sort_unstable();
+    let mut cursor = 0;
+    let mut source_coverage_complete = true;
+    for (start, end) in spans {
+        source_coverage_complete &= start == cursor && end >= start && end <= source_bytes;
+        cursor = end;
+    }
+    source_coverage_complete &= cursor == source_bytes;
+    let mut diagnostic_counts = BTreeMap::new();
+    for diagnostic in diagnostics {
+        *diagnostic_counts
+            .entry(diagnostic.code.clone())
+            .or_insert(0) += 1;
+    }
+    ArtifactImportReview {
+        source_bytes,
+        source_coverage_complete,
+        largest_note_source_bytes,
+        large_note_threshold_bytes: LARGE_NOTE_THRESHOLD_BYTES,
+        large_note_count,
+        diagnostic_counts,
+        semantic_review_required: true,
+    }
 }
 
 fn validate_destination(paths: &VaultPaths, destination: &str) -> Result<String, AppError> {
@@ -1150,6 +1222,17 @@ mod tests {
         assert_eq!(preview.assets.len(), 1);
         request.dry_run = false;
         let report = import_artifact(&paths, &request).expect("import");
+        assert_eq!(preview.review, report.review);
+        assert!(report.review.source_coverage_complete);
+        assert!(report.review.semantic_review_required);
+        assert_eq!(
+            report
+                .notes
+                .iter()
+                .map(|note| note.source_bytes)
+                .sum::<usize>(),
+            report.review.source_bytes
+        );
         assert_eq!(report.notes[0].title, "Fixture Rules");
         let root = fs::read_to_string(paths.vault_root().join(&report.root_path)).unwrap();
         assert!(root.contains("title: Fixture Rules"));
@@ -1169,6 +1252,76 @@ mod tests {
         assert_eq!(report.changed_paths.len(), report.notes.len() + 1);
         vulcan_core::resolve_note_reference(&paths, "Imported/Rules/Combat/Combat.md")
             .expect("reindexed");
+    }
+
+    #[test]
+    fn review_counts_owned_bytes_and_flags_every_large_note_without_mutating_plan() {
+        let text = format!(
+            "# Manual\n\n## First\n{}\n\n## Second\n{}\n",
+            "x".repeat(50_000),
+            "é".repeat(25_001)
+        );
+        let mut plan = plan_document_decomposition(
+            "manual.md",
+            &text,
+            &vulcan_core::VaultConfig::default(),
+            &DecompositionOptions {
+                min_section_bytes: 0,
+                from_level: 2,
+                through_level: 3,
+                destination_root: "Book".into(),
+                navigation: true,
+            },
+        )
+        .unwrap();
+        let original = plan.clone();
+        let mut diagnostics = Vec::new();
+        let review = review_import_plan(&plan, text.len(), &mut diagnostics);
+        assert_eq!(plan, original);
+        assert!(review.source_coverage_complete);
+        assert!(review.semantic_review_required);
+        assert_eq!(review.large_note_count, 2);
+        assert_eq!(review.large_note_threshold_bytes, 50_000);
+        assert_eq!(review.diagnostic_counts["large_note_source"], 2);
+        assert_eq!(diagnostics.len(), 2);
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.path.as_ref().is_some_and(|p| p != &plan.root_path)));
+        let span = plan.notes[0].source_spans[0].clone();
+        plan.notes[1].source_spans.push(span);
+        assert!(!review_import_plan(&plan, text.len(), &mut Vec::new()).source_coverage_complete);
+        plan = original;
+        plan.notes[0].source_spans.clear();
+        assert!(!review_import_plan(&plan, text.len(), &mut Vec::new()).source_coverage_complete);
+    }
+
+    #[test]
+    fn review_size_threshold_is_strict_and_not_rendered_navigation_size() {
+        let plan = DecompositionPlan {
+            source_path: "text.md".into(),
+            destination_root: "Book".into(),
+            root_path: "Book.md".into(),
+            notes: vec![vulcan_core::DecompositionNotePlan {
+                path: "Book.md".into(),
+                title: "Book".into(),
+                parent_path: None,
+                source_spans: vec![SourceByteSpan {
+                    start: 0,
+                    end: 50_000,
+                }],
+                children: vec![],
+                content: "navigation".repeat(10_000),
+                link_placements: vec![],
+            }],
+            diagnostics: vec![],
+            heading_targets: vec![],
+            anchor_targets: vec![],
+            block_targets: vec![],
+        };
+        let review = review_import_plan(&plan, 50_000, &mut Vec::new());
+        assert_eq!(review.large_note_count, 0);
+        assert_eq!(review.largest_note_source_bytes, 50_000);
+        assert!(review.source_coverage_complete);
     }
 
     #[test]

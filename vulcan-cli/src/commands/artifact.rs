@@ -215,11 +215,25 @@ fn print_import(output: OutputFormat, report: &ArtifactImportReport) -> Result<(
                 report.notes.len(),
                 report.assets.len()
             );
+            println!(
+                "Review: source coverage {}; largest note {} source bytes; {} notes over {} bytes. Topic ownership still requires review.",
+                if report.review.source_coverage_complete { "complete" } else { "incomplete" },
+                report.review.largest_note_source_bytes,
+                report.review.large_note_count,
+                report.review.large_note_threshold_bytes,
+            );
             for note in &report.notes {
-                println!("{} ({})", note.path, note.title);
+                println!(
+                    "{} ({}, {} source bytes)",
+                    note.path, note.title, note.source_bytes
+                );
             }
             for diagnostic in &report.diagnostics {
-                println!("{}: {}", diagnostic.code, diagnostic.message);
+                if let Some(path) = &diagnostic.path {
+                    println!("{} [{}]: {}", diagnostic.code, path, diagnostic.message);
+                } else {
+                    println!("{}: {}", diagnostic.code, diagnostic.message);
+                }
             }
             Ok(())
         }

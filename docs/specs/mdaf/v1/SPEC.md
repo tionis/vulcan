@@ -105,6 +105,13 @@ Transport secrets, credentials, signed URLs, and private endpoint topology are f
 
 ## Consumer behavior
 
+Structural validity, complete source-byte coverage and successful generated-link
+checks do not establish semantic topic ownership. Consumers should distinguish
+these mechanical checks from semantic review and identify unusually large notes
+throughout the output, not only the root. Size measurements should distinguish
+owned primary bytes from generated navigation and metadata. These review aids
+are consumer reports, not additional required MDAF fields or a schema revision.
+
 Materialization granularity is independent of outline authority. Consumers may
 retain small descendant sections inline in their nearest materialized ancestor,
 provided source coverage stays complete and non-overlapping, relative hierarchy

@@ -10135,6 +10135,16 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
     let preview_json = parse_stdout_json(&preview);
     assert_eq!(preview_json["dry_run"], true);
     assert_eq!(preview_json["notes"][0]["title"], "Synthetic Rules");
+    assert_eq!(preview_json["review"]["source_coverage_complete"], true);
+    assert_eq!(preview_json["review"]["semantic_review_required"], true);
+    assert_eq!(preview_json["review"]["large_note_threshold_bytes"], 50_000);
+    let source_bytes: u64 = preview_json["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note["source_bytes"].as_u64().unwrap())
+        .sum();
+    assert_eq!(preview_json["review"]["source_bytes"], source_bytes);
     assert_eq!(preview_json["assets"].as_array().map(Vec::len), Some(1));
     assert!(preview_json["assets"][0]["digest"]
         .as_str()
@@ -14870,6 +14880,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(artifact_import.contains("--hierarchy outline"));
     assert!(artifact_import.contains("--min-section-bytes 0"));
     assert!(artifact_import.contains("vulcan.source"));
+    assert!(artifact_import.contains("source_coverage_complete"));
+    assert!(artifact_import.contains("large_note_source"));
 
     let portable_exchange = fs::read_to_string(installed_skills.join("portable-exchange/SKILL.md"))
         .expect("portable exchange skill should be installed");

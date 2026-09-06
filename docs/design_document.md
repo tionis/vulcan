@@ -375,6 +375,12 @@ and `../` as exact relative paths, without fuzzy filename or alias fallback;
 missing paths remain unresolved. This applies to ordinary vault links as well
 as imported artifacts and requires no persistent-cache schema change.
 
+Import review reports expose per-note owned source bytes, exact nonoverlapping
+coverage, largest-note size, warnings for every note over 50,000 source bytes,
+and diagnostic counts. These are reproducible comparison measurements, not a
+semantic quality score: topic ownership always requires review. Measurements
+exclude generated navigation/frontmatter and do not alter materialization.
+
 Every generated member is attributable to a provenance activity that records its inputs, outputs, direct tools and versions, models and exposed revisions, sanitized output-affecting parameters, and dependencies. Later enrichment creates a self-contained derivative artifact with immutable lineage instead of rewriting or inventing provenance for an existing artifact. On import, the resulting ordinary Markdown tree becomes canonical vault content; MDAF remains an external exchange/evidence artifact, and the rebuildable cache never becomes its authority.
 
 ### 4.5 Portable Markdown exchange formats
