@@ -83,6 +83,12 @@ Consumers must honor declared section boundaries or reject an unsupported alignm
 
 ## Native evidence and extensions
 
+When materializing an explicitly selected outline, consumers may render authored
+ATX heading markers at note-relative outline levels without changing the heading
+text or its fragment identity. Synthetic boundaries in prose do not authorize
+replacing prose with titles. Source spans continue to reference immutable primary
+bytes, and link placements must account for both growing and shrinking markers.
+
 Complete extractor responses belong below `renditions/<namespace>/` and are declared with their real media types and schemas when known. They may contain provider-native block trees, bounding boxes, polygons, masks, timestamps, tracks, frames, page Markdown, tables, hyperlinks, DOM trees, or binary databases. MDAF does not rewrite or interpret them.
 
 Native responses are retained byte-for-byte after mandatory secret filtering. A redaction creates a provenance record naming the field location, reason, and original-field digest when safe to compute. Assets may use arbitrary names; only declared roles and Markdown-relative references carry meaning.

@@ -25,6 +25,7 @@ Use this workflow for a Markdown Artifact Format (MDAF) directory or ZIP that is
 - For an approved book outline with major sections at level two, preview `--hierarchy outline --from-level 2` for chapter notes, or add `--through-level 3` for nested topic notes. A `large_root_remainder` diagnostic means the selected levels leave substantial content in the root; review the authority and level range before applying.
 - Fine imports default to `--min-section-bytes 2048`: smaller descendant subtrees remain inline with their nearest selected ancestor, while the first selected level always materializes. Use `--min-section-bytes 0` to reproduce exact depth-only splitting. This changes note granularity, not artifact hierarchy, and every source byte remains owned once.
 - Use `--hierarchy outline` only when the user explicitly prefers the aligned alternative outline. Markdown headings are authoritative by default.
+- Outline imports render aligned ATX headings at note-relative semantic levels while preserving their authored text and anchors. Synthetic prose boundaries remain prose. Review topic ownership and rendered headings, not just note counts or successful link validation; small-note grouping cannot repair an incorrect producer outline.
 
 ## Guardrails
 

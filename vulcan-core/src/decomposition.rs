@@ -295,7 +295,7 @@ pub fn plan_document_decomposition_with_aligned_outline(
         })
         .collect();
     let mut plan =
-        plan_parsed_document_decomposition(source_path, source, config, options, &parsed, false)?;
+        plan_parsed_document_decomposition(source_path, source, config, options, &parsed, true)?;
     // Outline titles are routing metadata, not authored Markdown anchors. Keep
     // every real heading target, including headings omitted by a sparse outline.
     plan.heading_targets = build_heading_targets(&original, &[], &plan.notes)?;
@@ -808,16 +808,26 @@ fn render_source_span(
             .filter(|heading| span.contains(heading.byte_offset))
         {
             let new_level = heading.level.saturating_sub(base_level).saturating_add(1);
-            let marker_end = heading.byte_offset + usize::from(heading.level);
-            if marker_end > source.len()
-                || !source.as_bytes()[heading.byte_offset..marker_end]
-                    .iter()
-                    .all(|byte| *byte == b'#')
+            // An aligned outline supplies semantic levels, not marker lengths.
+            // Synthetic boundaries in prose are valid too: never turn them into
+            // headings or replace their text. Authored titles/anchors stay intact.
+            let marker_len = source.as_bytes()[heading.byte_offset..]
+                .iter()
+                .take_while(|byte| **byte == b'#')
+                .count();
+            if !(1..=6).contains(&marker_len)
+                || !source
+                    .as_bytes()
+                    .get(heading.byte_offset + marker_len)
+                    .is_some_and(u8::is_ascii_whitespace)
             {
-                return Err(DecompositionError::new(format!(
-                    "cannot locate heading marker for `{}` at byte {}",
-                    heading.text, heading.byte_offset
-                )));
+                continue;
+            }
+            let marker_end = heading.byte_offset + marker_len;
+            if marker_end > span.end {
+                return Err(DecompositionError::new(
+                    "section boundary splits a heading marker",
+                ));
             }
             marker_edits.push((
                 heading.byte_offset,
@@ -844,10 +854,15 @@ fn render_source_span(
             let removed_bytes = marker_edits
                 .iter()
                 .filter(|(_, end, _)| *end <= link.byte_offset)
-                .map(|(start, end, replacement)| (end - start) - replacement.len())
+                .map(|(start, end, _)| end - start)
+                .sum::<usize>();
+            let added_bytes = marker_edits
+                .iter()
+                .filter(|(_, end, _)| *end <= link.byte_offset)
+                .map(|(_, _, replacement)| replacement.len())
                 .sum::<usize>();
             let original_offset = link.byte_offset - span.start;
-            let output_byte_offset = original_offset - removed_bytes + output_base;
+            let output_byte_offset = original_offset - removed_bytes + added_bytes + output_base;
             DecompositionLinkPlacement {
                 source_byte_offset: link.byte_offset,
                 output_byte_offset,
@@ -1198,6 +1213,41 @@ mod tests {
         assert!(spans
             .windows(2)
             .all(|window| window[0].end == window[1].start));
+    }
+
+    #[test]
+    fn aligned_outline_renders_semantic_levels_and_keeps_link_offsets() {
+        let source = "# Topic\n\n# First\n[one](target.md)\n\n### Second\n[two](target.md)\n";
+        let headings = [("Topic", 2), ("First", 4), ("Second", 3)]
+            .into_iter()
+            .map(|(title, level)| AlignedOutlineHeading {
+                title: title.to_string(),
+                level,
+                byte_offset: source[..source.find(title).unwrap()].rfind('#').unwrap()
+                    - if title == "Second" { 2 } else { 0 },
+            })
+            .collect::<Vec<_>>();
+        let plan = plan_document_decomposition_with_aligned_outline(
+            "source.md",
+            source,
+            &VaultConfig::default(),
+            &DecompositionOptions {
+                from_level: 2,
+                through_level: 2,
+                min_section_bytes: 0,
+                destination_root: "Wiki".to_string(),
+                navigation: false,
+            },
+            &headings,
+        )
+        .unwrap();
+        let note = &plan.notes[1];
+        assert!(note.content.contains("### First\n"));
+        assert!(note.content.contains("## Second\n"));
+        for placement in &note.link_placements {
+            assert!(note.content[placement.output_byte_offset..].starts_with(&placement.raw_text));
+        }
+        assert!(plan.heading_target("First").is_some());
     }
 
     #[test]
