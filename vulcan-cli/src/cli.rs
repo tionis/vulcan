@@ -515,6 +515,7 @@ Examples:
 const SYNC_COMMAND_AFTER_HELP: &str = "\
 Notes:
   `sync clone` automatically selects a detached Android-shared layout in Termux.
+  `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.
   Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.
   The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
   Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.
@@ -523,6 +524,9 @@ Notes:
 
 Examples:
   vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run
+  vulcan sync termux-install personal --period-minutes 30 --dry-run
+  vulcan sync schedule show personal
+  vulcan sync schedule set personal --period-minutes 60 --dry-run
   vulcan sync run
   vulcan sync run personal
   vulcan sync run --group daily
@@ -3796,7 +3800,38 @@ pub enum SemanticGroupingArg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SyncScheduleCommand {
+    #[command(about = "Show the saved settings of a managed Termux sync job")]
+    Show {
+        #[arg(help = "Registered wiki ID")]
+        wiki: String,
+    },
+    #[command(about = "Update a managed Termux sync job, preserving unspecified settings")]
+    Set {
+        #[arg(help = "Registered wiki ID")]
+        wiki: String,
+        #[arg(long, help = "Approximate Android interval in minutes (minimum 15)")]
+        period_minutes: Option<u32>,
+        #[arg(long, value_enum, help = "Required network type")]
+        network: Option<TermuxNetworkArg>,
+        #[arg(long, help = "Require charging: true or false")]
+        charging: Option<bool>,
+        #[arg(long, help = "Require battery not low: true or false")]
+        battery_not_low: Option<bool>,
+        #[arg(long, help = "Retain the Android job across reboots: true or false")]
+        persisted: Option<bool>,
+        #[arg(long, help = "Preview the updated settings without rescheduling")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
+    #[command(about = "Inspect or update a managed Android/Termux sync schedule")]
+    Schedule {
+        #[command(subcommand)]
+        command: SyncScheduleCommand,
+    },
     #[command(
         about = "Clone a Git remote with sync-ready platform defaults",
         after_help = VAULT_CLONE_AFTER_HELP

@@ -2,7 +2,8 @@ use crate::editor::open_paths_in_editor;
 use crate::output::print_json;
 use crate::{
     selected_permission_guard, Cli, CliError, OutputFormat, SemanticGroupingArg,
-    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs, TermuxNetworkArg,
+    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncScheduleCommand,
+    SyncSelectionArgs, TermuxNetworkArg,
 };
 use serde::Serialize;
 use std::io::{self, IsTerminal, Read, Write};
@@ -64,7 +65,7 @@ use vulcan_daemon::registry::{UpdateWikiRequest, WikiId, WikiRegistration, WikiR
 use vulcan_daemon::sync::{sync_registered_wikis, RegisteredSyncReport, RegisteredSyncSelection};
 use vulcan_daemon::termux_scheduler::{
     apply_termux_sync, load_termux_sync_plan, plan_termux_sync, TermuxNetwork, TermuxSyncAction,
-    TermuxSyncInstallOptions, TermuxSyncReport,
+    TermuxSyncInstallOptions, TermuxSyncReport, TermuxSyncUpdate,
 };
 
 pub(crate) fn handle_sync_command(
@@ -479,7 +480,9 @@ fn handle_non_cycle_sync_command(
             unreachable!("clone is dispatched before the general sync match")
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
-        SyncCommand::TermuxInstall { .. } | SyncCommand::TermuxUninstall { .. } => {
+        SyncCommand::TermuxInstall { .. }
+        | SyncCommand::TermuxUninstall { .. }
+        | SyncCommand::Schedule { .. } => {
             unreachable!("Termux commands are dispatched before the general sync match")
         }
         SyncCommand::RetentionPlan { .. } | SyncCommand::RetentionApply { .. } => {
@@ -536,6 +539,7 @@ fn handle_notification_sync_command(
 
 fn handle_termux_sync_command(cli: &Cli, command: &SyncCommand) -> Option<Result<(), CliError>> {
     match command {
+        SyncCommand::Schedule { command } => Some(handle_sync_schedule(cli, command)),
         SyncCommand::TermuxInstall {
             wiki,
             period_minutes,
@@ -567,6 +571,59 @@ fn handle_termux_sync_command(cli: &Cli, command: &SyncCommand) -> Option<Result
             Some(uninstall_termux_sync(cli.output, wiki, *dry_run))
         }
         _ => None,
+    }
+}
+
+fn handle_sync_schedule(cli: &Cli, command: &SyncScheduleCommand) -> Result<(), CliError> {
+    let (SyncScheduleCommand::Show { wiki } | SyncScheduleCommand::Set { wiki, .. }) = command;
+    WikiId::parse(wiki).map_err(CliError::operation)?;
+    let state_root = vulcan_core::vulcan_user_state_dir()
+        .ok_or_else(|| CliError::operation("Vulcan user state directory is unavailable"))?;
+    let installed = load_termux_sync_plan(&state_root, wiki)
+        .map_err(CliError::operation)?
+        .ok_or_else(|| CliError::operation(format!(
+            "no managed Termux sync job exists for wiki `{wiki}`; install one with `vulcan sync termux-install {wiki}`"
+        )))?;
+    match command {
+        SyncScheduleCommand::Show { .. } => {
+            if cli.output == OutputFormat::Json {
+                return print_json(&installed);
+            }
+            println!(
+                "Saved Android sync schedule for `{wiki}` (job {})",
+                installed.job_id
+            );
+            println!("Approximate interval: {} minutes", installed.period_minutes);
+            println!("Network: {:?}", installed.network);
+            println!("Battery not low: {}", installed.battery_not_low);
+            println!("Charging required: {}", installed.charging);
+            println!("Persist across reboots: {}", installed.persisted);
+            println!("These are saved settings; inspect Android jobs with `termux-job-scheduler --pending`.");
+            Ok(())
+        }
+        SyncScheduleCommand::Set {
+            period_minutes,
+            network,
+            charging,
+            battery_not_low,
+            persisted,
+            dry_run,
+            ..
+        } => {
+            let update = TermuxSyncUpdate {
+                period_minutes: *period_minutes,
+                network: network.map(|network| match network {
+                    TermuxNetworkArg::Any => TermuxNetwork::Any,
+                    TermuxNetworkArg::Unmetered => TermuxNetwork::Unmetered,
+                    TermuxNetworkArg::Cellular => TermuxNetwork::Cellular,
+                    TermuxNetworkArg::NotRoaming => TermuxNetwork::NotRoaming,
+                }),
+                charging: *charging,
+                battery_not_low: *battery_not_low,
+                persisted: *persisted,
+            };
+            install_termux_sync(cli, wiki, &update.apply_to(&installed), *dry_run)
+        }
     }
 }
 
@@ -665,6 +722,17 @@ fn print_termux_sync_report(
         );
     }
     println!("Script: {}", report.plan.script_path.display());
+    if report.plan.action == TermuxSyncAction::Install {
+        println!(
+            "Approximate interval: {} minutes",
+            report.plan.period_minutes
+        );
+        println!("Inspect: vulcan sync schedule show {}", report.plan.wiki_id);
+        println!(
+            "Change interval: vulcan sync schedule set {} --period-minutes <minutes>",
+            report.plan.wiki_id
+        );
+    }
     Ok(())
 }
 

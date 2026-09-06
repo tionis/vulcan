@@ -8450,10 +8450,136 @@
       },
       {
         "about": "Synchronize a vault through a hidden Git live ref",
-        "after_help": "Notes:\n  `sync clone` automatically selects a detached Android-shared layout in Termux.\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync propose <conflict-id> --model <model> --base-url <url>\n  vulcan sync reject <conflict-id> <proposal-id> --dry-run\n  vulcan sync resolve <conflict-id> --side local --dry-run\n  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run\n  vulcan sync checkpoint personal --kind recovery\n  vulcan sync retention-plan personal\n  vulcan sync retention-apply personal --dry-run\n  vulcan sync retention-apply personal --rollover\n  vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run\n  vulcan sync semantic-apply <plan-id> --dry-run\n  vulcan sync semantic-publish <plan-id> --dry-run\n  vulcan sync semantic-auto personal --quiet-seconds 900 --maximum-wait-seconds 21600\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
+        "after_help": "Notes:\n  `sync clone` automatically selects a detached Android-shared layout in Termux.\n  `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run\n  vulcan sync termux-install personal --period-minutes 30 --dry-run\n  vulcan sync schedule show personal\n  vulcan sync schedule set personal --period-minutes 60 --dry-run\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync propose <conflict-id> --model <model> --base-url <url>\n  vulcan sync reject <conflict-id> <proposal-id> --dry-run\n  vulcan sync resolve <conflict-id> --side local --dry-run\n  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run\n  vulcan sync checkpoint personal --kind recovery\n  vulcan sync retention-plan personal\n  vulcan sync retention-apply personal --dry-run\n  vulcan sync retention-apply personal --rollover\n  vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run\n  vulcan sync semantic-apply <plan-id> --dry-run\n  vulcan sync semantic-publish <plan-id> --dry-run\n  vulcan sync semantic-auto personal --quiet-seconds 900 --maximum-wait-seconds 21600\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
         "name": "sync",
         "options": [],
         "subcommands": [
+          {
+            "about": "Inspect or update a managed Android/Termux sync schedule",
+            "name": "schedule",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Show the saved settings of a managed Termux sync job",
+                "name": "show",
+                "options": [
+                  {
+                    "help": "Registered wiki ID",
+                    "id": "wiki",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Update a managed Termux sync job, preserving unspecified settings",
+                "name": "set",
+                "options": [
+                  {
+                    "help": "Registered wiki ID",
+                    "id": "wiki",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Approximate Android interval in minutes (minimum 15)",
+                    "id": "period_minutes",
+                    "long": "period-minutes",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PERIOD_MINUTES"
+                    ]
+                  },
+                  {
+                    "help": "Required network type",
+                    "id": "network",
+                    "long": "network",
+                    "possible_values": [
+                      "any",
+                      "unmetered",
+                      "cellular",
+                      "not-roaming"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK"
+                    ]
+                  },
+                  {
+                    "help": "Require charging: true or false",
+                    "id": "charging",
+                    "long": "charging",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CHARGING"
+                    ]
+                  },
+                  {
+                    "help": "Require battery not low: true or false",
+                    "id": "battery_not_low",
+                    "long": "battery-not-low",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "BATTERY_NOT_LOW"
+                    ]
+                  },
+                  {
+                    "help": "Retain the Android job across reboots: true or false",
+                    "id": "persisted",
+                    "long": "persisted",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PERSISTED"
+                    ]
+                  },
+                  {
+                    "help": "Preview the updated settings without rescheduling",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
           {
             "about": "Clone a Git remote with sync-ready platform defaults",
             "after_help": "Notes:\n  Clones the remote, then registers the new worktree exactly like `vault add`.\n  The ID defaults to the destination directory name and follows the same rules.\n  Preview with --dry-run first; --dry-run clones nothing and registers nothing.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault list\n  vulcan sync status personal",

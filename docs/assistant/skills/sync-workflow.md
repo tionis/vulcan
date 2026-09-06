@@ -205,6 +205,13 @@ they commit.
   network/battery policy. It requires Termux:API plus `pkg install termux-api`, defaults to
   battery-not-low and storage-not-low, and never starts the daemon. Use `--network unmetered` or
   `--charging` when requested. Preview `sync termux-uninstall <wiki> --dry-run` before removal.
+- Inspect saved settings with `vulcan sync schedule show <wiki>`. Change only the interval with
+  `vulcan sync schedule set <wiki> --period-minutes 30 --dry-run`, then apply without `--dry-run`.
+  Updates retain the same Android job ID and all unspecified settings. Use `--network unmetered`,
+  `--charging true|false`, `--battery-not-low true|false`, or `--persisted true|false` for explicit
+  changes. The minimum interval is 15 minutes. These commands manage an existing job; create it
+  with `sync termux-install` first. Saved settings do not prove Android still has the job queued;
+  use `termux-job-scheduler --pending` to inspect Android's actual queue.
 - Treat Android JobScheduler timing as approximate. Use the periodic job as an energy-efficient
   safety net; a shortcut or future save/resume bridge may invoke the same finite `sync run` for
   lower latency. A foreground or persistently supervised Termux daemon may use the same advertised

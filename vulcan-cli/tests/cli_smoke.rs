@@ -7899,6 +7899,73 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
         .is_some_and(|script| script.contains("sync run 'detached'")));
     assert!(!state_home.join("vulcan/termux-sync/detached.sh").exists());
 
+    // Seed the persisted plan to exercise settings management on desktop without
+    // invoking Android APIs. A dry-run update must leave these bytes unchanged.
+    let manifest_path = PathBuf::from(
+        termux_json["manifest_path"]
+            .as_str()
+            .expect("manifest path"),
+    );
+    fs::create_dir_all(manifest_path.parent().expect("manifest parent")).expect("state directory");
+    let manifest = serde_json::to_vec(&termux_json).expect("manifest JSON");
+    fs::write(&manifest_path, &manifest).expect("saved plan");
+    let shown = cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["--output", "json", "sync", "schedule", "show", "detached"])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&shown)["period_minutes"], 30);
+    let changed = cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "schedule",
+            "set",
+            "detached",
+            "--period-minutes",
+            "45",
+            "--charging",
+            "false",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let changed = parse_stdout_json(&changed);
+    assert_eq!(changed["period_minutes"], 45);
+    assert_eq!(changed["charging"], false);
+    assert_eq!(changed["network"], "unmetered");
+    assert_eq!(changed["battery_not_low"], true);
+    assert_eq!(changed["persisted"], true);
+    assert_eq!(changed["job_id"], termux_json["job_id"]);
+    assert_eq!(changed["dry_run"], true);
+    assert_eq!(fs::read(&manifest_path).expect("unchanged plan"), manifest);
+    assert!(!state_home.join("vulcan/termux-sync/detached.sh").exists());
+    cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "schedule",
+            "set",
+            "detached",
+            "--period-minutes",
+            "14",
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("at least 15 minutes"));
+    fs::remove_file(&manifest_path).expect("remove seeded plan");
+    cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["--output", "json", "sync", "schedule", "show", "detached"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("sync termux-install detached"));
+
     cargo_vulcan_with_xdg_config(config_home)
         .env("XDG_STATE_HOME", &state_home)
         .args([
@@ -14433,6 +14500,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("macOS installs a restartable per-user LaunchAgent"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
+    assert!(sync_skill.contains("vulcan sync schedule show <wiki>"));
+    assert!(sync_skill.contains("vulcan sync schedule set <wiki> --period-minutes 30 --dry-run"));
     assert!(sync_skill.contains("`refs/vulcan/notifications`"));
     assert!(sync_skill.contains("there is no subscription-bundle import"));
     assert!(sync_skill.contains("Notifications are untrusted hints"));

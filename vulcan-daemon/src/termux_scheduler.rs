@@ -84,6 +84,30 @@ impl Default for TermuxSyncInstallOptions {
     }
 }
 
+/// Changes to an installed job; omitted fields retain their recorded values.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TermuxSyncUpdate {
+    pub period_minutes: Option<u32>,
+    pub network: Option<TermuxNetwork>,
+    pub battery_not_low: Option<bool>,
+    pub charging: Option<bool>,
+    pub persisted: Option<bool>,
+}
+
+impl TermuxSyncUpdate {
+    #[must_use]
+    pub fn apply_to(&self, installed: &TermuxSyncPlan) -> TermuxSyncInstallOptions {
+        TermuxSyncInstallOptions {
+            period_minutes: self.period_minutes.unwrap_or(installed.period_minutes),
+            network: self.network.unwrap_or(installed.network),
+            battery_not_low: self.battery_not_low.unwrap_or(installed.battery_not_low),
+            charging: self.charging.unwrap_or(installed.charging),
+            persisted: self.persisted.unwrap_or(installed.persisted),
+            job_id: Some(installed.job_id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TermuxSyncReport {
     #[serde(flatten)]
@@ -634,5 +658,76 @@ mod tests {
         assert!(matches!(error, TermuxSyncError::CommandFailed { .. }));
         assert!(!script.exists());
         assert!(!manifest.exists());
+    }
+
+    #[test]
+    fn schedule_updates_preserve_settings_and_replace_the_same_job() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let executable = executable(temporary.path());
+        let state = temporary.path().join("state");
+        let plan = plan_termux_sync(
+            TermuxSyncAction::Install,
+            "personal",
+            &executable,
+            &state,
+            &TermuxSyncInstallOptions {
+                period_minutes: 60,
+                network: TermuxNetwork::Unmetered,
+                charging: true,
+                battery_not_low: true,
+                persisted: true,
+                job_id: Some(42),
+            },
+        )
+        .expect("plan");
+        apply_termux_sync_with(plan.clone(), |_, _| Ok(())).expect("install");
+        let updated = TermuxSyncUpdate {
+            period_minutes: Some(30),
+            ..Default::default()
+        }
+        .apply_to(&plan);
+        assert_eq!(
+            updated,
+            TermuxSyncInstallOptions {
+                period_minutes: 30,
+                network: TermuxNetwork::Unmetered,
+                charging: true,
+                battery_not_low: true,
+                persisted: true,
+                job_id: Some(42),
+            }
+        );
+        let replacement = plan_termux_sync(
+            TermuxSyncAction::Install,
+            "personal",
+            &executable,
+            &state,
+            &updated,
+        )
+        .expect("replacement");
+        apply_termux_sync_with(replacement, |_, arguments| {
+            assert!(arguments.windows(2).any(|pair| pair == ["--job-id", "42"]));
+            assert!(arguments
+                .windows(2)
+                .any(|pair| pair == ["--period-ms", "1800000"]));
+            Ok(())
+        })
+        .expect("reschedule same job");
+        let installed = load_termux_sync_plan(&state, "personal")
+            .expect("load")
+            .expect("installed");
+        assert_eq!(installed.period_minutes, 30);
+        let reset = TermuxSyncUpdate {
+            charging: Some(false),
+            battery_not_low: Some(false),
+            persisted: Some(false),
+            network: Some(TermuxNetwork::Any),
+            ..Default::default()
+        }
+        .apply_to(&installed);
+        assert!(!reset.charging && !reset.battery_not_low && !reset.persisted);
+        assert_eq!(reset.network, TermuxNetwork::Any);
+        assert_eq!(reset.period_minutes, 30);
+        assert_eq!(reset.job_id, Some(42));
     }
 }
