@@ -26,19 +26,19 @@ The default colocated layout keeps `.git/` beside the vault. `sync run` does not
 
 Android shared storage is suitable for the Obsidian-visible files but not for Git's private repository machinery. Keep the worktree in shared storage and the detached Git directory inside Termux-private storage.
 
-After granting Termux storage access and installing Git, preview the layout:
+After granting Termux storage access and installing Git, preview the layout. In Termux,
+`sync clone` automatically keeps Git metadata in the private Vulcan data directory and selects the
+`android-shared` policy:
 
 ```sh
 termux-setup-storage
 pkg install git
-vulcan --output json vault clone <remote> /storage/emulated/0/Documents/Personal \
-  --id personal \
-  --git-dir ~/.local/share/vulcan/git/personal.git \
-  --platform android-shared \
-  --dry-run
+vulcan --output json sync clone <remote> /storage/emulated/0/Documents/Personal --dry-run
 ```
 
-Apply the same command without `--dry-run`, then use one-shot commands whenever synchronization is wanted:
+The wiki ID defaults to `personal` from the destination name. `--id`, `--group`, `--git-dir`, and
+`--platform` remain available when an override is needed. Apply the same command without
+`--dry-run`, then use one-shot commands whenever synchronization is wanted:
 
 ```sh
 vulcan sync status personal

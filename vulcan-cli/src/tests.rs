@@ -2153,6 +2153,40 @@ fn parses_git_blame_command() {
 }
 
 #[test]
+fn parses_sync_clone_command() {
+    let clone = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "clone",
+        "ssh://git@example.invalid/wiki.git",
+        "/storage/wiki",
+        "--id",
+        "personal",
+        "--group",
+        "mobile",
+        "--platform",
+        "android-shared",
+        "--dry-run",
+    ])
+    .expect("sync clone should parse");
+    assert_eq!(
+        clone.command,
+        Command::Sync {
+            command: SyncCommand::Clone {
+                remote: "ssh://git@example.invalid/wiki.git".to_string(),
+                path: PathBuf::from("/storage/wiki"),
+                id: Some("personal".to_string()),
+                group: vec!["mobile".to_string()],
+                git_dir: None,
+                platform: Some(ClonePlatformArg::AndroidShared),
+                permissions_profile: None,
+                dry_run: true,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_sync_commands() {
     let run = Cli::try_parse_from([
         "vulcan",

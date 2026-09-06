@@ -143,6 +143,16 @@ pub fn vulcan_user_config_dir() -> Option<PathBuf> {
 }
 
 #[must_use]
+pub fn user_data_dir() -> Option<PathBuf> {
+    user_data_dir_from_env(|name| std::env::var_os(name))
+}
+
+#[must_use]
+pub fn vulcan_user_data_dir() -> Option<PathBuf> {
+    user_data_dir().map(|path| path.join("vulcan"))
+}
+
+#[must_use]
 pub fn user_state_dir() -> Option<PathBuf> {
     user_state_dir_from_env(|name| std::env::var_os(name))
 }
@@ -212,6 +222,41 @@ fn user_config_dir_from_env(mut env: impl FnMut(&str) -> Option<OsString>) -> Op
         if let (Some(mut drive), Some(path)) = (drive, path) {
             drive.push(path);
             return Some(PathBuf::from(drive).join(".config"));
+        }
+    }
+
+    None
+}
+
+fn user_data_dir_from_env(mut env: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if let Some(path) = env_path(&mut env, "XDG_DATA_HOME") {
+        return Some(path);
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(path) = env_path(&mut env, "LOCALAPPDATA") {
+            return Some(path);
+        }
+        if let Some(path) = env_path(&mut env, "APPDATA") {
+            return Some(path);
+        }
+    }
+
+    if let Some(home) = env_path(&mut env, "HOME") {
+        return Some(home.join(".local/share"));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(home) = env_path(&mut env, "USERPROFILE") {
+            return Some(home.join("AppData/Local"));
+        }
+        let drive = non_empty_os(env("HOMEDRIVE"));
+        let path = non_empty_os(env("HOMEPATH"));
+        if let (Some(mut drive), Some(path)) = (drive, path) {
+            drive.push(path);
+            return Some(PathBuf::from(drive).join("AppData/Local"));
         }
     }
 
@@ -698,6 +743,31 @@ mod tests {
             user_state_dir_from_env(|name| env.get(name).cloned()),
             Some(PathBuf::from("/tmp/home/.local/state"))
         );
+    }
+
+    #[test]
+    fn user_data_dir_prefers_xdg_and_falls_back_to_home() {
+        let mut env = BTreeMap::new();
+        env.insert("XDG_DATA_HOME", OsString::from("/tmp/xdg-data"));
+        env.insert("HOME", OsString::from("/tmp/home"));
+        assert_eq!(
+            user_data_dir_from_env(|name| env.get(name).cloned()),
+            Some(PathBuf::from("/tmp/xdg-data"))
+        );
+
+        env.remove("XDG_DATA_HOME");
+        assert_eq!(
+            user_data_dir_from_env(|name| env.get(name).cloned()),
+            Some(PathBuf::from("/tmp/home/.local/share"))
+        );
+    }
+
+    #[test]
+    fn vulcan_user_data_dir_uses_vulcan_subdirectory() {
+        let data_dir = vulcan_user_data_dir();
+        if let Some(path) = data_dir {
+            assert_eq!(path.file_name(), Some(std::ffi::OsStr::new("vulcan")));
+        }
     }
 
     #[test]

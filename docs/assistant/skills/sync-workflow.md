@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 5
+version: 6
 metadata:
   vulcan:
     managed: true
@@ -14,6 +14,11 @@ Vulcan synchronizes canonical vault files through finite, recoverable transactio
 are deliberately non-semantic and do not advance the user's checked-out branch. Use the direct CLI
 for one-shot work and the daemon for scheduling, watching, multiple wikis, or a companion client;
 both execute the same application workflow.
+
+For a new sync checkout, preview `vulcan sync clone <remote> <path> --dry-run` before applying it.
+The command derives the wiki ID from the destination, uses native clone defaults on desktop, and
+automatically selects a detached private Git directory plus the `android-shared` policy in Termux.
+Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appropriate.
 
 ## Select the execution mode
 

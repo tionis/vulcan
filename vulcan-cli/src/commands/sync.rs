@@ -56,7 +56,8 @@ use vulcan_app::sync_semantic::{
 use vulcan_app::sync_semantic_auto::{run_semantic_auto, SemanticAutoOptions, SemanticAutoReport};
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_permission_profile, vulcan_user_data_dir, PermissionGuard, ProfilePermissionGuard,
+    VaultPaths,
 };
 use vulcan_daemon::process::{daemon_status, DaemonProcessContext};
 use vulcan_daemon::registry::{UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry};
@@ -71,6 +72,9 @@ pub(crate) fn handle_sync_command(
     paths: &VaultPaths,
     command: &SyncCommand,
 ) -> Result<(), CliError> {
+    if matches!(command, SyncCommand::Clone { .. }) {
+        return handle_sync_clone(cli, command);
+    }
     if let Some(result) = handle_non_cycle_sync_command(cli, paths, command) {
         return result;
     }
@@ -133,6 +137,75 @@ pub(crate) fn handle_sync_command(
     observer.finish();
     let report = result.map_err(CliError::operation)?;
     print_sync_report(cli.output, cli.verbose, &report)
+}
+
+fn handle_sync_clone(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
+    let SyncCommand::Clone {
+        remote,
+        path,
+        id,
+        group,
+        git_dir,
+        platform,
+        permissions_profile,
+        dry_run,
+    } = command
+    else {
+        unreachable!("sync clone handler requires a clone command")
+    };
+    let id = id.as_deref().map_or_else(
+        || {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    CliError::operation("cannot derive a wiki ID from the destination; pass --id")
+                })
+                .and_then(|value| WikiId::parse(value).map_err(CliError::operation))
+        },
+        |value| WikiId::parse(value).map_err(CliError::operation),
+    )?;
+    let platform = resolve_sync_clone_platform(
+        *platform,
+        cfg!(target_os = "android"),
+        std::env::var_os("PREFIX").is_some(),
+    );
+    let default_git_dir;
+    let git_dir = if platform == GitPlatformProfile::AndroidShared && git_dir.is_none() {
+        default_git_dir = vulcan_user_data_dir()
+            .ok_or_else(|| CliError::operation("Vulcan user data directory is unavailable"))?
+            .join("git")
+            .join(format!("{}.git", id.as_str()));
+        Some(default_git_dir.as_path())
+    } else {
+        git_dir.as_deref()
+    };
+    let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
+    crate::commands::vault::clone_wiki(
+        cli,
+        &registry,
+        crate::commands::vault::CloneCliRequest {
+            id,
+            remote,
+            path,
+            groups: group,
+            git_dir,
+            platform,
+            permissions_profile: permissions_profile.as_deref(),
+            dry_run: *dry_run,
+        },
+    )
+}
+
+fn resolve_sync_clone_platform(
+    explicit: Option<crate::ClonePlatformArg>,
+    target_is_android: bool,
+    termux_prefix_present: bool,
+) -> GitPlatformProfile {
+    match explicit {
+        Some(crate::ClonePlatformArg::AndroidShared) => GitPlatformProfile::AndroidShared,
+        None if target_is_android && termux_prefix_present => GitPlatformProfile::AndroidShared,
+        None | Some(crate::ClonePlatformArg::Native) => GitPlatformProfile::native(),
+    }
 }
 
 struct CliSyncProgress {
@@ -291,6 +364,30 @@ mod progress_tests {
             assert_eq!(mode, CliSyncProgressMode::Silent);
         }
     }
+
+    #[test]
+    fn sync_clone_selects_android_only_inside_termux() {
+        assert_eq!(
+            resolve_sync_clone_platform(None, true, true),
+            GitPlatformProfile::AndroidShared
+        );
+        assert_eq!(
+            resolve_sync_clone_platform(None, true, false),
+            GitPlatformProfile::native()
+        );
+        assert_eq!(
+            resolve_sync_clone_platform(None, false, true),
+            GitPlatformProfile::native()
+        );
+        assert_eq!(
+            resolve_sync_clone_platform(Some(crate::ClonePlatformArg::AndroidShared), false, false),
+            GitPlatformProfile::AndroidShared
+        );
+        assert_eq!(
+            resolve_sync_clone_platform(Some(crate::ClonePlatformArg::Native), true, true),
+            GitPlatformProfile::native()
+        );
+    }
 }
 
 fn handle_non_cycle_sync_command(
@@ -377,6 +474,9 @@ fn handle_non_cycle_sync_command(
         | SyncCommand::SemanticAuto { .. }
         | SyncCommand::SemanticReject { .. } => {
             unreachable!("semantic commands are dispatched before the general sync match")
+        }
+        SyncCommand::Clone { .. } => {
+            unreachable!("clone is dispatched before the general sync match")
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
         SyncCommand::TermuxInstall { .. } | SyncCommand::TermuxUninstall { .. } => {

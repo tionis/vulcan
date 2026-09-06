@@ -514,6 +514,7 @@ Examples:
 
 const SYNC_COMMAND_AFTER_HELP: &str = "\
 Notes:
+  `sync clone` automatically selects a detached Android-shared layout in Termux.
   Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.
   The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
   Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.
@@ -521,6 +522,7 @@ Notes:
   Pause/resume updates device-local automatic behavior only; manual run and status remain available.
 
 Examples:
+  vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run
   vulcan sync run
   vulcan sync run personal
   vulcan sync run --group daily
@@ -3795,6 +3797,38 @@ pub enum SemanticGroupingArg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
+    #[command(
+        about = "Clone a Git remote with sync-ready platform defaults",
+        after_help = VAULT_CLONE_AFTER_HELP
+    )]
+    Clone {
+        #[arg(help = "Git remote URL or local repository path")]
+        remote: String,
+        #[arg(help = "New worktree directory to create")]
+        path: PathBuf,
+        #[arg(
+            long,
+            help = "Device-local wiki ID (lowercase, digits, `-`/`_`, max 64 chars); defaults to the destination name"
+        )]
+        id: Option<String>,
+        #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
+        group: Vec<String>,
+        #[arg(
+            long,
+            help = "Create Git metadata in this directory; Android defaults below the private Vulcan data directory"
+        )]
+        git_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            value_enum,
+            help = "Filesystem policy; defaults to android-shared in Termux and native elsewhere"
+        )]
+        platform: Option<ClonePlatformArg>,
+        #[arg(long, help = "Permission profile used by future daemon requests")]
+        permissions_profile: Option<String>,
+        #[arg(long, help = "Validate and report without cloning or registering")]
+        dry_run: bool,
+    },
     #[command(about = "Run one finite Git synchronization cycle")]
     Run {
         #[command(flatten)]

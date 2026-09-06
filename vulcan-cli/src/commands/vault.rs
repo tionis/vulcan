@@ -165,21 +165,53 @@ fn handle_clone(
         },
         parse_id,
     )?;
-    let report = clone_registered_wiki(
+    clone_wiki(
+        cli,
         registry,
-        &CloneWikiRequest {
+        CloneCliRequest {
             id,
-            source: remote.clone(),
-            work_tree: path.clone(),
-            git_dir: git_dir.clone(),
+            remote,
+            path,
+            groups: group,
+            git_dir: git_dir.as_deref(),
             platform: match platform {
                 ClonePlatformArg::Native => GitPlatformProfile::native(),
                 ClonePlatformArg::AndroidShared => GitPlatformProfile::AndroidShared,
             },
-            groups: group.clone(),
-            permissions_profile: permissions_profile.clone(),
+            permissions_profile: permissions_profile.as_deref(),
+            dry_run: *dry_run,
         },
-        *dry_run,
+    )
+}
+
+pub(crate) struct CloneCliRequest<'a> {
+    pub(crate) id: WikiId,
+    pub(crate) remote: &'a str,
+    pub(crate) path: &'a Path,
+    pub(crate) groups: &'a [String],
+    pub(crate) git_dir: Option<&'a Path>,
+    pub(crate) platform: GitPlatformProfile,
+    pub(crate) permissions_profile: Option<&'a str>,
+    pub(crate) dry_run: bool,
+}
+
+pub(crate) fn clone_wiki(
+    cli: &Cli,
+    registry: &WikiRegistry,
+    request: CloneCliRequest<'_>,
+) -> Result<(), CliError> {
+    let report = clone_registered_wiki(
+        registry,
+        &CloneWikiRequest {
+            id: request.id,
+            source: request.remote.to_string(),
+            work_tree: request.path.to_path_buf(),
+            git_dir: request.git_dir.map(Path::to_path_buf),
+            platform: request.platform,
+            groups: request.groups.to_vec(),
+            permissions_profile: request.permissions_profile.map(str::to_string),
+        },
+        request.dry_run,
     )
     .map_err(CliError::operation)?;
     print_clone(cli.output, &report)

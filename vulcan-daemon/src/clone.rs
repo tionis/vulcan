@@ -204,6 +204,12 @@ pub fn clone_registered_wiki(
         });
     }
 
+    if let Some(parent) = git_dir.as_deref().and_then(Path::parent) {
+        fs::create_dir_all(parent).map_err(|error| CloneWikiError::InvalidDestination {
+            path: parent.to_path_buf(),
+            detail: format!("cannot create detached Git parent directory: {error}"),
+        })?;
+    }
     let clone = clone_git_vault(&clone_request).map_err(CloneWikiError::Git)?;
     let wiki = registry
         .add(
@@ -336,11 +342,47 @@ fn prospective_directory(path: &Path) -> Result<PathBuf, CloneWikiError> {
             detail: error.to_string(),
         })?,
     };
-    let parent = fs::canonicalize(&parent).map_err(|error| CloneWikiError::InvalidDestination {
-        path: path.to_path_buf(),
-        detail: format!("parent directory is unavailable: {error}"),
+    let parent = if parent.is_absolute() {
+        parent
+    } else {
+        std::env::current_dir()
+            .map_err(|error| CloneWikiError::InvalidDestination {
+                path: path.to_path_buf(),
+                detail: error.to_string(),
+            })?
+            .join(parent)
+    };
+    let existing_parent = parent
+        .ancestors()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| CloneWikiError::InvalidDestination {
+            path: path.to_path_buf(),
+            detail: "no existing parent directory is available".to_string(),
+        })?;
+    let mut resolved =
+        fs::canonicalize(existing_parent).map_err(|error| CloneWikiError::InvalidDestination {
+            path: path.to_path_buf(),
+            detail: format!("parent directory is unavailable: {error}"),
+        })?;
+    let missing = parent.strip_prefix(existing_parent).map_err(|error| {
+        CloneWikiError::InvalidDestination {
+            path: path.to_path_buf(),
+            detail: format!("parent directory cannot be resolved: {error}"),
+        }
     })?;
-    Ok(parent.join(file_name))
+    for component in missing.components() {
+        match component {
+            std::path::Component::Normal(component) => resolved.push(component),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(CloneWikiError::InvalidDestination {
+                    path: path.to_path_buf(),
+                    detail: "missing parent path contains traversal".to_string(),
+                })
+            }
+        }
+    }
+    Ok(resolved.join(file_name))
 }
 
 fn validate_groups(groups: &[String]) -> Result<(), CloneWikiError> {
@@ -423,12 +465,13 @@ mod tests {
     #[test]
     fn dry_run_resolves_and_validates_without_mutation() {
         let temporary = tempdir().expect("temporary directory");
-        fs::create_dir(temporary.path().join("git")).expect("Git parent");
         let registry_path = temporary.path().join("config/daemon.toml");
         let registry = WikiRegistry::at(registry_path.clone());
+        let mut planned_request = request(temporary.path());
+        planned_request.git_dir = Some(temporary.path().join("data/vulcan/git/wiki.git"));
 
-        let report = clone_registered_wiki(&registry, &request(temporary.path()), true)
-            .expect("clone should plan");
+        let report =
+            clone_registered_wiki(&registry, &planned_request, true).expect("clone should plan");
 
         assert!(report.dry_run);
         assert_eq!(report.source, "https://***@example.invalid/wiki.git");
@@ -438,6 +481,7 @@ mod tests {
             GitPlatformProfile::AndroidShared
         );
         assert!(!temporary.path().join("wiki").exists());
+        assert!(!temporary.path().join("data").exists());
         assert!(!registry_path.exists());
 
         let mut invalid = request(temporary.path());

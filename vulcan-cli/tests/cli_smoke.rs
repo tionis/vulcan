@@ -7979,6 +7979,68 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
 }
 
 #[test]
+fn sync_clone_supplies_the_android_detached_git_layout() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let data_home = temporary.path().join("data");
+    let source = temporary.path().join("source");
+    let destination = temporary.path().join("mobile");
+    fs::create_dir_all(&config_home).expect("config home should be created");
+    fs::create_dir(&source).expect("source should be created");
+    init_git_repo(&source);
+    fs::write(source.join("Home.md"), "# Home\n").expect("source note should be written");
+    commit_all(&source, "initial");
+
+    let mut command =
+        cargo_vulcan_with_xdg_config(config_home.to_str().expect("config path should be UTF-8"));
+    command.env("XDG_DATA_HOME", &data_home).args([
+        "--output",
+        "json",
+        "sync",
+        "clone",
+        source.to_str().expect("source path should be UTF-8"),
+        destination
+            .to_str()
+            .expect("destination path should be UTF-8"),
+        "--platform",
+        "android-shared",
+        "--dry-run",
+    ]);
+    let dry_run = command.assert().success();
+    let report = parse_stdout_json(&dry_run);
+    let expected_git_dir = data_home.join("vulcan/git/mobile.git");
+    assert_eq!(report["platform_policy"]["profile"], "android_shared");
+    assert_eq!(report["proposed_registration"]["id"], "mobile");
+    assert_eq!(
+        report["proposed_registration"]["git_dir"],
+        expected_git_dir.to_str().expect("Git path should be UTF-8")
+    );
+    assert!(!destination.exists());
+    assert!(!data_home.exists());
+
+    let mut command =
+        cargo_vulcan_with_xdg_config(config_home.to_str().expect("config path should be UTF-8"));
+    command.env("XDG_DATA_HOME", &data_home).args([
+        "--output",
+        "json",
+        "sync",
+        "clone",
+        source.to_str().expect("source path should be UTF-8"),
+        destination
+            .to_str()
+            .expect("destination path should be UTF-8"),
+        "--platform",
+        "android-shared",
+    ]);
+    let applied = command.assert().success();
+    let report = parse_stdout_json(&applied);
+    assert_eq!(report["clone"]["repository"]["layout"], "detached");
+    assert_eq!(report["wiki"]["platform_profile"], "android_shared");
+    assert!(destination.join("Home.md").is_file());
+    assert!(expected_git_dir.join("HEAD").is_file());
+}
+
+#[test]
 fn vault_recover_git_preserves_a_materialized_detached_worktree() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -14416,7 +14478,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("vulcan vault recover-git <wiki> <remote> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
-    assert!(git_skill.contains("--platform android-shared"));
+    assert!(git_skill.contains(
+        "vulcan sync clone <remote> /storage/emulated/0/Documents/wiki --dry-run"
+    ));
     assert!(git_skill.contains("supported baseline is one-shot direct execution"));
     assert!(git_skill.contains("do not require or start the daemon"));
     assert!(git_skill.contains("case-only renames require an intermediate path"));
