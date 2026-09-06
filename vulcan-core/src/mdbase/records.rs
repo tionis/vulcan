@@ -1,5 +1,6 @@
 use super::{
-    discover_mdbase_files, match_mdbase_record_types, MdbaseCollection, MdbaseTypeRegistry,
+    compose_mdbase_type_behavior, discover_mdbase_files, match_mdbase_record_types,
+    validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseTypeRegistry,
     MdbaseValidationLevel,
 };
 use crate::config::VaultConfig;
@@ -204,6 +205,33 @@ fn build_mdbase_record(
         )
     }));
 
+    let behavior = compose_mdbase_type_behavior(types, &matched.types);
+    diagnostics.extend(
+        behavior
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| MdbaseRecordDiagnostic {
+                severity,
+                code: diagnostic.code,
+                message: diagnostic.message,
+                path: path.to_string(),
+                field: diagnostic.field,
+                type_name: None,
+                schema_path: None,
+                related_paths: diagnostic.locations,
+            }),
+    );
+    if collection.config.settings.validation != MdbaseValidationLevel::Off {
+        validate_record_schemas(
+            collection,
+            types,
+            path,
+            &frontmatter,
+            &matched.types,
+            &mut diagnostics,
+        );
+    }
+    let effective_frontmatter = apply_mdbase_read_defaults(&frontmatter, &behavior.read_defaults);
     let revision = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
     let body = record_body(&source).to_string();
     let file = file_metadata(path, metadata);
@@ -212,12 +240,81 @@ fn build_mdbase_record(
         path: path.to_string(),
         revision,
         types: matched.types,
-        frontmatter: frontmatter.clone(),
-        effective_frontmatter: frontmatter,
+        frontmatter,
+        effective_frontmatter,
         body,
         document: include_source.then_some(source),
         file,
         diagnostics,
+    }
+}
+
+/// Apply static read defaults only where the persisted top-level key is missing.
+#[must_use]
+pub fn apply_mdbase_read_defaults(
+    persisted: &serde_json::Value,
+    defaults: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> serde_json::Value {
+    let mut effective = persisted.clone();
+    let Some(object) = effective.as_object_mut() else {
+        return effective;
+    };
+    for (field, value) in defaults {
+        if !object.contains_key(field) {
+            object.insert(field.clone(), value.clone());
+        }
+    }
+    effective
+}
+
+fn validate_record_schemas(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    frontmatter: &serde_json::Value,
+    matched_types: &[String],
+    diagnostics: &mut Vec<MdbaseRecordDiagnostic>,
+) {
+    let severity = validation_severity(collection.config.settings.validation);
+    for type_name in matched_types {
+        let Some(definition) = types.get(type_name) else {
+            continue;
+        };
+        let type_path = collection.root.join(&definition.path);
+        match validate_mdbase_schema_value_with_local_refs(
+            &definition.schema,
+            frontmatter,
+            &type_path,
+            &collection.root,
+        ) {
+            Ok(schema_diagnostics) => {
+                diagnostics.extend(schema_diagnostics.into_iter().map(|diagnostic| {
+                    MdbaseRecordDiagnostic {
+                        severity,
+                        code: diagnostic.code,
+                        message: diagnostic.message,
+                        path: path.to_string(),
+                        field: diagnostic.instance_path,
+                        type_name: Some(definition.name.clone()),
+                        schema_path: Some(diagnostic.schema_path),
+                        related_paths: Vec::new(),
+                    }
+                }));
+            }
+            Err(error) => diagnostics.push(MdbaseRecordDiagnostic {
+                severity,
+                code: "schema_invalid".to_string(),
+                message: format!(
+                    "failed to compile schema for type `{}`: {error}",
+                    definition.name
+                ),
+                path: path.to_string(),
+                field: String::new(),
+                type_name: Some(definition.name.clone()),
+                schema_path: None,
+                related_paths: vec![definition.path.clone()],
+            }),
+        }
     }
 }
 
@@ -421,5 +518,57 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a.md", "z.md"]
         );
+    }
+
+    #[test]
+    fn defaults_preserve_explicit_states_and_required_validates_persisted_values() {
+        let directory = tempdir().expect("collection directory");
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(
+            &directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [type, status]\n    properties:\n      type: {const: task}\n      status: {}\n      empty: {type: string}\n      items: {type: array}\ncollection:\n  read_defaults:\n    status: open\n    empty: default\n    items: [default]\n---\n",
+        );
+        write(
+            &directory.path().join("missing.md"),
+            "---\ntype: task\n---\n",
+        );
+        write(
+            &directory.path().join("states.md"),
+            "---\ntype: task\nstatus: null\nempty: \"\"\nitems: []\n---\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("collection should load")
+            .expect("collection should exist");
+        let types = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let missing = load_mdbase_record(&collection, &types, "missing.md", false)
+            .expect("missing record should load");
+        assert!(!missing
+            .frontmatter
+            .as_object()
+            .unwrap()
+            .contains_key("status"));
+        assert_eq!(missing.effective_frontmatter["status"], "open");
+        assert!(missing
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema_required"
+                && diagnostic.type_name.as_deref() == Some("task")));
+
+        let states = load_mdbase_record(&collection, &types, "states.md", false)
+            .expect("states record should load");
+        assert_eq!(
+            states.effective_frontmatter["status"],
+            serde_json::Value::Null
+        );
+        assert_eq!(states.effective_frontmatter["empty"], "");
+        assert_eq!(states.effective_frontmatter["items"], serde_json::json!([]));
+        assert!(!states
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema_required"));
     }
 }
