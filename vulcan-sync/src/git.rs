@@ -5787,8 +5787,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn clone_repairs_ownership_only_for_its_new_worktree() {
-        use std::os::unix::fs::PermissionsExt;
-
         for detached in [false, true] {
             let temporary = TempDir::new().expect("temporary directory");
             let source = temporary.path().join("source");
@@ -5800,20 +5798,15 @@ mod tests {
             // without chown, root, process-global environment changes, or touching
             // the developer's Git configuration.
             let wrapper = temporary.path().join("git-wrapper");
-            fs::write(
+            // Execute an existing, immutable fixture through a per-test symlink.
+            // Writing an executable here can race with parallel fork/exec calls
+            // that briefly inherit its writable descriptor, causing ETXTBSY.
+            std::os::unix::fs::symlink(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/git-ownership-wrapper.sh"),
                 &wrapper,
-                r#"#!/bin/sh
-test_root=$(dirname "$0")
-export GIT_CONFIG_GLOBAL="$test_root/global.config"
-export GIT_CONFIG_NOSYSTEM=1
-if test "$1" != clone && test -e "$test_root/different-owner"; then
-    export GIT_TEST_ASSUME_DIFFERENT_OWNER=1
-fi
-exec git "$@"
-"#,
             )
-            .expect("wrapper");
-            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).expect("executable");
+            .expect("wrapper symlink");
             let engine = GitCliEngine::new(&wrapper);
             let global = temporary.path().join("global.config");
             fs::write(&global, "[safe]\n\tdirectory = /unrelated/trusted\n").expect("config");
