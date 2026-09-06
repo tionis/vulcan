@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import unittest
 import zipfile
 from io import BytesIO
@@ -718,6 +719,10 @@ class ReleasePackagingTests(unittest.TestCase):
             android_setup = workflow.split(
                 "- name: Configure Android NDK toolchain", maxsplit=1
             )[1].split("- name: Cache cargo registry", maxsplit=1)[0]
+            self.assertIn('for candidate in "$host_root/lib" "$host_root/lib64"', android_setup)
+            self.assertIn('if [[ -e "$candidate/libclang.so" ]]', android_setup)
+            self.assertIn('test -n "$libclang"', android_setup)
+            self.assertNotIn('libclang="$ANDROID_NDK_LATEST_HOME', android_setup)
             self.assertIn("LIBCLANG_PATH=$libclang", android_setup)
             self.assertIn(
                 "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$sysroot", android_setup
@@ -733,6 +738,45 @@ class ReleasePackagingTests(unittest.TestCase):
             self.assertIn("Machine:.*AArch64", android_linkage)
             self.assertIn("JS_NewRuntime", android_linkage)
             self.assertIn("JS_Eval", android_linkage)
+
+    def test_android_ndk_setup_accepts_current_and_legacy_libclang_layouts(
+        self,
+    ) -> None:
+        workflows = SCRIPT_ROOT.parents[1] / ".github/workflows"
+        for name in ("release.yml", "rolling-release.yml"):
+            workflow = (workflows / name).read_text(encoding="utf-8")
+            android_setup = workflow.split(
+                "- name: Configure Android NDK toolchain", maxsplit=1
+            )[1].split("- name: Cache cargo registry", maxsplit=1)[0]
+            script = textwrap.dedent(android_setup.split("run: |", maxsplit=1)[1])
+
+            for library_directory in ("lib", "lib64"):
+                ndk = self.root / f"{name}-{library_directory}"
+                host_root = ndk / "toolchains/llvm/prebuilt/linux-x86_64"
+                toolchain = host_root / "bin"
+                toolchain.mkdir(parents=True)
+                (host_root / "sysroot").mkdir()
+                libclang = host_root / library_directory
+                libclang.mkdir()
+                (libclang / "libclang.so").touch()
+                clang = toolchain / "aarch64-linux-android24-clang"
+                clang.touch()
+                clang.chmod(0o755)
+                github_env = self.root / f"{name}-{library_directory}.env"
+                environment = os.environ.copy()
+                environment["ANDROID_NDK_LATEST_HOME"] = str(ndk)
+                environment["GITHUB_ENV"] = str(github_env)
+
+                subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c", script],
+                    check=True,
+                    env=environment,
+                )
+
+                self.assertIn(
+                    f"LIBCLANG_PATH={libclang}",
+                    github_env.read_text(encoding="utf-8"),
+                )
 
     def test_android_termux_smoke_exercises_full_feature_binary(self) -> None:
         smoke = SCRIPT_ROOT / "smoke_android_termux.sh"
