@@ -5,6 +5,9 @@ use vulcan_app::mdbase::{
     build_mdbase_types_report, build_mdbase_validate_report, MdbaseContractsReport,
     MdbaseReadReport, MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
 };
+use vulcan_app::mdbase_conformance::{
+    run_mdbase_core_read_conformance, MdbaseConformanceEvidenceReport,
+};
 use vulcan_core::mdbase::{MdbaseCompleteRecord, MdbaseDiagnosticLevel, MdbaseOperationResult};
 use vulcan_core::VaultPaths;
 
@@ -35,7 +38,46 @@ pub(crate) fn handle_mdbase_command(
             cli.output,
             &build_mdbase_read_report(paths, path, *source, filter.as_ref())?,
         ),
+        MdbaseCommand::Conformance => {
+            print_conformance(cli.output, &run_mdbase_core_read_conformance()?)
+        }
     }
+}
+
+fn print_conformance(
+    output: OutputFormat,
+    report: &MdbaseConformanceEvidenceReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(&MdbaseOperationResult::new(
+            report.valid,
+            report,
+            Vec::new(),
+        ));
+    }
+    println!(
+        "mdbase {} conformance: {}",
+        report.spec_version, report.valid
+    );
+    println!("Pinned upstream: {}", report.upstream_commit);
+    for profile in &report.profiles {
+        println!(
+            "{}\t{}\t{} passed, {} failed, {} unsupported",
+            profile.profile,
+            if profile.supported {
+                "supported"
+            } else {
+                "unsupported"
+            },
+            profile.passed,
+            profile.failed,
+            profile.unsupported
+        );
+        for requirement in &profile.missing_requirements {
+            println!("  missing: {requirement}");
+        }
+    }
+    Ok(())
 }
 
 fn print_status(output: OutputFormat, report: &MdbaseStatusReport) -> Result<(), CliError> {

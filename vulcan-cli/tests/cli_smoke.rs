@@ -30823,3 +30823,29 @@ fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
     );
     assert!(!vault_root.join(".vulcan").exists());
 }
+
+#[test]
+fn mdbase_conformance_command_emits_pinned_machine_readable_evidence() {
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["--output", "json", "mdbase", "conformance"])
+        .output()
+        .expect("conformance runs");
+    assert!(
+        output.status.success(),
+        "conformance failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("conformance JSON");
+    assert_eq!(report["valid"], true);
+    assert_eq!(report["result"]["spec_version"], "0.3.0");
+    assert_eq!(
+        report["result"]["upstream_commit"],
+        "68b9a97969bf9472f0d42b8faf8a2e349553f4ea"
+    );
+    assert!(report["result"]["profiles"]
+        .as_array()
+        .expect("profiles")
+        .iter()
+        .all(|profile| profile["supported"] == true));
+}

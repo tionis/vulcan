@@ -2043,6 +2043,8 @@ pub enum MdbaseCommand {
         )]
         source: bool,
     },
+    #[command(about = "Run pinned v0.3 core-read conformance fixtures and emit evidence")]
+    Conformance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

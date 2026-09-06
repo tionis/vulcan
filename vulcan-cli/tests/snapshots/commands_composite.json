@@ -170,6 +170,12 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Run pinned v0.3 core-read conformance fixtures and emit evidence",
+            "name": "conformance",
+            "options": [],
+            "subcommands": []
           }
         ]
       },

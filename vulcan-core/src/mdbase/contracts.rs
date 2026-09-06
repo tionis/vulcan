@@ -433,7 +433,7 @@ fn parse_contract_frontmatter(
     })
 }
 
-fn resolve_schema_wrapper(
+pub(super) fn resolve_schema_wrapper(
     wrapper: &serde_json::Value,
     owner_file: &Path,
     collection_root: &Path,
@@ -452,14 +452,14 @@ fn resolve_schema_wrapper(
         || file_reference.contains('?')
     {
         return Err(MdbaseSchemaCompileError(format!(
-            "contract schema ref must name a local file: {reference}"
+            "schema ref must name a local file: {reference}"
         )));
     }
     let root = fs::canonicalize(collection_root).map_err(|error| {
         MdbaseSchemaCompileError(format!("failed to resolve collection root: {error}"))
     })?;
     let owner = fs::canonicalize(owner_file).map_err(|error| {
-        MdbaseSchemaCompileError(format!("failed to resolve contract file: {error}"))
+        MdbaseSchemaCompileError(format!("failed to resolve schema owner file: {error}"))
     })?;
     let path = fs::canonicalize(
         owner
@@ -472,7 +472,7 @@ fn resolve_schema_wrapper(
     })?;
     if !path.starts_with(&root) {
         return Err(MdbaseSchemaCompileError(format!(
-            "contract schema ref escapes collection root: {}",
+            "schema ref escapes collection root: {}",
             path.display()
         )));
     }
@@ -484,13 +484,11 @@ fn resolve_schema_wrapper(
             .pointer(&format!("/{pointer}"))
             .cloned()
             .ok_or_else(|| {
-                MdbaseSchemaCompileError(format!(
-                    "contract schema ref fragment does not exist: #{fragment}"
-                ))
+                MdbaseSchemaCompileError(format!("schema ref fragment does not exist: #{fragment}"))
             })?
     } else {
         return Err(MdbaseSchemaCompileError(format!(
-            "contract schema ref fragment must be a JSON Pointer: #{fragment}"
+            "schema ref fragment must be a JSON Pointer: #{fragment}"
         )));
     };
     Ok((resolved, serde_json::json!({"$ref": reference})))
@@ -680,12 +678,7 @@ fn validate_implementation(
         return Err(diagnostics);
     }
     Ok(build_contract_implementation(
-        definition,
-        contract,
-        entry,
-        fields,
-        binding,
-        type_schema,
+        definition, contract, entry, fields, binding,
     ))
 }
 
@@ -755,10 +748,9 @@ fn build_contract_implementation(
     entry: &serde_json::Value,
     fields: BTreeMap<String, String>,
     binding: Option<&serde_json::Value>,
-    type_schema: serde_json::Value,
 ) -> MdbaseContractImplementation {
     let identity = &contract.identity;
-    let portable_type = portable_type_semantics(definition, type_schema);
+    let portable_type = portable_type_semantics(definition);
     let digest = sha256_jcs(&serde_json::json!({
         "contract_digest": contract.digest,
         "type": portable_type,
@@ -775,10 +767,7 @@ fn build_contract_implementation(
     }
 }
 
-fn portable_type_semantics(
-    definition: &MdbaseTypeDefinition,
-    schema: serde_json::Value,
-) -> serde_json::Value {
+fn portable_type_semantics(definition: &MdbaseTypeDefinition) -> serde_json::Value {
     let mut value = serde_json::Map::new();
     value.insert("name".to_string(), serde_json::json!(definition.name));
     if let Some(version) = definition.version {
@@ -789,7 +778,14 @@ fn portable_type_semantics(
             value.insert(key.to_string(), member.clone());
         }
     }
-    value.insert("schema".to_string(), schema);
+    value.insert(
+        "schema".to_string(),
+        definition
+            .frontmatter
+            .get("schema")
+            .expect("validated type should contain schema")
+            .clone(),
+    );
     serde_json::Value::Object(value)
 }
 
@@ -1377,7 +1373,7 @@ implements:
     }
 
     #[test]
-    fn referenced_schema_wrappers_keep_portable_digests_stable() {
+    fn implementation_digest_pins_the_authored_type_schema_wrapper() {
         let (_directory, collection, types) = setup_collection(
             &[("_contracts/note.md", NOTE_CONTRACT)],
             &[("_types/personal.md", PERSONAL_TYPE)],
@@ -1459,7 +1455,7 @@ implements:
         let all_referenced = load_mdbase_contract_registry(&collection, &referenced_types)
             .expect("referenced implementation should load");
         assert!(all_referenced.diagnostics.is_empty());
-        assert_eq!(
+        assert_ne!(
             implementation_digest,
             all_referenced.implementations("example.note", "1.0.0")[0].digest
         );

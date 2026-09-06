@@ -39,6 +39,7 @@ pub mod export;
 pub mod folder_notes;
 pub mod integrations;
 pub mod mdbase;
+pub mod mdbase_conformance;
 pub mod notes;
 pub mod outline_markdown;
 pub mod plugins;

@@ -646,12 +646,14 @@ fn validate_record_schemas(
         ) {
             Ok(schema_diagnostics) => {
                 diagnostics.extend(schema_diagnostics.into_iter().map(|diagnostic| {
+                    let field =
+                        schema_diagnostic_field(&definition.schema, frontmatter, &diagnostic);
                     MdbaseRecordDiagnostic {
                         severity,
                         code: diagnostic.code,
                         message: diagnostic.message,
                         path: path.to_string(),
-                        field: diagnostic.instance_path,
+                        field,
                         type_name: Some(definition.name.clone()),
                         schema_path: Some(diagnostic.schema_path),
                         related_paths: Vec::new(),
@@ -672,6 +674,54 @@ fn validate_record_schemas(
                 related_paths: vec![definition.path.clone()],
             }),
         }
+    }
+}
+
+fn schema_diagnostic_field(
+    schema: &serde_json::Value,
+    instance: &serde_json::Value,
+    diagnostic: &crate::mdbase::MdbaseSchemaDiagnostic,
+) -> String {
+    let keyword_path = diagnostic.schema_path.as_str();
+    let schema_parent_path = keyword_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or_default();
+    let schema_parent = schema.pointer(schema_parent_path).unwrap_or(schema);
+    let instance_object = instance
+        .pointer(&diagnostic.instance_path)
+        .unwrap_or(instance)
+        .as_object();
+    let qualify = |field: &str| {
+        let escaped = field.replace('~', "~0").replace('/', "~1");
+        if diagnostic.instance_path.is_empty() {
+            escaped
+        } else {
+            format!("{}/{escaped}", diagnostic.instance_path)
+        }
+    };
+    match diagnostic.code.as_str() {
+        "schema_required" => schema_parent
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .find(|field| instance_object.is_none_or(|object| !object.contains_key(*field)))
+            .map(qualify)
+            .unwrap_or_default(),
+        "schema_additional_properties" => instance_object
+            .into_iter()
+            .flat_map(|object| object.keys())
+            .find(|field| {
+                schema_parent
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object)
+                    .is_none_or(|properties| !properties.contains_key(*field))
+            })
+            .map(|field| qualify(field))
+            .unwrap_or_default(),
+        _ => diagnostic.instance_path.clone(),
     }
 }
 
@@ -913,7 +963,8 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "schema_required"
-                && diagnostic.type_name.as_deref() == Some("task")));
+                && diagnostic.type_name.as_deref() == Some("task")
+                && diagnostic.field == "status"));
 
         let states = load_mdbase_record(&collection, &types, "states.md", false)
             .expect("states record should load");

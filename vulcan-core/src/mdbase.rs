@@ -34,8 +34,25 @@ pub const SUPPORTED_MDBASE_SPEC_MINOR: &str = "0.3";
 pub const MDBASE_SPEC_UPSTREAM_COMMIT: &str = "68b9a97969bf9472f0d42b8faf8a2e349553f4ea";
 pub const MDBASE_SPEC_UPSTREAM_URL: &str = "https://github.com/mdbase-dev/mdbase-spec";
 pub const MDBASE_BUNDLED_ASSET_DIGEST: &str =
-    "9b4c7d477dc914099a5a40092d6543caca9c626d5ca0ff3ed5a4d47646c29e52";
+    "91c7c26271d1b1069eb89940492b6e9e7583ce01884925ef3b9302c96031c276";
 pub const MDBASE_CANONICAL_SCHEMA_BASE: &str = "https://mdbase.dev/schemas/v0.3/";
+pub const MDBASE_V03_MANIFEST: &str =
+    include_str!("../resources/mdbase/v0.3/upstream/tests/manifest.yaml");
+pub const MDBASE_V03_CORE_COLLECTION_SUITE: &str =
+    include_str!("../resources/mdbase/v0.3/upstream/tests/core/core-collection.yaml");
+pub const MDBASE_V03_DATA_CONTRACTS_SUITE: &str =
+    include_str!("../resources/mdbase/v0.3/upstream/tests/data-contracts/data-contracts.yaml");
+pub const MDBASE_V03_TASKNOTES_CONTRACT: &str = include_str!(
+    "../resources/mdbase/v0.3/upstream/examples/v0.3/tasknotes-migration/v0.3/_contracts/tasknotes.task.md"
+);
+pub const MDBASE_V03_TASKNOTES_TYPE: &str = include_str!(
+    "../resources/mdbase/v0.3/upstream/examples/v0.3/tasknotes-migration/v0.3/_types/task.md"
+);
+pub const MDBASE_V03_VALID_TASK: &str =
+    include_str!("../resources/mdbase/v0.3/upstream/tests/fixtures/data-contracts/valid-task.yml");
+pub const MDBASE_V03_CONFLICTING_TASKNOTES_CONTRACT: &str = include_str!(
+    "../resources/mdbase/v0.3/upstream/tests/fixtures/data-contracts/conflicting-tasknotes.task.md"
+);
 const MDBASE_SCHEMA_MAX_FILES: usize = 64;
 const MDBASE_SCHEMA_MAX_DEPTH: usize = 32;
 const MDBASE_SCHEMA_MAX_BYTES: u64 = 1024 * 1024;
@@ -1711,16 +1728,22 @@ fn load_mdbase_type_file(
     let wrapped_schema = frontmatter
         .get("schema")
         .expect("validated type frontmatter should contain schema");
-    let (schema, schema_ref) = if let Some(value) = wrapped_schema.get("value") {
-        (value.clone(), None)
-    } else {
-        let reference = wrapped_schema
-            .get("ref")
-            .and_then(serde_json::Value::as_str)
-            .expect("validated schema wrapper should contain value or ref")
-            .to_string();
-        (serde_json::json!({"$ref": reference}), Some(reference))
-    };
+    let schema_ref = wrapped_schema
+        .get("ref")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let schema =
+        match contracts::resolve_schema_wrapper(wrapped_schema, &absolute_path, &collection.root) {
+            Ok((schema, _)) => schema,
+            Err(error) => {
+                return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(
+                    path,
+                    "schema_invalid",
+                    format!("failed to resolve type schema: {error}"),
+                    "schema",
+                )]));
+            }
+        };
     if let Err(error) = validate_mdbase_schema_value_with_local_refs(
         &schema,
         &serde_json::Value::Null,
@@ -2600,7 +2623,7 @@ schema:
         );
         fs::write(
             directory.path().join("_types/contact.schema.json"),
-            r#"{"$defs":{"contact":{"type":"object","required":["name"]}}}"#,
+            r##"{"$defs":{"contact":{"type":"object","required":["name"],"properties":{"name":{"$ref":"#/$defs/name"}},"$defs":{"name":{"type":"string","minLength":1}}}}}"##,
         )
         .expect("referenced schema should be written");
         let collection = load_mdbase_collection(directory.path())
@@ -2625,6 +2648,7 @@ schema:
             contact.schema_ref.as_deref(),
             Some("./contact.schema.json#/$defs/contact")
         );
+        assert_eq!(contact.schema["$defs"]["name"]["minLength"], 1);
         assert_eq!(
             registry
                 .iter()
@@ -3220,7 +3244,7 @@ lifecycle:
             hasher.update(&fs::read(path).expect("bundled resource should be readable"));
         }
 
-        assert_eq!(files.len(), 48);
+        assert_eq!(files.len(), 50);
         assert_eq!(
             hasher.finalize().to_hex().as_str(),
             MDBASE_BUNDLED_ASSET_DIGEST
