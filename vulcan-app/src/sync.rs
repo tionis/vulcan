@@ -2468,6 +2468,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         );
         git(&writer, &["config", "user.name", "Vulcan Test"]);
         git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+        git(&writer, &["config", "core.autocrlf", "false"]);
         git(
             &writer,
             &[
@@ -2489,6 +2490,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(
             temporary.path(),
             &[
+                "-c",
+                "core.autocrlf=false",
                 "clone",
                 "--quiet",
                 writer.to_str().expect("writer path"),
@@ -2504,6 +2507,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
                 remote.to_str().expect("remote path"),
             ],
         );
+        git(&reader, &["config", "core.autocrlf", "false"]);
         let reader_paths = VaultPaths::new(&reader);
         initialize_vulcan_dir(&reader_paths).expect("initialize reader cache");
         scan_vault(&reader_paths, ScanMode::Full).expect("initial reader scan");
