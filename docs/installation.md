@@ -90,9 +90,9 @@ and atomically replaces the running executable. `--allow-downgrade` is the expli
 reinstall or rollback. Restart a running daemon after applying an update.
 
 Current builds embed the separate `stable-2026-09` identity with stable-only authority. The
-`v0.2.0` release is the first stable trust bootstrap: once its descriptor is signed, ordinary
+`v0.2.1` release is the first stable trust bootstrap: once its descriptor is signed, ordinary
 self-update commands verify it without an exception. A binary from before that release cannot
-authenticate the bootstrap descriptor; install `v0.2.0` from a manually verified checksum/archive
+authenticate the bootstrap descriptor; install `v0.2.1` from a manually verified checksum/archive
 or package. Do not normalize `--allow-unsigned` as the stable update path.
 
 Rolling descriptors are signed by the dedicated `main-2026-09` identity after the automated build
@@ -160,8 +160,8 @@ conflicts, and vault content.
 The POSIX installer supports Linux and macOS and defaults to `~/.local`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.2.0/scripts/install.sh | \
-  sh -s -- --version 0.2.0 --dry-run
+curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.2.1/scripts/install.sh | \
+  sh -s -- --version 0.2.1 --dry-run
 ```
 
 Review the plan, remove `--dry-run`, and ensure `~/.local/bin` is on `PATH`. Pass an explicit
@@ -171,8 +171,8 @@ the invoking user has the required permission.
 On Windows, download `scripts/install.ps1` from the matching tag and review:
 
 ```powershell
-.\install.ps1 -Version 0.2.0 -DryRun
-.\install.ps1 -Version 0.2.0 -AddToPath
+.\install.ps1 -Version 0.2.1 -DryRun
+.\install.ps1 -Version 0.2.1 -AddToPath
 ```
 
 The default Windows prefix is `%LOCALAPPDATA%\Programs\Vulcan`. `-AddToPath` is explicit because it

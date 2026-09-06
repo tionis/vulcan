@@ -4459,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "blake3",
@@ -4490,7 +4490,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -4519,7 +4519,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aho-corasick",
  "ammonia",
@@ -4559,7 +4559,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-daemon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "base64",
@@ -4583,7 +4583,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-embed"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "reqwest",
  "rusqlite",
@@ -4595,7 +4595,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-sync"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "blake3",
  "fs2",

@@ -57,7 +57,7 @@ The decoded version-1 payload is:
   "schema_version": 1,
   "product": "vulcan",
   "channel": "stable",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "source_commit": "<40 hexadecimal characters>",
   "published_at": "2026-08-31T20:00:00Z",
   "prerelease": false,
@@ -66,10 +66,10 @@ The decoded version-1 payload is:
       "target": "x86_64-unknown-linux-gnu",
       "kind": "archive",
       "format": "tar.gz",
-      "url": "https://example.invalid/vulcan-0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+      "url": "https://example.invalid/vulcan-0.2.1-x86_64-unknown-linux-gnu.tar.gz",
       "sha256": "<64 hexadecimal characters>",
       "size": 123456,
-      "top_level_directory": "vulcan-0.2.0-x86_64-unknown-linux-gnu"
+      "top_level_directory": "vulcan-0.2.1-x86_64-unknown-linux-gnu"
     }
   ]
 }
@@ -186,17 +186,17 @@ only the descriptor, and verifies readback:
 
 ```sh
 python scripts/release/sign_stable_release.py \
-  --tag v0.2.0 \
+  --tag v0.2.1 \
   --expected-commit <full-40-character-commit> \
   --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem \
   --dry-run
 python scripts/release/sign_stable_release.py \
-  --tag v0.2.0 \
+  --tag v0.2.1 \
   --expected-commit <full-40-character-commit> \
   --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem
 ```
 
-The `v0.2.0` release is the first stable release containing this public key and is therefore the
+The `v0.2.1` release is the first stable release containing this public key and is therefore the
 trust bootstrap. Older binaries cannot authenticate that release and need one out-of-band
 checksummed archive/package installation; do not teach them to accept the signature by weakening
 channel policy. After bootstrap, stable signatures are the default portable-update path. The

@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.2.0 — 2026-09-06
+## 0.2.1 — 2026-09-06
+
+Vulcan 0.2.1 is the first published stable release after 0.1.0. It contains all changes described
+for 0.2.0 below and makes Android release builds compatible with both the current NDK 29 `lib/`
+host-library layout and the legacy `lib64/` layout.
+
+## 0.2.0 — 2026-09-06 (tagged, not published)
 
 Vulcan 0.2.0 advances the project from a local vault CLI into an experimental multi-device
 information hub. It remains pre-alpha; keep independent backups and review mutations with
@@ -25,7 +31,7 @@ information hub. It remains pre-alpha; keep independent backups and review mutat
 ### Upgrade notes
 
 - Git 2.38 or newer is required for the Git synchronization backend.
-- `v0.2.0` is the stable update-signing trust bootstrap. Install it once from a manually verified
+- `v0.2.1` is the stable update-signing trust bootstrap. Install it once from a manually verified
   checksum, archive, or package when upgrading from `v0.1.0`; later stable updates can be verified
   through the embedded `stable-2026-09` identity.
 - Synchronization state, credentials, journals, and publisher mappings are durable device state and

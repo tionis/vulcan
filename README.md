@@ -25,12 +25,12 @@ provide native amd64/arm64 Debian packages. The checksum-verifying installers re
 version and do not enable the daemon:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.2.0/scripts/install.sh | \
-  sh -s -- --version 0.2.0 --dry-run
+curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.2.1/scripts/install.sh | \
+  sh -s -- --version 0.2.1 --dry-run
 ```
 
 On Windows, download `scripts/install.ps1` from the matching tag and run
-`./install.ps1 -Version 0.2.0 -DryRun`. Review [the installation guide](docs/installation.md) before
+`./install.ps1 -Version 0.2.1 -DryRun`. Review [the installation guide](docs/installation.md) before
 removing `--dry-run`; Git remains a separate runtime dependency for synchronization.
 
 Manual portable installs can check the stable stream with `vulcan self-update check`. A bounded
