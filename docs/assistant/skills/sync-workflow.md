@@ -187,8 +187,11 @@ they commit.
 
 ## Android and detached Git data
 
-- Install a checksummed `aarch64-linux-android` release through the version-matched POSIX installer;
-  never substitute the `aarch64-unknown-linux-gnu` archive, which targets a different runtime.
+- Install a checksummed, full-feature `aarch64-linux-android` release through the version-matched
+  POSIX installer; never substitute the `aarch64-unknown-linux-gnu` archive, which targets a
+  different runtime. A Termux source build needs Clang, `rquickjs/bindgen`, and the documented
+  AArch64 SLP-vectorizer workaround; do not disable QuickJS, OAuth, vectors, or web merely to make
+  the Android build compile.
 - Under Termux, keep the worktree in shared storage and the detached Git directory in Termux-private
   storage. `vulcan sync clone <remote> <shared-path> --dry-run` selects both defaults automatically.
 - One-shot `sync status`, `sync doctor`, and `sync run` are the supported baseline and require no

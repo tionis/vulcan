@@ -34,7 +34,9 @@ termux-setup-storage
 
 The POSIX installer detects Termux and selects the Android/Bionic archive rather than the
 incompatible GNU/Linux arm64 archive. It also installs to Termux's existing `$PREFIX` by default,
-so no additional `PATH` setup is needed. Preview and then apply an explicit release version:
+so no additional `PATH` setup is needed. The Android archive retains the default QuickJS, OAuth,
+vector, and web features; it is not a reduced sync-only build. Preview and then apply an explicit
+release version:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v<version>/scripts/install.sh | \
@@ -52,6 +54,18 @@ vulcan sync clone <remote> /storage/emulated/0/Documents/<vault> --dry-run
 See the [Git synchronization guide](guide/git-sync.md) before applying the clone or enabling the
 optional Termux:API scheduler. Termux:API is not needed for one-shot `sync` commands. Android
 release candidates remain subject to the documented real-device certification gate.
+
+Building the full CLI from source in Termux requires Clang so `rquickjs` can generate the Android
+bindings. LLVM's SLP vectorizer is disabled because it has been observed to crash rustc during the
+large optimized `vulcan-core` build on AArch64:
+
+```sh
+pkg install clang
+RUSTFLAGS='-Cllvm-args=--vectorize-slp=false' \
+  cargo build --release --locked -p vulcan-cli \
+  --no-default-features \
+  --features 'js_runtime,oauth,vectors,web,rquickjs/bindgen'
+```
 
 ### Update channels and portable self-update
 

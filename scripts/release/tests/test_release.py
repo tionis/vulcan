@@ -702,6 +702,29 @@ class ReleasePackagingTests(unittest.TestCase):
             rolling.index("Prune superseded rolling assets"),
         )
 
+    def test_android_release_builds_enable_full_features_and_compiler_workarounds(
+        self,
+    ) -> None:
+        workflows = SCRIPT_ROOT.parents[1] / ".github/workflows"
+        for name in ("release.yml", "rolling-release.yml"):
+            workflow = (workflows / name).read_text(encoding="utf-8")
+            android_matrix = workflow.split(
+                "- target: aarch64-linux-android", maxsplit=1
+            )[1].split("- target: x86_64-apple-darwin", maxsplit=1)[0]
+            self.assertIn("cargo_flags: --features rquickjs/bindgen", android_matrix)
+            self.assertNotIn("--no-default-features", android_matrix)
+
+            android_setup = workflow.split(
+                "- name: Configure Android NDK toolchain", maxsplit=1
+            )[1].split("- name: Cache cargo registry", maxsplit=1)[0]
+            self.assertIn("LIBCLANG_PATH=$libclang", android_setup)
+            self.assertIn(
+                "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$sysroot", android_setup
+            )
+            self.assertIn(
+                "RUSTFLAGS=-Cllvm-args=--vectorize-slp=false", android_setup
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
