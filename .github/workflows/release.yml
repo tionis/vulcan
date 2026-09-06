@@ -83,7 +83,7 @@ jobs:
         run: '! grep -R -E "(/home/runner|target/debug|D:\\\\a\\\\)" release-assets'
 
       - name: Upload shared release assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets
           path: release-assets
@@ -168,7 +168,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Download shared release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-assets
           path: release-assets
@@ -225,7 +225,7 @@ jobs:
           --version '${{ needs.gate.outputs.version }}'
 
       - name: Upload canonical archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vulcan-${{ matrix.target }}
           path: dist/*
@@ -242,7 +242,7 @@ jobs:
           python-version: "3.13"
 
       - name: Download canonical archives
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: vulcan-*
           path: artifacts
@@ -277,7 +277,7 @@ jobs:
         run: rm artifacts/*.artifact.json artifacts/*.sha256
 
       - name: Create release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
           files: artifacts/*
