@@ -1,7 +1,7 @@
 use super::{
-    compose_mdbase_type_behavior, discover_mdbase_files, match_mdbase_record_types,
-    validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseTypeRegistry,
-    MdbaseValidationLevel,
+    compose_mdbase_type_behavior, discover_mdbase_files, match_mdbase_record_types, mdbase_glob,
+    resolve_match_field, validate_mdbase_schema_value_with_local_refs, MdbaseCollection,
+    MdbaseTypeRegistry, MdbaseValidationLevel,
 };
 use crate::config::VaultConfig;
 use crate::parser::{parse_document, ParseDiagnosticKind};
@@ -59,6 +59,8 @@ pub struct MdbaseRecordDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document: Option<String>,
     pub file: MdbaseRecordFileMetadata,
+    /// Advisory metadata from the first matched type, never a validator.
+    pub display: Option<serde_json::Value>,
     pub diagnostics: Vec<MdbaseRecordDiagnostic>,
 }
 
@@ -93,6 +95,13 @@ pub enum MdbaseRecordError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbasePathDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub field: String,
+}
+
 impl Display for MdbaseRecordError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -119,11 +128,14 @@ pub fn load_mdbase_records(
     include_source: bool,
 ) -> Result<MdbaseRecordSet, MdbaseRecordError> {
     let discovery = discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
-    let records = discovery
+    let mut records = discovery
         .records
         .iter()
         .map(|path| load_mdbase_record(collection, types, path, include_source))
         .collect::<Result<Vec<_>, _>>()?;
+    if collection.config.settings.validation != MdbaseValidationLevel::Off {
+        validate_cross_file_uniqueness(collection, types, &mut records);
+    }
     Ok(MdbaseRecordSet { records })
 }
 
@@ -245,8 +257,244 @@ fn build_mdbase_record(
         body,
         document: include_source.then_some(source),
         file,
+        display: behavior.display,
         diagnostics,
     }
+}
+
+/// Render and validate the portable `{field}` path-pattern grammar.
+pub fn render_mdbase_path_pattern(
+    pattern: &str,
+    frontmatter: &serde_json::Value,
+) -> Result<String, MdbasePathDiagnostic> {
+    let object = frontmatter
+        .as_object()
+        .ok_or_else(|| MdbasePathDiagnostic {
+            code: "frontmatter_invalid".to_string(),
+            message: "path policy requires a frontmatter mapping".to_string(),
+            field: String::new(),
+        })?;
+    if pattern.is_empty() || pattern.starts_with('/') || pattern.contains('\\') {
+        return Err(path_diagnostic(
+            "path_pattern_invalid",
+            "path pattern must be a non-empty relative forward-slash path",
+            "collection.path.pattern",
+        ));
+    }
+
+    let mut output = String::new();
+    let mut remaining = pattern;
+    while let Some(open) = remaining.find('{') {
+        output.push_str(&remaining[..open]);
+        let after_open = &remaining[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            return Err(path_diagnostic(
+                "path_pattern_invalid",
+                "path pattern contains an unclosed placeholder",
+                "collection.path.pattern",
+            ));
+        };
+        let field = &after_open[..close];
+        if field.is_empty() || field.contains(['{', '}', '.', '/', '\\']) {
+            return Err(path_diagnostic(
+                "path_pattern_invalid",
+                "path placeholders must name one top-level frontmatter field",
+                "collection.path.pattern",
+            ));
+        }
+        let value = object
+            .get(field)
+            .filter(|value| !value.is_null())
+            .ok_or_else(|| {
+                path_diagnostic(
+                    "path_value_missing",
+                    format!("path placeholder `{field}` has no persisted value"),
+                    field,
+                )
+            })?;
+        let value = path_value_string(value).ok_or_else(|| {
+            path_diagnostic(
+                "path_value_invalid",
+                format!("path placeholder `{field}` must resolve to a scalar value"),
+                field,
+            )
+        })?;
+        if value.is_empty() || value == "." || value == ".." || value.contains(['/', '\\']) {
+            return Err(path_diagnostic(
+                "path_value_invalid",
+                format!("path placeholder `{field}` produces an unsafe path component"),
+                field,
+            ));
+        }
+        output.push_str(&value);
+        remaining = &after_open[close + 1..];
+    }
+    if remaining.contains('}') {
+        return Err(path_diagnostic(
+            "path_pattern_invalid",
+            "path pattern contains an unmatched closing brace",
+            "collection.path.pattern",
+        ));
+    }
+    output.push_str(remaining);
+    validate_portable_record_path(&output)?;
+    Ok(output)
+}
+
+fn path_value_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            None
+        }
+    }
+}
+
+fn validate_portable_record_path(path: &str) -> Result<(), MdbasePathDiagnostic> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(path_diagnostic(
+            "path_traversal",
+            "generated path must remain a normalized collection-relative path",
+            "path",
+        ));
+    }
+    Ok(())
+}
+
+fn path_diagnostic(code: &str, message: impl Into<String>, field: &str) -> MdbasePathDiagnostic {
+    MdbasePathDiagnostic {
+        code: code.to_string(),
+        message: message.into(),
+        field: field.to_string(),
+    }
+}
+
+fn validate_cross_file_uniqueness(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    records: &mut [MdbaseRecordDocument],
+) {
+    let severity = validation_severity(collection.config.settings.validation);
+    for definition in types.iter() {
+        let Some(rules) = definition
+            .frontmatter
+            .pointer("/collection/unique")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for rule in rules {
+            validate_uniqueness_rule(records, definition.name.as_str(), rule, severity);
+        }
+    }
+    for record in records {
+        sort_record_diagnostics(&mut record.diagnostics);
+    }
+}
+
+fn validate_uniqueness_rule(
+    records: &mut [MdbaseRecordDocument],
+    declaring_type: &str,
+    rule: &serde_json::Value,
+    severity: MdbaseRecordDiagnosticSeverity,
+) {
+    let field = rule
+        .get("field")
+        .and_then(serde_json::Value::as_str)
+        .expect("validated uniqueness rule has a field");
+    let scope = rule
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("collection");
+    let path_glob = rule
+        .get("path_glob")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|pattern| mdbase_glob(pattern).ok())
+        .map(|pattern| pattern.compile_matcher());
+
+    let candidate_indices = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| match scope {
+            "type" => record
+                .types
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(declaring_type)),
+            "path_glob" => path_glob
+                .as_ref()
+                .is_some_and(|matcher| matcher.is_match(&record.path)),
+            _ => true,
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    let owners = candidate_indices
+        .iter()
+        .copied()
+        .filter(|index| {
+            records[*index]
+                .types
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(declaring_type))
+        })
+        .collect::<Vec<_>>();
+    for owner in owners {
+        let owner_values = record_field_values(&records[owner], field);
+        let mut related_paths = candidate_indices
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate != owner)
+            .filter(|candidate| {
+                let candidate_values = record_field_values(&records[*candidate], field);
+                owner_values
+                    .iter()
+                    .any(|owner_value| candidate_values.contains(owner_value))
+            })
+            .map(|candidate| records[candidate].path.clone())
+            .collect::<Vec<_>>();
+        related_paths.sort();
+        related_paths.dedup();
+        if !related_paths.is_empty() {
+            records[owner].diagnostics.push(MdbaseRecordDiagnostic {
+                severity,
+                code: "duplicate_value".to_string(),
+                message: format!(
+                    "field `{field}` duplicates another record in `{scope}` uniqueness scope"
+                ),
+                path: records[owner].path.clone(),
+                field: field.to_string(),
+                type_name: Some(declaring_type.to_string()),
+                schema_path: None,
+                related_paths,
+            });
+        }
+    }
+}
+
+fn record_field_values<'a>(
+    record: &'a MdbaseRecordDocument,
+    field: &str,
+) -> Vec<&'a serde_json::Value> {
+    let Some(frontmatter) = record.frontmatter.as_object() else {
+        return Vec::new();
+    };
+    let resolved = resolve_match_field(frontmatter, field);
+    if !resolved.exists {
+        return Vec::new();
+    }
+    resolved
+        .values
+        .into_iter()
+        .filter(|value| !value.is_null())
+        .collect()
 }
 
 /// Apply static read defaults only where the persisted top-level key is missing.
@@ -570,5 +818,68 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "schema_required"));
+    }
+
+    #[test]
+    fn uniqueness_display_and_portable_path_policy_are_deterministic() {
+        let directory = tempdir().expect("collection directory");
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(
+            &directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\ncollection:\n  display: {name_field: title, icon: check}\n  unique:\n    - {field: id, scope: type}\n    - {field: slug, scope: path_glob, path_glob: 'published/**/*.md'}\n  path:\n    pattern: 'tasks/{id}.md'\n---\n",
+        );
+        for (path, id, slug) in [
+            ("published/b.md", "same", "public"),
+            ("published/a.md", "same", "public"),
+            ("drafts/c.md", "same", "public"),
+        ] {
+            write(
+                &directory.path().join(path),
+                &format!("---\ntype: task\nid: {id}\nslug: {slug}\ntitle: {path}\n---\n"),
+            );
+        }
+        let collection = load_mdbase_collection(directory.path())
+            .expect("collection should load")
+            .expect("collection should exist");
+        let types = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let records = load_mdbase_records(&collection, &types, false).expect("records should load");
+        let first = records.get("published/a.md").expect("first record");
+        let duplicate_diagnostics = first
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "duplicate_value")
+            .collect::<Vec<_>>();
+        assert_eq!(duplicate_diagnostics.len(), 2);
+        assert_eq!(
+            duplicate_diagnostics[0].related_paths,
+            vec!["drafts/c.md", "published/b.md"]
+        );
+        assert_eq!(
+            duplicate_diagnostics[1].related_paths,
+            vec!["published/b.md"]
+        );
+        assert_eq!(first.display.as_ref().unwrap()["icon"], "check");
+
+        assert_eq!(
+            render_mdbase_path_pattern("tasks/{id}.md", &serde_json::json!({"id": "new-task"}))
+                .expect("safe path"),
+            "tasks/new-task.md"
+        );
+        assert_eq!(
+            render_mdbase_path_pattern("tasks/{id}.md", &serde_json::json!({"id": "../escape"}))
+                .expect_err("unsafe placeholder")
+                .code,
+            "path_value_invalid"
+        );
+        assert_eq!(
+            render_mdbase_path_pattern("../{id}.md", &serde_json::json!({"id": "escape"}))
+                .expect_err("traversing pattern")
+                .code,
+            "path_traversal"
+        );
     }
 }

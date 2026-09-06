@@ -7253,7 +7253,7 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 
 - [x] Introduce shared record-domain types that keep exact source, body, persisted frontmatter, effective frontmatter, matched types, revision, file metadata, and diagnostics distinct; never populate mdbase frontmatter from Dataview inline fields.
 - [x] Apply `collection.read_defaults` only to missing effective fields while preserving missing, explicit null, empty string, and empty list as distinct states; validate JSON Schema `required` against persisted frontmatter only.
-- [ ] Implement cross-file uniqueness scopes, advisory display metadata, and portable path-pattern validation with deterministic collection-relative forward-slash paths.
+- [x] Implement cross-file uniqueness scopes, advisory display metadata, and portable path-pattern validation with deterministic collection-relative forward-slash paths.
 - [ ] Cache type membership, effective projections, and validation results as versioned derived data with rebuild and incremental invalidation when config, types, contracts, schemas, or records change.
 
 #### MDB.4 Core read surface and conformance gate
