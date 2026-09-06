@@ -6,6 +6,9 @@ Vulcan 0.2.1 is the first published stable release after 0.1.0. It contains all 
 for 0.2.0 below and makes Android release builds compatible with both the current NDK 29 `lib/`
 host-library layout and the legacy `lib64/` layout.
 
+- Artifact imports now report source-byte coverage, per-note source sizes, diagnostic counts, and
+  explicit semantic-review guidance for unusually large generated notes.
+
 ## 0.2.0 — 2026-09-06 (tagged, not published)
 
 Vulcan 0.2.0 advances the project from a local vault CLI into an experimental multi-device
