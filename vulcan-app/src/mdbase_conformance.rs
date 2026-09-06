@@ -8,18 +8,26 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
-    compose_mdbase_type_behavior, load_mdbase_collection, load_mdbase_contract_registry,
-    load_mdbase_records_with_contracts, load_mdbase_type_registry, project_mdbase_contract_view,
-    render_mdbase_path_pattern, validate_mdbase_schema_value, MdbaseRecordDiagnostic,
+    compile_mdbase_query, compose_mdbase_type_behavior, execute_mdbase_query,
+    load_mdbase_collection, load_mdbase_contract_registry, load_mdbase_records_with_contracts,
+    load_mdbase_type_registry, match_mdbase_record_types, project_mdbase_contract_view,
+    render_mdbase_path_pattern, validate_mdbase_schema_value, MdbaseCelClock, MdbaseCelContext,
+    MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelLimits, MdbaseRecordDiagnostic,
     MDBASE_BUNDLED_ASSET_DIGEST, MDBASE_CANONICAL_SCHEMA_BASE, MDBASE_SCHEMA_MAX_BYTES,
     MDBASE_SCHEMA_MAX_DEPTH, MDBASE_SCHEMA_MAX_FILES, MDBASE_SPEC_UPSTREAM_COMMIT,
-    MDBASE_SPEC_VERSION, MDBASE_V03_CONFLICTING_TASKNOTES_CONTRACT,
+    MDBASE_SPEC_VERSION, MDBASE_V03_CEL_SUITE, MDBASE_V03_CONFLICTING_TASKNOTES_CONTRACT,
     MDBASE_V03_CORE_COLLECTION_SUITE, MDBASE_V03_DATA_CONTRACTS_SUITE, MDBASE_V03_MANIFEST,
     MDBASE_V03_TASKNOTES_CONTRACT, MDBASE_V03_TASKNOTES_TYPE, MDBASE_V03_VALID_TASK,
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 
-const TARGET_PROFILES: [&str; 2] = ["core_read", "collection_semantics"];
+const TARGET_PROFILES: [&str; 5] = [
+    "core_read",
+    "collection_semantics",
+    "cel",
+    "cel_match",
+    "cel_query",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +131,10 @@ struct FixtureSetup {
     contracts: BTreeMap<String, String>,
     #[serde(default)]
     files: BTreeMap<String, String>,
+    #[serde(default)]
+    event: serde_yaml::Value,
+    #[serde(default)]
+    steps: BTreeMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,14 +167,15 @@ enum CaseExecution {
     Unsupported(String),
 }
 
-/// Run every pinned fixture that declares evidence for `core_read` or
-/// `collection_semantics` and verify coverage against the upstream manifest.
+/// Run every pinned fixture that declares evidence for Vulcan's advertised
+/// profiles and verify coverage against the upstream manifest.
 pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceReport, AppError> {
     let suites = [
         serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_CORE_COLLECTION_SUITE)
             .map_err(AppError::operation)?,
         serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_DATA_CONTRACTS_SUITE)
             .map_err(AppError::operation)?,
+        serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_CEL_SUITE).map_err(AppError::operation)?,
     ];
     let manifest = serde_yaml::from_str::<FixtureManifest>(MDBASE_V03_MANIFEST)
         .map_err(AppError::operation)?;
@@ -181,7 +194,7 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
             materialize_setup(directory.path(), group.setup.as_ref())?;
             for case in selected {
                 materialize_case_inputs(directory.path(), case)?;
-                let execution = execute_case(directory.path(), case);
+                let execution = execute_case(directory.path(), case, group.setup.as_ref());
                 let (status, message) = match execution {
                     Ok(CaseExecution::Actual(actual)) => {
                         match assert_expectation(&actual, &case.expect) {
@@ -206,6 +219,7 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
             }
         }
     }
+    results.extend(run_vulcan_cel_gate_cases());
     results.sort_by(|left, right| left.id.cmp(&right.id));
 
     let profiles = manifest
@@ -240,6 +254,209 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
         profiles,
         cases: results,
     })
+}
+
+fn run_vulcan_cel_gate_cases() -> Vec<MdbaseConformanceCaseResult> {
+    vec![
+        gate_case(
+            "vulcan.cel.clock-and-limits",
+            "fixed clock, ISO duration, and bounded compilation",
+            "evaluate_cel",
+            &["cel.date_and_duration", "cel.operational_limits"],
+            cel_clock_and_limits_gate,
+        ),
+        gate_case(
+            "vulcan.cel-match.diagnostics",
+            "match expressions preflight and runtime failures diagnose non-matches",
+            "get_types",
+            &[
+                "cel_match.expression_preflight",
+                "cel_match.match_evaluation_diagnostics",
+            ],
+            cel_match_diagnostics_gate,
+        ),
+        gate_case(
+            "vulcan.cel-query.rich-plan",
+            "invocation context, projections, grouping, and summaries execute",
+            "query",
+            &[
+                "cel_query.invocation_context",
+                "cel_query.query_projections",
+                "cel_query.named_projections",
+                "cel_query.grouping_and_summaries",
+            ],
+            cel_query_rich_plan_gate,
+        ),
+    ]
+}
+
+fn gate_case(
+    id: &str,
+    name: &str,
+    operation: &str,
+    covers: &[&str],
+    run: fn() -> Result<(), String>,
+) -> MdbaseConformanceCaseResult {
+    let result = run();
+    MdbaseConformanceCaseResult {
+        id: id.to_string(),
+        name: name.to_string(),
+        fixture_set: "vulcan-cel-gates".to_string(),
+        operation: operation.to_string(),
+        covers: covers.iter().map(ToString::to_string).collect(),
+        status: if result.is_ok() {
+            MdbaseConformanceCaseStatus::Pass
+        } else {
+            MdbaseConformanceCaseStatus::Fail
+        },
+        message: result.err(),
+    }
+}
+
+fn cel_clock_and_limits_gate() -> Result<(), String> {
+    let engine = MdbaseCelEngine::default();
+    let program = engine
+        .compile("today() == '2026-06-14' && duration('PT1H30M') == duration('PT90M')")
+        .map_err(|error| error.to_string())?;
+    let context = MdbaseCelContext::system(
+        MdbaseCelContextKind::QuerySummary,
+        BTreeMap::from([("values".to_string(), serde_json::json!([]))]),
+        conformance_clock().map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let evaluated = engine
+        .evaluate_context(&program, &context)
+        .map_err(|error| error.to_string())?;
+    if evaluated.value != serde_json::Value::Bool(true) {
+        return Err(format!(
+            "clock/duration expression returned {}",
+            evaluated.value
+        ));
+    }
+    let oversized = "x".repeat(engine.limits().max_source_bytes + 1);
+    let error = engine
+        .compile(&oversized)
+        .expect_err("oversized source must be rejected");
+    if error.code != "expression_limit_exceeded" {
+        return Err(format!("unexpected limit diagnostic: {error}"));
+    }
+    Ok(())
+}
+
+fn cel_match_diagnostics_gate() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    write_fixture(directory.path(), "mdbase.yaml", "spec_version: \"0.3.0\"\n")
+        .map_err(|error| error.to_string())?;
+    write_fixture(
+        directory.path(),
+        "_types/invalid.md",
+        "---\nkind: mdbase.type\nname: invalid\nversion: 1\nmatch:\n  expr: {$expr: 'status =='}\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n---\n",
+    )
+    .map_err(|error| error.to_string())?;
+    write_fixture(
+        directory.path(),
+        "_types/runtime.md",
+        "---\nkind: mdbase.type\nname: runtime\nversion: 1\nmatch:\n  expr: {$expr: 'title + 1'}\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      title: {type: string}\n---\n",
+    )
+    .map_err(|error| error.to_string())?;
+    let collection = load_mdbase_collection(directory.path())
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "collection did not load".to_string())?;
+    let types = load_mdbase_type_registry(&collection).map_err(|error| error.to_string())?;
+    if !types
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "expression_compile_error")
+    {
+        return Err("invalid match expression passed preflight".to_string());
+    }
+    let matched = match_mdbase_record_types(
+        &collection,
+        &types,
+        "record.md",
+        &serde_json::json!({"title": "text"}),
+    );
+    if !matched.types.is_empty()
+        || !matched
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "expression_evaluation_error")
+    {
+        return Err("runtime match failure was not a diagnosed non-match".to_string());
+    }
+    Ok(())
+}
+
+fn cel_query_rich_plan_gate() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    write_fixture(directory.path(), "mdbase.yaml", "spec_version: \"0.3.0\"\n")
+        .map_err(|error| error.to_string())?;
+    write_fixture(
+        directory.path(),
+        "_types/task.md",
+        "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      type: {const: task}\n      title: {type: string}\n      status: {type: string}\n---\n",
+    )
+    .map_err(|error| error.to_string())?;
+    write_fixture(
+        directory.path(),
+        "context.md",
+        "---\ntype: task\ntitle: Context\nstatus: done\n---\n",
+    )
+    .map_err(|error| error.to_string())?;
+    write_fixture(
+        directory.path(),
+        "open.md",
+        "---\ntype: task\ntitle: Open\nstatus: open\n---\n",
+    )
+    .map_err(|error| error.to_string())?;
+    let collection = load_mdbase_collection(directory.path())
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "collection did not load".to_string())?;
+    let types = load_mdbase_type_registry(&collection).map_err(|error| error.to_string())?;
+    let contracts =
+        load_mdbase_contract_registry(&collection, &types).map_err(|error| error.to_string())?;
+    let records = load_mdbase_records_with_contracts(&collection, &types, &contracts, true)
+        .map_err(|error| error.to_string())?;
+    let plan = compile_mdbase_query(&serde_json::json!({
+        "types": ["task"],
+        "context": {"this": {"path": "context.md"}},
+        "projections": {
+            "open": {"expr": "status == 'open'"},
+            "label": {"expr": "projection.open ? title + ':true' : title + ':false'"}
+        },
+        "where": "projection.open",
+        "select": ["title", {"name": "context", "expr": "this.title"}],
+        "group_by": [{"field": "status"}],
+        "summaries": [{"field": "title", "function": "count", "name": "count"}]
+    }))
+    .map_err(|error| error.to_string())?;
+    let report = execute_mdbase_query(
+        &records,
+        &types,
+        &plan,
+        None,
+        conformance_clock()
+            .map_err(|error| error.to_string())?
+            .now_utc(),
+    )
+    .map_err(|error| error.to_string())?;
+    if report.results.len() != 1
+        || report.results[0]
+            .values
+            .as_ref()
+            .and_then(|values| values.get("context"))
+            != Some(&serde_json::json!("Context"))
+        || report
+            .meta
+            .groups
+            .as_ref()
+            .and_then(|groups| groups.first())
+            .map(|group| group.count)
+            != Some(1)
+    {
+        return Err(format!("rich query result was incomplete: {report:?}"));
+    }
+    Ok(())
 }
 
 /// Build the canonical claim only from a completely passing pinned evidence
@@ -360,7 +577,44 @@ fn claim_json_schema() -> MdbaseConformanceJsonSchema {
 }
 
 fn claim_limits() -> BTreeMap<String, serde_json::Value> {
+    let cel = MdbaseCelLimits::default();
     BTreeMap::from([
+        (
+            "cel_max_ast_depth".to_string(),
+            serde_json::json!(cel.max_ast_depth),
+        ),
+        (
+            "cel_max_ast_nodes".to_string(),
+            serde_json::json!(cel.max_ast_nodes),
+        ),
+        (
+            "cel_max_collection_items".to_string(),
+            serde_json::json!(cel.max_collection_items),
+        ),
+        (
+            "cel_max_evaluation_work".to_string(),
+            serde_json::json!(cel.max_evaluation_work),
+        ),
+        (
+            "cel_max_lexical_tokens".to_string(),
+            serde_json::json!(cel.max_lexical_tokens),
+        ),
+        (
+            "cel_max_link_traversal".to_string(),
+            serde_json::json!(cel.max_link_traversal),
+        ),
+        (
+            "cel_max_source_bytes".to_string(),
+            serde_json::json!(cel.max_source_bytes),
+        ),
+        (
+            "cel_max_value_bytes".to_string(),
+            serde_json::json!(cel.max_value_bytes),
+        ),
+        (
+            "cel_max_value_nodes".to_string(),
+            serde_json::json!(cel.max_value_nodes),
+        ),
         (
             "local_schema_max_bytes".to_string(),
             serde_json::json!(MDBASE_SCHEMA_MAX_BYTES),
@@ -518,7 +772,11 @@ fn materialize_case_inputs(root: &Path, case: &FixtureCase) -> Result<(), AppErr
     Ok(())
 }
 
-fn execute_case(root: &Path, case: &FixtureCase) -> Result<CaseExecution, AppError> {
+fn execute_case(
+    root: &Path,
+    case: &FixtureCase,
+    setup: Option<&FixtureSetup>,
+) -> Result<CaseExecution, AppError> {
     let collection = load_mdbase_collection(root)
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("fixture did not create mdbase.yaml"))?;
@@ -531,31 +789,7 @@ fn execute_case(root: &Path, case: &FixtureCase) -> Result<CaseExecution, AppErr
         .ok_or_else(|| AppError::operation("fixture input must be a mapping"))?;
     match case.operation.as_str() {
         "validate" | "read" | "get_types" => {
-            let path = required_yaml_string(input, "path")?;
-            let set = load_mdbase_records_with_contracts(&collection, &types, &contracts, false)
-                .map_err(AppError::operation)?;
-            let record = set
-                .get(path)
-                .ok_or_else(|| AppError::operation(format!("record not found: {path}")))?;
-            let issues = types
-                .diagnostics
-                .iter()
-                .map(|diagnostic| {
-                    serde_json::json!({
-                        "code": diagnostic.code,
-                        "field": diagnostic.field.trim_start_matches('/'),
-                        "message": diagnostic.message,
-                    })
-                })
-                .chain(record.diagnostics.iter().map(diagnostic_value))
-                .collect::<Vec<_>>();
-            Ok(CaseExecution::Actual(serde_json::json!({
-                "valid": case.operation != "validate" || record.is_valid(),
-                "types": record.types,
-                "issues": issues,
-                "frontmatter": record.frontmatter,
-                "effective_frontmatter": record.effective_frontmatter,
-            })))
+            execute_read_case(&collection, &types, &contracts, input, &case.operation)
         }
         "get_type" => {
             let name = required_yaml_string(input, "name")?;
@@ -567,6 +801,11 @@ fn execute_case(root: &Path, case: &FixtureCase) -> Result<CaseExecution, AppErr
                 "type": definition.frontmatter,
             })))
         }
+        "evaluate_cel" => execute_cel(&collection, &types, &contracts, input, setup),
+        "evaluate_workflow_input" => {
+            execute_workflow_input(input, setup.unwrap_or(&FixtureSetup::default()))
+        }
+        "query" => execute_query(&collection, &types, &contracts, input),
         "create" => execute_create(&types, input),
         "data_contract_implementation_validate" => {
             execute_contract_validation(&collection, &types, &contracts, input)
@@ -615,6 +854,172 @@ fn execute_case(root: &Path, case: &FixtureCase) -> Result<CaseExecution, AppErr
             "fixture operation `{operation}` is not implemented"
         ))),
     }
+}
+
+fn execute_read_case(
+    collection: &vulcan_core::mdbase::MdbaseCollection,
+    types: &vulcan_core::mdbase::MdbaseTypeRegistry,
+    contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
+    input: &serde_yaml::Mapping,
+    operation: &str,
+) -> Result<CaseExecution, AppError> {
+    let path = required_yaml_string(input, "path")?;
+    let set = load_mdbase_records_with_contracts(collection, types, contracts, false)
+        .map_err(AppError::operation)?;
+    let record = set
+        .get(path)
+        .ok_or_else(|| AppError::operation(format!("record not found: {path}")))?;
+    let issues = types
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            serde_json::json!({
+                "code": diagnostic.code,
+                "field": diagnostic.field.trim_start_matches('/'),
+                "message": diagnostic.message,
+            })
+        })
+        .chain(record.diagnostics.iter().map(diagnostic_value))
+        .collect::<Vec<_>>();
+    Ok(CaseExecution::Actual(serde_json::json!({
+        "valid": operation != "validate" || record.is_valid(),
+        "types": record.types,
+        "issues": issues,
+        "frontmatter": record.frontmatter,
+        "effective_frontmatter": record.effective_frontmatter,
+    })))
+}
+
+fn execute_cel(
+    collection: &vulcan_core::mdbase::MdbaseCollection,
+    types: &vulcan_core::mdbase::MdbaseTypeRegistry,
+    contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
+    input: &serde_yaml::Mapping,
+    setup: Option<&FixtureSetup>,
+) -> Result<CaseExecution, AppError> {
+    let engine = MdbaseCelEngine::default();
+    let clock = conformance_clock()?;
+    let expression = required_yaml_string(input, "expression")?;
+    let context = if yaml_string(input, "context") == Some("workflow") {
+        workflow_context(setup.unwrap_or(&FixtureSetup::default()), clock)?
+    } else {
+        let path = required_yaml_string(input, "path")?;
+        let records = load_mdbase_records_with_contracts(collection, types, contracts, true)
+            .map_err(AppError::operation)?;
+        let record = records
+            .get(path)
+            .ok_or_else(|| AppError::operation(format!("record not found: {path}")))?;
+        MdbaseCelContext::query(
+            MdbaseCelContextKind::QueryProjection,
+            record,
+            record_known_fields(record, types),
+            serde_json::json!({}),
+            None,
+            clock,
+        )
+        .map_err(AppError::operation)?
+    };
+    let result = engine
+        .evaluate_context(
+            &engine.compile(expression).map_err(AppError::operation)?,
+            &context,
+        )
+        .map_err(AppError::operation)?;
+    Ok(CaseExecution::Actual(serde_json::json!({
+        "valid": true,
+        "value": result.value,
+        "diagnostics": result.diagnostics.iter().map(|diagnostic| {
+            serde_json::json!({"code": diagnostic.code})
+        }).collect::<Vec<_>>(),
+    })))
+}
+
+fn execute_workflow_input(
+    input: &serde_yaml::Mapping,
+    setup: &FixtureSetup,
+) -> Result<CaseExecution, AppError> {
+    let template = yaml_to_json(
+        input
+            .get(serde_yaml::Value::String("template".to_string()))
+            .ok_or_else(|| AppError::operation("workflow input template is missing"))?,
+    )?;
+    let engine = MdbaseCelEngine::default();
+    let result = engine
+        .evaluate_expression_value(&template, &workflow_context(setup, conformance_clock()?)?)
+        .map_err(AppError::operation)?;
+    Ok(CaseExecution::Actual(serde_json::json!({
+        "valid": true,
+        "value": result.value,
+    })))
+}
+
+fn execute_query(
+    collection: &vulcan_core::mdbase::MdbaseCollection,
+    types: &vulcan_core::mdbase::MdbaseTypeRegistry,
+    contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
+    input: &serde_yaml::Mapping,
+) -> Result<CaseExecution, AppError> {
+    let query = yaml_to_json(&serde_yaml::Value::Mapping(input.clone()))?;
+    let plan = compile_mdbase_query(&query).map_err(AppError::operation)?;
+    let records = load_mdbase_records_with_contracts(collection, types, contracts, true)
+        .map_err(AppError::operation)?;
+    let report = execute_mdbase_query(
+        &records,
+        types,
+        &plan,
+        collection.config.settings.timezone.as_deref(),
+        conformance_clock()?.now_utc(),
+    )
+    .map_err(AppError::operation)?;
+    Ok(CaseExecution::Actual(serde_json::json!({
+        "valid": true,
+        "results": report.results.iter().map(|row| {
+            serde_json::json!({"path": row.file["path"]})
+        }).collect::<Vec<_>>(),
+        "body_returned": report.results.iter().any(|row| row.body.is_some()),
+    })))
+}
+
+fn conformance_clock() -> Result<MdbaseCelClock, AppError> {
+    let now = DateTime::parse_from_rfc3339("2026-06-14T08:15:00Z")
+        .map_err(AppError::operation)?
+        .with_timezone(&Utc);
+    MdbaseCelClock::new(now, "UTC").map_err(AppError::operation)
+}
+
+fn workflow_context(
+    setup: &FixtureSetup,
+    clock: MdbaseCelClock,
+) -> Result<MdbaseCelContext, AppError> {
+    let event = yaml_to_json(&setup.event)?;
+    let steps = serde_json::to_value(&setup.steps).map_err(AppError::operation)?;
+    MdbaseCelContext::system(
+        MdbaseCelContextKind::WorkflowStep,
+        BTreeMap::from([
+            ("event".to_string(), event),
+            ("workflow".to_string(), serde_json::json!({})),
+            ("trigger".to_string(), serde_json::json!({})),
+            ("steps".to_string(), steps),
+            ("vars".to_string(), serde_json::json!({})),
+            ("item".to_string(), serde_json::Value::Null),
+        ]),
+        clock,
+    )
+    .map_err(AppError::operation)
+}
+
+fn record_known_fields(
+    record: &vulcan_core::mdbase::MdbaseRecordDocument,
+    types: &vulcan_core::mdbase::MdbaseTypeRegistry,
+) -> BTreeSet<String> {
+    record
+        .types
+        .iter()
+        .filter_map(|name| types.get(name))
+        .filter_map(|definition| definition.schema.get("properties")?.as_object())
+        .flat_map(serde_json::Map::keys)
+        .cloned()
+        .collect()
 }
 
 fn execute_create(
@@ -888,7 +1293,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pinned_core_read_and_collection_semantics_fixtures_pass() {
+    fn pinned_and_extended_advertised_profile_fixtures_pass() {
         let report = run_mdbase_core_read_conformance().expect("conformance runs");
         let failures = report
             .cases
@@ -905,7 +1310,10 @@ mod tests {
         assert!(report
             .profiles
             .iter()
-            .any(|profile| profile.profile == "cel" && !profile.evaluated && !profile.supported));
+            .any(|profile| profile.profile == "cel" && profile.evaluated && profile.supported));
+        assert!(report.profiles.iter().any(|profile| {
+            profile.profile == "cel_query" && profile.evaluated && profile.supported
+        }));
     }
 
     #[test]
@@ -946,7 +1354,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         materialize_setup(directory.path(), None).expect("setup");
         assert!(matches!(
-            execute_case(directory.path(), &case).expect("execution"),
+            execute_case(directory.path(), &case, None).expect("execution"),
             CaseExecution::Unsupported(_)
         ));
     }

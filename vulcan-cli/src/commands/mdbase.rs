@@ -1,15 +1,18 @@
 use crate::output::print_json;
 use crate::{selected_read_permission_filter, Cli, CliError, MdbaseCommand, OutputFormat};
 use vulcan_app::mdbase::{
-    build_mdbase_contracts_report, build_mdbase_read_report, build_mdbase_status_report,
-    build_mdbase_types_report, build_mdbase_validate_report, MdbaseContractsReport,
-    MdbaseReadReport, MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
+    build_mdbase_contracts_report, build_mdbase_query_report, build_mdbase_read_report,
+    build_mdbase_status_report, build_mdbase_types_report, build_mdbase_validate_report,
+    parse_mdbase_query, MdbaseContractsReport, MdbaseReadReport, MdbaseStatusReport,
+    MdbaseTypesReport, MdbaseValidateReport,
 };
 use vulcan_app::mdbase_conformance::{
     build_mdbase_conformance_claim, run_mdbase_core_read_conformance, MdbaseConformanceClaim,
     MdbaseConformanceEvidenceReport,
 };
-use vulcan_core::mdbase::{MdbaseCompleteRecord, MdbaseDiagnosticLevel, MdbaseOperationResult};
+use vulcan_core::mdbase::{
+    MdbaseCompleteRecord, MdbaseDiagnosticLevel, MdbaseOperationResult, MdbaseQueryResult,
+};
 use vulcan_core::VaultPaths;
 
 pub(crate) fn handle_mdbase_command(
@@ -39,6 +42,18 @@ pub(crate) fn handle_mdbase_command(
             cli.output,
             &build_mdbase_read_report(paths, path, *source, filter.as_ref())?,
         ),
+        MdbaseCommand::Query { query, file } => {
+            let source = match (query, file) {
+                (Some(query), None) => query.clone(),
+                (None, Some(file)) => std::fs::read_to_string(file).map_err(CliError::operation)?,
+                _ => return Err(CliError::operation("provide either QUERY or --file PATH")),
+            };
+            let value = parse_mdbase_query(&source)?;
+            print_query(
+                cli.output,
+                &build_mdbase_query_report(paths, &value, filter.as_ref())?,
+            )
+        }
         MdbaseCommand::Conformance { claim } => {
             let report = run_mdbase_core_read_conformance()?;
             if *claim {
@@ -48,6 +63,29 @@ pub(crate) fn handle_mdbase_command(
             }
         }
     }
+}
+
+fn print_query(output: OutputFormat, report: &MdbaseQueryResult) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    for row in &report.results {
+        println!("{}", row.file["path"].as_str().unwrap_or_default());
+        if let Some(values) = &row.values {
+            println!("  {values}");
+        }
+    }
+    println!(
+        "{} result(s){}",
+        report.meta.total_count,
+        if report.meta.has_more {
+            " (more available)"
+        } else {
+            ""
+        }
+    );
+    print_diagnostics(&report.diagnostics);
+    Ok(())
 }
 
 fn print_conformance_claim(

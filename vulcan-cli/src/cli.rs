@@ -2043,7 +2043,23 @@ pub enum MdbaseCommand {
         )]
         source: bool,
     },
-    #[command(about = "Run pinned v0.3 core-read conformance fixtures and emit evidence")]
+    #[command(about = "Execute a canonical mdbase CEL query")]
+    Query {
+        #[arg(
+            value_name = "QUERY",
+            required_unless_present = "file",
+            conflicts_with = "file",
+            help = "Inline canonical query as YAML or JSON"
+        )]
+        query: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Read the canonical query from a YAML or JSON file"
+        )]
+        file: Option<PathBuf>,
+    },
+    #[command(about = "Run pinned v0.3 conformance fixtures and emit evidence")]
     Conformance {
         #[arg(
             long,

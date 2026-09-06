@@ -172,7 +172,36 @@
             "subcommands": []
           },
           {
-            "about": "Run pinned v0.3 core-read conformance fixtures and emit evidence",
+            "about": "Execute a canonical mdbase CEL query",
+            "name": "query",
+            "options": [
+              {
+                "help": "Inline canonical query as YAML or JSON",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "Read the canonical query from a YAML or JSON file",
+                "id": "file",
+                "long": "file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Run pinned v0.3 conformance fixtures and emit evidence",
             "name": "conformance",
             "options": [
               {

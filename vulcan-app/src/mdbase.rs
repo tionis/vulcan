@@ -1,13 +1,15 @@
 //! Reusable, non-mutating mdbase collection read workflows.
 
 use crate::AppError;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::time::SystemTime;
 use vulcan_core::mdbase::{
-    discover_mdbase_files, load_mdbase_collection, load_mdbase_contract_registry,
-    load_mdbase_records_with_contracts_filtered, load_mdbase_type_registry, MdbaseCollection,
-    MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
-    MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseRecordDocument, MdbaseTypeDefinition,
-    MdbaseTypeRegistry,
+    compile_mdbase_query, discover_mdbase_files, execute_mdbase_query, load_mdbase_collection,
+    load_mdbase_contract_registry, load_mdbase_records_with_contracts_filtered,
+    load_mdbase_type_registry, MdbaseCollection, MdbaseContractDefinition,
+    MdbaseContractImplementation, MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel,
+    MdbaseQueryResult, MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry,
 };
 use vulcan_core::{PermissionFilter, VaultPaths};
 
@@ -248,6 +250,44 @@ pub fn build_mdbase_read_report(
     })
 }
 
+/// Execute a canonical mdbase query over the records visible to the caller.
+/// Record source is loaded for `file.body` evaluation, but is returned only
+/// when the query explicitly opts into `include_body`.
+pub fn build_mdbase_query_report(
+    paths: &VaultPaths,
+    query: &serde_json::Value,
+    filter: Option<&PermissionFilter>,
+) -> Result<MdbaseQueryResult, AppError> {
+    let loaded = load_collection(paths)?;
+    let plan = compile_mdbase_query(query).map_err(AppError::operation)?;
+    let records = load_mdbase_records_with_contracts_filtered(
+        &loaded.collection,
+        &loaded.types,
+        &loaded.contracts,
+        true,
+        filter,
+    )
+    .map_err(AppError::operation)?;
+    let mut report = execute_mdbase_query(
+        &records,
+        &loaded.types,
+        &plan,
+        loaded.collection.config.settings.timezone.as_deref(),
+        DateTime::<Utc>::from(SystemTime::now()),
+    )
+    .map_err(AppError::operation)?;
+    report
+        .diagnostics
+        .splice(0..0, registry_diagnostics(&loaded, filter));
+    Ok(report)
+}
+
+pub fn parse_mdbase_query(source: &str) -> Result<serde_json::Value, AppError> {
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>(source)
+        .map_err(|error| AppError::operation(format!("invalid query YAML or JSON: {error}")))?;
+    serde_json::to_value(yaml).map_err(AppError::operation)
+}
+
 fn load_collection(paths: &VaultPaths) -> Result<LoadedCollection, AppError> {
     let collection = load_mdbase_collection(paths.vault_root())
         .map_err(AppError::operation)?
@@ -395,5 +435,53 @@ mod tests {
             before
         );
         assert!(!directory.path().join(".vulcan").exists());
+    }
+
+    #[test]
+    fn query_filters_effective_values_and_never_leaks_denied_records() {
+        let (_directory, paths) = fixture();
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("tasks/**".to_string())],
+            deny: vec![ResourceSpecifier::Folder("tasks/private/**".to_string())],
+        });
+        let report = build_mdbase_query_report(
+            &paths,
+            &serde_json::json!({
+                "types": ["task"],
+                "where": "status == \"open\" && file.body.contains(\"Body\")",
+                "select": ["title", {"name": "display", "expr": "title + \"!\""}],
+                "order_by": [{"field": "file.path"}],
+                "group_by": [{"field": "status"}],
+                "summaries": [{"field": "title", "function": "count", "name": "tasks"}],
+                "include_body": false,
+                "frontmatter_mode": "effective"
+            }),
+            Some(&filter),
+        )
+        .expect("query");
+
+        assert_eq!(report.meta.total_count, 1);
+        assert_eq!(report.results[0].file["path"], "tasks/public.md");
+        assert_eq!(
+            report.results[0].values.as_ref().unwrap()["display"],
+            "Public!"
+        );
+        assert!(report.results[0].body.is_none());
+        assert_eq!(
+            report.meta.groups.as_ref().unwrap()[0].summaries["tasks"],
+            1
+        );
+    }
+
+    #[test]
+    fn canonical_query_source_accepts_yaml_and_json() {
+        assert_eq!(
+            parse_mdbase_query("types: [task]\nlimit: 2\n").expect("YAML"),
+            serde_json::json!({"types": ["task"], "limit": 2})
+        );
+        assert_eq!(
+            parse_mdbase_query(r#"{"where":"true"}"#).expect("JSON"),
+            serde_json::json!({"where": "true"})
+        );
     }
 }

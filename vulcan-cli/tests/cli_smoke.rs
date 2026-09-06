@@ -30825,6 +30825,48 @@ fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
 }
 
 #[test]
+fn mdbase_query_executes_canonical_yaml_with_direct_json_output() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("collection");
+    fs::create_dir_all(vault_root.join("_types")).expect("types directory");
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+    fs::write(
+        vault_root.join("_types/task.md"),
+        "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      type: {const: task}\n      title: {type: string}\n      status: {type: string}\ncollection:\n  read_defaults: {status: open}\n---\n",
+    )
+    .expect("type");
+    fs::write(
+        vault_root.join("record.md"),
+        "---\ntype: task\ntitle: Test\n---\nBody\n",
+    )
+    .expect("record");
+
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("path"),
+            "--output",
+            "json",
+            "mdbase",
+            "query",
+            "types: [task]\nwhere: 'status == \"open\"'\nselect: [title]\n",
+        ])
+        .output()
+        .expect("query runs");
+    assert!(
+        output.status.success(),
+        "query failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("query JSON");
+    assert_eq!(report["meta"]["total_count"], 1);
+    assert_eq!(report["results"][0]["file"]["path"], "record.md");
+    assert_eq!(report["results"][0]["values"]["title"], "Test");
+    assert!(report["results"][0].get("body").is_none());
+}
+
+#[test]
 fn mdbase_conformance_command_emits_pinned_machine_readable_evidence() {
     let output = Command::cargo_bin("vulcan")
         .expect("binary")
@@ -30850,9 +30892,7 @@ fn mdbase_conformance_command_emits_pinned_machine_readable_evidence() {
             && profile["supported"] == true
     }));
     assert!(profiles.iter().any(|profile| {
-        profile["profile"] == "cel"
-            && profile["evaluated"] == false
-            && profile["supported"] == false
+        profile["profile"] == "cel" && profile["evaluated"] == true && profile["supported"] == true
     }));
 }
 
@@ -30874,7 +30914,13 @@ fn mdbase_conformance_claim_is_canonical_and_verified() {
     assert_eq!(claim["result"]["status"], "verified");
     assert_eq!(
         claim["result"]["profiles"],
-        serde_json::json!(["core_read", "collection_semantics"])
+        serde_json::json!([
+            "core_read",
+            "collection_semantics",
+            "cel",
+            "cel_match",
+            "cel_query"
+        ])
     );
     assert_eq!(claim["result"]["json_schema"]["remote_refs"], false);
     assert_eq!(claim["result"]["evidence"][0]["result"], "pass");
