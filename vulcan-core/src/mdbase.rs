@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 
 mod contracts;
 pub use contracts::*;
+mod cel;
+pub use cel::*;
 mod api;
 pub use api::*;
 mod records;

@@ -19,6 +19,8 @@ base64 = { workspace = true, optional = true }
 blake3.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+cel-interpreter.workspace = true
+cel-parser.workspace = true
 csv.workspace = true
 fs2.workspace = true
 globset.workspace = true

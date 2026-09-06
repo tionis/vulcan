@@ -17,6 +17,8 @@ base64 = "0.22.1"
 blake3 = "1.8.2"
 chrono = { version = "0.4.44", default-features = false, features = ["std"] }
 chrono-tz = "0.10.4"
+cel-interpreter = { version = "=0.10.0", features = ["json"] }
+cel-parser = "=0.10.1"
 clap = { version = "4.5.49", features = ["derive", "string", "env"] }
 clap_complete = "4.5.61"
 csv = "1.4.0"
