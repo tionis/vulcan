@@ -1480,7 +1480,9 @@ mod tests {
         )
         .expect("resolution file");
         fs::write(directory.join("artifacts/0000-local.bin"), b"bytes").expect("artifact");
-        fs::File::open(&resolution_path)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&resolution_path)
             .expect("resolution handle")
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(age_seconds))
             .expect("resolution mtime");
