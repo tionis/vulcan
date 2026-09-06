@@ -2795,7 +2795,11 @@ mod sync_report_tests {
         use std::os::unix::fs::PermissionsExt;
 
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let source = temporary.path().join("subscribe-url");
+        let temporary_root = temporary
+            .path()
+            .canonicalize()
+            .expect("canonical temporary directory");
+        let source = temporary_root.join("subscribe-url");
         std::fs::write(&source, "https://patch.example/h/private?pubsub=true\n")
             .expect("secret file");
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600))
@@ -2819,18 +2823,18 @@ mod sync_report_tests {
             .to_string()
             .contains("4096-byte limit"));
 
-        let target = temporary.path().join("target");
+        let target = temporary_root.join("target");
         std::fs::write(&target, "https://patch.example/h/symlink?pubsub=true")
             .expect("symlink target");
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
             .expect("private target permissions");
-        let symlink = temporary.path().join("subscribe-url-symlink");
+        let symlink = temporary_root.join("subscribe-url-symlink");
         std::os::unix::fs::symlink(&target, &symlink).expect("secret symlink");
         assert!(
             read_subscribe_url(&symlink).is_err(),
             "the checked path must not be followed after validation"
         );
-        let real_directory = temporary.path().join("real-directory");
+        let real_directory = temporary_root.join("real-directory");
         std::fs::create_dir(&real_directory).expect("real secret directory");
         let nested_target = real_directory.join("subscribe-url");
         std::fs::write(
@@ -2840,7 +2844,7 @@ mod sync_report_tests {
         .expect("nested secret");
         std::fs::set_permissions(&nested_target, std::fs::Permissions::from_mode(0o600))
             .expect("private nested permissions");
-        let linked_directory = temporary.path().join("linked-directory");
+        let linked_directory = temporary_root.join("linked-directory");
         std::os::unix::fs::symlink(&real_directory, &linked_directory)
             .expect("secret directory symlink");
         assert!(
