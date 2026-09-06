@@ -7146,6 +7146,10 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ## Phase 9.36: Evidence-preserving Markdown artifacts and wiki import
 
+- [x] Preserve explicit relative link meaning in shortest-mode indexed and
+  direct resolution; verify generated wiki references when same-named notes
+  coexist and leave missing explicit paths unresolved instead of retargeting.
+
 - [x] Render explicitly selected outline levels inside generated notes while
   preserving authored titles, source spans, and growing/shrinking link offsets;
   add semantic topic-ownership and readability acceptance checks.

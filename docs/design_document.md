@@ -369,6 +369,12 @@ The normalized core stays deliberately small. UTF-8 Markdown byte spans map to o
 
 Outline routing retains authored Markdown anchors and rejects section boundaries the selected decomposition cannot represent. Coarse source mappings contribute every overlapping output note when resolving references; uniquely placed plain-text references can become links, while ambiguous or protected syntax remains unchanged with diagnostics. Import reports retain validation warnings, use manifest root titles, and flag large unselected root remainders. Book-specific chapter inference belongs in a versioned producer recipe, not the Vulcan parser.
 
+Generated explicit relative links retain their source-directory meaning under
+the default shortest resolver. Both indexed and direct resolution handle `./`
+and `../` as exact relative paths, without fuzzy filename or alias fallback;
+missing paths remain unresolved. This applies to ordinary vault links as well
+as imported artifacts and requires no persistent-cache schema change.
+
 Every generated member is attributable to a provenance activity that records its inputs, outputs, direct tools and versions, models and exposed revisions, sanitized output-affecting parameters, and dependencies. Later enrichment creates a self-contained derivative artifact with immutable lineage instead of rewriting or inventing provenance for an existing artifact. On import, the resulting ordinary Markdown tree becomes canonical vault content; MDAF remains an external exchange/evidence artifact, and the rebuildable cache never becomes its authority.
 
 ### 4.5 Portable Markdown exchange formats

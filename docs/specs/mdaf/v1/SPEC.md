@@ -115,6 +115,10 @@ spans identify distinct occurrences and their safe output placements correspond.
 Repeated heading labels may use unique enclosing-section context; unresolved
 targets must not be chosen by first-match ordering.
 
+Materialized explicit relative links retain their source-directory meaning.
+An explicit `./` or `../` target must not be silently redirected to a same-named
+note through fuzzy filename or alias matching when its intended path is missing.
+
 Producers should distinguish structural alignment from confidence in inferred
 boundaries. Conflicting contents-page and authored-title evidence must be
 reconciled or reported as unresolved; an inferred page offset is not itself

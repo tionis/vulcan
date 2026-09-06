@@ -151,6 +151,9 @@ impl ResolverIndex {
     }
 
     fn resolve_shortest_indexed(&self, source_path: &str, target: &str) -> LinkResolutionResult {
+        if is_explicit_relative(target) {
+            return self.resolve_relative_indexed(source_path, target);
+        }
         let target_normalized = normalize_path(target);
         let target_name = file_name_without_extension(&target_normalized);
         let target_name_lower = target_name.to_ascii_lowercase();
@@ -341,6 +344,9 @@ fn resolve_shortest(
     source_path: &str,
     target: &str,
 ) -> LinkResolutionResult {
+    if is_explicit_relative(target) {
+        return resolve_relative(documents, source_path, target);
+    }
     let target_normalized = normalize_path(target);
     let target_name = file_name_without_extension(&target_normalized);
     let source_dir = source_directory(source_path);
@@ -405,6 +411,10 @@ fn resolve_shortest(
             }
         }
     }
+}
+
+fn is_explicit_relative(target: &str) -> bool {
+    target.starts_with("./") || target.starts_with("../")
 }
 
 fn matches_exact_path(document: &ResolverDocument, target: &str) -> bool {
@@ -575,6 +585,37 @@ mod tests {
         let result = resolve_link(&documents, &link, LinkResolutionMode::Relative);
 
         assert_eq!(result.resolved_target_id.as_deref(), Some("archive-topic"));
+    }
+
+    #[test]
+    fn shortest_honors_explicit_relative_paths_in_both_resolvers() {
+        let documents = fixture_documents();
+        let index = ResolverIndex::build(&documents);
+        for kind in [LinkKind::Markdown, LinkKind::Wikilink] {
+            for (target, expected) in [
+                ("../archive/Topic.md", Some("archive-topic")),
+                ("./Topic.md", Some("projects-topic")),
+                ("../missing/Topic.md", None),
+                ("./missing/Topic.md", None),
+            ] {
+                let link = ResolverLink {
+                    source_document_id: "source".into(),
+                    source_path: "projects/source.md".into(),
+                    target_path_candidate: Some(target.into()),
+                    link_kind: kind,
+                };
+                let scanned = resolve_link(&documents, &link, LinkResolutionMode::Shortest);
+                let indexed = index.resolve(&link, LinkResolutionMode::Shortest);
+                assert_eq!(scanned, indexed, "{target}");
+                assert_eq!(scanned.resolved_target_id.as_deref(), expected, "{target}");
+                assert_eq!(
+                    scanned.problem,
+                    expected
+                        .is_none()
+                        .then_some(LinkResolutionProblem::Unresolved)
+                );
+            }
+        }
     }
 
     #[test]
