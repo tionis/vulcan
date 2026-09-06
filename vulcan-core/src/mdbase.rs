@@ -18,6 +18,9 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod contracts;
+pub use contracts::*;
+
 pub const MDBASE_CONFIG_FILE_NAME: &str = "mdbase.yaml";
 pub const MDBASE_LOCK_FILE_NAME: &str = "mdbase.lock.yaml";
 pub const MDBASE_SPEC_VERSION: &str = "0.3.0";
