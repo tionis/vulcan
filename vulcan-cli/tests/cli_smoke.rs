@@ -30894,6 +30894,12 @@ fn mdbase_conformance_command_emits_pinned_machine_readable_evidence() {
     assert!(profiles.iter().any(|profile| {
         profile["profile"] == "cel" && profile["evaluated"] == true && profile["supported"] == true
     }));
+    assert!(profiles.iter().any(|profile| {
+        profile["profile"] == "links"
+            && profile["evaluated"] == true
+            && profile["supported"] == true
+            && profile["passed"] == 2
+    }));
 }
 
 #[test]
@@ -30919,7 +30925,8 @@ fn mdbase_conformance_claim_is_canonical_and_verified() {
             "collection_semantics",
             "cel",
             "cel_match",
-            "cel_query"
+            "cel_query",
+            "links"
         ])
     );
     assert_eq!(claim["result"]["json_schema"]["remote_refs"], false);

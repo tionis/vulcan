@@ -21,12 +21,13 @@ use vulcan_core::mdbase::{
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 
-const TARGET_PROFILES: [&str; 5] = [
+const TARGET_PROFILES: [&str; 6] = [
     "core_read",
     "collection_semantics",
     "cel",
     "cel_match",
     "cel_query",
+    "links",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -185,7 +186,7 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
             let selected = group
                 .tests
                 .iter()
-                .filter(|case| case.covers.iter().any(|cover| target_cover(cover)))
+                .filter(|case| case_covers(case).iter().any(|cover| target_cover(cover)))
                 .collect::<Vec<_>>();
             if selected.is_empty() {
                 continue;
@@ -212,7 +213,7 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
                     name: case.name.clone(),
                     fixture_set: suite.fixture_set.clone(),
                     operation: case.operation.clone(),
-                    covers: case.covers.clone(),
+                    covers: case_covers(case),
                     status,
                     message,
                 });
@@ -660,6 +661,34 @@ fn target_cover(cover: &str) -> bool {
         .any(|profile| cover.starts_with(&format!("{profile}.")))
 }
 
+fn case_covers(case: &FixtureCase) -> Vec<String> {
+    let mut covers = case.covers.clone();
+    let expectation = case.expect.as_mapping();
+    if expectation.is_some_and(|expectation| {
+        expectation.contains_key(serde_yaml::Value::String("resolved_links".to_string()))
+    }) {
+        covers.push("links.resolution".to_string());
+    }
+    if expectation
+        .and_then(|expectation| expectation.get(serde_yaml::Value::String("issues".to_string())))
+        .and_then(serde_yaml::Value::as_sequence)
+        .is_some_and(|issues| {
+            issues.iter().any(|issue| {
+                issue
+                    .as_mapping()
+                    .and_then(|issue| issue.get(serde_yaml::Value::String("code".to_string())))
+                    .and_then(serde_yaml::Value::as_str)
+                    .is_some_and(|code| code.starts_with("link_"))
+            })
+        })
+    {
+        covers.push("links.validation".to_string());
+    }
+    covers.sort();
+    covers.dedup();
+    covers
+}
+
 fn build_profile_result(
     profile: &str,
     manifest: &FixtureManifest,
@@ -882,12 +911,36 @@ fn execute_read_case(
         })
         .chain(record.diagnostics.iter().map(diagnostic_value))
         .collect::<Vec<_>>();
+    let mut resolved_links = BTreeMap::<String, Vec<String>>::new();
+    for link in record.links.iter().filter(|link| {
+        link.source == vulcan_core::mdbase::MdbaseLinkSource::Frontmatter
+            && link.resolution == vulcan_core::mdbase::MdbaseLinkResolution::Resolved
+    }) {
+        if let (Some(field), Some(path)) = (&link.field, &link.resolved_path) {
+            resolved_links
+                .entry(field.clone())
+                .or_default()
+                .push(path.clone());
+        }
+    }
+    let resolved_links = resolved_links
+        .into_iter()
+        .map(|(field, paths)| {
+            let value = if paths.len() == 1 {
+                serde_json::Value::String(paths[0].clone())
+            } else {
+                serde_json::Value::Array(paths.into_iter().map(serde_json::Value::String).collect())
+            };
+            (field, value)
+        })
+        .collect::<serde_json::Map<_, _>>();
     Ok(CaseExecution::Actual(serde_json::json!({
         "valid": operation != "validate" || record.is_valid(),
         "types": record.types,
         "issues": issues,
         "frontmatter": record.frontmatter,
         "effective_frontmatter": record.effective_frontmatter,
+        "resolved_links": resolved_links,
     })))
 }
 
@@ -1316,6 +1369,20 @@ mod tests {
         assert!(report.profiles.iter().any(|profile| {
             profile.profile == "cel_query" && profile.evaluated && profile.supported
         }));
+        assert!(report.profiles.iter().any(|profile| {
+            profile.profile == "links"
+                && profile.evaluated
+                && profile.supported
+                && profile.passed == 2
+        }));
+        assert!(report
+            .cases
+            .iter()
+            .any(|case| case.name == "collection links resolve valid ID-based link"));
+        assert!(report
+            .cases
+            .iter()
+            .any(|case| case.name == "collection links enforce validate_exists"));
     }
 
     #[test]

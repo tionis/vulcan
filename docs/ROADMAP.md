@@ -7315,7 +7315,7 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 - [x] Add a scoped mdbase resolver mode for declared frontmatter links and body links: configured-ID lookup, collection/file-relative paths, stable ambiguity behavior, target-type constraints, and `validate_exists` diagnostics.
 - [x] Preserve raw, parsed, and resolved link forms; keep ordinary Vulcan/Obsidian shortest-path and alias behavior unchanged outside explicit mdbase operations.
 - [x] Implement bounded CEL link helpers plus `file.links`, `file.embeds`, and `file.tags`, ignoring code spans/fences consistently with the parser pipeline.
-- [ ] Pass the upstream Links profile before claiming it; do not claim Links before its CEL dependency is satisfied.
+- [x] Pass the upstream Links profile before claiming it; do not claim Links before its CEL dependency is satisfied.
 
 #### MDB.7 Core write, concurrency, and lifecycle
 
