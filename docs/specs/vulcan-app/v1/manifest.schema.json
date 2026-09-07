@@ -64,6 +64,9 @@
     },
     "configuration": {
       "$ref": "#/$defs/configuration"
+    },
+    "settings": {
+      "$ref": "#/$defs/settings"
     }
   },
   "$defs": {
@@ -649,7 +652,9 @@
             "app.functions.invoke",
             "runtime.clock",
             "runtime.random",
-            "processors.use"
+            "processors.use",
+            "app.settings.read",
+            "app.settings.write"
           ]
         },
         "required": {
@@ -1235,6 +1240,56 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.settings.read"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "required": [
+                  "keys",
+                  "targets"
+                ],
+                "propertyNames": {
+                  "enum": [
+                    "keys",
+                    "targets"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.settings.write"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "required": [
+                  "keys",
+                  "targets"
+                ],
+                "propertyNames": {
+                  "enum": [
+                    "keys",
+                    "targets"
+                  ]
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -1280,6 +1335,20 @@
         },
         "operations": {
           "$ref": "#/$defs/string_set"
+        },
+        "keys": {
+          "$ref": "#/$defs/selector_id_set"
+        },
+        "targets": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "shared",
+              "local"
+            ]
+          }
         }
       }
     },
@@ -1841,6 +1910,40 @@
             "vulcan.saved_views.v1",
             "obsidian_bases_views"
           ]
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "schema",
+        "scopes"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "schema": {
+          "$ref": "#/$defs/schema_path"
+        },
+        "scopes": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 256,
+          "propertyNames": {
+            "$ref": "#/$defs/local_id"
+          },
+          "additionalProperties": {
+            "enum": [
+              "shared",
+              "local",
+              "shared-and-local"
+            ]
+          }
         }
       }
     }

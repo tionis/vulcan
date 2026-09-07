@@ -6467,6 +6467,12 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.6 Instances, configuration, secrets, and data ownership
 
+- [x] Specify app-wide shared/device-local settings, closed manifest declarations, capability selectors, and API/CLI/TUI behavior in `docs/specs/vulcan-app/v1/SETTINGS.md`; add schema conformance tests. This records the pre-release design, not runtime availability.
+- [ ] Implement settings schema cross-reference validation, scoped canonical/local persistence, default/shared/local resolution with provenance, multi-instance compatibility checks, and repairable external-edit diagnostics.
+- [ ] Implement settings describe/get/plan/apply in shared services and App API adapters with key/target authorization, explicit executing-device identity, optimistic concurrency, and direct/daemon parity.
+- [ ] Add `apps settings describe|show|get|set|unset|edit`, typed JSON values, required write targets, dry-run and JSON reports, and a schema-driven TUI with target/provenance display and reviewed atomic save.
+- [ ] Complete the SETTINGS.md acceptance matrix, generated protocol contracts and feature negotiation; extend bundled configuration guidance when these commands ship. Deliver persistence and CLI with instance configuration, API with the host bridge, and TUI as a follow-on that does not block headless settings.
+
 - [ ] Allow multiple named instances of one app per vault and define stable instance IDs independent of display names; embeds/routes refer to an instance plus view rather than an ambiguous package name
 - [ ] Store non-secret shareable instance definitions as canonical validated vault objects in a reserved app namespace; store activation, trust, grants, local preferences, and runtime health device-locally
 - [ ] Store credentials through Phase 17's secret facilities and expose only opaque secret handles scoped to an instance and capability; never place secret values in manifests, instance files, URLs, browser storage, logs, or app-visible error details

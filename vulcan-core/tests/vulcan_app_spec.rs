@@ -299,6 +299,85 @@ fn manifest_can_declare_migrations_bindings_and_entrypoint_requirements() {
 }
 
 #[test]
+fn app_settings_declaration_is_optional_versioned_and_closed() {
+    let validator = manifest_validator();
+    let mut manifest = fixture_json("examples/minimal/manifest.source.json");
+    assert!(validator.is_valid(&manifest));
+    manifest["settings"] = json!({
+        "version": 1,
+        "schema": "schemas/settings.json",
+        "scopes": {
+            "output-folder": "shared",
+            "page-size": "shared-and-local",
+            "theme": "local"
+        }
+    });
+    // Manifest shape only; payload and property-map cross-references need the future validator.
+    assert!(validator.is_valid(&manifest));
+    for field in ["version", "schema", "scopes"] {
+        let mut invalid = manifest.clone();
+        invalid["settings"].as_object_mut().unwrap().remove(field);
+        assert!(!validator.is_valid(&invalid), "missing {field}");
+    }
+    for (field, value) in [
+        ("version", json!(0)),
+        ("version", json!(1.5)),
+        ("schema", json!("https://example.com/settings.json")),
+        ("scopes", json!({})),
+        ("scopes", json!({"theme": "user"})),
+        ("scopes", json!({"theme.nested/path": "local"})),
+        ("widget", json!("execute.js")),
+    ] {
+        let mut invalid = manifest.clone();
+        invalid["settings"][field] = value;
+        assert!(!validator.is_valid(&invalid), "invalid settings {field}");
+    }
+    manifest["configuration"] = json!({"version": 2, "schema": "schemas/instance.json"});
+    assert!(
+        validator.is_valid(&manifest),
+        "instance config stays independent"
+    );
+}
+
+#[test]
+fn settings_capabilities_require_explicit_keys_and_targets() {
+    let validator = manifest_validator();
+    let mut manifest = fixture_json("examples/minimal/manifest.source.json");
+    for name in ["app.settings.read", "app.settings.write"] {
+        for selector in [
+            json!({"keys": ["*"], "targets": ["local", "shared"]}),
+            json!({"keys": ["theme"], "targets": ["local"]}),
+            json!({"keys": [], "targets": []}),
+        ] {
+            manifest["capability_requests"] =
+                json!([{"id": "settings", "name": name, "required": true, "selector": selector}]);
+            assert!(validator.is_valid(&manifest), "valid {name}");
+        }
+        for selector in [
+            json!({}),
+            json!({"keys": ["*"]}),
+            json!({"targets": ["local"]}),
+            json!({"keys": ["*"], "targets": ["effective"]}),
+            json!({"keys": ["*"], "targets": ["*"]}),
+            json!({"keys": ["*"], "targets": ["local", "local"]}),
+            json!({"keys": ["*"], "targets": ["local"], "paths": ["*"]}),
+        ] {
+            manifest["capability_requests"][0]["selector"] = selector;
+            assert!(
+                !validator.is_valid(&manifest),
+                "invalid selector for {name}"
+            );
+        }
+    }
+    manifest["capability_requests"][0]["name"] = json!("app.stores.read");
+    manifest["capability_requests"][0]["selector"] = json!({"keys": ["*"], "targets": ["shared"]});
+    assert!(
+        !validator.is_valid(&manifest),
+        "store grants cannot name settings"
+    );
+}
+
+#[test]
 fn app_ids_require_a_dot_and_agree_with_the_documented_length_limit() {
     let validator = manifest_validator();
     let mut manifest = fixture_json("examples/minimal/manifest.source.json");

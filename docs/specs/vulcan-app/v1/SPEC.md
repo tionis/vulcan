@@ -2,7 +2,7 @@
 
 Status: normative implementation target for Roadmap Phase 19. It does not claim that the current binary implements this specification.
 
-Revision: 2026-09-07 implementation-handoff review (pre-release; no deployed v1 compatibility claim).
+Revision: 2026-09-07 layered app settings review (pre-release; no deployed v1 compatibility claim).
 
 This document defines the version 1 package, lifecycle, capability, bridge, runtime, storage, and conformance contracts. Requirements use MUST, MUST NOT, SHOULD, and MAY in the RFC 2119 sense. Anything not granted or described here is unavailable to an app. Future behavior requires a separately versioned contract rather than permissive interpretation.
 
@@ -11,6 +11,7 @@ Machine-readable companions:
 - `manifest.schema.json` — closed JSON Schema for `manifest.json`
 - `signature.schema.json` — closed detached-signature record schema
 - `IMPLEMENTATION_CONTRACTS.md` — normative API, transaction, browser, and handoff details
+- `SETTINGS.md` — normative vault-global settings, device-local overrides, API, CLI, and TUI contract
 - `examples/signed-store/` — signed package and SQL migration fixture
 - `vulcan-app.wit` — server-component guest/host boundary
 - `examples/minimal/` — canonical static package source fixture and identity vector
@@ -130,6 +131,7 @@ The schema is normative. The top-level fields are:
 - `stores`: map of package-local logical store IDs;
 - optional `signature_policy`: required signers (omitted means none, never implicit trust);
 - optional `configuration`: independently versioned instance JSON Schema (omitted means empty configuration);
+- optional `settings`: independently versioned app-wide settings schema and per-key storage scopes, shared across instances in a vault; see `SETTINGS.md`;
 - `resources`: maximum runtime budgets requested by the package; and
 - `files`: complete payload inventory.
 
@@ -198,6 +200,7 @@ The v1 registry is closed to these names:
 | `vault.artifacts.read` / `write` / `delete` | `paths`, `media_types` | bounded artifact access or planned mutation |
 | `app.stores.read` / `write` / `admin` | `stores` | bound store operations; admin covers reset/export/delete |
 | `app.sessions.join` / `manage` | `stores` | live-session participation or privileged transitions |
+| `app.settings.read` / `app.settings.write` | `keys`, `targets` (both required) | own app’s vault-global and device-local settings; see `SETTINGS.md` |
 | `app.functions.invoke` | `functions` | invoke a declared function in the same instance |
 | `runtime.clock` / `runtime.random` | none (empty object) | bounded explicit clock/random service |
 | `processors.use` | `processors`, `operations` | named artifact processor operations |
@@ -220,6 +223,7 @@ Every adapter exposes these logical method names. Methods unavailable under the 
 | Namespace | Methods |
 | --- | --- |
 | `app` | `context`, `features`, `instance.get`, `log` |
+| `settings` | `describe`, `get`, `plan`, `apply` |
 | `functions` | `invoke` |
 | `runtime` | `clock`, `random` |
 | `notes` | `list`, `get`, `render` |
@@ -318,6 +322,7 @@ Host commands are fixed:
 ```text
 vulcan apps discover|inspect|validate|list|show|install|update|enable|disable|uninstall|doctor
 vulcan apps instances list|show|create|set|enable|disable|remove
+vulcan apps settings describe|show|get|set|unset|edit <app-id>
 vulcan apps grants show|plan|apply|revoke
 vulcan apps stores list|show|export|reset|archive|delete
 vulcan apps commands list|show
