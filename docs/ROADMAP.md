@@ -7296,6 +7296,7 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 - [x] Pin one exact supported mdbase v0.3 specification revision in source/docs, bundle required canonical schemas and fixtures with license/provenance metadata, and make upgrades explicit reviewable changes.
 - [x] Add a transport-neutral `vulcan-core::mdbase` collection detector and `mdbase.yaml` loader with v0.3 version checks, documented defaults, unknown-key warnings, safe relative control-folder paths, record-extension validation, explicit type-key configuration, validation level, and durable IANA timezone validation.
 - [x] Model configured `_types/` and `_contracts/` folders, `.mdbase/`, `mdbase.lock.yaml`, configured exclusions, and nested `mdbase.yaml` roots as mdbase control/discovery boundaries without hiding those Markdown files from ordinary Obsidian-oriented Vulcan browsing unless the caller requests the mdbase record set.
+- [x] Document the default `.mdbase/.gitignore` containing `*`, preservation of existing rules, and separation from durable recovery data in [the MDB implementation contract](specs/mdb/IMPLEMENTATION_CONTRACTS.md#7-derived-state-and-git-ignore-convention); directory creation remains future workflow behavior.
 - [x] Add an `mdbase` fixture vault covering a minimal collection, customized folders/extensions, malformed YAML, unknown keys, unsupported versions, unsafe paths, invalid timezone identifiers, exclusions, and nested collections.
 
 #### MDB.2 JSON Schema, type registry, and data contracts

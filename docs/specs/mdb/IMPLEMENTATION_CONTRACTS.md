@@ -47,3 +47,17 @@ Studio patches persisted frontmatter only. Missing, null, empty values, and effe
 ## 6. Handoff evidence
 
 Before marking a slice complete, add unit/fixture/conformance tests, direct-mode and restricted-grant tests, failure recovery tests where it mutates files, generated CLI/API documentation, and the bundled-skill impact review. Do not teach installed skills unimplemented commands. Watchers are repair hints: control changes invalidate all affected projections, and notifications wait until a coherent read state exists. No loading or synchronization of a provider/workflow/type-pack record executes code.
+
+## 7. Derived state and Git ignore convention
+
+`.mdbase/` is reserved for derived implementation state and excluded from mdbase record discovery. When a Vulcan workflow or maintenance script creates this directory, it must also create `.mdbase/.gitignore`, if absent, with exactly these contents followed by a newline:
+
+```gitignore
+*
+```
+
+Preserve an existing `.mdbase/.gitignore` without overwriting or extending its rules. The default ignores itself as well as the directory's other untracked contents; each local creator supplies it rather than relying on Git to distribute it. Do not modify the vault-root `.gitignore` for this default. Ignore rules do not untrack files already committed to Git.
+
+Keep canonical collection files such as `mdbase.yaml`, `mdbase.lock.yaml`, and configured type/contract folders eligible for version control. Required recovery backups and durable reconciliation state belong outside this disposable directory; a backup copy inside it must not be the only preserved original.
+
+This is a Vulcan creation convention, not an upstream requirement for the directory's internal layout. Vulcan currently does not create `.mdbase/` in its mdbase commands. Do not add implicit writes to collection discovery or read-only commands solely to install the ignore file. When a creation workflow is implemented, test default creation, preservation of existing rules, Git exclusion, and unchanged read-only behavior.
