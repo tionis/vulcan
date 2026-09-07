@@ -5093,6 +5093,17 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [x] Phase 10 can be implemented by depending on shared app/core modules rather than importing `vulcan-cli` internals. (MCP transport reuse remains explicitly deferred to either a small support crate or CLI-only endpoint once Phase 10 proves the boundary.)
 - [x] The roadmap and design document reflect the final boundaries before Phase 10 starts.
 
+### 9.29.10 Optional query maintenance follow-up
+
+**Scheduling:** Small maintenance follow-ups to the completed cleanup phase; these do not reopen the pre-daemon gate or block Phase 10. Multiple compatibility syntaxes alone do not justify a query-engine unification project.
+
+- [ ] Correct the query architecture descriptions in `docs/design_document.md` (§12 and §12b) to distinguish current sharing from intended architecture: Bases and DQL share the expression parser/evaluator, DQL retains its own compiled query pipeline, native `QueryAst` uses property filtering, and mdbase uses `StructuredQueryPlan` with CEL-specific execution. Document JavaScript and Tasks as separate compatibility surfaces where relevant; do not claim all frontends already execute one canonical AST.
+- [ ] Remove the native `QueryAst` execution path's typed-predicate → filter-string → parsed-filter round trip if direct lowering to existing typed property filters reduces code and complexity. Keep reusable changes in `vulcan-core`, preserve public DSL/JSON/filter syntax and existing public conversion APIs, and avoid introducing a general executor abstraction for this cleanup.
+  - Add regression coverage for typed values (including null, booleans, numbers, and strings containing quotes/backslashes), supported operators including regex, and permission-filtered results; retain CLI JSON coverage for equivalent native query inputs.
+  - Preserve existing comparison/coercion and error behavior; if direct lowering requires substantial new machinery or changes semantics, record the finding and defer the refactor.
+
+**Further extraction threshold:** Revisit shared query operations only when a concrete feature or bug requires duplicating the same behavior across pipelines. Preserve dialect-specific types, diagnostics, and operation ordering. Replacing Bases/DQL expressions, CEL, or JavaScript, retiring supported syntax, and building a universal query executor are outside this follow-up's scope. Review bundled query skills during implementation; update them only if agent-facing usage changes.
+
 ---
 
 ## Phase 10: Multi-Vault Daemon
