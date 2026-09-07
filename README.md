@@ -1,78 +1,97 @@
 # Vulcan
 
-> Pre-alpha: Vulcan is moving fast and still contains a large amount of LLM-written code. Treat it as experimental, keep backups, and use git or another versioning system before pointing it at important vaults.
+**A local-first information hub that makes Markdown searchable, queryable, and programmable.**
 
-Vulcan is a local-first Rust information hub for Obsidian-style vaults and plain Markdown directories. It indexes canonical Markdown into a rebuildable local SQLite cache, then exposes search, graph queries, Dataview/Bases-style metadata, TaskNotes workflows, publishing, scripting, MCP tools, and safe note mutations without requiring Obsidian to be running.
+Vulcan turns an Obsidian vault or plain Markdown directory into a knowledge base you can work with from the terminal, scripts, and agent tools. Search your notes, query structured records, follow links, manage tasks, make precise edits, and publish selected content—all while keeping ordinary files as the source of truth. Obsidian does not need to be installed or running.
 
-The current implementation includes the local CLI and MCP server plus a multi-vault synchronization daemon built on the shared `vulcan-core` and `vulcan-app` workflows. Outline already has first-class named subtree routes and exact local-note/remote-document bindings. Later connector layers extend the same inspectable hub model to SilverBullet, Git wikis, and HedgeDoc without making their databases or Vulcan's cache authoritative.
+> **Pre-alpha:** Vulcan is moving fast and contains a large amount of LLM-written code. Treat it as experimental, keep backups, and use Git or another versioning system before pointing it at important vaults.
 
-## What It Can Do
+[Getting started](docs/guide/getting-started.md) · [Installation](docs/installation.md) · [CLI reference](docs/cli.md) · [Architecture](docs/design_document.md) · [Roadmap](docs/ROADMAP.md)
 
-- **Index and query Markdown vaults**: incremental scanning, frontmatter, tags, wikilinks, embeds, aliases, block refs, attachments, and diagnostics.
-- **Search and explore**: SQLite FTS5, Obsidian-like search operators, graph traversal, backlinks/outgoing links, communities, suggestions, and optional vector search via `sqlite-vec`.
-- **Use structured knowledge models**: Dataview DQL, inline fields, inline expressions, `.base` views, task queries, TaskNotes, recurring tasks, dependencies, Kanban boards, periodic notes, and an emerging pinned mdbase v0.3 compatibility layer.
-- **Edit safely**: `note get/create/append/patch/set/delete/rename`, task create/complete/reschedule/archive, property updates, refactors, dry-run reports, link rewriting, and permission profiles.
-- **Publish, import, and route**: Markdown, JSON, CSV, Graph, EPUB, ZIP, SQLite, static search indexes, frontend bundles, full static sites, Outline-compatible ZIPs, conflict-aware Outline publication/pull, exact document bindings, and named subtree mirror routes.
-- **Automate locally**: JSON output on commands, saved reports, automation runs, checkpoints, shell completions, JavaScript scripting with sandbox tiers, custom skills, skill commands, and plugins.
-- **Synchronize devices**: finite Git-backed vault synchronization, deterministic conflict preservation and reviewed resolution, multi-wiki daemon scheduling, plus detached Git directories for Obsidian-visible Android/Termux storage.
-- **Integrate with agents**: `vulcan describe`, OpenAI tool schemas, MCP stdio/HTTP, ChatGPT-compatible OAuth/IndieAuth, tool packs, resources, prompts, and Agent Skills-compatible vault guidance.
+## What you can do today
 
-## Quick Start
+### Work with a knowledge base
 
-Versioned release archives for Linux, macOS, Windows, and aarch64 Android/Termux include the binary,
-generated shell completions, a man page, install notes, checksums, and license files. Releases also
-provide native amd64/arm64 Debian packages. The checksum-verifying installers require an explicit
-version and do not enable the daemon:
+Search note text with full-text and optional semantic search; explore backlinks, outgoing links, and the note graph; find unresolved links and other diagnostics. Query frontmatter, tags, inline fields, and file metadata using Vulcan's query language, Dataview DQL, or Obsidian Bases views.
+
+Read and patch individual sections of long notes, rename files with link rewriting, and preview bulk property edits and refactors. Terminal browsers and interactive Bases views complement the scriptable commands.
+
+Start with the [query guide](docs/guide/query-dsl.md), [filter reference](docs/guide/filters.md), and [workflow recipes](docs/examples/recipes.md).
+
+### Use Markdown as a database
+
+Keep tasks, projects, contacts, and other records in readable Markdown with structured metadata. Vulcan supports inline tasks, TaskNotes task files, recurring tasks, dependencies, Kanban boards, periodic notes, templates, and capture workflows.
+
+The explicit `mdbase` commands add typed collection discovery, schema validation, record reads, CEL queries, and link semantics against a pinned mdbase v0.3 specification. Compatibility is scoped to tested profiles; collection writes and the optimized App backend remain planned. Ordinary vaults do not need mdbase schemas.
+
+See the [CLI reference](docs/cli.md) for task and metadata workflows, and the [mdbase roadmap](docs/ROADMAP.md#mdb-mdbase-typed-markdown-collection-interoperability-formerly-932) for implemented profiles and remaining work.
+
+### Automate with scripts and agents
+
+Use the CLI directly from shell or Python scripts, request JSON output, or run JavaScript against Vulcan's vault API. The same local workflows support agent tool discovery, MCP clients, reusable skills, and typed skill commands. Direct CLI operation does not require a daemon.
+
+| Surface | Best suited to |
+| --- | --- |
+| CLI with `--output json` | Shell scripts, CI, and programs invoking Vulcan |
+| `vulcan run` | JavaScript scripts using the vault API |
+| Skills and skill commands | Reusable agent guidance and typed callable workflows |
+| Plugins | Event-driven lifecycle hooks |
+| MCP | Tool clients using permission profiles and selected tool packs |
+| Rust crates | Native integration with shared semantics and application workflows |
+
+Read the [automation overview](docs/guide/automation-surfaces.md), [scripting guide](docs/guide/scripting.md), [JavaScript API](docs/reference/js-api/index.md), and [sandbox guide](docs/guide/sandbox.md). For remote agent access, see the [ChatGPT MCP setup guide](docs/guide/chatgpt-mcp.md).
+
+### Publish and synchronize
+
+Export selected notes as documents, datasets, books, or archives; build static sites; or publish to Outline. Outline integration includes explicit pull and publication workflows, exact note/document bindings, and named subtree routes with conflict handling.
+
+Git-backed synchronization replicates vault files across devices. An optional multi-vault daemon schedules synchronization, and the Obsidian companion exposes status and sync controls. Device synchronization and external wiki publication have separate responsibilities: external documents pass through an inspectable local vault.
+
+Follow the guides for [static sites](docs/guide/static-sites.md), [Outline publishing](docs/guide/outline-publishing.md), [Git synchronization](docs/guide/git-sync.md), and the [Obsidian companion](integrations/obsidian-vulcan/README.md).
+
+## Quick start
+
+Install a release using the [installation guide](docs/installation.md), which covers Linux, macOS, Windows, and Android/Termux, plus upgrades and optional daemon services. Place `vulcan` on your `PATH`. Git is a separate dependency for synchronization.
+
+To build from this checkout instead, use the toolchain selected by `rust-toolchain.toml` (Rust 1.88 minimum):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.2.1/scripts/install.sh | \
-  sh -s -- --version 0.2.1 --dry-run
+cargo build --release --locked -p vulcan-cli --bin vulcan
+export PATH="$PWD/target/release:$PATH"
 ```
 
-On Windows, download `scripts/install.ps1` from the matching tag and run
-`./install.ps1 -Version 0.2.1 -DryRun`. Review [the installation guide](docs/installation.md) before
-removing `--dry-run`; Git remains a separate runtime dependency for synchronization.
-
-Manual portable installs can check the stable stream with `vulcan self-update check`. A bounded
-rolling build from eligible `main` commits is available through `--channel main`. Release metadata
-is signed after publication with separate channel-scoped keys; self-update fails closed while a
-new descriptor is awaiting its signature. Package-managed installations should update only through
-their package manager. See the [update-channel specification](docs/specs/update-channels.md).
-
-Vulcan requires Rust 1.88 or newer. With `rustup`, the checked-in `rust-toolchain.toml` installs and selects the supported toolchain automatically. Build the CLI:
+Initialize an existing Markdown directory and build its local index:
 
 ```sh
-cargo build --release -p vulcan-cli --bin vulcan
+vulcan --vault ~/notes index init
+vulcan --vault ~/notes index scan
 ```
 
-Initialize and scan a vault:
+Search, query, and inspect it:
 
 ```sh
-./target/release/vulcan --vault ~/notes index init
-./target/release/vulcan --vault ~/notes index scan
-```
-
-Try common workflows:
-
-```sh
-vulcan --vault ~/notes browse
+# Search note contents.
 vulcan --vault ~/notes search 'meeting notes'
-vulcan --vault ~/notes query 'FROM "Projects" WHERE status = "active"'
-vulcan --vault ~/notes note get "Projects/Alpha.md" --output json
-vulcan --vault ~/notes daily today
-vulcan --vault ~/notes tasks list --output json
-vulcan --vault ~/notes export markdown 'tag:publish' --path public.md
-vulcan --vault ~/notes export outline-zip --collection-title Wiki --path wiki.zip
-vulcan --vault ~/notes export outline-zip --profile wiki --path wiki.zip
-vulcan --vault ~/notes outline collections list wiki
-vulcan --vault ~/notes publish outline wiki --create-collection
-vulcan --vault ~/notes integration validate players
-vulcan --vault ~/notes integration plan players
-vulcan --vault ~/notes site build
+
+# Select records by metadata and return JSON for a script.
+vulcan --vault ~/notes query \
+  'from notes where status = "open" order by file.path asc limit 20' \
+  --output json
+
+# Browse interactively, or inspect indexing and link diagnostics.
+vulcan --vault ~/notes browse
 vulcan --vault ~/notes doctor
 ```
 
-For external agent runtimes and MCP clients:
+For an existing note, use its vault-relative path to read or preview an edit:
+
+```sh
+vulcan --vault ~/notes note get 'Projects/Alpha.md' --output json
+vulcan --vault ~/notes note patch 'Projects/Alpha.md' \
+  --find 'TODO' --replace 'DONE' --dry-run
+```
+
+For an external agent runtime or MCP client:
 
 ```sh
 vulcan --vault ~/notes agent install
@@ -80,73 +99,75 @@ vulcan --vault ~/notes describe --format mcp
 vulcan --vault ~/notes mcp --transport stdio --tool-pack notes-read,search,status
 ```
 
-## Configuration
+Explore commands with `vulcan --help` and topic guides with `vulcan help`. The [getting-started guide](docs/guide/getting-started.md) and [CLI reference](docs/cli.md) cover additional workflows and configuration prerequisites.
 
-Vulcan stores vault-local state under `.vulcan/`:
+## How your data is stored
 
-- `.vulcan/config.toml`: shared vault configuration, usually committed with the vault
-- `.vulcan/config.local.toml`: device-local overrides, ignored by default
-- `.vulcan/cache.db`: rebuildable SQLite cache
-- `.vulcan/publish/`: durable publisher mappings such as Outline source-to-document identity, stored outside the rebuildable cache
-- `.vulcan/integrations/`: durable pull identities, content snapshots, conflict journals, and named-route run state, stored outside the rebuildable cache
+Vulcan follows three layers:
 
-Use `vulcan config ...` and `vulcan help config` for the editable config surface. Vulcan can import settings from supported Obsidian plugins with `vulcan index init --import` or `vulcan config import --all`.
-
-## Automation And Agent Surfaces
-
-Vulcan has several automation layers with different jobs:
-
-| Surface | Use It For |
-| --- | --- |
-| CLI JSON | Shell scripts, CI, direct command automation |
-| `vulcan run` | One-off JavaScript scripts against the vault API |
-| Skills | Agent-readable workflow instructions and references in `.agents/skills/` |
-| Skill commands | Typed callable tools inside skills, exposed to CLI, MCP, `describe`, and JS |
-| Plugins | Event-driven lifecycle hooks such as note-write or pre-commit checks |
-| MCP | ChatGPT/Claude/Codex-style tool clients with permission profiles and tool packs |
-
-For a private ChatGPT connector, see [docs/guide/chatgpt-mcp.md](docs/guide/chatgpt-mcp.md). The recommended setup uses HTTPS, Vulcan's embedded OAuth issuer, IndieAuth for human login, Dynamic Client Registration when useful, and a narrow permission profile.
-
-## Documentation
-
-- [Getting started](docs/guide/getting-started.md): first commands and conventions
-- [CLI guide](docs/cli.md): command catalogue and examples
-- [Filters](docs/guide/filters.md) and [query DSL](docs/guide/query-dsl.md): selection syntax
-- [Scripting](docs/guide/scripting.md), [sandboxing](docs/guide/sandbox.md), and [automation surfaces](docs/guide/automation-surfaces.md)
-- [Skill commands](docs/assistant/skill_commands.md) and [custom tools](docs/assistant/custom_tools.md)
-- [ChatGPT MCP setup](docs/guide/chatgpt-mcp.md)
-- [Static sites](docs/guide/static-sites.md)
-- [Outline publishing](docs/guide/outline-publishing.md)
-- [Git-backed device synchronization](docs/guide/git-sync.md): direct Linux/Windows operation and detached Android/Termux setup
-- [Installation and daemon services](docs/installation.md): release archives, upgrades, native user services, and state-preserving removal
-- [Obsidian companion](integrations/obsidian-vulcan/README.md): authenticated status, sync triggers, and dry-run-first conflict review
-- [Local information hub and external wikis](docs/guide/information-hub.md): current integration baseline and planned binding/route/connector architecture
-- [Design document](docs/design_document.md): architecture and crate boundaries
-- [Roadmap](docs/ROADMAP.md): implementation status and planned phases
-- [Hardening](docs/hardening.md): verification matrix and boundary checks
-
-The integrated help system mirrors much of this documentation:
-
-```sh
-vulcan help
-vulcan help filters
-vulcan help assistant-integration
-vulcan help custom-tools
+```text
+Markdown, attachments, and collection definitions   ← canonical vault files
+                      ↓ parse and index
+              Rebuildable SQLite cache             ← metadata and link graph
+                      ↓ derive
+             Full-text and vector indexes          ← search and retrieval
 ```
 
-## Workspace Layout
+You can edit the files with your existing editor and rebuild the cache from disk. `.obsidian/` is optional. Compatibility adapters interpret supported plugin formats and settings; they do not require the plugins to run or promise complete desktop behavior parity.
 
-| Crate | Purpose |
+Vault-local configuration and state live under `.vulcan/`:
+
+| Path | Purpose |
 | --- | --- |
-| `vulcan-core` | Synchronous vault semantics: parser, indexer, cache, config model, query/search/graph/task logic, permissions, optional JS/web/OAuth/vector features |
-| `vulcan-app` | Reusable synchronous workflows over `vulcan-core`: note/task/template/export/site/config/plugin/tool orchestration without terminal UI |
-| `vulcan-embed` | Embedding provider trait and vector store implementations |
-| `vulcan-cli` | The `vulcan` binary: `clap` surface, terminal output, TUI/editor integration, MCP stdio/HTTP server, completions |
-| `vulcan-daemon` | Async HTTP/WebSocket transport, multi-vault registry state, background scheduling, and native service lifecycle |
+| `config.toml` | Shared vault configuration, usually committed with the vault |
+| `config.local.toml` | Device-local overrides, ignored by default |
+| `cache.db` | Rebuildable SQLite cache |
+| `publish/` | Durable publisher identity mappings |
+| `integrations/` | Durable import identities, reconciliation snapshots, conflict journals, and route state |
 
-## Development Checks
+The cache is disposable; remote identities and recovery state are not. Keep durable workflow state when backing up or moving an integration. See the [configuration reference](docs/reference/config.md) and [information-hub guide](docs/guide/information-hub.md) for the boundaries. Supported Obsidian settings can be imported explicitly with `vulcan config import --all`.
 
-Run these before committing:
+## Where the project is going
+
+The [roadmap](docs/ROADMAP.md) tracks implementation separately from design targets. Major directions include a web wiki, broader external knowledge connectors, and **Vulcan Apps**: installable applications with browser views, typed commands, and explicitly granted access to vault data.
+
+For wiki-native structured data, the accepted direction is **one portable mdbase model with one Vulcan execution and mutation engine**. Markdown and mdbase definitions remain canonical; SQLite supplies rebuildable, indexed query projections. Equivalent mdbase and collection-bound native queries should share optimized execution, while managed writes should share schema validation, lifecycle rules, and Markdown persistence.
+
+That integration is planned. The current mdbase query path still performs collection-wide work, and the documented latency targets are acceptance criteria, not measured guarantees. The target profile includes warm App reads below 50 ms at p95 and direct CLI queries below 100 ms at p95 under defined workloads. Standalone scripts remain useful independently of the App platform.
+
+- [mdbase performance and native integration](docs/specs/mdb/PERFORMANCE_AND_NATIVE_INTEGRATION.md): execution strategy, shared writes, benchmark workloads, and readiness gates.
+- [Vulcan App specification](docs/specs/vulcan-app/v1/SPEC.md) and [example App designs](docs/specs/vulcan-app/v1/EXAMPLE_APPS.md): planned package, API, storage, and application model.
+- [Local information hub](docs/guide/information-hub.md): current Outline integration and planned routes to additional knowledge systems.
+- [Performance notes](docs/performance.md): optimization evidence and remaining work.
+
+## Documentation map
+
+| If you want to… | Read |
+| --- | --- |
+| Install, upgrade, or run a service | [Installation](docs/installation.md) |
+| Learn commands and selection syntax | [CLI reference](docs/cli.md), [queries](docs/guide/query-dsl.md), [filters](docs/guide/filters.md) |
+| Write scripts or extend automation | [Scripting](docs/guide/scripting.md), [JS API](docs/reference/js-api/index.md), [custom tools](docs/assistant/custom_tools.md), [skill commands](docs/assistant/skill_commands.md) |
+| Configure permissions and script access | [Configuration](docs/reference/config.md), [sandboxing](docs/guide/sandbox.md), [MCP setup](docs/guide/chatgpt-mcp.md) |
+| Publish or exchange knowledge | [Static sites](docs/guide/static-sites.md), [Outline](docs/guide/outline-publishing.md), [external wikis](docs/guide/information-hub.md) |
+| Sync devices and use Obsidian alongside Vulcan | [Git sync](docs/guide/git-sync.md), [companion plugin](integrations/obsidian-vulcan/README.md) |
+| Understand or contribute to the implementation | [Design document](docs/design_document.md), [roadmap](docs/ROADMAP.md), [hardening and verification](docs/hardening.md) |
+
+## Development
+
+The Rust workspace separates reusable synchronous semantics and workflows from UI and async transports:
+
+| Crate | Responsibility |
+| --- | --- |
+| `vulcan-core` | Parsing, indexing, SQLite cache, queries, graph, tasks, permissions, and compatibility semantics |
+| `vulcan-app` | Reusable application workflows, including mutations, publication, configuration, and plugin dispatch |
+| `vulcan-cli` | CLI, terminal UIs, output formatting, and MCP transports |
+| `vulcan-daemon` | Async service, multi-vault registry, and background scheduling |
+| `vulcan-sync` | Synchronous Git synchronization engine and backend boundaries |
+| `vulcan-embed` | Embedding providers and vector-store abstractions |
+
+The `vulcan-app` crate is the shared workflow layer used today; the planned **Vulcan Apps** platform is a separate product capability.
+
+Run the required checks before committing:
 
 ```sh
 cargo fmt --all
@@ -155,4 +176,4 @@ cargo test --workspace
 cargo check --workspace --no-default-features
 ```
 
-Feature and boundary expectations are documented in [docs/hardening.md](docs/hardening.md). The repository also has boundary tests to keep CLI, app, core, MCP, JS, web, OAuth, and vector responsibilities from drifting back together.
+See [hardening](docs/hardening.md) for feature combinations and architecture boundary checks.
