@@ -1,0 +1,5 @@
+# Signed SQL store conformance fixture
+
+The Ed25519 seed is the public test sequence `00 01 02 … 1f`. It is not a publisher credential and must never be trusted outside tests. The signature binds the exact canonical manifest identity and its required signer policy. `migrations/001.sql` initializes schema version 1 from 0; it is an inventoried payload, not executable package discovery code.
+
+`manifest.source.json` is authoring JSON. `package.vapp` contains its RFC 8785 serialization first, followed by all payload/signature paths in ASCII order. Entries use Stored compression, Unix regular-file mode 0644, DOS timestamp 1980-01-01 00:00:00, and no extra fields/comments/data descriptors. `identity-test-vector.json` records the manifest, payload, exact ZIP, and signed-statement identities. The Rust fixture tests independently recompute hashes, verify the signature and archive inventory, exercise an initialization transaction, and reject tampering. These fixture checks do not replace the hostile production-validator gate.

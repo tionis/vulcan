@@ -58,6 +58,12 @@
       "additionalProperties": {
         "$ref": "#/$defs/file"
       }
+    },
+    "signature_policy": {
+      "$ref": "#/$defs/signature_policy"
+    },
+    "configuration": {
+      "$ref": "#/$defs/configuration"
     }
   },
   "$defs": {
@@ -70,8 +76,8 @@
     "app_id": {
       "type": "string",
       "minLength": 3,
-      "maxLength": 160,
-      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
     },
     "semver": {
       "type": "string",
@@ -264,6 +270,9 @@
         },
         "capability_requests": {
           "$ref": "#/$defs/id_set"
+        },
+        "store_requirements": {
+          "$ref": "#/$defs/store_requirements"
         }
       }
     },
@@ -317,6 +326,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 300000
+        },
+        "store_requirements": {
+          "$ref": "#/$defs/store_requirements"
         }
       },
       "allOf": [
@@ -500,6 +512,13 @@
         },
         "conflicts_with": {
           "$ref": "#/$defs/id_set"
+        },
+        "default": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
         }
       }
     },
@@ -626,7 +645,11 @@
             "secrets.use",
             "tools.call",
             "publication.write",
-            "host.execute"
+            "host.execute",
+            "app.functions.invoke",
+            "runtime.clock",
+            "runtime.random",
+            "processors.use"
           ]
         },
         "required": {
@@ -635,7 +658,585 @@
         "selector": {
           "$ref": "#/$defs/selector"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.notes.read"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.notes.write"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.notes.delete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.query"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.search"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.graph"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.tasks.read"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.tasks.write"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "tags",
+                    "types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.artifacts.read"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "media_types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.artifacts.write"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "media_types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "vault.artifacts.delete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths",
+                    "media_types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.stores.read"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "stores"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.stores.write"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "stores"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.stores.admin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "stores"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.sessions.join"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "stores"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.sessions.manage"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "stores"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app.functions.invoke"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "functions"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "jobs.enqueue"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "functions"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "jobs.schedule"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "functions"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "events.subscribe"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "events",
+                    "paths",
+                    "media_types"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "network.fetch"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "domains"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "secrets.use"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "secrets",
+                    "domains",
+                    "operations"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "tools.call"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "tools"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "publication.write"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "paths"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "host.execute"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "executables"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "processors.use"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": {
+                  "enum": [
+                    "processors",
+                    "operations"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "runtime.clock"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "runtime.random"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selector": {
+                "propertyNames": false
+              }
+            }
+          }
+        }
+      ]
     },
     "selector": {
       "type": "object",
@@ -654,10 +1255,10 @@
           "$ref": "#/$defs/string_set"
         },
         "stores": {
-          "$ref": "#/$defs/id_set"
+          "$ref": "#/$defs/selector_id_set"
         },
         "functions": {
-          "$ref": "#/$defs/id_set"
+          "$ref": "#/$defs/selector_id_set"
         },
         "events": {
           "$ref": "#/$defs/string_set"
@@ -666,12 +1267,18 @@
           "$ref": "#/$defs/string_set"
         },
         "secrets": {
-          "$ref": "#/$defs/id_set"
+          "$ref": "#/$defs/selector_id_set"
         },
         "tools": {
           "$ref": "#/$defs/string_set"
         },
         "executables": {
+          "$ref": "#/$defs/string_set"
+        },
+        "processors": {
+          "$ref": "#/$defs/selector_id_set"
+        },
+        "operations": {
           "$ref": "#/$defs/string_set"
         }
       }
@@ -773,8 +1380,253 @@
         },
         "binding_required": {
           "type": "boolean"
+        },
+        "migrations": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/migration"
+          }
+        },
+        "adapter": {
+          "enum": [
+            "sqlite-artifact-v1"
+          ]
+        },
+        "command_function": {
+          "$ref": "#/$defs/local_id"
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "profile": {
+              "const": "temporary"
+            },
+            "engine": {
+              "enum": [
+                "kv",
+                "blob"
+              ]
+            },
+            "authority": {
+              "const": "temporary"
+            },
+            "scope": {
+              "const": "invocation"
+            },
+            "replication": {
+              "const": "none"
+            },
+            "visibility": {
+              "const": "private"
+            },
+            "retention": {
+              "const": "disposable"
+            }
+          }
+        },
+        {
+          "properties": {
+            "profile": {
+              "const": "derived-cache"
+            },
+            "engine": {
+              "enum": [
+                "kv",
+                "sqlite",
+                "blob"
+              ]
+            },
+            "authority": {
+              "const": "derived"
+            },
+            "scope": {
+              "const": "device"
+            },
+            "replication": {
+              "const": "none"
+            },
+            "visibility": {
+              "const": "admin"
+            },
+            "retention": {
+              "const": "disposable"
+            }
+          }
+        },
+        {
+          "properties": {
+            "profile": {
+              "const": "device-local"
+            },
+            "engine": {
+              "enum": [
+                "kv",
+                "sqlite"
+              ]
+            },
+            "authority": {
+              "const": "authoritative"
+            },
+            "scope": {
+              "const": "device"
+            },
+            "replication": {
+              "const": "none"
+            },
+            "visibility": {
+              "const": "admin"
+            },
+            "retention": {
+              "const": "preserve"
+            }
+          }
+        },
+        {
+          "properties": {
+            "profile": {
+              "const": "vault-collection"
+            },
+            "engine": {
+              "enum": [
+                "mdbase"
+              ]
+            },
+            "authority": {
+              "const": "authoritative"
+            },
+            "scope": {
+              "const": "vault"
+            },
+            "replication": {
+              "const": "file_tree"
+            },
+            "visibility": {
+              "const": "vault"
+            },
+            "retention": {
+              "const": "preserve"
+            }
+          }
+        },
+        {
+          "properties": {
+            "profile": {
+              "const": "canonical-artifact"
+            },
+            "engine": {
+              "enum": [
+                "canonical_artifact",
+                "blob"
+              ]
+            },
+            "authority": {
+              "const": "authoritative"
+            },
+            "scope": {
+              "const": "vault"
+            },
+            "replication": {
+              "const": "file_tree"
+            },
+            "visibility": {
+              "const": "vault"
+            },
+            "retention": {
+              "const": "preserve"
+            }
+          }
+        },
+        {
+          "properties": {
+            "profile": {
+              "const": "live-session"
+            },
+            "engine": {
+              "enum": [
+                "live_session"
+              ]
+            },
+            "authority": {
+              "const": "temporary"
+            },
+            "scope": {
+              "const": "group"
+            },
+            "replication": {
+              "const": "external"
+            },
+            "visibility": {
+              "const": "admin"
+            },
+            "retention": {
+              "const": "disposable"
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "adapter"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile": {
+                "const": "canonical-artifact"
+              },
+              "engine": {
+                "const": "canonical_artifact"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "migrations"
+            ]
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "engine": {
+                    "const": "sqlite"
+                  }
+                }
+              },
+              {
+                "required": [
+                  "adapter"
+                ],
+                "properties": {
+                  "adapter": {
+                    "const": "sqlite-artifact-v1"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "command_function"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile": {
+                "const": "live-session"
+              }
+            }
+          }
+        }
+      ]
     },
     "resources": {
       "type": "object",
@@ -854,6 +1706,140 @@
           "enum": [
             "whole",
             "byte_range"
+          ]
+        }
+      }
+    },
+    "selector_id_set": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/local_id"
+          },
+          {
+            "const": "*"
+          }
+        ]
+      }
+    },
+    "signer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publisher",
+        "key_id",
+        "public_key"
+      ],
+      "properties": {
+        "publisher": {
+          "$ref": "#/$defs/app_id"
+        },
+        "key_id": {
+          "$ref": "#/$defs/local_id"
+        },
+        "public_key": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "signature_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_signers"
+      ],
+      "properties": {
+        "required_signers": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/signer"
+          }
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "schema"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "schema": {
+          "$ref": "#/$defs/schema_path"
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from_version",
+        "to_version",
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/local_id"
+        },
+        "from_version": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483646
+        },
+        "to_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "kind": {
+          "enum": [
+            "sql"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/package_path"
+        }
+      }
+    },
+    "store_requirements": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "$ref": "#/$defs/local_id"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 16,
+        "items": {
+          "enum": [
+            "core_read",
+            "collection_semantics",
+            "cel",
+            "cel_match",
+            "cel_query",
+            "links",
+            "core_write",
+            "lifecycle",
+            "watch",
+            "vulcan.record_write.v1",
+            "vulcan.lifecycle.v1",
+            "vulcan.saved_views.v1",
+            "obsidian_bases_views"
           ]
         }
       }

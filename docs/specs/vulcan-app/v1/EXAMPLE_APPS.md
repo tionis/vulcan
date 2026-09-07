@@ -10,9 +10,9 @@ For every app:
 
 1. Installation, instance creation, grant review, migration, update, disable, uninstall, and data-retention behavior work through the standard host workflows.
 2. Every view renders a useful denied/unsupported/offline state and does not infer hidden resources.
-3. Every mutation uses a typed plan/apply operation with exact revisions and idempotency.
+3. Every canonical mutation, migration, and destructive administration operation uses typed plan/apply with exact revisions and idempotency. Private state transactions and live-session commands use bounded revision-checked idempotent operations; ordinary clicks/heartbeats do not require human previews.
 4. CLI commands support `--output json`, non-interactive use, stable errors, and direct mode unless the operation inherently requires a daemon.
-5. Browser, CLI, QuickJS, and WASM surfaces share domain functions rather than implementing divergent business rules.
+5. Browser and CLI call the same declared QuickJS domain functions through `functions.invoke`/the command adapter after Gate E. WASM is optional after Gate F. Gate C demos perform only host-provided read/render operations and browser presentation; they do not implement a separate write path.
 6. Package, runtime, cache, local state, canonical data, secrets, jobs, and live sessions survive or disappear according to their declared profile.
 7. Static publication emits only explicitly supported public views/data and never bundles secrets, private stores, grants, live control channels, or unpublished content.
 
@@ -98,7 +98,9 @@ status: planned
 ### 3.2 State machine and roles
 
 ```text
-planned -> active <-> paused -> finished
+planned -> active <-> paused
+           |           |
+           +-> finished <-+
 ```
 
 Only the facilitator may start/pause/resume/finish, change the current item, reorder/remove speakers, record decisions, or create actions. Participants may join, raise/lower their own hand, and yield their own active slot. Viewers are read-only. A facilitator token is session-bound, revocable, and cannot be inherited by an embedded audience view.
@@ -125,7 +127,7 @@ This app is the denial baseline: forged bridge calls, denied capabilities, cross
 
 ### 4.2 Optional Wiki Quest mode
 
-Wiki Quest is a separate optional view/request. It reads a permission-filtered graph selector and creates a deterministic puzzle from only visible node IDs, titles, and permitted edges. Restricted nodes contribute no placeholder, count, degree, timing distinction, or missing-target hint. Seed identity includes the visible graph digest so two users are never told their differing maps are equivalent.
+Wiki Quest is a separate optional view/request. It reads a permission-filtered graph selector and creates a deterministic puzzle from only visible node IDs, titles, and permitted edges. Restricted nodes contribute no placeholder, count, degree, or missing-target hint. Timing on shared hardware is not promised constant; hidden data must not affect returned graph content, counts, ranks, or seed inputs. Seed identity includes the visible graph digest so two users are never told their differing maps are equivalent.
 
 Achievements remain local unless an explicit `vault.notes.write` binding targets a user-selected achievement note. No automatic canonical write is allowed.
 
@@ -137,7 +139,7 @@ Acceptance tests cover deterministic replay, keyboard/touch/reduced-motion opera
 
 The MVP is a WebUI and CLI client for one configured Blobforge coordinator: ingest a source, inspect queue/workers/jobs/artifacts, request conversion, download/preview results, hydrate supported outputs, and cancel when the coordinator advertises cancellation. It is not a second coordinator and does not execute the Blobforge schema.
 
-Before client code lands, check in a pinned Blobforge revision, license/provenance record, and exact OpenAPI or captured typed protocol under the app project. Generate the transport client and fake coordinator from that snapshot. An upstream change is an explicit adapter upgrade; unknown fields are preserved only where the pinned contract permits them and unknown enum variants fail visibly.
+All coordinator operations use a host-configured public `processors.*` adapter whose reports cover the listed dashboard/worker/artifact operations; normal network/secret grants still apply. Before client code lands, check in a pinned Blobforge revision, license/provenance record, and exact OpenAPI or captured typed protocol under the app project. Generate the transport client and fake coordinator from that snapshot. An upstream change is an explicit adapter upgrade; unknown fields are preserved only where the pinned contract permits them and unknown enum variants fail visibly.
 
 Configuration contains non-secret endpoint, approved redirect/origin policy, recipe allowlist/default, output root binding, and optional PDF watch selector. The bearer token is an opaque instance secret scoped to the exact coordinator origin. Browser code never receives it. The default uses typed HTTPS requests; a local executable adapter separately requires `host.execute` bound to one administrator-configured executable ID, never a path or shell string.
 
@@ -183,11 +185,11 @@ credential: private-feed
 
 ### 6.3 Identity and storage
 
-Canonical feed identity is the normalized final self URL after an approved refresh, falling back to normalized configured URL. Entry identity prefers a nonempty feed-scoped Atom/RSS/JSON ID. Otherwise use the normalized absolute item URL; otherwise use BLAKE3 over feed identity plus normalized title, author, published timestamp, and sanitized textual content. Reused IDs with materially different content retain revisions and emit a diagnostic rather than replacing a captured note silently.
+The durable subscription has a stable local ULID. Normalized self/configured URLs are revisioned source aliases under that identity. Accept a changed self URL only after approved origin checks; record an alias transition without rekeying read state or captures. Deduplication across subscriptions requires an explicit merge plan, never silently merging unrelated feeds. Entry identity prefers a nonempty subscription-scoped Atom/RSS/JSON ID. Otherwise use the normalized absolute item URL; otherwise use BLAKE3 over the stable subscription ID plus normalized title, author, published timestamp, and sanitized textual content. Reused IDs with materially different content retain revisions and emit a diagnostic rather than replacing a captured note silently.
 
-Private SQLite tables are `feeds`, `entries`, `entry_revisions`, `read_state`, and `refresh_state`, all keyed by stable IDs. Read/star/archive is durable device-local state. Raw bounded response bodies, parsed projections, search indexes, and localized media are derived cache. Enclosures use the blob store. Saved entries become ordinary Markdown with `type: feed-entry`, stable source/feed IDs, source URL, published/fetched timestamps, content digest, and capture provenance. Remote disappearance never deletes a saved note.
+Use separate logical SQLite stores: a `device-local` store for subscription identities, `read_state`, and capture bindings, and a `derived-cache` store for `entries`, `entry_revisions`, and `refresh_state`. Both use stable entry/feed IDs; cache eviction cannot cascade-delete durable state. Cross-store updates are journaled idempotent steps, not one claimed SQLite transaction. Read/star/archive is durable device-local state. Raw bounded response bodies, parsed projections, search indexes, and localized media are derived cache. Enclosures use the blob store. Saved entries become ordinary Markdown with `type: feed-entry`, stable source/feed IDs, source URL, published/fetched timestamps, content digest, and capture provenance. Remote disappearance never deletes a saved note.
 
-Refresh uses conditional requests, at most four concurrent origins and one request per origin at a time, bounded exponential retry, ten redirects, 16 MiB compressed and 64 MiB decompressed bodies, and the platform network/SSRF rules. XML DTD/entity expansion is disabled. HTML is sanitized through Vulcan's renderer; scripts, styles, forms, active embeds, event handlers, and unsafe URLs are removed.
+Refresh uses conditional requests, at most four concurrent origins and one request per origin at a time, bounded exponential retry, ten redirects, 16 MiB compressed and 64 MiB decompressed bodies, and the platform network/SSRF rules. XML DTD/entity expansion is disabled. HTML is sanitized through `content.render` on bounded response/blob input; scripts, styles, forms, active embeds, event handlers, and unsafe URLs are removed.
 
 Views are `subscriptions`, `inbox`, `entry`, and `settings`. Commands are `subscriptions`, `add`, `remove`, `refresh`, `entries`, `read`, `star`, `archive`, `capture`, and `opml import|export`. Scheduling without a daemon returns `unsupported_feature`; manual refresh remains available directly.
 
@@ -203,13 +205,17 @@ Accounts and categories are optional mdbase-compatible records with stable ULIDs
 
 ```text
 commodities(id, code, scale)
-transactions(id, occurred_at, payee, description, created_at, source_digest)
+accounts(id, name, kind, commodity_id, archived, source_record_id, source_revision)
+categories(id, name, archived, source_record_id, source_revision)
+transactions(id, occurred_at, payee, description, created_at, source_digest,
+             status, supersedes_id)
 postings(id, transaction_id, account_id, commodity_id, amount_minor, memo,
-         cleared, reconciled_at)
+         cleared, reconciled_at, category_id)
 imports(id, source_digest, imported_at)
+audit(id, transaction_id, operation, occurred_at, prior_revision)
 ```
 
-All IDs are ULIDs. Amounts are signed 64-bit integer minor units; floats are forbidden. For every transaction, postings sum to zero independently per commodity. Foreign keys and checks are enabled. Published transactions are corrected by explicit superseding transactions, not silent destructive edits; deletion is allowed only for unposted drafts. An account/category record revision is captured when a posting plan is created, so stale or archived references fail apply.
+All IDs are ULIDs. Amounts are signed 64-bit integer minor units in SQLite; the App API and CLI JSON carry them as canonical decimal strings, parsed as BigInt/checked i64 without a floating-point conversion. Floats are forbidden. For every transaction, postings sum to zero independently per commodity. Foreign keys and checks are enabled. Ledger-local account/category rows are immutable reviewed snapshots of optional mdbase references; references across Markdown and SQLite are checked by the shared plan under the vault lock, not SQL foreign keys. Transaction status is `draft` or `posted`; posting validates balance atomically. Corrections append linked reversal/replacement transactions using `supersedes_id` and audit rows in the same SQLite transaction. All arithmetic and sums use checked wide intermediates and reject overflow before commit. Posted transactions cannot be destructively edited; deletion is allowed only for unposted drafts. An account/category record revision is captured when a posting plan is created, so stale or archived references fail apply.
 
 The SQLite file is a canonical artifact selected during instance binding. Vulcan owns connection and atomic artifact capture. Cross-device file conflicts require review. No network capability is requested. Local report caches remain derived and disposable.
 
@@ -223,7 +229,7 @@ Acceptance tests prove balancing, integer precision, multi-commodity separation,
 
 Collection Studio provides generated list/table/detail/form views over one bound typed Markdown or mdbase collection. It does not introduce another schema language, database, query language, ownership model, or hidden record store.
 
-An instance binds collection root, permitted types/contracts, default saved view, and writable paths. Read-only operation requires mdbase `core_read` and query profiles. Create/edit/delete is enabled only when Vulcan advertises the corresponding `core_write`/lifecycle profiles; otherwise the UI remains useful and visibly read-only.
+An instance binds collection root, permitted types/contracts, optional default saved view, and writable paths. Schema forms use `stores.mdbase.collections/types/contracts/schema/views`, including source and composition revisions. Until MDB.8 exists, use an ad hoc query rather than a saved-view default. Linked pickers require MDB.6; writes require MDB.7; saved views and `.base` adaptation require MDB.8; live refresh requires MDB.9. Read-only operation requires mdbase `core_read`, `collection_semantics`, and `cel_query` with their dependencies. Create/edit/delete is enabled only when Vulcan advertises `vulcan.record_write.v1` and, where used, `vulcan.lifecycle.v1`; otherwise the UI remains useful and visibly read-only. Upstream `core_write` is not claimed as a synonym for CRUD. A narrow binding lacking full validation-scope read authority also stays read-only for affected writes; no hidden-record uniqueness probing is allowed.
 
 ### 8.2 Widget mapping and mutations
 
@@ -248,7 +254,18 @@ Acceptance covers multiple matched types, defaults versus persisted values, requ
 
 ## 9. Delivery mapping
 
-The examples intentionally unlock in this order:
+The roadmap gates are authoritative. Early subsets are demos, not completion of the full contracts above:
+
+| Gate | Required example evidence | Explicitly deferred acceptance |
+| --- | --- | --- |
+| C | Minimal package, Ember Run in-memory base mode, Presenter single-note audience/embed read-render demo | Persistence, live control, automatic event reload, app CLI commands, export |
+| D | Host-level fixtures for mutations, stores, SQL migrations, live-session substrate, events and retained-job records; optional Studio read-only metadata demo | App reducers/job execution and complete interactive examples |
+| E | Meeting Tool and writable Studio with required MDB slices; Ember persistence; Presenter CLI/live control; complete non-networked Ledger | Presenter export until G; network examples until H; WASM optional |
+| F (optional) | Runtime parity using component fixtures | No required portfolio example depends on WASM |
+| G | Presenter export and complete Presenter contract; publication/distribution conformance | Feed Reader and Blobforge until H |
+| H | Complete Feed Reader and Blobforge contracts through public adapters | Native Blobforge execution and replication remain optional |
+
+Functional coverage is:
 
 1. Minimal fixture and Ember Run base mode validate package/iframe isolation without vault authority.
 2. Presenter validates read/render/embed/events/static publication.

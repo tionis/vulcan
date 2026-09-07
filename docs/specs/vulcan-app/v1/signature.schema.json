@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulcan.local/schemas/vulcan-app-signature-v1.json",
+  "title": "Vulcan App detached signature v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "algorithm",
+    "publisher",
+    "key_id",
+    "public_key",
+    "app_content_id",
+    "signature"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "algorithm": {
+      "const": "ed25519"
+    },
+    "publisher": {
+      "$ref": "#/$defs/app_id"
+    },
+    "key_id": {
+      "$ref": "#/$defs/local_id"
+    },
+    "public_key": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "app_content_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  },
+  "$defs": {
+    "app_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "local_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    }
+  }
+}

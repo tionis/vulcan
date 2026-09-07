@@ -1,0 +1,17 @@
+{
+  "canonical_manifest_bytes": 1653,
+  "app_content_id": "blake3:193f4b3b94c2b83582eafb55b60fdcbf22e5c1546c6b25e3a683ded08aee58f4",
+  "package_blob_id": "blake3:d1e2349778c52472cdd9157b71294b957fce5ff460207b58b1562ef6b971b18f",
+  "signed_statement_hex": "76756c63616e2d6170702d7369676e61747572652f763100193f4b3b94c2b83582eafb55b60fdcbf22e5c1546c6b25e3a683ded08aee58f4",
+  "payloads": {
+    "assets/index.html": {
+      "bytes": 262,
+      "digest": "blake3:27c015ddae3a780a5e985ca67ff19d63f34616b7e944ed2733cff1607af0e275"
+    },
+    "migrations/001.sql": {
+      "bytes": 76,
+      "digest": "blake3:1e45937eb52314edbc6eb0f4ff8a1d7bd02edc4b297656ab38fea5ac1671b352"
+    }
+  },
+  "signature_valid": true
+}

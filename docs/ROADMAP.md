@@ -6410,7 +6410,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.2 Canonical manifest and logical package specification
 
-- [x] Freeze the initial implementation target in `docs/specs/vulcan-app/v1/`: normative platform prose, a closed draft-2020-12 manifest schema, server-component WIT, canonical source/identity fixture, and bounded contracts for every first-party example app
+- [x] Record the initial implementation target in `docs/specs/vulcan-app/v1/`: normative platform prose, closed manifest/signature schemas, server-component WIT, source/identity/signature/migration fixtures, and bounded reference-app contracts. The 2026-09-07 handoff revision resolves signatures/migrations, API invocation/discovery, selectors, storage transactions, numeric transport, browser bootstrap, and gate dependencies in `IMPLEMENTATION_CONTRACTS.md`; Gate A remains incomplete until the production validator and hostile package conformance pass.
 - [ ] Specify `manifest.json` as UTF-8 without BOM, I-JSON-compatible canonical JSON whose original bytes must equal its RFC 8785 JSON Canonicalization Scheme representation
 - [ ] Reject duplicate object keys before constructing a generic JSON value, forbid floating-point values in v1, bound integers to the exactly interoperable range, and reject ambiguous uses of `null`
 - [ ] Define application-level canonical rules beyond JSON syntax: payload maps ordered by canonical path, set-like arrays lexicographically sorted and duplicate-free, lowercase digest encodings, and deterministic ordering for entrypoints and capability requests
@@ -6418,10 +6418,10 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Require manifest fields for format version, app ID/version/name, App API compatibility, human metadata, runtime entrypoints, capability requests, resource ceilings, payload inventory, and supported instance/data schema ranges
 - [ ] Require every payload file to appear exactly once in the manifest with canonical path, actual uncompressed byte size, BLAKE3 digest, and optional validated media type/delivery metadata; `manifest.json` does not list itself
 - [ ] Model capabilities as structured requests with stable request IDs, capability names, required/optional status, maximum resource selectors, network-domain ceilings, and whether an instance may bind a narrower concrete scope
-- [ ] Give every logical store a stable package-local ID and closed declaration for engine, authority, scope, replication, visibility, retention, quota/resource ceilings, schema version/range, migration assets, backup/export behavior, and required store operations; reject internally inconsistent combinations
+- [ ] Give every logical store a stable package-local ID and closed declaration for engine, authority, scope, replication, visibility, retention, quota/resource ceilings, exact required schema version in v1, SQL migration assets, profile-defined backup/export behavior, and required store operations; reject internally inconsistent combinations
 - [ ] Model full-page UI routes, named embeddable views, typed CLI commands, typed host functions, browser-WASM assets, server-WASM exports, lifecycle/background entrypoints, schemas, migrations, and static-publication support explicitly rather than inferring semantics from directories
 - [ ] Reserve `META-INF/signatures/` for detached signature records that are neither executable payloads nor part of `AppContentId`; prohibit every other unlisted entry
-- [ ] Define Ed25519 as the v1 detached signature algorithm, a canonical signature-record schema with publisher/key identity, and the exact signed statement `"vulcan-app-signature/v1\0" || raw 32-byte AppContentId`; a canonical manifest signature policy makes removal of a required record invalid without creating a digest cycle
+- [x] Define Ed25519 as the v1 detached signature algorithm, a canonical signature-record schema with publisher/key identity, and the exact signed statement `"vulcan-app-signature/v1\0" || raw 32-byte AppContentId`; a canonical manifest signature policy makes removal of a required record invalid without creating a digest cycle
 - [ ] Publish the v1 JSON Schema, normative examples, exact hash vectors, path vectors, canonicalization vectors, signature vectors, and a human-readable format specification
 
 ### 19.3 Strict ZIP profile and hostile-input validation
@@ -6519,7 +6519,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Provide a small transactional typed key/value or document API as the default private-state surface, plus separately declared private-SQLite, mdbase collection, content-addressed blob, canonical artifact, live-session, and future replicated-store namespaces
 - [ ] Return opaque store/transaction/blob/session handles rather than host paths, raw file descriptors, WAL files, daemon database handles, or credentials; use the same bounded transport-neutral request/report types from browser, CLI, QuickJS, and server WASM surfaces
 - [ ] Let apps call visible skill commands through the typed registry with input/output validation, recursion limits, and preserved effective permission ceilings; do not add arbitrary CLI/shell escape hatches
-- [ ] Treat the closed method registry in `docs/specs/vulcan-app/v1/SPEC.md` as exhaustive for v1; before enabling any runtime, check in versioned request/success/error fixtures for every method and reject unregistered methods
+- [ ] Treat the closed method registry in `docs/specs/vulcan-app/v1/SPEC.md` as exhaustive for v1; before enabling each method, check in versioned request/success/error fixtures and its complete authorization mapping; later-gate methods return `unsupported_feature` and do not block the Gate C subset
 - [ ] Keep App API schemas and daemon/OpenAPI/browser/WASM projections generated or conformance-tested from the same domain contracts and fixtures; require protocol-version review for every field or method change
 
 ### 19.10 Events, jobs, and background execution
@@ -6556,7 +6556,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.12 Server-side WebAssembly runtime
 
-- [ ] Introduce a replaceable server-WASM runtime adapter behind optional `wasm_runtime`, using pinned Wasmtime `36.0.10` with default features disabled and only reviewed component-model/runtime/compiler features; record binary-size/platform impact and keep package validation/App API independent of the engine
+- [ ] Introduce a replaceable server-WASM runtime adapter behind optional `wasm_runtime`. Verify candidate Wasmtime `36.0.10` against Rust 1.88/platform builds and upstream maintenance/advisories before adoption; disable default features and enable only reviewed component-model/runtime/compiler features; record binary-size/platform impact and keep package validation/App API independent of the engine
 - [ ] Make server WASM a peer function/job runtime: direct CLI, daemon RPC, or jobs may invoke it directly, QuickJS may call it as a declared component, and pure components may have no host imports
 - [ ] Implement and conformance-test `docs/specs/vulcan-app/v1/vulcan-app.wit`: components export `invoke(entry, canonical-json)` and receive only the typed error plus generic schema-checked App API host call; do not introduce an ad hoc raw-memory allocation ABI
 - [ ] Permit only declared Vulcan host imports for query, notes, mutation plans, artifacts, state, network, secrets, jobs/progress, time/randomness, and logging; do not enable ambient WASI filesystem, sockets, environment, process, or clocks
@@ -6633,7 +6633,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.16 CLI, WebUI administration, and developer experience
 
-- [ ] Add `vulcan apps discover|inspect|validate|list|show|install|update|disable|uninstall|doctor` with stable JSON reports and `--dry-run` on every mutation
+- [ ] Add `vulcan apps discover|inspect|validate|list|show|install|update|enable|disable|uninstall|doctor` with stable JSON reports and `--dry-run` on every mutation
 - [ ] Add `vulcan apps instances list|show|create|set|enable|disable|remove` with explicit vault/instance selection, capability/data bindings, migration previews, and no interactive-only requirements
 - [ ] Add `vulcan apps grants show|plan|apply|revoke` over Phase 17 authority rather than a parallel ACL file; human output clearly separates requested, granted, denied, optional, and policy-ceiling capabilities
 - [ ] Add `vulcan apps pack|lint|test|unpack` developer commands and `describe`/help coverage for manifest, identities, ZIP profile, browser bridge, App API, QuickJS, WASM, logical store declarations/profiles, signing, and publication
@@ -6667,7 +6667,7 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 - [ ] Support heading or delimiter slide boundaries, horizontal/vertical slide structure, fragments, themes, speaker notes, timers, audience/presenter routes, named note embeds, fullscreen, and print/PDF-friendly output
 - [ ] Subscribe to filtered source-note and dependency changes, update the deck without a Vite/development server, and preserve the current slide/fragment where the changed structure still permits it
 - [ ] Support static publication through Phase 9.20 without bundling private presenter state or daemon-only control channels; diagnose dynamic constructs that cannot be exported safely
-- [ ] Add typed CLI commands for `present`, `list-slides`, `export`, and `doctor`, with no write capability required for the initial release
+- [ ] Add typed CLI commands for `present`, `list-slides`, and `doctor` after Gate E; `export` follows Gate G and requires `publication.write`. Gate C requires only the audience/embed read-render demo
 
 #### 19.18.2 Meeting Tool
 
@@ -6676,7 +6676,7 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 - [ ] Classify agenda/minutes/decisions/action items as canonical Markdown/tasks, the current item and speaker queue as explicit resumable live-session state with optional checkpoints, and participant presence as expiring live-session state
 - [ ] Write decisions, notes, and action items through optimistic-concurrency mutation plans scoped to the selected agenda section rather than replacing the whole note
 - [ ] Resolve facilitator, speaker, participant, and viewer actions through caller and instance capabilities; an embedded audience view cannot inherit facilitator authority
-- [ ] Add `start`, `show`, `next`, `previous`, `queue`, `yield`, `decision`, `action`, and `finish` CLI commands with direct/daemon parity and a complete non-interactive path
+- [ ] Add `start`, `show`, `next`, `previous`, `pause`, `resume`, `queue`, `yield`, `decision`, `action`, and `finish` CLI commands after Gate E. Session operations explicitly require the daemon and return `unsupported_feature` in direct mode; canonical note plans reuse direct-mode shared services and every command remains non-interactive
 - [ ] Ship a single-facilitator/multiple-viewer baseline on Phase 19 events; layer simultaneous collaborative note editing on Phase 16 rather than inventing an app-specific CRDT
 
 #### 19.18.3 Ember Run capability-free minigame and Wiki Quest
@@ -6720,11 +6720,11 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 
 - [ ] **Gate A — normative format:** Complete 19.1–19.3's domain model, canonical manifest, BLAKE3 vectors, strict ZIP profile, signature envelope, format specification, hostile fixtures, and raw-package fuzz target before any package code may execute
 - [ ] **Gate B — package substrate:** Complete 19.4 plus the immutable installation/blob-store portion of 19.5 and CLI descriptor validation/discovery from 19.15; `inspect`, `validate`, `pack`, `lint`, install preview/apply, exact identity reporting, and no-extraction invariants work without enabling QuickJS, WASM, or the WebUI
-- [ ] **Gate C — static read-only MVP:** Complete instances, device-local trust/grants, the iframe host, content-addressed asset serving, read-only bridge/App API, full-page routes, note embeds, CLI/WebUI administration, Presenter, and the capability-free minigame; this is the first user-facing release
-- [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, orthogonal logical-store declarations/bindings, private typed state and SQLite, content-addressed blobs, live sessions, migration journals, vault-native/mdbase bindings, canonical artifact handling, retained jobs/events, Meeting Tool, Collection Studio, and the finance prototype's non-networked storage path
-- [ ] **Gate E — QuickJS functions and CLI apps:** Add compiled-TypeScript authoring, VFS module loading, resource-limited request/job/direct CLI execution, namespaced QuickJS CLI commands, nested typed tools, and JS-to-WASM-ready component calls behind `js_runtime`; static apps remain available without that feature
-- [ ] **Gate F — server WASM and compiled CLI apps:** Integrate pinned Wasmtime 36.0.10 behind `wasm_runtime`, implement the frozen WIT/component host boundary, add direct CLI/RPC/job and nested invocation, namespaced WASM CLI commands, resource enforcement, multi-toolchain conformance components, and a feature-disabled compatibility path
-- [ ] **Gate G — publication and distribution:** Add static/live publication modes, source/catalog abstraction, publisher policy and update/revocation UX, optional OCI transport, offline import/export, and complete security/lifecycle conformance
+- [ ] **Gate C — static read-only MVP:** Complete instances, device-local trust/grants, isolated iframe/bootstrap, asset serving, read-only bridge/App API, full-page routes, embeds, and host CLI/WebUI administration. Ship only the minimal package, Ember Run in-memory mode, and Presenter single-note audience/embed demo from the example gate matrix; no app CLI, live control, persistence, event reload, or export is required here. This is the first user-facing release, not full reference-app completion.
+- [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, orthogonal logical-store declarations/bindings, private typed state and SQLite, content-addressed blobs, live sessions, migration journals, vault-native/mdbase bindings, canonical artifact handling, retained-job/event substrate, and MDB metadata/binding support. Validate with host-level fixtures; optional Studio read-only demo is not full app completion. App reducers, executable jobs, and complete Meeting/Studio/Ledger acceptance wait for Gate E
+- [ ] **Gate E — QuickJS functions and CLI apps:** Add compiled-TypeScript authoring, VFS module loading, resource-limited request/job/direct CLI execution, namespaced QuickJS CLI commands, nested typed tools, and JS-to-WASM-ready component calls behind `js_runtime`; static apps remain available without that feature. Complete Meeting Tool, Studio with explicit MDB.6/7/8 dependencies for linked writes/views, Ember persistence, Presenter CLI/live control, and non-networked Ledger; Presenter export waits for G
+- [ ] **Gate F — optional server WASM and compiled CLI apps:** Verify candidate Wasmtime 36.0.10 against Rust 1.88, target support, maintenance/advisories, and dependency features before adoption; integrate the reviewed pin behind `wasm_runtime`, implement the frozen WIT/component host boundary, add direct CLI/RPC/job and nested invocation, namespaced WASM CLI commands, resource enforcement, multi-toolchain conformance components, and a feature-disabled compatibility path
+- [ ] **Gate G — publication and distribution:** Add static/live publication modes, source/catalog abstraction, publisher policy and update/revocation UX, optional OCI transport, offline import/export, Presenter static export/full contract, and publication security/lifecycle conformance. G follows E and does not depend on optional Gate F
 - [ ] **Gate H — network and processing examples:** Complete filtered attachment events, the reusable `ArtifactProcessor`, Feed Reader, and Blobforge Workbench with durable idempotency/reconciliation, scheduler restart, secret/network isolation, validated artifact import, and direct/daemon CLI parity
 - [ ] **Post-v1 replicated-store gate:** Keep the replicated structured-store API experimental until the Phase 19.13.3 harness demonstrates one explicitly versioned adapter profile across offline multi-writer behavior, schema migration, malicious inputs, revocation, recovery, compaction, evidence, and transport/runtime compatibility; do not block the core app platform on this investigation
 - [ ] Parallelization rule: after Gate A freezes the format contracts, package tooling/VFS, browser-host prototyping, App API domain types, and runtime-adapter investigations may proceed independently; installation authority and runtime execution must converge on the same validated package and permission contracts before Gate C or later ships
@@ -7269,6 +7269,8 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 
 **Initial conformance target:** implement and verify the mdbase `core_read` and `collection_semantics` profiles first. Do not claim `cel`, `cel_match`, `cel_query`, `links`, `core_write`, `lifecycle`, or `watch` until every required behavior has focused tests and the corresponding upstream conformance fixtures pass. The optional runtime, workflow, type-pack installation, and event/action interoperability profiles are explicitly deferred.
 
+**Handoff contract:** `docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md` is normative for Vulcan validation-scope authorization, native feature negotiation, full revision/dependency plans, multi-file recovery, and Studio dependencies. The pinned draft `core_write` ledger includes type-pack requirements; record CRUD alone must not claim it.
+
 **Delivery placement:** MDB.1–MDB.8 are independently promotable local/core capability slices and do not block Phase 10. Watch/daemon integration in MDB.9 follows Phase 10; executable runtime/workflow interoperability remains a Phase 15-era candidate.
 
 #### MDB.1 Specification pinning, collection discovery, and configuration
@@ -7317,14 +7319,21 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 
 #### MDB.7 Core write, concurrency, and lifecycle
 
+- [x] Define the write implementation contract and upstream-profile gap handling in `docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md`; this completes design review only, not CRUD, transaction, or conformance implementation.
+- [ ] Implement scope-complete read authorization before global constraints; reject insufficient visibility consistently without probing hidden conflicts. Keep read filtering unchanged.
+- [ ] Bind previews to config/type/contract/schema/grant revisions, relevant directory membership, source/absence preconditions, and fixed generated values; invalidate on phantom records or control drift.
+- [ ] Implement the bounded all-or-nothing cooperating-reader batch/rename journal, crash recovery, external-drift preservation, post-consistency outbox, and durable idempotency contract. Do not claim isolation from direct filesystem editors.
+
 - [ ] Centralize mdbase create/update/delete/rename/batch orchestration in `vulcan-app`, reusing secure path handling, atomic writes, scan refresh, permission checks, dry-run reports, plugin events, and opt-in git commits.
 - [ ] Add opaque content-derived revisions and `if_revision` preconditions; preserve the current file and return `concurrent_modification` on mismatch.
 - [ ] Implement the normative draft pipeline: draft type membership, lifecycle, one post-lifecycle membership check, JSON Schema validation, collection validators, atomic persistence, derived-state refresh, then events.
 - [ ] Implement `now`, `today`, `uuid`, `ulid`, `slugify`, `copy`, and `literal` lifecycle providers, guarded lifecycle actions after CEL, and deterministic conflict diagnostics across matched types.
 - [ ] Preserve unrelated Markdown, link style, aliases, anchors, line endings, and exact supplied source when policy does not require reserialization; update references on rename through the existing rewrite planner.
-- [ ] Pass Core Write and Lifecycle suites independently before claiming either profile, and add crash/concurrency regression tests around batch and rename operations.
+- [ ] Ship bounded CRUD/declarative lifecycle under `vulcan.record_write.v1` / `vulcan.lifecycle.v1` only after their native contract tests pass. Pass all pinned normative requirements and suites independently before claiming upstream Core Write or Lifecycle, including required managed type-pack behavior or an explicitly reviewed new upstream pin; passing draft fixtures alone is insufficient. Add crash/concurrency regression tests around batch and rename operations.
 
 #### MDB.8 Portable views, Obsidian Bases, and TaskNotes
+
+- [ ] Expose permission-filtered collection/type/contract/effective-schema/view discovery with revisions through shared services and the App API; advertise native `vulcan.saved_views.v1` separately from upstream profile claims.
 
 - [ ] Load canonical `type: view` records as ordinary mdbase records and implement stable named-view discovery, inheritance/merge rules, invocation context, advisory presentation, and headless execution.
 - [ ] Adapt existing `.base` discovery/evaluation to the mdbase saved-view source envelope without converting `.base` files or making mdbase CEL the Bases expression language; keep source revisions and full-document writable operations explicit.
@@ -7341,7 +7350,7 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 
 #### Deferred mdbase runtime work
 
-The mdbase event/action interoperability, durable runtime, workflow execution, provider registry, type-pack installation, and migration profiles are not part of the initial MDB track. Revisit them after the Phase 10 daemon and Vulcan's shared plugin/skill-command/permission boundaries are stable. Any later integration must adapt those contracts to the daemon rather than introducing executable behavior into `vulcan-core` or bypassing Vulcan authorization.
+The mdbase event/action interoperability, durable runtime, workflow execution, provider registry, type-pack installation, and migration profiles are not part of the initial MDB track. Consequently the pinned draft upstream `core_write` claim remains unavailable while its required type-pack behavior is deferred; native bounded record writes are separately named and tested. Revisit them after the Phase 10 daemon and Vulcan's shared plugin/skill-command/permission boundaries are stable. Any later integration must adapt those contracts to the daemon rather than introducing executable behavior into `vulcan-core` or bypassing Vulcan authorization.
 
 ---
 
