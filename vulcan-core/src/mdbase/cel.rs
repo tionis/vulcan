@@ -1,4 +1,7 @@
-use super::{MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseRecordDocument};
+use super::{
+    parse_mdbase_link_value, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseLink, MdbaseLinkFormat,
+    MdbaseLinkResolution, MdbaseRecordDocument, MdbaseRecordSet,
+};
 use cel_interpreter::extractors::This;
 use cel_interpreter::{Context, ExecutionError, Program, Value};
 use cel_parser::ast::{EntryExpr, Expr, IdedEntryExpr, IdedExpr};
@@ -8,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub const MDBASE_CEL_RESERVED_BINDINGS: [&str; 16] = [
     "record",
@@ -232,7 +235,13 @@ impl MdbaseCelEngine {
 
         let mut context = Context::default();
         add_json_bindings(&mut context, &evaluation.bindings)?;
-        add_mdbase_functions(&mut context, &evaluation.clock);
+        add_mdbase_functions(
+            &mut context,
+            &evaluation.clock,
+            evaluation.path.as_deref(),
+            evaluation.link_index.as_deref(),
+            self.link_budget(),
+        );
         match program.program.execute(&context) {
             Ok(value) => {
                 let value = value.json().map_err(|error| {
@@ -488,6 +497,42 @@ pub struct MdbaseCelContext {
     bindings: BTreeMap<String, serde_json::Value>,
     clock: MdbaseCelClock,
     path: Option<String>,
+    link_index: Option<Arc<MdbaseCelLinkIndex>>,
+}
+
+#[derive(Debug, Clone)]
+struct MdbaseCelLinkTarget {
+    path: String,
+    basename: String,
+    id: Option<String>,
+    file: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MdbaseCelLinkIndex {
+    targets: Vec<MdbaseCelLinkTarget>,
+}
+
+impl MdbaseCelLinkIndex {
+    #[must_use]
+    pub fn new(records: &MdbaseRecordSet, id_field: &str) -> Self {
+        Self {
+            targets: records
+                .records
+                .iter()
+                .map(|record| MdbaseCelLinkTarget {
+                    path: record.path.clone(),
+                    basename: record.file.basename.clone(),
+                    id: record
+                        .effective_frontmatter
+                        .get(id_field)
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToString::to_string),
+                    file: file_value(record),
+                })
+                .collect(),
+        }
+    }
 }
 
 impl MdbaseCelContext {
@@ -522,6 +567,7 @@ impl MdbaseCelContext {
             bindings,
             clock,
             path: Some(record.path.clone()),
+            link_index: None,
         })
     }
 
@@ -536,6 +582,7 @@ impl MdbaseCelContext {
             bindings: record_bindings(record, &known_fields, true),
             clock,
             path: Some(record.path.clone()),
+            link_index: None,
         }
     }
 
@@ -572,6 +619,7 @@ impl MdbaseCelContext {
             bindings,
             clock,
             path: Some(path.to_string()),
+            link_index: None,
         }
     }
 
@@ -595,7 +643,14 @@ impl MdbaseCelContext {
             bindings,
             clock,
             path: None,
+            link_index: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_link_index(mut self, link_index: Arc<MdbaseCelLinkIndex>) -> Self {
+        self.link_index = Some(link_index);
+        self
     }
 
     fn validate_program(&self, program: &MdbaseCelProgram) -> Result<(), MdbaseCelError> {
@@ -733,7 +788,16 @@ fn presence_map(value: &serde_json::Value, known_fields: &BTreeSet<String>) -> s
 }
 
 fn file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
-    let tags = collect_tags(&record.frontmatter, &record.body);
+    let links = record
+        .links
+        .iter()
+        .filter(|link| !link.embed)
+        .collect::<Vec<_>>();
+    let embeds = record
+        .links
+        .iter()
+        .filter(|link| link.embed)
+        .collect::<Vec<_>>();
     serde_json::json!({
         "path": record.path,
         "name": record.file.name,
@@ -744,9 +808,9 @@ fn file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
         "mtime": record.file.mtime,
         "ctime": record.file.ctime,
         "body": record.body,
-        "tags": tags,
-        "links": [],
-        "embeds": [],
+        "tags": record.tags,
+        "links": links,
+        "embeds": embeds,
     })
 }
 
@@ -807,7 +871,13 @@ fn normalize_tag(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-fn add_mdbase_functions(context: &mut Context<'_>, clock: &MdbaseCelClock) {
+fn add_mdbase_functions(
+    context: &mut Context<'_>,
+    clock: &MdbaseCelClock,
+    source_path: Option<&str>,
+    link_index: Option<&MdbaseCelLinkIndex>,
+    link_budget: MdbaseCelLinkBudget,
+) {
     let now: DateTime<FixedOffset> = clock.now_utc.fixed_offset();
     let today = Arc::new(clock.today());
     context.add_function("now", move || now);
@@ -815,6 +885,20 @@ fn add_mdbase_functions(context: &mut Context<'_>, clock: &MdbaseCelClock) {
     context.add_function("duration", iso8601_duration);
     context.add_function("inFolder", file_in_folder);
     context.add_function("hasTag", file_has_tag);
+    context.add_function("hasLink", file_has_link);
+    context.add_function("asLink", file_as_link);
+
+    let source_path = source_path.unwrap_or_default().to_string();
+    let index = Arc::new(link_index.cloned().unwrap_or_default());
+    let link_index = Arc::clone(&index);
+    let link_source = source_path.clone();
+    context.add_function("link", move |value: Arc<String>| {
+        cel_link_from_string(&value, &link_source, &link_index)
+    });
+    let budget = Arc::new(Mutex::new(link_budget));
+    context.add_function("asFile", move |This(link): This<Value>| {
+        link_as_file(&link, &source_path, &index, &budget)
+    });
 }
 
 fn file_in_folder(This(file): This<Value>, folder: Arc<String>) -> Result<bool, ExecutionError> {
@@ -843,6 +927,184 @@ fn file_has_tag(This(file): This<Value>, tag: Arc<String>) -> Result<bool, Execu
         };
         value.as_str() == wanted || value.starts_with(&format!("{wanted}/"))
     }))
+}
+
+#[allow(clippy::needless_pass_by_value)] // CEL's dynamic argument extractor yields owned Values.
+fn file_has_link(This(file): This<Value>, wanted: Value) -> Result<bool, ExecutionError> {
+    let Value::Map(file) = file else {
+        return Err(ExecutionError::function_error(
+            "hasLink",
+            "target is not an mdbase file object",
+        ));
+    };
+    let wanted = link_comparison_values(&wanted);
+    let Some(Value::List(links)) = file.get(&"links".into()) else {
+        return Ok(false);
+    };
+    Ok(links.iter().any(|link| {
+        let candidates = link_comparison_values(link);
+        wanted.iter().any(|wanted| candidates.contains(wanted))
+    }))
+}
+
+fn file_as_link(This(file): This<Value>) -> Result<Value, ExecutionError> {
+    let path = file_member_string(&file, "path", "asLink")?;
+    cel_link_value(MdbaseLink {
+        raw: path.to_string(),
+        target: path.to_string(),
+        alias: None,
+        anchor: None,
+        format: MdbaseLinkFormat::Path,
+        is_relative: false,
+        source: super::MdbaseLinkSource::Body,
+        field: None,
+        target_type: None,
+        validate_exists: false,
+        embed: false,
+        resolved_path: Some(path.to_string()),
+        resolution: MdbaseLinkResolution::Resolved,
+    })
+}
+
+fn cel_link_from_string(
+    value: &str,
+    source_path: &str,
+    index: &MdbaseCelLinkIndex,
+) -> Result<Value, ExecutionError> {
+    let mut link = parse_mdbase_link_value(value)
+        .ok_or_else(|| ExecutionError::function_error("link", "link value must not be empty"))?;
+    if let Some(path) = resolve_cel_link_path(&link, source_path, index) {
+        link.resolved_path = Some(path);
+        link.resolution = MdbaseLinkResolution::Resolved;
+    }
+    cel_link_value(link)
+}
+
+fn cel_link_value(link: MdbaseLink) -> Result<Value, ExecutionError> {
+    cel_interpreter::to_value(link)
+        .map_err(|error| ExecutionError::function_error("link", error.to_string()))
+}
+
+fn link_as_file(
+    link: &Value,
+    source_path: &str,
+    index: &MdbaseCelLinkIndex,
+    budget: &Mutex<MdbaseCelLinkBudget>,
+) -> Result<Value, ExecutionError> {
+    budget
+        .lock()
+        .map_err(|_| ExecutionError::function_error("asFile", "link budget lock failed"))?
+        .consume()
+        .map_err(|error| ExecutionError::function_error("asFile", error.message))?;
+    let Some(path) = link_member_string(link, "resolved_path").or_else(|| {
+        let target = link_member_string(link, "target")?;
+        let parsed = parse_mdbase_link_value(&target)?;
+        resolve_cel_link_path(&parsed, source_path, index)
+    }) else {
+        return Ok(Value::Null);
+    };
+    index
+        .targets
+        .iter()
+        .find(|target| target.path == path)
+        .map_or(Ok(Value::Null), |target| {
+            cel_interpreter::to_value(&target.file)
+                .map_err(|error| ExecutionError::function_error("asFile", error.to_string()))
+        })
+}
+
+fn resolve_cel_link_path(
+    link: &MdbaseLink,
+    source_path: &str,
+    index: &MdbaseCelLinkIndex,
+) -> Option<String> {
+    let simple_wikilink = link.format == MdbaseLinkFormat::Wikilink
+        && !link.target.contains('/')
+        && !link.target.starts_with('.');
+    if simple_wikilink {
+        let ids = index
+            .targets
+            .iter()
+            .filter(|target| target.id.as_deref() == Some(link.target.as_str()))
+            .collect::<Vec<_>>();
+        if ids.len() == 1 {
+            return Some(ids[0].path.clone());
+        }
+        if ids.len() > 1 {
+            return None;
+        }
+        let source_folder = source_path
+            .rsplit_once('/')
+            .map_or("", |(folder, _)| folder);
+        let wanted = link.target.strip_suffix(".md").unwrap_or(&link.target);
+        let mut filenames = index
+            .targets
+            .iter()
+            .filter(|target| target.basename == wanted)
+            .collect::<Vec<_>>();
+        filenames.sort_by(|left, right| {
+            let left_folder = left.path.rsplit_once('/').map_or("", |(folder, _)| folder);
+            let right_folder = right.path.rsplit_once('/').map_or("", |(folder, _)| folder);
+            (left_folder != source_folder)
+                .cmp(&(right_folder != source_folder))
+                .then_with(|| left.path.len().cmp(&right.path.len()))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        return filenames.first().map(|target| target.path.clone());
+    }
+    let candidate = normalize_cel_link_path(source_path, &link.target)?;
+    let candidates = if std::path::Path::new(&candidate)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    {
+        vec![candidate]
+    } else {
+        vec![candidate.clone(), format!("{candidate}.md")]
+    };
+    candidates
+        .into_iter()
+        .find(|candidate| index.targets.iter().any(|target| target.path == *candidate))
+}
+
+fn normalize_cel_link_path(source_path: &str, target: &str) -> Option<String> {
+    let mut components = Vec::new();
+    if !target.starts_with('/') {
+        if let Some((folder, _)) = source_path.rsplit_once('/') {
+            components.extend(folder.split('/').filter(|value| !value.is_empty()));
+        }
+    }
+    for component in target.trim_start_matches('/').split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            value if value.contains(['\\', '\0']) => return None,
+            value => components.push(value),
+        }
+    }
+    (!components.is_empty()).then(|| components.join("/"))
+}
+
+fn link_comparison_values(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(value) => vec![value.to_string()],
+        Value::Map(_) => ["resolved_path", "target", "raw"]
+            .into_iter()
+            .filter_map(|member| link_member_string(value, member))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn link_member_string(value: &Value, member: &str) -> Option<String> {
+    let Value::Map(value) = value else {
+        return None;
+    };
+    match value.get(&member.into()) {
+        Some(Value::String(value)) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn file_member_string(
@@ -1384,6 +1646,92 @@ mod tests {
                 .value,
             true
         );
+    }
+
+    #[test]
+    fn query_context_exposes_links_embeds_tags_and_bounded_traversal() {
+        let mut child = record();
+        child.links = vec![
+            MdbaseLink {
+                raw: "[[task-1|Parent]]".to_string(),
+                target: "task-1".to_string(),
+                alias: Some("Parent".to_string()),
+                anchor: None,
+                format: MdbaseLinkFormat::Wikilink,
+                is_relative: true,
+                source: super::super::MdbaseLinkSource::Body,
+                field: None,
+                target_type: None,
+                validate_exists: false,
+                embed: false,
+                resolved_path: Some("tasks/parent.md".to_string()),
+                resolution: MdbaseLinkResolution::Resolved,
+            },
+            MdbaseLink {
+                raw: "![[diagram.png]]".to_string(),
+                target: "diagram.png".to_string(),
+                alias: None,
+                anchor: None,
+                format: MdbaseLinkFormat::Wikilink,
+                is_relative: true,
+                source: super::super::MdbaseLinkSource::Body,
+                field: None,
+                target_type: None,
+                validate_exists: false,
+                embed: true,
+                resolved_path: None,
+                resolution: MdbaseLinkResolution::NotFound,
+            },
+        ];
+        let mut parent = record();
+        parent.path = "tasks/parent.md".to_string();
+        parent.file.path = parent.path.clone();
+        parent.file.name = "parent.md".to_string();
+        parent.file.basename = "parent".to_string();
+        parent.frontmatter["id"] = json!("task-1");
+        parent.effective_frontmatter["id"] = json!("task-1");
+        let records = MdbaseRecordSet {
+            records: vec![child.clone(), parent],
+        };
+        let index = Arc::new(MdbaseCelLinkIndex::new(&records, "id"));
+        let context = MdbaseCelContext::query(
+            MdbaseCelContextKind::QueryFilter,
+            &child,
+            std::iter::empty(),
+            json!({}),
+            None,
+            fixed_clock(),
+        )
+        .expect("query context")
+        .with_link_index(index);
+        let engine = MdbaseCelEngine::default();
+        let program = engine
+            .compile(
+                "file.links.size() == 1 && file.embeds.size() == 1 && \
+                 file.hasLink('tasks/parent.md') && file.hasLink(link('[[task-1]]')) && \
+                 file.asLink().target == 'tasks/open.md' && \
+                 file.links[0].asFile().path == 'tasks/parent.md' && \
+                 link('[[task-1]]').asFile().basename == 'parent'",
+            )
+            .expect("link expression compiles");
+
+        let result = engine
+            .evaluate_context(&program, &context)
+            .expect("link expression evaluates");
+        assert_eq!(result.value, true);
+        assert!(result.diagnostics.is_empty());
+
+        let limited_engine = engine_with(|limits| limits.max_link_traversal = 1);
+        let limited = limited_engine
+            .compile("file.links[0].asFile().asLink().asFile()")
+            .expect("bounded traversal compiles");
+        let result = limited_engine
+            .evaluate_context(&limited, &context)
+            .expect("query traversal failures become diagnostics");
+        assert!(result.value.is_null());
+        assert!(result.diagnostics[0]
+            .message
+            .contains("link traversal budget is exhausted"));
     }
 
     #[test]

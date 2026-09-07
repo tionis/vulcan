@@ -434,6 +434,7 @@ fn cel_query_rich_plan_gate() -> Result<(), String> {
         &records,
         &types,
         &plan,
+        &collection.config.settings.id_field,
         None,
         conformance_clock()
             .map_err(|error| error.to_string())?
@@ -967,6 +968,7 @@ fn execute_query(
         &records,
         types,
         &plan,
+        &collection.config.settings.id_field,
         collection.config.settings.timezone.as_deref(),
         conformance_clock()?.now_utc(),
     )

@@ -272,6 +272,7 @@ pub fn build_mdbase_query_report(
         &records,
         &loaded.types,
         &plan,
+        &loaded.collection.config.settings.id_field,
         loaded.collection.config.settings.timezone.as_deref(),
         DateTime::<Utc>::from(SystemTime::now()),
     )

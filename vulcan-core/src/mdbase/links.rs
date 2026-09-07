@@ -131,6 +131,25 @@ fn link_strings(value: &serde_json::Value) -> Vec<&str> {
     }
 }
 
+pub(crate) fn parse_mdbase_link_value(value: &str) -> Option<MdbaseLink> {
+    let parsed = parse_link_value(value)?;
+    Some(MdbaseLink {
+        is_relative: !parsed.target.starts_with('/'),
+        raw: parsed.raw,
+        target: parsed.target,
+        alias: parsed.alias,
+        anchor: parsed.anchor,
+        format: parsed.format,
+        source: MdbaseLinkSource::Body,
+        field: None,
+        target_type: None,
+        validate_exists: false,
+        embed: parsed.embed,
+        resolved_path: None,
+        resolution: MdbaseLinkResolution::NotFound,
+    })
+}
+
 fn parse_link_value(value: &str) -> Option<ParsedLink> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

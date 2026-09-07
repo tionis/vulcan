@@ -1,7 +1,8 @@
 use super::{
     bundled_mdbase_schema, validate_mdbase_schema_value, MdbaseCelClock, MdbaseCelContext,
-    MdbaseCelContextKind, MdbaseCelEngine, MdbaseDiagnostic, MdbaseDiagnosticLevel,
-    MdbaseRecordDocument, MdbaseRecordSet, MdbaseTypeRegistry, MDBASE_CANONICAL_SCHEMA_BASE,
+    MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelLinkIndex, MdbaseDiagnostic,
+    MdbaseDiagnosticLevel, MdbaseRecordDocument, MdbaseRecordSet, MdbaseTypeRegistry,
+    MDBASE_CANONICAL_SCHEMA_BASE,
 };
 use crate::query::{
     QueryDirection, QueryExpressionLanguage, QueryExpressionSpec, QueryFrontmatterMode,
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MdbaseQueryError {
@@ -206,6 +208,7 @@ pub fn execute_mdbase_query(
     records: &MdbaseRecordSet,
     types: &MdbaseTypeRegistry,
     plan: &StructuredQueryPlan,
+    id_field: &str,
     collection_timezone: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<MdbaseQueryResult, MdbaseQueryError> {
@@ -231,6 +234,7 @@ pub fn execute_mdbase_query(
         })
         .transpose()?;
     let engine = MdbaseCelEngine::default();
+    let link_index = Arc::new(MdbaseCelLinkIndex::new(records, id_field));
     let mut diagnostics = Vec::new();
     let mut candidates = Vec::new();
     for record in &records.records {
@@ -241,6 +245,7 @@ pub fn execute_mdbase_query(
             types,
             invocation_context,
             &clock,
+            &link_index,
             &mut diagnostics,
         )? {
             candidates.push(candidate);
@@ -285,6 +290,7 @@ fn evaluate_query_candidate<'a>(
     types: &MdbaseTypeRegistry,
     invocation_context: Option<&MdbaseRecordDocument>,
     clock: &MdbaseCelClock,
+    link_index: &Arc<MdbaseCelLinkIndex>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
 ) -> Result<Option<QueryCandidate<'a>>, MdbaseQueryError> {
     if !plan.types.is_empty()
@@ -312,6 +318,7 @@ fn evaluate_query_candidate<'a>(
             clock.clone(),
         )
         .map_err(cel_query_error)?;
+        let context = context.with_link_index(Arc::clone(link_index));
         let result = engine
             .evaluate_context(
                 &engine
@@ -333,6 +340,7 @@ fn evaluate_query_candidate<'a>(
             clock.clone(),
         )
         .map_err(cel_query_error)?;
+        let context = context.with_link_index(Arc::clone(link_index));
         let result = engine
             .evaluate_context(
                 &engine.compile(&filter.source).map_err(cel_query_error)?,
@@ -360,6 +368,7 @@ fn evaluate_query_candidate<'a>(
         &projection,
         invocation_context,
         clock,
+        link_index,
         diagnostics,
     )?;
     Ok(Some(QueryCandidate {
@@ -389,6 +398,7 @@ fn evaluate_selection(
     projection: &serde_json::Map<String, serde_json::Value>,
     invocation_context: Option<&MdbaseRecordDocument>,
     clock: &MdbaseCelClock,
+    link_index: &Arc<MdbaseCelLinkIndex>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
 ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, MdbaseQueryError> {
     let Some(selection) = &plan.selection else {
@@ -415,6 +425,7 @@ fn evaluate_selection(
                     clock.clone(),
                 )
                 .map_err(cel_query_error)?;
+                let context = context.with_link_index(Arc::clone(link_index));
                 let result = engine
                     .evaluate_context(
                         &engine
@@ -1064,9 +1075,15 @@ mod tests {
             .expect("timestamp")
             .with_timezone(&Utc);
 
-        let result =
-            execute_mdbase_query(&records, &MdbaseTypeRegistry::default(), &plan, None, now)
-                .expect("query executes");
+        let result = execute_mdbase_query(
+            &records,
+            &MdbaseTypeRegistry::default(),
+            &plan,
+            "id",
+            None,
+            now,
+        )
+        .expect("query executes");
 
         assert_eq!(result.meta.total_count, 2);
         assert!(result.meta.has_more);
