@@ -25,6 +25,7 @@ use vulcan_core::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ArtifactHierarchyAuthority {
+    Auto,
     Markdown,
     Outline,
 }
@@ -168,26 +169,47 @@ fn import_artifact_unlocked(
         navigation: request.navigation,
     };
     let virtual_source = format!("{destination}/text.md");
-    let mut plan = match request.hierarchy {
-        ArtifactHierarchyAuthority::Markdown => {
-            plan_document_decomposition(&virtual_source, markdown, &config, &options)
+    let markdown_plan = || {
+        plan_document_decomposition(&virtual_source, markdown, &config, &options)
+            .map_err(AppError::operation)
+    };
+    let outline_plan = || {
+        let outline = artifact
+            .outline
+            .as_ref()
+            .ok_or_else(|| AppError::operation("--hierarchy outline requires outline.json"))?;
+        let headings = aligned_outline_headings(outline, markdown.len())?;
+        plan_document_decomposition_with_aligned_outline(
+            &virtual_source,
+            markdown,
+            &config,
+            &options,
+            &headings,
+        )
+        .map_err(AppError::operation)
+    };
+    let mut hierarchy_diagnostics = Vec::new();
+    let (mut plan, hierarchy) = match request.hierarchy {
+        ArtifactHierarchyAuthority::Auto if artifact.outline.is_some() => match outline_plan() {
+            Ok(plan) => (plan, ArtifactHierarchyAuthority::Outline),
+            Err(error) => {
+                hierarchy_diagnostics.push(ArtifactImportDiagnostic {
+                    code: "outline_fallback".to_string(),
+                    message: format!(
+                        "the aligned outline could not represent the requested import projection; used Markdown headings instead: {error}"
+                    ),
+                    path: None,
+                });
+                (markdown_plan()?, ArtifactHierarchyAuthority::Markdown)
+            }
+        },
+        ArtifactHierarchyAuthority::Auto | ArtifactHierarchyAuthority::Markdown => {
+            (markdown_plan()?, ArtifactHierarchyAuthority::Markdown)
         }
         ArtifactHierarchyAuthority::Outline => {
-            let outline = artifact
-                .outline
-                .as_ref()
-                .ok_or_else(|| AppError::operation("--hierarchy outline requires outline.json"))?;
-            let headings = aligned_outline_headings(outline, markdown.len())?;
-            plan_document_decomposition_with_aligned_outline(
-                &virtual_source,
-                markdown,
-                &config,
-                &options,
-                &headings,
-            )
+            (outline_plan()?, ArtifactHierarchyAuthority::Outline)
         }
-    }
-    .map_err(AppError::operation)?;
+    };
     ensure_plan_is_contained(&plan, &destination)?;
 
     let root_title = artifact
@@ -267,6 +289,7 @@ fn import_artifact_unlocked(
         })
         .chain(plan.diagnostics.iter().map(import_decomposition_diagnostic))
         .chain(rewrite_diagnostics)
+        .chain(hierarchy_diagnostics)
         .collect::<Vec<_>>();
     let root_bytes = plan
         .notes
@@ -328,7 +351,7 @@ fn import_artifact_unlocked(
         dry_run: request.dry_run,
         artifact_identity: artifact.identity,
         destination_root: destination,
-        hierarchy: request.hierarchy,
+        hierarchy,
         root_path: plan.root_path,
         notes,
         assets,
@@ -1325,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn outline_authority_is_explicit_and_changes_generated_titles() {
+    fn auto_authority_prefers_an_available_aligned_outline() {
         let artifact_dir = tempdir().expect("artifact temp");
         write_artifact(artifact_dir.path(), true);
         let vault = tempdir().expect("vault temp");
@@ -1335,15 +1358,65 @@ mod tests {
             min_section_bytes: 0,
             artifact: artifact_dir.path().to_path_buf(),
             destination: "Outline".to_string(),
-            hierarchy: ArtifactHierarchyAuthority::Outline,
+            hierarchy: ArtifactHierarchyAuthority::Auto,
             from_level: 2,
             through_level: 3,
             navigation: false,
             dry_run: true,
         };
         let report = import_artifact(&paths, &request).expect("outline preview");
+        assert_eq!(report.hierarchy, ArtifactHierarchyAuthority::Outline);
         assert!(report.notes.iter().any(|note| note.title == "Encounter"));
         assert!(report.notes.iter().any(|note| note.title == "Harm"));
+    }
+
+    #[test]
+    fn auto_authority_falls_back_to_markdown_without_an_outline() {
+        let artifact_dir = tempdir().expect("artifact temp");
+        write_artifact(artifact_dir.path(), false);
+        let vault = tempdir().expect("vault temp");
+        let paths = VaultPaths::new(vault.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        let request = ArtifactImportRequest {
+            min_section_bytes: 0,
+            artifact: artifact_dir.path().to_path_buf(),
+            destination: "Markdown".to_string(),
+            hierarchy: ArtifactHierarchyAuthority::Auto,
+            from_level: 2,
+            through_level: 3,
+            navigation: false,
+            dry_run: true,
+        };
+        let report = import_artifact(&paths, &request).expect("Markdown preview");
+        assert_eq!(report.hierarchy, ArtifactHierarchyAuthority::Markdown);
+        assert!(report.notes.iter().any(|note| note.title == "Combat"));
+        assert!(report.notes.iter().any(|note| note.title == "Damage"));
+    }
+
+    #[test]
+    fn auto_authority_falls_back_when_outline_cannot_represent_selected_levels() {
+        let artifact_dir = tempdir().expect("artifact temp");
+        write_artifact(artifact_dir.path(), true);
+        let vault = tempdir().expect("vault temp");
+        let paths = VaultPaths::new(vault.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        let request = ArtifactImportRequest {
+            min_section_bytes: 0,
+            artifact: artifact_dir.path().to_path_buf(),
+            destination: "Markdown".to_string(),
+            hierarchy: ArtifactHierarchyAuthority::Auto,
+            from_level: 1,
+            through_level: 1,
+            navigation: false,
+            dry_run: true,
+        };
+        let report = import_artifact(&paths, &request).expect("Markdown fallback preview");
+        assert_eq!(report.hierarchy, ArtifactHierarchyAuthority::Markdown);
+        assert!(report.notes.iter().any(|note| note.title == "Rules"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "outline_fallback"));
     }
 
     #[test]

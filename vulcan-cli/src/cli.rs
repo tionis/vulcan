@@ -5405,6 +5405,7 @@ pub enum RefactorCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum ArtifactHierarchyArg {
     #[default]
+    Auto,
     Markdown,
     Outline,
 }
@@ -5439,8 +5440,8 @@ pub enum ArtifactCommand {
         #[arg(
             long,
             value_enum,
-            default_value_t = ArtifactHierarchyArg::Markdown,
-            help = "Hierarchy authority: primary Markdown headings or aligned outline.json"
+            default_value_t = ArtifactHierarchyArg::Auto,
+            help = "Hierarchy authority: prefer an aligned outline when available, or force primary Markdown/outline.json"
         )]
         hierarchy: ArtifactHierarchyArg,
         #[arg(
@@ -5453,7 +5454,7 @@ pub enum ArtifactCommand {
         #[arg(
             long,
             value_parser = clap::value_parser!(u8).range(1..=6),
-            help = "Last hierarchy level to materialize (defaults to --from-level)"
+            help = "Last hierarchy level to materialize (defaults to one level deeper than --from-level, capped at 6)"
         )]
         through_level: Option<u8>,
         #[arg(long, help = "Do not append child navigation lists")]

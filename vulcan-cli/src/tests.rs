@@ -5782,6 +5782,36 @@ fn parses_split_note_command() {
 }
 
 #[test]
+fn parses_artifact_import_with_adaptive_defaults() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "artifact",
+        "import",
+        "book.mdaf",
+        "--destination",
+        "Rules/Book",
+    ])
+    .expect("artifact import should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Artifact {
+            command: ArtifactCommand::Import {
+                min_section_bytes: 2048,
+                artifact: PathBuf::from("book.mdaf"),
+                destination: "Rules/Book".to_string(),
+                hierarchy: ArtifactHierarchyArg::Auto,
+                from_level: 2,
+                through_level: None,
+                no_navigation: false,
+                dry_run: false,
+                no_commit: false,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_config_import_folder_notes_command() {
     let cli = Cli::try_parse_from(["vulcan", "config", "import", "folder-notes"])
         .expect("folder-notes import should parse");

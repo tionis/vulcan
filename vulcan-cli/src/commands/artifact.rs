@@ -77,7 +77,7 @@ pub(crate) fn handle_artifact_command(
                     destination: destination.clone(),
                     hierarchy: core_hierarchy(*hierarchy),
                     from_level: *from_level,
-                    through_level: through_level.unwrap_or(*from_level),
+                    through_level: default_through_level(*from_level, *through_level),
                     navigation: !*no_navigation,
                     dry_run: *dry_run,
                 },
@@ -101,9 +101,14 @@ pub(crate) fn handle_artifact_command(
 
 fn core_hierarchy(value: ArtifactHierarchyArg) -> ArtifactHierarchyAuthority {
     match value {
+        ArtifactHierarchyArg::Auto => ArtifactHierarchyAuthority::Auto,
         ArtifactHierarchyArg::Markdown => ArtifactHierarchyAuthority::Markdown,
         ArtifactHierarchyArg::Outline => ArtifactHierarchyAuthority::Outline,
     }
+}
+
+fn default_through_level(from_level: u8, through_level: Option<u8>) -> u8 {
+    through_level.unwrap_or_else(|| from_level.saturating_add(1).min(6))
 }
 
 fn inspection_report(artifact: &MdafArtifact) -> ArtifactInspectionReport<'_> {
@@ -237,5 +242,18 @@ fn print_import(output: OutputFormat, report: &ArtifactImportReport) -> Result<(
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_through_level;
+
+    #[test]
+    fn default_depth_includes_one_descendant_level() {
+        assert_eq!(default_through_level(1, None), 2);
+        assert_eq!(default_through_level(2, None), 3);
+        assert_eq!(default_through_level(6, None), 6);
+        assert_eq!(default_through_level(2, Some(5)), 5);
     }
 }

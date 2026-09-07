@@ -10201,7 +10201,11 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
         .success();
     let preview_json = parse_stdout_json(&preview);
     assert_eq!(preview_json["dry_run"], true);
+    assert_eq!(preview_json["hierarchy"], "outline");
     assert_eq!(preview_json["notes"][0]["title"], "Synthetic Rules");
+    assert!(preview_json["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note["title"] == "Encounter")));
     assert_eq!(preview_json["review"]["source_coverage_complete"], true);
     assert_eq!(preview_json["review"]["semantic_review_required"], true);
     assert_eq!(preview_json["review"]["large_note_threshold_bytes"], 50_000);
@@ -10219,6 +10223,30 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
     assert!(preview_json["assets"][0].get("sha256").is_none());
     assert!(!vault_root.join("Imported").exists());
 
+    let forced_markdown = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "artifact",
+            "import",
+            fixture.to_str().expect("fixture path"),
+            "--destination",
+            "ForcedMarkdown",
+            "--hierarchy",
+            "markdown",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let forced_markdown_json = parse_stdout_json(&forced_markdown);
+    assert_eq!(forced_markdown_json["hierarchy"], "markdown");
+    assert!(forced_markdown_json["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note["title"] == "Combat")));
+
     for (minimum, expected) in [("2048", 2), ("0", 3)] {
         let result = Command::cargo_bin("vulcan")
             .expect("binary")
@@ -10232,6 +10260,8 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
                 fixture.to_str().unwrap(),
                 "--destination",
                 "Granularity",
+                "--hierarchy",
+                "markdown",
                 "--from-level",
                 "1",
                 "--through-level",
@@ -14950,6 +14980,9 @@ fn skill_list_and_get_surface_bundled_skills() {
         .expect("artifact import skill should be installed");
     assert!(artifact_import.contains("artifact import <artifact> --destination <new-folder>"));
     assert!(artifact_import.contains("--hierarchy outline"));
+    assert!(artifact_import.contains("default `auto` authority"));
+    assert!(artifact_import.contains("`outline_fallback` diagnostic"));
+    assert!(artifact_import.contains("Defaults materialize levels 2–3"));
     assert!(artifact_import.contains("--min-section-bytes 0"));
     assert!(artifact_import.contains("vulcan.source"));
     assert!(artifact_import.contains("source_coverage_complete"));

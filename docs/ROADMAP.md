@@ -7151,6 +7151,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ## Phase 9.36: Evidence-preserving Markdown artifacts and wiki import
 
+- [x] Default MDAF wiki imports to validated outline evidence with Markdown fallback, report the selected authority, and materialize one useful descendant level unless explicitly overridden.
+
 - [x] Expose per-note source sizes and review summaries with exact byte-coverage
   checks, path-specific large-note warnings and diagnostic counts; document
   fresh-preview comparisons without conflating structural and semantic quality.

@@ -15283,10 +15283,11 @@
                 ]
               },
               {
-                "help": "Hierarchy authority: primary Markdown headings or aligned outline.json",
+                "help": "Hierarchy authority: prefer an aligned outline when available, or force primary Markdown/outline.json",
                 "id": "hierarchy",
                 "long": "hierarchy",
                 "possible_values": [
+                  "auto",
                   "markdown",
                   "outline"
                 ],
@@ -15308,7 +15309,7 @@
                 ]
               },
               {
-                "help": "Last hierarchy level to materialize (defaults to --from-level)",
+                "help": "Last hierarchy level to materialize (defaults to one level deeper than --from-level, capped at 6)",
                 "id": "through_level",
                 "long": "through-level",
                 "possible_values": [],
