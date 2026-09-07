@@ -4,6 +4,7 @@ all-features = true
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "jsonwebtoken uses rsa only for external JWT public-key verification; Vulcan performs no RSA private-key signing or decryption, and local tokens use HS256" },
+    { id = "RUSTSEC-2024-0436", reason = "cel-interpreter 0.10.0 requires paste 1.0.15 for compile-time identifier generation; this is an unmaintained advisory with no patched release, not a reported runtime vulnerability. Remove this exception when the CEL dependency no longer requires paste" },
 ]
 
 [licenses]

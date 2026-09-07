@@ -7312,6 +7312,8 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 #### MDB.5 CEL and canonical mdbase querying
 
 - [x] Select or implement an MSRV-compatible CEL engine behind a Vulcan-owned adapter; bound source size, AST depth, evaluation work, memory, list iteration, and link traversal.
+- [x] Review the CEL engine's transitive `paste` maintenance advisory and scope the supply-chain exception to `RUSTSEC-2024-0436` for compile-time identifier generation.
+- [ ] Remove the `RUSTSEC-2024-0436` exception when the CEL dependency can drop the unmaintained `paste` crate.
 - [x] Implement mdbase raw/effective/presence namespaces, reserved bindings, fixed per-operation clock, IANA timezone context, date/duration values, null propagation, and context-specific diagnostics without changing Bases/Dataview expression behavior.
 - [x] Add `match.expr` only after the base CEL profile passes, with raw candidate bindings and compile-time type-file preflight.
 - [x] Extend the internal query representation as needed for named projections, invocation context (`this`), CEL filters/selections, multi-key ordering, grouping, summaries, frontmatter modes, and canonical pagination metadata; keep mdbase as another frontend rather than the product-wide canonical syntax.
