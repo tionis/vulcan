@@ -6390,13 +6390,13 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - A package requests capabilities but grants none. Effective authority is the restrictive intersection of the caller/session grant, installation grant, instance grant, manifest request, runtime sandbox ceiling, and canonical policy ceilings.
 - The browser UI, typed CLI commands, QuickJS functions, and server WebAssembly components are peer application surfaces over one versioned Vulcan App API. Server WASM may be invoked directly from CLI/RPC, from QuickJS, or as a job; it is not merely a JavaScript optimization format. Browser WASM remains inside the iframe sandbox and initially reaches Vulcan only through the JavaScript bridge.
 - App-provided CLI commands are namespaced, manifest-declared entrypoints whose arguments and results are parsed and rendered by Vulcan. They are not native executables, arbitrary `argv` passthrough, raw shell commands, automatic top-level command injection, or implicit MCP tools.
-- Only `.vulcan/cache.db` is necessarily rebuildable derived state. Apps may own canonical Markdown, Canvas, Bases, media, SQLite, or other explicit artifacts. Every store declares whether it is canonical document data, canonical artifact data, device-local state, secret state, derived cache, or temporary state.
+- Only `.vulcan/cache.db` is necessarily rebuildable derived state. Apps may own canonical Markdown, Canvas, Bases, media, SQLite, or other explicit artifacts. Apps declare logical stores whose engine, authority, scope, replication, visibility, retention, schema, and limits are independently explicit; choosing SQLite never implies either cache semantics or synchronization.
 - V1 packages are self-contained and have no executable package dependencies. Bundle JavaScript/UI dependencies and call other installed behavior only through stable typed Vulcan services or tool APIs.
 - Discovery and synchronization never execute or activate code. Installation trust is bound to the exact `AppContentId`; changed package content requires validation and explicit update handling, and expanded capability requests require renewed approval.
 
 ### 19.1 Domain model, ownership, and version contracts
 
-- [ ] Add transport-neutral `AppId`, semantic `AppVersion`, `AppContentId`, `PackageBlobId`, `AppPackageManifest`, `AppInstallation`, `AppInstance`, `AppDataBinding`, and typed app error/report models
+- [ ] Add transport-neutral `AppId`, semantic `AppVersion`, `AppContentId`, `PackageBlobId`, `AppPackageManifest`, `AppInstallation`, `AppInstance`, `AppStoreDeclaration`, `AppStoreBinding`, `AppDataBinding`, and typed app error/report models
 - [ ] Validate reverse-DNS-style stable app IDs independently from human names; distinguish publisher release coordinates from cryptographic content identity
 - [ ] Define `AppContentId` as BLAKE3 derive-key mode with the exact UTF-8 context `dev.vulcan.app-content.v1` over the original validated canonical manifest bytes
 - [ ] Define `PackageBlobId` as BLAKE3 derive-key mode with context `dev.vulcan.app-package-blob.v1` over the exact ZIP bytes
@@ -6415,6 +6415,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Require manifest fields for format version, app ID/version/name, App API compatibility, human metadata, runtime entrypoints, capability requests, resource ceilings, payload inventory, and supported instance/data schema ranges
 - [ ] Require every payload file to appear exactly once in the manifest with canonical path, actual uncompressed byte size, BLAKE3 digest, and optional validated media type/delivery metadata; `manifest.json` does not list itself
 - [ ] Model capabilities as structured requests with stable request IDs, capability names, required/optional status, maximum resource selectors, network-domain ceilings, and whether an instance may bind a narrower concrete scope
+- [ ] Give every logical store a stable package-local ID and closed declaration for engine, authority, scope, replication, visibility, retention, quota/resource ceilings, schema version/range, migration assets, backup/export behavior, and required store operations; reject internally inconsistent combinations
 - [ ] Model full-page UI routes, named embeddable views, typed CLI commands, typed host functions, browser-WASM assets, server-WASM exports, lifecycle/background entrypoints, schemas, migrations, and static-publication support explicitly rather than inferring semantics from directories
 - [ ] Reserve `META-INF/signatures/` for detached signature records that are neither executable payloads nor part of `AppContentId`; prohibit every other unlisted entry
 - [ ] Define Ed25519 as the v1 detached signature algorithm, a canonical signature-record schema with publisher/key identity, and the exact signed statement `"vulcan-app-signature/v1\0" || raw 32-byte AppContentId`; a canonical manifest signature policy makes removal of a required record invalid without creating a digest cycle
@@ -6466,8 +6467,12 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Allow multiple named instances of one app per vault and define stable instance IDs independent of display names; embeds/routes refer to an instance plus view rather than an ambiguous package name
 - [ ] Store non-secret shareable instance definitions as canonical validated vault objects in a reserved app namespace; store activation, trust, grants, local preferences, and runtime health device-locally
 - [ ] Store credentials through Phase 17's secret facilities and expose only opaque secret handles scoped to an instance and capability; never place secret values in manifests, instance files, URLs, browser storage, logs, or app-visible error details
-- [ ] Define explicit app data classes: canonical document, canonical artifact, device-local, secret, derived cache, and temporary; require every declared store/binding to select one
+- [ ] Represent app storage through orthogonal engine, authority, scope, replication, visibility, retention, schema, and limit fields while retaining convenience profiles for temporary, derived-cache, durable device-local, vault-native collection, canonical artifact, and replicated structured dataset stores
+- [ ] Distinguish temporary data, rebuildable cache, and durable local state operationally: temporary allocations use OS temporary storage, cache clearing affects only declared derived stores, and uninstall preserves durable local state unless an explicit reviewed deletion requests otherwise
+- [ ] Let the host allocate vault-scoped private stores beneath a default `.vulcan/apps/<instance-id>/cache/` or `state/` layout where appropriate, while keeping the physical path out of the App API and allowing platform adapters to relocate it; gitignore and exclude every private allocation from vault scanning, publication, and Phase 12 file-tree synchronization
+- [ ] Provide inspect, quota/usage, integrity, export, reset, archive, and explicit delete workflows per store; reports distinguish whether loss is recoverable by rebuild, backup/import, or not at all
 - [ ] Let instances bind manifest capability requests and logical stores to narrower concrete path/tag/type selectors; validate both old and resulting selectors for configuration or data-moving mutations
+- [ ] Authorize operations against stable bound store IDs rather than database paths or engine names; storage access, replication, network, background execution, secrets, and access to other vault objects remain separately granted capabilities
 - [ ] Define package, instance-config, and data-schema versions separately; track migration state outside `cache.db` and make it reconstructible or durably journaled as appropriate
 - [ ] Require migration plans to name affected stores, backups/snapshots, resource ceilings, supported from/to versions, validation, rollback support, and whether downgrade is possible
 - [ ] Run data migrations only after explicit preview/approval, under the effective instance and caller authority, with interruption-safe journaling and post-migration validation
@@ -6508,6 +6513,8 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Require expected revisions/content hashes for direct mutations and return typed stale-state reports rather than last-writer-wins behavior
 - [ ] Route multi-file or consequential changes through a plan/preview/apply workflow with exact accepted inputs, permission checks against old and resulting state, application-level write locking, incremental rescan, and optional auto-commit
 - [ ] Expose app-owned state APIs according to declared data classification; never let an app relabel canonical data as cache to bypass history, sync, backup, or deletion review
+- [ ] Provide a small transactional typed key/value or document API as the default private-state surface, plus separately declared private-SQLite, mdbase collection, content-addressed blob, canonical artifact, live-session, and future replicated-store namespaces
+- [ ] Return opaque store/transaction/blob/session handles rather than host paths, raw file descriptors, WAL files, daemon database handles, or credentials; use the same bounded transport-neutral request/report types from browser, CLI, QuickJS, and server WASM surfaces
 - [ ] Let apps call visible skill commands through the typed registry with input/output validation, recursion limits, and preserved effective permission ceilings; do not add arbitrary CLI/shell escape hatches
 - [ ] Keep App API schemas and daemon/OpenAPI/browser/WASM projections generated or conformance-tested from the same domain contracts
 
@@ -6556,17 +6563,41 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Keep browser-WASM and server-WASM targets explicit and separate in the manifest; browser modules use browser ABI/tooling and never inherit server host imports
 - [ ] Add conformance components in Rust plus at least one other supported toolchain, including denied-import, resource-exhaustion, cancellation, malformed-component, schema-mismatch, and deterministic-output cases
 
-### 19.13 Canonical artifacts, SQLite data, and synchronization
+### 19.13 Application storage, canonical artifacts, and replicated datasets
 
+#### 19.13.1 Private local stores
+
+- [ ] Implement host-managed transactional key/value or typed-document stores for small instance state; keep the logical API independent of its SQLite-backed implementation and enforce schema, transaction, object, result, quota, and concurrency limits
+- [ ] Add private SQLite stores for substantial relational/query/cache workloads through opaque connection and transaction handles; never expose their paths to app code or browser clients
+- [ ] Own connection lifecycle, writer serialization, safe pragmas, integrity checks, atomic migration/backup, WAL/SHM cleanup, and interruption recovery in Vulcan; reject arbitrary `ATTACH`, extension loading, host-path VFS access, unsafe pragmas, unbounded statements/results, and app-supplied native SQLite modules
+- [ ] Make schema installation and migration use declared versioned assets plus preview, resource estimates, backup policy, interruption-safe journals, post-validation, and explicit downgrade support; package rollback never silently rolls store schemas backward
+- [ ] Add content-addressed local/canonical blob stores with domain-separated BLAKE3 identity, streaming byte/media limits, deduplication, reference-aware retention, provenance, and garbage collection that cannot remove live canonical or migration inputs
+- [ ] Add daemon-owned expiring live-session state for presence, raised hands, speaker queues, timers, cursors, and similar reconnectable collaboration data; define roles, bounded snapshots/events, expiry, restart behavior, and optional explicit checkpointing without misclassifying presence as canonical wiki content
+
+#### 19.13.2 Vault-native collections and canonical artifacts
+
+- [ ] Make typed Markdown and mdbase-compatible collections the preferred structured store when data should remain human-readable, linkable, queryable, interoperable, and synchronized with the vault; bind apps to typed collection contracts and use Vulcan read/query/mutation/lifecycle/event APIs rather than raw paths
+- [ ] Allow several apps to consume records implementing the same portable mdbase data contract without granting package ownership, implicit writes, or access beyond each instance's selectors; surface unsupported mdbase profiles and collection diagnostics explicitly
 - [ ] Allow apps to declare and bind canonical non-Markdown artifacts, including SQLite databases, without treating them as rebuildable merely because they use SQLite
-- [ ] Keep app data physically separate from immutable `.vapp` packages by default so package upgrades, signatures, rollback, distribution, sync, and backup do not become stateful code rewrites
-- [ ] Reserve self-modifying package-plus-data files for a future explicit portable-document mode with separate identity/migration semantics; v1 `.vapp` files remain immutable
-- [ ] For canonical SQLite stores, serialize writers through Vulcan, use safe connection settings, prevent extension loading, bound database/page/schema complexity, and ensure WAL/SHM sidecars cannot escape the captured mutation boundary
-- [ ] Materialize SQLite changes as an atomic canonical artifact replacement or a formally captured file set, then rescan/history/sync it like other user data
+- [ ] Keep app data physically separate from immutable `.vapp` packages by default so package upgrades, signatures, rollback, distribution, sync, and backup do not become stateful code rewrites; reserve self-modifying package-plus-data files for a future explicit portable-document mode
+- [ ] For canonical SQLite stores, serialize writers through Vulcan, use the same safe connection boundary as private stores, and ensure WAL/SHM sidecars cannot escape the captured mutation; materialize each completed write as an atomic artifact replacement or formally captured file set
 - [ ] Treat concurrent cross-device SQLite artifact changes as required-review conflicts in v1; do not claim Git can semantically merge database bytes
-- [ ] Design a later optional deterministic artifact-merger contract over immutable base/local/remote inputs, declared schema/version, strict resource limits, exact output validation, and evidence reports; never execute arbitrary app merge code merely because sync discovered a conflict
 - [ ] Make canonical artifacts visible to permission filters, history, backup/export, conflict inspection, storage accounting, retention, and explicit deletion workflows without exposing their contents to unauthorized apps or users
-- [ ] Add crash/restart, concurrent mutation, sync conflict, migration, backup/restore, WAL cleanup, corrupt database, and package-uninstall-with-data-preserved integration tests
+
+#### 19.13.3 Replicated structured-store investigation
+
+- [ ] Define a Vulcan-owned experimental `ReplicatedStore` contract over authoritative logical datasets, independently of SQLite: stable record identity, replica membership, deletion/reinsertion, ordering, conflict semantics, schema/version negotiation, snapshots, compaction, acknowledgements, permission filtering, and inspectable merge evidence
+- [ ] Keep replica IDs, acknowledgements, checkpoints, recovery/compaction journals, and every fact needed to resume or explain replication durable outside `cache.db`; shared authoritative state must never exist only in gitignored `.vulcan/apps/` local storage
+- [ ] Prototype the [SQLite Session extension](https://www.sqlite.org/sessionintro.html) behind a statically linked host adapter for controlled primary-keyed schemas; explicitly cover its compatible-schema/base requirements, conflict callbacks, null-primary-key exclusion, lack of virtual-table capture, changeset inversion/concatenation, and noncanonical internal row ordering
+- [ ] Prototype a Git transport as immutable actor/sequence-named changeset records plus schema/checkpoint identities and BLAKE3 digests, with bounded inspection and conflict reports; call this append/merge-friendly rather than promising human-readable diffs or semantic identity from opaque binary bytes
+- [ ] Evaluate a pinned, statically linked [cr-sqlite](https://github.com/vlcn-io/cr-sqlite) adapter without allowing package-provided extensions; require explicit reviewed table/column CRDT choices, deletion behavior, uniqueness/foreign-key handling, ordering, schema evolution, authorization, and evidence rather than equating convergence with intent preservation
+- [ ] Compare Sessions, cr-sqlite, and a possible service-backed adapter through one hostile conformance harness covering offline concurrent writes, deterministic replay/convergence, manual conflicts, malicious deltas, interruption, stale replicas, schema upgrades, compaction, revocation, selective replication, backup/restore, Git transport, browser/native/runtime compatibility, and resource exhaustion
+- [ ] Do not stabilize a replicated-store manifest/API profile until one adapter satisfies its declared semantics; until then private SQLite is unsynchronized and canonical SQLite is an atomic conflict-reviewed artifact
+- [ ] Design any later deterministic artifact-merger over immutable base/local/remote inputs, declared schema/version, strict resource limits, exact output validation, and evidence reports; never execute arbitrary app merge code merely because synchronization discovered a conflict
+
+#### 19.13.4 Storage verification
+
+- [ ] Add crash/restart, concurrent mutation, cache reset, local-state retention/deletion, migration, quota, backup/restore, WAL cleanup, corrupt database, canonical sync conflict, live-session expiry, blob GC, and package-uninstall-with-data-preserved integration tests
 
 ### 19.14 Publication and distribution
 
@@ -6601,7 +6632,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Add `vulcan apps discover|inspect|validate|list|show|install|update|disable|uninstall|doctor` with stable JSON reports and `--dry-run` on every mutation
 - [ ] Add `vulcan apps instances list|show|create|set|enable|disable|remove` with explicit vault/instance selection, capability/data bindings, migration previews, and no interactive-only requirements
 - [ ] Add `vulcan apps grants show|plan|apply|revoke` over Phase 17 authority rather than a parallel ACL file; human output clearly separates requested, granted, denied, optional, and policy-ceiling capabilities
-- [ ] Add `vulcan apps pack|lint|test|unpack` developer commands and `describe`/help coverage for manifest, identities, ZIP profile, browser bridge, App API, QuickJS, WASM, data classes, signing, and publication
+- [ ] Add `vulcan apps pack|lint|test|unpack` developer commands and `describe`/help coverage for manifest, identities, ZIP profile, browser bridge, App API, QuickJS, WASM, logical store declarations/profiles, signing, and publication
 - [ ] Add WebUI pages for discovered packages, exact identity/provenance, signatures, requested/granted capabilities, installed versions, instances, data stores, jobs/events, runtime health, updates, migrations, disablement, and uninstall/data-retention choices
 - [ ] Provide an explicit capability-delta review before install/update/instance enablement and an inspectable audit trail for approvals, invocations, migrations, and denied operations
 - [ ] Add a local development workflow with watch/repack/reload that remains visibly marked as development mode and never converts directory mutability into production trust
@@ -6616,6 +6647,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Add authorization tests for discovery-without-execution, code-change trust invalidation, caller/installation/instance/runtime intersection, optional capabilities, path/query filtering, network-domain ceilings, secret redaction, nested JS/WASM/tool calls, and background grants
 - [ ] Add browser security tests for iframe origin isolation, CSP, forged/cross-instance messages, schema violations, revoked sessions, embed filtering, asset paths/ranges/media types, and denial of daemon credentials
 - [ ] Add lifecycle tests for interrupted install/update/migration, mutable source replacement, rollback, concurrent invocation, disable/uninstall during jobs, retained data, orphan blob cleanup, and daemon restart
+- [ ] Add store-classification tests proving cache reset cannot delete authoritative local state, private paths never enter scan/sync/publication, canonical data cannot be rebound as derived, replication is separately authorized, and every retained store has an inspectable export/delete/recovery policy
 - [ ] Document when to choose an app, app CLI command, plugin, skill command, script, QuickJS function, browser WASM, or server WASM; do not advertise WASM as automatically faster
 - [ ] Perform the required bundled-skill impact review: extend existing plugin/tool/configuration skills when app discovery, permission review, or authoring changes agent workflows; add/register a new managed app-authoring skill only if it is a distinct reusable workflow
 - [ ] Review `docs/assistant/AGENTS.template.md`, assistant integration docs, static-site docs, security guidance, and daemon/WebUI API docs for app-aware selection, trust, and mutation rules
@@ -6637,7 +6669,7 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 
 - [ ] Build `dev.vulcan.meeting` over an ordinary Markdown agenda whose headings/items remain readable and editable without the app
 - [ ] Provide facilitator and audience views with current-item highlighting, next/previous control, speaker list and raised hands, timers, parking lot, lightweight votes/temperature checks, and reconnectable session state
-- [ ] Classify agenda/minutes/decisions/action items as canonical Markdown/tasks, the current item and speaker queue as explicit resumable or ephemeral session state, and participant presence as ephemeral state
+- [ ] Classify agenda/minutes/decisions/action items as canonical Markdown/tasks, the current item and speaker queue as explicit resumable live-session state with optional checkpoints, and participant presence as expiring live-session state
 - [ ] Write decisions, notes, and action items through optimistic-concurrency mutation plans scoped to the selected agenda section rather than replacing the whole note
 - [ ] Resolve facilitator, speaker, participant, and viewer actions through caller and instance capabilities; an embedded audience view cannot inherit facilitator authority
 - [ ] Add `start`, `show`, `next`, `previous`, `queue`, `yield`, `decision`, `action`, and `finish` CLI commands with direct/daemon parity and a complete non-interactive path
@@ -6669,14 +6701,14 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 - [ ] Deduplicate with durable feed identity and entry bindings using stable entry IDs when trustworthy plus normalized URL and content BLAKE3 fallbacks; cache rebuild or feed reordering must not recreate captured entries
 - [ ] Sanitize remote HTML and media before rendering, never execute feed scripts/styles, proxy or localize remote assets only under explicit policy, and prevent server-side request forgery or credential forwarding across origins/redirects
 - [ ] Support authenticated/private feeds through opaque secrets that remain outside package, canonical notes, browser storage, logs, OPML, and exports
-- [ ] Classify subscription definitions and capture rules as explicit canonical or device-local instance configuration, unread UI state as app state, fetched bodies as bounded derived cache, and saved entries as ordinary canonical Markdown with source/provenance fields
+- [ ] Classify subscription definitions and capture rules as explicit canonical mdbase-compatible records or durable device-local instance configuration, unread/star/archive UI state as durable local typed state, fetched bodies/indexes as bounded SQLite-derived cache, enclosures as policy-bound content-addressed blobs, and saved entries as ordinary canonical Markdown with source/provenance fields
 - [ ] Reuse Phase 15 external-route and reconciliation contracts for durable captured-document bindings when available; never treat removal from a remote feed as authority to delete a saved local note
 - [ ] Add `subscriptions`, `add`, `remove`, `refresh`, `entries`, `read`, `star`, `archive`, `capture`, and `opml` CLI commands with `--output json`, dry-run/plan behavior for mutations, and direct-mode diagnostics when scheduling requires the daemon
 - [ ] Test hostile XML/HTML, entity expansion, huge feeds, duplicate/reused IDs, URL normalization, redirect credential leakage, conditional refresh, authenticated feeds, scheduler restart, permission filtering, and idempotent capture
 
 #### 19.18.6 Finance and Collection Studio
 
-- [ ] Build a bounded finance prototype as the canonical-artifact stress test: transparent Markdown and/or explicit canonical SQLite data, transactional mutation plans, migrations, audit/history/export, conflict preservation, and no network access by default
+- [ ] Build a bounded finance prototype as a cross-store stress test: mdbase-compatible accounts/categories where human-readable interoperability fits, an explicit canonical SQLite ledger only where transactional scale justifies it, transactional mutation plans, migrations, audit/history/export, conflict preservation, and no network access by default
 - [ ] Build `dev.vulcan.collection-studio` as a schema-driven forms/table/detail app over typed Markdown or mdbase-compatible collections, proving reusable validation, multiple instances, property/link editors, filtered queries, bulk mutation previews, import/export, and app-defined views without hiding records in UI-only state
 - [ ] Keep both examples domain-bounded and auditable; they validate general platform contracts but do not turn finance rules or a second database/query language into Vulcan core semantics
 
@@ -6685,13 +6717,14 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 - [ ] **Gate A — normative format:** Complete 19.1–19.3's domain model, canonical manifest, BLAKE3 vectors, strict ZIP profile, signature envelope, format specification, hostile fixtures, and raw-package fuzz target before any package code may execute
 - [ ] **Gate B — package substrate:** Complete 19.4 plus the immutable installation/blob-store portion of 19.5 and CLI descriptor validation/discovery from 19.15; `inspect`, `validate`, `pack`, `lint`, install preview/apply, exact identity reporting, and no-extraction invariants work without enabling QuickJS, WASM, or the WebUI
 - [ ] **Gate C — static read-only MVP:** Complete instances, device-local trust/grants, the iframe host, content-addressed asset serving, read-only bridge/App API, full-page routes, note embeds, CLI/WebUI administration, Presenter, and the capability-free minigame; this is the first user-facing release
-- [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, data classifications/bindings, migration journals, canonical artifact handling, retained jobs/events, Meeting Tool, Collection Studio, and the finance prototype's non-networked storage path
+- [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, orthogonal logical-store declarations/bindings, private typed state and SQLite, content-addressed blobs, live sessions, migration journals, vault-native/mdbase bindings, canonical artifact handling, retained jobs/events, Meeting Tool, Collection Studio, and the finance prototype's non-networked storage path
 - [ ] **Gate E — QuickJS functions and CLI apps:** Add compiled-TypeScript authoring, VFS module loading, resource-limited request/job/direct CLI execution, namespaced QuickJS CLI commands, nested typed tools, and JS-to-WASM-ready component calls behind `js_runtime`; static apps remain available without that feature
 - [ ] **Gate F — server WASM and compiled CLI apps:** Select and pin the runtime, finalize the component ABI/host imports, add direct CLI/RPC/job and nested invocation, namespaced WASM CLI commands, resource enforcement, multi-toolchain conformance components, and a feature-disabled compatibility path
 - [ ] **Gate G — publication and distribution:** Add static/live publication modes, source/catalog abstraction, publisher policy and update/revocation UX, optional OCI transport, offline import/export, and complete security/lifecycle conformance
 - [ ] **Gate H — network and processing examples:** Complete filtered attachment events, the reusable `ArtifactProcessor`, Feed Reader, and Blobforge Workbench with durable idempotency/reconciliation, scheduler restart, secret/network isolation, validated artifact import, and direct/daemon CLI parity
+- [ ] **Post-v1 replicated-store gate:** Keep the replicated structured-store API experimental until the Phase 19.13.3 harness demonstrates one explicitly versioned adapter profile across offline multi-writer behavior, schema migration, malicious inputs, revocation, recovery, compaction, evidence, and transport/runtime compatibility; do not block the core app platform on this investigation
 - [ ] Parallelization rule: after Gate A freezes the format contracts, package tooling/VFS, browser-host prototyping, App API domain types, and runtime-adapter investigations may proceed independently; installation authority and runtime execution must converge on the same validated package and permission contracts before Gate C or later ships
-- [ ] Completion gate: validated immutable packages can be discovered, installed, granted, instantiated, embedded, invoked through typed CLI commands, updated, disabled, and uninstalled without extraction or authority expansion; the Phase 19.18 portfolio exercises static, write-enabled, zero-capability, CLI, network, scheduled, artifact-processing, canonical-SQLite, and schema-driven workflows end-to-end; package/runtime/data state survives restart and sync safely; all CLI/API outputs and security invariants have unit, integration, conformance, and fuzz coverage
+- [ ] Completion gate: validated immutable packages can be discovered, installed, granted, instantiated, embedded, invoked through typed CLI commands, updated, disabled, and uninstalled without extraction or authority expansion; the Phase 19.18 portfolio exercises static, write-enabled, zero-capability, CLI, network, scheduled, artifact-processing, private typed/SQLite, blob, live-session, vault-native/mdbase, canonical-SQLite, and schema-driven workflows end-to-end; package/runtime/data state survives restart and sync safely; all CLI/API outputs and security invariants have unit, integration, conformance, and fuzz coverage
 
 ---
 

@@ -23,6 +23,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 - **Correctness model:** Watcher + periodic reconciliation — File watchers improve freshness but should not be treated as a sufficient source of truth.
 - **Realtime Git notification model:** Discover one opaque HTTPS long-poll endpoint from the ordinary Git ref `refs/vulcan/notifications`. Any successful response is an untrusted wake-up hint that enqueues the ordinary sync transaction; Git remains authoritative and startup plus periodic polling remain the repair path. The intentionally small contract lives in `docs/specs/realtime-sync-notifications.md`.
 - **Information-hub model:** The materialized Markdown vault is the canonical interchange point. Device sync replicates that working tree; external document bindings and content routes import or publish logical documents through connector adapters. External systems never synchronize through SQLite or relay directly through Vulcan without an inspectable local state.
+- **Vulcan App storage model:** Apps declare bounded logical stores rather than receiving paths or generic SQLite authority. Engine, authority, scope, replication, visibility, retention, schema, and limits remain independent; mdbase is preferred for wiki-native structured knowledge, private SQLite serves substantial local/cache workloads, canonical SQLite remains an explicit conflict-reviewed vault artifact, and replicated structured stores stay experimental behind a Vulcan-owned adapter contract.
 - **Capability and compatibility model:** Design stable CLI, config, API, and domain boundaries around native Vulcan capabilities. Obsidian plugins and other tools contribute optional persisted-format adapters, settings importers, migration aliases, providers, and conformance profiles; they do not define Vulcan's product taxonomy or cap what a native workflow may do.
 - **Authorization model:** Resolve all human, group, agent, automation, share, and service authority from typed, vault-canonical capability objects. Delegation may only attenuate authority. A reserved authorization namespace and dedicated mutation workflows protect those objects across WebUI/API/managed-sync paths; direct filesystem control remains trusted. Roles and ACL-like administration views are convenience projections over the grant graph, while runtime enforcement continues through `PermissionGrant`, `PermissionGuard`, and `PermissionFilter`.
 - **Chunk sizing:** Use character count as a proxy for token count (default ~4000 characters ≈ 1024 tokens). A lightweight tokenizer may be added later for model-specific accuracy.
@@ -392,6 +393,57 @@ A Markdown Wiki Package exchanges a snapshot of multiple Markdown notes and asse
 Imported wiki packages materialize ordinary files below an explicit new vault destination and then rebuild cache state. Export excludes `.vulcan/cache.db`, device-local configuration, credentials, Git internals, and undeclared runtime state. Archive readers apply the same normalized-path, duplicate, symlink, expansion, and bounded-read rules as MDAF. Snapshot replacement or reconciliation into an existing destination is separate future work and requires explicit base identity and conflict policies; version 1 import does not silently merge.
 
 SQLite may later serialize the same wiki-package semantic model for offline web, mobile, WASM, or large transactional consumers. Such a database uses its own application ID and schema version, stores authoritative Markdown and asset bytes without lossy normalization, checkpoints transport state into one file, and marks any materialized indexes disposable. It is not a writable Vulcan vault or synchronization protocol. Supporting a directly editable SQLite-backed wiki would require a separately reviewed storage abstraction, revision model, merge semantics, and interoperability story; the rebuildable `.vulcan/cache.db` is never repurposed for it.
+
+### 4.6 Vulcan App data and storage model
+
+Vulcan Apps declare logical stores rather than receiving ambient filesystem access or an undifferentiated "SQLite capability." A store declaration separates properties that a storage engine alone cannot decide:
+
+- **engine** — typed key/value or document state, SQLite, mdbase, content-addressed blobs, canonical files/artifacts, live-session state, or a future replicated-store adapter;
+- **authority** — temporary, rebuildable derived data, or authoritative user/application data;
+- **scope** — one invocation, device, vault, user, or explicitly defined collaborative group;
+- **replication** — none, ordinary vault file-tree synchronization, a reviewed changeset/CRDT protocol, or an external service;
+- **visibility** — private to one instance, administratively inspectable, or ordinary vault-visible content;
+- **retention** — disposable, uninstall-preserved, explicitly archived, or explicitly deleted; and
+- **schema and limits** — independently versioned schema, migration policy, quota, object/row/result ceilings, and backup/export behavior.
+
+The manifest gives each store a stable package-local ID and declares the maximum profile it can request. An app instance binds that store to a concrete vault collection, artifact, or host-owned private allocation and may only narrow the declaration. Capabilities authorize operations on the bound logical store; they do not reveal its host path or permit the app to relabel canonical data as cache. Storage classification, replication, network access, background execution, and access to other vault objects remain separately reviewable authority.
+
+Convenience profiles should cover the common combinations without collapsing the underlying axes:
+
+| Profile | Authority and scope | Replication | Intended use |
+| --- | --- | --- | --- |
+| temporary | disposable invocation/session data | none | uploads and intermediate computation |
+| derived cache | rebuildable device or vault-local data | none | parsed feeds, thumbnails, indexes, and downloaded renditions |
+| device-local state | authoritative only for that device/instance | none | read positions, UI state, local queues, and preferences |
+| vault-native collection | authoritative ordinary Markdown/mdbase data | file-tree/Git | tasks, contacts, agendas, saved entries, and interoperable records |
+| canonical artifact | authoritative user-owned file such as SQLite or media | file-tree/Git as an atomic artifact in v1 | specialized transactional or binary documents |
+| replicated structured dataset | authoritative logical dataset with multiple replicas | an explicit adapter/protocol | offline multi-writer application data |
+
+#### Private local stores
+
+Typed transactional key/value or document state is the default private-state API for small values; Vulcan may implement it with SQLite without making that choice part of the app contract. Apps with substantial relational, query, or cache workloads may request a private SQLite store. On ordinary desktop/direct-mode vaults, host-owned allocations may live beneath `.vulcan/apps/<instance-id>/cache/` and `.vulcan/apps/<instance-id>/state/`; platform adapters may relocate them. Those paths are gitignored, excluded from vault scanning and file-tree synchronization, and never exposed as writable paths to app code. Temporary databases use operating-system temporary storage instead.
+
+Cache clearing may remove only stores declared rebuildable. Durable local state survives cache rebuild and package uninstall by default and has explicit inspect, export, reset, and delete workflows. Secrets never share these databases and continue to use opaque Phase 17 secret handles.
+
+The host owns SQLite connections, transactions, WAL/SHM cleanup, quotas, backup, integrity checks, and schema migration journals. It forbids arbitrary `ATTACH` paths, extension loading, host-path VFS access, and unsafe pragmas; applies statement, row, byte, page, time, and result limits; and exposes parameterized, transport-neutral operations to QuickJS, server WASM, CLI entrypoints, and the browser bridge. A package cannot supply a native SQLite extension merely by requesting a store.
+
+#### Vault-native and canonical stores
+
+mdbase is the preferred structured store when records are wiki knowledge: users should be able to read and edit them without the app, other tools should be able to query or link them, and ordinary Git/file-tree synchronization should carry them. Apps access collections through Vulcan's typed mdbase/query/mutation contracts, including validation, optimistic concurrency, permission filtering, lifecycle rules, and events, rather than through raw paths. Portable mdbase data contracts allow several apps to consume the same record semantics without one app claiming ownership. High-frequency UI state, caches, presence, queues, and very large append-heavy datasets should not be forced into Markdown.
+
+A canonical SQLite database is different from a private local SQLite store. It is an explicit user-owned vault artifact, remains outside the immutable `.vapp`, participates in history, backup, export, permissions, and file-tree synchronization, and survives app removal. Vulcan serializes local writers and captures a complete atomic artifact boundary. Version 1 treats concurrent cross-device changes as inspectable required-review conflicts rather than pretending Git can merge database pages.
+
+Content-addressed blob stores provide a separate primitive for media, generated previews, models, feed enclosures, and processor output. Each blob is addressed by a domain-separated BLAKE3 identity and receives explicit derived-local or canonical retention. A daemon-owned expiring live-session store covers presence, raised hands, speaker queues, timers, cursors, and similar reconnectable collaboration state that is neither durable wiki knowledge nor database replication.
+
+#### Replicated structured datasets
+
+Replication is a policy over an authoritative logical dataset, not an incidental property of choosing SQLite. The public contract should be a Vulcan-owned `ReplicatedStore`-style capability with explicit stable row/object identity, deletion, ordering, conflict, schema migration, snapshot, compaction, membership, and evidence semantics. Concrete engines remain replaceable adapters. Replica identity, acknowledgements, checkpoints, recovery journals, and facts needed to resume or explain synchronization are durable state outside `cache.db`; shared authoritative state must not exist only under the gitignored local app directory.
+
+The [SQLite Session extension](https://www.sqlite.org/sessionintro.html) is a candidate adapter for capturing, combining, inverting, inspecting, and applying row changes. It is not by itself a conflict-free multi-master protocol: peers require compatible schemas and starting state, conflict handling remains application/protocol policy, participating tables need declared primary keys, null primary-key rows are ignored, and virtual tables are not captured. A Git transport should therefore store immutable actor/sequence-named change records plus schema and checkpoint identities rather than repeatedly rewriting one database or change file. Binary changesets may be structurally Git-friendly through append-only paths and Vulcan inspection without claiming useful textual diffs or canonical byte ordering.
+
+[cr-sqlite](https://github.com/vlcn-io/cr-sqlite) is a candidate multi-writer adapter when its CRDT semantics match the application model. Convergence alone is not intent preservation: table-set deletion behavior, last-write-wins fields, counters, ordering, uniqueness, foreign-key invariants, and schema evolution require explicit reviewed choices. Vulcan may later ship a pinned, statically linked adapter; third-party packages never load arbitrary native extensions, supply executable merge code during sync, or obtain a raw replication channel implicitly.
+
+The first replicated-store milestone is an investigation and conformance harness, not a compatibility promise. It must compare SQLite Sessions, cr-sqlite, and a possible service-backed adapter against offline writes, deterministic replay, conflicts, malicious changes, interrupted application, schema upgrades, compaction, permission-filtered replication, backup/restore, Git transport, and cross-platform/runtime requirements. Until one profile passes those gates, private SQLite stays unsynchronized and canonical SQLite stays an atomic conflict-reviewed artifact.
 
 ## 5. Data model overview
 
@@ -1554,7 +1606,7 @@ Phases are listed in recommended order. Dependency edges are noted explicitly so
 ### Parallelism summary
 After Phase 1 is complete, Phases 2, 3, and 4 can proceed in parallel. Phase 5 requires Phase 3. Phase 6 follows all others.
 
-### Phases 7–18
+### Phases 7–19
 
 Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
@@ -1570,6 +1622,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 - **Phase 16:** Wiki mode with live collaborative editing
 - **Phase 17:** Identity and delegable capability authorization — canonical authorization wiki objects, reserved control-plane mutations, rooted grants, monotonic attenuation, limited agent/automation/service/share credentials, permission-filtered queries, document-level secrets, and optional later OIDC binding
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
+- **Phase 19:** Vulcan Apps — immutable `.vapp` packages, sandboxed browser/QuickJS/WASM/CLI surfaces, capability-bound instances, logical storage profiles, vault-native and canonical data, and an experimental replicated structured-store boundary
 
 Detailed mdbase and native vault-capability plans with Obsidian compatibility adapters remain **candidate capability tracks**, not numbered delivery gates. The SilverBullet appendix is promoted connector design referenced by Phases 12 and 15. Candidate durable Markdown/core slices may still be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively.
 
