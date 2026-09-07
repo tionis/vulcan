@@ -966,6 +966,46 @@ mod tests {
     }
 
     #[test]
+    fn collection_links_with_any_target_type_accept_typed_and_untyped_records() {
+        let directory = tempdir().expect("collection directory");
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(
+            &directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\ncollection:\n  links:\n    related[]:\n      target_type: any\n      validate_exists: true\n---\n",
+        );
+        write(
+            &directory.path().join("source.md"),
+            "---\ntype: task\nrelated: ['[[typed]]', '[[untyped]]', '[[missing]]']\n---\n",
+        );
+        write(&directory.path().join("typed.md"), "---\ntype: task\n---\n");
+        write(&directory.path().join("untyped.md"), "# Untyped note\n");
+        let collection = load_mdbase_collection(directory.path())
+            .expect("collection should load")
+            .expect("collection should exist");
+        let types = load_mdbase_type_registry(&collection).expect("types should load");
+        let records = load_mdbase_records(&collection, &types, false).expect("records should load");
+        let source = records.get("source.md").expect("source record");
+        for target in ["typed", "untyped"] {
+            let link = source
+                .links
+                .iter()
+                .find(|link| link.target == target)
+                .expect("link");
+            assert_eq!(
+                link.resolution,
+                super::super::MdbaseLinkResolution::Resolved
+            );
+            assert_eq!(link.target_type.as_deref(), Some("any"));
+            assert_eq!(link.resolved_path, Some(format!("{target}.md")));
+        }
+        assert_eq!(source.diagnostics.len(), 1);
+        assert_eq!(source.diagnostics[0].code, "link_not_found");
+    }
+
+    #[test]
     fn collection_links_preserve_syntax_and_resolve_with_mdbase_rules() {
         let directory = tempdir().expect("collection directory");
         write(

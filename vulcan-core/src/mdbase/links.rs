@@ -218,15 +218,16 @@ fn resolve_link(
     if let (Some(target_type), Some(path)) =
         (rule.and_then(|rule| rule.target_type), &resolved_path)
     {
-        let matches = records
-            .iter()
-            .find(|record| &record.path == path)
-            .is_some_and(|record| {
-                record
-                    .types
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(target_type))
-            });
+        let matches = target_type == "any"
+            || records
+                .iter()
+                .find(|record| &record.path == path)
+                .is_some_and(|record| {
+                    record
+                        .types
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(target_type))
+                });
         if !matches {
             resolution = MdbaseLinkResolution::TargetTypeMismatch;
         }
