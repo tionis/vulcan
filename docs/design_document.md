@@ -396,6 +396,8 @@ SQLite may later serialize the same wiki-package semantic model for offline web,
 
 ### 4.6 Vulcan App data and storage model
 
+The normative Phase 19 implementation target is `docs/specs/vulcan-app/v1/SPEC.md`, with its closed manifest schema, WIT component boundary, identity fixture, and per-example product contracts. This section records the architectural rationale; when prose here is less specific, the versioned specification controls v1 behavior. Changing a frozen v1 requirement requires an explicit specification revision and compatibility review rather than an implementation-local interpretation.
+
 Vulcan Apps declare logical stores rather than receiving ambient filesystem access or an undifferentiated "SQLite capability." A store declaration separates properties that a storage engine alone cannot decide:
 
 - **engine** — typed key/value or document state, SQLite, mdbase, content-addressed blobs, canonical files/artifacts, live-session state, or a future replicated-store adapter;
@@ -1736,5 +1738,8 @@ The implementation agent should treat the following as mandatory:
 [15] comrak documentation — extensions for source positions, front matter, alerts, and wikilinks.
 [16] tree-sitter-markdown README — correctness limitations and editor-oriented positioning.
 [17] Dataview documentation — inline fields, DQL query language, inline expressions, DataviewJS, implicit metadata.
+[18] Vulcan App Platform Specification v1 — `docs/specs/vulcan-app/v1/SPEC.md`.
+[19] Vulcan App v1 Reference Application Contracts — `docs/specs/vulcan-app/v1/EXAMPLE_APPS.md`.
+[20] Wasmtime releases and component-model documentation — https://github.com/bytecodealliance/wasmtime/releases and https://docs.wasmtime.dev/.
 
 This document is intentionally opinionated. It is optimized to keep the first implementation correct, rebuildable, and extensible rather than feature-maximal.

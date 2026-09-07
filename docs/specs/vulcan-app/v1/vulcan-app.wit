@@ -1,0 +1,23 @@
+package vulcan:app@1.0.0;
+
+interface types {
+  record app-error {
+    code: string,
+    message: string,
+    details-json: list<u8>,
+    retryable: bool,
+  }
+}
+
+interface host {
+  use types.{app-error};
+
+  call: func(method: string, request-json: list<u8>) -> result<list<u8>, app-error>;
+}
+
+world function {
+  use types.{app-error};
+  import host;
+
+  export invoke: func(entry: string, input-json: list<u8>) -> result<list<u8>, app-error>;
+}

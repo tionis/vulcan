@@ -1,0 +1,51 @@
+{
+  "format_version": 1,
+  "app": {
+    "id": "dev.vulcan.minimal",
+    "version": "1.0.0",
+    "name": "Minimal Vulcan App",
+    "description": "Capability-free static conformance fixture.",
+    "license": "MIT"
+  },
+  "api_versions": {
+    "app": "1",
+    "bridge": "1",
+    "cli": "1",
+    "quickjs": "1",
+    "wasm": "1"
+  },
+  "entrypoints": {
+    "views": {
+      "main": {
+        "path": "assets/index.html",
+        "title": "Minimal",
+        "mode": "both",
+        "static_export": true,
+        "capability_requests": []
+      }
+    },
+    "functions": {},
+    "commands": {},
+    "jobs": {},
+    "event_handlers": {}
+  },
+  "capability_requests": [],
+  "stores": {},
+  "resources": {
+    "quickjs_heap_bytes": 67108864,
+    "wasm_memory_bytes": 134217728,
+    "interactive_timeout_ms": 5000,
+    "job_timeout_ms": 60000,
+    "input_bytes": 1048576,
+    "output_bytes": 8388608,
+    "concurrent_invocations": 4
+  },
+  "files": {
+    "assets/index.html": {
+      "size": 262,
+      "digest": "blake3:27c015ddae3a780a5e985ca67ff19d63f34616b7e944ed2733cff1607af0e275",
+      "media_type": "text/html",
+      "delivery": "whole"
+    }
+  }
+}

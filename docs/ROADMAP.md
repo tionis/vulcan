@@ -6380,6 +6380,8 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 **Depends on:** Phase 10 (daemon, versioned HTTP service, jobs, and watchers), Phase 13 (WebUI host and read-only browser surfaces), and Phase 17.1–17.5 (identity, sessions, rooted/delegable grants, permission filtering, document secrets, and share boundaries). Write-enabled browser apps additionally depend on Phase 14's mutation and review surfaces. Static publication integration depends on Phase 9.20. QuickJS host/CLI functions reuse Phase 9.18.5 and Phase 9.24's typed tool/runtime contracts. Server-side WebAssembly is a new optional runtime and does not depend on Phase 16.6's collaborative local-first investigation. The Feed Reader reuses Phase 15's external binding/reconciliation contracts when available, but neither that example nor Phase 15 blocks the core package and runtime gates.
 
+**Normative v1 target:** Implement against `docs/specs/vulcan-app/v1/SPEC.md`, `manifest.schema.json`, `vulcan-app.wit`, the minimal identity fixture, and `EXAMPLE_APPS.md`. The checklist below owns delivery order and evidence; the versioned specification owns exact v1 wire, format, runtime, storage, and product behavior. If implementation reveals a contradiction, update the specification and fixtures in a separately reviewed change before changing behavior.
+
 **Core decisions:**
 
 - A Vulcan App is an interactive application package, not another name for a script, skill command, or lifecycle plugin. Scripts are directly executed, skill commands are typed callable operations, plugins react to lifecycle events, and apps own interactive sessions and views. Apps may call typed tools or shared services without bypassing those boundaries.
@@ -6408,6 +6410,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.2 Canonical manifest and logical package specification
 
+- [x] Freeze the initial implementation target in `docs/specs/vulcan-app/v1/`: normative platform prose, a closed draft-2020-12 manifest schema, server-component WIT, canonical source/identity fixture, and bounded contracts for every first-party example app
 - [ ] Specify `manifest.json` as UTF-8 without BOM, I-JSON-compatible canonical JSON whose original bytes must equal its RFC 8785 JSON Canonicalization Scheme representation
 - [ ] Reject duplicate object keys before constructing a generic JSON value, forbid floating-point values in v1, bound integers to the exactly interoperable range, and reject ambiguous uses of `null`
 - [ ] Define application-level canonical rules beyond JSON syntax: payload maps ordered by canonical path, set-like arrays lexicographically sorted and duplicate-free, lowercase digest encodings, and deterministic ordering for entrypoints and capability requests
@@ -6516,7 +6519,8 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Provide a small transactional typed key/value or document API as the default private-state surface, plus separately declared private-SQLite, mdbase collection, content-addressed blob, canonical artifact, live-session, and future replicated-store namespaces
 - [ ] Return opaque store/transaction/blob/session handles rather than host paths, raw file descriptors, WAL files, daemon database handles, or credentials; use the same bounded transport-neutral request/report types from browser, CLI, QuickJS, and server WASM surfaces
 - [ ] Let apps call visible skill commands through the typed registry with input/output validation, recursion limits, and preserved effective permission ceilings; do not add arbitrary CLI/shell escape hatches
-- [ ] Keep App API schemas and daemon/OpenAPI/browser/WASM projections generated or conformance-tested from the same domain contracts
+- [ ] Treat the closed method registry in `docs/specs/vulcan-app/v1/SPEC.md` as exhaustive for v1; before enabling any runtime, check in versioned request/success/error fixtures for every method and reject unregistered methods
+- [ ] Keep App API schemas and daemon/OpenAPI/browser/WASM projections generated or conformance-tested from the same domain contracts and fixtures; require protocol-version review for every field or method change
 
 ### 19.10 Events, jobs, and background execution
 
@@ -6552,9 +6556,9 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.12 Server-side WebAssembly runtime
 
-- [ ] Introduce a replaceable server-WASM runtime adapter, preferably in a dedicated optional crate/feature, without coupling package validation or the App API to one engine
+- [ ] Introduce a replaceable server-WASM runtime adapter behind optional `wasm_runtime`, using pinned Wasmtime `36.0.10` with default features disabled and only reviewed component-model/runtime/compiler features; record binary-size/platform impact and keep package validation/App API independent of the engine
 - [ ] Make server WASM a peer function/job runtime: direct CLI, daemon RPC, or jobs may invoke it directly, QuickJS may call it as a declared component, and pure components may have no host imports
-- [ ] Define and version a Vulcan component ABI using an explicit interface description rather than an ad hoc raw-memory `alloc(pointer, length)` convention; begin with bounded canonical JSON values if needed while preserving a path to richer typed records/resources
+- [ ] Implement and conformance-test `docs/specs/vulcan-app/v1/vulcan-app.wit`: components export `invoke(entry, canonical-json)` and receive only the typed error plus generic schema-checked App API host call; do not introduce an ad hoc raw-memory allocation ABI
 - [ ] Permit only declared Vulcan host imports for query, notes, mutation plans, artifacts, state, network, secrets, jobs/progress, time/randomness, and logging; do not enable ambient WASI filesystem, sockets, environment, process, or clocks
 - [ ] Instantiate only imports covered by the effective grant and fail closed on missing, unknown, or denied imports; a component cannot dynamically acquire broader host functions
 - [ ] Enforce fuel/epoch interruption or equivalent CPU limits, linear-memory/table/stack limits, component size limits, output limits, cancellation, and bounded instance pooling
@@ -6654,7 +6658,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.18 First-party example apps and conformance portfolio
 
-Every reference app is an ordinary signed or explicitly locally trusted `.vapp` built with the public package, bridge, CLI, runtime, event, and App API contracts. Reference apps receive no private daemon endpoints, implicit grants, relaxed validation, filesystem shortcuts, or other privileges unavailable to third-party packages. Keep each app in its own fixture/package project with pinned frontend/runtime dependencies, deterministic builds, declared example data, capability snapshots, and direct/daemon/browser conformance tests.
+Every reference app is an ordinary signed or explicitly locally trusted `.vapp` built with the public package, bridge, CLI, runtime, event, and App API contracts. Reference apps receive no private daemon endpoints, implicit grants, relaxed validation, filesystem shortcuts, or other privileges unavailable to third-party packages. The normative MVP boundaries, source/data schemas, state machines, views, CLI commands, capabilities, and acceptance fixtures are in `docs/specs/vulcan-app/v1/EXAMPLE_APPS.md`; roadmap summaries below do not broaden them. Keep each app in its own fixture/package project with pinned frontend/runtime dependencies, deterministic builds, declared example data, capability snapshots, and direct/daemon/browser conformance tests.
 
 #### 19.18.1 Presenter
 
@@ -6675,9 +6679,9 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 - [ ] Add `start`, `show`, `next`, `previous`, `queue`, `yield`, `decision`, `action`, and `finish` CLI commands with direct/daemon parity and a complete non-interactive path
 - [ ] Ship a single-facilitator/multiple-viewer baseline on Phase 19 events; layer simultaneous collaborative note editing on Phase 16 rather than inventing an app-specific CRDT
 
-#### 19.18.3 Capability-free minigame and Wiki Quest
+#### 19.18.3 Ember Run capability-free minigame and Wiki Quest
 
-- [ ] Build a small capability-free browser minigame that requests no vault, network, secret, mutation, job, or host authority and stores progress only in bounded temporary/device-local app state
+- [ ] Build `dev.vulcan.ember-run` as the deterministic maze/input/accessibility contract in `EXAMPLE_APPS.md`; its base mode requests no vault, network, secret, mutation, job, event, tool, or host-execution authority and uses only memory or explicitly enabled bounded device-local state
 - [ ] Use the game as the iframe/CSP/input/audio/browser-WASM/resource-limit baseline and prove denial of undeclared App API calls without degrading normal gameplay
 - [ ] Add an optional “Wiki Quest” mode that derives a navigable map or puzzles from the permission-filtered link graph while preventing inference of restricted nodes through topology, counts, labels, suggestions, timing, or missing-target behavior
 - [ ] Keep canonical achievements/progress as an explicit opt-in capability and mutation plan rather than silently writing game state into the vault
@@ -6706,9 +6710,9 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 - [ ] Add `subscriptions`, `add`, `remove`, `refresh`, `entries`, `read`, `star`, `archive`, `capture`, and `opml` CLI commands with `--output json`, dry-run/plan behavior for mutations, and direct-mode diagnostics when scheduling requires the daemon
 - [ ] Test hostile XML/HTML, entity expansion, huge feeds, duplicate/reused IDs, URL normalization, redirect credential leakage, conditional refresh, authenticated feeds, scheduler restart, permission filtering, and idempotent capture
 
-#### 19.18.6 Finance and Collection Studio
+#### 19.18.6 Personal Ledger and Collection Studio
 
-- [ ] Build a bounded finance prototype as a cross-store stress test: mdbase-compatible accounts/categories where human-readable interoperability fits, an explicit canonical SQLite ledger only where transactional scale justifies it, transactional mutation plans, migrations, audit/history/export, conflict preservation, and no network access by default
+- [ ] Build `dev.vulcan.ledger` as the bounded personal double-entry contract in `EXAMPLE_APPS.md`: mdbase-compatible accounts/categories, an explicit canonical SQLite transaction/posting ledger, integer minor units, per-commodity balancing, correction history, transactional mutation plans, migrations, audit/export, conflict preservation, and no network capability
 - [ ] Build `dev.vulcan.collection-studio` as a schema-driven forms/table/detail app over typed Markdown or mdbase-compatible collections, proving reusable validation, multiple instances, property/link editors, filtered queries, bulk mutation previews, import/export, and app-defined views without hiding records in UI-only state
 - [ ] Keep both examples domain-bounded and auditable; they validate general platform contracts but do not turn finance rules or a second database/query language into Vulcan core semantics
 
@@ -6719,7 +6723,7 @@ Every reference app is an ordinary signed or explicitly locally trusted `.vapp` 
 - [ ] **Gate C — static read-only MVP:** Complete instances, device-local trust/grants, the iframe host, content-addressed asset serving, read-only bridge/App API, full-page routes, note embeds, CLI/WebUI administration, Presenter, and the capability-free minigame; this is the first user-facing release
 - [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, orthogonal logical-store declarations/bindings, private typed state and SQLite, content-addressed blobs, live sessions, migration journals, vault-native/mdbase bindings, canonical artifact handling, retained jobs/events, Meeting Tool, Collection Studio, and the finance prototype's non-networked storage path
 - [ ] **Gate E — QuickJS functions and CLI apps:** Add compiled-TypeScript authoring, VFS module loading, resource-limited request/job/direct CLI execution, namespaced QuickJS CLI commands, nested typed tools, and JS-to-WASM-ready component calls behind `js_runtime`; static apps remain available without that feature
-- [ ] **Gate F — server WASM and compiled CLI apps:** Select and pin the runtime, finalize the component ABI/host imports, add direct CLI/RPC/job and nested invocation, namespaced WASM CLI commands, resource enforcement, multi-toolchain conformance components, and a feature-disabled compatibility path
+- [ ] **Gate F — server WASM and compiled CLI apps:** Integrate pinned Wasmtime 36.0.10 behind `wasm_runtime`, implement the frozen WIT/component host boundary, add direct CLI/RPC/job and nested invocation, namespaced WASM CLI commands, resource enforcement, multi-toolchain conformance components, and a feature-disabled compatibility path
 - [ ] **Gate G — publication and distribution:** Add static/live publication modes, source/catalog abstraction, publisher policy and update/revocation UX, optional OCI transport, offline import/export, and complete security/lifecycle conformance
 - [ ] **Gate H — network and processing examples:** Complete filtered attachment events, the reusable `ArtifactProcessor`, Feed Reader, and Blobforge Workbench with durable idempotency/reconciliation, scheduler restart, secret/network isolation, validated artifact import, and direct/daemon CLI parity
 - [ ] **Post-v1 replicated-store gate:** Keep the replicated structured-store API experimental until the Phase 19.13.3 harness demonstrates one explicitly versioned adapter profile across offline multi-writer behavior, schema migration, malicious inputs, revocation, recovery, compaction, evidence, and transport/runtime compatibility; do not block the core app platform on this investigation

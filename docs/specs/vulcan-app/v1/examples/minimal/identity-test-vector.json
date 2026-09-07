@@ -1,0 +1,15 @@
+{
+  "format": "vulcan-app-identity-test-vector",
+  "version": 1,
+  "canonicalization": "RFC 8785",
+  "source_manifest": "manifest.source.json",
+  "canonical_manifest_bytes": 856,
+  "app_content_id": "blake3:49f272364e020c48a2c891e2798a5f5a218f42ab1b2ba24e7b660763118ace1a",
+  "payloads": {
+    "assets/index.html": {
+      "bytes": 262,
+      "digest": "blake3:27c015ddae3a780a5e985ca67ff19d63f34616b7e944ed2733cff1607af0e275"
+    }
+  },
+  "note": "The deterministic builder must emit the RFC 8785 bytes without a trailing newline. PackageBlobId is added by the golden ZIP fixture when the builder lands because it identifies exact builder output, not this source directory."
+}

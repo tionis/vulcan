@@ -1,0 +1,862 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulcan.local/schemas/vulcan-app-manifest-v1.json",
+  "title": "Vulcan App manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "app",
+    "api_versions",
+    "entrypoints",
+    "capability_requests",
+    "stores",
+    "resources",
+    "files"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "app": {
+      "$ref": "#/$defs/app"
+    },
+    "api_versions": {
+      "$ref": "#/$defs/api_versions"
+    },
+    "entrypoints": {
+      "$ref": "#/$defs/entrypoints"
+    },
+    "capability_requests": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/capability_request"
+      }
+    },
+    "stores": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "$ref": "#/$defs/local_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/store"
+      }
+    },
+    "resources": {
+      "$ref": "#/$defs/resources"
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4094,
+      "propertyNames": {
+        "$ref": "#/$defs/package_path"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/file"
+      }
+    }
+  },
+  "$defs": {
+    "local_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    },
+    "app_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+    },
+    "semver": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "package_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9._@+-]+(?:/[A-Za-z0-9._@+-]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "schema_path": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/package_path"
+        },
+        {
+          "pattern": "\\.json$"
+        }
+      ]
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "name",
+        "description",
+        "license"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/app_id"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "homepage": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        }
+      }
+    },
+    "api_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app",
+        "bridge",
+        "cli",
+        "quickjs",
+        "wasm"
+      ],
+      "properties": {
+        "app": {
+          "const": "1"
+        },
+        "bridge": {
+          "const": "1"
+        },
+        "cli": {
+          "const": "1"
+        },
+        "quickjs": {
+          "const": "1"
+        },
+        "wasm": {
+          "const": "1"
+        }
+      }
+    },
+    "entrypoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "views",
+        "functions",
+        "commands",
+        "jobs",
+        "event_handlers"
+      ],
+      "properties": {
+        "views": {
+          "$ref": "#/$defs/view_map"
+        },
+        "functions": {
+          "$ref": "#/$defs/function_map"
+        },
+        "commands": {
+          "$ref": "#/$defs/command_map"
+        },
+        "jobs": {
+          "$ref": "#/$defs/job_map"
+        },
+        "event_handlers": {
+          "$ref": "#/$defs/event_handler_map"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "views": {
+              "minProperties": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "functions": {
+              "minProperties": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "commands": {
+              "minProperties": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "jobs": {
+              "minProperties": 1
+            }
+          }
+        }
+      ]
+    },
+    "view_map": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "$ref": "#/$defs/local_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/view"
+      }
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "title",
+        "mode",
+        "static_export"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/package_path"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "mode": {
+          "enum": [
+            "full_page",
+            "embed",
+            "both"
+          ]
+        },
+        "static_export": {
+          "type": "boolean"
+        },
+        "capability_requests": {
+          "$ref": "#/$defs/id_set"
+        }
+      }
+    },
+    "function_map": {
+      "type": "object",
+      "maxProperties": 128,
+      "propertyNames": {
+        "$ref": "#/$defs/local_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/function"
+      }
+    },
+    "function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime",
+        "path",
+        "input_schema",
+        "output_schema",
+        "capability_requests",
+        "timeout_ms"
+      ],
+      "properties": {
+        "runtime": {
+          "enum": [
+            "quickjs",
+            "wasm"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/package_path"
+        },
+        "export": {
+          "$ref": "#/$defs/local_id"
+        },
+        "entry": {
+          "$ref": "#/$defs/local_id"
+        },
+        "input_schema": {
+          "$ref": "#/$defs/schema_path"
+        },
+        "output_schema": {
+          "$ref": "#/$defs/schema_path"
+        },
+        "capability_requests": {
+          "$ref": "#/$defs/id_set"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "runtime": {
+                "const": "quickjs"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "export"
+            ],
+            "not": {
+              "required": [
+                "entry"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime": {
+                "const": "wasm"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "entry"
+            ],
+            "not": {
+              "required": [
+                "export"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "command_map": {
+      "type": "object",
+      "maxProperties": 128,
+      "propertyNames": {
+        "$ref": "#/$defs/local_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/command"
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "function",
+        "positionals",
+        "options",
+        "stdin",
+        "mutating"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "function": {
+          "$ref": "#/$defs/local_id"
+        },
+        "positionals": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/positional"
+          }
+        },
+        "options": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/option"
+          }
+        },
+        "stdin": {
+          "enum": [
+            "none",
+            "text",
+            "json",
+            "bytes"
+          ]
+        },
+        "mutating": {
+          "type": "boolean"
+        }
+      }
+    },
+    "value_kind": {
+      "enum": [
+        "string",
+        "integer",
+        "boolean",
+        "path",
+        "json",
+        "bytes"
+      ]
+    },
+    "positional": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "required",
+        "repeatable"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/local_id"
+        },
+        "kind": {
+          "$ref": "#/$defs/value_kind"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "repeatable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "long",
+        "kind",
+        "required",
+        "repeatable"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/local_id"
+        },
+        "long": {
+          "type": "string",
+          "pattern": "^--[a-z][a-z0-9-]*$",
+          "maxLength": 64
+        },
+        "short": {
+          "type": "string",
+          "pattern": "^-[A-Za-z0-9]$"
+        },
+        "kind": {
+          "$ref": "#/$defs/value_kind"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "repeatable": {
+          "type": "boolean"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "minimum": {
+          "type": "integer"
+        },
+        "maximum": {
+          "type": "integer"
+        },
+        "conflicts_with": {
+          "$ref": "#/$defs/id_set"
+        }
+      }
+    },
+    "job_map": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "$ref": "#/$defs/local_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/job"
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "retry",
+        "max_attempts"
+      ],
+      "properties": {
+        "function": {
+          "$ref": "#/$defs/local_id"
+        },
+        "retry": {
+          "enum": [
+            "never",
+            "idempotent"
+          ]
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        }
+      }
+    },
+    "event_handler_map": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "$ref": "#/$defs/local_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/event_handler"
+      }
+    },
+    "event_handler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "capability_request",
+        "events"
+      ],
+      "properties": {
+        "function": {
+          "$ref": "#/$defs/local_id"
+        },
+        "capability_request": {
+          "$ref": "#/$defs/local_id"
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "file.created",
+              "file.changed",
+              "file.deleted",
+              "instance.enabled",
+              "schedule.due"
+            ]
+          }
+        }
+      }
+    },
+    "id_set": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/local_id"
+      }
+    },
+    "capability_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "required",
+        "selector"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/local_id"
+        },
+        "name": {
+          "enum": [
+            "vault.notes.read",
+            "vault.notes.write",
+            "vault.notes.delete",
+            "vault.query",
+            "vault.search",
+            "vault.graph",
+            "vault.tasks.read",
+            "vault.tasks.write",
+            "vault.artifacts.read",
+            "vault.artifacts.write",
+            "vault.artifacts.delete",
+            "app.stores.read",
+            "app.stores.write",
+            "app.stores.admin",
+            "app.sessions.join",
+            "app.sessions.manage",
+            "jobs.enqueue",
+            "jobs.schedule",
+            "events.subscribe",
+            "network.fetch",
+            "secrets.use",
+            "tools.call",
+            "publication.write",
+            "host.execute"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "selector": {
+          "$ref": "#/$defs/selector"
+        }
+      }
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "$ref": "#/$defs/string_set"
+        },
+        "tags": {
+          "$ref": "#/$defs/string_set"
+        },
+        "types": {
+          "$ref": "#/$defs/string_set"
+        },
+        "media_types": {
+          "$ref": "#/$defs/string_set"
+        },
+        "stores": {
+          "$ref": "#/$defs/id_set"
+        },
+        "functions": {
+          "$ref": "#/$defs/id_set"
+        },
+        "events": {
+          "$ref": "#/$defs/string_set"
+        },
+        "domains": {
+          "$ref": "#/$defs/string_set"
+        },
+        "secrets": {
+          "$ref": "#/$defs/id_set"
+        },
+        "tools": {
+          "$ref": "#/$defs/string_set"
+        },
+        "executables": {
+          "$ref": "#/$defs/string_set"
+        }
+      }
+    },
+    "string_set": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
+    "store": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "engine",
+        "authority",
+        "scope",
+        "replication",
+        "visibility",
+        "retention",
+        "schema_version",
+        "quota_bytes"
+      ],
+      "properties": {
+        "profile": {
+          "enum": [
+            "temporary",
+            "derived-cache",
+            "device-local",
+            "vault-collection",
+            "canonical-artifact",
+            "live-session"
+          ]
+        },
+        "engine": {
+          "enum": [
+            "kv",
+            "sqlite",
+            "mdbase",
+            "blob",
+            "canonical_artifact",
+            "live_session"
+          ]
+        },
+        "authority": {
+          "enum": [
+            "temporary",
+            "derived",
+            "authoritative"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "invocation",
+            "device",
+            "vault",
+            "user",
+            "group"
+          ]
+        },
+        "replication": {
+          "enum": [
+            "none",
+            "file_tree",
+            "external"
+          ]
+        },
+        "visibility": {
+          "enum": [
+            "private",
+            "admin",
+            "vault"
+          ]
+        },
+        "retention": {
+          "enum": [
+            "disposable",
+            "preserve",
+            "archive"
+          ]
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "quota_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        },
+        "schema": {
+          "$ref": "#/$defs/schema_path"
+        },
+        "binding_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quickjs_heap_bytes",
+        "wasm_memory_bytes",
+        "interactive_timeout_ms",
+        "job_timeout_ms",
+        "input_bytes",
+        "output_bytes",
+        "concurrent_invocations"
+      ],
+      "properties": {
+        "quickjs_heap_bytes": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 268435456
+        },
+        "wasm_memory_bytes": {
+          "type": "integer",
+          "minimum": 65536,
+          "maximum": 536870912
+        },
+        "interactive_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "job_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        },
+        "input_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        },
+        "concurrent_invocations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "size",
+        "digest",
+        "media_type",
+        "delivery"
+      ],
+      "properties": {
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 134217728
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160,
+          "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+(?:;[ -~]+)?$"
+        },
+        "delivery": {
+          "enum": [
+            "whole",
+            "byte_range"
+          ]
+        }
+      }
+    }
+  }
+}
