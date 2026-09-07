@@ -305,6 +305,8 @@ KV values are canonical JSON, at most 1 MiB each, addressed by UTF-8 keys matchi
 
 An mdbase binding names collection root plus optional types/contracts/path selectors and required conformance profiles. Version 1 app record writes require `vulcan.record_write.v1` and its read-profile prerequisites; declarative lifecycle requires `vulcan.lifecycle.v1`. A package explicitly requiring upstream `core_write` remains blocked until the complete pinned profile passes, including its type-pack requirements. Unsupported requirements block only dependent entrypoints. Apps never mutate mdbase files outside the shared planner.
 
+The `mdbase` engine identifies collection semantics and canonical Markdown storage; Vulcan implements its execution using rebuildable SQLite indexes and a shared physical query planner. Native App/script query conveniences preserve those semantics and receive the same optimization as equivalent canonical mdbase queries. All managed collection writes share Vulcan's mdbase-validating revision/journal pipeline. This creates no second persisted collection model or direct SQL-write authority; see [MDB execution and integration](../../mdb/PERFORMANCE_AND_NATIVE_INTEGRATION.md) for the implementation and compatibility gates.
+
 Canonical SQLite is an artifact, not a private SQL handle by default. A store declaring `adapter: "sqlite-artifact-v1"` may expose SQL through the same guarded host connection, but every committed transaction produces an atomic captured artifact revision. Concurrent file-tree versions require review in v1.
 
 ## 11. Events, jobs, network, and secrets

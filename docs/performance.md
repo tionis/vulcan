@@ -18,6 +18,8 @@ The accepted targets and measurement protocol are in the [MDB performance and na
 
 The current mdbase query path derives the collection before filtering. Its record-cache refresh avoids unchanged row writes but still derives the complete collection first. MDB.10 owns removal of repeated work and genuinely incremental indexed reads; changing only the cache lookup call site is insufficient.
 
+The target preserves Markdown/control files → incremental derivation → SQLite/indexed query execution. SQL lowering for the common type/path/scalar-filter/projection/order subset is part of the initial milestone. Canonical mdbase queries and explicitly collection-bound native equivalents must share physical-plan optimization and pass the same latency gates; native syntax is not a prerequisite for fast collection queries. Cross-frontend semantic evidence and SQL/index-use checks accompany timings. All managed collection writes use the same mdbase-validating Vulcan mutation services, with durable-write latency measured separately.
+
 ### Build configuration
 
 Build a release binary first:
