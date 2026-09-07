@@ -864,6 +864,44 @@ function main(event, ctx) {
 }
 
 #[test]
+fn global_options_without_a_subcommand_show_root_help() {
+    let temp = TempDir::new().expect("temporary directory");
+    for args in [
+        vec![],
+        vec!["--vault", "missing-wiki"],
+        vec!["--vault=missing-wiki", "--quiet"],
+    ] {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .current_dir(temp.path())
+            .args(args)
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("Usage:").and(predicate::str::contains("--vault <VAULT>")),
+            )
+            .stderr(predicate::str::is_empty());
+    }
+    assert!(!temp.path().join("missing-wiki").exists());
+}
+
+#[test]
+fn missing_subcommands_and_invalid_global_options_remain_errors() {
+    for args in [
+        vec!["--vault"],
+        vec!["--vault", "missing-wiki", "note"],
+        vec!["--vault", "missing-wiki", "--unknown-option"],
+    ] {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(args)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty());
+    }
+}
+
+#[test]
 fn help_mentions_global_flags_and_core_commands() {
     let mut command = Command::cargo_bin("vulcan").expect("binary should build");
 

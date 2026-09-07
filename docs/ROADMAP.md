@@ -3143,6 +3143,7 @@ The current `vulcan help` is a flat list of ~130 subcommand paths without descri
 - [x] `vulcan help <group>` (e.g., `vulcan help note`) shows all subcommands in that group with descriptions and usage examples
 - [x] `vulcan --help` (clap) should match the grouped layout — currently lists 37 commands in alphabetical order with no visual hierarchy
 - [x] Keep `vulcan help` overview grouped; avoid repeating the same raw command tree below the curated category index
+- [x] Show root help when invoked without a subcommand, including global-option-only invocations such as `vulcan --vault ~/wiki` used by shell wrappers
 
 **Examples in `--help`**
 

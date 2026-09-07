@@ -464,7 +464,7 @@ use crate::output::{
 use crate::resolve::{interactive_note_selection_allowed, resolve_note_argument};
 use bundle_server::{serve_frontend_bundle_profile, FrontendBundleServeOptions};
 use clap::error::ErrorKind;
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, FromArgMatches};
 use clap_complete::generate;
 use regex::Regex;
 use serde::Serialize;
@@ -4802,8 +4802,12 @@ where
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
     let expanded_args = expand_cli_aliases(&args);
-    let cli = match Cli::try_parse_from(&expanded_args) {
-        Ok(cli) => cli,
+    let matches = match Cli::command()
+        .subcommand_required(false)
+        .arg_required_else_help(false)
+        .try_get_matches_from(&expanded_args)
+    {
+        Ok(matches) => matches,
         Err(error) => match error.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
                 error.print().map_err(CliError::operation)?;
@@ -4817,6 +4821,12 @@ where
             }
         },
     };
+    if matches.subcommand_name().is_none() {
+        Cli::command().print_help().map_err(CliError::operation)?;
+        println!();
+        return Ok(());
+    }
+    let cli = Cli::from_arg_matches(&matches).map_err(|error| CliError::clap(&error))?;
     dispatch(&cli)
 }
 
