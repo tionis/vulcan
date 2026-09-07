@@ -1,6 +1,8 @@
 # MDB implementation contract
 
-Status: normative Vulcan integration decisions for the remaining MDB.6–MDB.9 work, reviewed 2026-09-07. The pinned upstream artifacts remain authoritative for upstream format/profile semantics. This document specifies Vulcan authorization, transactional guarantees, and native feature negotiation; it does not silently amend an upstream conformance claim.
+Status: normative Vulcan integration decisions for the remaining MDB.6–MDB.10 work, reviewed 2026-09-07. The pinned upstream artifacts remain authoritative for upstream format/profile semantics. This document specifies Vulcan authorization, transactional guarantees, and native feature negotiation; it does not silently amend an upstream conformance claim.
+
+The [performance and focused native integration contract](PERFORMANCE_AND_NATIVE_INTEGRATION.md) adds MDB.10 acceptance gates for indexed reads, App bindings, and standalone scripts. It retains the portable mdbase model and existing wire contracts; documented targets do not establish implemented capability or performance.
 
 ## 1. Profile evidence and delivery dependencies
 
@@ -10,7 +12,7 @@ The pinned `tests/manifest.yaml` marks `links`, `core_write`, and `lifecycle` dr
 
 Bounded record CRUD may ship first as the Vulcan-owned feature `vulcan.record_write.v1`, with `core_read` and `collection_semantics` prerequisites. Its contract is sections 2–5 below and MDB.7's draft/lifecycle pipeline. Declarative lifecycle support is separately advertised as `vulcan.lifecycle.v1` after its CEL dependency and provider tests pass. Named views use `vulcan.saved_views.v1`; `.base` adaptation separately advertises `obsidian_bases_views` only with the required oracle evidence. These names are feature claims, not invented upstream profiles. Apps negotiate profile and feature names explicitly and report which namespace a claim belongs to.
 
-MDB.6 owns link resolution/helpers; MDB.7 owns record writes and declarative lifecycle; MDB.8 owns saved views, `.base` adaptation, and explicit TaskNotes migration. MDB.9 owns watcher integration. Studio can ship read-only after MDB.4/5, with no saved-view default until MDB.8; linked pickers require MDB.6, writes require MDB.7, saved views/import migration require MDB.8, and automatic refresh requires MDB.9. Missing optional features disable their controls, not unrelated reads. No MDB slice becomes a global daemon gate.
+MDB.6 owns link resolution/helpers; MDB.7 owns record writes and declarative lifecycle; MDB.8 owns saved views, `.base` adaptation, and explicit TaskNotes migration. MDB.9 owns watcher integration. Studio's first-party read-only backend requires MDB.4/5 and the MDB.10 read acceptance gates, with no saved-view default until MDB.8; linked pickers require MDB.6, writes require MDB.7 and MDB.10 write acceptance, saved views/import migration require MDB.8, and automatic refresh requires MDB.9. Missing optional features disable their controls, not unrelated reads. No MDB slice becomes a global daemon gate.
 
 ## 2. Authorization and constraint scope
 

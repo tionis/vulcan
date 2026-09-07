@@ -12,6 +12,14 @@ Vulcan's performance model is built around cheap incremental rescans and rebuild
 
 ## Benchmarking
 
+### mdbase App and script workloads
+
+The accepted targets and measurement protocol are in the [MDB performance and native integration contract](specs/mdb/PERFORMANCE_AND_NATIVE_INTEGRATION.md#3-performance-acceptance-contract). Bounded warm local metadata queries target p95 below 50 ms and p99 below 100 ms; a direct CLI query with an existing index and normal unchanged-vault freshness checking targets p95 below 100 ms. These targets are not claims about the current binary. Cold/rebuild/reconciliation work, durable writes, and expensive query classes are measured separately. Follow the contract's fixture, permission, exact-result, concurrency, percentile, and work-counter requirements before claiming App-backend readiness.
+
+The current mdbase query path derives the collection before filtering. Its record-cache refresh avoids unchanged row writes but still derives the complete collection first. MDB.10 owns removal of repeated work and genuinely incremental indexed reads; changing only the cache lookup call site is insufficient.
+
+### Build configuration
+
 Build a release binary first:
 
 ```bash

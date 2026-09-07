@@ -6600,6 +6600,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 - [ ] Make typed Markdown and mdbase-compatible collections the preferred structured store when data should remain human-readable, linkable, queryable, interoperable, and synchronized with the vault; bind apps to typed collection contracts and use Vulcan read/query/mutation/lifecycle/event APIs rather than raw paths
 - [ ] Allow several apps to consume records implementing the same portable mdbase data contract without granting package ownership, implicit writes, or access beyond each instance's selectors; surface unsupported mdbase profiles and collection diagnostics explicitly
+- [ ] Gate first-party mdbase App-backend readiness on MDB.10's bounded warm read latency, semantic parity, and shared App/script bindings; preserve `stores.mdbase.*` and portable collection definitions, and gate writable entrypoints separately on MDB.7 plus measured write acceptance
 - [ ] Allow apps to declare and bind canonical non-Markdown artifacts, including SQLite databases, without treating them as rebuildable merely because they use SQLite
 - [ ] Keep app data physically separate from immutable `.vapp` packages by default so package upgrades, signatures, rollback, distribution, sync, and backup do not become stateful code rewrites; reserve self-modifying package-plus-data files for a future explicit portable-document mode
 - [ ] For canonical SQLite stores, serialize writers through Vulcan, use the same safe connection boundary as private stores, and ensure WAL/SHM sidecars cannot escape the captured mutation; materialize each completed write as an atomic artifact replacement or formally captured file set
@@ -7314,6 +7315,8 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 - [x] Implement cross-file uniqueness scopes, advisory display metadata, and portable path-pattern validation with deterministic collection-relative forward-slash paths.
 - [x] Cache type membership, effective projections, and validation results as versioned derived data with rebuild and incremental invalidation when config, types, contracts, schemas, or records change.
 
+The current refresh avoids unchanged SQLite row writes but still derives the whole collection first. Actual changed-record derivation and cache-backed query execution are MDB.10 work, not completed performance guarantees.
+
 #### MDB.4 Core read surface and conformance gate
 
 - [x] Add `vulcan mdbase status|types|contracts|validate|read` over reusable core/app services, with `--output json`, permission filtering, exact source opt-in, canonical diagnostics, and no implicit mutation.
@@ -7369,6 +7372,24 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 - [ ] Apply existing permission profiles to mdbase read/query/write paths and keep control files, contracts, diagnostics, and exact source subject to normal path/read restrictions.
 - [ ] Add help/reference documentation, an mdbase-focused assistant skill, example collections, feature-disabled behavior, and upgrade notes for each newly claimed profile.
 - [ ] Re-evaluate upstream stability, MSRV, and crate boundaries before each profile expansion. Do not depend directly on `mdbase-rs` while it would raise Vulcan's MSRV or introduce a second authoritative cache/watcher/mutation engine.
+
+#### MDB.10 Performance acceptance and focused native integration
+
+**Contract:** [MDB performance and native integration](specs/mdb/PERFORMANCE_AND_NATIVE_INTEGRATION.md). Keep mdbase first-class and portable regardless of adoption forecasts. Native integration means shared Vulcan execution/bindings for Apps and standalone scripts, with no second collection format, schema language, public query dialect, or independent engine.
+
+**Targets:** On the specified 10K-record reference fixture, bounded warm local metadata queries require p95 < 50 ms and p99 < 100 ms; internal execution targets p95 < 25 ms, warm metadata reads p95 < 10 ms, and unchanged-vault direct CLI queries with normal freshness checking p95 < 100 ms. The contract defines measurement boundaries, 100K scaling cases, exact-count semantics, and separate cold/rebuild/write budgets. No current performance pass is implied.
+
+**Delivery:** Begin with MDB.1–MDB.5 services; CLI/script read performance does not wait for Phase 19. App bindings follow the host's Phase 19 availability, writes follow MDB.7, and live subscriptions follow MDB.9. These are first-party App-backend readiness gates, not blockers for unrelated daemon work or exploratory read-only CLI use.
+
+- [x] Document latency acceptance criteria, freshness/semantic constraints, the focused integration scope, and an explicit implementation/evidence sequence; this completes design documentation only.
+- [ ] Add deterministic public 10K/100K fixtures, stage timing/work counters, native/DQL/mdbase baselines, and a recorded release-build reference machine; keep private real-vault data out of committed artifacts.
+- [ ] Reuse compiled CEL programs and schema validators, share immutable link state, and avoid unused body/link/contract hydration; measure each change and preserve diagnostics and resource bounds.
+- [ ] Make cache derivation genuinely incremental across changed records and relevant control/link/constraint dependencies; connect read/query services to permission-safe coherent indexed snapshots with repairable invalidation.
+- [ ] Add indexed candidate selection through the shared query representation; lower predicates/order only with differential semantic evidence, retaining residual CEL and exact totals/grouping without premature pagination.
+- [ ] Pass the reference warm read/CLI latency gates and deterministic no-full-rederivation/no-body-read/no-per-row-index-copy assertions; publish percentiles, memory, failures, candidate work, cold/rebuild timings, and 100K scaling evidence.
+- [ ] Exercise one shared inspect/schema/read/query service through a shell task-list script, Python structured integration, and Collection Studio bindings; retain canonical mdbase envelopes and existing native-query semantics, with no App package or daemon required for standalone scripts.
+- [ ] After MDB.7, pass a revision-checked frontmatter-patch pilot with durable recovery and read-after-write consistency; establish and document the write latency budget before enabling writable App/script entrypoints. Do not claim complete native/upstream write profiles from this pilot alone.
+- [ ] Pass semantic differential, permission-revocation, clock/schema/source-change, crash/rebuild, and sustained eight-reader/two-write-per-second tests; include queueing in latency and review installed skills when callable behavior ships.
 
 #### Deferred mdbase runtime work
 
