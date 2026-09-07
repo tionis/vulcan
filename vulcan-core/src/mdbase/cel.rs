@@ -1234,6 +1234,12 @@ mod tests {
                 mtime: Some("2026-06-14T08:00:00Z".to_string()),
                 ctime: None,
             },
+            links: Vec::new(),
+            tags: vec![
+                "project/alpha".to_string(),
+                "runtime".to_string(),
+                "urgent".to_string(),
+            ],
             display: None,
             contract_views: Vec::new(),
             diagnostics: Vec::new(),

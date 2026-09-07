@@ -30,6 +30,8 @@ mod records;
 pub use records::*;
 mod record_cache;
 pub use record_cache::*;
+mod links;
+pub use links::*;
 
 pub const MDBASE_CONFIG_FILE_NAME: &str = "mdbase.yaml";
 pub const MDBASE_LOCK_FILE_NAME: &str = "mdbase.lock.yaml";

@@ -965,6 +965,8 @@ mod tests {
                 mtime: None,
                 ctime: None,
             },
+            links: Vec::new(),
+            tags: Vec::new(),
             display: None,
             contract_views: Vec::new(),
             diagnostics: Vec::new(),

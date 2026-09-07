@@ -61,6 +61,10 @@ pub struct MdbaseRecordDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document: Option<String>,
     pub file: MdbaseRecordFileMetadata,
+    #[serde(default)]
+    pub links: Vec<super::MdbaseLink>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Advisory metadata from the first matched type, never a validator.
     pub display: Option<serde_json::Value>,
     #[serde(default)]
@@ -157,6 +161,10 @@ pub fn load_mdbase_records_filtered(
         .collect::<Result<Vec<_>, _>>()?;
     if collection.config.settings.validation != MdbaseValidationLevel::Off {
         validate_cross_file_uniqueness(collection, types, &mut records);
+    }
+    super::resolve_collection_links(collection, types, &mut records);
+    for record in &mut records {
+        sort_record_diagnostics(&mut record.diagnostics);
     }
     Ok(MdbaseRecordSet { records })
 }
@@ -323,6 +331,8 @@ fn build_mdbase_record(
         body,
         document: include_source.then_some(source),
         file,
+        links: Vec::new(),
+        tags: Vec::new(),
         display: behavior.display,
         contract_views: Vec::new(),
         diagnostics,
@@ -953,6 +963,99 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a.md", "z.md"]
         );
+    }
+
+    #[test]
+    fn collection_links_preserve_syntax_and_resolve_with_mdbase_rules() {
+        let directory = tempdir().expect("collection directory");
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\nsettings:\n  validation: error\n",
+        );
+        write(
+            &directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\ncollection:\n  links:\n    parent:\n      target_type: task\n      validate_exists: true\n---\n",
+        );
+        write(
+            &directory.path().join("_types/project.md"),
+            "---\nkind: mdbase.type\nname: project\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
+        );
+        write(
+            &directory.path().join("tasks/parent.md"),
+            "---\ntype: task\nid: task-1\ntags: [work, '#parent']\n---\n# Parent\n",
+        );
+        write(
+            &directory.path().join("tasks/child.md"),
+            "---\ntype: task\nid: task-2\nparent: '[[task-1|Parent task]]'\n---\nSee [parent](parent.md#Details), ![[asset.png]], and #body-tag.\n\n`#not-a-tag [[not-a-link]]`\n",
+        );
+        write(
+            &directory.path().join("projects/relative.md"),
+            "---\ntype: task\nparent: ../tasks/parent.md\n---\n",
+        );
+        write(
+            &directory.path().join("tasks/missing.md"),
+            "---\ntype: task\nparent: '[[does-not-exist]]'\n---\n",
+        );
+        write(
+            &directory.path().join("projects/wrong-type.md"),
+            "---\ntype: project\nid: project-1\n---\n",
+        );
+        write(
+            &directory.path().join("tasks/wrong-type.md"),
+            "---\ntype: task\nparent: '[[project-1]]'\n---\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("collection should load")
+            .expect("collection should exist");
+        let types = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let records = load_mdbase_records(&collection, &types, false).expect("records should load");
+        let child = records.get("tasks/child.md").expect("child record");
+        let parent = child
+            .links
+            .iter()
+            .find(|link| link.field.as_deref() == Some("parent"))
+            .expect("declared link");
+        assert_eq!(parent.raw, "[[task-1|Parent task]]");
+        assert_eq!(parent.target, "task-1");
+        assert_eq!(parent.alias.as_deref(), Some("Parent task"));
+        assert_eq!(parent.resolved_path.as_deref(), Some("tasks/parent.md"));
+        assert_eq!(
+            parent.resolution,
+            super::super::MdbaseLinkResolution::Resolved
+        );
+        assert!(child.links.iter().any(|link| {
+            link.source == super::super::MdbaseLinkSource::Body
+                && link.target == "parent.md"
+                && link.anchor.as_deref() == Some("Details")
+                && link.resolved_path.as_deref() == Some("tasks/parent.md")
+        }));
+        assert!(child
+            .links
+            .iter()
+            .any(|link| link.embed && link.target == "asset.png"));
+        assert!(!child.links.iter().any(|link| link.target == "not-a-link"));
+        assert_eq!(child.tags, vec!["body-tag"]);
+
+        let parent_record = records.get("tasks/parent.md").expect("parent record");
+        assert_eq!(parent_record.tags, vec!["parent", "work"]);
+        let relative = records
+            .get("projects/relative.md")
+            .expect("relative record");
+        assert_eq!(
+            relative.links[0].resolved_path.as_deref(),
+            Some("tasks/parent.md")
+        );
+        let missing = records.get("tasks/missing.md").expect("missing record");
+        assert!(missing.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "link_not_found" && diagnostic.field == "parent"
+        }));
+        let wrong_type = records
+            .get("tasks/wrong-type.md")
+            .expect("wrong-type record");
+        assert!(wrong_type.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "link_target_type_mismatch" && diagnostic.field == "parent"
+        }));
     }
 
     #[test]
