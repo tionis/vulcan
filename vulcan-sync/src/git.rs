@@ -3032,18 +3032,39 @@ impl GitEngine for GitCliEngine {
                 .expect("the sync index path always has a parent"),
         )?;
         remove_file_if_present(&index_path)?;
+        let merge = self.merge_commits(
+            repository,
+            &request.accepted_remote,
+            &request.local_candidate,
+        )?;
+        let supplied = request
+            .paths
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if merge.base.as_ref() != Some(&request.base)
+            || merge
+                .conflict_paths
+                .iter()
+                .any(|path| !supplied.contains(path.as_str()))
+        {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "merge resolution inputs do not cover the current conflicted merge"
+                    .to_string(),
+            });
+        }
+        let merge_tree =
+            merge
+                .tree
+                .as_ref()
+                .ok_or_else(|| GitEngineError::UnsupportedRepository {
+                    detail: "merge resolution did not produce a candidate tree".to_string(),
+                })?;
         self.index_output(
             repository,
             &index_path,
             "prepare a conflicted merge resolution",
-            [
-                "read-tree",
-                "-m",
-                "--aggressive",
-                request.base.as_str(),
-                request.accepted_remote.as_str(),
-                request.local_candidate.as_str(),
-            ],
+            ["read-tree", merge_tree.as_str()],
         )?;
         let selected = match request.side {
             GitConflictSide::Base => &request.base,
@@ -3100,18 +3121,39 @@ impl GitEngine for GitCliEngine {
                 .expect("the sync index path always has a parent"),
         )?;
         remove_file_if_present(&index_path)?;
+        let merge = self.merge_commits(
+            repository,
+            &request.accepted_remote,
+            &request.local_candidate,
+        )?;
+        let supplied = request
+            .paths
+            .iter()
+            .map(|path| path.path.as_str())
+            .collect::<BTreeSet<_>>();
+        if merge.base.as_ref() != Some(&request.base)
+            || merge
+                .conflict_paths
+                .iter()
+                .any(|path| !supplied.contains(path.as_str()))
+        {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "structured merge inputs do not cover the current conflicted merge"
+                    .to_string(),
+            });
+        }
+        let merge_tree =
+            merge
+                .tree
+                .as_ref()
+                .ok_or_else(|| GitEngineError::UnsupportedRepository {
+                    detail: "structured merge did not produce a candidate tree".to_string(),
+                })?;
         self.index_output(
             repository,
             &index_path,
             "prepare a structured merge resolution",
-            [
-                "read-tree",
-                "-m",
-                "--aggressive",
-                request.base.as_str(),
-                request.accepted_remote.as_str(),
-                request.local_candidate.as_str(),
-            ],
+            ["read-tree", merge_tree.as_str()],
         )?;
         for resolved in &request.paths {
             validate_repository_path(&resolved.path)?;
@@ -6557,9 +6599,16 @@ mod tests {
             "removed by both sides\n",
         )
         .expect("deleted on both sides");
+        fs::write(temporary.path().join("clean.md"), "alpha\nmiddle\nomega\n")
+            .expect("clean merge base");
         let base = commit_all(temporary.path(), "base");
         run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
         fs::write(temporary.path().join("data.json"), "{\"value\":1}\n").expect("remote");
+        fs::write(
+            temporary.path().join("clean.md"),
+            "remote alpha\nmiddle\nomega\n",
+        )
+        .expect("remote clean edit");
         fs::remove_file(temporary.path().join("removed.md")).expect("remote deletion");
         let remote = commit_all(temporary.path(), "remote");
         run_git(
@@ -6567,6 +6616,11 @@ mod tests {
             &["checkout", "--quiet", "-b", "local", base.as_str()],
         );
         fs::write(temporary.path().join("data.json"), "{\"value\":2}\n").expect("local");
+        fs::write(
+            temporary.path().join("clean.md"),
+            "alpha\nmiddle\nlocal omega\n",
+        )
+        .expect("local clean edit");
         fs::remove_file(temporary.path().join("removed.md")).expect("local deletion");
         let local = commit_all(temporary.path(), "local");
         let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
@@ -6610,6 +6664,14 @@ mod tests {
             .expect("deleted path query")
             .is_none());
         assert_eq!(
+            engine
+                .path_object(&repository, &commit, "clean.md")
+                .expect("clean path query")
+                .expect("clean path")
+                .data,
+            Some(b"remote alpha\nmiddle\nlocal omega\n".to_vec())
+        );
+        assert_eq!(
             run_git_capture(temporary.path(), &["write-tree"]),
             normal_index
         );
@@ -6625,10 +6687,17 @@ mod tests {
             "removed by both sides\n",
         )
         .expect("shared file");
+        fs::write(temporary.path().join("clean.md"), "alpha\nmiddle\nomega\n")
+            .expect("clean merge base");
         let base = commit_all(temporary.path(), "base");
 
         run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
         fs::write(temporary.path().join("Home.md"), "remote\n").expect("remote note");
+        fs::write(
+            temporary.path().join("clean.md"),
+            "remote alpha\nmiddle\nomega\n",
+        )
+        .expect("remote clean edit");
         fs::remove_file(temporary.path().join("removed.md")).expect("remote deletion");
         let remote = commit_all(temporary.path(), "remote");
 
@@ -6637,6 +6706,11 @@ mod tests {
             &["checkout", "--quiet", "-b", "local", base.as_str()],
         );
         fs::write(temporary.path().join("Home.md"), "local\n").expect("local note");
+        fs::write(
+            temporary.path().join("clean.md"),
+            "alpha\nmiddle\nlocal omega\n",
+        )
+        .expect("local clean edit");
         fs::remove_file(temporary.path().join("removed.md")).expect("local deletion");
         let local = commit_all(temporary.path(), "local");
         let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
@@ -6670,6 +6744,14 @@ mod tests {
             .path_object(&repository, &tree, "removed.md")
             .expect("deleted path query")
             .is_none());
+        assert_eq!(
+            engine
+                .path_object(&repository, &tree, "clean.md")
+                .expect("clean path query")
+                .expect("clean path")
+                .data,
+            Some(b"remote alpha\nmiddle\nlocal omega\n".to_vec())
+        );
         assert_eq!(
             run_git_capture(temporary.path(), &["write-tree"]),
             normal_index
