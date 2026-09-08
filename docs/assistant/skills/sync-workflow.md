@@ -119,6 +119,9 @@ they commit.
 - Vulcan verifies the worktree before and after applying an accepted tree. If Obsidian or another
   writer changes a file during that window, the finite cycle recaptures and retries automatically;
   repeated activity exhausts the bounded retry limit and remains a retryable `busy` failure.
+- The daemon gives an initial retryable repository-lock (`busy`) failure one durable recovery
+  cycle before notifying. If that recovery is also busy, it records and delivers the failure
+  normally instead of retrying forever.
 
 ## Daemon and Obsidian companion
 

@@ -42,7 +42,7 @@ use tempfile::NamedTempFile;
 use tokio::net::TcpListener;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
-use vulcan_sync::GitBranchSync;
+use vulcan_sync::{GitBranchSync, SyncErrorCategory, SyncJobState, SyncJobTrigger};
 
 pub const DAEMON_RUNTIME_VERSION: u32 = 1;
 const RUNTIME_FILE: &str = "runtime.json";
@@ -550,6 +550,9 @@ fn spawn_job_worker(
                         if verbose {
                             eprintln!("{}", format_sync_execution(&execution));
                         }
+                        if enqueue_busy_recovery(&supervisor, &execution)? {
+                            continue;
+                        }
                         if let Some(alert) = alerts.observe(&execution) {
                             eprintln!("{}", alert.log_line());
                             if let Some(sender) = alert_sender.as_ref() {
@@ -581,6 +584,32 @@ fn spawn_job_worker(
         }
         result
     })
+}
+
+/// Gives one transient repository-lock failure an immediate supervised
+/// recovery cycle. The first failure is not alerted because the recovery is
+/// already durable; a second busy failure carries the `Recovery` trigger and
+/// is surfaced normally instead of spinning forever.
+fn enqueue_busy_recovery(
+    supervisor: &SyncSupervisor,
+    execution: &crate::sync::DaemonSyncExecution,
+) -> Result<bool, SupervisorError> {
+    let retryable_busy = execution.job.job.state == SyncJobState::Failed
+        && execution
+            .job
+            .job
+            .error
+            .as_ref()
+            .is_some_and(|error| error.retryable && error.category == SyncErrorCategory::Busy)
+        && !execution.job.triggers.contains(&SyncJobTrigger::Recovery);
+    if !retryable_busy {
+        return Ok(false);
+    }
+    let Some(wiki_id) = execution.job.job.wiki_id.as_deref() else {
+        return Ok(false);
+    };
+    supervisor.enqueue(wiki_id, &execution.job.job.vault, SyncJobTrigger::Recovery)?;
+    Ok(true)
 }
 
 /// Returns a branch lane failure the first time it appears per wiki, so a
@@ -834,6 +863,46 @@ mod tests {
             }],
             ..DaemonConfig::default()
         }
+    }
+
+    #[test]
+    fn first_busy_failure_enqueues_one_recovery_before_alerting() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
+        let failed = crate::sync::DaemonSyncExecution {
+            job: crate::supervisor::SupervisedSyncJob {
+                job: vulcan_sync::SyncJob {
+                    version: vulcan_sync::SYNC_CONTRACT_VERSION,
+                    id: "failed-job".to_string(),
+                    wiki_id: Some("notes".to_string()),
+                    backend: "git".to_string(),
+                    vault: temporary.path().join("vault"),
+                    trigger: SyncJobTrigger::Resume,
+                    state: SyncJobState::Failed,
+                    status: None,
+                    error: Some(vulcan_sync::SyncError::new(
+                        SyncErrorCategory::Busy,
+                        "repository lock is held",
+                        true,
+                    )),
+                },
+                triggers: vec![SyncJobTrigger::Resume],
+                watch: None,
+            },
+            report: None,
+        };
+
+        assert!(enqueue_busy_recovery(&supervisor, &failed).expect("schedule recovery"));
+        let recovery = supervisor
+            .claim_next()
+            .expect("claim recovery")
+            .expect("recovery job");
+        assert_eq!(recovery.job.triggers, vec![SyncJobTrigger::Recovery]);
+
+        let mut repeated = failed;
+        repeated.job.triggers = vec![SyncJobTrigger::Recovery];
+        assert!(!enqueue_busy_recovery(&supervisor, &repeated).expect("bound recovery"));
     }
 
     #[cfg(feature = "web")]
