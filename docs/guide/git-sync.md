@@ -124,7 +124,9 @@ vulcan daemon start --detach
 Vulcan uses `notify-send` on Linux, `osascript` on macOS, and PowerShell on Windows without a shell.
 Delivery runs on a bounded worker with a five-second helper timeout. If the helper or graphical
 session is unavailable, the daemon logs that delivery failure and leaves the authoritative sync
-result unchanged. Disable it with `set-notifications --desktop false`.
+result unchanged. Desktop attempts use the durable alert ledger too: enabling the setting after a
+retained failure delivers that current state once, while later daemon restarts do not repeat an
+already delivered alert. Disable it with `set-notifications --desktop false`.
 
 For ntfy, configure the full non-secret topic endpoint and keep an optional access token in
 `daemon.env`:

@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 20
+version: 21
 tools:
   - config_show
   - config_get
@@ -44,7 +44,9 @@ permission profiles, or diagnoses permission and trust failures.
 15. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
     Preview `vulcan daemon config set-notifications --desktop true --dry-run`, apply it, and restart
     the daemon to opt into native desktop delivery. This setting contains no credential and a
-    desktop delivery failure never changes the retained sync result.
+    desktop delivery failure never changes the retained sync result. Enabling it reconciles the
+    current retained terminal job into the durable alert ledger once; successful delivery prevents
+    repeat alerts on later restarts.
 16. Add remote alerts with `daemon config set-notification-webhook <name> --url <url>
     --format json|ntfy [--token-env <name>] --dry-run`, or an absolute shell-free local bridge with
     `set-notification-command <name> --program <path> [--arg <literal>]... --dry-run`. Restart after

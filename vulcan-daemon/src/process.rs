@@ -1,6 +1,9 @@
 //! Long-running synchronization daemon process lifecycle.
 
-use crate::alert_delivery::{spawn_alert_delivery, AlertDeliverySender, AlertDeliveryWorker};
+use crate::alert_delivery::{
+    spawn_alert_delivery, spawn_best_effort_desktop_delivery, AlertDeliverySender,
+    AlertDeliveryWorker,
+};
 use crate::alerts::SyncAlertTracker;
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
@@ -335,20 +338,8 @@ impl DaemonWorkers {
                     "level=warning event=notification_delivery_failed sink=ledger reason=startup_error; {error}"
                 );
                 if config.notifications.desktop {
-                    let desktop_only = crate::registry::DaemonNotificationConfig {
-                        desktop: true,
-                        ..crate::registry::DaemonNotificationConfig::default()
-                    };
-                    match spawn_alert_delivery(
-                        &desktop_only,
-                        &context.state_root,
-                        context.registry.clone(),
-                        supervisor,
-                        Arc::clone(stop),
-                    ) {
-                        Ok(Some((sender, worker))) => (Some(sender), Some(worker)),
-                        _ => (None, None),
-                    }
+                    let (sender, worker) = spawn_best_effort_desktop_delivery();
+                    (Some(sender), Some(worker))
                 } else {
                     (None, None)
                 }

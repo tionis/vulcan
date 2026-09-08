@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 15
+version: 16
 metadata:
   vulcan:
     managed: true
@@ -192,7 +192,9 @@ they commit.
   desktop delivery, preview and apply
   `vulcan daemon config set-notifications --desktop true --dry-run` and then without `--dry-run`,
   then restart the daemon. Desktop delivery is best-effort, timeout-bounded, and never changes the
-  retained sync result; helper or desktop-session failures become warning log records.
+  retained sync result; helper or desktop-session failures become warning log records. Its durable
+  delivery identity surfaces a failure that already exists when desktop alerts are first enabled,
+  but suppresses replay after successful delivery on later restarts.
   For remote delivery, configure a named JSON webhook or ntfy topic with
   `daemon config set-notification-webhook <name> --url <https-url> --format json|ntfy
   [--token-env <name>] --dry-run`. Apply and restart only after the preview is correct. The URL

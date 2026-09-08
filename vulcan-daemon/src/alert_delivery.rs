@@ -27,6 +27,7 @@ const LEDGER_VERSION: u32 = 1;
 const LEDGER_FILE: &str = "alert-delivery.json";
 const MAX_LEDGER_BYTES: u64 = 1024 * 1024;
 const MAX_RECORDS: usize = 512;
+const MAX_TARGETS_PER_RECORD: usize = 17;
 const RETRY_BASE_MS: u64 = 30_000;
 const RETRY_MAX_MS: u64 = 3_600_000;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -159,15 +160,19 @@ pub fn alert_delivery_status(
         desktop: config.desktop,
         configured_sinks: sinks
             .iter()
-            .map(|sink| AlertSinkStatus {
-                name: sink.name().to_string(),
-                kind: match sink {
-                    DeliverySink::Webhook(config) => match config.format {
+            .filter_map(|sink| match sink {
+                DeliverySink::Desktop => None,
+                DeliverySink::Webhook(config) => Some(AlertSinkStatus {
+                    name: config.name.clone(),
+                    kind: match config.format {
                         DaemonWebhookFormat::Json => "webhook",
                         DaemonWebhookFormat::Ntfy => "ntfy",
                     },
-                    DeliverySink::Command(_) => "command",
-                },
+                }),
+                DeliverySink::Command(config) => Some(AlertSinkStatus {
+                    name: config.name.clone(),
+                    kind: "command",
+                }),
             })
             .collect(),
         retained_events: ledger.state.records.len(),
@@ -181,6 +186,29 @@ impl AlertDeliveryWorker {
     }
 }
 
+/// Keeps new desktop alerts working when the durable ledger cannot be opened.
+/// The startup error remains visible in logs and status so durable delivery can
+/// be repaired; this fallback deliberately cannot acknowledge retained work.
+#[must_use]
+pub fn spawn_best_effort_desktop_delivery() -> (AlertDeliverySender, AlertDeliveryWorker) {
+    let (sender, receiver) = mpsc::sync_channel(32);
+    let handle = thread::spawn(move || {
+        while let Ok(alert) = receiver.recv() {
+            if let Err(error) = deliver_desktop(&alert) {
+                log_delivery_failure("desktop", delivery_io_reason(&error), 1);
+            }
+        }
+    });
+    (
+        AlertDeliverySender {
+            sender,
+            ledger: None,
+            sink_ids: Vec::new(),
+        },
+        AlertDeliveryWorker { handle },
+    )
+}
+
 /// Creates the delivery boundary. Retained terminal jobs are reconciled into
 /// the durable ledger before the worker starts, closing the crash window
 /// between supervisor completion and alert enqueue.
@@ -192,21 +220,16 @@ pub fn spawn_alert_delivery(
     stop: Arc<AtomicBool>,
 ) -> Result<Option<(AlertDeliverySender, AlertDeliveryWorker)>, AlertDeliveryError> {
     let sinks = configured_sinks(config);
-    if !config.desktop && sinks.is_empty() {
+    if sinks.is_empty() {
         return Ok(None);
     }
     let sink_ids = sinks.iter().map(DeliverySink::id).collect::<Vec<_>>();
-    let ledger = if sinks.is_empty() {
-        None
-    } else {
-        let mut ledger = DeliveryLedger::load(state_root.join("daemon").join(LEDGER_FILE))?;
-        ledger.retire_missing_sinks(&sink_ids)?;
-        reconcile_retained_jobs(&mut ledger, supervisor, &sink_ids)?;
-        Some(Arc::new(Mutex::new(ledger)))
-    };
+    let mut ledger = DeliveryLedger::load(state_root.join("daemon").join(LEDGER_FILE))?;
+    ledger.retire_missing_sinks(&sink_ids)?;
+    reconcile_retained_jobs(&mut ledger, supervisor, &sink_ids)?;
+    let ledger = Some(Arc::new(Mutex::new(ledger)));
     let (sender, receiver) = mpsc::sync_channel(32);
     let worker_ledger = ledger.clone();
-    let desktop = config.desktop;
     let handle = thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -222,12 +245,7 @@ pub fn spawn_alert_delivery(
         );
         loop {
             match receiver.recv_timeout(WORKER_POLL) {
-                Ok(alert) => {
-                    if desktop {
-                        if let Err(error) = deliver_desktop(&alert) {
-                            log_delivery_failure("desktop", delivery_io_reason(&error), 1);
-                        }
-                    }
+                Ok(_) => {
                     process_pending(
                         worker_ledger.as_ref(),
                         &sinks,
@@ -281,6 +299,7 @@ fn reconcile_retained_jobs(
 
 #[derive(Debug, Clone)]
 enum DeliverySink {
+    Desktop,
     Webhook(DaemonWebhookNotificationConfig),
     Command(DaemonCommandNotificationConfig),
 }
@@ -288,6 +307,7 @@ enum DeliverySink {
 impl DeliverySink {
     fn id(&self) -> String {
         match self {
+            Self::Desktop => "desktop".to_string(),
             Self::Webhook(config) => format!("webhook:{}", config.name),
             Self::Command(config) => format!("command:{}", config.name),
         }
@@ -295,6 +315,7 @@ impl DeliverySink {
 
     fn name(&self) -> &str {
         match self {
+            Self::Desktop => "desktop",
             Self::Webhook(config) => &config.name,
             Self::Command(config) => &config.name,
         }
@@ -303,11 +324,17 @@ impl DeliverySink {
 
 fn configured_sinks(config: &DaemonNotificationConfig) -> Vec<DeliverySink> {
     config
-        .webhooks
-        .iter()
-        .cloned()
-        .map(DeliverySink::Webhook)
-        .chain(config.commands.iter().cloned().map(DeliverySink::Command))
+        .desktop
+        .then_some(DeliverySink::Desktop)
+        .into_iter()
+        .chain(
+            config
+                .webhooks
+                .iter()
+                .cloned()
+                .map(DeliverySink::Webhook)
+                .chain(config.commands.iter().cloned().map(DeliverySink::Command)),
+        )
         .collect()
 }
 
@@ -377,6 +404,7 @@ fn authorize_sink(
         .map_err(|_| "permission_profile_invalid")?;
     let guard = ProfilePermissionGuard::new(&paths, selection);
     match sink {
+        DeliverySink::Desktop => Ok(()),
         DeliverySink::Webhook(config) => guard
             .check_network(&config.url)
             .map_err(|_| "network_permission_denied"),
@@ -392,6 +420,7 @@ fn deliver_sink(
     client: Option<&reqwest::blocking::Client>,
 ) -> Result<(), &'static str> {
     match sink {
+        DeliverySink::Desktop => deliver_desktop(alert).map_err(|error| delivery_io_reason(&error)),
         DeliverySink::Webhook(config) => {
             deliver_webhook(config, alert, client.ok_or("http_client_unavailable")?)
         }
@@ -570,13 +599,37 @@ impl DeliveryLedger {
     }
 
     fn record(&mut self, alert: SyncAlert, sink_ids: &[String]) -> Result<(), AlertDeliveryError> {
-        if self
+        if let Some(index) = self
             .state
             .records
             .iter()
-            .any(|record| record.alert.job_id == alert.job_id)
+            .position(|record| record.alert.job_id == alert.job_id)
         {
-            return Ok(());
+            let previous = self.state.clone();
+            let record = &mut self.state.records[index];
+            let existing = record
+                .targets
+                .iter()
+                .map(|target| target.sink_id.as_str())
+                .collect::<BTreeSet<_>>();
+            let additions = sink_ids
+                .iter()
+                .filter(|sink_id| !existing.contains(sink_id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            if additions.is_empty() {
+                return Ok(());
+            }
+            record
+                .targets
+                .extend(additions.into_iter().map(|sink_id| DeliveryTarget {
+                    sink_id,
+                    delivered: false,
+                    attempts: 0,
+                    next_attempt_unix_ms: 0,
+                    last_failure: None,
+                }));
+            return self.save_or_restore(previous);
         }
         let previous = self.state.clone();
         trim_completed_records(&mut self.state.records);
@@ -672,16 +725,12 @@ impl DeliveryLedger {
         let previous = self.state.clone();
         let configured = sink_ids.iter().collect::<BTreeSet<_>>();
         let mut changed = false;
-        for target in self
-            .state
-            .records
-            .iter_mut()
-            .flat_map(|record| &mut record.targets)
-        {
-            if !configured.contains(&target.sink_id) && !target.delivered {
-                target.delivered = true;
-                changed = true;
-            }
+        for record in &mut self.state.records {
+            let before = record.targets.len();
+            record
+                .targets
+                .retain(|target| configured.contains(&target.sink_id));
+            changed |= record.targets.len() != before;
         }
         if changed {
             self.save_or_restore(previous)?;
@@ -762,7 +811,7 @@ fn validate_ledger_state(
             || !valid_event
             || !valid_wiki
             || !jobs.insert(&alert.job_id)
-            || record.targets.len() > 16
+            || record.targets.len() > MAX_TARGETS_PER_RECORD
         {
             return Err(invalid_ledger(path));
         }
@@ -940,10 +989,33 @@ mod tests {
         ledger.record(alert("job-1"), &sinks).expect("deduplicate");
         assert_eq!(ledger.state.records.len(), 1);
         ledger
+            .record(
+                alert("job-1"),
+                &[
+                    "webhook:first".to_string(),
+                    "command:second".to_string(),
+                    "desktop".to_string(),
+                ],
+            )
+            .expect("add newly enabled desktop target");
+        assert_eq!(ledger.state.records[0].targets.len(), 3);
+        assert_eq!(ledger.pending(u64::MAX).len(), 3);
+        ledger
             .retire_missing_sinks(&["webhook:first".to_string()])
             .expect("retire");
-        let retired = &ledger.state.records[0].targets[1];
-        assert!(retired.delivered);
+        assert_eq!(ledger.state.records[0].targets.len(), 1);
+        assert_eq!(ledger.state.records[0].targets[0].sink_id, "webhook:first");
+
+        let mut replacements = vec!["desktop".to_string()];
+        replacements.extend((0..16).map(|index| format!("webhook:replacement-{index}")));
+        ledger
+            .retire_missing_sinks(&replacements)
+            .expect("remove obsolete target identities");
+        ledger
+            .record(alert("job-1"), &replacements)
+            .expect("add replacement targets within the active bound");
+        assert_eq!(ledger.state.records[0].targets.len(), 17);
+        DeliveryLedger::load(ledger.path.clone()).expect("rotated ledger remains valid");
     }
 
     #[test]
