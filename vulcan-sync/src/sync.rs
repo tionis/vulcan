@@ -2574,6 +2574,14 @@ fn build_conflict_materialization(
     for path in conflict_paths {
         let remote_object = engine.path_object(repository, remote, path)?;
         let local_object = engine.path_object(repository, local, path)?;
+        // Git can report a synthesized destination for directory-rename and
+        // file-location conflicts even though that path exists in neither
+        // input tree. A path-only materialization cannot faithfully preserve
+        // or resolve that topology, so leave the structural conflict behind
+        // immutable refs instead of publishing a misleading candidate tree.
+        if remote_object.is_none() && local_object.is_none() {
+            return Ok(None);
+        }
         if remote_object
             .as_ref()
             .is_some_and(|object| !is_materializable_blob(object))
@@ -5197,6 +5205,31 @@ mod tests {
         assert_eq!(conflict.id.len(), 32);
         assert_eq!(conflict.policy_version, MergePolicy::default().version);
         assert_published_conflict_state(&engine, reader.as_path(), &report);
+    }
+
+    #[test]
+    fn directory_rename_location_conflicts_are_not_materialized_by_path() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        fs::create_dir_all(writer.join("Old")).expect("old directory");
+        fs::write(writer.join("Old/anchor.md"), "anchor\n").expect("anchor note");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
+
+        fs::write(writer.join("Old/remote.md"), "remote addition\n").expect("remote addition");
+        fs::rename(reader.join("Old"), reader.join("New")).expect("local directory rename");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("conflict report");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
+        let conflict = report.conflict.as_ref().expect("conflict details");
+        assert!(conflict.paths.iter().any(|path| path == "New/remote.md"));
+        assert!(conflict.materialization.is_none());
+        assert!(!report.actions.contains(&GitSyncAction::Pushed));
+        assert!(reader.join("New/anchor.md").exists());
+        assert!(!reader.join("Old/remote.md").exists());
     }
 
     #[test]

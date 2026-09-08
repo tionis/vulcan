@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 7
+version: 8
 metadata:
   vulcan:
     managed: true
@@ -100,6 +100,10 @@ they commit.
 - A published conflict materialization keeps accepted remote bytes at the original path and local
   copies under `.sync-conflicts/<id>/local/`. Do not edit or push that managed tree manually; a
   reviewed Vulcan resolution removes it atomically.
+- Git may report synthesized destinations for directory-rename or file-location conflicts that do
+  not exist in either candidate tree. Vulcan preserves those structural conflicts without a
+  materialized tree and refuses path-side selection with a specific diagnostic; do not reinterpret
+  that refusal as a missing-file deletion or edit hidden refs to force a result.
 - A sync cycle that fails with "would overwrite untracked worktree files excluded by Git ignore
   rules" refuses to apply the accepted tree over a device-local ignored file that shares a path
   with an incoming file. Move or remove the named ignored files, then rerun; never delete them

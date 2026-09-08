@@ -788,6 +788,9 @@ fn prepare_resolution(
     options: &ResolveSyncConflictOptions,
     device_id: &vulcan_sync::GitSyncDeviceId,
 ) -> Result<SyncConflictResolutionRecord, AppError> {
+    if effective_conflict_scope(record) == GitConflictScope::Paths {
+        reject_synthesized_path_side_resolution(record)?;
+    }
     let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
     let expected_tree = conflict_worktree_tree(engine, repository, record)?;
     if capture.tree != expected_tree {
@@ -869,6 +872,20 @@ fn prepare_resolution(
         published: false,
         applied: false,
     })
+}
+
+fn reject_synthesized_path_side_resolution(record: &SyncConflictRecord) -> Result<(), AppError> {
+    if let Some(path) = record
+        .paths
+        .iter()
+        .find(|path| path.local.object_id.is_none() && path.remote.object_id.is_none())
+    {
+        return Err(AppError::operation(format!(
+            "structural conflict path `{}` was synthesized by Git and cannot be resolved by selecting a path side; the original local and remote revisions remain preserved",
+            path.path
+        )));
+    }
+    Ok(())
 }
 
 fn effective_conflict_scope(record: &SyncConflictRecord) -> GitConflictScope {
@@ -1453,6 +1470,53 @@ fn validate_hex_id(label: &str, value: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+
+    fn absent_side(revision: &str) -> SyncConflictSideRecord {
+        SyncConflictSideRecord {
+            revision: revision.to_string(),
+            object_id: None,
+            mode: None,
+            kind: None,
+            artifact: None,
+            content_hash: None,
+            bytes: None,
+        }
+    }
+
+    #[test]
+    fn synthesized_structural_paths_reject_misleading_side_resolution() {
+        let record = SyncConflictRecord {
+            version: SYNC_CONFLICT_RECORD_VERSION,
+            id: "a".repeat(32),
+            repository_key: "b".repeat(32),
+            work_tree: PathBuf::from("/vault"),
+            base_revision: Some("base".to_string()),
+            local_revision: "local".to_string(),
+            remote_revision: "remote".to_string(),
+            scope: GitConflictScope::Paths,
+            policy_version: 1,
+            policy_hash: "policy".to_string(),
+            preserved_base_ref: None,
+            preserved_local_ref: "refs/local".to_string(),
+            preserved_remote_ref: "refs/remote".to_string(),
+            preserved_record_ref: None,
+            provenance_revision: None,
+            materialization: None,
+            paths: vec![SyncConflictPathRecord {
+                path: "New/remote.md".to_string(),
+                classification: None,
+                base: absent_side("base"),
+                local: absent_side("local"),
+                remote: absent_side("remote"),
+            }],
+            diagnostics: "CONFLICT (file location)".to_string(),
+        };
+
+        let error = reject_synthesized_path_side_resolution(&record)
+            .expect_err("synthesized location must fail closed");
+        assert!(error.to_string().contains("synthesized by Git"));
+        assert!(error.to_string().contains("New/remote.md"));
+    }
 
     fn resolved_conflict(store: &SyncConflictStore, key: &str, id: &str, age_seconds: u64) {
         let directory = store.conflict_directory(key, id).expect("directory");

@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 58
+version: 59
 tools:
   - git_status
   - git_diff
@@ -88,6 +88,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
   normal index itself.
 - Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, `provenance_revision`, and `preserved_refs` are stable; the `record` ref names a Git-reachable trailer-bearing creation record, while `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, run mutating resolution, delete the record, or edit Vulcan-owned refs without explicit user direction. A preservation ref mismatch is evidence of unexpected mutation and must fail closed.
 - A conflicted report may include `conflict.materialization` and the durable record includes matching metadata. When `published` and `applied` are true, the live ref and worktree contain its exact safe tree: accepted remote bytes remain at original conflicted paths, local copies live under `.sync-conflicts/<id>/local/`, and clean merged paths continue synchronizing. Review either copy, but do not move, rename, edit, check out, or push conflict artifacts manually; use `sync resolve` so publication leases the materialized provenance commit and removes the hidden directory atomically. Structural conflicts may omit materialization and remain fully preserved by refs and device-local artifacts.
+- A directory-rename or file-location conflict may name a Git-synthesized destination absent from both original candidate trees. Vulcan deliberately omits materialization and refuses path-side resolution for that topology; do not turn the refusal into an implicit deletion or manipulate preserved refs. Report the structural diagnostic and keep both candidate revisions intact for a dedicated structural resolution workflow.
 - A device-local automation ceiling may turn an otherwise deterministic structured resolution into a preserved conflict, but it must never produce a different accepted tree. Do not infer that two devices disagree merely because one requires additional review.
 - Sync defaults to remote `origin` and `refs/heads/__vulcan-sync/live`; pass `--remote` or `--live-ref` only when the repository uses a different agreed profile.
 - A clone that succeeds before registration fails is deliberately preserved. Report the partial state and register or remove it only with explicit user direction.
