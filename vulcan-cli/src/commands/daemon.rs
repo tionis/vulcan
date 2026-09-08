@@ -1,5 +1,8 @@
 use crate::output::print_json;
-use crate::{Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonConfigCommand, OutputFormat};
+use crate::{
+    Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonConfigCommand, DaemonWebhookFormatArg,
+    OutputFormat,
+};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
@@ -7,14 +10,15 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground, DaemonProcessContext,
     DaemonStatusReport,
 };
 use vulcan_daemon::registry::{
-    DaemonAgentConfig, DaemonAgentKind, DaemonConfig, DaemonNotificationConfig,
-    DaemonSemanticWorkerConfig, WikiId,
+    DaemonAgentConfig, DaemonAgentKind, DaemonCommandNotificationConfig, DaemonConfig,
+    DaemonSemanticWorkerConfig, DaemonWebhookFormat, DaemonWebhookNotificationConfig, WikiId,
 };
 use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
@@ -80,6 +84,12 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
                 })?;
             print_semantic_worker_status(cli.output, &status)
         }
+        DaemonCommand::AlertStatus => {
+            let config = context.registry.load().map_err(CliError::operation)?;
+            let status = alert_delivery_status(&config.notifications, &context.state_root)
+                .map_err(CliError::operation)?;
+            print_alert_delivery_status(cli.output, &status)
+        }
         DaemonCommand::Stop => {
             let status = request_daemon_shutdown(&context).map_err(CliError::operation)?;
             print_status(cli.output, &status)
@@ -89,6 +99,47 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
         }
         DaemonCommand::Config { command } => handle_config(cli.output, &context, command),
     }
+}
+
+fn print_alert_delivery_status(
+    output: OutputFormat,
+    status: &AlertDeliveryStatus,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(status);
+    }
+    println!(
+        "Desktop notifications: {}",
+        if status.desktop {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    if status.configured_sinks.is_empty() {
+        println!("Remote/command sinks: none");
+    } else {
+        println!("Remote/command sinks:");
+        for sink in &status.configured_sinks {
+            println!("  {} ({})", sink.name, sink.kind);
+        }
+    }
+    println!("Retained alert events: {}", status.retained_events);
+    println!("Pending deliveries: {}", status.pending_deliveries.len());
+    for pending in &status.pending_deliveries {
+        println!(
+            "  {} -> {} (attempts {}, next retry {} ms{})",
+            pending.wiki_id,
+            pending.sink,
+            pending.attempts,
+            pending.next_attempt_unix_ms,
+            pending
+                .last_failure
+                .as_deref()
+                .map_or(String::new(), |reason| format!(", last failure {reason}"))
+        );
+    }
+    Ok(())
 }
 
 fn print_semantic_worker_status(
@@ -250,6 +301,9 @@ fn handle_config(
     context: &DaemonProcessContext,
     command: &DaemonConfigCommand,
 ) -> Result<(), CliError> {
+    if let Some(config) = handle_notification_config(context, command) {
+        return print_config(output, &config?);
+    }
     let config = match command {
         DaemonConfigCommand::Show => context.registry.load().map_err(CliError::operation)?,
         DaemonConfigCommand::SetBind { bind, dry_run } => context
@@ -312,12 +366,61 @@ fn handle_config(
             .registry
             .clear_semantic_worker(*dry_run)
             .map_err(CliError::operation)?,
-        DaemonConfigCommand::SetNotifications { desktop, dry_run } => context
-            .registry
-            .set_notifications(DaemonNotificationConfig { desktop: *desktop }, *dry_run)
-            .map_err(CliError::operation)?,
+        DaemonConfigCommand::SetNotifications { .. }
+        | DaemonConfigCommand::SetNotificationWebhook { .. }
+        | DaemonConfigCommand::SetNotificationCommand { .. }
+        | DaemonConfigCommand::RemoveNotificationSink { .. } => {
+            unreachable!("notification configuration is dispatched above")
+        }
     };
     print_config(output, &config)
+}
+
+fn handle_notification_config(
+    context: &DaemonProcessContext,
+    command: &DaemonConfigCommand,
+) -> Option<Result<DaemonConfig, CliError>> {
+    let result = match command {
+        DaemonConfigCommand::SetNotifications { desktop, dry_run } => context
+            .registry
+            .set_desktop_notifications(*desktop, *dry_run),
+        DaemonConfigCommand::SetNotificationWebhook {
+            name,
+            url,
+            format,
+            token_env,
+            dry_run,
+        } => context.registry.set_notification_webhook(
+            DaemonWebhookNotificationConfig {
+                name: name.clone(),
+                url: url.clone(),
+                format: match format {
+                    DaemonWebhookFormatArg::Json => DaemonWebhookFormat::Json,
+                    DaemonWebhookFormatArg::Ntfy => DaemonWebhookFormat::Ntfy,
+                },
+                token_env: token_env.clone(),
+            },
+            *dry_run,
+        ),
+        DaemonConfigCommand::SetNotificationCommand {
+            name,
+            program,
+            args,
+            dry_run,
+        } => context.registry.set_notification_command(
+            DaemonCommandNotificationConfig {
+                name: name.clone(),
+                program: program.clone(),
+                args: args.clone(),
+            },
+            *dry_run,
+        ),
+        DaemonConfigCommand::RemoveNotificationSink { name, dry_run } => {
+            context.registry.remove_notification_sink(name, *dry_run)
+        }
+        _ => return None,
+    };
+    Some(result.map_err(CliError::operation))
 }
 
 const fn daemon_agent_kind(kind: DaemonAgentKindArg) -> DaemonAgentKind {

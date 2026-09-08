@@ -4414,6 +4414,8 @@ pub enum DaemonCommand {
     Status,
     #[command(about = "Show the latest daemon semantic-worker pass")]
     SemanticStatus,
+    #[command(about = "Show configured notification sinks and pending deliveries")]
+    AlertStatus,
     #[command(about = "Request graceful daemon shutdown")]
     Stop,
     #[command(about = "Show local companion connection details")]
@@ -4530,12 +4532,65 @@ pub enum DaemonConfigCommand {
         )]
         dry_run: bool,
     },
+    #[command(about = "Add or replace an HTTPS notification webhook")]
+    SetNotificationWebhook {
+        #[arg(help = "Stable sink name")]
+        name: String,
+        #[arg(long, help = "HTTPS endpoint or loopback HTTP endpoint")]
+        url: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = DaemonWebhookFormatArg::Json,
+            help = "Delivery encoding for the webhook"
+        )]
+        format: DaemonWebhookFormatArg,
+        #[arg(long, help = "Environment variable containing a bearer token")]
+        token_env: Option<String>,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Add or replace a shell-free local notification adapter")]
+    SetNotificationCommand {
+        #[arg(help = "Stable sink name")]
+        name: String,
+        #[arg(long, help = "Absolute adapter executable path")]
+        program: PathBuf,
+        #[arg(
+            long = "arg",
+            allow_hyphen_values = true,
+            help = "Literal adapter argument; repeat in order (JSON event is written to stdin)"
+        )]
+        args: Vec<String>,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Remove a named webhook or command notification sink")]
+    RemoveNotificationSink {
+        #[arg(help = "Stable sink name")]
+        name: String,
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DaemonAgentKindArg {
     Resolution,
     Semantic,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum DaemonWebhookFormatArg {
+    #[default]
+    Json,
+    Ntfy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

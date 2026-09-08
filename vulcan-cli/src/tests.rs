@@ -2502,6 +2502,69 @@ fn parses_daemon_desktop_notification_configuration() {
 }
 
 #[test]
+fn parses_daemon_remote_notification_sinks() {
+    let status =
+        Cli::try_parse_from(["vulcan", "daemon", "alert-status"]).expect("alert status parses");
+    assert!(matches!(
+        status.command,
+        Command::Daemon {
+            command: DaemonCommand::AlertStatus
+        }
+    ));
+
+    let webhook = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-notification-webhook",
+        "phone",
+        "--url",
+        "https://ntfy.example.test/vulcan",
+        "--format",
+        "ntfy",
+        "--token-env",
+        "VULCAN_NTFY_TOKEN",
+    ])
+    .expect("webhook parses");
+    assert!(matches!(
+        webhook.command,
+        Command::Daemon {
+            command: DaemonCommand::Config {
+                command: DaemonConfigCommand::SetNotificationWebhook {
+                    format: DaemonWebhookFormatArg::Ntfy,
+                    ..
+                }
+            }
+        }
+    ));
+
+    let command = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-notification-command",
+        "nats",
+        "--program",
+        "/usr/bin/nats",
+        "--arg",
+        "pub",
+        "--arg",
+        "vulcan.sync.alerts",
+    ])
+    .expect("command adapter parses");
+    let Command::Daemon {
+        command:
+            DaemonCommand::Config {
+                command: DaemonConfigCommand::SetNotificationCommand { args, .. },
+            },
+    } = command.command
+    else {
+        panic!("expected command notification config");
+    };
+    assert_eq!(args, ["pub", "vulcan.sync.alerts"]);
+}
+
+#[test]
 fn parses_sync_doctor_command() {
     let doctor =
         Cli::try_parse_from(["vulcan", "sync", "doctor", "personal", "--remote", "backup"])

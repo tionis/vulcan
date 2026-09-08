@@ -7604,6 +7604,67 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
     assert!(persisted.contains("VULCAN_PLANNER_KEY"));
     assert!(!persisted.contains("secret-value"));
 
+    let notifications =
+        parse_stdout_json(&daemon(&["set-notifications", "--desktop", "true"]).success());
+    assert_eq!(notifications["notifications"]["desktop"], true);
+    daemon(&[
+        "set-notification-webhook",
+        "phone",
+        "--url",
+        "https://ntfy.example.test/vulcan",
+        "--format",
+        "ntfy",
+        "--token-env",
+        "VULCAN_NTFY_TOKEN",
+    ])
+    .success();
+    daemon(&[
+        "set-notification-command",
+        "nats",
+        "--program",
+        "/usr/bin/nats",
+        "--arg",
+        "pub",
+        "--arg",
+        "vulcan.sync.alerts",
+    ])
+    .success();
+    let shown = parse_stdout_json(&daemon(&["show"]).success());
+    assert_eq!(shown["notifications"]["desktop"], true);
+    assert_eq!(shown["notifications"]["webhooks"][0]["name"], "phone");
+    assert_eq!(
+        shown["notifications"]["webhooks"][0]["token_env"],
+        "VULCAN_NTFY_TOKEN"
+    );
+    assert_eq!(shown["notifications"]["commands"][0]["name"], "nats");
+    let persisted = fs::read_to_string(config_home.join("vulcan/daemon.toml"))
+        .expect("notification config should exist");
+    assert!(persisted.contains("VULCAN_NTFY_TOKEN"));
+    assert!(!persisted.contains("secret-value"));
+    let alert_status = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["--output", "json", "daemon", "alert-status"])
+        .assert()
+        .success();
+    let alert_status = parse_stdout_json(&alert_status);
+    assert_eq!(alert_status["desktop"], true);
+    assert_eq!(alert_status["configured_sinks"][0]["name"], "phone");
+    assert_eq!(alert_status["configured_sinks"][1]["name"], "nats");
+    assert_eq!(alert_status["pending_deliveries"], serde_json::json!([]));
+    daemon(&["remove-notification-sink", "nats"]).success();
+    daemon(&[
+        "set-notification-webhook",
+        "bad",
+        "--url",
+        "https://example.test/topic?token=secret",
+    ])
+    .failure()
+    .stdout(predicate::str::contains(
+        "without credentials, query, or fragment",
+    ));
+
     let worker = parse_stdout_json(
         &daemon(&[
             "set-semantic-worker",

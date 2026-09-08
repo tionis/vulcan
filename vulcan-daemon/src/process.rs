@@ -1,6 +1,7 @@
 //! Long-running synchronization daemon process lifecycle.
 
-use crate::alerts::{deliver_desktop, SyncAlert, SyncAlertTracker};
+use crate::alert_delivery::{spawn_alert_delivery, AlertDeliverySender, AlertDeliveryWorker};
+use crate::alerts::SyncAlertTracker;
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
@@ -31,7 +32,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
@@ -307,7 +308,7 @@ struct DaemonWorkers {
     trigger: thread::JoinHandle<Result<(), DaemonProcessError>>,
     sync: thread::JoinHandle<Result<(), DaemonProcessError>>,
     notifications: tokio::task::JoinHandle<Result<(), DaemonProcessError>>,
-    desktop_notifications: Option<thread::JoinHandle<()>>,
+    alert_delivery: Option<AlertDeliveryWorker>,
     semantic: Option<thread::JoinHandle<Result<(), String>>>,
 }
 
@@ -320,14 +321,38 @@ impl DaemonWorkers {
         semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
         stop: &Arc<AtomicBool>,
     ) -> Self {
-        let (desktop_sender, desktop_notifications) = if config.notifications.desktop {
-            let (sender, receiver) = mpsc::sync_channel(32);
-            (
-                Some(sender),
-                Some(spawn_desktop_notification_worker(receiver)),
-            )
-        } else {
-            (None, None)
+        let (alert_sender, alert_delivery) = match spawn_alert_delivery(
+            &config.notifications,
+            &context.state_root,
+            context.registry.clone(),
+            supervisor,
+            Arc::clone(stop),
+        ) {
+            Ok(Some((sender, worker))) => (Some(sender), Some(worker)),
+            Ok(None) => (None, None),
+            Err(error) => {
+                eprintln!(
+                    "level=warning event=notification_delivery_failed sink=ledger reason=startup_error; {error}"
+                );
+                if config.notifications.desktop {
+                    let desktop_only = crate::registry::DaemonNotificationConfig {
+                        desktop: true,
+                        ..crate::registry::DaemonNotificationConfig::default()
+                    };
+                    match spawn_alert_delivery(
+                        &desktop_only,
+                        &context.state_root,
+                        context.registry.clone(),
+                        supervisor,
+                        Arc::clone(stop),
+                    ) {
+                        Ok(Some((sender, worker))) => (Some(sender), Some(worker)),
+                        _ => (None, None),
+                    }
+                } else {
+                    (None, None)
+                }
+            }
         };
         Self {
             trigger: spawn_trigger_runtime(
@@ -342,7 +367,7 @@ impl DaemonWorkers {
                 Arc::clone(state_store),
                 Arc::clone(stop),
                 context.verbose,
-                desktop_sender,
+                alert_sender,
             ),
             notifications: spawn_notification_runtime(
                 context.registry.clone(),
@@ -350,7 +375,7 @@ impl DaemonWorkers {
                 Arc::clone(stop),
                 context.verbose,
             ),
-            desktop_notifications,
+            alert_delivery,
             semantic: config.semantic_worker.clone().map(|worker_config| {
                 spawn_semantic_worker(
                     worker_config,
@@ -375,9 +400,9 @@ impl DaemonWorkers {
         self.notifications.await.map_err(|error| {
             DaemonProcessError::Worker(format!("daemon notification runtime panicked: {error}"))
         })??;
-        if let Some(worker) = self.desktop_notifications {
+        if let Some(worker) = self.alert_delivery {
             worker.join().map_err(|_| {
-                DaemonProcessError::Worker("desktop notification worker panicked".to_string())
+                DaemonProcessError::Worker("alert delivery worker panicked".to_string())
             })?;
         }
         if let Some(worker) = self.semantic {
@@ -514,13 +539,14 @@ fn spawn_job_worker(
     state_store: Arc<SyncStateStore>,
     stop: Arc<AtomicBool>,
     verbose: bool,
-    desktop_sender: Option<mpsc::SyncSender<SyncAlert>>,
+    alert_sender: Option<AlertDeliverySender>,
 ) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
     thread::spawn(move || {
         let result = (|| {
             let engine = vulcan_sync::GitCliEngine::default();
             let mut last_branch_diagnostics = BTreeMap::<String, String>::new();
-            let mut alerts = SyncAlertTracker::default();
+            let retained = supervisor.list()?;
+            let mut alerts = SyncAlertTracker::from_retained_jobs(&retained);
             while !stop.load(Ordering::Acquire) {
                 match execute_next_sync_job_with_state_store_and_engine(
                     &supervisor,
@@ -535,16 +561,10 @@ fn spawn_job_worker(
                         }
                         if let Some(alert) = alerts.observe(&execution) {
                             eprintln!("{}", alert.log_line());
-                            if let Some(sender) = desktop_sender.as_ref() {
-                                if let Err(error) = sender.try_send(alert) {
+                            if let Some(sender) = alert_sender.as_ref() {
+                                if let Err(error) = sender.enqueue(alert) {
                                     eprintln!(
-                                        "level=warning event=notification_delivery_failed sink=desktop reason={}",
-                                        match error {
-                                            mpsc::TrySendError::Full(_) => "queue_full",
-                                            mpsc::TrySendError::Disconnected(_) => {
-                                                "worker_unavailable"
-                                            }
-                                        }
+                                        "level=warning event=notification_delivery_failed sink=dispatcher reason=enqueue_error; {error}",
                                     );
                                 }
                             }
@@ -569,21 +589,6 @@ fn spawn_job_worker(
             stop.store(true, Ordering::Release);
         }
         result
-    })
-}
-
-fn spawn_desktop_notification_worker(
-    receiver: mpsc::Receiver<SyncAlert>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        while let Ok(alert) = receiver.recv() {
-            if let Err(error) = deliver_desktop(&alert) {
-                eprintln!(
-                    "level=warning event=notification_delivery_failed sink=desktop reason={:?}",
-                    error.kind()
-                );
-            }
-        }
     })
 }
 

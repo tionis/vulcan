@@ -1,7 +1,7 @@
 //! Secret-minimal daemon attention events and local delivery.
 
 use crate::sync::DaemonSyncExecution;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io;
 use std::process::{Command, Stdio};
@@ -11,7 +11,7 @@ use vulcan_sync::{SyncErrorCategory, SyncJobState};
 
 const DESKTOP_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AlertSeverity {
     Warning,
@@ -27,10 +27,10 @@ impl AlertSeverity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncAlert {
     pub version: u32,
-    pub event: &'static str,
+    pub event: String,
     pub severity: AlertSeverity,
     pub job_id: String,
     pub wiki_id: String,
@@ -43,25 +43,28 @@ pub struct SyncAlert {
 impl SyncAlert {
     #[must_use]
     pub fn from_execution(execution: &DaemonSyncExecution) -> Option<Self> {
-        let (event, severity) = match execution.job.job.state {
+        Self::from_job(&execution.job.job)
+    }
+
+    #[must_use]
+    pub fn from_job(job: &vulcan_sync::SyncJob) -> Option<Self> {
+        let (event, severity) = match job.state {
             SyncJobState::Failed => ("sync_failed", AlertSeverity::Error),
             SyncJobState::Conflicted => ("sync_conflicted", AlertSeverity::Warning),
             SyncJobState::Paused => ("sync_paused", AlertSeverity::Warning),
             _ => return None,
         };
-        let error = execution.job.job.error.as_ref();
+        let error = job.error.as_ref();
         Some(Self {
             version: 1,
-            event,
+            event: event.to_string(),
             severity,
-            job_id: execution.job.job.id.clone(),
-            wiki_id: execution
-                .job
-                .job
+            job_id: job.id.clone(),
+            wiki_id: job
                 .wiki_id
                 .clone()
                 .unwrap_or_else(|| "<unregistered>".to_string()),
-            state: execution.job.job.state,
+            state: job.state,
             category: error.map(|error| error.category),
             retryable: error.is_some_and(|error| error.retryable),
         })
@@ -90,7 +93,7 @@ impl SyncAlert {
         )
     }
 
-    fn desktop_title(&self) -> &'static str {
+    pub(crate) fn desktop_title(&self) -> &'static str {
         match self.state {
             SyncJobState::Failed => "Vulcan sync failed",
             SyncJobState::Conflicted => "Vulcan sync needs resolution",
@@ -99,7 +102,7 @@ impl SyncAlert {
         }
     }
 
-    fn desktop_body(&self) -> String {
+    pub(crate) fn desktop_body(&self) -> String {
         let reason = self.category.map_or(String::new(), |category| {
             format!(" ({})", format!("{category:?}").to_ascii_lowercase())
         });
@@ -116,6 +119,28 @@ pub struct SyncAlertTracker {
 }
 
 impl SyncAlertTracker {
+    #[must_use]
+    pub fn from_retained_jobs(jobs: &[crate::supervisor::SupervisedSyncJob]) -> Self {
+        let mut tracker = Self::default();
+        for retained in jobs {
+            tracker.prime(&retained.job);
+        }
+        tracker
+    }
+
+    fn prime(&mut self, job: &vulcan_sync::SyncJob) {
+        let wiki = job
+            .wiki_id
+            .as_deref()
+            .unwrap_or("<unregistered>")
+            .to_string();
+        if let Some(alert) = SyncAlert::from_job(job) {
+            self.last_by_wiki.insert(wiki, alert.fingerprint());
+        } else {
+            self.last_by_wiki.remove(&wiki);
+        }
+    }
+
     /// Returns a new or changed attention event. A healthy execution clears
     /// the per-wiki fingerprint so a later recurrence is delivered again.
     pub fn observe(&mut self, execution: &DaemonSyncExecution) -> Option<SyncAlert> {
@@ -319,6 +344,13 @@ mod tests {
         assert!(tracker.observe(&failed).is_none());
         assert!(tracker.observe(&healthy).is_none());
         assert!(tracker.observe(&failed).is_some());
+
+        let primed = SyncAlertTracker::from_retained_jobs(std::slice::from_ref(&failed.job));
+        let mut primed = primed;
+        assert!(
+            primed.observe(&failed).is_none(),
+            "daemon restart must not repeat the retained state"
+        );
     }
 
     #[test]

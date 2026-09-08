@@ -10494,6 +10494,12 @@
             "subcommands": []
           },
           {
+            "about": "Show configured notification sinks and pending deliveries",
+            "name": "alert-status",
+            "options": [],
+            "subcommands": []
+          },
+          {
             "about": "Request graceful daemon shutdown",
             "name": "stop",
             "options": [],
@@ -10819,6 +10825,160 @@
                   },
                   {
                     "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Add or replace an HTTPS notification webhook",
+                "name": "set-notification-webhook",
+                "options": [
+                  {
+                    "help": "Stable sink name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "HTTPS endpoint or loopback HTTP endpoint",
+                    "id": "url",
+                    "long": "url",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "URL"
+                    ]
+                  },
+                  {
+                    "help": "Delivery encoding for the webhook",
+                    "id": "format",
+                    "long": "format",
+                    "possible_values": [
+                      "json",
+                      "ntfy"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FORMAT"
+                    ]
+                  },
+                  {
+                    "help": "Environment variable containing a bearer token",
+                    "id": "token_env",
+                    "long": "token-env",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TOKEN_ENV"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Add or replace a shell-free local notification adapter",
+                "name": "set-notification-command",
+                "options": [
+                  {
+                    "help": "Stable sink name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Absolute adapter executable path",
+                    "id": "program",
+                    "long": "program",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROGRAM"
+                    ]
+                  },
+                  {
+                    "help": "Literal adapter argument; repeat in order (JSON event is written to stdin)",
+                    "id": "args",
+                    "long": "arg",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ARGS"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove a named webhook or command notification sink",
+                "name": "remove-notification-sink",
+                "options": [
+                  {
+                    "help": "Stable sink name",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Report without writing daemon configuration",
                     "id": "dry_run",
                     "long": "dry-run",
                     "possible_values": [

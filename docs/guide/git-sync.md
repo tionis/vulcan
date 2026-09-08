@@ -126,6 +126,48 @@ Delivery runs on a bounded worker with a five-second helper timeout. If the help
 session is unavailable, the daemon logs that delivery failure and leaves the authoritative sync
 result unchanged. Disable it with `set-notifications --desktop false`.
 
+For ntfy, configure the full non-secret topic endpoint and keep an optional access token in
+`daemon.env`:
+
+```sh
+vulcan daemon config set-notification-webhook phone \
+  --url https://ntfy.example.com/vulcan-alerts \
+  --format ntfy \
+  --token-env VULCAN_NTFY_TOKEN \
+  --dry-run
+```
+
+The default `json` format POSTs the versioned event to a generic webhook, which can route to an
+email service or another notification system. URLs must use HTTPS (or loopback HTTP), may not embed
+credentials/query/fragment data, and redirects are not followed. The affected wiki's permission
+profile must allow network access to the endpoint.
+
+Local adapters receive the same JSON on stdin. For example, the NATS CLI reads a publication body
+from stdin when no message argument is supplied:
+
+```sh
+vulcan daemon config set-notification-command nats \
+  --program /usr/local/bin/nats \
+  --arg pub \
+  --arg vulcan.sync.alerts \
+  --dry-run
+```
+
+Use an equivalent absolute, locally reviewed adapter for an email gateway. Vulcan never invokes a
+shell, command arguments must not contain credentials, and each command delivery requires the
+wiki profile's execute permission. After applying any sink change, restart the daemon. Inspect
+configured sink names, pending jobs, attempt counts, and next retry times without exposing endpoint,
+program, or token details:
+
+```sh
+vulcan daemon alert-status
+```
+
+Remote deliveries are recorded under the device state directory before dispatch, retried with
+bounded exponential backoff across restarts, and identified by the durable sync job ID. Receivers
+should deduplicate on the `Idempotency-Key` header or JSON `job_id`. Remove a sink with
+`vulcan daemon config remove-notification-sink <name> --dry-run` and then apply the reviewed change.
+
 ## Debounced semantic commits
 
 `sync semantic-auto` is a finite scheduler entrypoint for cron, a systemd timer, or Forgejo Actions.

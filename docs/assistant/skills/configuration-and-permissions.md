@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 19
+version: 20
 tools:
   - config_show
   - config_get
@@ -45,11 +45,23 @@ permission profiles, or diagnoses permission and trust failures.
     Preview `vulcan daemon config set-notifications --desktop true --dry-run`, apply it, and restart
     the daemon to opt into native desktop delivery. This setting contains no credential and a
     desktop delivery failure never changes the retained sync result.
+16. Add remote alerts with `daemon config set-notification-webhook <name> --url <url>
+    --format json|ntfy [--token-env <name>] --dry-run`, or an absolute shell-free local bridge with
+    `set-notification-command <name> --program <path> [--arg <literal>]... --dry-run`. Restart after
+    applying configuration and inspect the secret-minimal queue with `daemon alert-status`. Remove
+    either kind with `daemon config remove-notification-sink <name> --dry-run`.
 
 ## Guardrails
 
 - Do not put private credentials in shared `.vulcan/config.toml`; use local config or environment variables.
 - Never put a provider key in `daemon.toml` or a CLI argument. `daemon config set-agent --api-key-env` accepts the environment-variable name only. For an installed Linux/macOS service, use a mode-`0600` `$XDG_CONFIG_HOME/vulcan/daemon.env` containing literal `NAME=value` records when ordinary environment inheritance is unavailable; never put this file in a vault.
+- Notification webhooks follow the same credential rule: store only `--token-env <name>` in
+  `daemon.toml`. URLs must use HTTPS (loopback HTTP is accepted for local bridges) and cannot carry
+  credentials, query strings, or fragments. Do not use a secret-as-topic URL; use an authenticated
+  endpoint. Each webhook delivery must pass the affected wiki profile's network policy. Command
+  adapters require execute permission, use an absolute executable and literal argument vector,
+  receive the bounded event on stdin, and never invoke a shell. Do not place credentials in adapter
+  arguments.
 - Never copy a revealed companion token into vault content, `.obsidian/plugins/*/data.json`, logs, shell history, or source control.
 - Treat the complete advertised notification subscribe URL as a repository-scoped read capability.
   It may exist only in the dedicated Git advertisement, not in ordinary vault content, CLI

@@ -6,6 +6,7 @@
 //! HTTP, watcher, and scheduling modules will be added here without making the
 //! registry depend on a running daemon.
 
+pub mod alert_delivery;
 pub mod alerts;
 pub mod clone;
 pub mod companion;

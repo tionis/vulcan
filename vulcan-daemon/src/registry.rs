@@ -110,12 +110,47 @@ pub struct DaemonNotificationConfig {
     /// require human attention. Operational warning/error logs are always on.
     #[serde(default, skip_serializing_if = "is_false")]
     pub desktop: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub webhooks: Vec<DaemonWebhookNotificationConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<DaemonCommandNotificationConfig>,
 }
 
 impl DaemonNotificationConfig {
     const fn is_default(&self) -> bool {
-        !self.desktop
+        !self.desktop && self.webhooks.is_empty() && self.commands.is_empty()
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonWebhookFormat {
+    #[default]
+    Json,
+    Ntfy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonWebhookNotificationConfig {
+    pub name: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "is_default_webhook_format")]
+    pub format: DaemonWebhookFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_default_webhook_format(format: &DaemonWebhookFormat) -> bool {
+    matches!(format, DaemonWebhookFormat::Json)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonCommandNotificationConfig {
+    pub name: String,
+    pub program: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,13 +548,65 @@ impl WikiRegistry {
         })
     }
 
-    pub fn set_notifications(
+    pub fn set_desktop_notifications(
         &self,
-        notifications: DaemonNotificationConfig,
+        enabled: bool,
         dry_run: bool,
     ) -> Result<DaemonConfig, RegistryError> {
         self.mutate(dry_run, |config| {
-            config.notifications = notifications;
+            config.notifications.desktop = enabled;
+            Ok(config.clone())
+        })
+    }
+
+    pub fn set_notification_webhook(
+        &self,
+        webhook: DaemonWebhookNotificationConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_webhook(&webhook)?;
+            remove_notification_sink(&mut config.notifications, &webhook.name);
+            config.notifications.webhooks.push(webhook);
+            config
+                .notifications
+                .webhooks
+                .sort_by(|left, right| left.name.cmp(&right.name));
+            validate_notification_config(&config.notifications)?;
+            Ok(config.clone())
+        })
+    }
+
+    pub fn set_notification_command(
+        &self,
+        command: DaemonCommandNotificationConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_notification_command(&command)?;
+            remove_notification_sink(&mut config.notifications, &command.name);
+            config.notifications.commands.push(command);
+            config
+                .notifications
+                .commands
+                .sort_by(|left, right| left.name.cmp(&right.name));
+            validate_notification_config(&config.notifications)?;
+            Ok(config.clone())
+        })
+    }
+
+    pub fn remove_notification_sink(
+        &self,
+        name: &str,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_notification_name(name)?;
+            if !remove_notification_sink(&mut config.notifications, name) {
+                return Err(RegistryError::InvalidDaemonSetting(format!(
+                    "notification sink `{name}` does not exist"
+                )));
+            }
             Ok(config.clone())
         })
     }
@@ -550,7 +637,113 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     if let Some(worker) = &config.semantic_worker {
         validate_semantic_worker_config(worker)?;
     }
+    validate_notification_config(&config.notifications)?;
     Ok(())
+}
+
+fn validate_notification_config(config: &DaemonNotificationConfig) -> Result<(), RegistryError> {
+    if config.webhooks.len() + config.commands.len() > 16 {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "at most 16 notification sinks may be configured".to_string(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    for webhook in &config.webhooks {
+        validate_webhook(webhook)?;
+        if !names.insert(&webhook.name) {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "duplicate notification sink `{}`",
+                webhook.name
+            )));
+        }
+    }
+    for command in &config.commands {
+        validate_notification_command(command)?;
+        if !names.insert(&command.name) {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "duplicate notification sink `{}`",
+                command.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_notification_name(name: &str) -> Result<(), RegistryError> {
+    WikiId::parse(name.to_string()).map(|_| ()).map_err(|_| {
+        RegistryError::InvalidDaemonSetting(format!(
+            "notification sink name `{name}` must use wiki-ID syntax"
+        ))
+    })
+}
+
+fn validate_webhook(webhook: &DaemonWebhookNotificationConfig) -> Result<(), RegistryError> {
+    validate_notification_name(&webhook.name)?;
+    let url = reqwest::Url::parse(&webhook.url).map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!(
+            "notification webhook `{}` has an invalid URL: {error}",
+            webhook.name
+        ))
+    })?;
+    if url.as_str().len() > 2048
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "notification webhook `{}` must have a bounded host URL without credentials, query, or fragment",
+            webhook.name
+        )));
+    }
+    let loopback_http = url.scheme() == "http"
+        && (url.host_str() == Some("localhost")
+            || url
+                .host_str()
+                .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+                .is_some_and(|address| address.is_loopback()));
+    if url.scheme() != "https" && !loopback_http {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "notification webhook `{}` must use HTTPS or loopback HTTP",
+            webhook.name
+        )));
+    }
+    if let Some(name) = &webhook.token_env {
+        validate_environment_name(name, "notification token")?;
+    }
+    Ok(())
+}
+
+fn validate_notification_command(
+    command: &DaemonCommandNotificationConfig,
+) -> Result<(), RegistryError> {
+    validate_notification_name(&command.name)?;
+    if !command.program.is_absolute() {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "notification command `{}` must use an absolute program path",
+            command.name
+        )));
+    }
+    if command.args.len() > 32
+        || command
+            .args
+            .iter()
+            .any(|argument| argument.len() > 1024 || argument.bytes().any(|byte| byte == 0))
+    {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "notification command `{}` may have at most 32 bounded arguments without NUL bytes",
+            command.name
+        )));
+    }
+    Ok(())
+}
+
+fn remove_notification_sink(config: &mut DaemonNotificationConfig, name: &str) -> bool {
+    let before = config.webhooks.len() + config.commands.len();
+    config.webhooks.retain(|sink| sink.name != name);
+    config.commands.retain(|sink| sink.name != name);
+    before != config.webhooks.len() + config.commands.len()
 }
 
 fn validate_semantic_worker_config(
@@ -635,20 +828,26 @@ fn validate_agent_config(agent: &DaemonAgentConfig) -> Result<(), RegistryError>
         ));
     }
     if let Some(name) = &agent.api_key_env {
-        let valid = !name.is_empty()
-            && name.len() <= 128
-            && name.bytes().enumerate().all(|(index, byte)| match byte {
-                b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
-                b'0'..=b'9' => index > 0,
-                _ => false,
-            });
-        if !valid {
-            return Err(RegistryError::InvalidDaemonSetting(format!(
-                "agent API-key environment variable `{name}` is invalid"
-            )));
-        }
+        validate_environment_name(name, "agent API-key")?;
     }
     Ok(())
+}
+
+fn validate_environment_name(name: &str, label: &str) -> Result<(), RegistryError> {
+    let valid = !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().enumerate().all(|(index, byte)| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+            b'0'..=b'9' => index > 0,
+            _ => false,
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(RegistryError::InvalidDaemonSetting(format!(
+            "{label} environment variable `{name}` is invalid"
+        )))
+    }
 }
 
 fn canonical_directory(path: &Path) -> Result<PathBuf, RegistryError> {
@@ -933,7 +1132,7 @@ mod tests {
             .is_none());
 
         let preview = registry
-            .set_notifications(DaemonNotificationConfig { desktop: true }, true)
+            .set_desktop_notifications(true, true)
             .expect("preview notifications");
         assert!(preview.notifications.desktop);
         assert!(
@@ -944,7 +1143,7 @@ mod tests {
                 .desktop
         );
         registry
-            .set_notifications(DaemonNotificationConfig { desktop: true }, false)
+            .set_desktop_notifications(true, false)
             .expect("enable notifications");
         assert!(
             registry
@@ -964,6 +1163,117 @@ mod tests {
         assert_eq!(config.notifications, DaemonNotificationConfig::default());
         let serialized = toml::to_string(&config).expect("serialize default config");
         assert!(!serialized.contains("notifications"));
+    }
+
+    #[test]
+    fn notification_sinks_validate_replace_remove_and_preserve_desktop() {
+        let temporary = tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry
+            .set_desktop_notifications(true, false)
+            .expect("desktop");
+        let webhook = DaemonWebhookNotificationConfig {
+            name: "primary".to_string(),
+            url: "https://ntfy.example.test/vulcan".to_string(),
+            format: DaemonWebhookFormat::Ntfy,
+            token_env: Some("VULCAN_NTFY_TOKEN".to_string()),
+        };
+        let configured = registry
+            .set_notification_webhook(webhook.clone(), false)
+            .expect("webhook");
+        assert!(configured.notifications.desktop);
+        assert_eq!(configured.notifications.webhooks, [webhook]);
+
+        let command = DaemonCommandNotificationConfig {
+            name: "primary".to_string(),
+            program: PathBuf::from("/usr/bin/notify-bridge"),
+            args: vec!["--stdin".to_string()],
+        };
+        let replaced = registry
+            .set_notification_command(command.clone(), false)
+            .expect("replace sink kind");
+        assert!(replaced.notifications.webhooks.is_empty());
+        assert_eq!(replaced.notifications.commands, [command]);
+        let removed = registry
+            .remove_notification_sink("primary", false)
+            .expect("remove sink");
+        assert!(removed.notifications.commands.is_empty());
+        assert!(removed.notifications.desktop);
+    }
+
+    #[test]
+    fn notification_sinks_reject_credential_urls_plaintext_and_unsafe_commands() {
+        let temporary = tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        for url in [
+            "http://example.test/topic",
+            "https://token@example.test/topic",
+            "https://example.test/topic?token=secret",
+        ] {
+            let result = registry.set_notification_webhook(
+                DaemonWebhookNotificationConfig {
+                    name: "bad".to_string(),
+                    url: url.to_string(),
+                    format: DaemonWebhookFormat::Json,
+                    token_env: None,
+                },
+                true,
+            );
+            assert!(matches!(
+                result,
+                Err(RegistryError::InvalidDaemonSetting(_))
+            ));
+        }
+        assert!(matches!(
+            registry.set_notification_command(
+                DaemonCommandNotificationConfig {
+                    name: "bad".to_string(),
+                    program: PathBuf::from("nats"),
+                    args: Vec::new(),
+                },
+                true,
+            ),
+            Err(RegistryError::InvalidDaemonSetting(_))
+        ));
+    }
+
+    #[test]
+    fn notification_sink_limit_rejects_the_extra_sink_without_losing_configuration() {
+        let temporary = tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        for index in 0..16 {
+            registry
+                .set_notification_command(
+                    DaemonCommandNotificationConfig {
+                        name: format!("sink-{index}"),
+                        program: PathBuf::from("/usr/bin/notify-bridge"),
+                        args: Vec::new(),
+                    },
+                    false,
+                )
+                .expect("sink within limit");
+        }
+        let result = registry.set_notification_command(
+            DaemonCommandNotificationConfig {
+                name: "sink-extra".to_string(),
+                program: PathBuf::from("/usr/bin/notify-bridge"),
+                args: Vec::new(),
+            },
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(RegistryError::InvalidDaemonSetting(_))
+        ));
+        assert_eq!(
+            registry
+                .load()
+                .expect("configuration")
+                .notifications
+                .commands
+                .len(),
+            16
+        );
     }
 
     #[test]

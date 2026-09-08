@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 14
+version: 15
 metadata:
   vulcan:
     managed: true
@@ -193,6 +193,15 @@ they commit.
   `vulcan daemon config set-notifications --desktop true --dry-run` and then without `--dry-run`,
   then restart the daemon. Desktop delivery is best-effort, timeout-bounded, and never changes the
   retained sync result; helper or desktop-session failures become warning log records.
+  For remote delivery, configure a named JSON webhook or ntfy topic with
+  `daemon config set-notification-webhook <name> --url <https-url> --format json|ntfy
+  [--token-env <name>] --dry-run`. Apply and restart only after the preview is correct. The URL
+  cannot contain credentials, a query, or fragment; keep bearer values in protected `daemon.env`.
+  A shell-free `set-notification-command` adapter can feed the event JSON on stdin to an absolute
+  local bridge such as the NATS CLI or an email gateway. It requires the wiki profile's execute
+  capability; webhooks require network access to their endpoint. Inspect retry attempts and next
+  delivery times with `vulcan daemon alert-status`. Remote events are durably retained and retried
+  across daemon restarts, but delivery failure never changes the authoritative sync result.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.
