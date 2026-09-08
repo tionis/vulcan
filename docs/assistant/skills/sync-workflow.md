@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 12
+version: 13
 metadata:
   vulcan:
     managed: true
@@ -183,10 +183,11 @@ they commit.
   which carries the flag to the background child and its `daemon.log`) for operational stderr
   lines: one per completed sync job with wiki, triggers, state/outcome, watch-trigger detail,
   and branch-lane action, plus notification advertisement discovery and wake-up enqueueing
-  identified by endpoint origin and fingerprint only. Branch pull-strategy and push failures
-  print unconditionally on first occurrence per wiki (deduplicated until recovery), so a
-  persistently failing branch lane does not need `--verbose` to be noticed. Installed services
-  run at the default quiet level.
+  identified by endpoint origin and fingerprint only. At the default quiet level, failed jobs
+  print one secret-minimal line per wiki/category state with retryability and a direction to inspect
+  retained status; error text remains on the authenticated status surface. Branch pull-strategy and
+  push failures use their specific diagnostic. Both kinds deduplicate until recovery, so installed
+  services make persistent failure visible without flooding their logs.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.

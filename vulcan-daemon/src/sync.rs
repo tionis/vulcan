@@ -63,6 +63,39 @@ pub fn format_sync_execution(execution: &DaemonSyncExecution) -> String {
     }
 }
 
+/// Renders a secret-minimal failed-job diagnostic for quiet daemon logs.
+/// Branch-lane failures already have their own more specific diagnostic.
+#[must_use]
+pub fn format_sync_failure_diagnostic(execution: &DaemonSyncExecution) -> Option<String> {
+    if execution.job.job.state != SyncJobState::Failed
+        || execution
+            .report
+            .as_ref()
+            .and_then(|report| report.sync.branch.as_ref())
+            .and_then(|branch| {
+                format_branch_diagnostic(execution.job.job.wiki_id.as_deref(), branch)
+            })
+            .is_some()
+    {
+        return None;
+    }
+    let wiki = execution
+        .job
+        .job
+        .wiki_id
+        .as_deref()
+        .unwrap_or("<unregistered>");
+    let error = execution.job.job.error.as_ref();
+    let category = error.map_or_else(
+        || "unknown".to_string(),
+        |error| format!("{:?}", error.category).to_ascii_lowercase(),
+    );
+    let retryable = error.is_some_and(|error| error.retryable);
+    Some(format!(
+        "sync job (wiki `{wiki}`) failed: category={category} retryable={retryable}; inspect retained synchronization status for details"
+    ))
+}
+
 /// Renders the branch lane of a completed execution, if the report carries
 /// one. Empty when the branch lane did not run.
 fn format_branch_summary(branch: Option<&GitBranchSync>) -> String {
@@ -758,6 +791,37 @@ mod tests {
                 "line should explain the watch trigger ({fragment}): {with_watch}"
             );
         }
+    }
+
+    #[test]
+    fn quiet_failure_diagnostic_is_bounded_and_omits_error_detail() {
+        let execution = DaemonSyncExecution {
+            job: SupervisedSyncJob {
+                job: SyncJob {
+                    version: vulcan_sync::SYNC_CONTRACT_VERSION,
+                    id: "job-1".to_string(),
+                    wiki_id: Some("alpha".to_string()),
+                    backend: "git".to_string(),
+                    vault: Path::new("/vault").to_path_buf(),
+                    trigger: SyncJobTrigger::Poll,
+                    state: SyncJobState::Failed,
+                    status: None,
+                    error: Some(SyncError::new(
+                        SyncErrorCategory::Authentication,
+                        "secret-bearing provider detail",
+                        false,
+                    )),
+                },
+                triggers: vec![SyncJobTrigger::Poll],
+                watch: None,
+            },
+            report: None,
+        };
+        let line = format_sync_failure_diagnostic(&execution).expect("diagnostic");
+        assert!(line.contains("wiki `alpha`"));
+        assert!(line.contains("category=authentication"));
+        assert!(line.contains("retryable=false"));
+        assert!(!line.contains("secret-bearing"));
     }
 
     fn branch_lane_for_test(

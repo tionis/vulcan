@@ -18,7 +18,7 @@ use crate::service::DaemonServiceDiagnostic;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
 use crate::sync::{
     execute_next_sync_job_with_state_store_and_engine, format_branch_diagnostic,
-    format_sync_execution,
+    format_sync_execution, format_sync_failure_diagnostic,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -501,6 +501,7 @@ fn spawn_job_worker(
         let result = (|| {
             let engine = vulcan_sync::GitCliEngine::default();
             let mut last_branch_diagnostics = BTreeMap::<String, String>::new();
+            let mut last_sync_failures = BTreeMap::<String, String>::new();
             while !stop.load(Ordering::Acquire) {
                 match execute_next_sync_job_with_state_store_and_engine(
                     &supervisor,
@@ -512,6 +513,11 @@ fn spawn_job_worker(
                     Some(execution) => {
                         if verbose {
                             eprintln!("{}", format_sync_execution(&execution));
+                        }
+                        if let Some(line) =
+                            next_sync_failure_diagnostic(&execution, &mut last_sync_failures)
+                        {
+                            eprintln!("{line}");
                         }
                         if let Some(line) = next_branch_diagnostic(
                             execution.job.job.wiki_id.as_deref(),
@@ -534,6 +540,29 @@ fn spawn_job_worker(
         }
         result
     })
+}
+
+fn next_sync_failure_diagnostic(
+    execution: &crate::sync::DaemonSyncExecution,
+    last: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    let wiki = execution
+        .job
+        .job
+        .wiki_id
+        .as_deref()
+        .unwrap_or("<unregistered>")
+        .to_string();
+    let diagnostic = format_sync_failure_diagnostic(execution);
+    if let Some(line) = diagnostic {
+        if last.get(&wiki) == Some(&line) {
+            return None;
+        }
+        last.insert(wiki, line.clone());
+        return Some(line);
+    }
+    last.remove(&wiki);
+    None
 }
 
 /// Returns a branch lane failure the first time it appears per wiki, so a
@@ -1066,6 +1095,42 @@ mod tests {
             None,
             "healthy lanes never report"
         );
+    }
+
+    #[test]
+    fn sync_failure_diagnostics_deduplicate_until_recovery() {
+        use crate::supervisor::SupervisedSyncJob;
+        use crate::sync::DaemonSyncExecution;
+        use vulcan_sync::{SyncError, SyncErrorCategory, SyncJob, SyncJobState, SyncJobTrigger};
+
+        let execution = |state, error| DaemonSyncExecution {
+            job: SupervisedSyncJob {
+                job: SyncJob {
+                    version: vulcan_sync::SYNC_CONTRACT_VERSION,
+                    id: "job-1".to_string(),
+                    wiki_id: Some("alpha".to_string()),
+                    backend: "git".to_string(),
+                    vault: PathBuf::from("/vault"),
+                    trigger: SyncJobTrigger::Poll,
+                    state,
+                    status: None,
+                    error,
+                },
+                triggers: vec![SyncJobTrigger::Poll],
+                watch: None,
+            },
+            report: None,
+        };
+        let failed = execution(
+            SyncJobState::Failed,
+            Some(SyncError::new(SyncErrorCategory::Network, "offline", true)),
+        );
+        let healthy = execution(SyncJobState::Succeeded, None);
+        let mut last = BTreeMap::new();
+        assert!(next_sync_failure_diagnostic(&failed, &mut last).is_some());
+        assert_eq!(next_sync_failure_diagnostic(&failed, &mut last), None);
+        assert_eq!(next_sync_failure_diagnostic(&healthy, &mut last), None);
+        assert!(next_sync_failure_diagnostic(&failed, &mut last).is_some());
     }
 
     #[test]
