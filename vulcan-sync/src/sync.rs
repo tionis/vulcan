@@ -5204,12 +5204,15 @@ mod tests {
         let (temporary, remote, writer) = setup_remote_and_writer();
         let engine = GitCliEngine::default();
         fs::write(writer.join("data.json"), "{\"base\":true}\n").expect("base JSON");
+        fs::write(writer.join("removed.md"), "removed by both sides\n").expect("shared file");
         sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
         let reader = clone_reader(&temporary, &remote, &writer);
         sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
 
         fs::write(writer.join("data.json"), "{\"base\":true,\"writer\":1}\n").expect("writer JSON");
         fs::write(reader.join("data.json"), "{\"base\":true,\"reader\":2}\n").expect("reader JSON");
+        fs::remove_file(writer.join("removed.md")).expect("writer deletion");
+        fs::remove_file(reader.join("removed.md")).expect("reader deletion");
         sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
         let report =
             sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("structured merge");
@@ -5240,6 +5243,7 @@ mod tests {
             merged,
             serde_json::json!({"base": true, "reader": 2, "writer": 1})
         );
+        assert!(!reader.join("removed.md").exists());
     }
 
     #[test]

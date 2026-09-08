@@ -3039,6 +3039,7 @@ impl GitEngine for GitCliEngine {
             [
                 "read-tree",
                 "-m",
+                "--aggressive",
                 request.base.as_str(),
                 request.accepted_remote.as_str(),
                 request.local_candidate.as_str(),
@@ -3106,6 +3107,7 @@ impl GitEngine for GitCliEngine {
             [
                 "read-tree",
                 "-m",
+                "--aggressive",
                 request.base.as_str(),
                 request.accepted_remote.as_str(),
                 request.local_candidate.as_str(),
@@ -6561,15 +6563,22 @@ mod tests {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
         fs::write(temporary.path().join("data.json"), "{\"value\":0}\n").expect("base");
+        fs::write(
+            temporary.path().join("removed.md"),
+            "removed by both sides\n",
+        )
+        .expect("deleted on both sides");
         let base = commit_all(temporary.path(), "base");
         run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
         fs::write(temporary.path().join("data.json"), "{\"value\":1}\n").expect("remote");
+        fs::remove_file(temporary.path().join("removed.md")).expect("remote deletion");
         let remote = commit_all(temporary.path(), "remote");
         run_git(
             temporary.path(),
             &["checkout", "--quiet", "-b", "local", base.as_str()],
         );
         fs::write(temporary.path().join("data.json"), "{\"value\":2}\n").expect("local");
+        fs::remove_file(temporary.path().join("removed.md")).expect("local deletion");
         let local = commit_all(temporary.path(), "local");
         let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
         let engine = GitCliEngine::default();
@@ -6607,6 +6616,71 @@ mod tests {
                 .data,
             Some(b"{\"local\":2,\"remote\":1}\n".to_vec())
         );
+        assert!(engine
+            .path_object(&repository, &commit, "removed.md")
+            .expect("deleted path query")
+            .is_none());
+        assert_eq!(
+            run_git_capture(temporary.path(), &["write-tree"]),
+            normal_index
+        );
+    }
+
+    #[test]
+    fn preserved_side_resolution_keeps_shared_deletions_resolved() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "base\n").expect("base note");
+        fs::write(
+            temporary.path().join("removed.md"),
+            "removed by both sides\n",
+        )
+        .expect("shared file");
+        let base = commit_all(temporary.path(), "base");
+
+        run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
+        fs::write(temporary.path().join("Home.md"), "remote\n").expect("remote note");
+        fs::remove_file(temporary.path().join("removed.md")).expect("remote deletion");
+        let remote = commit_all(temporary.path(), "remote");
+
+        run_git(
+            temporary.path(),
+            &["checkout", "--quiet", "-b", "local", base.as_str()],
+        );
+        fs::write(temporary.path().join("Home.md"), "local\n").expect("local note");
+        fs::remove_file(temporary.path().join("removed.md")).expect("local deletion");
+        let local = commit_all(temporary.path(), "local");
+        let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
+
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let tree = engine
+            .resolve_merge_tree(
+                &repository,
+                &GitMergeResolutionRequest {
+                    base,
+                    accepted_remote: remote,
+                    local_candidate: local,
+                    paths: vec!["Home.md".to_string()],
+                    side: GitConflictSide::Local,
+                },
+            )
+            .expect("preserved-side tree");
+
+        assert_eq!(
+            engine
+                .path_object(&repository, &tree, "Home.md")
+                .expect("resolved note query")
+                .expect("resolved note")
+                .data,
+            Some(b"local\n".to_vec())
+        );
+        assert!(engine
+            .path_object(&repository, &tree, "removed.md")
+            .expect("deleted path query")
+            .is_none());
         assert_eq!(
             run_git_capture(temporary.path(), &["write-tree"]),
             normal_index
