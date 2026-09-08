@@ -116,6 +116,9 @@ they commit.
   rules" refuses to apply the accepted tree over a device-local ignored file that shares a path
   with an incoming file. Move or remove the named ignored files, then rerun; never delete them
   automatically.
+- Vulcan verifies the worktree before and after applying an accepted tree. If Obsidian or another
+  writer changes a file during that window, the finite cycle recaptures and retries automatically;
+  repeated activity exhausts the bounded retry limit and remains a retryable `busy` failure.
 
 ## Daemon and Obsidian companion
 

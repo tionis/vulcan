@@ -3684,16 +3684,7 @@ impl GitEngine for GitCliEngine {
             )?
             .trim(),
         )?;
-        if self.tree_oid(repository, target)? != applied_tree {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "verify the applied sync tree",
-                detail: format!(
-                    "expected tree {}, materialized tree {}",
-                    self.tree_oid(repository, target)?,
-                    applied_tree
-                ),
-            });
-        }
+        verify_materialized_tree(&self.tree_oid(repository, target)?, &applied_tree)?;
         Ok(plan)
     }
 
@@ -3817,6 +3808,17 @@ impl GitEngine for GitCliEngine {
         }
         Ok(())
     }
+}
+
+fn verify_materialized_tree(expected: &GitOid, actual: &GitOid) -> Result<(), GitEngineError> {
+    if expected == actual {
+        return Ok(());
+    }
+    // Git just populated the worktree from `expected`, so a different
+    // capture means another process wrote during materialization. Report the
+    // same retryable condition as pre-apply drift instead of misclassifying
+    // ordinary editor activity as invalid Git output.
+    Err(GitEngineError::WorktreeChanged)
 }
 
 impl GitCliEngine {
@@ -7515,6 +7517,18 @@ mod tests {
             run_git_capture(temporary.path(), &["write-tree"]),
             normal_index
         );
+    }
+
+    #[test]
+    fn materialized_tree_mismatch_is_retryable_worktree_drift() {
+        let expected = GitOid::parse("1".repeat(40)).expect("expected tree");
+        let actual = GitOid::parse("2".repeat(40)).expect("actual tree");
+
+        assert!(matches!(
+            verify_materialized_tree(&expected, &actual),
+            Err(GitEngineError::WorktreeChanged)
+        ));
+        assert!(verify_materialized_tree(&expected, &expected).is_ok());
     }
 
     #[test]

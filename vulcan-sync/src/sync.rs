@@ -1616,8 +1616,10 @@ fn run_attempt(
         }
         control.check()?;
         control.emit(GitSyncPhase::Applying, report, None)?;
-        report.application =
-            Some(engine.apply_tree(&report.repository, &capture.commit, &accepted)?);
+        report.application = apply_accepted_tree(engine, report, &capture.commit, &accepted)?;
+        if report.application.is_none() {
+            return Ok(AttemptResult::Retry);
+        }
         report.actions.push(GitSyncAction::WorktreeApplied);
     }
     if outcome == GitSyncOutcome::Conflicted {
@@ -1643,6 +1645,19 @@ fn run_attempt(
     push_branch_lane(engine, report)?;
     control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
+}
+
+fn apply_accepted_tree(
+    engine: &dyn GitEngine,
+    report: &GitSyncReport,
+    expected_worktree: &GitOid,
+    accepted: &GitOid,
+) -> Result<Option<GitTreeApplyPlan>, GitSyncError> {
+    match engine.apply_tree(&report.repository, expected_worktree, accepted) {
+        Ok(application) => Ok(Some(application)),
+        Err(GitEngineError::WorktreeChanged) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn observe_remote_tip(
@@ -3295,6 +3310,11 @@ mod tests {
         fired: bool,
     }
 
+    struct EditDuringApplicationObserver {
+        repository: PathBuf,
+        fired: bool,
+    }
+
     impl GitSyncObserver for EditBeforePushObserver {
         fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
             if progress.phase == GitSyncPhase::Pushing && !self.fired {
@@ -3329,6 +3349,20 @@ mod tests {
                 fs::write(
                     self.repository.join("Home.md"),
                     "edited during verification\n",
+                )
+                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            }
+            Ok(())
+        }
+    }
+
+    impl GitSyncObserver for EditDuringApplicationObserver {
+        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+            if progress.phase == GitSyncPhase::Applying && !self.fired {
+                self.fired = true;
+                fs::write(
+                    self.repository.join("Home.md"),
+                    "edited while the remote tree was being applied\n",
                 )
                 .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
             }
@@ -4418,6 +4452,51 @@ mod tests {
         assert_eq!(
             fs::read_to_string(writer.join("Home.md")).expect("current note"),
             "edited during verification\n"
+        );
+    }
+
+    #[test]
+    fn worktree_change_during_application_is_recaptured() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        sync_git_once(
+            &GitCliEngine::default(),
+            &writer,
+            &GitSyncOptions::default(),
+        )
+        .expect("bootstrap writer live ref");
+        let peer = clone_reader(&temporary, &remote, &writer);
+        fs::write(peer.join("Remote.md"), "added remotely\n").expect("remote edit");
+        commit_all(&peer, "remote edit");
+        sync_git_once(&GitCliEngine::default(), &peer, &GitSyncOptions::default())
+            .expect("publish peer live ref");
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = EditDuringApplicationObserver {
+            repository: writer.clone(),
+            fired: false,
+        };
+
+        let report = sync_git_once_with_control(
+            &GitCliEngine::default(),
+            &writer,
+            &GitSyncOptions::default(),
+            &cancellation,
+            &mut observer,
+        )
+        .expect("worktree edit during application should be recaptured");
+
+        assert!(observer.fired);
+        assert_eq!(report.retries, 1);
+        assert!(matches!(
+            report.outcome,
+            GitSyncOutcome::Pulled | GitSyncOutcome::Merged
+        ));
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("current note"),
+            "edited while the remote tree was being applied\n"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Remote.md")).expect("remote note"),
+            "added remotely\n"
         );
     }
 
