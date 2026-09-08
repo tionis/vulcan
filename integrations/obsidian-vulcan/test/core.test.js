@@ -6,7 +6,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   SaveSyncCoordinator,
+  SyncFailureAlertTracker,
   sanitizeSettings,
+  syncFailureAlert,
   statusPresentation,
 } = require("../core");
 
@@ -17,6 +19,7 @@ test("settings persistence is allowlisted and cannot retain bearer material", ()
     syncOnSave: true,
     saveDebounceMs: 1,
     eventStream: false,
+    notifyOnFailure: false,
     token: "must-not-survive",
   }), {
     baseUrl: "http://127.0.0.1:4000",
@@ -24,7 +27,46 @@ test("settings persistence is allowlisted and cannot retain bearer material", ()
     syncOnSave: true,
     saveDebounceMs: 250,
     eventStream: false,
+    notifyOnFailure: false,
   });
+});
+
+test("failed synchronization alerts are authoritative, bounded, and deduplicated", () => {
+  const tracker = new SyncFailureAlertTracker();
+  const status = {
+    state: "offline",
+    detail: "fallback",
+    job: {
+      id: "job-1",
+      state: "failed",
+      error: {
+        category: "network_unavailable",
+        message: ` remote failed\n${"x".repeat(300)} `,
+      },
+    },
+  };
+  const first = tracker.observe(status);
+  assert.equal(first.key, "job:job-1");
+  assert.match(first.message, /^Vulcan synchronization failed \(network unavailable\): remote failed x+…$/);
+  assert.ok(first.message.length < 300);
+  assert.equal(tracker.observe(status), null);
+
+  status.job.id = "job-2";
+  assert.equal(tracker.observe(status).key, "job:job-2");
+  assert.equal(tracker.observe({ state: "offline", detail: "daemon unavailable" }), null);
+});
+
+test("retained journal errors alert once per transaction", () => {
+  const tracker = new SyncFailureAlertTracker();
+  const status = {
+    state: "error",
+    wiki_id: "personal",
+    transaction_id: "tx-1",
+    detail: "worktree changed during apply",
+  };
+  assert.equal(tracker.observe(status).key, "transaction:tx-1");
+  assert.equal(tracker.observe(status), null);
+  assert.equal(syncFailureAlert({ state: "dirty" }), null);
 });
 
 test("status presentation distinguishes active, conflict, and terminal states", () => {
@@ -77,5 +119,6 @@ test("the Obsidian adapter delegates to the daemon and uses SecretStorage", () =
   assert.match(source, /secretStorage\.getSecret\(TOKEN_SECRET_ID\)/);
   assert.match(source, /secretStorage\.setSecret\(TOKEN_SECRET_ID/);
   assert.match(source, /client\.sync\(this\.settings\.wikiId\)/);
+  assert.match(source, /failureAlerts\.observe\(status\)/);
   assert.doesNotMatch(source, /child_process|execFile|spawn\(|\bgit\s/);
 });

@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 9
+version: 10
 metadata:
   vulcan:
     managed: true
@@ -186,8 +186,12 @@ they commit.
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.
 - The reference Obsidian companion requests editor save, debounces completed writes, displays
-  authenticated state, and previews conflicts. It is not a second Git engine. Do not run it beside
-  another independent Git-sync plugin against the same worktree.
+  authenticated state, and previews conflicts. By default it shows one bounded notice per failed
+  daemon job or retained failed transaction, deduplicated by durable job/transaction identity
+  across its live event stream and 30-second polling fallback. A temporary companion connection
+  failure changes the status bar to offline but is not labeled as a sync failure. The setting can
+  disable notices without changing authoritative status. It is not a second Git engine. Do not run
+  it beside another independent Git-sync plugin against the same worktree.
 - Provider endpoints/models are daemon configuration, not companion request fields. Use
   `vulcan daemon config set-agent resolution|semantic ... --dry-run`, keep key values in the named
   environment variable, apply deliberately, and restart the daemon.

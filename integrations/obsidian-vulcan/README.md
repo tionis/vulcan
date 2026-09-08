@@ -37,7 +37,11 @@ Obsidian application, so install only trusted plugins on a device that holds thi
 
 The daemon must remain loopback-only and its registered permission profile remains authoritative.
 The WebSocket sends deduplicated snapshots; a 30-second HTTP refresh remains as recovery when the
-stream is unavailable.
+stream is unavailable. By default, the companion shows one Obsidian notice for each failed daemon
+job or retained failed transaction. Notices are deduplicated by job or transaction identity and
+bound their error detail; temporary companion connection loss changes the status bar to offline but
+does not masquerade as a failed synchronization. Disable **Notify on failed synchronization** when
+another device-local alerting system owns that responsibility.
 
 ## Conflict review
 

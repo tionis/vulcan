@@ -6,7 +6,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   syncOnSave: false,
   saveDebounceMs: 1500,
   eventStream: true,
+  notifyOnFailure: true,
 });
+
+const MAX_FAILURE_DETAIL_CHARS = 240;
 
 const BUSY_STATES = new Set([
   "capture_pending",
@@ -30,7 +33,57 @@ function sanitizeSettings(value) {
       ? Math.min(60_000, Math.max(250, Math.round(debounce)))
       : DEFAULT_SETTINGS.saveDebounceMs,
     eventStream: input.eventStream !== false,
+    notifyOnFailure: input.notifyOnFailure !== false,
   };
+}
+
+function boundedFailureDetail(value) {
+  const detail = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!detail) return "Open synchronization status for details.";
+  if (detail.length <= MAX_FAILURE_DETAIL_CHARS) return detail;
+  return `${detail.slice(0, MAX_FAILURE_DETAIL_CHARS - 1)}…`;
+}
+
+function syncFailureAlert(status) {
+  if (!status || typeof status !== "object") return null;
+  const job = status.job;
+  if (job && typeof job === "object" && job.state === "failed" && typeof job.id === "string" && job.id) {
+    const error = job.error && typeof job.error === "object" ? job.error : {};
+    const category = typeof error.category === "string" && error.category
+      ? ` (${error.category.replaceAll("_", " ")})`
+      : "";
+    return {
+      key: `job:${job.id}`,
+      message: `Vulcan synchronization failed${category}: ${boundedFailureDetail(error.message || status.detail)}`,
+    };
+  }
+  if (status.state !== "error") return null;
+  const transactionId = typeof status.transaction_id === "string" && status.transaction_id
+    ? status.transaction_id
+    : `${status.wiki_id || "unknown"}:${boundedFailureDetail(status.detail)}`;
+  return {
+    key: `transaction:${transactionId}`,
+    message: `Vulcan synchronization failed: ${boundedFailureDetail(status.detail)}`,
+  };
+}
+
+class SyncFailureAlertTracker {
+  constructor(limit = 64) {
+    this.limit = Math.max(1, limit);
+    this.seen = new Set();
+    this.order = [];
+  }
+
+  observe(status) {
+    const alert = syncFailureAlert(status);
+    if (!alert || this.seen.has(alert.key)) return null;
+    this.seen.add(alert.key);
+    this.order.push(alert.key);
+    if (this.order.length > this.limit) {
+      this.seen.delete(this.order.shift());
+    }
+    return alert;
+  }
 }
 
 function statusPresentation(status) {
@@ -109,6 +162,8 @@ module.exports = {
   BUSY_STATES,
   DEFAULT_SETTINGS,
   SaveSyncCoordinator,
+  SyncFailureAlertTracker,
   sanitizeSettings,
+  syncFailureAlert,
   statusPresentation,
 };

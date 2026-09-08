@@ -199,8 +199,10 @@ var require_core = __commonJS({
       wikiId: "",
       syncOnSave: false,
       saveDebounceMs: 1500,
-      eventStream: true
+      eventStream: true,
+      notifyOnFailure: true
     });
+    var MAX_FAILURE_DETAIL_CHARS = 240;
     var BUSY_STATES = /* @__PURE__ */ new Set([
       "capture_pending",
       "capturing",
@@ -219,9 +221,51 @@ var require_core = __commonJS({
         wikiId: typeof input.wikiId === "string" ? input.wikiId : "",
         syncOnSave: input.syncOnSave === true,
         saveDebounceMs: Number.isFinite(debounce) ? Math.min(6e4, Math.max(250, Math.round(debounce))) : DEFAULT_SETTINGS2.saveDebounceMs,
-        eventStream: input.eventStream !== false
+        eventStream: input.eventStream !== false,
+        notifyOnFailure: input.notifyOnFailure !== false
       };
     }
+    function boundedFailureDetail(value) {
+      const detail2 = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+      if (!detail2) return "Open synchronization status for details.";
+      if (detail2.length <= MAX_FAILURE_DETAIL_CHARS) return detail2;
+      return `${detail2.slice(0, MAX_FAILURE_DETAIL_CHARS - 1)}\u2026`;
+    }
+    function syncFailureAlert(status) {
+      if (!status || typeof status !== "object") return null;
+      const job = status.job;
+      if (job && typeof job === "object" && job.state === "failed" && typeof job.id === "string" && job.id) {
+        const error = job.error && typeof job.error === "object" ? job.error : {};
+        const category = typeof error.category === "string" && error.category ? ` (${error.category.replaceAll("_", " ")})` : "";
+        return {
+          key: `job:${job.id}`,
+          message: `Vulcan synchronization failed${category}: ${boundedFailureDetail(error.message || status.detail)}`
+        };
+      }
+      if (status.state !== "error") return null;
+      const transactionId = typeof status.transaction_id === "string" && status.transaction_id ? status.transaction_id : `${status.wiki_id || "unknown"}:${boundedFailureDetail(status.detail)}`;
+      return {
+        key: `transaction:${transactionId}`,
+        message: `Vulcan synchronization failed: ${boundedFailureDetail(status.detail)}`
+      };
+    }
+    var SyncFailureAlertTracker2 = class {
+      constructor(limit = 64) {
+        this.limit = Math.max(1, limit);
+        this.seen = /* @__PURE__ */ new Set();
+        this.order = [];
+      }
+      observe(status) {
+        const alert = syncFailureAlert(status);
+        if (!alert || this.seen.has(alert.key)) return null;
+        this.seen.add(alert.key);
+        this.order.push(alert.key);
+        if (this.order.length > this.limit) {
+          this.seen.delete(this.order.shift());
+        }
+        return alert;
+      }
+    };
     function statusPresentation2(status) {
       const state = status && typeof status.state === "string" ? status.state : "unknown";
       const conflicts = Number(status && status.unresolved_conflicts) || 0;
@@ -294,7 +338,9 @@ var require_core = __commonJS({
       BUSY_STATES,
       DEFAULT_SETTINGS: DEFAULT_SETTINGS2,
       SaveSyncCoordinator: SaveSyncCoordinator2,
+      SyncFailureAlertTracker: SyncFailureAlertTracker2,
       sanitizeSettings: sanitizeSettings2,
+      syncFailureAlert,
       statusPresentation: statusPresentation2
     };
   }
@@ -313,6 +359,7 @@ var { VulcanCompanionClient } = require_protocol();
 var {
   DEFAULT_SETTINGS,
   SaveSyncCoordinator,
+  SyncFailureAlertTracker,
   sanitizeSettings,
   statusPresentation
 } = require_core();
@@ -321,6 +368,7 @@ var EVENT_RECONNECT_MS = 5e3;
 module.exports = class VulcanCompanionPlugin extends Plugin {
   async onload() {
     this.settings = sanitizeSettings(await this.loadData());
+    this.failureAlerts = new SyncFailureAlertTracker();
     this.status = null;
     this.eventSocket = null;
     this.eventReconnectTimer = null;
@@ -455,8 +503,7 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
   async refreshStatus(notify) {
     try {
       const client = await this.client();
-      this.status = await client.status(this.settings.wikiId);
-      this.renderStatus();
+      this.applyStatus(await client.status(this.settings.wikiId));
       if (notify) new StatusModal(this.app, this.status).open();
       return this.status;
     } catch (error) {
@@ -484,6 +531,13 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
     this.statusEl.setAttr("data-state", presentation.state);
     this.statusEl.setAttr("aria-label", "Open Vulcan synchronization status");
   }
+  applyStatus(status) {
+    this.status = status;
+    this.renderStatus();
+    if (!this.settings.notifyOnFailure) return;
+    const alert = this.failureAlerts.observe(status);
+    if (alert) new Notice(alert.message);
+  }
   reconnectEvents() {
     if (!this.settings.eventStream || this.eventSocket || this.eventReconnectTimer) return;
     void this.client().then((client) => {
@@ -491,10 +545,7 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
       this.eventSocket = client.connectEvents({
         onSnapshot: (snapshot) => {
           const status = snapshot.statuses.find((entry) => entry.wiki_id === this.settings.wikiId);
-          if (status) {
-            this.status = status;
-            this.renderStatus();
-          }
+          if (status) this.applyStatus(status);
         },
         onError: () => {
         },
@@ -582,6 +633,10 @@ var VulcanSettingTab = class extends PluginSettingTab {
     }));
     new Setting(containerEl).setName("Live status events").setDesc("Use the authenticated Vulcan WebSocket snapshot stream; periodic status refresh remains enabled.").addToggle((toggle) => toggle.setValue(this.plugin.settings.eventStream).onChange(async (value) => {
       this.plugin.settings.eventStream = value;
+      await this.plugin.saveSettings();
+    }));
+    new Setting(containerEl).setName("Notify on failed synchronization").setDesc("Show one notice per failed daemon job or retained failed transaction.").addToggle((toggle) => toggle.setValue(this.plugin.settings.notifyOnFailure).onChange(async (value) => {
+      this.plugin.settings.notifyOnFailure = value;
       await this.plugin.saveSettings();
     }));
     new Setting(containerEl).setName("Test connection").addButton((button) => button.setButtonText("Test").onClick(async () => {

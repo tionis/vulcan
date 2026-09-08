@@ -14,6 +14,7 @@ const { VulcanCompanionClient } = require("./protocol");
 const {
   DEFAULT_SETTINGS,
   SaveSyncCoordinator,
+  SyncFailureAlertTracker,
   sanitizeSettings,
   statusPresentation,
 } = require("./core");
@@ -24,6 +25,7 @@ const EVENT_RECONNECT_MS = 5000;
 module.exports = class VulcanCompanionPlugin extends Plugin {
   async onload() {
     this.settings = sanitizeSettings(await this.loadData());
+    this.failureAlerts = new SyncFailureAlertTracker();
     this.status = null;
     this.eventSocket = null;
     this.eventReconnectTimer = null;
@@ -169,8 +171,7 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
   async refreshStatus(notify) {
     try {
       const client = await this.client();
-      this.status = await client.status(this.settings.wikiId);
-      this.renderStatus();
+      this.applyStatus(await client.status(this.settings.wikiId));
       if (notify) new StatusModal(this.app, this.status).open();
       return this.status;
     } catch (error) {
@@ -202,6 +203,14 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
     this.statusEl.setAttr("aria-label", "Open Vulcan synchronization status");
   }
 
+  applyStatus(status) {
+    this.status = status;
+    this.renderStatus();
+    if (!this.settings.notifyOnFailure) return;
+    const alert = this.failureAlerts.observe(status);
+    if (alert) new Notice(alert.message);
+  }
+
   reconnectEvents() {
     if (!this.settings.eventStream || this.eventSocket || this.eventReconnectTimer) return;
     void this.client().then((client) => {
@@ -209,10 +218,7 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
       this.eventSocket = client.connectEvents({
         onSnapshot: (snapshot) => {
           const status = snapshot.statuses.find((entry) => entry.wiki_id === this.settings.wikiId);
-          if (status) {
-            this.status = status;
-            this.renderStatus();
-          }
+          if (status) this.applyStatus(status);
         },
         onError: () => {},
         onClose: () => {
@@ -340,6 +346,16 @@ class VulcanSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.eventStream)
         .onChange(async (value) => {
           this.plugin.settings.eventStream = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Notify on failed synchronization")
+      .setDesc("Show one notice per failed daemon job or retained failed transaction.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.notifyOnFailure)
+        .onChange(async (value) => {
+          this.plugin.settings.notifyOnFailure = value;
           await this.plugin.saveSettings();
         }));
 
