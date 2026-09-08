@@ -6258,15 +6258,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_covers_the_complete_worktree_from_a_subdirectory_cwd() {
-        struct CwdGuard(PathBuf);
-        impl Drop for CwdGuard {
-            fn drop(&mut self) {
-                std::env::set_current_dir(&self.0).expect("restore the test working directory");
-            }
-        }
-        static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    fn capture_commands_anchor_at_the_complete_worktree_root() {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
         fs::create_dir(temporary.path().join("sub")).expect("subdirectory");
@@ -6279,15 +6271,14 @@ mod tests {
         let repository = engine
             .discover_repository(temporary.path())
             .expect("repository");
-
-        let lock = CWD_LOCK.lock().expect("cwd lock");
-        let original = std::env::current_dir().expect("current dir");
-        let cwd_guard = CwdGuard(original);
-        std::env::set_current_dir(temporary.path().join("sub"))
-            .expect("enter the repository subdirectory");
+        assert_eq!(
+            engine.repository_command(&repository).get_current_dir(),
+            repository.work_tree.as_deref(),
+            "repository commands must not inherit a caller subdirectory"
+        );
         let snapshot = engine
             .snapshot_worktree_tree(&repository, Some(&head))
-            .expect("subdirectory cwd snapshot");
+            .expect("root-anchored snapshot");
         let local_ref = GitRefName::parse("refs/vulcan/sync/cwd/live").expect("ref");
         let capture = engine
             .capture_worktree(
@@ -6299,12 +6290,10 @@ mod tests {
                     message: "vulcan sync snapshot\n".to_string(),
                 },
             )
-            .expect("capture from subdirectory cwd");
+            .expect("root-anchored capture");
         let unchanged = engine
             .worktree_matches_tree(&repository, &capture.commit)
-            .expect("worktree comparison from subdirectory cwd");
-        drop(cwd_guard);
-        drop(lock);
+            .expect("root-anchored worktree comparison");
 
         let root_object = engine
             .path_object(&repository, &capture.commit, "root.md")
