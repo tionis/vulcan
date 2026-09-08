@@ -243,25 +243,29 @@ fn report_from_journal(
     registration: &WikiRegistration,
     journal: &SyncJournal,
 ) -> DaemonWikiSyncStatus {
-    let state = match journal.phase {
-        SyncJournalPhase::Preparing => SyncState::CapturePending,
-        SyncJournalPhase::Capturing => SyncState::Capturing,
-        SyncJournalPhase::Captured => SyncState::CapturedUnpushed,
-        SyncJournalPhase::Fetching => SyncState::Fetching,
-        SyncJournalPhase::Fetched => SyncState::Fetched,
-        SyncJournalPhase::Merging => SyncState::Merging,
-        SyncJournalPhase::Pushing => SyncState::Pushing,
-        SyncJournalPhase::Applying | SyncJournalPhase::Verifying => SyncState::Applying,
-        SyncJournalPhase::Conflicted => SyncState::Conflicted,
-        SyncJournalPhase::Paused => SyncState::Paused,
-        SyncJournalPhase::Error => SyncState::Error,
+    let state = if journal.error.is_some() {
+        SyncState::Error
+    } else {
+        match journal.phase {
+            SyncJournalPhase::Preparing => SyncState::CapturePending,
+            SyncJournalPhase::Capturing => SyncState::Capturing,
+            SyncJournalPhase::Captured => SyncState::CapturedUnpushed,
+            SyncJournalPhase::Fetching => SyncState::Fetching,
+            SyncJournalPhase::Fetched => SyncState::Fetched,
+            SyncJournalPhase::Merging => SyncState::Merging,
+            SyncJournalPhase::Pushing => SyncState::Pushing,
+            SyncJournalPhase::Applying | SyncJournalPhase::Verifying => SyncState::Applying,
+            SyncJournalPhase::Conflicted => SyncState::Conflicted,
+            SyncJournalPhase::Paused => SyncState::Paused,
+            SyncJournalPhase::Error => SyncState::Error,
+        }
     };
     DaemonWikiSyncStatus {
         version: DAEMON_SYNC_STATUS_VERSION,
         wiki_id: registration.id.as_str().to_string(),
         paused: registration.sync_paused,
         source: DaemonSyncStatusSource::Journal,
-        recovery_required: journal.phase.requires_recovery(),
+        recovery_required: journal.error.is_some() || journal.phase.requires_recovery(),
         status: SyncStatus {
             state,
             backend: "git".to_string(),
@@ -412,6 +416,31 @@ mod tests {
         assert_eq!(report.status.state, SyncState::Fetched);
         assert_eq!(report.source, DaemonSyncStatusSource::Journal);
         assert!(report.recovery_required);
+        assert_eq!(
+            report.transaction_id,
+            Some(journal.transaction_id.to_string().to_ascii_lowercase())
+        );
+    }
+
+    #[test]
+    fn failed_journal_is_an_error_instead_of_an_active_phase() {
+        let (_temporary, registry, supervisor, state_store, id) = setup();
+        let registration = registry.show(&id).expect("registration").registration;
+        let mut journal = SyncJournal::preparing(&registration.path, "origin", "refs/heads/live")
+            .expect("journal");
+        journal.phase = SyncJournalPhase::Merging;
+        journal.error = Some("git-write-tree failed".to_string());
+        state_store.save(&journal).expect("save journal");
+
+        let report =
+            wiki_sync_status(&registry, &supervisor, &state_store, &id).expect("sync status");
+        assert_eq!(report.status.state, SyncState::Error);
+        assert_eq!(report.source, DaemonSyncStatusSource::Journal);
+        assert!(report.recovery_required);
+        assert_eq!(
+            report.status.detail.as_deref(),
+            Some("git-write-tree failed")
+        );
         assert_eq!(
             report.transaction_id,
             Some(journal.transaction_id.to_string().to_ascii_lowercase())
