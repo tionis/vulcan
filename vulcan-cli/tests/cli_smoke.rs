@@ -4859,6 +4859,24 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     assert_eq!(status_json["actions"], serde_json::json!([]));
     assert!(status_json["state"].get("recovered_from").is_none());
 
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--vault",
+            reader.to_str().expect("reader path should be utf-8"),
+            "sync",
+            "status",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(
+                "Sync preview: inspected origin; file reconciliation not run (no changes applied)",
+            )
+            .and(predicate::str::contains("Sync: planned").not()),
+        );
+
     let doctor = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .env("XDG_STATE_HOME", &state_home)
@@ -4920,6 +4938,19 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     assert_eq!(all_status_json["selection"], "all");
     assert_eq!(all_status_json["dry_run"], true);
     assert_eq!(all_status_json["total"], 2);
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["sync", "status", "a-writer"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(
+                "Registered sync preview wiki:a-writer: 1 inspected, 0 inspection failures (no changes applied)",
+            )
+            .and(predicate::str::contains("Preview complete ("))
+            .and(predicate::str::contains("file reconciliation not run"))
+            .and(predicate::str::contains("\tPlanned\t").not()),
+        );
 }
 
 fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf, String) {
@@ -14731,6 +14762,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("`safe.directory`"));
     assert!(sync_skill.contains("managed: true"));
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
+    assert!(sync_skill.contains("read-only check completed, not that synchronization succeeded"));
+    assert!(sync_skill.contains("does not fetch, merge, apply, or otherwise reconcile"));
     assert!(sync_skill.contains("vulcan sync conflicts <conflict-id>"));
     assert!(sync_skill.contains("detached private Git directory"));
     assert!(sync_skill.contains("`android-shared` policy"));

@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 16
+version: 17
 metadata:
   vulcan:
     managed: true
@@ -34,7 +34,10 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
 ## Inspect before mutation
 
 1. Run `vulcan sync status [<wiki>]` to inspect layout, safety state, candidate refs, and remote live
-   state without mutation.
+   state without mutation. Human output calls this a **sync preview**: “inspected” means the
+   read-only check completed, not that synchronization succeeded. The preview inspects the branch
+   lane but does not fetch, merge, apply, or otherwise reconcile the hidden file lane; use
+   `--output json` for the observed refs and branch detail.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
 3. Preview a finite transaction with `vulcan sync run [<wiki>] --dry-run`; apply it by omitting

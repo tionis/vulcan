@@ -12,7 +12,7 @@ use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault_with_progress, GitBranchSync,
     GitBranchSyncAction, GitPlatformProfile, GitRefName, GitRemote, GitSyncAction, GitSyncObserver,
     GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
-    SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+    GitSyncReport, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -2599,18 +2599,25 @@ fn print_registered_sync_report(
     if output == OutputFormat::Json {
         return print_json(report);
     }
-    println!(
-        "Registered sync {}: {} succeeded, {} conflicted, {} failed",
-        report.selection, report.succeeded, report.conflicted, report.failed
-    );
+    if report.dry_run {
+        println!(
+            "Registered sync preview {}: {} inspected, {} inspection failures (no changes applied)",
+            report.selection, report.succeeded, report.failed
+        );
+    } else {
+        println!(
+            "Registered sync {}: {} succeeded, {} conflicted, {} failed",
+            report.selection, report.succeeded, report.conflicted, report.failed
+        );
+    }
     for item in &report.items {
         if let Some(sync) = &item.report {
-            println!(
-                "{}\t{:?}\t{}",
-                item.wiki_id,
-                sync.sync.outcome,
-                item.path.display()
-            );
+            let outcome = if sync.sync.dry_run {
+                sync_preview_message(&sync.sync)
+            } else {
+                format!("{:?}", sync.sync.outcome)
+            };
+            println!("{}\t{}\t{}", item.wiki_id, outcome, item.path.display());
         } else if let Some(error) = &item.error {
             println!("{}\terror\t{}: {error}", item.wiki_id, item.path.display());
         }
@@ -2713,7 +2720,7 @@ fn print_sync_report(
 fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
     match outcome {
         GitSyncOutcome::Planned => {
-            format!("Sync: inspected {remote} (no changes applied)")
+            format!("Sync preview: inspected {remote}; file reconciliation not run (no changes applied)")
         }
         GitSyncOutcome::Paused => format!("Sync: paused before reconciling with {remote}"),
         GitSyncOutcome::UpToDate => format!("Sync: up to date with {remote}"),
@@ -2723,6 +2730,30 @@ fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
         GitSyncOutcome::Merged => format!("Sync: merged with {remote}"),
         GitSyncOutcome::Conflicted => format!("Sync: conflict with {remote} requires review"),
     }
+}
+
+fn sync_preview_message(report: &GitSyncReport) -> String {
+    let branch = branch_preview_message(report.branch.as_ref());
+    format!("Preview complete ({branch}; file reconciliation not run)")
+}
+
+fn branch_preview_message(branch: Option<&GitBranchSync>) -> String {
+    branch.map_or_else(
+        || "branch not inspected".to_string(),
+        |branch| {
+            let name = branch
+                .branch
+                .as_str()
+                .strip_prefix("refs/heads/")
+                .unwrap_or(branch.branch.as_str());
+            match branch.action {
+                GitBranchSyncAction::UpToDate => format!("branch {name} is up to date"),
+                GitBranchSyncAction::Planned => format!("branch {name} would pull"),
+                GitBranchSyncAction::Skipped => format!("branch {name} was skipped"),
+                action => format!("branch {name} preview: {action:?}"),
+            }
+        },
+    )
 }
 
 /// Renders the branch lane for human output. Steady states (up to date,
@@ -2795,6 +2826,10 @@ mod sync_report_tests {
     #[test]
     fn sync_outcome_messages_are_compact_and_human_readable() {
         assert_eq!(
+            sync_outcome_message(GitSyncOutcome::Planned, "origin"),
+            "Sync preview: inspected origin; file reconciliation not run (no changes applied)"
+        );
+        assert_eq!(
             sync_outcome_message(GitSyncOutcome::UpToDate, "origin"),
             "Sync: up to date with origin"
         );
@@ -2854,6 +2889,14 @@ mod sync_report_tests {
         assert_eq!(
             branch_push_message(&pushed),
             Some("Branch main was not pushed: remote advanced first; retry later.".to_string())
+        );
+    }
+
+    #[test]
+    fn branch_preview_message_names_an_up_to_date_branch() {
+        assert_eq!(
+            branch_preview_message(Some(&branch_lane(GitBranchSyncAction::UpToDate, None))),
+            "branch main is up to date"
         );
     }
 
