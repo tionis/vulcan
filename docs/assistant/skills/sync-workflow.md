@@ -73,12 +73,13 @@ refs move, following the repository's own pull configuration (`pull.ff`, `pull.r
 the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
 `pull.ff=only`, interactive rebase, or a merge/rebase conflict left for ordinary Git),
 `deferred` (dirty worktree, retried next cycle), or `skipped` (no upstream, deleted upstream,
-detached HEAD, or bare repository). After a successful file lane, the branch tip is published
-to its upstream with the observed tracking ref as an exact lease — never force-pushed. A moved
-remote reports for the next cycle; transport or policy failures record `push_detail` without
-reversing the converged file lane, and `pushed` tells whether publication happened. A daemon job
-with either failure is nevertheless terminally `failed`, with status `error` and explicit detail
-that the file lane converged; this keeps aggregate status and companion failure notices truthful.
+detached HEAD, or bare repository). After a healthy pull lane, the branch tip is published to its
+upstream with the observed tracking ref as an exact lease — never force-pushed — before hidden
+file reconciliation. Ordinary commits therefore still fetch, pull, and push when the file lane
+later preserves a conflict. A moved remote reports for the next cycle; transport or policy
+failures record `push_detail` without preventing the file lane, and `pushed` tells whether
+publication happened. A daemon job with either branch failure is nevertheless terminally
+`failed`, with status `error`; this keeps aggregate status and companion failure notices truthful.
 Human output also prints `push_detail` whenever branch publication was rejected or failed; do not
 interpret a successful file-lane summary as proof that the checked-out branch was published.
 Caveats: `rebase.autostash` is neutralized (automation never stashes implicitly); a

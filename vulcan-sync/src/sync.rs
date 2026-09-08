@@ -1471,11 +1471,11 @@ fn preview_branch_pull(
     Ok(())
 }
 
-/// Pushes the checked-out branch tip to its upstream after a successful file
-/// lane, leasing the tracking ref observed during this attempt. Never
-/// force-pushes: a remote that moved first reports Rejected for the next
-/// cycle's pull to incorporate. Push transport or policy failures record a
-/// detail instead of failing the converged file lane.
+/// Pushes the checked-out branch tip to its upstream immediately after its
+/// pull lane, leasing the tracking ref observed during this attempt. This is
+/// deliberately independent of later file-lane reconciliation: a hidden-live
+/// conflict must not strand ordinary commits. Never force-pushes; a remote
+/// that moved first reports Rejected for the next cycle's pull to incorporate.
 fn push_branch_lane(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
@@ -1543,6 +1543,7 @@ fn run_attempt(
     // A successful pull can rewrite the worktree; capturing first would make
     // that intentional rewrite look concurrent and force a redundant retry.
     pull_branch_lane(engine, report)?;
+    push_branch_lane(engine, report)?;
 
     control.check()?;
     control.emit(GitSyncPhase::Capturing, report, None)?;
@@ -1642,7 +1643,6 @@ fn run_attempt(
     )?;
     report.outcome = outcome;
     report.accepted = Some(accepted);
-    push_branch_lane(engine, report)?;
     control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
 }
@@ -5018,6 +5018,63 @@ mod tests {
         assert!(
             remote_tip.starts_with(&head),
             "remote main should equal the published head"
+        );
+    }
+
+    #[test]
+    fn branch_push_publishes_local_commits_despite_a_file_lane_conflict() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap live ref");
+        let peer = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &peer, &GitSyncOptions::default()).expect("peer baseline");
+
+        fs::write(peer.join("Home.md"), "remote file-lane edit\n").expect("peer edit");
+        sync_git_once(&engine, &peer, &GitSyncOptions::default()).expect("publish peer edit");
+        fs::write(peer.join("Home.md"), "initial\n").expect("restore branch content");
+        fs::write(peer.join("RemoteBranch.md"), "ordinary remote commit\n")
+            .expect("remote branch edit");
+        commit_all(&peer, "remote ordinary commit");
+        run_git(&peer, &["push", "--quiet", "origin", "main"]);
+
+        fs::write(writer.join("Home.md"), "local committed edit\n").expect("local edit");
+        commit_all(&writer, "local ordinary commit");
+        let local_commit =
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("local commit oid");
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("file conflict remains a successful preserved outcome");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
+        let lane = report.branch.as_ref().expect("branch lane report");
+        assert_eq!(lane.action, GitBranchSyncAction::Merged);
+        assert!(
+            lane.pushed,
+            "ordinary branch should publish before conflict"
+        );
+        let published_head =
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("published head oid");
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert!(
+            engine
+                .is_ancestor(&repository, &local_commit, &published_head)
+                .expect("local commit ancestry"),
+            "the pulled merge must retain the original local commit"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("RemoteBranch.md")).expect("pulled branch file"),
+            "ordinary remote commit\n"
+        );
+        let remote_tip = git_stdout(
+            &writer,
+            &[
+                "ls-remote",
+                remote.to_str().expect("remote path"),
+                "refs/heads/main",
+            ],
+        );
+        assert!(
+            remote_tip.starts_with(published_head.as_str()),
+            "remote main should contain the pulled merge despite the live conflict"
         );
     }
 
