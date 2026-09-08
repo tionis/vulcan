@@ -4990,6 +4990,80 @@ fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf
     (temporary, state_home, reader, id)
 }
 
+fn setup_cli_obsidian_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf, String) {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let writer = temporary.path().join("writer");
+    fs::create_dir_all(writer.join(".obsidian")).expect("writer Obsidian directory");
+    init_git_repo(&writer);
+    run_git_ok(
+        &writer,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(writer.join(".obsidian/community-plugins.json"), "[]\n").expect("base state");
+    commit_all(&writer, "Base");
+    let run_sync = |vault: &std::path::Path| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_STATE_HOME", &state_home)
+            .args([
+                "--vault",
+                vault.to_str().expect("vault path"),
+                "--output",
+                "json",
+                "sync",
+                "run",
+            ])
+            .assert()
+            .success()
+    };
+    run_sync(&writer);
+    let reader = temporary.path().join("reader");
+    clone_git_repo(temporary.path(), &writer, &reader);
+    run_git_ok(
+        &reader,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    run_sync(&reader);
+    fs::write(
+        writer.join(".obsidian/community-plugins.json"),
+        "[\"writer\"]\n",
+    )
+    .expect("writer state");
+    fs::write(
+        reader.join(".obsidian/community-plugins.json"),
+        "[\"reader\"]\n",
+    )
+    .expect("reader state");
+    run_sync(&writer);
+    let conflict = parse_stdout_json(&run_sync(&reader));
+    let id = conflict["conflict_record"]["id"]
+        .as_str()
+        .expect("conflict ID")
+        .to_string();
+    (temporary, state_home, reader, id)
+}
+
 struct CliResolutionProvider;
 
 impl ResolutionAgentProvider for CliResolutionProvider {
@@ -6900,6 +6974,43 @@ fn sync_resolve_cli_applies_reviewed_supplied_files_through_a_proposal() {
         .assert()
         .success();
     assert_eq!(parse_stdout_json(&conflicts)["count"], 0);
+}
+
+#[test]
+fn sync_resolve_cli_accepts_reviewed_obsidian_state_without_exposing_it_to_an_agent() {
+    let (temporary, state_home, reader, id) = setup_cli_obsidian_sync_conflict();
+    let source = temporary.path().join("reviewed-community-plugins.json");
+    fs::write(&source, "[\"reader\",\"writer\"]\n").expect("reviewed state");
+    let specification = format!(".obsidian/community-plugins.json={}", source.display());
+    let run = |dry_run: bool| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args(["--output", "json", "sync", "resolve", &id, "--file"])
+            .arg(&specification);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.assert().success()
+    };
+
+    let preview = parse_stdout_json(&run(true));
+    assert_eq!(preview["outcome"], "planned");
+    assert_eq!(
+        preview["paths"][0]["path"],
+        ".obsidian/community-plugins.json"
+    );
+
+    let resolved = parse_stdout_json(&run(false));
+    assert_eq!(resolved["outcome"], "applied");
+    assert!(resolved["proposal_id"].is_string());
+    assert_eq!(
+        fs::read_to_string(reader.join(".obsidian/community-plugins.json"))
+            .expect("resolved state"),
+        "[\"reader\",\"writer\"]\n"
+    );
 }
 
 #[test]

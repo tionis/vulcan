@@ -101,7 +101,12 @@ vulcan sync resolve <conflict-id> --side local --dry-run
 vulcan sync resolve <conflict-id> --side local
 ```
 
-Complete-file, patch, editor, and reviewed agent-proposal modes are also available. Successful resolution removes the hidden conflict directory atomically while retaining the original Git objects and durable conflict record.
+Complete-file, patch, editor, and reviewed agent-proposal modes are also available. Use repeatable
+`--file '<conflict-path>=<reviewed-source>'` arguments for mixed conflicts containing `.obsidian`
+state, binary content, or Git-synthesized rename destinations: complete-file resolution accepts
+those locally reviewed bytes without exposing them to an LLM. Agent proposals intentionally reject
+the entire conflict when any input is ineligible. Successful resolution removes the hidden conflict
+directory atomically while retaining the original Git objects and durable conflict record.
 
 If a finite cycle is interrupted or the network is unavailable, rerun `vulcan sync run`. Device-local journals and Git refs retain the captured state; do not delete them or replace the vault with a fresh clone as a recovery shortcut.
 

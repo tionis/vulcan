@@ -29,12 +29,12 @@ use vulcan_app::sync_notifications::{
     SyncNotificationStatusOptions, SyncNotificationStatusReport,
 };
 use vulcan_app::sync_proposals::{
-    approve_resolution_proposal, create_resolution_proposal, prepare_editor_resolution,
-    preview_patch_resolution, preview_supplied_resolution, reject_resolution_proposal,
-    resolution_paths_from_patch, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
-    EditorResolutionPlan, PatchResolutionPreviewReport, RejectResolutionProposalReport,
-    ResolutionAgentPathOutput, ResolutionProposalOptions, SuppliedResolutionPreviewReport,
-    SuppliedResolutionProvider,
+    approve_resolution_proposal, create_resolution_proposal, create_supplied_resolution_proposal,
+    prepare_editor_resolution, preview_patch_resolution, preview_supplied_resolution,
+    reject_resolution_proposal, resolution_paths_from_patch, ApproveResolutionProposalOptions,
+    ApproveResolutionProposalReport, EditorResolutionPlan, PatchResolutionPreviewReport,
+    RejectResolutionProposalReport, ResolutionAgentPathOutput, ResolutionProposalOptions,
+    SuppliedResolutionPreviewReport,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_proposals::{
@@ -2228,13 +2228,13 @@ fn run_supplied_resolution(
     approval_options: &ApproveResolutionProposalOptions,
     supplied: Vec<ResolutionAgentPathOutput>,
 ) -> Result<(), CliError> {
-    let provider = SuppliedResolutionProvider::new(supplied);
     let cancellation = vulcan_app::sync::SyncCancellationToken::default();
-    let proposal = create_resolution_proposal(
+    let proposal = create_supplied_resolution_proposal(
         paths,
         conflict_id,
         proposal_options,
-        &provider,
+        approval_options,
+        supplied,
         &cancellation,
     )
     .map_err(CliError::operation)?;

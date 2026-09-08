@@ -994,6 +994,7 @@ pub fn preview_supplied_resolution_with_state_store(
             paths: supplied,
         },
         Vec::new(),
+        ResolutionContentSource::Reviewed,
     )?;
     Ok(SuppliedResolutionPreviewReport {
         vault: manual.vault,
@@ -1012,6 +1013,123 @@ pub fn preview_supplied_resolution_with_state_store(
             ResolutionProposalValidationCheck::RefsUnchanged,
         ],
     })
+}
+
+pub fn create_supplied_resolution_proposal(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    supplied: Vec<ResolutionAgentPathOutput>,
+    cancellation: &SyncCancellationToken,
+) -> Result<ResolutionProposal, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    create_supplied_resolution_proposal_with_state_store(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        supplied,
+        cancellation,
+        &state_store,
+    )
+}
+
+pub fn create_supplied_resolution_proposal_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    supplied: Vec<ResolutionAgentPathOutput>,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+) -> Result<ResolutionProposal, AppError> {
+    if approval_options.dry_run {
+        return Err(AppError::operation(
+            "supplied-resolution proposal requires mutating mode",
+        ));
+    }
+    cancellation_check(cancellation)?;
+    let manual = prepare_manual_resolution_scope(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        state_store,
+    )?;
+    let base_revision = manual
+        .record
+        .base_revision
+        .as_deref()
+        .ok_or_else(|| AppError::operation("supplied resolution requires one merge base"))?;
+    let prepared = prepare_output(
+        &manual.engine,
+        &manual.repository,
+        &manual.record,
+        &BTreeSet::new(),
+        ResolutionAgentOutput {
+            explanation: "Resolution content supplied explicitly by the user.".to_string(),
+            referenced_context: Vec::new(),
+            paths: supplied,
+        },
+        Vec::new(),
+        ResolutionContentSource::Reviewed,
+    )?;
+    let proposal_tree = manual
+        .engine
+        .resolve_merge_tree_with_paths(
+            &manual.repository,
+            &GitContentMergeResolutionRequest {
+                base: GitOid::parse(base_revision).map_err(AppError::operation)?,
+                accepted_remote: GitOid::parse(&manual.record.remote_revision)
+                    .map_err(AppError::operation)?,
+                local_candidate: GitOid::parse(&manual.record.local_revision)
+                    .map_err(AppError::operation)?,
+                paths: prepared.git_paths.clone(),
+            },
+        )
+        .map_err(AppError::operation)?;
+    verify_tree_objects(
+        &manual.engine,
+        &manual.repository,
+        &proposal_tree,
+        &prepared.git_paths,
+    )?;
+    let conflict_paths = conflict_path_names(&manual.record);
+    validate_proposal_whole_tree_inputs(
+        paths,
+        &manual.engine,
+        &manual.repository,
+        base_revision,
+        &manual.record.local_revision,
+        &manual.record.remote_revision,
+        &proposal_tree,
+        &conflict_paths,
+    )?;
+    cancellation_check(cancellation)?;
+    let patch = manual
+        .engine
+        .diff_patch(
+            &manual.repository,
+            &GitOid::parse(&manual.record.remote_revision).map_err(AppError::operation)?,
+            &proposal_tree,
+            &conflict_paths,
+        )
+        .map_err(AppError::operation)?;
+    let proposal = assemble_proposal(
+        &manual.record,
+        manual.repository_key.clone(),
+        SuppliedResolutionProvider::new(Vec::new()).identity(),
+        proposal_options,
+        &[],
+        prepared,
+        ProposalTree {
+            oid: proposal_tree,
+            patch,
+        },
+    )?;
+    save_proposal(state_store, &proposal)?;
+    Ok(proposal)
 }
 
 pub fn preview_patch_resolution(
@@ -1268,6 +1386,7 @@ struct ManualResolutionScope {
     record: SyncConflictRecord,
     engine: vulcan_sync::GitCliEngine,
     repository: vulcan_sync::GitRepository,
+    _lock: vulcan_sync::RepositoryLock,
 }
 
 fn prepare_manual_resolution_scope(
@@ -1282,11 +1401,12 @@ fn prepare_manual_resolution_scope(
         repository_key,
         record,
         ..
-    } = prepare_agent_scope(paths, conflict_id, proposal_options, state_store)?;
+    } = prepare_resolution_scope(paths, conflict_id, proposal_options, state_store, false)?;
     let engine = vulcan_sync::GitCliEngine::default();
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
+    let lock = acquire_proposal_lock(&repository)?;
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     if conflict_store
         .get_effective_resolution(&repository_key, conflict_id)?
@@ -1338,6 +1458,7 @@ fn prepare_manual_resolution_scope(
         record,
         engine,
         repository,
+        _lock: lock,
     })
 }
 
@@ -1476,6 +1597,7 @@ fn persist_generated_proposal(
         &run.supplied_context,
         run.output,
         run.tool_calls,
+        ResolutionContentSource::Agent,
     )?;
     let proposal_tree = engine
         .resolve_merge_tree_with_paths(
@@ -1575,6 +1697,16 @@ fn prepare_agent_scope(
     options: &ResolutionProposalOptions,
     state_store: &SyncStateStore,
 ) -> Result<AgentScope, AppError> {
+    prepare_resolution_scope(paths, conflict_id, options, state_store, true)
+}
+
+fn prepare_resolution_scope(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    options: &ResolutionProposalOptions,
+    state_store: &SyncStateStore,
+    require_agent_eligible: bool,
+) -> Result<AgentScope, AppError> {
     validate_options(options)?;
     let selection = resolve_permission_profile(paths, Some(&options.permission_profile))
         .map_err(AppError::operation)?;
@@ -1589,7 +1721,9 @@ fn prepare_agent_scope(
     let repository_key = repository_state_key(&vault);
     let record =
         SyncConflictStore::from_state_store(state_store).get(&repository_key, conflict_id)?;
-    validate_agent_conflict_scope(&record)?;
+    if require_agent_eligible {
+        validate_agent_conflict_scope(&record)?;
+    }
     for path in &record.paths {
         permission_guard
             .check_read_path(&path.path)
@@ -2175,7 +2309,12 @@ fn revalidate_proposal_tree(
                 path.path
             )));
         }
-        validate_proposal_content(record, &path.path, &data)?;
+        let source = if proposal.provider == "vulcan-manual" {
+            ResolutionContentSource::Reviewed
+        } else {
+            ResolutionContentSource::Agent
+        };
+        validate_proposal_content(record, &path.path, &data, source)?;
         resolved.push(GitResolvedPath {
             path: path.path.clone(),
             mode: Some(path.mode.clone()),
@@ -2279,6 +2418,7 @@ fn validate_proposal_content(
     record: &SyncConflictRecord,
     path: &str,
     data: &[u8],
+    source: ResolutionContentSource,
 ) -> Result<(), AppError> {
     let kind = record
         .paths
@@ -2309,9 +2449,11 @@ fn validate_proposal_content(
         vulcan_sync::MergeFileKind::Binary
         | vulcan_sync::MergeFileKind::ObsidianState
         | vulcan_sync::MergeFileKind::Missing => {
-            return Err(AppError::operation(format!(
-                "proposal path `{path}` has an ineligible file kind"
-            )));
+            if source == ResolutionContentSource::Agent {
+                return Err(AppError::operation(format!(
+                    "proposal path `{path}` has an ineligible file kind"
+                )));
+            }
         }
     }
     Ok(())
@@ -2901,6 +3043,12 @@ fn build_agent_request(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolutionContentSource {
+    Agent,
+    Reviewed,
+}
+
 fn prepare_output(
     engine: &dyn GitEngine,
     repository: &vulcan_sync::GitRepository,
@@ -2908,6 +3056,7 @@ fn prepare_output(
     supplied_context: &BTreeSet<String>,
     output: ResolutionAgentOutput,
     tool_calls: Vec<ResolutionProposalToolCall>,
+    source: ResolutionContentSource,
 ) -> Result<PreparedOutput, AppError> {
     validate_text("proposal explanation", &output.explanation)?;
     if output.referenced_context.len() > MAX_CONTEXT_PATHS {
@@ -2959,8 +3108,8 @@ fn prepare_output(
         let content = supplied
             .remove(&conflict_path.path)
             .expect("validated exact path set");
-        validate_proposal_content(record, &conflict_path.path, &content)?;
-        let mode = resolved_mode(conflict_path)?;
+        validate_proposal_content(record, &conflict_path.path, &content, source)?;
+        let mode = resolved_mode(conflict_path, source == ResolutionContentSource::Reviewed)?;
         let resolved = GitResolvedPath {
             path: conflict_path.path.clone(),
             mode: Some(mode.clone()),
@@ -3011,11 +3160,16 @@ fn validate_referenced_context(
     Ok(())
 }
 
-fn resolved_mode(path: &crate::sync_conflicts::SyncConflictPathRecord) -> Result<String, AppError> {
+fn resolved_mode(
+    path: &crate::sync_conflicts::SyncConflictPathRecord,
+    allow_new_file: bool,
+) -> Result<String, AppError> {
     let base = path.base.mode.as_deref();
     let local = path.local.mode.as_deref();
     let remote = path.remote.mode.as_deref();
-    if local == remote {
+    if allow_new_file && base.is_none() && local.is_none() && remote.is_none() {
+        Some("100644")
+    } else if local == remote {
         local
     } else if local == base {
         remote
@@ -3328,10 +3482,34 @@ fn cancellation_check(cancellation: &SyncCancellationToken) -> Result<(), AppErr
 mod tests {
     use super::*;
     use crate::sync::sync_git_vault_with_state_store;
+    use crate::sync_conflicts::{SyncConflictPathRecord, SyncConflictSideRecord};
     use std::process::Command;
     use tempfile::{tempdir, TempDir};
     use vulcan_core::{paths::initialize_vulcan_dir, scan_vault, ScanMode};
     use vulcan_sync::{GitCliEngine, GitSyncOptions};
+
+    #[test]
+    fn reviewed_resolution_can_create_a_synthesized_conflict_destination() {
+        let absent = |revision: &str| SyncConflictSideRecord {
+            revision: revision.to_string(),
+            object_id: None,
+            mode: None,
+            kind: None,
+            artifact: None,
+            content_hash: None,
+            bytes: None,
+        };
+        let path = SyncConflictPathRecord {
+            path: "Renamed/remote.base".to_string(),
+            classification: None,
+            base: absent("base"),
+            local: absent("local"),
+            remote: absent("remote"),
+        };
+
+        assert_eq!(resolved_mode(&path, true).expect("reviewed mode"), "100644");
+        assert!(resolved_mode(&path, false).is_err());
+    }
 
     struct FakeProvider {
         cancel: bool,
