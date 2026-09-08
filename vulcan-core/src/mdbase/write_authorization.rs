@@ -21,8 +21,10 @@ pub struct MdbaseWriteAuthorizationRequest {
 pub struct MdbaseAuthorizedValidationScope {
     pub read_paths: Vec<String>,
     pub write_paths: Vec<String>,
-    /// Collection-relative glob namespaces that must be completely readable.
+    /// Vault-relative glob namespaces that must be completely readable.
     pub record_namespaces: Vec<String>,
+    /// Equivalent collection-relative namespaces for preview state binding.
+    pub collection_record_namespaces: Vec<String>,
 }
 
 /// A deliberately non-oracular authorization failure.
@@ -79,12 +81,12 @@ pub fn authorize_mdbase_write_validation_scope(
             .map_err(|_| MdbaseWriteAuthorizationError::permission_denied())?;
     }
 
-    let record_namespaces = required_record_namespaces(
-        collection,
-        types,
-        collection_permission_prefix,
-        &request.matched_types,
-    );
+    let collection_record_namespaces =
+        required_record_namespaces(collection, types, &request.matched_types);
+    let record_namespaces = collection_record_namespaces
+        .iter()
+        .map(|namespace| prefixed_namespace(collection_permission_prefix, namespace))
+        .collect::<Vec<_>>();
     if !record_namespaces.is_empty()
         && (guard.has_policy_hook()
             || record_namespaces
@@ -98,13 +100,13 @@ pub fn authorize_mdbase_write_validation_scope(
         read_paths,
         write_paths,
         record_namespaces,
+        collection_record_namespaces,
     })
 }
 
 fn required_record_namespaces(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
-    collection_permission_prefix: &str,
     matched_types: &[String],
 ) -> Vec<String> {
     let mut namespaces = BTreeSet::new();
@@ -145,10 +147,7 @@ fn required_record_namespaces(
                 "path_glob" => {
                     if let Some(pattern) = rule.get("path_glob").and_then(serde_json::Value::as_str)
                     {
-                        namespaces.insert(prefixed_namespace(
-                            collection_permission_prefix,
-                            &pattern.replace('\\', "/"),
-                        ));
+                        namespaces.insert(pattern.replace('\\', "/"));
                     }
                 }
                 // Explicit type declarations may occur in any candidate record,
@@ -160,29 +159,17 @@ fn required_record_namespaces(
         }
     }
     if collection_wide {
-        namespaces.extend(collection_record_namespaces(
-            collection,
-            collection_permission_prefix,
-        ));
+        namespaces.extend(collection_record_namespaces(collection));
     }
     namespaces.into_iter().collect()
 }
 
-fn collection_record_namespaces(
-    collection: &MdbaseCollection,
-    collection_permission_prefix: &str,
-) -> Vec<String> {
+fn collection_record_namespaces(collection: &MdbaseCollection) -> Vec<String> {
     let mut namespaces = Vec::new();
     for extension in &collection.config.settings.record_extensions {
-        namespaces.push(prefixed_namespace(
-            collection_permission_prefix,
-            &format!("*.{extension}"),
-        ));
+        namespaces.push(format!("*.{extension}"));
         if collection.config.settings.include_subfolders {
-            namespaces.push(prefixed_namespace(
-                collection_permission_prefix,
-                &format!("**/*.{extension}"),
-            ));
+            namespaces.push(format!("**/*.{extension}"));
         }
     }
     namespaces.sort();

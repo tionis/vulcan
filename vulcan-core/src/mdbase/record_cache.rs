@@ -38,6 +38,16 @@ pub struct MdbaseRecordCacheRefresh {
     pub deleted: usize,
 }
 
+/// Content-derived revisions for every authoritative mdbase control class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseControlRevisions {
+    pub config: String,
+    pub types: String,
+    pub contracts: String,
+    pub schemas: String,
+    pub combined: String,
+}
+
 #[derive(Debug)]
 pub enum MdbaseRecordCacheError {
     Records(MdbaseRecordError),
@@ -98,34 +108,73 @@ impl From<serde_json::Error> for MdbaseRecordCacheError {
 pub fn mdbase_record_dependency_digest(
     collection: &MdbaseCollection,
 ) -> Result<String, MdbaseRecordCacheError> {
-    let mut paths = BTreeSet::new();
-    paths.insert(PathBuf::from("mdbase.yaml"));
+    Ok(mdbase_control_revisions(collection)?.combined)
+}
+
+/// Snapshot authoritative control files without consulting derived cache rows.
+pub fn mdbase_control_revisions(
+    collection: &MdbaseCollection,
+) -> Result<MdbaseControlRevisions, MdbaseRecordCacheError> {
+    let mut config_paths = BTreeSet::new();
+    config_paths.insert(PathBuf::from("mdbase.yaml"));
     if collection.root.join(MDBASE_LOCK_FILE_NAME).is_file() {
-        paths.insert(PathBuf::from(MDBASE_LOCK_FILE_NAME));
+        config_paths.insert(PathBuf::from(MDBASE_LOCK_FILE_NAME));
     }
+
+    let mut type_paths = BTreeSet::new();
     collect_dependency_tree(
         &collection.root,
         Path::new(&collection.config.settings.types_folder),
         true,
-        &mut paths,
+        &mut type_paths,
     )?;
+    let mut contract_paths = BTreeSet::new();
     collect_dependency_tree(
         &collection.root,
         Path::new(&collection.config.settings.contracts_folder),
         true,
-        &mut paths,
+        &mut contract_paths,
     )?;
-    collect_dependency_tree(&collection.root, Path::new(""), false, &mut paths)?;
+    let mut schema_paths = BTreeSet::new();
+    collect_dependency_tree(&collection.root, Path::new(""), false, &mut schema_paths)?;
+
+    let config = digest_dependency_paths(&collection.root, "config", &config_paths)?;
+    let types = digest_dependency_paths(&collection.root, "types", &type_paths)?;
+    let contracts = digest_dependency_paths(&collection.root, "contracts", &contract_paths)?;
+    let schemas = digest_dependency_paths(&collection.root, "schemas", &schema_paths)?;
 
     let mut digest = Sha256::new();
     digest.update(MDBASE_RECORD_MODEL_VERSION.to_be_bytes());
+    for revision in [&config, &types, &contracts, &schemas] {
+        digest.update(
+            u64::try_from(revision.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        digest.update(revision.as_bytes());
+    }
+    Ok(MdbaseControlRevisions {
+        config,
+        types,
+        contracts,
+        schemas,
+        combined: format!("sha256:{:x}", digest.finalize()),
+    })
+}
+
+fn digest_dependency_paths(
+    root: &Path,
+    domain: &str,
+    paths: &BTreeSet<PathBuf>,
+) -> Result<String, MdbaseRecordCacheError> {
+    let mut digest = Sha256::new();
+    digest.update(domain.as_bytes());
     for path in paths {
-        let contents = secure_read_to_string(&collection.root, &path).map_err(|source| {
-            MdbaseRecordCacheError::Read {
-                path: collection.root.join(&path),
+        let contents =
+            secure_read_to_string(root, path).map_err(|source| MdbaseRecordCacheError::Read {
+                path: root.join(path),
                 source,
-            }
-        })?;
+            })?;
         let path = path.to_string_lossy().replace('\\', "/");
         digest.update(u64::try_from(path.len()).unwrap_or(u64::MAX).to_be_bytes());
         digest.update(path.as_bytes());
@@ -604,30 +653,43 @@ mod tests {
             .expect("collection should load")
             .expect("collection should exist");
 
-        let initial = mdbase_record_dependency_digest(&collection).expect("initial digest");
+        let initial = mdbase_control_revisions(&collection).expect("initial revisions");
         write(
             &directory.path().join("mdbase.yaml"),
             "spec_version: 0.3.0\n# changed\n",
         );
-        let config = mdbase_record_dependency_digest(&collection).expect("config digest");
-        assert_ne!(initial, config);
+        let config = mdbase_control_revisions(&collection).expect("config revisions");
+        assert_ne!(initial.config, config.config);
+        assert_eq!(initial.types, config.types);
+        assert_eq!(initial.contracts, config.contracts);
+        assert_eq!(initial.schemas, config.schemas);
+        assert_ne!(initial.combined, config.combined);
 
         write(&directory.path().join("_types/type.md"), "type v2\n");
-        let type_file = mdbase_record_dependency_digest(&collection).expect("type digest");
-        assert_ne!(config, type_file);
+        let type_file = mdbase_control_revisions(&collection).expect("type revisions");
+        assert_ne!(config.types, type_file.types);
+        assert_eq!(config.contracts, type_file.contracts);
+        assert_eq!(config.schemas, type_file.schemas);
+        assert_ne!(config.combined, type_file.combined);
 
         write(
             &directory.path().join("_contracts/contract.md"),
             "contract v2\n",
         );
-        let contract = mdbase_record_dependency_digest(&collection).expect("contract digest");
-        assert_ne!(type_file, contract);
+        let contract = mdbase_control_revisions(&collection).expect("contract revisions");
+        assert_eq!(type_file.types, contract.types);
+        assert_ne!(type_file.contracts, contract.contracts);
+        assert_eq!(type_file.schemas, contract.schemas);
+        assert_ne!(type_file.combined, contract.combined);
 
         write(
             &directory.path().join("schemas/value.json"),
             "{\"type\":\"object\"}\n",
         );
-        let schema = mdbase_record_dependency_digest(&collection).expect("schema digest");
-        assert_ne!(contract, schema);
+        let schema = mdbase_control_revisions(&collection).expect("schema revisions");
+        assert_eq!(contract.types, schema.types);
+        assert_eq!(contract.contracts, schema.contracts);
+        assert_ne!(contract.schemas, schema.schemas);
+        assert_ne!(contract.combined, schema.combined);
     }
 }
