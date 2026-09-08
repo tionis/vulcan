@@ -573,6 +573,26 @@ impl PathPermission {
                 .any(|specifier| specifier_matches_path(specifier, &normalized, tags))
     }
 
+    /// Return whether this permission proves access to every path represented
+    /// by `pattern` without consulting the current filesystem.
+    ///
+    /// This is deliberately stricter than checking the records that happen to
+    /// exist. Callers use it for constraints whose correctness depends on the
+    /// absence of hidden or not-yet-created records. Tag selectors cannot prove
+    /// path-namespace coverage, and any overlapping deny must make the proof
+    /// fail.
+    #[must_use]
+    pub fn covers_path_namespace(&self, pattern: &str) -> bool {
+        let requested = ResourceSpecifier::Folder(normalize_permission_path(pattern));
+        self.allow
+            .iter()
+            .any(|allowed| resource_specifier_covers(allowed, &requested))
+            && !self
+                .deny
+                .iter()
+                .any(|denied| namespace_deny_may_overlap(denied, pattern))
+    }
+
     #[must_use]
     pub fn is_subset_of(&self, active: &Self) -> bool {
         if self.allow.is_empty() {
@@ -817,6 +837,21 @@ fn resource_specifiers_overlap(left: &ResourceSpecifier, right: &ResourceSpecifi
             }
             _ => false,
         }
+}
+
+fn namespace_deny_may_overlap(denied: &ResourceSpecifier, namespace: &str) -> bool {
+    match denied {
+        ResourceSpecifier::All | ResourceSpecifier::Tag(_) => true,
+        ResourceSpecifier::Note(path) => glob_matches(namespace, path),
+        ResourceSpecifier::Folder(pattern) => {
+            let denied_prefix = glob_static_prefix(pattern);
+            let namespace_prefix = glob_static_prefix(namespace);
+            denied_prefix.is_empty()
+                || namespace_prefix.is_empty()
+                || denied_prefix.starts_with(&namespace_prefix)
+                || namespace_prefix.starts_with(&denied_prefix)
+        }
+    }
 }
 
 fn specifier_group_sql(
@@ -1068,6 +1103,28 @@ mod tests {
         assert!(permission.is_allowed("Projects/Nested/Beta.md"));
         assert!(!permission.is_allowed("Projects/Secret.md"));
         assert!(!permission.is_allowed("Archive/Alpha.md"));
+    }
+
+    #[test]
+    fn namespace_coverage_is_policy_based_and_deny_aware() {
+        let covered = PathPermission {
+            allow: vec![ResourceSpecifier::Folder("tasks/**".to_string())],
+            deny: Vec::new(),
+        };
+        assert!(covered.covers_path_namespace("tasks/published/**/*.md"));
+        assert!(!covered.covers_path_namespace("projects/**/*.md"));
+
+        let denied_subtree = PathPermission {
+            allow: vec![ResourceSpecifier::Folder("tasks/**".to_string())],
+            deny: vec![ResourceSpecifier::Folder("tasks/private/**".to_string())],
+        };
+        assert!(!denied_subtree.covers_path_namespace("tasks/**/*.md"));
+
+        let tag_only = PathPermission {
+            allow: vec![ResourceSpecifier::Tag("task".to_string())],
+            deny: Vec::new(),
+        };
+        assert!(!tag_only.covers_path_namespace("tasks/**/*.md"));
     }
 
     #[test]

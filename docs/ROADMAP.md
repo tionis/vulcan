@@ -7346,7 +7346,7 @@ The current refresh avoids unchanged SQLite row writes but still derives the who
 #### MDB.7 Core write, concurrency, and lifecycle
 
 - [x] Define the write implementation contract and upstream-profile gap handling in `docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md`; this completes design review only, not CRUD, transaction, or conformance implementation.
-- [ ] Implement scope-complete read authorization before global constraints; reject insufficient visibility consistently without probing hidden conflicts. Keep read filtering unchanged.
+- [x] Implement scope-complete read authorization before global constraints; reject insufficient visibility consistently without probing hidden conflicts. Keep read filtering unchanged.
 - [ ] Bind previews to config/type/contract/schema/grant revisions, relevant directory membership, source/absence preconditions, and fixed generated values; invalidate on phantom records or control drift.
 - [ ] Implement the bounded all-or-nothing cooperating-reader batch/rename journal, crash recovery, external-drift preservation, post-consistency outbox, and durable idempotency contract. Do not claim isolation from direct filesystem editors.
 
