@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 10
+version: 11
 metadata:
   vulcan:
     managed: true
@@ -73,7 +73,9 @@ the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (di
 detached HEAD, or bare repository). After a successful file lane, the branch tip is published
 to its upstream with the observed tracking ref as an exact lease — never force-pushed. A moved
 remote reports for the next cycle; transport or policy failures record `push_detail` without
-failing the converged file lane, and `pushed` tells whether publication happened.
+reversing the converged file lane, and `pushed` tells whether publication happened. A daemon job
+with either failure is nevertheless terminally `failed`, with status `error` and explicit detail
+that the file lane converged; this keeps aggregate status and companion failure notices truthful.
 Human output also prints `push_detail` whenever branch publication was rejected or failed; do not
 interpret a successful file-lane summary as proof that the checked-out branch was published.
 Caveats: `rebase.autostash` is neutralized (automation never stashes implicitly); a
