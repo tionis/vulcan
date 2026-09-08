@@ -998,6 +998,7 @@ pub fn sync_git_vault_with_observer_and_engine(
     ) {
         Ok(sync) => sync,
         Err(error) => {
+            let classified = vulcan_sync::classify_git_sync_error(&error);
             if !options.dry_run {
                 journal.error = Some(error.to_string());
                 if let Err(state_error) = state_store.save(&journal) {
@@ -1006,7 +1007,7 @@ pub fn sync_git_vault_with_observer_and_engine(
                     )));
                 }
             }
-            return Err(AppError::operation(error));
+            return Err(AppError::sync(classified));
         }
     };
     let conflict_record =
@@ -2645,9 +2646,14 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         fs::create_dir(&vault).expect("vault directory");
         let paths = VaultPaths::new(&vault);
         let store = SyncStateStore::at(temporary.path().join("state"));
-        assert!(
-            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store).is_err()
+        let error = sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
+            .expect_err("non-repository must fail");
+        let sync_error = error.sync_error().expect("typed sync error");
+        assert_eq!(
+            sync_error.category,
+            vulcan_sync::SyncErrorCategory::Repository
         );
+        assert!(!sync_error.retryable);
 
         let key = crate::sync_state::repository_state_key(
             &fs::canonicalize(&vault).expect("canonical vault"),

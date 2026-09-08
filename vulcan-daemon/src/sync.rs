@@ -254,12 +254,19 @@ fn execute_claimed_job(
         Err(error) => complete_execution_error(
             supervisor,
             &id,
-            if claimed.cancellation.is_cancelled() {
-                SyncError::new(SyncErrorCategory::Cancelled, error.to_string(), false)
-            } else {
-                SyncError::new(SyncErrorCategory::Unknown, error.to_string(), true)
-            },
+            daemon_sync_error(&error, claimed.cancellation.is_cancelled()),
         ),
+    }
+}
+
+fn daemon_sync_error(error: &vulcan_app::AppError, cancelled: bool) -> SyncError {
+    if cancelled {
+        SyncError::new(SyncErrorCategory::Cancelled, error.to_string(), false)
+    } else {
+        error
+            .sync_error()
+            .cloned()
+            .unwrap_or_else(|| SyncError::new(SyncErrorCategory::Unknown, error.to_string(), true))
     }
 }
 
@@ -889,6 +896,22 @@ mod tests {
             ]),
             GitRemoteObservation::Fetch
         );
+    }
+
+    #[test]
+    fn daemon_preserves_typed_app_sync_errors_and_cancellation() {
+        let typed = vulcan_app::AppError::sync(SyncError::new(
+            SyncErrorCategory::Network,
+            "remote unavailable",
+            true,
+        ));
+        let propagated = daemon_sync_error(&typed, false);
+        assert_eq!(propagated.category, SyncErrorCategory::Network);
+        assert!(propagated.retryable);
+
+        let cancelled = daemon_sync_error(&typed, true);
+        assert_eq!(cancelled.category, SyncErrorCategory::Cancelled);
+        assert!(!cancelled.retryable);
     }
 
     #[test]

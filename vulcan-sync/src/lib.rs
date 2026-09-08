@@ -64,12 +64,13 @@ pub use refs::{
     REMOTE_EPOCH_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
 };
 pub use sync::{
-    find_git_live_epoch, git_live_epoch_id, sync_git_once, sync_git_once_with_control,
-    GitAutomaticMergeValidation, GitAutomaticResolution, GitAutomaticResolutionValidation,
-    GitAutomaticValidationCheck, GitBranchSync, GitBranchSyncAction, GitConflictClass,
-    GitConflictClassification, GitConflictCopy, GitConflictMaterialization, GitConflictRefs,
-    GitConflictScope, GitLiveEpoch, GitRemoteObservation, GitSyncAction, GitSyncBackend,
-    GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    classify_git_sync_error, find_git_live_epoch, git_live_epoch_id, sync_git_once,
+    sync_git_once_with_control, GitAutomaticMergeValidation, GitAutomaticResolution,
+    GitAutomaticResolutionValidation, GitAutomaticValidationCheck, GitBranchSync,
+    GitBranchSyncAction, GitConflictClass, GitConflictClassification, GitConflictCopy,
+    GitConflictMaterialization, GitConflictRefs, GitConflictScope, GitLiveEpoch,
+    GitRemoteObservation, GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId,
+    GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
+    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    IgnoreGitSyncProgress, SyncCancellationToken,
 };

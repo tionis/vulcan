@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 11
+version: 12
 metadata:
   vulcan:
     managed: true
@@ -60,7 +60,10 @@ heals the cache. Never delete journals,
 apply markers, or `refs/vulcan/**` to make a status look clean.
 If a retained journal includes an error, daemon and companion status project `error` even though
 the journal keeps the exact failed phase for recovery. Do not interpret a stale-looking phase name
-inside diagnostics as an operation that is still running.
+inside diagnostics as an operation that is still running. Daemon jobs preserve the sync engine's
+typed failure category and retryability through the application layer: network/authentication
+failures can project offline, while repository/configuration/invariant failures remain errors with
+different repair guidance rather than being flattened into retryable `unknown` failures.
 
 ## Branch lane
 

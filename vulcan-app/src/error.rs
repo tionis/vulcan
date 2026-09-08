@@ -4,6 +4,7 @@ use std::io;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppError {
     message: String,
+    sync_error: Option<vulcan_sync::SyncError>,
 }
 
 impl AppError {
@@ -11,12 +12,26 @@ impl AppError {
     pub fn operation(error: impl Display) -> Self {
         Self {
             message: error.to_string(),
+            sync_error: None,
+        }
+    }
+
+    #[must_use]
+    pub fn sync(error: vulcan_sync::SyncError) -> Self {
+        Self {
+            message: error.message.clone(),
+            sync_error: Some(error),
         }
     }
 
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    #[must_use]
+    pub fn sync_error(&self) -> Option<&vulcan_sync::SyncError> {
+        self.sync_error.as_ref()
     }
 }
 

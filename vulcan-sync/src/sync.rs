@@ -666,7 +666,7 @@ impl SyncBackend for GitSyncBackend<'_> {
             &mut observer,
         )
         .map(git_report_to_backend_report)
-        .map_err(|error| sync_error_from_git(&error))
+        .map_err(|error| classify_git_sync_error(&error))
     }
 }
 
@@ -788,7 +788,10 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
     }
 }
 
-fn sync_error_from_git(error: &GitSyncError) -> SyncError {
+/// Converts a Git-engine failure into the stable backend-neutral error
+/// contract used by supervisors and transports.
+#[must_use]
+pub fn classify_git_sync_error(error: &GitSyncError) -> SyncError {
     let (category, retryable) = match error {
         GitSyncError::Locked
         | GitSyncError::Git(
@@ -4302,19 +4305,19 @@ mod tests {
 
     #[test]
     fn backend_errors_expose_stable_categories_and_retry_guidance() {
-        let cancelled = sync_error_from_git(&GitSyncError::Cancelled);
+        let cancelled = classify_git_sync_error(&GitSyncError::Cancelled);
         assert_eq!(cancelled.category, SyncErrorCategory::Cancelled);
         assert!(!cancelled.retryable);
 
         let unavailable =
-            sync_error_from_git(&GitSyncError::Git(GitEngineError::ExecutableUnavailable {
+            classify_git_sync_error(&GitSyncError::Git(GitEngineError::ExecutableUnavailable {
                 executable: PathBuf::from("git"),
                 source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
             }));
         assert_eq!(unavailable.category, SyncErrorCategory::Configuration);
         assert!(!unavailable.retryable);
 
-        let remote = sync_error_from_git(&GitSyncError::Git(GitEngineError::CommandFailed {
+        let remote = classify_git_sync_error(&GitSyncError::Git(GitEngineError::CommandFailed {
             operation: "fetch the live sync ref",
             exit_code: Some(128),
             stderr: "offline".to_string(),
