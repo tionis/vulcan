@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 13
+version: 14
 metadata:
   vulcan:
     managed: true
@@ -185,9 +185,14 @@ they commit.
   and branch-lane action, plus notification advertisement discovery and wake-up enqueueing
   identified by endpoint origin and fingerprint only. At the default quiet level, failed jobs
   print one secret-minimal line per wiki/category state with retryability and a direction to inspect
-  retained status; error text remains on the authenticated status surface. Branch pull-strategy and
-  push failures use their specific diagnostic. Both kinds deduplicate until recovery, so installed
-  services make persistent failure visible without flooding their logs.
+  retained status; error text remains on the authenticated status surface. Conflicted and paused
+  jobs emit warning records, failed jobs emit error records, and branch pull-strategy and push
+  failures also keep their specific diagnostic. Attention states deduplicate per wiki until recovery,
+  so installed services make persistent trouble visible without flooding their logs. To add native
+  desktop delivery, preview and apply
+  `vulcan daemon config set-notifications --desktop true --dry-run` and then without `--dry-run`,
+  then restart the daemon. Desktop delivery is best-effort, timeout-bounded, and never changes the
+  retained sync result; helper or desktop-session failures become warning log records.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.

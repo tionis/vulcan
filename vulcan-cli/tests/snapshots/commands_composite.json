@@ -10798,6 +10798,41 @@
                   }
                 ],
                 "subcommands": []
+              },
+              {
+                "about": "Configure daemon-owned operational notifications",
+                "name": "set-notifications",
+                "options": [
+                  {
+                    "help": "Enable or disable native desktop notifications (true or false)",
+                    "id": "desktop",
+                    "long": "desktop",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DESKTOP"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
               }
             ]
           }

@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 18
+version: 19
 tools:
   - config_show
   - config_get
@@ -41,6 +41,10 @@ permission profiles, or diagnoses permission and trust failures.
     daemon discovers `notification.json` from the repository's exact
     `refs/vulcan/notifications` ref. The registration's effective profile must allow Git and
     network access to the advertised endpoint origin before the daemon connects.
+15. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
+    Preview `vulcan daemon config set-notifications --desktop true --dry-run`, apply it, and restart
+    the daemon to opt into native desktop delivery. This setting contains no credential and a
+    desktop delivery failure never changes the retained sync result.
 
 ## Guardrails
 

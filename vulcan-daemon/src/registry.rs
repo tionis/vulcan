@@ -80,6 +80,8 @@ pub struct DaemonConfig {
     pub semantic_agent: Option<DaemonAgentConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_worker: Option<DaemonSemanticWorkerConfig>,
+    #[serde(default, skip_serializing_if = "DaemonNotificationConfig::is_default")]
+    pub notifications: DaemonNotificationConfig,
     #[serde(default, rename = "vault")]
     pub vaults: Vec<WikiRegistration>,
 }
@@ -96,8 +98,23 @@ impl Default for DaemonConfig {
             resolution_agent: None,
             semantic_agent: None,
             semantic_worker: None,
+            notifications: DaemonNotificationConfig::default(),
             vaults: Vec::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonNotificationConfig {
+    /// Show native desktop notifications for sync failures and states that
+    /// require human attention. Operational warning/error logs are always on.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub desktop: bool,
+}
+
+impl DaemonNotificationConfig {
+    const fn is_default(&self) -> bool {
+        !self.desktop
     }
 }
 
@@ -492,6 +509,17 @@ impl WikiRegistry {
     pub fn clear_semantic_worker(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
         self.mutate(dry_run, |config| {
             config.semantic_worker = None;
+            Ok(config.clone())
+        })
+    }
+
+    pub fn set_notifications(
+        &self,
+        notifications: DaemonNotificationConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            config.notifications = notifications;
             Ok(config.clone())
         })
     }
@@ -903,6 +931,39 @@ mod tests {
             .expect("clear semantic worker")
             .semantic_worker
             .is_none());
+
+        let preview = registry
+            .set_notifications(DaemonNotificationConfig { desktop: true }, true)
+            .expect("preview notifications");
+        assert!(preview.notifications.desktop);
+        assert!(
+            !registry
+                .load()
+                .expect("preview preserves configuration")
+                .notifications
+                .desktop
+        );
+        registry
+            .set_notifications(DaemonNotificationConfig { desktop: true }, false)
+            .expect("enable notifications");
+        assert!(
+            registry
+                .load()
+                .expect("load notifications")
+                .notifications
+                .desktop
+        );
+    }
+
+    #[test]
+    fn old_daemon_configs_default_to_log_only_notifications() {
+        let config: DaemonConfig = toml::from_str(
+            "device_id = \"01ARZ3NDEKTSV4RRFFQ69G5FAV\"\nbind = \"127.0.0.1:3210\"\n",
+        )
+        .expect("legacy daemon config");
+        assert_eq!(config.notifications, DaemonNotificationConfig::default());
+        let serialized = toml::to_string(&config).expect("serialize default config");
+        assert!(!serialized.contains("notifications"));
     }
 
     #[test]

@@ -2477,6 +2477,31 @@ fn parses_daemon_semantic_worker_configuration() {
 }
 
 #[test]
+fn parses_daemon_desktop_notification_configuration() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-notifications",
+        "--desktop",
+        "true",
+        "--dry-run",
+    ])
+    .expect("notification config parses");
+    let Command::Daemon {
+        command:
+            DaemonCommand::Config {
+                command: DaemonConfigCommand::SetNotifications { desktop, dry_run },
+            },
+    } = cli.command
+    else {
+        panic!("expected daemon notification config command");
+    };
+    assert!(desktop);
+    assert!(dry_run);
+}
+
+#[test]
 fn parses_sync_doctor_command() {
     let doctor =
         Cli::try_parse_from(["vulcan", "sync", "doctor", "personal", "--remote", "backup"])

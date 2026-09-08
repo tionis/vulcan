@@ -1,5 +1,6 @@
 //! Long-running synchronization daemon process lifecycle.
 
+use crate::alerts::{deliver_desktop, SyncAlert, SyncAlertTracker};
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
@@ -18,7 +19,7 @@ use crate::service::DaemonServiceDiagnostic;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
 use crate::sync::{
     execute_next_sync_job_with_state_store_and_engine, format_branch_diagnostic,
-    format_sync_execution, format_sync_failure_diagnostic,
+    format_sync_execution,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -30,7 +31,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
@@ -306,6 +307,7 @@ struct DaemonWorkers {
     trigger: thread::JoinHandle<Result<(), DaemonProcessError>>,
     sync: thread::JoinHandle<Result<(), DaemonProcessError>>,
     notifications: tokio::task::JoinHandle<Result<(), DaemonProcessError>>,
+    desktop_notifications: Option<thread::JoinHandle<()>>,
     semantic: Option<thread::JoinHandle<Result<(), String>>>,
 }
 
@@ -318,6 +320,15 @@ impl DaemonWorkers {
         semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
         stop: &Arc<AtomicBool>,
     ) -> Self {
+        let (desktop_sender, desktop_notifications) = if config.notifications.desktop {
+            let (sender, receiver) = mpsc::sync_channel(32);
+            (
+                Some(sender),
+                Some(spawn_desktop_notification_worker(receiver)),
+            )
+        } else {
+            (None, None)
+        };
         Self {
             trigger: spawn_trigger_runtime(
                 context.registry.clone(),
@@ -331,6 +342,7 @@ impl DaemonWorkers {
                 Arc::clone(state_store),
                 Arc::clone(stop),
                 context.verbose,
+                desktop_sender,
             ),
             notifications: spawn_notification_runtime(
                 context.registry.clone(),
@@ -338,6 +350,7 @@ impl DaemonWorkers {
                 Arc::clone(stop),
                 context.verbose,
             ),
+            desktop_notifications,
             semantic: config.semantic_worker.clone().map(|worker_config| {
                 spawn_semantic_worker(
                     worker_config,
@@ -362,6 +375,11 @@ impl DaemonWorkers {
         self.notifications.await.map_err(|error| {
             DaemonProcessError::Worker(format!("daemon notification runtime panicked: {error}"))
         })??;
+        if let Some(worker) = self.desktop_notifications {
+            worker.join().map_err(|_| {
+                DaemonProcessError::Worker("desktop notification worker panicked".to_string())
+            })?;
+        }
         if let Some(worker) = self.semantic {
             worker
                 .join()
@@ -496,12 +514,13 @@ fn spawn_job_worker(
     state_store: Arc<SyncStateStore>,
     stop: Arc<AtomicBool>,
     verbose: bool,
+    desktop_sender: Option<mpsc::SyncSender<SyncAlert>>,
 ) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
     thread::spawn(move || {
         let result = (|| {
             let engine = vulcan_sync::GitCliEngine::default();
             let mut last_branch_diagnostics = BTreeMap::<String, String>::new();
-            let mut last_sync_failures = BTreeMap::<String, String>::new();
+            let mut alerts = SyncAlertTracker::default();
             while !stop.load(Ordering::Acquire) {
                 match execute_next_sync_job_with_state_store_and_engine(
                     &supervisor,
@@ -514,10 +533,21 @@ fn spawn_job_worker(
                         if verbose {
                             eprintln!("{}", format_sync_execution(&execution));
                         }
-                        if let Some(line) =
-                            next_sync_failure_diagnostic(&execution, &mut last_sync_failures)
-                        {
-                            eprintln!("{line}");
+                        if let Some(alert) = alerts.observe(&execution) {
+                            eprintln!("{}", alert.log_line());
+                            if let Some(sender) = desktop_sender.as_ref() {
+                                if let Err(error) = sender.try_send(alert) {
+                                    eprintln!(
+                                        "level=warning event=notification_delivery_failed sink=desktop reason={}",
+                                        match error {
+                                            mpsc::TrySendError::Full(_) => "queue_full",
+                                            mpsc::TrySendError::Disconnected(_) => {
+                                                "worker_unavailable"
+                                            }
+                                        }
+                                    );
+                                }
+                            }
                         }
                         if let Some(line) = next_branch_diagnostic(
                             execution.job.job.wiki_id.as_deref(),
@@ -542,27 +572,19 @@ fn spawn_job_worker(
     })
 }
 
-fn next_sync_failure_diagnostic(
-    execution: &crate::sync::DaemonSyncExecution,
-    last: &mut BTreeMap<String, String>,
-) -> Option<String> {
-    let wiki = execution
-        .job
-        .job
-        .wiki_id
-        .as_deref()
-        .unwrap_or("<unregistered>")
-        .to_string();
-    let diagnostic = format_sync_failure_diagnostic(execution);
-    if let Some(line) = diagnostic {
-        if last.get(&wiki) == Some(&line) {
-            return None;
+fn spawn_desktop_notification_worker(
+    receiver: mpsc::Receiver<SyncAlert>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while let Ok(alert) = receiver.recv() {
+            if let Err(error) = deliver_desktop(&alert) {
+                eprintln!(
+                    "level=warning event=notification_delivery_failed sink=desktop reason={:?}",
+                    error.kind()
+                );
+            }
         }
-        last.insert(wiki, line.clone());
-        return Some(line);
-    }
-    last.remove(&wiki);
-    None
+    })
 }
 
 /// Returns a branch lane failure the first time it appears per wiki, so a
@@ -1095,42 +1117,6 @@ mod tests {
             None,
             "healthy lanes never report"
         );
-    }
-
-    #[test]
-    fn sync_failure_diagnostics_deduplicate_until_recovery() {
-        use crate::supervisor::SupervisedSyncJob;
-        use crate::sync::DaemonSyncExecution;
-        use vulcan_sync::{SyncError, SyncErrorCategory, SyncJob, SyncJobState, SyncJobTrigger};
-
-        let execution = |state, error| DaemonSyncExecution {
-            job: SupervisedSyncJob {
-                job: SyncJob {
-                    version: vulcan_sync::SYNC_CONTRACT_VERSION,
-                    id: "job-1".to_string(),
-                    wiki_id: Some("alpha".to_string()),
-                    backend: "git".to_string(),
-                    vault: PathBuf::from("/vault"),
-                    trigger: SyncJobTrigger::Poll,
-                    state,
-                    status: None,
-                    error,
-                },
-                triggers: vec![SyncJobTrigger::Poll],
-                watch: None,
-            },
-            report: None,
-        };
-        let failed = execution(
-            SyncJobState::Failed,
-            Some(SyncError::new(SyncErrorCategory::Network, "offline", true)),
-        );
-        let healthy = execution(SyncJobState::Succeeded, None);
-        let mut last = BTreeMap::new();
-        assert!(next_sync_failure_diagnostic(&failed, &mut last).is_some());
-        assert_eq!(next_sync_failure_diagnostic(&failed, &mut last), None);
-        assert_eq!(next_sync_failure_diagnostic(&healthy, &mut last), None);
-        assert!(next_sync_failure_diagnostic(&failed, &mut last).is_some());
     }
 
     #[test]

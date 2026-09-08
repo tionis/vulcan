@@ -4516,6 +4516,20 @@ pub enum DaemonConfigCommand {
         #[arg(long, help = "Report without writing daemon configuration")]
         dry_run: bool,
     },
+    #[command(about = "Configure daemon-owned operational notifications")]
+    SetNotifications {
+        #[arg(
+            long,
+            action = clap::ArgAction::Set,
+            help = "Enable or disable native desktop notifications (true or false)"
+        )]
+        desktop: bool,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

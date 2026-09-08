@@ -13,7 +13,8 @@ use vulcan_daemon::process::{
     DaemonStatusReport,
 };
 use vulcan_daemon::registry::{
-    DaemonAgentConfig, DaemonAgentKind, DaemonConfig, DaemonSemanticWorkerConfig, WikiId,
+    DaemonAgentConfig, DaemonAgentKind, DaemonConfig, DaemonNotificationConfig,
+    DaemonSemanticWorkerConfig, WikiId,
 };
 use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
@@ -310,6 +311,10 @@ fn handle_config(
         DaemonConfigCommand::ClearSemanticWorker { dry_run } => context
             .registry
             .clear_semantic_worker(*dry_run)
+            .map_err(CliError::operation)?,
+        DaemonConfigCommand::SetNotifications { desktop, dry_run } => context
+            .registry
+            .set_notifications(DaemonNotificationConfig { desktop: *desktop }, *dry_run)
             .map_err(CliError::operation)?,
     };
     print_config(output, &config)

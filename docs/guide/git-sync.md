@@ -105,6 +105,27 @@ Complete-file, patch, editor, and reviewed agent-proposal modes are also availab
 
 If a finite cycle is interrupted or the network is unavailable, rerun `vulcan sync run`. Device-local journals and Git refs retain the captured state; do not delete them or replace the vault with a fresh clone as a recovery shortcut.
 
+## Background failure notifications
+
+The daemon always writes one structured warning or error record when a registered wiki first
+enters a conflicted, paused, or failed sync state. Repeated automatic attempts in the same state do
+not flood the service log; a successful cycle resets the notification. Full error detail remains in
+`vulcan sync status <wiki>` rather than logs or desktop messages.
+
+Native desktop notifications are opt-in and require a daemon restart after configuration:
+
+```sh
+vulcan daemon config set-notifications --desktop true --dry-run
+vulcan daemon config set-notifications --desktop true
+vulcan daemon stop
+vulcan daemon start --detach
+```
+
+Vulcan uses `notify-send` on Linux, `osascript` on macOS, and PowerShell on Windows without a shell.
+Delivery runs on a bounded worker with a five-second helper timeout. If the helper or graphical
+session is unavailable, the daemon logs that delivery failure and leaves the authoritative sync
+result unchanged. Disable it with `set-notifications --desktop false`.
+
 ## Debounced semantic commits
 
 `sync semantic-auto` is a finite scheduler entrypoint for cron, a systemd timer, or Forgejo Actions.
