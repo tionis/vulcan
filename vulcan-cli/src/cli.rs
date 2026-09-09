@@ -3978,7 +3978,7 @@ pub enum SyncCommand {
         #[arg(long, help = "Report the cancellation without changing Android")]
         dry_run: bool,
     },
-    #[command(about = "List preserved sync conflicts or show one record")]
+    #[command(about = "List actionable sync conflicts or inspect one retained record")]
     Conflicts {
         #[arg(help = "Immutable conflict ID; omit to list conflicts")]
         conflict_id: Option<String>,

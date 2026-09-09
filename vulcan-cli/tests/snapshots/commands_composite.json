@@ -9118,7 +9118,7 @@
             "subcommands": []
           },
           {
-            "about": "List preserved sync conflicts or show one record",
+            "about": "List actionable sync conflicts or inspect one retained record",
             "name": "conflicts",
             "options": [
               {

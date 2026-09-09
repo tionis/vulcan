@@ -1011,7 +1011,7 @@ pub fn sync_git_vault_with_observer_and_engine(
         }
     };
     let conflict_record =
-        persist_sync_conflict(engine, &sync, &mut journal, state_store, !options.dry_run)?;
+        persist_and_update_conflicts(engine, &sync, &mut journal, state_store, !options.dry_run)?;
     journal.git_dir = Some(sync.repository.git_dir.clone());
     journal.local_snapshot = sync.local_snapshot.as_ref().map(ToString::to_string);
     journal.accepted = sync.accepted.as_ref().map(ToString::to_string);
@@ -1023,20 +1023,7 @@ pub fn sync_git_vault_with_observer_and_engine(
     if !options.dry_run {
         state_store.save(&journal)?;
     }
-    let should_refresh = !options.dry_run
-        && sync.actions.contains(&GitSyncAction::WorktreeApplied)
-        && paths.cache_db().is_file();
-    // The vault tree is already applied and verified; a cache refresh
-    // failure must not report the successful sync as failed or retain a
-    // misleading recovery journal. The rebuildable cache stays stale until
-    // the next refresh and the warning rides the report.
-    let (cache_refresh, cache_refresh_error) = match should_refresh
-        .then(|| refresh_cache_incrementally(paths))
-        .transpose()
-    {
-        Ok(report) => (report, None),
-        Err(error) => (None, Some(error.to_string())),
-    };
+    let (cache_refresh, cache_refresh_error) = refresh_cache_after_sync(paths, &sync, &options);
     let repository_key = journal.repository_key.clone();
     let retained = if options.dry_run {
         previous
@@ -1061,6 +1048,97 @@ pub fn sync_git_vault_with_observer_and_engine(
             retained,
         },
     })
+}
+
+fn refresh_cache_after_sync(
+    paths: &VaultPaths,
+    sync: &GitSyncReport,
+    options: &GitSyncOptions,
+) -> (Option<ScanSummary>, Option<String>) {
+    let should_refresh = !options.dry_run
+        && sync.actions.contains(&GitSyncAction::WorktreeApplied)
+        && paths.cache_db().is_file();
+    // The vault tree is already applied and verified; a cache refresh
+    // failure must not report the successful sync as failed or retain a
+    // misleading recovery journal. The rebuildable cache stays stale until
+    // the next refresh and the warning rides the report.
+    match should_refresh
+        .then(|| refresh_cache_incrementally(paths))
+        .transpose()
+    {
+        Ok(report) => (report, None),
+        Err(error) => (None, Some(error.to_string())),
+    }
+}
+
+fn supersede_obsolete_conflicts(
+    sync: &GitSyncReport,
+    current_conflict: Option<&SyncConflictRecord>,
+    state_store: &SyncStateStore,
+    journal: &SyncJournal,
+) -> Result<(), AppError> {
+    let store = SyncConflictStore::from_state_store(state_store);
+    if let Some(record) = current_conflict {
+        let current_revision = record
+            .provenance_revision
+            .as_deref()
+            .unwrap_or(&record.remote_revision);
+        store.supersede_unresolved_except(
+            &journal.repository_key,
+            Some(&record.id),
+            current_revision,
+        )?;
+        return Ok(());
+    }
+    if matches!(
+        sync.outcome,
+        GitSyncOutcome::Paused | GitSyncOutcome::Planned
+    ) {
+        return Ok(());
+    }
+    let current_revision = sync
+        .accepted
+        .as_ref()
+        .or(sync.remote_before.as_ref())
+        .or(sync.local_before.as_ref());
+    if let Some(current_revision) = current_revision {
+        store.supersede_unresolved_except(
+            &journal.repository_key,
+            None,
+            current_revision.as_str(),
+        )?;
+    }
+    Ok(())
+}
+
+fn persist_and_update_conflicts(
+    engine: &dyn GitEngine,
+    sync: &GitSyncReport,
+    journal: &mut SyncJournal,
+    state_store: &SyncStateStore,
+    persist: bool,
+) -> Result<Option<SyncConflictRecord>, AppError> {
+    let record = persist_sync_conflict(engine, sync, journal, state_store, persist)?;
+    update_conflict_lifecycle(sync, record.as_ref(), state_store, journal, !persist)?;
+    Ok(record)
+}
+
+fn update_conflict_lifecycle(
+    sync: &GitSyncReport,
+    current_conflict: Option<&SyncConflictRecord>,
+    state_store: &SyncStateStore,
+    journal: &mut SyncJournal,
+    dry_run: bool,
+) -> Result<(), AppError> {
+    if dry_run {
+        return Ok(());
+    }
+    if let Err(error) = supersede_obsolete_conflicts(sync, current_conflict, state_store, journal) {
+        journal.error = Some(error.to_string());
+        state_store.save(journal)?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn check_sync_start(cancellation: &SyncCancellationToken) -> Result<(), AppError> {
@@ -2091,6 +2169,82 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("safe materialization");
         assert!(materialization.published);
         assert!(materialization.applied);
+    }
+
+    #[test]
+    fn later_successful_sync_supersedes_an_unresolvable_older_conflict() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        fs::write(fixture.writer.join("Home.md"), "writer one\n").expect("writer edit");
+        fs::write(fixture.reader.join("Home.md"), "reader\n").expect("reader edit");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer push");
+        let first = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("first conflict")
+        .conflict_record
+        .expect("first conflict record");
+
+        fs::write(fixture.writer.join("Home.md"), "writer two\n").expect("writer advances");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer advances live ref");
+        let later = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("later successful sync");
+        assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
+
+        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.store,
+        )
+        .expect("active conflicts");
+        assert_eq!(listed.count, 0);
+        assert_eq!(listed.superseded_count, 1);
+        let historical = crate::sync_conflicts::get_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &first.id,
+            &fixture.store,
+        )
+        .expect("historical conflict");
+        assert_eq!(
+            historical.resolution,
+            crate::sync_conflicts::SyncConflictResolutionState::Superseded
+        );
+        assert_eq!(
+            historical
+                .supersession
+                .and_then(|item| item.replacement_conflict_id),
+            None
+        );
+        let stale_resolution = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &first.id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: true,
+            },
+            &fixture.store,
+        )
+        .expect_err("superseded history cannot be resolved");
+        assert!(stale_resolution
+            .to_string()
+            .contains("retained only as history"));
     }
 
     #[test]

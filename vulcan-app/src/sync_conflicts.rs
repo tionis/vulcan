@@ -17,6 +17,7 @@ use vulcan_sync::{
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 1;
 pub const SYNC_CONFLICT_RESOLUTION_VERSION: u32 = 1;
+pub const SYNC_CONFLICT_SUPERSESSION_VERSION: u32 = 1;
 const MAX_CONFLICT_RECORD_BYTES: u64 = 1024 * 1024;
 /// Fully resolved conflicts keep their records and resolution metadata
 /// forever, but only the newest few resolved conflicts retain the
@@ -113,6 +114,16 @@ pub struct SyncConflictSummary {
 pub enum SyncConflictResolutionState {
     Unresolved,
     Resolved,
+    Superseded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConflictSupersessionRecord {
+    pub version: u32,
+    pub conflict_id: String,
+    pub current_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_conflict_id: Option<String>,
 }
 
 const fn default_conflict_scope() -> GitConflictScope {
@@ -204,7 +215,10 @@ pub struct ResolveSyncConflictReport {
 pub struct SyncConflictListReport {
     pub vault: PathBuf,
     pub repository_key: String,
+    /// Number of currently actionable unresolved conflicts. Retained
+    /// superseded history is reported separately and excluded here.
     pub count: usize,
+    pub superseded_count: usize,
     pub conflicts: Vec<SyncConflictSummary>,
 }
 
@@ -212,6 +226,8 @@ pub struct SyncConflictListReport {
 pub struct SyncConflictDetailReport {
     pub record: SyncConflictRecord,
     pub resolution: SyncConflictResolutionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersession: Option<SyncConflictSupersessionRecord>,
 }
 
 pub fn list_sync_conflicts(
@@ -229,34 +245,41 @@ pub fn list_sync_conflicts_with_state_store(
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let records = SyncConflictStore::from_state_store(state_store).list(&repository_key)?;
     let store = SyncConflictStore::from_state_store(state_store);
-    let conflicts = records
+    let states = records
         .into_iter()
         .map(|record| {
             let resolution = store.resolution_state(&repository_key, &record.id)?;
             let scope = effective_conflict_scope(&record);
-            Ok(
-                (resolution == SyncConflictResolutionState::Unresolved).then_some(
-                    SyncConflictSummary {
-                        id: record.id,
-                        scope,
-                        paths: record.paths.into_iter().map(|path| path.path).collect(),
-                        base_revision: record.base_revision,
-                        local_revision: record.local_revision,
-                        remote_revision: record.remote_revision,
-                        policy_version: record.policy_version,
-                        resolution,
-                    },
-                ),
-            )
+            Ok((
+                resolution,
+                SyncConflictSummary {
+                    id: record.id,
+                    scope,
+                    paths: record.paths.into_iter().map(|path| path.path).collect(),
+                    base_revision: record.base_revision,
+                    local_revision: record.local_revision,
+                    remote_revision: record.remote_revision,
+                    policy_version: record.policy_version,
+                    resolution,
+                },
+            ))
         })
-        .collect::<Result<Vec<_>, AppError>>()?
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let superseded_count = states
+        .iter()
+        .filter(|(state, _)| *state == SyncConflictResolutionState::Superseded)
+        .count();
+    let conflicts = states
         .into_iter()
-        .flatten()
+        .filter_map(|(state, summary)| {
+            (state == SyncConflictResolutionState::Unresolved).then_some(summary)
+        })
         .collect::<Vec<_>>();
     Ok(SyncConflictListReport {
         vault: work_tree,
         repository_key,
         count: conflicts.len(),
+        superseded_count,
         conflicts,
     })
 }
@@ -279,7 +302,12 @@ pub fn get_sync_conflict_with_state_store(
     let store = SyncConflictStore::from_state_store(state_store);
     let record = store.get(&repository_key, conflict_id)?;
     let resolution = store.resolution_state(&repository_key, conflict_id)?;
-    Ok(SyncConflictDetailReport { record, resolution })
+    let supersession = store.get_supersession(&repository_key, conflict_id)?;
+    Ok(SyncConflictDetailReport {
+        record,
+        resolution,
+        supersession,
+    })
 }
 
 pub fn resolve_sync_conflict(
@@ -310,6 +338,13 @@ pub fn resolve_sync_conflict_with_state_store(
         return Err(AppError::operation(
             "sync conflict record does not belong to the selected worktree",
         ));
+    }
+    if store.resolution_state(&repository_key, conflict_id)?
+        == SyncConflictResolutionState::Superseded
+    {
+        return Err(AppError::operation(format!(
+            "conflict `{conflict_id}` was superseded by later synchronization and is retained only as history; choose a currently unresolved record from `vulcan sync conflicts`"
+        )));
     }
     let existing_resolution = store.get_effective_resolution(&repository_key, conflict_id)?;
     if let Some(existing) = &existing_resolution {
@@ -1237,15 +1272,84 @@ impl SyncConflictStore {
         write_json_replace(&path, resolution)
     }
 
-    fn resolution_state(
+    pub fn supersede_unresolved_except(
+        &self,
+        repository_key: &str,
+        current_conflict_id: Option<&str>,
+        current_revision: &str,
+    ) -> Result<usize, AppError> {
+        validate_hex_id("repository key", repository_key)?;
+        if let Some(id) = current_conflict_id {
+            validate_hex_id("conflict ID", id)?;
+        }
+        let mut superseded = 0;
+        for record in self.list(repository_key)? {
+            if current_conflict_id == Some(record.id.as_str())
+                || self.resolution_state(repository_key, &record.id)?
+                    != SyncConflictResolutionState::Unresolved
+                || (current_conflict_id.is_none()
+                    && conflict_live_input(&record)? == current_revision)
+            {
+                continue;
+            }
+            let supersession = SyncConflictSupersessionRecord {
+                version: SYNC_CONFLICT_SUPERSESSION_VERSION,
+                conflict_id: record.id.clone(),
+                current_revision: current_revision.to_string(),
+                replacement_conflict_id: current_conflict_id.map(str::to_string),
+            };
+            let path = self
+                .conflict_directory(repository_key, &record.id)?
+                .join("supersession.json");
+            write_json_replace(&path, &supersession)?;
+            superseded += 1;
+        }
+        Ok(superseded)
+    }
+
+    fn get_supersession(
+        &self,
+        repository_key: &str,
+        conflict_id: &str,
+    ) -> Result<Option<SyncConflictSupersessionRecord>, AppError> {
+        let path = self
+            .conflict_directory(repository_key, conflict_id)?
+            .join("supersession.json");
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(AppError::operation(error)),
+        };
+        let supersession: SyncConflictSupersessionRecord =
+            serde_json::from_slice(&bytes).map_err(AppError::operation)?;
+        if supersession.version != SYNC_CONFLICT_SUPERSESSION_VERSION
+            || supersession.conflict_id != conflict_id
+        {
+            return Err(AppError::operation(
+                "sync conflict supersession version or identity mismatch",
+            ));
+        }
+        Ok(Some(supersession))
+    }
+
+    pub(crate) fn resolution_state(
         &self,
         repository_key: &str,
         conflict_id: &str,
     ) -> Result<SyncConflictResolutionState, AppError> {
-        Ok(match self.get_resolution(repository_key, conflict_id)? {
-            Some(resolution) if resolution.applied => SyncConflictResolutionState::Resolved,
-            _ => SyncConflictResolutionState::Unresolved,
-        })
+        if self
+            .get_resolution(repository_key, conflict_id)?
+            .is_some_and(|resolution| resolution.applied)
+        {
+            return Ok(SyncConflictResolutionState::Resolved);
+        }
+        if self
+            .get_supersession(repository_key, conflict_id)?
+            .is_some()
+        {
+            return Ok(SyncConflictResolutionState::Superseded);
+        }
+        Ok(SyncConflictResolutionState::Unresolved)
     }
 
     fn conflict_directory(
@@ -1332,7 +1436,7 @@ fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), A
     }
 }
 
-fn write_json_replace(path: &Path, value: &SyncConflictResolutionRecord) -> Result<(), AppError> {
+fn write_json_replace<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
     let parent = path
         .parent()
         .ok_or_else(|| AppError::operation("conflict resolution has no parent directory"))?;
@@ -1481,6 +1585,119 @@ mod tests {
             content_hash: None,
             bytes: None,
         }
+    }
+
+    fn unresolved_record(id: &str, key: &str, work_tree: &Path) -> SyncConflictRecord {
+        SyncConflictRecord {
+            version: SYNC_CONFLICT_RECORD_VERSION,
+            id: id.to_string(),
+            repository_key: key.to_string(),
+            work_tree: work_tree.to_path_buf(),
+            base_revision: Some("base".to_string()),
+            local_revision: "local".to_string(),
+            remote_revision: "remote".to_string(),
+            scope: GitConflictScope::Paths,
+            policy_version: 1,
+            policy_hash: "policy".to_string(),
+            preserved_base_ref: None,
+            preserved_local_ref: "refs/local".to_string(),
+            preserved_remote_ref: "refs/remote".to_string(),
+            preserved_record_ref: None,
+            provenance_revision: None,
+            materialization: None,
+            paths: vec![SyncConflictPathRecord {
+                path: "Home.md".to_string(),
+                classification: None,
+                base: absent_side("base"),
+                local: absent_side("local"),
+                remote: absent_side("remote"),
+            }],
+            diagnostics: "conflict".to_string(),
+        }
+    }
+
+    #[test]
+    fn later_conflict_supersedes_unresolved_history_but_keeps_its_record() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let old_id = "b".repeat(32);
+        let current_id = "c".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        for id in [&old_id, &current_id] {
+            let directory = store.conflict_directory(&key, id).expect("directory");
+            fs::create_dir_all(&directory).expect("conflict directory");
+            write_json_noclobber(
+                &directory.join("record.json"),
+                &unresolved_record(id, &key, temporary.path()),
+            )
+            .expect("record");
+        }
+
+        assert_eq!(
+            store
+                .supersede_unresolved_except(&key, Some(&current_id), "revision")
+                .expect("supersede"),
+            1
+        );
+        assert_eq!(
+            store.resolution_state(&key, &old_id).expect("old state"),
+            SyncConflictResolutionState::Superseded
+        );
+        assert_eq!(
+            store
+                .resolution_state(&key, &current_id)
+                .expect("current state"),
+            SyncConflictResolutionState::Unresolved
+        );
+        let supersession = store
+            .get_supersession(&key, &old_id)
+            .expect("supersession")
+            .expect("superseded record");
+        assert_eq!(supersession.current_revision, "revision");
+        assert_eq!(
+            supersession.replacement_conflict_id.as_deref(),
+            Some(current_id.as_str())
+        );
+        assert_eq!(
+            store.get(&key, &old_id).expect("immutable old record").id,
+            old_id
+        );
+    }
+
+    #[test]
+    fn successful_retry_keeps_a_conflict_at_the_current_live_input_actionable() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        write_json_noclobber(
+            &directory.join("record.json"),
+            &unresolved_record(&id, &key, temporary.path()),
+        )
+        .expect("record");
+
+        assert_eq!(
+            store
+                .supersede_unresolved_except(&key, None, "remote")
+                .expect("same live input"),
+            0
+        );
+        assert_eq!(
+            store.resolution_state(&key, &id).expect("state"),
+            SyncConflictResolutionState::Unresolved
+        );
+        assert_eq!(
+            store
+                .supersede_unresolved_except(&key, None, "later")
+                .expect("later live input"),
+            1
+        );
+        assert_eq!(
+            store.resolution_state(&key, &id).expect("state"),
+            SyncConflictResolutionState::Superseded
+        );
     }
 
     #[test]

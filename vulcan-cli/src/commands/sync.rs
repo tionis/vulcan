@@ -20,7 +20,7 @@ use vulcan_app::sync_checkpoints::{
 use vulcan_app::sync_conflicts::{
     get_sync_conflict, list_sync_conflicts, resolve_sync_conflict, ResolveSyncConflictOptions,
     ResolveSyncConflictReport, SyncConflictDetailReport, SyncConflictListReport,
-    SyncConflictResolutionSide,
+    SyncConflictResolutionSide, SyncConflictResolutionState,
 };
 use vulcan_app::sync_notifications::{
     notification_status, publish_sync_notification_advertisement,
@@ -2444,29 +2444,55 @@ fn run_sync_conflicts(
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     if let Some(conflict_id) = conflict_id {
         let report = get_sync_conflict(&paths, conflict_id).map_err(CliError::operation)?;
-        print_sync_conflict_detail(cli.output, &report)
+        print_sync_conflict_detail(cli.output, &report, wiki)
     } else {
         let report = list_sync_conflicts(&paths).map_err(CliError::operation)?;
-        print_sync_conflict_list(cli.output, &report)
+        print_sync_conflict_list(cli.output, &report, wiki)
     }
 }
 
 fn print_sync_conflict_list(
     output: OutputFormat,
     report: &SyncConflictListReport,
+    wiki: Option<&str>,
 ) -> Result<(), CliError> {
     if output == OutputFormat::Json {
         return print_json(report);
     }
-    println!("Preserved sync conflicts: {}", report.count);
+    println!("Active unresolved sync conflicts: {}", report.count);
+    if report.superseded_count > 0 {
+        println!(
+            "Superseded conflict records retained as history: {}",
+            report.superseded_count
+        );
+    }
     for conflict in &report.conflicts {
         println!(
-            "{}\t{:?}\t{:?}\t{}",
+            "{}\t{:?}\t{} path(s)\t{}",
             conflict.id,
-            conflict.resolution,
             conflict.scope,
+            conflict.paths.len(),
             conflict.paths.join(", ")
         );
+        println!(
+            "  Inspect: vulcan sync conflicts {}{}",
+            conflict.id,
+            sync_wiki_selector(wiki)
+        );
+        println!(
+            "  Resolve interactively: vulcan sync resolve {}{} --editor",
+            conflict.id,
+            sync_wiki_selector(wiki)
+        );
+    }
+    if report.count > 0 {
+        println!("Resolution choices:");
+        println!("  --editor       review every conflicted file in $VISUAL/$EDITOR");
+        println!("  --side local   keep the preserved local version of every conflicted path");
+        println!("  --side remote  keep the preserved remote version of every conflicted path");
+        println!("Add --dry-run to validate a choice without applying it.");
+    } else {
+        println!("No conflict resolution is currently required.");
     }
     Ok(())
 }
@@ -2474,6 +2500,7 @@ fn print_sync_conflict_list(
 fn print_sync_conflict_detail(
     output: OutputFormat,
     report: &SyncConflictDetailReport,
+    wiki: Option<&str>,
 ) -> Result<(), CliError> {
     if output == OutputFormat::Json {
         return print_json(report);
@@ -2486,9 +2513,45 @@ fn print_sync_conflict_detail(
         println!("Base:   {base}");
     }
     for path in &report.record.paths {
-        println!("Path:   {}", path.path);
+        if let Some(classification) = &path.classification {
+            println!(
+                "Path:   {} ({:?}; {:?})",
+                path.path, classification.class, classification.effective_resolution
+            );
+        } else {
+            println!("Path:   {}", path.path);
+        }
     }
+    if report.resolution == SyncConflictResolutionState::Superseded {
+        println!("Action: none; later synchronization superseded this immutable history record.");
+        if let Some(supersession) = &report.supersession {
+            println!("Current revision: {}", supersession.current_revision);
+            if let Some(replacement) = &supersession.replacement_conflict_id {
+                println!("Replacement conflict: {replacement}");
+            }
+        }
+        return Ok(());
+    }
+    let selector = sync_wiki_selector(wiki);
+    println!("Next steps:");
+    println!(
+        "  Interactive review: vulcan sync resolve {}{} --editor --dry-run",
+        report.record.id, selector
+    );
+    println!(
+        "  Keep local paths:   vulcan sync resolve {}{} --side local --dry-run",
+        report.record.id, selector
+    );
+    println!(
+        "  Keep remote paths:  vulcan sync resolve {}{} --side remote --dry-run",
+        report.record.id, selector
+    );
+    println!("Remove --dry-run from the chosen command to review/apply the resolution.");
     Ok(())
+}
+
+fn sync_wiki_selector(wiki: Option<&str>) -> String {
+    wiki.map_or_else(String::new, |wiki| format!(" --wiki {wiki}"))
 }
 
 fn print_sync_doctor_report(
@@ -2626,7 +2689,7 @@ fn print_registered_sync_report(
                     String::new()
                 } else {
                     format!(
-                        "; {count} unresolved retained conflict(s) (review with `vulcan sync conflicts --wiki {}`)",
+                        "; {count} active unresolved conflict(s) (inspect resolution choices with `vulcan sync conflicts --wiki {}`)",
                         item.wiki_id
                     )
                 }

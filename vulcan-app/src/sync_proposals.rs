@@ -1719,8 +1719,15 @@ fn prepare_resolution_scope(
     }
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let repository_key = repository_state_key(&vault);
-    let record =
-        SyncConflictStore::from_state_store(state_store).get(&repository_key, conflict_id)?;
+    let conflict_store = SyncConflictStore::from_state_store(state_store);
+    let record = conflict_store.get(&repository_key, conflict_id)?;
+    if conflict_store.resolution_state(&repository_key, conflict_id)?
+        == crate::sync_conflicts::SyncConflictResolutionState::Superseded
+    {
+        return Err(AppError::operation(format!(
+            "conflict `{conflict_id}` was superseded by later synchronization and is retained only as history; choose a currently unresolved record from `vulcan sync conflicts`"
+        )));
+    }
     if require_agent_eligible {
         validate_agent_conflict_scope(&record)?;
     }

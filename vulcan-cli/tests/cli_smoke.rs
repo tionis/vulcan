@@ -4982,9 +4982,7 @@ fn registered_sync_status_surfaces_retained_unresolved_conflicts() {
         .stdout(predicate::str::contains(
             "0 clear, 1 with unresolved conflicts",
         ))
-        .stdout(predicate::str::contains(
-            "1 unresolved retained conflict(s)",
-        ))
+        .stdout(predicate::str::contains("1 active unresolved conflict(s)"))
         .stdout(predicate::str::contains(
             "vulcan sync conflicts --wiki reader",
         ));
@@ -6932,6 +6930,7 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
     };
     let list = parse_stdout_json(&command(&[]));
     assert_eq!(list["count"], 1);
+    assert_eq!(list["superseded_count"], 0);
     assert_eq!(list["conflicts"][0]["id"], id);
     assert_eq!(list["conflicts"][0]["resolution"], "unresolved");
 
@@ -6957,6 +6956,36 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
         "writer\n"
     );
+
+    let human_list = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args(["sync", "conflicts"])
+        .assert()
+        .success();
+    let human_list = String::from_utf8(human_list.get_output().stdout.clone()).expect("UTF-8");
+    assert!(human_list.contains("Active unresolved sync conflicts: 1"));
+    assert!(human_list.contains(&format!(
+        "Resolve interactively: vulcan sync resolve {id} --editor"
+    )));
+    assert!(human_list.contains("--side local"));
+    assert!(human_list.contains("--side remote"));
+    assert!(human_list.contains("Add --dry-run to validate"));
+
+    let human_detail = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args(["sync", "conflicts", &id])
+        .assert()
+        .success();
+    let human_detail = String::from_utf8(human_detail.get_output().stdout.clone()).expect("UTF-8");
+    assert!(human_detail.contains("Next steps:"));
+    assert!(human_detail.contains(&format!("vulcan sync resolve {id} --editor --dry-run")));
+    assert!(human_detail.contains("Remove --dry-run from the chosen command"));
 }
 
 #[test]

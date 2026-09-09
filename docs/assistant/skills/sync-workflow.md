@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 21
+version: 22
 metadata:
   vulcan:
     managed: true
@@ -49,9 +49,11 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    observed refs and the worktree with its last local snapshot. It does not fetch, merge, apply, or
    detect whether differing trees conflict; use `--output json` for `preview.file_state`, observed
    refs, and branch detail. Registered previews also inspect durable conflict records. An up-to-date
-   file lane can coexist with unresolved retained conflicts, which remain an attention state until
-   reviewed through `vulcan sync conflicts --wiki <id>`; an unavailable conflict count makes the
-   inspection incomplete instead of implying zero.
+   file lane can coexist with actionable retained conflicts, which remain an attention state until
+   reviewed through `vulcan sync conflicts --wiki <id>`. Later successful synchronization or a
+   replacement conflict marks obsolete attempts as superseded immutable history and removes them
+   from the active count; an unavailable conflict count makes the inspection incomplete instead of
+   implying zero.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
 3. Preview a finite transaction with `vulcan sync run [<wiki>] --dry-run`; apply it by omitting
@@ -107,8 +109,11 @@ they commit.
 
 ## Review preserved conflicts
 
-- List records with `vulcan sync conflicts`; inspect one immutable record with
-  `vulcan sync conflicts <conflict-id>`. Keep its base/local/remote refs and device-local artifacts.
+- List actionable records with `vulcan sync conflicts`; inspect one immutable record with
+  `vulcan sync conflicts <conflict-id>`. The human output prints the exact next commands. A
+  superseded record is history, not something the user can or should resolve; choose its listed
+  replacement or run sync again to obtain a current conflict. Keep base/local/remote refs and
+  device-local artifacts.
   A fully applied resolution prunes its artifact copies automatically (newest 32 retained); the
   immutable refs remain the durable byte archive.
 - Never choose a winner implicitly. Preview one explicit side with
@@ -118,7 +123,10 @@ they commit.
   Vulcan's whole-tree link or deletion policy rejected the result.
 - For reviewed content, use complete `--file '<conflict-path>=<source>'` inputs, a reviewed
   `--patch <file>`, or `--editor`; preview every mode first. The editor writes markers only in a
-  private temporary directory.
+  private temporary directory. `--editor --dry-run` only validates preconditions; omit
+  `--dry-run` to launch the editor and apply the reviewed files. When an actively edited vault
+  repeatedly changes during review, pause automatic sync first and close the editor that is
+  rewriting those files; manual `sync resolve` remains available while paused.
 - Generate model help only when requested with `vulcan sync propose <id> --model <model> ...`.
   Provider output is an untrusted retained proposal, not an accepted merge. Review it, then preview
   exact approval with `sync resolve --approve-proposal <proposal-id> --dry-run`, or reject it with
