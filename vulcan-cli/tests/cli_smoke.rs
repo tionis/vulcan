@@ -7782,6 +7782,11 @@ fn daemon_status_human_output_explains_each_registered_wiki() {
     let config_home = temporary.path().join("config");
     let wiki = temporary.path().join("personal");
     fs::create_dir_all(&wiki).expect("wiki directory");
+    let canonical_wiki = wiki
+        .canonicalize()
+        .expect("wiki directory should be canonicalized")
+        .to_string_lossy()
+        .into_owned();
     let initialized = ProcessCommand::new("git")
         .current_dir(&wiki)
         .args(["init", "--quiet"])
@@ -7811,7 +7816,7 @@ fn daemon_status_human_output_explains_each_registered_wiki() {
         .stdout(predicate::str::contains(
             "Notifications: no server discovered on this device",
         ))
-        .stdout(predicate::str::contains(wiki.to_str().expect("wiki path")));
+        .stdout(predicate::str::contains(canonical_wiki));
 }
 
 #[test]
@@ -7819,6 +7824,10 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
     let state_home = temporary.path().join("state");
+    let notification_program = std::env::current_exe()
+        .expect("test executable path should be available")
+        .to_string_lossy()
+        .into_owned();
     let daemon = |arguments: &[&str]| {
         Command::cargo_bin("vulcan")
             .expect("binary should build")
@@ -7886,7 +7895,7 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
         "set-notification-command",
         "nats",
         "--program",
-        "/usr/bin/nats",
+        &notification_program,
         "--arg",
         "pub",
         "--arg",
