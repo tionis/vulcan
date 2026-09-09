@@ -5329,7 +5329,7 @@ trait SyncBackend: Send + Sync {
 - [x] Prototype `git clone --separate-git-dir` as the initial Android layout: Git objects, indexes, refs, locks, and temporary state live in Termux-private storage while the Obsidian-visible worktree lives in shared storage. Use a bare repository plus linked worktree only when a concrete multiple-worktree requirement justifies the additional bookkeeping.
 - [x] Define typed native Linux, native Windows, other-native, and Android shared-storage policies. `vulcan vault clone --platform android-shared` persists `core.fileMode=false` and `core.symlinks=false` before checkout, records the selected profile in device-local registration state, and reports non-representable executable bits, link-file symlinks, intermediate-path case-only renames, Windows-portable names, filesystem-dependent path limits, and content-verified timestamp handling. Native profiles retain Git filesystem probing and remain the default.
   - [x] Carry the recorded profile through registered direct and daemon transactions and enforce the same immutable-tree preflight used by doctor. Capture and journal an incompatible local candidate before any remote query; reject incompatible pulled, merged, or epoch-rebased trees before publication/application; retain bounded local/accepted diagnostics in successful JSON reports, including non-blocking executable, symlink, and long-path warnings.
-- [x] Keep sync job journals and other device-local operational state under the platform state directory, Git directories under the platform data directory, and credentials in Git/SSH credential facilities. Never store credentials or pending sync state in the rebuildable cache.
+- [x] Keep sync job journals and other device-local operational state under the platform state directory, Git directories under the platform data directory, and credentials in Git/SSH credential facilities. Never store credentials or pending sync state in the rebuildable cache. The planned 12.15 device key is the explicit interim exception: it uses a protected Vulcan user-data identity store until later SSH-agent/keychain support, never vault or cache storage.
   - [x] Add cross-platform user-state resolution (`XDG_STATE_HOME`, native Windows local application data, or the home-directory fallback) and versioned, atomic per-repository transaction journals under the Vulcan state directory. Direct sync detects interruption-sensitive prior phases, reports recovery, recaptures before application, records fine-grained progress plus captured object IDs, clears clean completions, and retains paused, conflicted, cancelled, or failed state without writing the vault or cache.
   - [x] Exclude `.vulcan/config.local.toml` and rebuildable SQLite cache files from alternate-index capture, worktree-equivalence checks, and pre/post-application verification regardless of user `.gitignore` rules. Device-local policy changes therefore neither enter canonical sync history nor invalidate an otherwise unchanged preserved worktree.
 - [x] Make loss of the detached Git directory recoverable: preserve the materialized worktree, refuse destructive reattachment, capture it before applying a fresh clone, and report which unpushed hidden snapshots could have been lost. Document that uninstalling Termux may remove device-local Git objects.
@@ -5626,6 +5626,160 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Run that handoff as a separate GitHub Actions `workflow_run` job using a dedicated `rolling-release-signing` environment secret, exact source-commit checkout, an ephemeral mode-restricted key file, and an explicit-commit manual repair dispatch. Remove the developer-workstation systemd timer so rolling availability does not depend on one laptop; retain the local and SOPS copies only for recovery.
 - [x] Establish the separate approval-gated `stable-2026-09` identity, keep its machine-local key and admin-scope encrypted recovery copy independent from `main`, embed stable-only public trust, and add an exact tag/commit signer that reuses the complete release validation and readback boundary. Exercise overlap rotation, retirement, and lost/compromised-key recovery behavior in tests and document the out-of-band recovery rule.
 - [ ] Publish the first stable release containing `stable-2026-09`, sign its immutable descriptor through the manual handoff, install it once through a checksummed archive/package as the out-of-band trust bootstrap, and verify default `vulcan self-update check` from that binary before declaring signed stable self-update the ordinary path.
+
+### 12.15 Cryptographic device identity
+
+**Goal:** Replace newly generated random synchronization actor IDs with first-class device identities derived from one locally generated Ed25519 SSH keypair. Preserve every legacy recovery head and all existing provenance while establishing a narrow foundation for later SSH authentication and signing work.
+
+**Design contract:** `docs/specs/device-identity.md`. One cryptographic installation is exactly one keypair; a physical machine or friendly name is separate. A new key is a new device; this phase does not define key continuity. Key derivation does not establish remote trust, ownership, authorization, or proof of private-key control.
+
+**Depends on:** The versioned ref contract and remote per-device safety heads in 12.4. Trust management, device fleet management, transport authorization, and signed statements are follow-ons, not blockers. Key custody is designed separately in 12.16 and does not broaden this identity slice.
+
+#### 12.15.1 Identifier and key format
+
+- [ ] Add a versioned `GitSyncDeviceId` grammar that accepts both legacy lowercase Crockford-Base32 ULIDs and `vdev1_<base32>` key identities, reports their kind, rejects ambiguous/non-canonical spellings, and remains safe as one Git ref component.
+- [ ] Parse a canonical `ssh-ed25519` public-key wire blob with a reviewed implementation, validate its algorithm and exact 32-byte key payload, and derive `vdev1_` plus the complete 52-character lowercase unpadded RFC 4648 Base32 SHA-256 digest of that blob. Do not hash comments, `.pub` whitespace, filenames, host data, or a supplied fingerprint.
+- [ ] Keep abbreviated IDs and conventional OpenSSH fingerprints presentation-only. All JSON, comparisons, ref builders, trailers, and mutations use the complete canonical device ID.
+
+#### 12.15.2 Local identity store and lifecycle
+
+- [ ] Add one platform user-data identity store outside vaults, caches, repositories, and synchronized trees, containing a bounded versioned public manifest plus, for the initial `file_v1` provider, an OpenSSH-compatible `id_ed25519`/public-key pair. Recompute the ID from the manifest public key and verify the keypair when private-key use is required rather than trusting stored derived fields.
+- [ ] Generate the key through the OS CSPRNG and a reviewed SSH parser/serializer without making first sync depend on an `ssh-keygen` executable. Use no-clobber, same-filesystem atomic writes, serialized initialization, durable ordering, symlink/reparse-point rejection, owner-only Unix private material, private inherited Windows ACLs, and recoverable adoption of a complete interrupted write. Never overwrite malformed, mismatched, partial, or unsafe key material.
+- [ ] Keep the initial `file_v1` private key unencrypted for unattended daemon use, document the filesystem-permission boundary explicitly, and ensure private bytes and paths never enter vault configuration, ordinary JSON, logs, notifications, crash diagnostics, or synchronized Git objects. The manifest records a closed provider discriminator so 12.16 can migrate the same key without changing identity; passphrase and hardware-backed storage remain deferred.
+- [ ] Preserve state-free reads. `vulcan device show` reports uninitialized/ready/degraded/legacy/invalid state without mutation; `vulcan device init [--dry-run]` creates only an absent identity; and `vulcan device public-key` explicitly exports the canonical public key. The first mutating identity-requiring operation may initialize only when no identity artifacts exist. No command in this slice replaces an existing key or asserts continuity.
+
+#### 12.15.3 Ref/provenance integration and compatibility rollout
+
+- [ ] Introduce ref namespace version 2 for the expanded device-ID grammar while retaining the same device-head path. Ship a first compatibility release that reads namespace versions 1/2 and legacy/key device IDs but still creates legacy IDs; switch writers to key identities only in a later release so a supported rolling upgrade fails closed without stranding mixed fleets.
+- [ ] Use the key-derived ID in every new safety-head path, `Vulcan-Sync-Device` trailer, typed report, doctor/status projection, daemon per-vault status, and conflict/recovery workflow without changing capture-before-apply or exact-lease semantics. Remote device lists expose `ssh_key_v1` versus `legacy_ulid` without calling either trusted or verified.
+- [ ] Migrate non-destructively: preserve the legacy `_device.json`, every old commit/trailer/journal/conflict/recovery ref, and the old remote safety head; create a new key identity and new head without rewriting or relabelling history; and leave the legacy head for explicit fetch, integration, and safe exact-lease removal. Any locally reported legacy ID is migration metadata, not a predecessor signature or continuity assertion.
+- [ ] Ensure a copied private key remains the same logical device. Detect and warn on divergent simultaneous use while retaining the existing reproducible bridge strictly as a byte-preservation fallback, not as validation of the clone or identity continuity.
+
+#### 12.15.4 Failure and recovery guarantees
+
+- [ ] Fail closed on an invalid manifest or a private key that is accessible but malformed, unsafe, or mismatched: never generate a replacement or sign/authenticate under that ID. Treat a missing, locked, prompting, or temporarily unavailable private provider as degraded rather than an invalid public identity; keep public-only capture, fetch, comparison, recovery inspection, unsigned provenance, and safety-ref work available, while operations configured to require that key preserve bytes first and fail without moving canonical refs or applying a remote tree. Emit actionable direct/daemon diagnostics and attention events in either case.
+- [ ] Test initialization races, interruption at every durable-write boundary, symlink/reparse attacks, permission failures, malformed SSH framing, ID test vectors, private/public mismatch, state-free reads/dry-runs, secret redaction, copied-key divergence, and complete identity-directory absence.
+- [ ] Test a real mixed-version migration with multiple bare-remote clones: legacy readers/writers, the dual-reader release, key writer activation, conflict preservation, old-head recovery, exact-lease cleanup, offline resumption, and refusal by binaries that cannot interpret namespace version 2.
+
+#### 12.15.5 Explicitly deferred integrations
+
+- [x] Define trust, ownership, lifecycle, key inventory, and accepted-history contracts in `docs/specs/key-management.md`. Never infer trust from a key-derived ref name, public-key comment, commit author, forge badge, or self-asserted principal.
+- [ ] Add SSH Git authentication only through an explicit transport adapter, dedicated key, and remote authorization. Do not silently replace the user's Git SSH identity or upload keys to a forge; authentication and signing remain independently authorized.
+- [ ] Add domain-separated signed device attestations over exact snapshot/ref/profile/protocol inputs without changing deterministic internal sync commit IDs or making local capture depend on signing availability. Treat human/semantic Git commit signing as a separate opt-in integration.
+- [ ] Before requiring device-key-backed access, ship replacement and retirement with independent re-enrollment: capture current bytes, retain old public identity/recovery heads, initialize a new key without requiring the lost private key, and list known bindings for authorized revocation/re-enrollment. Replacement produces a different device ID and never transfers authority implicitly.
+- [ ] Review and update `sync-workflow`, `diagnostics-and-repair`, configuration guidance, generated CLI/schema snapshots, and installed managed-skill tests when executable identity commands or sync behavior ship. Roadmap-only design does not change the current ULID-based skill instructions.
+
+### 12.16 Device key custody and secret-store foundation
+
+**Goal:** Keep protected-file custody as the unattended baseline, add native stores independently, and support exact-key generic agents only for explicitly interactive signing. Same-key migration checks dependent usages and retains its source; no provider fallback or implicit deletion.
+
+**Design contract:** `docs/specs/device-key-custody.md`. Custody is distinct from identity, protocol usage, trust, and authorization. This phase does not rotate keys, establish trust, upload forge credentials, or enable Git signing automatically.
+
+**Depends on:** 12.15's public identity manifest and key-derived ID. It may land after the 12.15 compatibility-reader release, but provider switching must not precede a manifest that records the concrete active provider.
+
+#### 12.16.1 Provider boundaries and secret handling
+
+- [ ] Add synchronous `SecretStore` and exact-key `KeyProvider` boundaries below `vulcan-app`, with `DeviceKeyProvider` as a device-manifest adapter. Keep platform APIs, prompts, sockets, and private formats out of `vulcan-core`/`vulcan-sync`; expose providers only through trusted typed workflows.
+- [ ] Add bounded non-serializable `SecretBytes` with redacted debug/errors and zeroization on drop. Audit reports, journals, config, logs, notifications, panic paths, snapshots, and tests so neither secret values nor unsafe raw locators escape.
+- [ ] Expose typed provider states including `unknown`; report capabilities as supported/unsupported/unknown per operation and execution context. Unattended means enforceable prompt suppression, never a successful past interactive test. Preserve ambiguous refusals without inventing lock/missing diagnoses.
+- [ ] Resolve provider entries deterministically from the complete device ID, reject duplicates, and record only the concrete closed `file_v1`, `system_secret_v1`, or `ssh_agent_v1` discriminator in the identity manifest. Never persist native object paths, agent indexes, arbitrary commands, or an `auto` provider.
+
+#### 12.16.2 Platform providers
+
+- [ ] Keep `file_v1` as the portable, headless, unattended default with the 12.15 owner-only and path-safety checks. Do not label it encrypted, hardware-backed, or keychain-protected.
+- [ ] On macOS, implement `system_secret_v1` through `SecItem`, prefer the data-protection keychain when the signed CLI and LaunchAgent can share it, set `kSecAttrSynchronizable=false`, and select the most restrictive accessibility class passing installed user-session daemon tests. Never allow iCloud to clone the device key.
+- [ ] On Windows, store the bounded OpenSSH blob as a `CRED_TYPE_GENERIC` credential with `CRED_PERSIST_LOCAL_MACHINE`, never enterprise/roaming persistence. If a user-scoped DPAPI file is later needed, give it a new provider version; never substitute it silently or use machine-wide DPAPI.
+- [ ] On Linux desktop, use the default Freedesktop Secret Service collection with exact public lookup attributes rather than D-Bus object paths. Treat absent D-Bus/service and locked/prompting collections distinctly, test GNOME Keyring and KWallet plus the installed systemd user service, and retain the file provider for headless systems.
+- [ ] Treat Android/Termux native storage as unsupported until an app-owned Android Keystore bridge has a narrow authenticated signing protocol and real-device lifecycle tests. Termux continues using `file_v1`; it must not claim direct access to another app's non-exportable Keystore key.
+- [ ] Implement `ssh_agent_v1` as an interactive-only ordinary Ed25519 signer with exact public-key selection and explicit socket. Refuse background signing before sending a request; public enumeration does not reveal complete constraints or prove unattended use. Defer authentication-only/destination-constrained and hardware keys to separate adapters; never remove constraints to pass a challenge.
+- [ ] Evaluate and exact-pin `ssh-key` plus explicit target-specific `keyring-core` stores against MSRV, dependency, binary-size, native-library, packaging, and maintenance constraints. Do not depend on a mutable runtime-native default whose meaning can change across releases.
+
+#### 12.16.3 Availability and sync reliability
+
+- [ ] Permit public-only sync operations—device ref naming, local capture, comparison, recovery inspection, and unsigned provenance—while the private provider is unavailable. Require custody only for operations actually configured to sign or authenticate with the device key.
+- [ ] When required custody is unavailable, capture and locally anchor current bytes before failing when repository access permits, leave canonical refs/worktree application unchanged, retain actionable recovery state, and emit the ordinary daemon attention event. Never retry through another provider.
+- [ ] Allow unlock/confirmation only under an explicit interactive TTY request. Native adapters enforce no-UI operation or refuse; generic agents refuse background signing before dispatch. Status/doctor/dry-run never sign, decrypt, or unlock and may report unknown availability. Bound actual I/O without claiming timeout prevents an agent-owned prompt.
+
+#### 12.16.4 Same-key migration and recovery
+
+- [ ] Add `device key status`, `verify [--interactive]`, journaled `migrate --to <file|system|ssh-agent> [--interactive] [--dry-run]`, and exact `cleanup --migration <id> [--dry-run]` workflows. Expose capabilities and repair state without secrets; dry-run reports unperformed checks honestly.
+- [ ] Plan every known dependent usage/context before same-key migration. Verify destination possession and actual required operations; block incompatibility/unknown capability until the operator separately disables or reconfigures the usage. Migration changes custody only. In particular, system-secret signing cannot replace an SSH `IdentityFile`, and an interactive agent cannot satisfy daemon signing. Recheck revisions, switch atomically, verify again, and always retain the source as inactive recovery material.
+- [ ] Keep cleanup separate from migration. Recheck active provider, dependencies, exact source item, and custody generation under the shared lock; refuse stale/superseded journals, active/recreated items, or deletion of the last known durable copy. Unsupported exact native-item deletion requires manual cleanup; agent availability never proves durable backing.
+- [ ] Make every migration phase crash-resumable and idempotent. Before the manifest switch the source remains active; afterward the destination remains active. Migration out of a non-exporting provider requires the same key to already exist at the destination or fails without inventing continuity.
+- [ ] Defer private-key recovery export until it has a no-stdout, owner-only, no-clobber workflow and explicit warning that importing it elsewhere clones the same device. Provider migration itself is not backup, rotation, replacement, or revocation.
+
+#### 12.16.5 Future credential reuse and protocol integration
+
+- [ ] Reuse `SecretStore` for named connector/API credentials only through structured device-local references and explicit per-credential migration. Preserve environment-variable sources and never ingest them automatically or store values in TOML.
+- [ ] Design Git SSH authentication per provider: exact `IdentityFile` plus `IdentitiesOnly` for file custody, the explicit socket and identity for agents, and a future narrow agent bridge for native stores. Never write broad SSH config, weaken host-key verification, export a native-store key to a temporary file, or auto-upload it to a forge.
+- [ ] Route future device statements, Git signing, and registry changes through typed `KeyManager` operations, never raw provider access from transports. Separate sensitive-role keys; custody proof does not confer permission or remote trust.
+
+#### 12.16.6 Conformance and rollout
+
+- [ ] Build fake provider/store conformance for no-replace creation, duplicates, bounds/redaction, unknown capabilities, refusal before background agent signing, constrained-key failures, and dry-run without secret reads/signing. Cover interactive success with daemon failure, dependent SSH files, retained source, post-switch failure, stale cleanup generations, last-copy refusal, cancellation, and crashes at every migration phase.
+- [ ] Add native macOS, Windows, Linux, and Android/Termux gates covering login/reboot, locked sessions, installed daemon/service access, prompt refusal, non-roaming behavior, package upgrade/downgrade, uninstall preservation, and explicit file-provider selection. A provider is not advertised on a platform until its installed-service tests pass.
+- [ ] Review and update `sync-workflow`, `diagnostics-and-repair`, configuration guidance, installation/service documentation, generated CLI/schema snapshots, and installed managed-skill tests when executable custody behavior ships. This design-only item does not change current skill instructions.
+
+### 12.17 Cryptographic key management and accepted registries
+
+**Goal:** Ship a small typed key manager and administrator-signed public registry for single users and small teams. Any enrolled administrator may sign a change; devices retain last accepted permissions while offline, and revocations propagate as updates arrive.
+
+**Design contract:** `docs/specs/key-management.md`. `SecretStore` remains the low-level byte-custody boundary; the `KeyManager` and `KeyRegistry` supply cryptographic semantics. A local key is not automatically registered or trusted, a registry never contains private material, and device identity remains exactly one key.
+
+**Depends on:** 12.15 public identity and 12.16 provider interfaces/file baseline. Native platform providers ship independently and do not block the public-only verifier. Future consumer adapters coordinate with Phase 17 using the last-accepted-state policy; existing authentication and updater trust remain in force.
+
+- [x] Define typed caller-bound operations, separate sensitive-role keys, unknown provider capabilities, retained-source migration, one-administrator signatures, offline authority with eventual revocation, pending-change reconciliation, and faithful projections. Review bundled sync, Git, configuration, diagnostics skills, and the assistant template; design targets do not change installed command guidance.
+
+#### 12.17.1 Key identity, inventory, and enrollment
+
+- [ ] Add a versioned `vkey1_` derived from the complete canonical SSH public-key blob, distinct from `vdev1_`. V1 accepts ordinary Ed25519 only; immutable records hold version/ID/algorithm/public key, with labels/origin/custody/lifecycle separate. Defer CAs, security-key algorithms, and encryption.
+- [ ] Add a device-local public inventory and secret-free journal outside vaults, Git repositories, and `cache.db`. Project the device key into it without replacing `identity.json` or weakening the device-equals-key rule.
+- [ ] Implement no-clobber generation, idempotent public import, private import attaching custody to a matching public-only record, explicitly interactive external-signer adoption, and read-only discovery. Select complete IDs; never enroll/trust the first provider item.
+- [ ] Keep one active provider per key and other copies inactive. Derive general-key logical names from `vkey1_`, while the device entry projects its authoritative manifest. Share custody locks, migration, and generation checks; never create a second writable selector for the device key.
+
+#### 12.17.2 Usage and operation policy
+
+- [ ] Start with key administration, internally generated possession proofs, and signed immutable registry changes. V1 usages are device identity and registry administration; no generic sign API or namespace patterns. Registry commits use the standard `git` namespace with dedicated administration keys and typed parent/tree/registry checks. Later device/Git/SSH/release adapters require their own contracts and dedicated keys.
+- [ ] Intersect trusted caller permission, local key/usage policy, exact configured registry eligibility, and any separate resource capability. Local denial wins; registries never grant custody access. Qualify principals by registry ID, forbid registry unions, pin/recheck revisions before dispatch, and deny key operations to MCP/JS/plugin/companion callers until explicitly authorized adapters exist.
+- [ ] Keep local active/retired/disabled/compromised/destroyed assertions scoped and provenance-aware. Removing a usage never deletes public history or private custody as a side effect, and no lifecycle label can retroactively prove when compromise occurred.
+- [ ] Add local inventory, enrollment, custody, and lifecycle commands with JSON and honest mutation-free dry runs. Private imports use stdin or an existing protected input file; recovery export and last-copy destruction remain deferred. Importing identical material cannot bypass incompatible-role checks.
+
+#### 12.17.3 Public registry and accepted history
+
+- [ ] Define bounded closed registry/principal/key/binding schemas with an immutable registry ULID, one owner per key, retained history, and complete graph validation. Start with one owner administrator; each administrator can independently authorize all changes using any of their enrolled administration keys. Require at least one active administrator key in every resulting state.
+- [ ] Pin registry ID, object format, and checkpoint independently. Replay every single-parent transition against its accepted parent, including administrator changes, removals, and later-reverted changes. Reject merges, self-introduction, removal of the last eligible administrator, missing/shallow history, replace refs/grafts, symlinks/gitlinks, and candidate verifier substitution.
+- [ ] Use exactly one native Git SSH signature (`gpgsig` for SHA-1, `gpgsig-sha256` for SHA-256) with namespace `git`. Verify exact unsigned commit bytes and parent administrator eligibility; reject malformed/additional/unknown signatures. Test native Git interoperability as well as Vulcan schema and history validation.
+- [ ] Keep observed evidence and pending changes separate from exact-CAS accepted state outside caches. Reports name the accepted checkpoint, last check/connectivity, pending work, and update failures. Existing accepted permissions do not expire offline. Local denial applies immediately; remote revocation applies on receipt, with no bounded propagation guarantee. Reject rollback/forks and pause affected ingestion while preserving local access and evidence.
+
+#### 12.17.4 Offline changes, publication, and recovery
+
+- [ ] Add `registry change prepare|review|sign|status|publish|discard`; preparation and signing work offline with one administrator. Canonical storage may be local disk or a shared Git remote; a disconnected replica queues signed changes without activating pending grants or promoting itself to canonical.
+- [ ] Read and verify canonical history before leased publication. If another administrator publishes first, retain the pending diff and require explicit review/re-signing against the new accepted base, rechecking authority. Resolve uncertain publication by exact-object readback; never overwrite competing accepted history or require a trust reset for an ordinary stale pending change.
+- [ ] Recover using any other enrolled administrator key, including a personal offline recovery key. If all administrator keys are lost, require an independently confirmed checkpoint reset with an expected old checkpoint; preserve prior trust/evidence. Local disablement/compromise immediately denies local use; remote withdrawal needs signed publication and does not prove theft time.
+- [ ] Produce inspection-only projection plans identifying source checkpoint, target expressiveness, and unsupported restrictions. Reject authority broadening: allowed-signers cannot itself enforce commit/tag distinction or repository scope. Consumer installers ship separately with atomic activation and denial if a known accepted revocation cannot be applied.
+- [ ] Implement future live adapters against last accepted authority, eventual revocation, and exact resource/payload contracts; specify session/cached-authorization invalidation. No mandatory expiring trust lease, clock dependency, or online check. Missing/restored accepted state requires independent confirmation; ordinary restart does not. Preserve existing independent credentials and updater policy until explicit integrations ship.
+
+#### 12.17.5 Verification and rollout
+
+- [ ] Implement the acceptance scenarios in `key-management.md`: single-admin changes with everyone else offline, prolonged disconnection, delayed revocation, pending grants, concurrent edits, typed-payload/caller spoofing, incompatible roles, cross-registry names, forks, lossy projections, and independent device/admin-key recovery.
+- [ ] Exercise one-owner and small-team publisher/consumer clones with an installed verifier: parent administrator eligibility, self-introduction and last-admin rejection, invalid-then-reverted history, merge rejection, exact-byte native Git signature vectors, SHA-1/SHA-256, leases, stale pending changes, redaction, interruption, and downgrade.
+- [ ] Ship inventory and typed local checks first, then offline verification and explicit signed changes after bootstrap/recovery/publication tests. Native providers and live consumer adapters are independently gated; no test or UI may claim instantaneous remote revocation or imply generic agents are unattended.
+- [ ] Review and update sync, diagnostics, configuration, Git, agent, and security skills plus installed managed-skill tests when executable key/registry commands ship. This design-only item does not advertise commands that do not yet exist.
+
+### 12.18 Optional synced secrets with age
+
+**Goal:** If synced secrets are needed, encrypt each secret for one dedicated native age X25519 recipient and distribute its private identity out of band. Several secrets may share the same key. Keep this extension optional and usable offline.
+
+**Design contract:** The "Optional synced secrets with age" section of `docs/specs/key-management.md`. This design round is complete; implementation checkboxes below remain open. Secret-access registries, automatic distribution, per-user recipient management, and rotation workflows are deferred.
+
+**Depends on:** File-tree sync and the 12.16 local custody boundary/file baseline. The 12.17 public registry and native system stores are not prerequisites. Apps and remote callers require their separate secret-access permission adapters; this does not block direct local use.
+
+- [x] Record age encryption, one recipient per secret, reusable shared keys, explicit out-of-band transfer, offline reads, locked-but-synchronizable records, and the limits of revoking copied keys. Review bundled configuration and sync skill guidance; no unimplemented commands are advertised.
+- [ ] Pin a bounded versioned canonical record containing secret ULID, canonical public age recipient reference, and standard age ciphertext. Encrypt/check the secret ID with the value; keep sensitive labels encrypted. Use a maintained age implementation with complete authentication before exposing a value.
+- [ ] Add explicit generation/import and protected out-of-band transfer of dedicated age identities into local custody. Reuse neither signing keys nor SSH-agent operations; keep private identities and decrypted values outside sync, caches, indexes, ordinary output, and logs. Do not migrate existing credentials automatically.
+- [ ] Support authorized offline secret writes/reads using the exact selected recipient and local identity. Missing keys leave records locked and still synchronizable. Sync treats encrypted records as opaque files without decryption or text merges; preserve conflicts for explicit resolution. Provide JSON status and mutation-free dry runs without exposing secret values or unlocking custody.
+- [ ] Test age interoperability, multiple secrets sharing a key, isolation across distinct keys, offline import/read, missing/wrong keys, malformed/truncated ciphertext, secret-ID mismatch, conflicts, interrupted writes, permission denial, redaction, and no secret/key reads in dry runs. Document that copied keys retain access to accessible historical ciphertext and that exposed underlying credentials require replacement at their source.
+- [ ] Update bundled configuration/sync skills and installed skill tests when commands ship. Keep Phase 17.4 plaintext callout/rendering restrictions separate from this encrypted secret store.
 
 ---
 
@@ -6018,7 +6172,7 @@ Authorization objects use strict versioned schemas. Duplicate IDs, unknown secur
 - [ ] `vulcan auth group add|remove|list` and `vulcan auth group members <group> add|remove <username>`
 - [ ] User/group/session endpoints under `/auth/...`, gated by `manage_identities` / `manage_groups` rather than a hard-coded owner bypass
 - [ ] Reserve and normalize the authorization namespace across note CRUD, refactors, templates, plugins, skills, MCP, publication, WebUI, and managed sync; protect changes to the namespace setting itself; reject symlink, case-folding, Unicode-normalization, and path-alias bypasses
-- [ ] Apply canonical-file and secret-store changes in fail-closed order: an orphaned public credential without verifier is inactive, and deleting/revoking verifier material precedes canonical revocation when immediate denial matters
+- [ ] Reuse the versioned `SecretStore` boundary and structured device-local references from 12.16 rather than creating an authorization-only keychain abstraction. Apply canonical-file and secret-store changes in fail-closed order: an orphaned public credential without verifier is inactive, and deleting/revoking verifier material precedes canonical revocation when immediate denial matters
 - [ ] Rebuild authorization projections from canonical files and invalidate active request/session caches after relevant file changes
 - [ ] Backup/restore and doctor coverage that distinguishes canonical authorization objects, rebuildable projections, and secret/runtime state
 
@@ -6161,7 +6315,7 @@ The `[!secret <label>]` callout type maps the region to a `secret:<label>` resou
 - [ ] Editor UI: secret callouts visually distinguished (e.g., lock icon, colored border) so authors can see what's hidden
 - [ ] Nesting: secret callouts inside regular callouts work; nested secret regions require every enclosing `secret:<label>` capability
 
-**Design note:** Both mechanisms protect content at the web/API layer only. Raw `.md` files contain all content in plaintext. Users with filesystem access see everything; document encryption is a separate future feature.
+**Design note:** Both mechanisms protect content at the web/API layer only. Raw `.md` files contain all content in plaintext. Users with filesystem access see everything; document encryption is a separate future feature. The optional age-based synced secret records in 12.18 do not automatically encrypt these callouts or restricted notes.
 
 ### 17.5 Limited credentials for agents, automation, services, and shares
 
