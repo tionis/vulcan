@@ -23,7 +23,7 @@ use vulcan_daemon::registry::{
 use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
     apply_daemon_service, inspect_daemon_service, plan_daemon_service, DaemonServiceAction,
-    DaemonServicePlan, DaemonServicePlatform, DaemonServiceReport,
+    DaemonServicePlan, DaemonServicePlatform, DaemonServiceReport, DaemonServiceUser,
 };
 use vulcan_daemon::status::{DaemonSyncStatusSource, SyncState};
 
@@ -183,14 +183,19 @@ fn native_service_plan(
         CliError::operation("daemon registry path has no configuration directory")
     })?;
     let home_directory = service_home_directory()?;
+    let platform = DaemonServicePlatform::native().map_err(CliError::operation)?;
+    let user = match service_windows_user_sid()? {
+        Some(sid) => DaemonServiceUser::windows(sid),
+        None => DaemonServiceUser::unix(service_user_id()?),
+    };
     plan_daemon_service(
         action,
-        DaemonServicePlatform::native().map_err(CliError::operation)?,
+        platform,
         &executable,
         config_directory,
         &context.state_root,
         &home_directory,
-        service_user_id()?,
+        &user,
     )
     .map_err(CliError::operation)
 }
@@ -226,6 +231,43 @@ fn service_user_id() -> Result<u32, CliError> {
 #[allow(clippy::unnecessary_wraps)]
 fn service_user_id() -> Result<u32, CliError> {
     Ok(0)
+}
+
+#[cfg(windows)]
+fn service_windows_user_sid() -> Result<Option<String>, CliError> {
+    let output = Command::new("whoami.exe")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .map_err(CliError::operation)?;
+    if !output.status.success() {
+        return Err(CliError::operation(format!(
+            "failed to determine the current Windows user SID with `whoami.exe /user`: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(CliError::operation)?;
+    parse_windows_user_sid(&stdout).map(Some).ok_or_else(|| {
+        CliError::operation("`whoami.exe /user` did not report a valid current-user SID")
+    })
+}
+
+#[cfg(not(windows))]
+// Keep one fallible call shape at the platform-neutral planner boundary.
+#[allow(clippy::unnecessary_wraps)]
+fn service_windows_user_sid() -> Result<Option<String>, CliError> {
+    Ok(None)
+}
+
+#[cfg(any(windows, test))]
+fn parse_windows_user_sid(output: &str) -> Option<String> {
+    let start = output.find("S-1-")?;
+    let sid: String = output[start..]
+        .chars()
+        .take_while(|character| {
+            character.is_ascii_digit() || *character == '-' || *character == 'S'
+        })
+        .collect();
+    (sid.len() <= 184 && sid.split('-').skip(1).all(|part| !part.is_empty())).then_some(sid)
 }
 
 fn print_service_report(
@@ -753,5 +795,16 @@ mod tests {
             sync_status_source_name(DaemonSyncStatusSource::ApplyMarker),
             "apply marker"
         );
+    }
+
+    #[test]
+    fn parses_current_user_sid_from_whoami_csv_output() {
+        assert_eq!(
+            parse_windows_user_sid("\"WORKSTATION\\alice\",\"S-1-5-21-111-222-333-1001\"\r\n")
+                .as_deref(),
+            Some("S-1-5-21-111-222-333-1001")
+        );
+        assert!(parse_windows_user_sid("malformed output").is_none());
+        assert!(parse_windows_user_sid("\"user\",\"S-1--5\"").is_none());
     }
 }

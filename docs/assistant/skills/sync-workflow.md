@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 23
+version: 24
 metadata:
   vulcan:
     managed: true
@@ -221,8 +221,10 @@ they commit.
 
 - Prefer `vulcan daemon install --dry-run` followed by `vulcan daemon install` for a persistent
   per-user service on Linux, macOS, or Windows. Linux installs a restartable `systemd --user` unit,
-  macOS installs a restartable per-user LaunchAgent, and Windows installs a limited per-user logon
-  task. Uninstall with `vulcan daemon uninstall --dry-run` and then the reviewed mutation.
+  macOS installs a restartable per-user LaunchAgent, and Windows installs a logon task whose trigger
+  and least-privilege interactive-token principal are bound to the current user SID. Windows
+  installation needs no Administrator terminal or stored password. Uninstall with
+  `vulcan daemon uninstall --dry-run` and then the reviewed mutation.
   Uninstalling the service does not remove registrations, credentials, journals, conflicts, or
   vault data.
 - Services and direct foreground startup read optional provider credentials from the device-local

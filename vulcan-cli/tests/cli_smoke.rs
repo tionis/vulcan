@@ -8054,11 +8054,26 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
             && unit.contains(" daemon start")));
     #[cfg(target_os = "windows")]
     {
-        assert!(install.get("definition").is_none());
+        assert!(install["definition_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("daemon-task.xml")));
+        assert!(install["definition"].as_str().is_some_and(|definition| {
+            definition.contains("<LogonType>InteractiveToken</LogonType>")
+                && definition.contains("<RunLevel>LeastPrivilege</RunLevel>")
+                && definition.contains("<Arguments>daemon start</Arguments>")
+        }));
         assert_eq!(install["commands"][0]["program"], "schtasks.exe");
-        assert!(install["commands"][0]["arguments"]
+        let arguments = install["commands"][0]["arguments"]
             .as_array()
-            .is_some_and(|arguments| arguments.iter().any(|argument| argument == "ONLOGON")));
+            .expect("Windows service command arguments");
+        assert!(arguments.iter().any(|argument| argument == "/XML"));
+        assert!(!arguments.iter().any(|argument| argument == "/SC"));
+        assert!(arguments.windows(2).any(|pair| {
+            pair[0] == "/TN"
+                && pair[1]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("Vulcan Daemon (S-1-"))
+        }));
     }
     #[cfg(target_os = "macos")]
     {
@@ -14904,6 +14919,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan daemon install --dry-run"));
     assert!(sync_skill.contains("vulcan daemon uninstall --dry-run"));
     assert!(sync_skill.contains("macOS installs a restartable per-user LaunchAgent"));
+    assert!(sync_skill.contains("bound to the current user SID"));
+    assert!(sync_skill.contains("needs no Administrator terminal or stored password"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
     assert!(sync_skill.contains("vulcan sync schedule show <wiki>"));

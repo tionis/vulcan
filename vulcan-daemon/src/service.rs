@@ -54,6 +54,30 @@ pub enum DaemonServiceAction {
     Uninstall,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonServiceUser {
+    unix_id: u32,
+    windows_sid: Option<String>,
+}
+
+impl DaemonServiceUser {
+    #[must_use]
+    pub fn unix(user_id: u32) -> Self {
+        Self {
+            unix_id: user_id,
+            windows_sid: None,
+        }
+    }
+
+    #[must_use]
+    pub fn windows(user_sid: impl Into<String>) -> Self {
+        Self {
+            unix_id: 0,
+            windows_sid: Some(user_sid.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DaemonServiceCommand {
     pub program: String,
@@ -119,6 +143,7 @@ pub enum DaemonServiceError {
     UnsupportedPlatform(String),
     InvalidExecutable(PathBuf),
     InvalidConfigDirectory(PathBuf),
+    InvalidWindowsUserSid(String),
     UnsafeDefinitionPath(PathBuf),
     UnsafeDirectoryPath(PathBuf),
     CommandFailed {
@@ -146,6 +171,10 @@ impl Display for DaemonServiceError {
                 formatter,
                 "Vulcan configuration directory must have a parent: {}",
                 path.display()
+            ),
+            Self::InvalidWindowsUserSid(sid) => write!(
+                formatter,
+                "cannot install the per-user Windows daemon task with invalid user SID {sid:?}"
             ),
             Self::UnsafeDefinitionPath(path) => write!(
                 formatter,
@@ -196,7 +225,7 @@ pub fn plan_daemon_service(
     config_directory: &Path,
     state_directory: &Path,
     home_directory: &Path,
-    user_id: u32,
+    user: &DaemonServiceUser,
 ) -> Result<DaemonServicePlan, DaemonServiceError> {
     if !executable.is_absolute() || !executable.is_file() {
         return Err(DaemonServiceError::InvalidExecutable(
@@ -213,9 +242,16 @@ pub fn plan_daemon_service(
             config_directory,
             state_directory,
             home_directory,
-            user_id,
+            user.unix_id,
         )),
-        DaemonServicePlatform::WindowsScheduledTask => Ok(plan_windows_task(action, executable)),
+        DaemonServicePlatform::WindowsScheduledTask => plan_windows_task(
+            action,
+            executable,
+            config_directory,
+            user.windows_sid.as_deref().ok_or_else(|| {
+                DaemonServiceError::InvalidWindowsUserSid("missing current-user SID".to_string())
+            })?,
+        ),
     }
 }
 
@@ -487,41 +523,50 @@ fn plan_systemd_service(
     })
 }
 
-fn plan_windows_task(action: DaemonServiceAction, executable: &Path) -> DaemonServicePlan {
-    let command = windows_task_command(executable);
+fn plan_windows_task(
+    action: DaemonServiceAction,
+    executable: &Path,
+    config_directory: &Path,
+    user_sid: &str,
+) -> Result<DaemonServicePlan, DaemonServiceError> {
+    if !is_windows_user_sid(user_sid) {
+        return Err(DaemonServiceError::InvalidWindowsUserSid(
+            user_sid.to_string(),
+        ));
+    }
+    let task_name = format!("{WINDOWS_TASK} ({user_sid})");
+    let definition_path = config_directory.join("daemon-task.xml");
+    let definition_argument = definition_path.to_string_lossy().into_owned();
+    let definition = render_windows_task_xml(executable, user_sid);
     let commands = match action {
         DaemonServiceAction::Install => vec![DaemonServiceCommand::new(
             "schtasks.exe",
             &[
                 "/Create",
                 "/TN",
-                WINDOWS_TASK,
-                "/TR",
-                &command,
-                "/SC",
-                "ONLOGON",
-                "/RL",
-                "LIMITED",
+                &task_name,
+                "/XML",
+                &definition_argument,
                 "/F",
             ],
         )],
         DaemonServiceAction::Uninstall => {
             vec![
-                DaemonServiceCommand::new("schtasks.exe", &["/Delete", "/TN", WINDOWS_TASK, "/F"])
+                DaemonServiceCommand::new("schtasks.exe", &["/Delete", "/TN", &task_name, "/F"])
                     .tolerant(),
             ]
         }
     };
-    DaemonServicePlan {
+    Ok(DaemonServicePlan {
         version: DAEMON_SERVICE_PLAN_VERSION,
         action,
         platform: DaemonServicePlatform::WindowsScheduledTask,
         executable: executable.to_path_buf(),
         directories: Vec::new(),
-        definition_path: None,
-        definition: None,
+        definition_path: Some(definition_path),
+        definition: (action == DaemonServiceAction::Install).then_some(definition),
         commands,
-    }
+    })
 }
 
 fn systemd_quote(path: &Path) -> String {
@@ -529,8 +574,61 @@ fn systemd_quote(path: &Path) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn windows_task_command(executable: &Path) -> String {
-    format!("\"{}\" daemon start", executable.display())
+fn is_windows_user_sid(value: &str) -> bool {
+    value.starts_with("S-1-")
+        && value.len() <= 184
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'S')
+        && value.split('-').skip(1).all(|part| !part.is_empty())
+}
+
+fn render_windows_task_xml(executable: &Path, user_sid: &str) -> String {
+    let executable = xml_escape(&executable.to_string_lossy());
+    let user_sid = xml_escape(user_sid);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Vulcan multi-wiki synchronization daemon</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user_sid}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="CurrentUser">
+      <UserId>{user_sid}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="CurrentUser">
+    <Exec>
+      <Command>{executable}</Command>
+      <Arguments>daemon start</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
 }
 
 fn write_definition(path: &Path, contents: &str) -> Result<(), DaemonServiceError> {
@@ -637,7 +735,7 @@ mod tests {
             &config,
             &temporary.path().join("state/vulcan"),
             temporary.path(),
-            1000,
+            &DaemonServiceUser::unix(1000),
         )
         .expect("systemd plan");
 
@@ -675,7 +773,7 @@ mod tests {
             temporary.path(),
             &temporary.path().join("state/vulcan"),
             temporary.path(),
-            0,
+            &DaemonServiceUser::windows("S-1-5-21-111-222-333-1001"),
         )
         .expect("Windows task plan");
 
@@ -684,15 +782,76 @@ mod tests {
         assert!(plan.commands[0]
             .arguments
             .windows(2)
-            .any(|pair| pair == ["/SC", "ONLOGON"]));
-        let task_command = plan.commands[0]
+            .any(|pair| pair == ["/TN", "Vulcan Daemon (S-1-5-21-111-222-333-1001)"]));
+        assert!(plan.commands[0]
+            .arguments
+            .windows(2)
+            .any(|pair| pair[0] == "/XML" && pair[1].ends_with("daemon-task.xml")));
+        assert!(!plan.commands[0]
             .arguments
             .iter()
-            .skip_while(|argument| *argument != "/TR")
-            .nth(1)
-            .expect("task command");
-        assert!(task_command.starts_with('"'));
-        assert!(task_command.ends_with(" daemon start"));
+            .any(|value| value == "/TR"));
+        let definition = plan.definition.expect("Windows task definition");
+        assert!(definition.contains(
+            "<LogonTrigger>\n      <Enabled>true</Enabled>\n      <UserId>S-1-5-21-111-222-333-1001</UserId>"
+        ));
+        assert!(definition.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(definition.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        assert!(definition.contains("Vulcan Bin/vulcan.exe</Command>"));
+        assert!(definition.contains("<Arguments>daemon start</Arguments>"));
+        assert!(!definition.contains("<Password>"));
+    }
+
+    #[test]
+    fn windows_plan_rejects_missing_or_malformed_user_sids() {
+        let temporary = tempdir().expect("temporary directory");
+        let executable = temporary.path().join("vulcan.exe");
+        fs::write(&executable, "binary").expect("binary fixture");
+
+        for sid in [None, Some("CURRENT_USER"), Some("S-1-5-21-&lt;unsafe&gt;")] {
+            assert!(matches!(
+                plan_daemon_service(
+                    DaemonServiceAction::Install,
+                    DaemonServicePlatform::WindowsScheduledTask,
+                    &executable,
+                    temporary.path(),
+                    temporary.path(),
+                    temporary.path(),
+                    &match sid {
+                        Some(sid) => DaemonServiceUser::windows(sid),
+                        None => DaemonServiceUser::unix(0),
+                    },
+                ),
+                Err(DaemonServiceError::InvalidWindowsUserSid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn windows_uninstall_targets_only_the_current_users_task() {
+        let temporary = tempdir().expect("temporary directory");
+        let executable = temporary.path().join("vulcan.exe");
+        fs::write(&executable, "binary").expect("binary fixture");
+
+        let plan = plan_windows_task(
+            DaemonServiceAction::Uninstall,
+            &executable,
+            temporary.path(),
+            "S-1-5-21-111-222-333-1002",
+        )
+        .expect("Windows uninstall plan");
+
+        assert!(plan.definition.is_none());
+        assert_eq!(
+            plan.commands[0].arguments,
+            [
+                "/Delete",
+                "/TN",
+                "Vulcan Daemon (S-1-5-21-111-222-333-1002)",
+                "/F"
+            ]
+        );
+        assert!(plan.commands[0].tolerate_failure);
     }
 
     #[test]
@@ -710,7 +869,7 @@ mod tests {
             &temporary.path().join("config/vulcan"),
             &state,
             temporary.path(),
-            501,
+            &DaemonServiceUser::unix(501),
         )
         .expect("launchd plan");
 
@@ -771,7 +930,7 @@ mod tests {
             temporary.path(),
             &temporary.path().join("state"),
             temporary.path(),
-            502,
+            &DaemonServiceUser::unix(502),
         )
         .expect("launchd uninstall plan");
 
@@ -833,7 +992,7 @@ mod tests {
             &temporary.path().join("config/vulcan"),
             &temporary.path().join("state/vulcan"),
             temporary.path(),
-            501,
+            &DaemonServiceUser::unix(501),
         )
         .expect("launchd plan");
         let path = plan.definition_path.as_ref().expect("definition path");
@@ -889,7 +1048,7 @@ mod tests {
             &temporary.path().join("config/vulcan"),
             &temporary.path().join("state/vulcan"),
             temporary.path(),
-            1000,
+            &DaemonServiceUser::unix(1000),
         )
         .expect("install plan");
         let report = apply_daemon_service(install.clone(), true).expect("dry run");
