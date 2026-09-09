@@ -932,6 +932,10 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn absolute_notification_program() -> PathBuf {
+        std::env::current_exe().expect("test executable path should be available")
+    }
+
     fn request(id: &str, path: &Path) -> AddWikiRequest {
         AddWikiRequest {
             id: WikiId::parse(id).expect("valid ID"),
@@ -1186,7 +1190,7 @@ mod tests {
 
         let command = DaemonCommandNotificationConfig {
             name: "primary".to_string(),
-            program: PathBuf::from("/usr/bin/notify-bridge"),
+            program: absolute_notification_program(),
             args: vec!["--stdin".to_string()],
         };
         let replaced = registry
@@ -1246,7 +1250,7 @@ mod tests {
                 .set_notification_command(
                     DaemonCommandNotificationConfig {
                         name: format!("sink-{index}"),
-                        program: PathBuf::from("/usr/bin/notify-bridge"),
+                        program: absolute_notification_program(),
                         args: Vec::new(),
                     },
                     false,
@@ -1256,7 +1260,7 @@ mod tests {
         let result = registry.set_notification_command(
             DaemonCommandNotificationConfig {
                 name: "sink-extra".to_string(),
-                program: PathBuf::from("/usr/bin/notify-bridge"),
+                program: absolute_notification_program(),
                 args: Vec::new(),
             },
             false,
