@@ -147,25 +147,25 @@ fn sync_run_defaults_to_a_compact_result_and_keeps_durable_progress_opt_in() {
 
     let bootstrap = run_sync(&[]);
     assert!(bootstrap.status.success());
-    assert_eq!(
-        String::from_utf8(bootstrap.stdout).expect("bootstrap stdout"),
-        "Sync: initialized origin\n"
-    );
+    let bootstrap_stdout = String::from_utf8(bootstrap.stdout).expect("bootstrap stdout");
+    assert!(bootstrap_stdout.starts_with("Sync: initialized origin\nDevice backup: snapshot "));
+    assert!(bootstrap_stdout.contains("refs/heads/__vulcan-sync/devices/"));
+    assert!(bootstrap_stdout.ends_with("(published).\n"));
     assert!(bootstrap.stderr.is_empty());
 
     let steady = run_sync(&[]);
     assert!(steady.status.success());
-    assert_eq!(
-        String::from_utf8(steady.stdout).expect("steady stdout"),
-        "Sync: up to date with origin\n"
-    );
+    let steady_stdout = String::from_utf8(steady.stdout).expect("steady stdout");
+    assert!(steady_stdout.starts_with("Sync: up to date with origin\nDevice backup: snapshot "));
+    assert!(steady_stdout.contains("refs/heads/__vulcan-sync/devices/"));
     assert!(steady.stderr.is_empty());
 
     let verbose = run_sync(&["--verbose"]);
     assert!(verbose.status.success());
     let stdout = String::from_utf8(verbose.stdout).expect("verbose stdout");
     let stderr = String::from_utf8(verbose.stderr).expect("verbose stderr");
-    assert!(stdout.starts_with("Sync: up to date with origin\nRemote ref: refs/heads/"));
+    assert!(stdout.starts_with("Sync: up to date with origin\nDevice backup: snapshot "));
+    assert!(stdout.contains("\nRemote ref: refs/heads/"));
     assert!(stdout.contains("\nAccepted: "));
     assert!(stderr.contains("Sync attempt 1/4: preparing repository"));
     assert!(stderr.contains("Sync attempt 1/4: cycle complete"));
@@ -14905,6 +14905,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan sync advertise --subscribe-url-file -"));
     assert!(sync_skill.contains("vulcan sync unadvertise"));
     assert!(sync_skill.contains("vulcan sync notifications"));
+    assert!(sync_skill.contains("vulcan sync devices list"));
+    assert!(sync_skill.contains("vulcan sync devices fetch <device-id>"));
+    assert!(sync_skill.contains("vulcan sync devices remove <device-id> --dry-run"));
+    assert!(sync_skill.contains("cleanup cannot silently destroy"));
     assert!(sync_skill.contains("## Branch lane"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));

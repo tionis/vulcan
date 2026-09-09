@@ -2,17 +2,18 @@ use crate::editor::open_paths_in_editor;
 use crate::output::print_json;
 use crate::{
     selected_permission_guard, Cli, CliError, OutputFormat, SemanticGroupingArg,
-    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncScheduleCommand,
-    SyncSelectionArgs, TermuxNetworkArg,
+    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncDeviceCommand,
+    SyncScheduleCommand, SyncSelectionArgs, TermuxNetworkArg,
 };
 use serde::Serialize;
 use std::io::{self, IsTerminal, Read, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault_with_progress, GitBranchSync,
-    GitBranchSyncAction, GitPlatformProfile, GitRefName, GitRemote, GitSyncAction, GitSyncObserver,
-    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncPreviewFileState,
-    GitSyncProgress, GitSyncReport, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+    GitBranchSyncAction, GitDeviceBackupOutcome, GitPlatformProfile, GitRefName, GitRemote,
+    GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
+    GitSyncPhase, GitSyncPreviewFileState, GitSyncProgress, GitSyncReport, SyncDoctorReport,
+    SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -21,6 +22,11 @@ use vulcan_app::sync_conflicts::{
     get_sync_conflict, list_sync_conflicts, resolve_sync_conflict, ResolveSyncConflictOptions,
     ResolveSyncConflictReport, SyncConflictDetailReport, SyncConflictListReport,
     SyncConflictResolutionSide, SyncConflictResolutionState,
+};
+use vulcan_app::sync_devices::{
+    fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
+    SyncDeviceFetchReport, SyncDeviceListReport, SyncDeviceOptions, SyncDeviceRelation,
+    SyncDeviceRemoveReport,
 };
 use vulcan_app::sync_notifications::{
     notification_status, publish_sync_notification_advertisement,
@@ -302,6 +308,7 @@ fn sync_phase_message(phase: GitSyncPhase) -> &'static str {
         GitSyncPhase::Preparing => "preparing repository",
         GitSyncPhase::Capturing => "capturing local worktree",
         GitSyncPhase::Captured => "local snapshot captured",
+        GitSyncPhase::BackingUp => "publishing device safety backup",
         GitSyncPhase::Fetching => "querying remote",
         GitSyncPhase::Fetched => "remote revision ready",
         GitSyncPhase::Merging => "merging revisions",
@@ -324,6 +331,7 @@ mod progress_tests {
             GitSyncPhase::Preparing,
             GitSyncPhase::Capturing,
             GitSyncPhase::Captured,
+            GitSyncPhase::BackingUp,
             GitSyncPhase::Fetching,
             GitSyncPhase::Fetched,
             GitSyncPhase::Merging,
@@ -408,6 +416,9 @@ fn handle_non_cycle_sync_command(
     if let Some(result) = handle_termux_sync_command(cli, command) {
         return Some(result);
     }
+    if let SyncCommand::Devices { command } = command {
+        return Some(handle_sync_devices(cli, paths, command));
+    }
     let result = match command {
         SyncCommand::Pause { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run)
@@ -480,6 +491,9 @@ fn handle_non_cycle_sync_command(
             unreachable!("clone is dispatched before the general sync match")
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
+        SyncCommand::Devices { .. } => {
+            unreachable!("device commands are dispatched before the general sync match")
+        }
         SyncCommand::TermuxInstall { .. }
         | SyncCommand::TermuxUninstall { .. }
         | SyncCommand::Schedule { .. } => {
@@ -2434,6 +2448,165 @@ fn check_sync_permission(
         .map_err(CliError::operation)
 }
 
+fn handle_sync_devices(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    command: &SyncDeviceCommand,
+) -> Result<(), CliError> {
+    let (wiki, target) = match command {
+        SyncDeviceCommand::List { wiki, target }
+        | SyncDeviceCommand::Fetch { wiki, target, .. }
+        | SyncDeviceCommand::Remove { wiki, target, .. } => (wiki.as_deref(), target),
+    };
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let options = SyncDeviceOptions {
+        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+    };
+    match command {
+        SyncDeviceCommand::List { .. } => {
+            let report = list_sync_device_backups(&paths, &options).map_err(CliError::operation)?;
+            print_sync_device_list(cli.output, &report)
+        }
+        SyncDeviceCommand::Fetch {
+            device_id, dry_run, ..
+        } => {
+            let report = fetch_sync_device_backup(&paths, &options, device_id, *dry_run)
+                .map_err(CliError::operation)?;
+            print_sync_device_fetch(cli.output, &report)
+        }
+        SyncDeviceCommand::Remove {
+            device_id, dry_run, ..
+        } => {
+            let report = remove_sync_device_backup(&paths, &options, device_id, *dry_run)
+                .map_err(CliError::operation)?;
+            print_sync_device_remove(cli.output, &report)
+        }
+    }
+}
+
+fn print_sync_device_list(
+    output: OutputFormat,
+    report: &SyncDeviceListReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Remote device safety backups: {} (remote {}, profile {})",
+        report.count, report.remote, report.profile
+    );
+    if report.backups.is_empty() {
+        println!("No device backups found. A successful non-dry-run sync creates one.");
+        return Ok(());
+    }
+    for backup in &report.backups {
+        println!(
+            "{}\t{}\t{}{}",
+            backup.device_id,
+            backup.revision,
+            backup.remote_ref,
+            if backup.current_device {
+                "\t(this device)"
+            } else {
+                ""
+            }
+        );
+    }
+    println!("Recover another device with: vulcan sync devices fetch <device-id>");
+    Ok(())
+}
+
+fn print_sync_device_fetch(
+    output: OutputFormat,
+    report: &SyncDeviceFetchReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.dry_run {
+        println!(
+            "Would fetch device {} at {} into {}.",
+            report.device_id, report.revision, report.local_device_ref
+        );
+        if let Some(local_live) = &report.local_live_ref {
+            println!("Would also fetch accepted live into {local_live} for comparison.");
+        }
+        return Ok(());
+    }
+    println!(
+        "Fetched device {} at {} into durable local ref {}.",
+        report.device_id, report.revision, report.local_device_ref
+    );
+    if let Some(relation) = report.relation {
+        println!(
+            "Relationship to accepted live: {}.",
+            device_relation_label(relation)
+        );
+    }
+    let changed_paths = report.changed_paths.as_deref().unwrap_or_default();
+    if changed_paths.is_empty() {
+        println!("Changed paths versus accepted live: none.");
+    } else {
+        println!(
+            "Changed paths versus accepted live ({}): {}",
+            changed_paths.len(),
+            changed_paths.join(", ")
+        );
+    }
+    if let Some(local_live) = &report.local_live_ref {
+        println!(
+            "Review: git diff {}..{}",
+            local_live, report.local_device_ref
+        );
+    }
+    println!(
+        "Isolate for conflict resolution: git worktree add --detach <new-directory> {}",
+        report.local_device_ref
+    );
+    Ok(())
+}
+
+fn print_sync_device_remove(
+    output: OutputFormat,
+    report: &SyncDeviceRemoveReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.dry_run {
+        println!(
+            "Safe to remove integrated device backup {} at {} ({}).",
+            report.device_id,
+            report.revision,
+            device_relation_label(report.relation)
+        );
+        println!(
+            "Run again without --dry-run to delete {}.",
+            report.remote_device_ref
+        );
+    } else if report.removed {
+        println!(
+            "Removed remote device backup {}. Local recovery ref {} remains available.",
+            report.remote_device_ref, report.local_recovery_retained
+        );
+    } else {
+        println!("Remote device backup was already absent; local recovery ref remains available.");
+    }
+    Ok(())
+}
+
+const fn device_relation_label(relation: SyncDeviceRelation) -> &'static str {
+    match relation {
+        SyncDeviceRelation::LiveUninitialized => "accepted live is uninitialized",
+        SyncDeviceRelation::Same => "identical to accepted live",
+        SyncDeviceRelation::Integrated => "fully integrated into accepted live",
+        SyncDeviceRelation::ContainsLive => "contains accepted live plus device-only commits",
+        SyncDeviceRelation::Diverged => "diverged and contains device-only history",
+    }
+}
+
 fn run_sync_conflicts(
     cli: &Cli,
     selected_paths: &VaultPaths,
@@ -2700,12 +2873,24 @@ fn print_registered_sync_report(
                 .map_or_else(String::new, |error| {
                     format!("; retained conflict status unavailable: {error}")
                 });
+            let backup = sync
+                .sync
+                .device_backup
+                .as_ref()
+                .map_or_else(String::new, |backup| {
+                    format!(
+                        "; device backup {} at {}",
+                        device_backup_outcome_label(backup.outcome),
+                        backup.reference
+                    )
+                });
             println!(
-                "{}\t{}{}{}\t{}",
+                "{}\t{}{}{}{}\t{}",
                 item.wiki_id,
                 outcome,
                 retained,
                 incomplete,
+                backup,
                 item.path.display()
             );
         } else if let Some(error) = &item.error {
@@ -2739,6 +2924,15 @@ fn print_sync_report(
                 if let Some(line) = branch_push_message(branch) {
                     println!("{line}");
                 }
+            }
+            if let Some(backup) = &report.sync.device_backup {
+                println!(
+                    "Device backup: snapshot {} is reachable from {} at {} ({}).",
+                    backup.snapshot_revision,
+                    report.sync.remote,
+                    backup.reference,
+                    device_backup_outcome_label(backup.outcome)
+                );
             }
             if verbose {
                 println!("Remote ref: {}", report.sync.refs.live);
@@ -2879,6 +3073,14 @@ fn branch_preview_message(branch: Option<&GitBranchSync>) -> String {
             }
         },
     )
+}
+
+const fn device_backup_outcome_label(outcome: GitDeviceBackupOutcome) -> &'static str {
+    match outcome {
+        GitDeviceBackupOutcome::Current => "already protected",
+        GitDeviceBackupOutcome::Published => "published",
+        GitDeviceBackupOutcome::Bridged => "published with prior device history preserved",
+    }
 }
 
 /// Renders the branch lane for human output. Steady states (up to date,

@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 22
+version: 23
 metadata:
   vulcan:
     managed: true
@@ -84,10 +84,35 @@ typed failure category and retryability through the application layer: network/a
 failures can project offline, while repository/configuration/invariant failures remain errors with
 different repair guidance rather than being flattened into retryable `unknown` failures.
 
+## Recover another device's work
+
+Every non-dry-run cycle captures the complete worktree and publishes it to a leased per-device
+safety head before pulling, merging, rebasing, or changing canonical live. This protects local
+bytes even when later reconciliation conflicts. The moving head retains earlier device history;
+if restored checkouts accidentally reuse one device ID and diverge, Vulcan publishes a bridge
+that keeps both histories reachable.
+
+- Run `vulcan sync devices list [--wiki <id>]` to enumerate remote device IDs and exact revisions.
+  These refs are recovery inputs, never automatic winners and never mixed into live merely because
+  they exist.
+- Run `vulcan sync devices fetch <device-id> [--wiki <id>] --dry-run`, then omit `--dry-run` to
+  anchor that device and accepted live under durable local recovery refs. Review the reported
+  paths and `git diff <live-recovery-ref>..<device-recovery-ref>`. Use the printed detached
+  `git worktree add` command to resolve a lost or inaccessible device in isolation; publish the
+  reviewed result through the normal sync/conflict workflow.
+- Retire a device head only after its work is integrated. First fetch it again, then run
+  `vulcan sync devices remove <device-id> --dry-run`. Removal refuses the current device, stale
+  recovery refs, uninitialized live, and any `contains_live` or `diverged` candidate whose tree is
+  not already accepted. Applying removal uses an exact lease and keeps the local recovery ref, so
+  cleanup cannot silently destroy the last reviewed copy.
+- A safety-head publication failure stops canonical reconciliation. Do not delete the head or
+  bypass this gate just to make sync green; restore remote write access or select the correct
+  remote, then rerun.
+
 ## Branch lane
 
-Every finite cycle also pulls the checked-out branch from its upstream before the hidden live
-refs move, following the repository's own pull configuration (`pull.ff`, `pull.rebase`,
+After publishing the pre-operation device safety head, every finite cycle also pulls the checked-out
+branch from its upstream before the canonical hidden live ref moves, following the repository's own pull configuration (`pull.ff`, `pull.rebase`,
 `branch.<name>.rebase`) with `--no-edit` and no implicit autostash. Watch the human output or
 the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
 `pull.ff=only`, interactive rebase, or a merge/rebase conflict left for ordinary Git),

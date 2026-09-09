@@ -1,6 +1,6 @@
 use crate::{
-    conflict_ref, local_epoch_ref, local_sync_ref, remote_epoch_ref, sync_profile_key,
-    BranchPullConfig, FastForwardOutcome, GitBranchUpstream, GitCaptureRequest,
+    conflict_ref, local_epoch_ref, local_sync_ref, remote_device_ref, remote_epoch_ref,
+    sync_profile_key, BranchPullConfig, FastForwardOutcome, GitBranchUpstream, GitCaptureRequest,
     GitContentMergeResolutionRequest, GitEngine, GitEngineError, GitInstallation, GitOid,
     GitPathObject, GitPlatformPreflight, GitPlatformProfile, GitPushResult, GitRefName, GitRemote,
     GitRepository, GitRepositoryRequirements, GitResolvedPath, GitSafetyState, GitTreeApplyPlan,
@@ -162,6 +162,7 @@ pub enum GitSyncPhase {
     Preparing,
     Capturing,
     Captured,
+    BackingUp,
     Fetching,
     Fetched,
     Merging,
@@ -257,6 +258,11 @@ pub struct GitSyncRefs {
     pub local: GitRefName,
     pub fetched: GitRefName,
     pub pending: GitRefName,
+    /// Remote per-device backup head. It advances independently of the
+    /// canonical live ref so a conflict cannot strand captured bytes locally.
+    pub device: GitRefName,
+    /// Local observation of the last successfully published device head.
+    pub device_tracking: GitRefName,
 }
 
 impl GitSyncRefs {
@@ -268,8 +274,27 @@ impl GitSyncRefs {
             local: local_sync_ref(&profile, "local")?,
             fetched: local_sync_ref(&profile, "remotes")?,
             pending: local_sync_ref(&profile, "pending")?,
+            device: remote_device_ref(&profile, options.device_id.as_str())?,
+            device_tracking: local_sync_ref(&profile, "device")?,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitDeviceBackupOutcome {
+    Current,
+    Published,
+    Bridged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitDeviceBackup {
+    pub device_id: GitSyncDeviceId,
+    pub reference: GitRefName,
+    pub snapshot_revision: GitOid,
+    pub published_revision: GitOid,
+    pub outcome: GitDeviceBackupOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -479,6 +504,8 @@ pub struct GitSyncReport {
     pub local_before: Option<GitOid>,
     pub local_snapshot: Option<GitOid>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_backup: Option<GitDeviceBackup>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub local_platform_preflight: Option<GitPlatformPreflight>,
     pub accepted: Option<GitOid>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -523,6 +550,7 @@ impl GitSyncReport {
             remote_before: observed.0,
             local_before: observed.1,
             local_snapshot: None,
+            device_backup: None,
             local_platform_preflight: None,
             accepted: None,
             accepted_platform_preflight: None,
@@ -716,10 +744,10 @@ fn sync_state_from_phase(phase: GitSyncPhase) -> SyncState {
         GitSyncPhase::Preparing => SyncState::CapturePending,
         GitSyncPhase::Capturing => SyncState::Capturing,
         GitSyncPhase::Captured => SyncState::CapturedUnpushed,
+        GitSyncPhase::BackingUp | GitSyncPhase::Pushing => SyncState::Pushing,
         GitSyncPhase::Fetching => SyncState::Fetching,
         GitSyncPhase::Fetched => SyncState::Fetched,
         GitSyncPhase::Merging => SyncState::Merging,
-        GitSyncPhase::Pushing => SyncState::Pushing,
         GitSyncPhase::Applying | GitSyncPhase::Verifying => SyncState::Applying,
         GitSyncPhase::Paused => SyncState::Paused,
         GitSyncPhase::Conflicted => SyncState::Conflicted,
@@ -1591,21 +1619,32 @@ fn run_attempt(
 ) -> Result<AttemptResult, GitSyncError> {
     control.check()?;
 
-    // Reconcile the checked-out branch before taking the file-lane snapshot.
-    // A successful pull can rewrite the worktree; capturing first would make
-    // that intentional rewrite look concurrent and force a redundant retry.
-    pull_branch_lane(engine, report)?;
-    push_branch_lane(engine, report)?;
-
-    control.check()?;
-    control.emit(GitSyncPhase::Capturing, report, None)?;
+    // Capture and publish before any pull, merge, or rebase can rewrite the
+    // checkout. If the branch lane moves the tree, publish a fresh safety
+    // snapshot before allowing file-lane reconciliation to publish anything.
     let refs_before = read_attempt_refs(engine, report)?;
-    let capture = capture_local_worktree(engine, options, report, refs_before.local)?;
-    report.local_snapshot = Some(capture.commit.clone());
-    if capture.created {
-        report.actions.push(GitSyncAction::SnapshotCreated);
-    }
-    control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
+    let Some(capture) = capture_and_publish_device_backup(
+        engine,
+        options,
+        report,
+        control,
+        refs_before.local.clone(),
+    )?
+    else {
+        return Ok(AttemptResult::Retry);
+    };
+
+    let Some(capture) = pull_branch_and_refresh_device_backup(
+        engine,
+        options,
+        report,
+        control,
+        capture,
+        refs_before.local,
+    )?
+    else {
+        return Ok(AttemptResult::Retry);
+    };
     require_local_platform(engine, options, report, &capture.commit)?;
 
     control.check()?;
@@ -1619,14 +1658,14 @@ fn run_attempt(
     if control.attempt == 0 {
         report.remote_before.clone_from(&remote_tip);
     }
-    if let Some(pause) = sync_pause(engine, report)? {
-        if let Some(remote_tip) = remote_tip.as_ref() {
-            ensure_remote_tip(engine, options, report, fetched_before, remote_tip)?;
-            control.emit(GitSyncPhase::Fetched, report, None)?;
-        }
-        report.pause = Some(pause);
-        report.outcome = GitSyncOutcome::Paused;
-        control.emit(GitSyncPhase::Paused, report, None)?;
+    if finish_paused_attempt(
+        engine,
+        options,
+        report,
+        control,
+        remote_tip.as_ref(),
+        fetched_before,
+    )? {
         return Ok(AttemptResult::Finished);
     }
     let Some((accepted, outcome, pushed)) = reconcile(
@@ -1646,44 +1685,10 @@ fn run_attempt(
         });
     };
 
-    require_accepted_platform(engine, options, report, &accepted)?;
-
-    control.check()?;
-    control.emit(GitSyncPhase::Verifying, report, None)?;
-    if !engine.worktree_matches_tree(&report.repository, &capture.commit)? {
-        return Ok(AttemptResult::Retry);
-    }
-    if pushed {
-        report.actions.push(GitSyncAction::Pushed);
-    }
-    report.accepted = Some(accepted.clone());
-    if accepted != capture.commit
-        && capture.tree != engine.tree_oid(&report.repository, &accepted)?
-    {
-        if let Some(pause) = sync_pause(engine, report)? {
-            engine.update_ref(&report.repository, &report.refs.pending, &accepted)?;
-            report.pause = Some(pause);
-            report.outcome = GitSyncOutcome::Paused;
-            control.emit(GitSyncPhase::Paused, report, None)?;
-            return Ok(AttemptResult::Finished);
-        }
-        control.check()?;
-        control.emit(GitSyncPhase::Applying, report, None)?;
-        report.application = apply_accepted_tree(engine, report, &capture.commit, &accepted)?;
-        if report.application.is_none() {
-            return Ok(AttemptResult::Retry);
-        }
-        report.actions.push(GitSyncAction::WorktreeApplied);
-    }
-    if outcome == GitSyncOutcome::Conflicted {
-        if let Some(materialization) = report
-            .conflict
-            .as_mut()
-            .and_then(|conflict| conflict.materialization.as_mut())
-        {
-            materialization.published = true;
-            materialization.applied = true;
-        }
+    if let Some(result) = verify_and_apply_reconciliation(
+        engine, options, report, control, &capture, &accepted, outcome, pushed,
+    )? {
+        return Ok(result);
     }
     update_accepted_refs_if_needed(
         engine,
@@ -1697,6 +1702,231 @@ fn run_attempt(
     report.accepted = Some(accepted);
     control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_and_apply_reconciliation(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    control: &mut AttemptControl<'_>,
+    capture: &crate::GitCapture,
+    accepted: &GitOid,
+    outcome: GitSyncOutcome,
+    pushed: bool,
+) -> Result<Option<AttemptResult>, GitSyncError> {
+    require_accepted_platform(engine, options, report, accepted)?;
+    control.check()?;
+    control.emit(GitSyncPhase::Verifying, report, None)?;
+    if !engine.worktree_matches_tree(&report.repository, &capture.commit)? {
+        return Ok(Some(AttemptResult::Retry));
+    }
+    if pushed {
+        report.actions.push(GitSyncAction::Pushed);
+    }
+    report.accepted = Some(accepted.clone());
+    if accepted != &capture.commit
+        && capture.tree != engine.tree_oid(&report.repository, accepted)?
+    {
+        if let Some(pause) = sync_pause(engine, report)? {
+            engine.update_ref(&report.repository, &report.refs.pending, accepted)?;
+            report.pause = Some(pause);
+            report.outcome = GitSyncOutcome::Paused;
+            control.emit(GitSyncPhase::Paused, report, None)?;
+            return Ok(Some(AttemptResult::Finished));
+        }
+        control.check()?;
+        control.emit(GitSyncPhase::Applying, report, None)?;
+        report.application = apply_accepted_tree(engine, report, &capture.commit, accepted)?;
+        if report.application.is_none() {
+            return Ok(Some(AttemptResult::Retry));
+        }
+        report.actions.push(GitSyncAction::WorktreeApplied);
+    }
+    if outcome == GitSyncOutcome::Conflicted {
+        if let Some(materialization) = report
+            .conflict
+            .as_mut()
+            .and_then(|conflict| conflict.materialization.as_mut())
+        {
+            materialization.published = true;
+            materialization.applied = true;
+        }
+    }
+    Ok(None)
+}
+
+fn capture_and_publish_device_backup(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    control: &mut AttemptControl<'_>,
+    base: Option<GitOid>,
+) -> Result<Option<crate::GitCapture>, GitSyncError> {
+    control.emit(GitSyncPhase::Capturing, report, None)?;
+    let capture = capture_local_worktree(engine, options, report, base)?;
+    report.local_snapshot = Some(capture.commit.clone());
+    if capture.created {
+        report.actions.push(GitSyncAction::SnapshotCreated);
+    }
+    control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
+    control.check()?;
+    control.emit(GitSyncPhase::BackingUp, report, Some(capture.tree.clone()))?;
+    if publish_device_backup(engine, options, report, &capture)? {
+        Ok(Some(capture))
+    } else {
+        Ok(None)
+    }
+}
+
+fn finish_paused_attempt(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    control: &mut AttemptControl<'_>,
+    remote_tip: Option<&GitOid>,
+    fetched_before: Option<&GitOid>,
+) -> Result<bool, GitSyncError> {
+    let Some(pause) = sync_pause(engine, report)? else {
+        return Ok(false);
+    };
+    if let Some(remote_tip) = remote_tip {
+        ensure_remote_tip(engine, options, report, fetched_before, remote_tip)?;
+        control.emit(GitSyncPhase::Fetched, report, None)?;
+    }
+    report.pause = Some(pause);
+    report.outcome = GitSyncOutcome::Paused;
+    control.emit(GitSyncPhase::Paused, report, None)?;
+    Ok(true)
+}
+
+fn pull_branch_and_refresh_device_backup(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    control: &mut AttemptControl<'_>,
+    capture: crate::GitCapture,
+    base: Option<GitOid>,
+) -> Result<Option<crate::GitCapture>, GitSyncError> {
+    control.check()?;
+    pull_branch_lane(engine, report)?;
+    push_branch_lane(engine, report)?;
+    let may_have_rewritten_worktree = report.branch.as_ref().is_some_and(|branch| {
+        matches!(
+            branch.action,
+            GitBranchSyncAction::FastForwarded
+                | GitBranchSyncAction::Merged
+                | GitBranchSyncAction::Rebased
+        ) || (branch.action == GitBranchSyncAction::Paused
+            && branch
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("conflict")))
+    });
+    if !may_have_rewritten_worktree {
+        return Ok(Some(capture));
+    }
+    if engine.worktree_matches_tree(&report.repository, &capture.commit)? {
+        Ok(Some(capture))
+    } else {
+        capture_and_publish_device_backup(engine, options, report, control, base)
+    }
+}
+
+fn publish_device_backup(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+) -> Result<bool, GitSyncError> {
+    let tracked = engine.read_ref(&report.repository, &report.refs.device_tracking)?;
+    if publish_device_backup_against(engine, options, report, capture, tracked.as_ref())? {
+        return Ok(true);
+    }
+    let current = engine.remote_ref(&report.repository, &options.remote, &report.refs.device)?;
+    if let Some(current) = &current {
+        engine.fetch_ref(
+            &report.repository,
+            &options.remote,
+            &report.refs.device,
+            &report.refs.device_tracking,
+        )?;
+        debug_assert_eq!(
+            engine.read_ref(&report.repository, &report.refs.device_tracking)?,
+            Some(current.clone())
+        );
+    }
+    publish_device_backup_against(engine, options, report, capture, current.as_ref())
+}
+
+fn publish_device_backup_against(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+    remote_before: Option<&GitOid>,
+) -> Result<bool, GitSyncError> {
+    let (target, outcome) = device_backup_target(engine, options, report, capture, remote_before)?;
+    if engine.push_ref(
+        &report.repository,
+        &options.remote,
+        &target,
+        &report.refs.device,
+        remote_before,
+    )? == GitPushResult::Rejected
+    {
+        return Ok(false);
+    }
+    if remote_before != Some(&target) {
+        engine.update_ref(&report.repository, &report.refs.device_tracking, &target)?;
+    }
+    report.device_backup = Some(GitDeviceBackup {
+        device_id: options.device_id.clone(),
+        reference: report.refs.device.clone(),
+        snapshot_revision: capture.commit.clone(),
+        published_revision: target,
+        outcome,
+    });
+    Ok(true)
+}
+
+fn device_backup_target(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &GitSyncReport,
+    capture: &crate::GitCapture,
+    remote_before: Option<&GitOid>,
+) -> Result<(GitOid, GitDeviceBackupOutcome), GitSyncError> {
+    let Some(remote_before) = remote_before else {
+        return Ok((capture.commit.clone(), GitDeviceBackupOutcome::Published));
+    };
+    if remote_before == &capture.commit
+        || engine.is_ancestor(&report.repository, &capture.commit, remote_before)?
+    {
+        return Ok((remote_before.clone(), GitDeviceBackupOutcome::Current));
+    }
+    if engine.is_ancestor(&report.repository, remote_before, &capture.commit)? {
+        return Ok((capture.commit.clone(), GitDeviceBackupOutcome::Published));
+    }
+    let bridge = engine.create_reproducible_commit(
+        &report.repository,
+        &capture.tree,
+        &[capture.commit.clone(), remote_before.clone()],
+        &device_backup_message(&report.refs, options, &capture.commit, remote_before),
+    )?;
+    Ok((bridge, GitDeviceBackupOutcome::Bridged))
+}
+
+fn device_backup_message(
+    refs: &GitSyncRefs,
+    options: &GitSyncOptions,
+    snapshot: &GitOid,
+    previous: &GitOid,
+) -> String {
+    format!(
+        "vulcan device backup bridge\n\n{}Vulcan-Device-Backup-Snapshot: {snapshot}\nVulcan-Device-Backup-Previous: {previous}\n",
+        sync_trailers(refs, options, snapshot.as_str())
+    )
 }
 
 fn apply_accepted_tree(
@@ -3803,8 +4033,8 @@ mod tests {
             "the branch lane should ask Git to resolve its upstream: {commands}"
         );
         assert!(
-            lines.len() <= 24,
-            "reused-engine sync exceeded its 24-process budget ({}): {commands}",
+            lines.len() <= 26,
+            "reused-engine sync exceeded its 26-process budget ({}): {commands}",
             lines.len()
         );
     }
@@ -4012,8 +4242,8 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 25,
-            "steady sync exceeded its 25-process budget ({}): {commands}",
+            lines.len() <= 27,
+            "steady sync exceeded its 27-process budget ({}): {commands}",
             lines.len()
         );
         assert_direct_engine_probes(&lines, &commands);
@@ -4351,6 +4581,7 @@ mod tests {
                 GitSyncPhase::Preparing,
                 GitSyncPhase::Capturing,
                 GitSyncPhase::Captured,
+                GitSyncPhase::BackingUp,
                 GitSyncPhase::Fetching,
                 GitSyncPhase::Pushing,
                 GitSyncPhase::Verifying,
@@ -4905,6 +5136,8 @@ mod tests {
         sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
         fs::write(writer.join("Home.md"), "local conflict\n").expect("conflict note");
         commit_all(&writer, "local conflict");
+        let local_before_pull =
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("local revision");
         advance_remote_branch(&temporary, &remote, "remote conflict\n");
 
         let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
@@ -4923,6 +5156,29 @@ mod tests {
         );
         let repository = engine.discover_repository(&writer).expect("repository");
         assert!(repository.git_dir.join("MERGE_HEAD").exists());
+        let pre_pull_tree = engine
+            .tree_oid(&repository, &local_before_pull)
+            .expect("pre-pull tree");
+        let backup = report
+            .device_backup
+            .as_ref()
+            .expect("conflicted pull still publishes a device backup");
+        let reachable_trees = git_stdout(
+            &writer,
+            &["log", "--format=%T", backup.published_revision.as_str()],
+        );
+        assert!(
+            reachable_trees
+                .lines()
+                .any(|tree| tree == pre_pull_tree.as_str()),
+            "the exact pre-pull tree bytes must remain reachable after Git enters conflict"
+        );
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &report.remote, &backup.reference)
+                .expect("remote device backup"),
+            Some(backup.published_revision.clone())
+        );
     }
 
     #[test]
@@ -5451,6 +5707,65 @@ mod tests {
         assert!(!report.actions.contains(&GitSyncAction::Pushed));
         assert!(reader.join("New/anchor.md").exists());
         assert!(!reader.join("Old/remote.md").exists());
+
+        let backup = report
+            .device_backup
+            .as_ref()
+            .expect("conflicted local snapshot is independently backed up");
+        assert!(engine
+            .is_ancestor(
+                &report.repository,
+                &backup.snapshot_revision,
+                &backup.published_revision,
+            )
+            .expect("backup ancestry"));
+        assert_eq!(
+            git_stdout(
+                &reader,
+                &["ls-remote", "origin", backup.reference.as_str(),],
+            )
+            .split_whitespace()
+            .next(),
+            Some(backup.published_revision.as_str())
+        );
+
+        let rescuer = temporary.path().join("rescuer");
+        run_git(
+            temporary.path(),
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "clone",
+                "--quiet",
+                writer.to_str().expect("writer path"),
+                rescuer.to_str().expect("rescuer path"),
+            ],
+        );
+        run_git(
+            &rescuer,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        run_git(
+            &rescuer,
+            &[
+                "fetch",
+                "--quiet",
+                "origin",
+                &format!("{}:refs/vulcan/recovery/test-device", backup.reference),
+            ],
+        );
+        assert_eq!(
+            git_stdout(
+                &rescuer,
+                &["show", "refs/vulcan/recovery/test-device:New/anchor.md"],
+            ),
+            "anchor"
+        );
     }
 
     #[test]

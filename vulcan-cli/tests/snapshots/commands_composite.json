@@ -8575,10 +8575,187 @@
       },
       {
         "about": "Synchronize a vault through a hidden Git live ref",
-        "after_help": "Notes:\n  `sync clone` automatically selects a detached Android-shared layout in Termux.\n  `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run\n  vulcan sync termux-install personal --period-minutes 30 --dry-run\n  vulcan sync schedule show personal\n  vulcan sync schedule set personal --period-minutes 60 --dry-run\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync propose <conflict-id> --model <model> --base-url <url>\n  vulcan sync reject <conflict-id> <proposal-id> --dry-run\n  vulcan sync resolve <conflict-id> --side local --dry-run\n  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run\n  vulcan sync checkpoint personal --kind recovery\n  vulcan sync retention-plan personal\n  vulcan sync retention-apply personal --dry-run\n  vulcan sync retention-apply personal --rollover\n  vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run\n  vulcan sync semantic-apply <plan-id> --dry-run\n  vulcan sync semantic-publish <plan-id> --dry-run\n  vulcan sync semantic-auto personal --quiet-seconds 900 --maximum-wait-seconds 21600\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
+        "after_help": "Notes:\n  `sync clone` automatically selects a detached Android-shared layout in Termux.\n  `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Non-dry-run cycles publish local bytes to a per-device safety ref before pull or reconciliation.\n  Staged changes are captured; in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run\n  vulcan sync termux-install personal --period-minutes 30 --dry-run\n  vulcan sync schedule show personal\n  vulcan sync schedule set personal --period-minutes 60 --dry-run\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync devices list --wiki personal\n  vulcan sync devices fetch <device-id> --wiki personal --dry-run\n  vulcan sync devices remove <device-id> --wiki personal --dry-run\n  vulcan sync propose <conflict-id> --model <model> --base-url <url>\n  vulcan sync reject <conflict-id> <proposal-id> --dry-run\n  vulcan sync resolve <conflict-id> --side local --dry-run\n  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run\n  vulcan sync checkpoint personal --kind recovery\n  vulcan sync retention-plan personal\n  vulcan sync retention-apply personal --dry-run\n  vulcan sync retention-apply personal --rollover\n  vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run\n  vulcan sync semantic-apply <plan-id> --dry-run\n  vulcan sync semantic-publish <plan-id> --dry-run\n  vulcan sync semantic-auto personal --quiet-seconds 900 --maximum-wait-seconds 21600\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
         "name": "sync",
         "options": [],
         "subcommands": [
+          {
+            "about": "Inspect, recover, or retire remote per-device safety backups",
+            "name": "devices",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "List remote per-device safety backups",
+                "name": "list",
+                "options": [
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Fetch one device backup into a durable local recovery ref",
+                "name": "fetch",
+                "options": [
+                  {
+                    "help": "Device ID shown by `vulcan sync devices list`",
+                    "id": "device_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DEVICE_ID"
+                    ]
+                  },
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Show the refs that would be fetched without changing them",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Safely remove an integrated remote device backup",
+                "name": "remove",
+                "options": [
+                  {
+                    "help": "Retired device ID previously fetched for verification",
+                    "id": "device_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DEVICE_ID"
+                    ]
+                  },
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Verify eligibility without deleting the remote ref",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
           {
             "about": "Inspect or update a managed Android/Termux sync schedule",
             "name": "schedule",

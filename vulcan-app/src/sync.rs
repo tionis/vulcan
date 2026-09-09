@@ -16,12 +16,12 @@ use vulcan_sync::{GitAutomaticMergeValidation, GitEngine};
 
 pub use vulcan_sync::{
     GitBranchSync, GitBranchSyncAction, GitCloneRequest, GitDetachedRecoveryReport,
-    GitDetachedRecoveryRequest, GitInstallation, GitObjectFormat, GitPlatformPolicy,
-    GitPlatformPreflight, GitPlatformProfile, GitRefName, GitRemote, GitRemoteObservation,
-    GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction, GitSyncConflict,
-    GitSyncDeviceId, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreviewFileState, GitSyncProgress,
-    GitSyncRefs, GitSyncReport, SyncCancellationToken,
+    GitDetachedRecoveryRequest, GitDeviceBackup, GitDeviceBackupOutcome, GitInstallation,
+    GitObjectFormat, GitPlatformPolicy, GitPlatformPreflight, GitPlatformProfile, GitRefName,
+    GitRemote, GitRemoteObservation, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
+    GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError,
+    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
+    GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport, SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1266,6 +1266,7 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
             GitSyncPhase::Preparing => SyncJournalPhase::Preparing,
             GitSyncPhase::Capturing => SyncJournalPhase::Capturing,
             GitSyncPhase::Captured => SyncJournalPhase::Captured,
+            GitSyncPhase::BackingUp => SyncJournalPhase::BackingUp,
             GitSyncPhase::Fetching => SyncJournalPhase::Fetching,
             GitSyncPhase::Fetched => SyncJournalPhase::Fetched,
             GitSyncPhase::Merging => SyncJournalPhase::Merging,
@@ -1735,10 +1736,11 @@ mod tests {
         store: SyncStateStore,
     }
 
-    const RECOVERABLE_JOURNAL_PHASES: [SyncJournalPhase; 10] = [
+    const RECOVERABLE_JOURNAL_PHASES: [SyncJournalPhase; 11] = [
         SyncJournalPhase::Preparing,
         SyncJournalPhase::Capturing,
         SyncJournalPhase::Captured,
+        SyncJournalPhase::BackingUp,
         SyncJournalPhase::Fetching,
         SyncJournalPhase::Fetched,
         SyncJournalPhase::Merging,
@@ -2824,6 +2826,16 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     #[test]
     fn platform_preflight_failure_retains_the_captured_recovery_journal() {
         let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
         let vault = temporary.path().join("vault");
         fs::create_dir(&vault).expect("vault directory");
         git(
@@ -2832,6 +2844,15 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         );
         git(&vault, &["config", "user.name", "Vulcan Test"]);
         git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
         fs::write(vault.join("Home.md"), "home\n").expect("home note");
         git(&vault, &["add", "Home.md"]);
         git(&vault, &["commit", "--quiet", "-m", "initial"]);
@@ -2852,7 +2873,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .load(&key)
             .expect("load journal")
             .expect("retained platform journal");
-        assert_eq!(journal.phase, SyncJournalPhase::Captured);
+        assert_eq!(journal.phase, SyncJournalPhase::BackingUp);
         assert!(journal.local_snapshot.is_some());
         assert!(journal.expected_worktree_tree.is_some());
         assert!(journal
@@ -2862,6 +2883,14 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert_eq!(
             fs::read_to_string(vault.join("CON.txt")).expect("preserved bytes"),
             "preserve me\n"
+        );
+        assert!(
+            !git_stdout(
+                &vault,
+                &["ls-remote", "origin", "refs/heads/__vulcan-sync/devices/*",],
+            )
+            .is_empty(),
+            "platform-incompatible bytes must still reach the remote device safety namespace"
         );
     }
 
@@ -2915,7 +2944,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
-    fn progress_journal_retains_the_precise_failed_phase_and_snapshot() {
+    fn progress_journal_records_failed_device_backup_publication_and_snapshot() {
         let temporary = tempdir().expect("temporary directory");
         let vault = temporary.path().join("vault");
         fs::create_dir(&vault).expect("vault directory");
@@ -2954,8 +2983,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         let journal = store
             .load(&key)
             .expect("load journal")
-            .expect("retained fetch journal");
-        assert_eq!(journal.phase, SyncJournalPhase::Fetching);
+            .expect("retained publication journal");
+        assert_eq!(journal.phase, SyncJournalPhase::BackingUp);
         assert!(journal.local_snapshot.is_some());
         assert!(journal.git_dir.is_some());
         assert!(journal.error.is_some());

@@ -3,6 +3,7 @@ use crate::{GitEngineError, GitRefName, GitRemote};
 pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 1;
 pub const DEFAULT_REMOTE_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 pub const REMOTE_EPOCH_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/epochs";
+pub const REMOTE_DEVICE_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/devices";
 pub const LOCAL_VULCAN_REF_ROOT: &str = "refs/vulcan";
 
 pub const LOCAL_RECOVERY_REF_NAMESPACES: &[&str] = &[
@@ -34,6 +35,18 @@ pub fn local_epoch_ref(profile: &str, epoch_id: &str) -> Result<GitRefName, GitE
 
 pub fn remote_epoch_ref(profile: &str, epoch_id: &str) -> Result<GitRefName, GitEngineError> {
     GitRefName::parse(format!("{REMOTE_EPOCH_BRANCH_ROOT}/{profile}/{epoch_id}"))
+}
+
+pub fn remote_device_ref(profile: &str, device_id: &str) -> Result<GitRefName, GitEngineError> {
+    GitRefName::parse(format!("{REMOTE_DEVICE_BRANCH_ROOT}/{profile}/{device_id}"))
+}
+
+pub fn device_recovery_ref(profile: &str, device_id: &str) -> Result<GitRefName, GitEngineError> {
+    local_ref(&["recovery", "devices", profile, device_id])
+}
+
+pub fn device_recovery_live_ref(profile: &str) -> Result<GitRefName, GitEngineError> {
+    local_ref(&["recovery", "devices", profile, "live"])
 }
 
 pub fn conflict_ref(conflict_id: &str, role: &str) -> Result<GitRefName, GitEngineError> {
@@ -105,6 +118,24 @@ mod tests {
                 .expect("local ref")
                 .as_str(),
             format!("refs/vulcan/sync/{profile}/local/live")
+        );
+        assert_eq!(
+            remote_device_ref(&profile, "01arz3ndektsv4rrffq69g5fav")
+                .expect("device ref")
+                .as_str(),
+            format!("refs/heads/__vulcan-sync/devices/{profile}/01arz3ndektsv4rrffq69g5fav")
+        );
+        assert_eq!(
+            device_recovery_ref(&profile, "01arz3ndektsv4rrffq69g5fav")
+                .expect("recovery ref")
+                .as_str(),
+            format!("refs/vulcan/recovery/devices/{profile}/01arz3ndektsv4rrffq69g5fav")
+        );
+        assert_eq!(
+            device_recovery_live_ref(&profile)
+                .expect("recovery live ref")
+                .as_str(),
+            format!("refs/vulcan/recovery/devices/{profile}/live")
         );
         assert_eq!(
             remote_epoch_ref(&profile, "epoch")

@@ -518,8 +518,8 @@ Notes:
   `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.
   Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.
   The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
-  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.
-  Staged changes and in-progress Git operations pause worktree synchronization.
+  Non-dry-run cycles publish local bytes to a per-device safety ref before pull or reconciliation.
+  Staged changes are captured; in-progress Git operations pause worktree synchronization.
   Pause/resume updates device-local automatic behavior only; manual run and status remain available.
 
 Examples:
@@ -536,6 +536,9 @@ Examples:
   vulcan sync doctor
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
+  vulcan sync devices list --wiki personal
+  vulcan sync devices fetch <device-id> --wiki personal --dry-run
+  vulcan sync devices remove <device-id> --wiki personal --dry-run
   vulcan sync propose <conflict-id> --model <model> --base-url <url>
   vulcan sync reject <conflict-id> <proposal-id> --dry-run
   vulcan sync resolve <conflict-id> --side local --dry-run
@@ -3875,7 +3878,48 @@ pub enum SyncScheduleCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SyncDeviceCommand {
+    #[command(about = "List remote per-device safety backups")]
+    List {
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+    },
+    #[command(about = "Fetch one device backup into a durable local recovery ref")]
+    Fetch {
+        #[arg(help = "Device ID shown by `vulcan sync devices list`")]
+        device_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(
+            long,
+            help = "Show the refs that would be fetched without changing them"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Safely remove an integrated remote device backup")]
+    Remove {
+        #[arg(help = "Retired device ID previously fetched for verification")]
+        device_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Verify eligibility without deleting the remote ref")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
+    #[command(about = "Inspect, recover, or retire remote per-device safety backups")]
+    Devices {
+        #[command(subcommand)]
+        command: SyncDeviceCommand,
+    },
     #[command(about = "Inspect or update a managed Android/Termux sync schedule")]
     Schedule {
         #[command(subcommand)]

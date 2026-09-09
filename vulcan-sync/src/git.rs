@@ -271,6 +271,15 @@ pub trait GitEngine: Send + Sync {
         reference: &GitRefName,
     ) -> Result<Option<GitOid>, GitEngineError>;
 
+    /// Lists direct remote refs beneath one validated namespace without
+    /// fetching their objects or updating local refs.
+    fn list_remote_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        prefix: &GitRefName,
+    ) -> Result<Vec<GitReference>, GitEngineError>;
+
     fn fetch_ref(
         &self,
         repository: &GitRepository,
@@ -2895,6 +2904,22 @@ impl GitEngine for GitCliEngine {
         GitOid::parse(oid).map(Some)
     }
 
+    fn list_remote_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        prefix: &GitRefName,
+    ) -> Result<Vec<GitReference>, GitEngineError> {
+        let pattern = format!("{}/*", prefix.as_str().trim_end_matches('/'));
+        let mut command = self.repository_command(repository);
+        command
+            .args(["ls-remote", "--refs", "--"])
+            .arg(remote.as_str())
+            .arg(pattern);
+        let output = ensure_success("list remote Git refs", self.execute(command)?)?;
+        parse_remote_reference_list(&output.stdout, prefix)
+    }
+
     fn fetch_ref(
         &self,
         repository: &GitRepository,
@@ -3300,7 +3325,7 @@ impl GitEngine for GitCliEngine {
         {
             return Ok(GitPushResult::Rejected);
         }
-        Err(command_failed("push the live sync ref", &output))
+        Err(command_failed("push a sync ref", &output))
     }
 
     fn delete_remote_ref(
@@ -4423,6 +4448,47 @@ fn parse_reference_list(stdout: &[u8]) -> Result<Vec<GitReference>, GitEngineErr
     Ok(references)
 }
 
+fn parse_remote_reference_list(
+    stdout: &[u8],
+    prefix: &GitRefName,
+) -> Result<Vec<GitReference>, GitEngineError> {
+    const OPERATION: &str = "list remote Git refs";
+    const MAX_REFS: usize = 4096;
+    let required_prefix = format!("{}/", prefix.as_str().trim_end_matches('/'));
+    let text = std::str::from_utf8(stdout).map_err(|error| GitEngineError::InvalidOutput {
+        operation: OPERATION,
+        detail: error.to_string(),
+    })?;
+    let mut references = Vec::new();
+    let mut names = BTreeSet::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        if references.len() == MAX_REFS {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!("remote returned more than {MAX_REFS} refs beneath {prefix}"),
+            });
+        }
+        let (target, name) =
+            line.split_once('\t')
+                .ok_or_else(|| GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: format!("expected `<oid>\\t<ref>`, received `{line}`"),
+                })?;
+        if !name.starts_with(&required_prefix) || !names.insert(name) {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!("unexpected or duplicate remote ref `{name}`"),
+            });
+        }
+        references.push(GitReference {
+            name: GitRefName::parse(name)?,
+            target: GitOid::parse(target)?,
+        });
+    }
+    references.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
+    Ok(references)
+}
+
 fn parse_ref_targets(
     stdout: &[u8],
     requested: &BTreeSet<&str>,
@@ -5159,6 +5225,31 @@ fn bounded_lossy(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn parses_bounded_remote_reference_lists_and_rejects_namespace_escape() {
+        let prefix =
+            GitRefName::parse("refs/heads/__vulcan-sync/devices/profile").expect("prefix ref");
+        let oid = "0123456789012345678901234567890123456789";
+        let input = format!(
+            "{oid}\t{}/device-b\n{oid}\t{}/device-a\n",
+            prefix.as_str(),
+            prefix.as_str()
+        );
+        let parsed = parse_remote_reference_list(input.as_bytes(), &prefix).expect("remote refs");
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].name.as_str().ends_with("device-a"));
+        assert!(parse_remote_reference_list(
+            format!("{oid}\trefs/heads/main\n").as_bytes(),
+            &prefix
+        )
+        .is_err());
+        assert!(parse_remote_reference_list(
+            format!("{oid}\t{prefix}/device-a\n{oid}\t{prefix}/device-a\n").as_bytes(),
+            &prefix
+        )
+        .is_err());
+    }
 
     fn run_git(current_dir: &Path, arguments: &[&str]) {
         let status = Command::new("git")

@@ -29,6 +29,7 @@ pub enum SyncJournalPhase {
     Preparing,
     Capturing,
     Captured,
+    BackingUp,
     Fetching,
     Fetched,
     Merging,
@@ -48,6 +49,7 @@ impl SyncJournalPhase {
             Self::Preparing
                 | Self::Capturing
                 | Self::Captured
+                | Self::BackingUp
                 | Self::Fetching
                 | Self::Fetched
                 | Self::Merging
@@ -440,6 +442,7 @@ mod tests {
             SyncJournalPhase::Preparing,
             SyncJournalPhase::Capturing,
             SyncJournalPhase::Captured,
+            SyncJournalPhase::BackingUp,
             SyncJournalPhase::Fetching,
             SyncJournalPhase::Fetched,
             SyncJournalPhase::Merging,

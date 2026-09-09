@@ -2284,6 +2284,61 @@ fn parses_sync_commands() {
 }
 
 #[test]
+fn parses_sync_device_recovery_commands() {
+    let list = Cli::try_parse_from(["vulcan", "sync", "devices", "list", "--wiki", "mimir"])
+        .expect("device list should parse");
+    assert!(matches!(
+        list.command,
+        Command::Sync {
+            command: SyncCommand::Devices {
+                command: SyncDeviceCommand::List {
+                    wiki: Some(ref wiki),
+                    ..
+                }
+            }
+        } if wiki == "mimir"
+    ));
+
+    let fetch = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "devices",
+        "fetch",
+        "01arz3ndektsv4rrffq69g5fav",
+        "--dry-run",
+    ])
+    .expect("device fetch should parse");
+    assert!(matches!(
+        fetch.command,
+        Command::Sync {
+            command: SyncCommand::Devices {
+                command: SyncDeviceCommand::Fetch { dry_run: true, .. }
+            }
+        }
+    ));
+
+    let remove = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "devices",
+        "remove",
+        "01arz3ndektsv4rrffq69g5fav",
+        "--wiki",
+        "mimir",
+        "--dry-run",
+    ])
+    .expect("device removal should parse");
+    assert!(matches!(
+        remove.command,
+        Command::Sync {
+            command: SyncCommand::Devices {
+                command: SyncDeviceCommand::Remove { dry_run: true, .. }
+            }
+        }
+    ));
+}
+
+#[test]
 fn parses_termux_sync_scheduler_commands() {
     let termux = Cli::try_parse_from([
         "vulcan",

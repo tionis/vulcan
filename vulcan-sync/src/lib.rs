@@ -59,9 +59,10 @@ pub use platform::{
 };
 pub use refs::{
     checkpoint_ref, conflict_proposal_resolution_ref, conflict_recovery_ref, conflict_ref,
-    conflict_resolved_ref, detached_recovery_ref, local_epoch_ref, local_recovery_ref_namespaces,
-    local_sync_ref, remote_epoch_ref, semantic_proposal_ref, sync_profile_key,
-    DEFAULT_REMOTE_LIVE_REF, LOCAL_RECOVERY_REF_NAMESPACES, LOCAL_VULCAN_REF_ROOT,
+    conflict_resolved_ref, detached_recovery_ref, device_recovery_live_ref, device_recovery_ref,
+    local_epoch_ref, local_recovery_ref_namespaces, local_sync_ref, remote_device_ref,
+    remote_epoch_ref, semantic_proposal_ref, sync_profile_key, DEFAULT_REMOTE_LIVE_REF,
+    LOCAL_RECOVERY_REF_NAMESPACES, LOCAL_VULCAN_REF_ROOT, REMOTE_DEVICE_BRANCH_ROOT,
     REMOTE_EPOCH_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
 };
 pub use sync::{
@@ -69,9 +70,10 @@ pub use sync::{
     sync_git_once_with_control, GitAutomaticMergeValidation, GitAutomaticResolution,
     GitAutomaticResolutionValidation, GitAutomaticValidationCheck, GitBranchSync,
     GitBranchSyncAction, GitConflictClass, GitConflictClassification, GitConflictCopy,
-    GitConflictMaterialization, GitConflictRefs, GitConflictScope, GitLiveEpoch,
-    GitRemoteObservation, GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId,
-    GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    GitConflictMaterialization, GitConflictRefs, GitConflictScope, GitDeviceBackup,
+    GitDeviceBackupOutcome, GitLiveEpoch, GitRemoteObservation, GitSyncAction, GitSyncBackend,
+    GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError,
+    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview,
+    GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress,
+    SyncCancellationToken,
 };

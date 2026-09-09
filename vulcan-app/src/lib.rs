@@ -51,6 +51,7 @@ pub mod site;
 pub mod sync;
 pub mod sync_checkpoints;
 pub mod sync_conflicts;
+pub mod sync_devices;
 pub mod sync_notifications;
 pub mod sync_proposals;
 pub mod sync_retention;
