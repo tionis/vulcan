@@ -169,6 +169,7 @@ impl SyncAlertTracker {
 // renderers on one host so release behavior does not drift unnoticed.
 #[allow(dead_code)]
 enum DesktopPlatform {
+    Android,
     Linux,
     MacOs,
     Windows,
@@ -184,6 +185,24 @@ fn desktop_command(platform: DesktopPlatform, alert: &SyncAlert) -> DesktopComma
     let title = alert.desktop_title().to_string();
     let body = alert.desktop_body();
     match platform {
+        DesktopPlatform::Android => DesktopCommand {
+            program: "termux-notification",
+            args: vec![
+                "--title".to_string(),
+                title,
+                "--content".to_string(),
+                body,
+                "--group".to_string(),
+                "vulcan-sync".to_string(),
+                "--priority".to_string(),
+                if alert.severity == AlertSeverity::Error {
+                    "high"
+                } else {
+                    "default"
+                }
+                .to_string(),
+            ],
+        },
         DesktopPlatform::Linux => DesktopCommand {
             program: "notify-send",
             args: vec![
@@ -231,19 +250,31 @@ fn desktop_command(platform: DesktopPlatform, alert: &SyncAlert) -> DesktopComma
 /// platform helper is reported to the operational log by the caller and never
 /// changes synchronization state.
 pub fn deliver_desktop(alert: &SyncAlert) -> io::Result<()> {
+    #[cfg(target_os = "android")]
+    let platform = DesktopPlatform::Android;
     #[cfg(target_os = "linux")]
     let platform = DesktopPlatform::Linux;
     #[cfg(target_os = "macos")]
     let platform = DesktopPlatform::MacOs;
     #[cfg(target_os = "windows")]
     let platform = DesktopPlatform::Windows;
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    )))]
     return Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "desktop notifications are unsupported on this platform",
     ));
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     {
         let plan = desktop_command(platform, alert);
         let mut child = Command::new(plan.program)
@@ -358,6 +389,7 @@ mod tests {
         let alert =
             SyncAlert::from_execution(&execution(SyncJobState::Conflicted, None)).expect("alert");
         for platform in [
+            DesktopPlatform::Android,
             DesktopPlatform::Linux,
             DesktopPlatform::MacOs,
             DesktopPlatform::Windows,
@@ -366,5 +398,30 @@ mod tests {
             assert!(!plan.program.contains("alpha"));
             assert!(plan.args.iter().any(|argument| argument.contains("alpha")));
         }
+    }
+
+    #[test]
+    fn termux_plan_uses_android_notification_helper() {
+        let alert = SyncAlert::from_execution(&execution(
+            SyncJobState::Failed,
+            Some(SyncError::new(SyncErrorCategory::Network, "offline", true)),
+        ))
+        .expect("alert");
+        let plan = desktop_command(DesktopPlatform::Android, &alert);
+
+        assert_eq!(plan.program, "termux-notification");
+        assert_eq!(
+            plan.args,
+            [
+                "--title",
+                "Vulcan sync failed",
+                "--content",
+                "Wiki `alpha` needs attention (network). Run `vulcan sync status alpha` for details.",
+                "--group",
+                "vulcan-sync",
+                "--priority",
+                "high",
+            ]
+        );
     }
 }

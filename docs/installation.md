@@ -55,6 +55,14 @@ See the [Git synchronization guide](guide/git-sync.md) before applying the clone
 optional Termux:API scheduler. Termux:API is not needed for one-shot `sync` commands. Android
 release candidates remain subject to the documented real-device certification gate.
 
+Scheduled, finite `vulcan sync run` jobs are the normal Termux setup because Android may stop a
+long-running background daemon. Install the Termux:API companion app and run `pkg install
+termux-api` before using the optional scheduler or native notifications. If a daemon is
+deliberately kept running, enabling
+`vulcan daemon config set-notifications --desktop true` delivers its sync-attention alerts through
+`termux-notification`. Delivery remains best-effort and requires the Termux:API companion app and
+`termux-api` package; a missing helper never changes the retained sync result.
+
 Building the full CLI from source in Termux requires Clang so `rquickjs` can generate the Android
 bindings. LLVM's SLP vectorizer is disabled because it has been observed to crash rustc during the
 large optimized `vulcan-core` build on AArch64:

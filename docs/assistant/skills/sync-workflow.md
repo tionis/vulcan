@@ -306,6 +306,10 @@ they commit.
   changes. The minimum interval is 15 minutes. These commands manage an existing job; create it
   with `sync termux-install` first. Saved settings do not prove Android still has the job queued;
   use `termux-job-scheduler --pending` to inspect Android's actual queue.
+- Prefer scheduled, finite sync runs over a long-running daemon on Termux. When a daemon is
+  deliberately kept running, `vulcan daemon config set-notifications --desktop true` uses
+  `termux-notification` for sync-attention alerts and requires the Termux:API companion app plus
+  the `termux-api` package. Notification failure does not change retained sync state.
 - Treat Android JobScheduler timing as approximate. Use the periodic job as an energy-efficient
   safety net; a shortcut or future save/resume bridge may invoke the same finite `sync run` for
   lower latency. A foreground or persistently supervised Termux daemon may use the same advertised

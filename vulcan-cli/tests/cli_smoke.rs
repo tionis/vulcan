@@ -14905,6 +14905,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan sync advertise --subscribe-url-file -"));
     assert!(sync_skill.contains("vulcan sync unadvertise"));
     assert!(sync_skill.contains("vulcan sync notifications"));
+    assert!(sync_skill.contains("termux-notification"));
     assert!(sync_skill.contains("vulcan sync devices list"));
     assert!(sync_skill.contains("vulcan sync devices fetch <device-id>"));
     assert!(sync_skill.contains("vulcan sync devices remove <device-id> --dry-run"));
