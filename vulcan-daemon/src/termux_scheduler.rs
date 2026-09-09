@@ -226,7 +226,8 @@ pub fn plan_termux_sync(
     let directory = state_root.join("termux-sync");
     let script_path = directory.join(format!("{wiki_id}.sh"));
     let manifest_path = directory.join(format!("{wiki_id}.json"));
-    let script = (action == TermuxSyncAction::Install).then(|| render_script(executable, wiki_id));
+    let script =
+        (action == TermuxSyncAction::Install).then(|| render_script(executable, wiki_id, job_id));
     let scheduler_arguments = match action {
         TermuxSyncAction::Install => vec![
             "--script".to_string(),
@@ -434,11 +435,17 @@ fn remove_managed(path: &Path) -> Result<(), TermuxSyncError> {
     }
 }
 
-fn render_script(executable: &Path, wiki_id: &str) -> String {
+fn render_script(executable: &Path, wiki_id: &str, notification_id: u32) -> String {
     format!(
-        "#!/data/data/com.termux/files/usr/bin/sh\nset -eu\numask 077\nexec {} --output json sync run {}\n",
+        "#!/data/data/com.termux/files/usr/bin/sh\nset -u\numask 077\nif {} --output json sync run {}; then\n  termux-notification-remove {} >/dev/null 2>&1 || :\nelse\n  status=$?\n  termux-notification --id {} --group vulcan-sync --priority high --title {} --content {} >/dev/null 2>&1 || :\n  exit \"$status\"\nfi\n",
         shell_quote(&executable.to_string_lossy()),
-        shell_quote(wiki_id)
+        shell_quote(wiki_id),
+        notification_id,
+        notification_id,
+        shell_quote("Vulcan sync needs attention"),
+        shell_quote(&format!(
+            "Wiki `{wiki_id}` needs attention. Run `vulcan sync status {wiki_id}` for details."
+        )),
     )
 }
 
@@ -506,6 +513,11 @@ mod tests {
         let script = plan.script.expect("script");
         assert!(script.contains("vulcan'\\''s binary'"));
         assert!(script.contains("--output json sync run 'personal'"));
+        assert!(script.contains("termux-notification --id"));
+        assert!(script.contains("--group vulcan-sync --priority high"));
+        assert!(script.contains("termux-notification-remove"));
+        assert!(script.contains("exit \"$status\""));
+        assert!(!script.contains("eval"));
     }
 
     #[test]

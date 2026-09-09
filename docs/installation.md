@@ -57,8 +57,9 @@ release candidates remain subject to the documented real-device certification ga
 
 Scheduled, finite `vulcan sync run` jobs are the normal Termux setup because Android may stop a
 long-running background daemon. Install the Termux:API companion app and run `pkg install
-termux-api` before using the optional scheduler or native notifications. If a daemon is
-deliberately kept running, enabling
+termux-api` before using the optional scheduler or native notifications. A managed scheduled job
+posts or replaces one high-priority notification when its finite sync run reports an issue, and a
+later successful run removes it. If a daemon is deliberately kept running, enabling
 `vulcan daemon config set-notifications --desktop true` delivers its sync-attention alerts through
 `termux-notification`. Delivery remains best-effort and requires the Termux:API companion app and
 `termux-api` package; a missing helper never changes the retained sync result.

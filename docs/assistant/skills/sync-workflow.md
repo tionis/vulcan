@@ -307,7 +307,9 @@ they commit.
   with `sync termux-install` first. Saved settings do not prove Android still has the job queued;
   use `termux-job-scheduler --pending` to inspect Android's actual queue.
 - Prefer scheduled, finite sync runs over a long-running daemon on Termux. When a daemon is
-  deliberately kept running, `vulcan daemon config set-notifications --desktop true` uses
+  installed through `sync termux-install`, a run that reports an issue posts or replaces one
+  high-priority `termux-notification`; a later successful run removes it. When a daemon is
+  deliberately kept running, `vulcan daemon config set-notifications --desktop true` also uses
   `termux-notification` for sync-attention alerts and requires the Termux:API companion app plus
   the `termux-api` package. Notification failure does not change retained sync state.
 - Treat Android JobScheduler timing as approximate. Use the periodic job as an energy-efficient
