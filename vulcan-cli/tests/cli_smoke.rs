@@ -4947,11 +4947,64 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         .success()
         .stdout(
             predicate::str::contains(
-                "Registered sync preview wiki:a-writer: 1 inspected, 0 inspection failures (no changes applied)",
+                "Registered sync preview wiki:a-writer: 1 clear, 0 with unresolved conflicts, 0 incomplete, 0 inspection failures (no changes applied)",
             )
             .and(predicate::str::contains("file lane appears up to date"))
             .and(predicate::str::contains("\tPlanned\t").not()),
         );
+}
+
+#[test]
+fn registered_sync_status_surfaces_retained_unresolved_conflicts() {
+    let (temporary, state_home, reader, _conflict_id) = setup_cli_sync_conflict();
+    let config_home = temporary.path().join("config");
+    let command = || {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home);
+        command
+    };
+    command()
+        .args([
+            "vault",
+            "add",
+            "reader",
+            reader.to_str().expect("reader path"),
+        ])
+        .assert()
+        .success();
+
+    command()
+        .args(["sync", "status", "reader"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "0 clear, 1 with unresolved conflicts",
+        ))
+        .stdout(predicate::str::contains(
+            "1 unresolved retained conflict(s)",
+        ))
+        .stdout(predicate::str::contains(
+            "vulcan sync conflicts --wiki reader",
+        ));
+
+    let json = command()
+        .args(["--output", "json", "sync", "status", "reader"])
+        .output()
+        .expect("JSON status");
+    assert!(!json.status.success());
+    let reports = String::from_utf8(json.stdout)
+        .expect("JSON output")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSON line"))
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 2, "report and issue error should be emitted");
+    let report = &reports[0];
+    assert_eq!(report["conflicted"], 1);
+    assert_eq!(report["incomplete"], 0);
+    assert_eq!(report["items"][0]["retained_conflicts"], 1);
+    assert_eq!(reports[1]["code"], "issues_detected");
 }
 
 fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf, String) {

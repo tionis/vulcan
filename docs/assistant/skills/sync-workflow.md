@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 20
+version: 21
 metadata:
   vulcan:
     managed: true
@@ -48,7 +48,10 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    `local_and_remote_differ`, `local_missing`, `remote_missing`, or `uninitialized` by comparing
    observed refs and the worktree with its last local snapshot. It does not fetch, merge, apply, or
    detect whether differing trees conflict; use `--output json` for `preview.file_state`, observed
-   refs, and branch detail.
+   refs, and branch detail. Registered previews also inspect durable conflict records. An up-to-date
+   file lane can coexist with unresolved retained conflicts, which remain an attention state until
+   reviewed through `vulcan sync conflicts --wiki <id>`; an unavailable conflict count makes the
+   inspection incomplete instead of implying zero.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
 3. Preview a finite transaction with `vulcan sync run [<wiki>] --dry-run`; apply it by omitting

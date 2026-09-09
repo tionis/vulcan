@@ -13,6 +13,7 @@ use vulcan_app::sync::{
     GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
     VaultSyncReport,
 };
+use vulcan_app::sync_conflicts::list_sync_conflicts;
 use vulcan_app::sync_state::{same_work_tree, SyncStateStore};
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
@@ -514,6 +515,10 @@ pub struct RegisteredSyncItemReport {
     pub report: Option<VaultSyncReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_conflicts: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_conflicts_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -523,6 +528,7 @@ pub struct RegisteredSyncReport {
     pub total: usize,
     pub succeeded: usize,
     pub conflicted: usize,
+    pub incomplete: usize,
     pub failed: usize,
     pub items: Vec<RegisteredSyncItemReport>,
 }
@@ -607,16 +613,34 @@ pub fn sync_registered_wikis(
             item.report
                 .as_ref()
                 .is_some_and(|report| report.sync.outcome == GitSyncOutcome::Conflicted)
+                || item.retained_conflicts.is_some_and(|count| count > 0)
         })
+        .count();
+    let incomplete = items
+        .iter()
+        .filter(|item| item.retained_conflicts_error.is_some())
         .count();
     let failed = items.iter().filter(|item| item.error.is_some()).count();
     let total = items.len();
+    let succeeded = items
+        .iter()
+        .filter(|item| {
+            item.error.is_none()
+                && item.retained_conflicts_error.is_none()
+                && item.retained_conflicts.is_none_or(|count| count == 0)
+                && item
+                    .report
+                    .as_ref()
+                    .is_none_or(|report| report.sync.outcome != GitSyncOutcome::Conflicted)
+        })
+        .count();
     Ok(RegisteredSyncReport {
         selection: selection_label(selection),
         dry_run: options.dry_run,
         total,
-        succeeded: total - failed - conflicted,
+        succeeded,
         conflicted,
+        incomplete,
         failed,
         items,
     })
@@ -680,17 +704,27 @@ fn sync_registration(
             }
         });
     match result {
-        Ok(report) => RegisteredSyncItemReport {
-            wiki_id: wiki.id.clone(),
-            path: wiki.path.clone(),
-            report: Some(report),
-            error: None,
-        },
+        Ok(report) => {
+            let (retained_conflicts, retained_conflicts_error) = match list_sync_conflicts(&paths) {
+                Ok(conflicts) => (Some(conflicts.count), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            RegisteredSyncItemReport {
+                wiki_id: wiki.id.clone(),
+                path: wiki.path.clone(),
+                report: Some(report),
+                error: None,
+                retained_conflicts,
+                retained_conflicts_error,
+            }
+        }
         Err(error) => RegisteredSyncItemReport {
             wiki_id: wiki.id.clone(),
             path: wiki.path.clone(),
             report: None,
             error: Some(error),
+            retained_conflicts: None,
+            retained_conflicts_error: None,
         },
     }
 }

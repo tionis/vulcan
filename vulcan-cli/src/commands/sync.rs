@@ -114,10 +114,10 @@ pub(crate) fn handle_sync_command(
             sync_registered_wikis(&registry, &selection, &options, cli.permissions.as_deref())
                 .map_err(CliError::operation)?;
         print_registered_sync_report(cli.output, &report)?;
-        if report.failed > 0 || report.conflicted > 0 {
+        if report.failed > 0 || report.conflicted > 0 || report.incomplete > 0 {
             return Err(CliError::issues(format!(
-                "{} registered sync operation(s) failed and {} remain conflicted",
-                report.failed, report.conflicted
+                "{} registered sync operation(s) failed, {} remain conflicted, and {} inspections were incomplete",
+                report.failed, report.conflicted, report.incomplete
             )));
         }
         return Ok(());
@@ -2601,13 +2601,17 @@ fn print_registered_sync_report(
     }
     if report.dry_run {
         println!(
-            "Registered sync preview {}: {} inspected, {} inspection failures (no changes applied)",
-            report.selection, report.succeeded, report.failed
+            "Registered sync preview {}: {} clear, {} with unresolved conflicts, {} incomplete, {} inspection failures (no changes applied)",
+            report.selection,
+            report.succeeded,
+            report.conflicted,
+            report.incomplete,
+            report.failed
         );
     } else {
         println!(
-            "Registered sync {}: {} succeeded, {} conflicted, {} failed",
-            report.selection, report.succeeded, report.conflicted, report.failed
+            "Registered sync {}: {} succeeded, {} conflicted, {} incomplete, {} failed",
+            report.selection, report.succeeded, report.conflicted, report.incomplete, report.failed
         );
     }
     for item in &report.items {
@@ -2617,7 +2621,30 @@ fn print_registered_sync_report(
             } else {
                 format!("{:?}", sync.sync.outcome)
             };
-            println!("{}\t{}\t{}", item.wiki_id, outcome, item.path.display());
+            let retained = item.retained_conflicts.map_or_else(String::new, |count| {
+                if count == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "; {count} unresolved retained conflict(s) (review with `vulcan sync conflicts --wiki {}`)",
+                        item.wiki_id
+                    )
+                }
+            });
+            let incomplete = item
+                .retained_conflicts_error
+                .as_deref()
+                .map_or_else(String::new, |error| {
+                    format!("; retained conflict status unavailable: {error}")
+                });
+            println!(
+                "{}\t{}{}{}\t{}",
+                item.wiki_id,
+                outcome,
+                retained,
+                incomplete,
+                item.path.display()
+            );
         } else if let Some(error) = &item.error {
             println!("{}\terror\t{}: {error}", item.wiki_id, item.path.display());
         }
