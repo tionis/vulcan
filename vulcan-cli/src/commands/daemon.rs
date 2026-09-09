@@ -597,6 +597,14 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
             runtime.pid,
             status.registered_wikis.len()
         );
+    } else if let Some(runtime) = &status.runtime {
+        println!(
+            "Vulcan daemon runtime exists on {} (pid {}) but did not answer the authenticated capability probe",
+            runtime.bind, runtime.pid
+        );
+        if let Some(error) = &status.capability_probe_error {
+            println!("Probe error: {error}");
+        }
     } else {
         println!("Vulcan daemon is stopped");
     }

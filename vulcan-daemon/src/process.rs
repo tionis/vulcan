@@ -67,6 +67,8 @@ pub struct DaemonStatusReport {
     pub version: u32,
     pub running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability_probe_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<DaemonRuntimeRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime_ms: Option<u64>,
@@ -696,12 +698,16 @@ pub fn daemon_status(
             }
         })
         .collect();
-    let running = runtime.as_ref().is_some_and(|record| {
-        authenticated_request(context, record, "GET", "/capabilities").is_ok()
+    let (running, capability_probe_error) = runtime.as_ref().map_or((false, None), |record| {
+        match authenticated_request(context, record, "GET", "/capabilities") {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        }
     });
     Ok(DaemonStatusReport {
         version: DAEMON_RUNTIME_VERSION,
         running,
+        capability_probe_error,
         uptime_ms: running.then(|| {
             runtime
                 .as_ref()
@@ -1305,5 +1311,37 @@ mod tests {
             let error = read_runtime_record(&link).expect_err("symlink must fail");
             assert!(error.to_string().contains("bounded regular file"));
         }
+    }
+
+    #[test]
+    fn status_distinguishes_an_unresponsive_runtime_from_a_stopped_daemon() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let context = DaemonProcessContext {
+            registry: WikiRegistry::at(temporary.path().join("daemon.toml")),
+            state_root: temporary.path().join("state"),
+            verbose: false,
+        };
+        let credential = CompanionCredentialStore::at(&context.state_root)
+            .load_or_create(vec!["app://obsidian.md".to_string()])
+            .expect("companion credential");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("temporary listener");
+        let bind = listener.local_addr().expect("listener address");
+        drop(listener);
+        write_runtime_record(
+            &context.runtime_path(),
+            &DaemonRuntimeRecord {
+                version: DAEMON_RUNTIME_VERSION,
+                pid: std::process::id(),
+                bind,
+                started_unix_ms: unix_time_ms().expect("current time"),
+                credential_id: credential.id,
+            },
+        )
+        .expect("runtime record");
+
+        let status = daemon_status(&context).expect("daemon status");
+        assert!(!status.running);
+        assert!(status.runtime.is_some());
+        assert!(status.capability_probe_error.is_some());
     }
 }
