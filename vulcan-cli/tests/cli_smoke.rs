@@ -7665,6 +7665,7 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
     let running = successful_process_json(&daemon(&["status"]));
     assert_eq!(running["running"], true);
     assert_eq!(running["registered_wikis"], serde_json::json!([]));
+    assert_eq!(running["wiki_statuses"], serde_json::json!([]));
     assert!(running["uptime_ms"].as_u64().is_some());
 
     let redacted = successful_process_json(&daemon(&["companion"]));
@@ -7691,6 +7692,44 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
     assert!(!companion.status.success());
     assert!(String::from_utf8_lossy(&companion.stdout)
         .contains("daemon must be running to provision a companion client"));
+}
+
+#[test]
+fn daemon_status_human_output_explains_each_registered_wiki() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let wiki = temporary.path().join("personal");
+    fs::create_dir_all(&wiki).expect("wiki directory");
+    let initialized = ProcessCommand::new("git")
+        .current_dir(&wiki)
+        .args(["init", "--quiet"])
+        .status()
+        .expect("initialize Git repository");
+    assert!(initialized.success());
+
+    cargo_vulcan_with_xdg_config(config_home.to_str().expect("config path"))
+        .args([
+            "vault",
+            "add",
+            "personal",
+            wiki.to_str().expect("wiki path"),
+        ])
+        .assert()
+        .success();
+
+    cargo_vulcan_with_xdg_config(config_home.to_str().expect("config path"))
+        .args(["daemon", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Vulcan daemon is stopped"))
+        .stdout(predicate::str::contains("Registered wikis:\n  personal"))
+        .stdout(predicate::str::contains(
+            "Last daemon attempt: never attempted by this daemon",
+        ))
+        .stdout(predicate::str::contains(
+            "Notifications: no server discovered on this device",
+        ))
+        .stdout(predicate::str::contains(wiki.to_str().expect("wiki path")));
 }
 
 #[test]

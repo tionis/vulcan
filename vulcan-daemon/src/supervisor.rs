@@ -249,6 +249,21 @@ impl SyncSupervisor {
         })
     }
 
+    /// Opens the durable ledger for status inspection without recovering or
+    /// re-queueing jobs owned by a running daemon process.
+    pub fn inspect_at(state_path: impl Into<PathBuf>) -> Result<Self, SupervisorError> {
+        let state_path = state_path.into();
+        let state = load_state(&state_path)?;
+        Ok(Self {
+            state_path,
+            inner: Mutex::new(SupervisorInner {
+                state,
+                queue: VecDeque::new(),
+                cancellations: BTreeMap::new(),
+            }),
+        })
+    }
+
     pub fn enqueue(
         &self,
         wiki_id: impl Into<String>,
@@ -1105,6 +1120,29 @@ mod tests {
             .expect("recovered job");
         assert_eq!(running.job.job.id, recovered.job.job.id);
         assert!(recovered.job.triggers.contains(&SyncJobTrigger::Recovery));
+    }
+
+    #[test]
+    fn status_inspection_preserves_running_jobs_without_recovery_mutation() {
+        let temporary = tempdir().expect("temporary directory");
+        let state_path = temporary.path().join("jobs.json");
+        let supervisor = SyncSupervisor::at(&state_path).expect("supervisor");
+        supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Watch)
+            .expect("enqueue");
+        let running = supervisor.claim_next().expect("claim").expect("job");
+
+        let inspected = SyncSupervisor::inspect_at(&state_path).expect("inspect");
+        let jobs = inspected.list().expect("inspect jobs");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job.id, running.job.job.id);
+        assert_eq!(jobs[0].job.state, SyncJobState::Running);
+        assert!(!jobs[0].triggers.contains(&SyncJobTrigger::Recovery));
+
+        let inspected_again = SyncSupervisor::inspect_at(&state_path).expect("inspect again");
+        let jobs = inspected_again.list().expect("inspect jobs again");
+        assert_eq!(jobs[0].job.state, SyncJobState::Running);
+        assert!(!jobs[0].triggers.contains(&SyncJobTrigger::Recovery));
     }
 
     #[test]

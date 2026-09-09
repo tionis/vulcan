@@ -20,6 +20,7 @@ use crate::runtime::{
 };
 use crate::semantic_worker::spawn_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
+use crate::status::{wiki_sync_status, DaemonWikiSyncStatus};
 use crate::supervisor::{SupervisorError, SyncSupervisor};
 use crate::sync::{
     execute_next_sync_job_with_state_store_and_engine, format_branch_diagnostic,
@@ -42,6 +43,7 @@ use tempfile::NamedTempFile;
 use tokio::net::TcpListener;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
+use vulcan_sync::{cached_notification_advertisement, GitCliEngine, GitEngine};
 use vulcan_sync::{GitBranchSync, SyncErrorCategory, SyncJobState, SyncJobTrigger};
 
 pub const DAEMON_RUNTIME_VERSION: u32 = 1;
@@ -69,8 +71,40 @@ pub struct DaemonStatusReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime_ms: Option<u64>,
     pub registered_wikis: Vec<WikiRegistrationStatus>,
+    pub wiki_statuses: Vec<DaemonWikiOperationalStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<DaemonServiceDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonNotificationDiscoveryState {
+    Discovered,
+    NotDiscovered,
+    Disabled,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DaemonNotificationDiscoveryStatus {
+    pub state: DaemonNotificationDiscoveryState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DaemonWikiOperationalStatus {
+    pub wiki_id: String,
+    pub path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<DaemonWikiSyncStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_error: Option<String>,
+    pub notification: DaemonNotificationDiscoveryStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -638,6 +672,30 @@ pub fn daemon_status(
 ) -> Result<DaemonStatusReport, DaemonProcessError> {
     let runtime = read_runtime_record(&context.runtime_path())?;
     let registered_wikis = context.registry.list(None)?;
+    let state_store = SyncStateStore::at(context.state_root.join("sync/repositories"));
+    let supervisor = SyncSupervisor::inspect_at(state_store.root().join("daemon/jobs.json"))?;
+    let wiki_statuses = registered_wikis
+        .iter()
+        .map(|wiki| {
+            let sync = wiki_sync_status(
+                &context.registry,
+                &supervisor,
+                &state_store,
+                &wiki.registration.id,
+            );
+            let (sync, sync_error) = match sync {
+                Ok(status) => (Some(status), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            DaemonWikiOperationalStatus {
+                wiki_id: wiki.registration.id.as_str().to_string(),
+                path: wiki.registration.path.clone(),
+                sync,
+                sync_error,
+                notification: cached_notification_status(wiki),
+            }
+        })
+        .collect();
     let running = runtime.as_ref().is_some_and(|record| {
         authenticated_request(context, record, "GET", "/capabilities").is_ok()
     });
@@ -656,8 +714,41 @@ pub fn daemon_status(
         }),
         runtime,
         registered_wikis,
+        wiki_statuses,
         service: None,
     })
+}
+
+fn cached_notification_status(wiki: &WikiRegistrationStatus) -> DaemonNotificationDiscoveryStatus {
+    let empty = |state| DaemonNotificationDiscoveryStatus {
+        state,
+        origin: None,
+        fingerprint: None,
+        revision: None,
+    };
+    if wiki.registration.sync_paused
+        || wiki
+            .registration
+            .sync_backend
+            .as_deref()
+            .is_some_and(|backend| backend != "git")
+    {
+        return empty(DaemonNotificationDiscoveryState::Disabled);
+    }
+    let engine = GitCliEngine::default();
+    let Ok(repository) = engine.discover_repository(&wiki.registration.path) else {
+        return empty(DaemonNotificationDiscoveryState::Unavailable);
+    };
+    match cached_notification_advertisement(&engine, &repository) {
+        Ok(Some(discovered)) => DaemonNotificationDiscoveryStatus {
+            state: DaemonNotificationDiscoveryState::Discovered,
+            origin: Some(discovered.advertisement.endpoint.origin().to_string()),
+            fingerprint: Some(discovered.advertisement.endpoint.fingerprint().to_string()),
+            revision: Some(discovered.revision.to_string()),
+        },
+        Ok(None) => empty(DaemonNotificationDiscoveryState::NotDiscovered),
+        Err(_) => empty(DaemonNotificationDiscoveryState::Unavailable),
+    }
 }
 
 pub fn request_daemon_shutdown(
@@ -863,6 +954,21 @@ mod tests {
             }],
             ..DaemonConfig::default()
         }
+    }
+
+    fn assert_daemon_sync_attempted(context: &DaemonProcessContext) {
+        let status = daemon_status(context).expect("synchronized daemon status");
+        let wiki_status = status.wiki_statuses.first().expect("per-wiki status");
+        assert!(wiki_status
+            .sync
+            .as_ref()
+            .expect("sync status")
+            .last_attempt_unix_ms
+            .is_some());
+        assert_eq!(
+            wiki_status.notification.state,
+            DaemonNotificationDiscoveryState::NotDiscovered
+        );
     }
 
     #[test]
@@ -1099,6 +1205,7 @@ mod tests {
             })
             .expect("daemon becomes ready");
         assert_eq!(status.registered_wikis.len(), 1);
+        assert_eq!(status.wiki_statuses.len(), 1);
         assert!(status.uptime_ms.is_some());
         assert!(status
             .runtime
@@ -1124,6 +1231,7 @@ mod tests {
             }
         });
         assert!(synchronized, "startup reconciliation should sync the wiki");
+        assert_daemon_sync_attempted(&context);
 
         let stopped = request_daemon_shutdown(&context).expect("request shutdown");
         assert!(!stopped.running);

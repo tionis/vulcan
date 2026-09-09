@@ -46,11 +46,12 @@ pub use merge_policy::{
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
 };
 pub use notifications::{
-    preview_notification_advertisement, publish_notification_advertisement,
-    refresh_notification_advertisement, remove_notification_advertisement,
-    validate_notification_remote, DiscoveredNotificationAdvertisement, NotificationAdvertisement,
-    NotificationAdvertisementError, NotificationEndpoint, NotificationTransport,
-    NOTIFICATION_ADVERTISEMENT_FILE, NOTIFICATION_ADVERTISEMENT_REF, NOTIFICATION_REMOTE,
+    cached_notification_advertisement, preview_notification_advertisement,
+    publish_notification_advertisement, refresh_notification_advertisement,
+    remove_notification_advertisement, validate_notification_remote,
+    DiscoveredNotificationAdvertisement, NotificationAdvertisement, NotificationAdvertisementError,
+    NotificationEndpoint, NotificationTransport, NOTIFICATION_ADVERTISEMENT_FILE,
+    NOTIFICATION_ADVERTISEMENT_REF, NOTIFICATION_REMOTE,
 };
 pub use platform::{
     inspect_git_tree_platform, GitPlatformDiagnostic, GitPlatformDiagnosticSeverity,

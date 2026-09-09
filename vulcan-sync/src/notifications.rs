@@ -178,8 +178,29 @@ pub fn refresh_notification_advertisement(
             ));
         }
     }
+    read_notification_advertisement(engine, repository, remote_revision).map(Some)
+}
+
+/// Reads the advertisement most recently discovered by the daemon without
+/// contacting the remote or changing repository state.
+pub fn cached_notification_advertisement(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+) -> Result<Option<DiscoveredNotificationAdvertisement>, NotificationAdvertisementError> {
+    let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
+    engine
+        .read_ref(repository, &advertisement_ref)?
+        .map(|revision| read_notification_advertisement(engine, repository, revision))
+        .transpose()
+}
+
+fn read_notification_advertisement(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    revision: GitOid,
+) -> Result<DiscoveredNotificationAdvertisement, NotificationAdvertisementError> {
     let object = engine
-        .path_object(repository, &remote_revision, NOTIFICATION_ADVERTISEMENT_FILE)?
+        .path_object(repository, &revision, NOTIFICATION_ADVERTISEMENT_FILE)?
         .ok_or_else(|| {
             NotificationAdvertisementError::Invalid(format!(
                 "notification advertisement commit does not contain `{NOTIFICATION_ADVERTISEMENT_FILE}`"
@@ -195,10 +216,10 @@ pub fn refresh_notification_advertisement(
             "`{NOTIFICATION_ADVERTISEMENT_FILE}` has no readable content"
         ))
     })?;
-    Ok(Some(DiscoveredNotificationAdvertisement {
-        revision: remote_revision,
+    Ok(DiscoveredNotificationAdvertisement {
+        revision,
         advertisement: NotificationAdvertisement::parse(&bytes)?,
-    }))
+    })
 }
 
 fn is_loopback_host(host: &Host<&str>) -> bool {
@@ -483,6 +504,12 @@ mod tests {
             .expose_url()
             .as_str()
             .contains("first"));
+        assert_eq!(
+            cached_notification_advertisement(&engine, &repository)
+                .expect("read cached advertisement")
+                .expect("cached advertisement should exist"),
+            first
+        );
 
         write_advertisement(&repository_path, "second");
         run_git(&repository_path, &["commit", "-am", "rotate notifications"]);
@@ -518,6 +545,11 @@ mod tests {
         let reference = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF).expect("ref");
         assert_eq!(
             engine.read_ref(&repository, &reference).expect("read ref"),
+            None
+        );
+        assert_eq!(
+            cached_notification_advertisement(&engine, &repository)
+                .expect("read empty advertisement cache"),
             None
         );
     }

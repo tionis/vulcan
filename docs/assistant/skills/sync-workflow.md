@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 18
+version: 19
 metadata:
   vulcan:
     managed: true
@@ -26,8 +26,13 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   Direct commands never start a daemon implicitly.
 - For registered wikis, select one ID, `--group <name>`, or `--all`. Aggregate results are independent
   per-wiki transactions, not a cross-repository atomic commit.
-- Use `vulcan daemon status` before diagnosing automatic work. A stopped daemon does not prevent
-  direct `sync status`, `sync doctor`, or `sync run`.
+- Use `vulcan daemon status` before diagnosing automatic work. It reports each registered wiki's
+  reconstructed daemon state, latest daemon-supervised attempt, path, and locally cached
+  notification-advertisement discovery. It is an offline inspection: it does not fetch merely to
+  refresh notification discovery, and `not_discovered` means no advertisement has been cached on
+  this device yet rather than proving none exists remotely. A stopped daemon does not prevent
+  direct `sync status`, `sync doctor`, or `sync run`; direct runs do not enter the daemon job
+  ledger, so their time is not the daemon's `last_attempt_unix_ms`.
 - Use `vulcan sync pause [<wiki>] --dry-run` and then the same command without `--dry-run` only when
   the user wants to stop future automatic triggers. Manual direct operations remain available.
 

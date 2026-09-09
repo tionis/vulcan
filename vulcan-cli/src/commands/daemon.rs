@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::process::{
-    daemon_status, request_daemon_shutdown, run_daemon_foreground, DaemonProcessContext,
-    DaemonStatusReport,
+    daemon_status, request_daemon_shutdown, run_daemon_foreground,
+    DaemonNotificationDiscoveryState, DaemonProcessContext, DaemonStatusReport,
 };
 use vulcan_daemon::registry::{
     DaemonAgentConfig, DaemonAgentKind, DaemonCommandNotificationConfig, DaemonConfig,
@@ -25,6 +25,7 @@ use vulcan_daemon::service::{
     apply_daemon_service, inspect_daemon_service, plan_daemon_service, DaemonServiceAction,
     DaemonServicePlan, DaemonServicePlatform, DaemonServiceReport,
 };
+use vulcan_daemon::status::{DaemonSyncStatusSource, SyncState};
 
 #[derive(Debug, Serialize)]
 struct DaemonStartReport<'a> {
@@ -607,7 +608,104 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
             );
         }
     }
+    if status.wiki_statuses.is_empty() {
+        println!("Registered wikis: none");
+        return Ok(());
+    }
+    println!("Registered wikis:");
+    for wiki in &status.wiki_statuses {
+        let notification = match wiki.notification.state {
+            DaemonNotificationDiscoveryState::Discovered => format!(
+                "server cached from {}",
+                wiki.notification
+                    .origin
+                    .as_deref()
+                    .unwrap_or("redacted origin")
+            ),
+            DaemonNotificationDiscoveryState::NotDiscovered => {
+                "no server discovered on this device".to_string()
+            }
+            DaemonNotificationDiscoveryState::Disabled => "listener disabled".to_string(),
+            DaemonNotificationDiscoveryState::Unavailable => "discovery unavailable".to_string(),
+        };
+        println!("  {}", wiki.wiki_id);
+        println!("    Path: {}", wiki.path.display());
+        if let Some(sync) = &wiki.sync {
+            println!(
+                "    Sync: {} (source: {})",
+                sync_state_name(sync.status.state),
+                sync_status_source_name(sync.source)
+            );
+            let last_attempt = sync
+                .last_attempt_unix_ms
+                .map_or_else(|| "never attempted by this daemon".to_string(), format_age);
+            println!("    Last daemon attempt: {last_attempt}");
+            if sync.recovery_required {
+                println!("    Recovery required: yes");
+            }
+            if sync.status.unresolved_conflicts > 0 {
+                println!(
+                    "    Unresolved conflicts: {}",
+                    sync.status.unresolved_conflicts
+                );
+            }
+            if let Some(detail) = &sync.status.detail {
+                println!("    Detail: {detail}");
+            }
+        } else {
+            println!(
+                "    Sync: unavailable ({})",
+                wiki.sync_error.as_deref().unwrap_or("unknown error")
+            );
+        }
+        println!("    Notifications: {notification}");
+    }
     Ok(())
+}
+
+fn sync_state_name(state: SyncState) -> &'static str {
+    match state {
+        SyncState::Clean => "clean",
+        SyncState::Dirty => "dirty",
+        SyncState::CapturePending => "capture pending",
+        SyncState::Capturing => "capturing",
+        SyncState::CapturedUnpushed => "captured, not pushed",
+        SyncState::Fetching => "fetching",
+        SyncState::Fetched => "fetched",
+        SyncState::Merging => "merging",
+        SyncState::Pushing => "pushing",
+        SyncState::Applying => "applying",
+        SyncState::Conflicted => "conflicted",
+        SyncState::Paused => "paused",
+        SyncState::Offline => "offline",
+        SyncState::Error => "error",
+    }
+}
+
+fn sync_status_source_name(source: DaemonSyncStatusSource) -> &'static str {
+    match source {
+        DaemonSyncStatusSource::Job => "daemon job",
+        DaemonSyncStatusSource::Journal => "recovery journal",
+        DaemonSyncStatusSource::ApplyMarker => "apply marker",
+        DaemonSyncStatusSource::Conflict => "conflict records",
+        DaemonSyncStatusSource::Registration => "registration",
+        DaemonSyncStatusSource::Idle => "no retained activity",
+    }
+}
+
+fn format_age(timestamp_ms: u64) -> String {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(timestamp_ms);
+    let seconds = now_ms.saturating_sub(timestamp_ms) / 1_000;
+    match seconds {
+        0..=59 => format!("{seconds}s ago"),
+        60..=3_599 => format!("{}m ago", seconds / 60),
+        3_600..=86_399 => format!("{}h ago", seconds / 3_600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
 }
 
 /// Arguments for the detached daemon child. The global `--verbose` flag must
@@ -630,6 +728,22 @@ mod tests {
         assert_eq!(
             detached_child_args(true),
             ["--verbose", "daemon", "start", "--child"]
+        );
+    }
+
+    #[test]
+    fn daemon_sync_states_use_readable_human_names() {
+        assert_eq!(
+            sync_state_name(SyncState::CapturePending),
+            "capture pending"
+        );
+        assert_eq!(
+            sync_state_name(SyncState::CapturedUnpushed),
+            "captured, not pushed"
+        );
+        assert_eq!(
+            sync_status_source_name(DaemonSyncStatusSource::ApplyMarker),
+            "apply marker"
         );
     }
 }

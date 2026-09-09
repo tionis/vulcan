@@ -8,7 +8,8 @@ use std::fmt::{Display, Formatter};
 use vulcan_app::sync_conflicts::list_sync_conflicts_with_state_store;
 use vulcan_app::sync_state::{repository_state_key, SyncJournal, SyncJournalPhase, SyncStateStore};
 use vulcan_core::VaultPaths;
-use vulcan_sync::{SyncErrorCategory, SyncJobState, SyncJobTrigger, SyncState, SyncStatus};
+pub use vulcan_sync::SyncState;
+use vulcan_sync::{SyncErrorCategory, SyncJobState, SyncJobTrigger, SyncStatus};
 
 pub const DAEMON_SYNC_STATUS_VERSION: u32 = 1;
 
@@ -30,6 +31,8 @@ pub struct DaemonWikiSyncStatus {
     pub paused: bool,
     pub source: DaemonSyncStatusSource,
     pub recovery_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attempt_unix_ms: Option<u64>,
     #[serde(flatten)]
     pub status: SyncStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,7 +92,15 @@ pub fn wiki_sync_status(
         .into_iter()
         .find(|registration| &registration.id == wiki_id)
         .ok_or_else(|| RegistryError::UnknownWiki(wiki_id.clone()))?;
-    reconstruct_sync_status(&registration, supervisor, state_store)
+    let mut report = reconstruct_sync_status(&registration, supervisor, state_store)?;
+    report.last_attempt_unix_ms = supervisor
+        .list()?
+        .iter()
+        .rev()
+        .find(|job| job.job.wiki_id.as_deref() == Some(wiki_id.as_str()))
+        .and_then(|job| ulid::Ulid::from_string(&job.job.id).ok())
+        .map(|id| id.timestamp_ms());
+    Ok(report)
 }
 
 fn reconstruct_sync_status(
@@ -184,6 +195,7 @@ fn report_from_active_job(
         paused: registration.sync_paused,
         source: DaemonSyncStatusSource::Job,
         recovery_required: job.triggers.contains(&SyncJobTrigger::Recovery),
+        last_attempt_unix_ms: None,
         status,
         transaction_id: None,
         job: Some(job.clone()),
@@ -203,6 +215,7 @@ fn report_from_apply_marker(
             paused: registration.sync_paused,
             source: DaemonSyncStatusSource::ApplyMarker,
             recovery_required: true,
+            last_attempt_unix_ms: None,
             status: SyncStatus {
                 state: SyncState::Applying,
                 backend: "git".to_string(),
@@ -223,6 +236,7 @@ fn report_from_apply_marker(
             paused: registration.sync_paused,
             source: DaemonSyncStatusSource::ApplyMarker,
             recovery_required: true,
+            last_attempt_unix_ms: None,
             status: SyncStatus {
                 state: SyncState::Error,
                 backend: "git".to_string(),
@@ -266,6 +280,7 @@ fn report_from_journal(
         paused: registration.sync_paused,
         source: DaemonSyncStatusSource::Journal,
         recovery_required: journal.error.is_some() || journal.phase.requires_recovery(),
+        last_attempt_unix_ms: None,
         status: SyncStatus {
             state,
             backend: "git".to_string(),
@@ -313,6 +328,7 @@ fn report_from_terminal_job(
         paused: registration.sync_paused,
         source: DaemonSyncStatusSource::Job,
         recovery_required: job.job.error.as_ref().is_some_and(|error| error.retryable),
+        last_attempt_unix_ms: None,
         status,
         transaction_id: None,
         job: Some(job.clone()),
@@ -332,6 +348,7 @@ fn base_report(
         paused: registration.sync_paused,
         source,
         recovery_required: false,
+        last_attempt_unix_ms: None,
         status: SyncStatus {
             state,
             backend: "git".to_string(),
@@ -400,6 +417,7 @@ mod tests {
         assert_eq!(report.status.state, SyncState::Dirty);
         assert_eq!(report.source, DaemonSyncStatusSource::Job);
         assert!(report.job.is_some());
+        assert!(report.last_attempt_unix_ms.is_some());
     }
 
     #[test]
