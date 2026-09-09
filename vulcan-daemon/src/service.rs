@@ -272,7 +272,7 @@ pub fn apply_daemon_service(
                 ensure_directory(directory)?;
             }
             if let (Some(path), Some(definition)) = (&plan.definition_path, &plan.definition) {
-                write_definition(path, definition)?;
+                write_definition(path, definition, plan.platform)?;
             }
             run_commands(&plan.commands)?;
             true
@@ -309,7 +309,7 @@ pub fn inspect_daemon_service(
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(DaemonServiceError::UnsafeDefinitionPath(path.clone()));
         }
-        Ok(metadata) if metadata.is_file() => Some(fs::read_to_string(path)?),
+        Ok(metadata) if metadata.is_file() => Some(read_definition(path, plan.platform)?),
         Ok(_) => return Err(DaemonServiceError::UnsafeDefinitionPath(path.clone())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
@@ -587,7 +587,7 @@ fn render_windows_task_xml(executable: &Path, user_sid: &str) -> String {
     let executable = xml_escape(&executable.to_string_lossy());
     let user_sid = xml_escape(user_sid);
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+        r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Vulcan multi-wiki synchronization daemon</Description>
@@ -631,7 +631,11 @@ fn render_windows_task_xml(executable: &Path, user_sid: &str) -> String {
     )
 }
 
-fn write_definition(path: &Path, contents: &str) -> Result<(), DaemonServiceError> {
+fn write_definition(
+    path: &Path,
+    contents: &str,
+    platform: DaemonServicePlatform,
+) -> Result<(), DaemonServiceError> {
     let parent = path
         .parent()
         .ok_or_else(|| DaemonServiceError::InvalidConfigDirectory(path.to_path_buf()))?;
@@ -640,12 +644,49 @@ fn write_definition(path: &Path, contents: &str) -> Result<(), DaemonServiceErro
         return Err(DaemonServiceError::UnsafeDefinitionPath(path.to_path_buf()));
     }
     let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary.write_all(contents.as_bytes())?;
+    if platform == DaemonServicePlatform::WindowsScheduledTask {
+        let mut encoded = Vec::with_capacity(2 + contents.len() * 2);
+        encoded.extend_from_slice(&[0xff, 0xfe]);
+        for code_unit in contents.encode_utf16() {
+            encoded.extend_from_slice(&code_unit.to_le_bytes());
+        }
+        temporary.write_all(&encoded)?;
+    } else {
+        temporary.write_all(contents.as_bytes())?;
+    }
     temporary.as_file().sync_all()?;
     temporary
         .persist(path)
         .map_err(|error| DaemonServiceError::Io(error.error))?;
     Ok(())
+}
+
+fn read_definition(
+    path: &Path,
+    platform: DaemonServicePlatform,
+) -> Result<String, DaemonServiceError> {
+    if platform != DaemonServicePlatform::WindowsScheduledTask {
+        return Ok(fs::read_to_string(path)?);
+    }
+    let bytes = fs::read(path)?;
+    if !bytes.starts_with(&[0xff, 0xfe]) || (bytes.len() - 2) % 2 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Windows daemon task definition is not BOM-prefixed UTF-16LE",
+        )
+        .into());
+    }
+    let code_units = bytes[2..]
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&code_units).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Windows daemon task definition is invalid UTF-16LE: {error}"),
+        )
+        .into()
+    })
 }
 
 fn ensure_directory(path: &Path) -> Result<(), DaemonServiceError> {
@@ -828,6 +869,35 @@ mod tests {
     }
 
     #[test]
+    fn windows_task_definition_is_written_as_bom_prefixed_utf16le() {
+        let temporary = tempdir().expect("temporary directory");
+        let path = temporary.path().join("daemon-task.xml");
+        let definition = render_windows_task_xml(
+            Path::new(r"C:\Users\alice\Vulcan & Tools\vulcan.exe"),
+            "S-1-5-21-111-222-333-1001",
+        );
+
+        write_definition(
+            &path,
+            &definition,
+            DaemonServicePlatform::WindowsScheduledTask,
+        )
+        .expect("write Windows task definition");
+
+        let bytes = fs::read(path).expect("read Windows task definition");
+        assert_eq!(&bytes[..2], &[0xff, 0xfe]);
+        assert_eq!((bytes.len() - 2) % 2, 0);
+        let decoded = read_definition(
+            &temporary.path().join("daemon-task.xml"),
+            DaemonServicePlatform::WindowsScheduledTask,
+        )
+        .expect("decode UTF-16LE definition");
+        assert_eq!(decoded, definition);
+        assert!(decoded.starts_with("<?xml version=\"1.0\" encoding=\"UTF-16\"?>"));
+        assert!(decoded.contains("Vulcan &amp; Tools"));
+    }
+
+    #[test]
     fn windows_uninstall_targets_only_the_current_users_task() {
         let temporary = tempdir().expect("temporary directory");
         let executable = temporary.path().join("vulcan.exe");
@@ -1006,8 +1076,12 @@ mod tests {
             Some("vulcan daemon install")
         );
 
-        write_definition(path, plan.definition.as_deref().expect("definition"))
-            .expect("write definition");
+        write_definition(
+            path,
+            plan.definition.as_deref().expect("definition"),
+            DaemonServicePlatform::LaunchdUser,
+        )
+        .expect("write definition");
         let current = inspect_daemon_service(&plan)
             .expect("current diagnostic")
             .expect("definition-backed service");
@@ -1024,7 +1098,8 @@ mod tests {
             &xml_escape(&executable.to_string_lossy()),
             "/missing/versioned/vulcan",
         );
-        write_definition(path, &stale_definition).expect("write stale definition");
+        write_definition(path, &stale_definition, DaemonServicePlatform::LaunchdUser)
+            .expect("write stale definition");
         let stale = inspect_daemon_service(&plan)
             .expect("stale diagnostic")
             .expect("definition-backed service");
@@ -1072,7 +1147,7 @@ mod tests {
         symlink(&target, &link).expect("symlink");
 
         assert!(matches!(
-            write_definition(&link, "replacement"),
+            write_definition(&link, "replacement", DaemonServicePlatform::SystemdUser),
             Err(DaemonServiceError::UnsafeDefinitionPath(path)) if path == link
         ));
         assert_eq!(fs::read_to_string(target).expect("target"), "unchanged");
