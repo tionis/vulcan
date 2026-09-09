@@ -11,8 +11,8 @@ use std::time::Duration;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault_with_progress, GitBranchSync,
     GitBranchSyncAction, GitPlatformProfile, GitRefName, GitRemote, GitSyncAction, GitSyncObserver,
-    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
-    GitSyncReport, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncPreviewFileState,
+    GitSyncProgress, GitSyncReport, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -2633,10 +2633,15 @@ fn print_sync_report(
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
-            println!(
-                "{}",
+            let outcome = if report.sync.dry_run {
+                format!(
+                    "Sync preview: {} (no changes applied)",
+                    sync_preview_message(&report.sync)
+                )
+            } else {
                 sync_outcome_message(report.sync.outcome, report.sync.remote.as_str())
-            );
+            };
+            println!("{outcome}");
             if let Some(branch) = &report.sync.branch {
                 if let Some(line) = branch_lane_message(branch) {
                     println!("{line}");
@@ -2720,7 +2725,7 @@ fn print_sync_report(
 fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
     match outcome {
         GitSyncOutcome::Planned => {
-            format!("Sync preview: inspected {remote}; file reconciliation not run (no changes applied)")
+            format!("Sync preview: inspected {remote} (no changes applied)")
         }
         GitSyncOutcome::Paused => format!("Sync: paused before reconciling with {remote}"),
         GitSyncOutcome::UpToDate => format!("Sync: up to date with {remote}"),
@@ -2734,7 +2739,31 @@ fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
 
 fn sync_preview_message(report: &GitSyncReport) -> String {
     let branch = branch_preview_message(report.branch.as_ref());
-    format!("Preview complete ({branch}; file reconciliation not run)")
+    let files = report.preview.as_ref().map_or_else(
+        || "file state unavailable".to_string(),
+        |preview| match preview.file_state {
+            GitSyncPreviewFileState::UpToDate => "file lane appears up to date".to_string(),
+            GitSyncPreviewFileState::LocalChanges => {
+                "local files changed since the last sync snapshot".to_string()
+            }
+            GitSyncPreviewFileState::RemoteDiffers => {
+                "remote file lane differs; run sync to reconcile".to_string()
+            }
+            GitSyncPreviewFileState::LocalAndRemoteDiffer => {
+                "local files and remote file lane both differ; run sync to reconcile".to_string()
+            }
+            GitSyncPreviewFileState::LocalMissing => {
+                "local file snapshot is missing; run sync to initialize it".to_string()
+            }
+            GitSyncPreviewFileState::RemoteMissing => {
+                "remote file lane is missing; run sync to publish it".to_string()
+            }
+            GitSyncPreviewFileState::Uninitialized => {
+                "file lane is not initialized; run sync to initialize it".to_string()
+            }
+        },
+    );
+    format!("{branch}; {files}")
 }
 
 fn branch_preview_message(branch: Option<&GitBranchSync>) -> String {
@@ -2748,7 +2777,13 @@ fn branch_preview_message(branch: Option<&GitBranchSync>) -> String {
                 .unwrap_or(branch.branch.as_str());
             match branch.action {
                 GitBranchSyncAction::UpToDate => format!("branch {name} is up to date"),
-                GitBranchSyncAction::Planned => format!("branch {name} would pull"),
+                GitBranchSyncAction::Planned => format!(
+                    "branch {name}: {}",
+                    branch
+                        .detail
+                        .as_deref()
+                        .unwrap_or("changes would be required")
+                ),
                 GitBranchSyncAction::Skipped => format!("branch {name} was skipped"),
                 action => format!("branch {name} preview: {action:?}"),
             }
@@ -2827,7 +2862,7 @@ mod sync_report_tests {
     fn sync_outcome_messages_are_compact_and_human_readable() {
         assert_eq!(
             sync_outcome_message(GitSyncOutcome::Planned, "origin"),
-            "Sync preview: inspected origin; file reconciliation not run (no changes applied)"
+            "Sync preview: inspected origin (no changes applied)"
         );
         assert_eq!(
             sync_outcome_message(GitSyncOutcome::UpToDate, "origin"),

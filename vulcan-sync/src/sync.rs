@@ -132,6 +132,24 @@ pub enum GitSyncOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum GitSyncPreviewFileState {
+    UpToDate,
+    LocalChanges,
+    RemoteDiffers,
+    LocalAndRemoteDiffer,
+    LocalMissing,
+    RemoteMissing,
+    Uninitialized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitSyncPreview {
+    pub file_state: GitSyncPreviewFileState,
+    pub worktree_matches_local: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GitSyncAction {
     SnapshotCreated,
     Pushed,
@@ -476,6 +494,8 @@ pub struct GitSyncReport {
     pub application: Option<GitTreeApplyPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<GitBranchSync>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<GitSyncPreview>,
 }
 
 impl GitSyncReport {
@@ -513,6 +533,7 @@ impl GitSyncReport {
             pause: None,
             application: None,
             branch: None,
+            preview: None,
         }
     }
 }
@@ -892,6 +913,19 @@ pub fn sync_git_once_with_control(
                 false,
             )?);
         }
+        let worktree_matches_local = report
+            .local_before
+            .as_ref()
+            .map(|revision| engine.worktree_matches_tree(&report.repository, revision))
+            .transpose()?;
+        report.preview = Some(GitSyncPreview {
+            file_state: preview_file_state(
+                report.local_before.as_ref(),
+                report.remote_before.as_ref(),
+                worktree_matches_local,
+            ),
+            worktree_matches_local,
+        });
         preview_branch_pull(engine, &mut report)?;
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
@@ -925,6 +959,24 @@ pub fn sync_git_once_with_control(
     }
 
     Err(GitSyncError::RetryLimit { attempts })
+}
+
+fn preview_file_state(
+    local: Option<&GitOid>,
+    remote: Option<&GitOid>,
+    worktree_matches_local: Option<bool>,
+) -> GitSyncPreviewFileState {
+    match (local, remote, worktree_matches_local) {
+        (None, None, _) => GitSyncPreviewFileState::Uninitialized,
+        (None, Some(_), _) => GitSyncPreviewFileState::LocalMissing,
+        (Some(_), None, Some(true)) => GitSyncPreviewFileState::RemoteMissing,
+        (Some(local), Some(remote), Some(true)) if local == remote => {
+            GitSyncPreviewFileState::UpToDate
+        }
+        (Some(local), Some(remote), _) if local == remote => GitSyncPreviewFileState::LocalChanges,
+        (Some(_), Some(_), Some(true)) => GitSyncPreviewFileState::RemoteDiffers,
+        (Some(_), _, _) => GitSyncPreviewFileState::LocalAndRemoteDiffer,
+    }
 }
 
 fn require_git_version(installation: &GitInstallation) -> Result<(), GitSyncError> {
@@ -4580,6 +4632,13 @@ mod tests {
         let report = sync_git_once(&engine, &writer, &options).expect("plan should succeed");
 
         assert_eq!(report.outcome, GitSyncOutcome::Planned);
+        assert_eq!(
+            report.preview,
+            Some(GitSyncPreview {
+                file_state: GitSyncPreviewFileState::Uninitialized,
+                worktree_matches_local: None,
+            })
+        );
         assert_eq!(report.remote_before, None);
         assert_eq!(
             engine
@@ -4604,6 +4663,29 @@ mod tests {
         assert!(
             !platform_preflight_cache_path(&report.repository).exists(),
             "dry-run platform inspection must remain mutation-free"
+        );
+    }
+
+    #[test]
+    fn preview_file_state_distinguishes_clean_local_remote_and_diverged_state() {
+        let local = GitOid::parse("1111111111111111111111111111111111111111").expect("local oid");
+        let remote = GitOid::parse("2222222222222222222222222222222222222222").expect("remote oid");
+
+        assert_eq!(
+            preview_file_state(Some(&local), Some(&local), Some(true)),
+            GitSyncPreviewFileState::UpToDate
+        );
+        assert_eq!(
+            preview_file_state(Some(&local), Some(&local), Some(false)),
+            GitSyncPreviewFileState::LocalChanges
+        );
+        assert_eq!(
+            preview_file_state(Some(&local), Some(&remote), Some(true)),
+            GitSyncPreviewFileState::RemoteDiffers
+        );
+        assert_eq!(
+            preview_file_state(Some(&local), Some(&remote), Some(false)),
+            GitSyncPreviewFileState::LocalAndRemoteDiffer
         );
     }
 

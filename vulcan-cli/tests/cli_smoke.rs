@@ -4857,6 +4857,8 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let status_json = parse_stdout_json(&status);
     assert_eq!(status_json["outcome"], "planned");
     assert_eq!(status_json["actions"], serde_json::json!([]));
+    assert_eq!(status_json["preview"]["file_state"], "up_to_date");
+    assert_eq!(status_json["preview"]["worktree_matches_local"], true);
     assert!(status_json["state"].get("recovered_from").is_none());
 
     Command::cargo_bin("vulcan")
@@ -4871,10 +4873,10 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains(
-                "Sync preview: inspected origin; file reconciliation not run (no changes applied)",
-            )
-            .and(predicate::str::contains("Sync: planned").not()),
+            predicate::str::contains("Sync preview:")
+                .and(predicate::str::contains("file lane appears up to date"))
+                .and(predicate::str::contains("no changes applied"))
+                .and(predicate::str::contains("Sync: planned").not()),
         );
 
     let doctor = Command::cargo_bin("vulcan")
@@ -4947,8 +4949,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
             predicate::str::contains(
                 "Registered sync preview wiki:a-writer: 1 inspected, 0 inspection failures (no changes applied)",
             )
-            .and(predicate::str::contains("Preview complete ("))
-            .and(predicate::str::contains("file reconciliation not run"))
+            .and(predicate::str::contains("file lane appears up to date"))
             .and(predicate::str::contains("\tPlanned\t").not()),
         );
 }
@@ -14763,7 +14764,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("managed: true"));
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
     assert!(sync_skill.contains("read-only check completed, not that synchronization succeeded"));
-    assert!(sync_skill.contains("does not fetch, merge, apply, or otherwise reconcile"));
+    assert!(sync_skill.contains("does not fetch, merge, apply, or"));
+    assert!(sync_skill.contains("detect whether differing trees conflict"));
     assert!(sync_skill.contains("vulcan sync conflicts <conflict-id>"));
     assert!(sync_skill.contains("detached private Git directory"));
     assert!(sync_skill.contains("`android-shared` policy"));

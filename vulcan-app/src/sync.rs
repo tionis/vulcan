@@ -20,8 +20,8 @@ pub use vulcan_sync::{
     GitPlatformPreflight, GitPlatformProfile, GitRefName, GitRemote, GitRemoteObservation,
     GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction, GitSyncConflict,
     GitSyncDeviceId, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    SyncCancellationToken,
+    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreviewFileState, GitSyncProgress,
+    GitSyncRefs, GitSyncReport, SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

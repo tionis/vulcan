@@ -71,6 +71,6 @@ pub use sync::{
     GitConflictMaterialization, GitConflictRefs, GitConflictScope, GitLiveEpoch,
     GitRemoteObservation, GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId,
     GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    IgnoreGitSyncProgress, SyncCancellationToken,
+    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState,
+    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
 };
