@@ -14926,7 +14926,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("bound to the current user SID"));
     assert!(sync_skill.contains("needs no Administrator terminal or stored password"));
     assert!(sync_skill.contains("runs the registered task"));
-    assert!(sync_skill.contains("no long-running console remains visible"));
+    assert!(sync_skill.contains("Windows 11 24H2 or newer"));
+    assert!(sync_skill.contains("no transient or"));
+    assert!(sync_skill.contains("no separate launcher binary is needed"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
     assert!(sync_skill.contains("vulcan sync schedule show <wiki>"));

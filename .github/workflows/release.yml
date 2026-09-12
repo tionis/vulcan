@@ -176,6 +176,17 @@ jobs:
       - name: Build locked release binary
         run: cargo build --release --locked --target ${{ matrix.target }} -p vulcan-cli ${{ matrix.cargo_flags }}
 
+      - name: Verify Windows console-allocation manifest
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $binary = 'target/${{ matrix.target }}/release/vulcan.exe'
+          $manifest = Join-Path $env:RUNNER_TEMP 'vulcan.manifest'
+          mt.exe -nologo "-inputresource:$binary;#1" "-out:$manifest"
+          if ((Get-Content -Raw $manifest) -notmatch '<consoleAllocationPolicy[^>]*>detached</consoleAllocationPolicy>') {
+            throw 'The release binary does not embed the detached console-allocation policy.'
+          }
+
       - name: Verify Android architecture and QuickJS linkage
         if: matrix.target == 'aarch64-linux-android'
         shell: bash

@@ -21,6 +21,12 @@ if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
     $BaseUrl = "https://github.com/tionis/vulcan/releases/download/v$Version"
 }
 
+$minimumWindowsBuild = 26100
+$windowsBuild = [System.Environment]::OSVersion.Version.Build
+if ($windowsBuild -lt $minimumWindowsBuild) {
+    throw "Vulcan requires Windows 11 24H2 (build $minimumWindowsBuild) or later; this system is build $windowsBuild."
+}
+
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 switch ($architecture) {
     'X64' { $target = 'x86_64-pc-windows-msvc' }

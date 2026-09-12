@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 25
+version: 26
 metadata:
   vulcan:
     managed: true
@@ -224,7 +224,9 @@ they commit.
   macOS installs a restartable per-user LaunchAgent, and Windows installs a logon task whose trigger
   and least-privilege interactive-token principal are bound to the current user SID. Windows
   installation needs no Administrator terminal or stored password, runs the registered task
-  immediately, and uses detached start so no long-running console remains visible. Uninstall with
+  immediately, and uses detached start. On supported Windows 11 24H2 or newer releases, the single
+  `vulcan.exe` embeds the detached console-allocation policy, so the task creates no transient or
+  long-running terminal window; no separate launcher binary is needed. Uninstall with
   `vulcan daemon uninstall --dry-run` and then the reviewed mutation.
   Uninstalling the service does not remove registrations, credentials, journals, conflicts, or
   vault data.

@@ -19,6 +19,11 @@ The supported target names are:
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 
+The Windows target requires Windows 11 24H2 (build 26100) or later. Its single console-subsystem
+executable embeds the Windows detached console-allocation policy: commands launched from an existing
+terminal retain ordinary CLI output and blocking behavior, while launches by Task Scheduler do not
+allocate a transient terminal window.
+
 Place the executable in a stable path on `PATH`, such as `~/.local/bin/vulcan`. A stable path matters
 when a native daemon service refers to it across upgrades. Replace the executable atomically, then
 run `vulcan daemon install` again after an upgrade to refresh the native service definition.
@@ -207,8 +212,9 @@ Linux uses `systemd --user`, macOS uses a LaunchAgent in `~/Library/LaunchAgents
 a Task Scheduler logon task bound to the current user SID. The Windows task uses the current
 interactive token at least privilege, stores no password, and does not require an Administrator
 terminal. Installation starts it immediately through Task Scheduler; subsequent logons launch the
-daemon through its detached background path without leaving a terminal window open. To remove only
-the service projection:
+daemon through its detached background path. On the supported Windows 11 24H2 or newer baseline,
+the executable's console-allocation manifest prevents even a transient terminal window from being
+created. No second launcher executable is installed. To remove only the service projection:
 
 ```sh
 vulcan daemon uninstall --dry-run
