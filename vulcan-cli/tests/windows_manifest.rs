@@ -67,9 +67,11 @@ fn manifest_tool_discovery_selects_the_newest_installed_windows_sdk() {
 fn windows_binary_embeds_detached_console_allocation_manifest() {
     use std::process::Command;
 
-    let extracted = tempfile::NamedTempFile::new().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let extracted = directory.path().join("vulcan.manifest");
+    assert!(!extracted.exists());
     let input = format!("-inputresource:{};#1", env!("CARGO_BIN_EXE_vulcan"));
-    let output = format!("-out:{}", extracted.path().display());
+    let output = format!("-out:{}", extracted.display());
     let tool =
         find_manifest_tool().expect("mt.exe should be available from PATH or the Windows SDK");
     let result = Command::new(tool)
@@ -78,11 +80,12 @@ fn windows_binary_embeds_detached_console_allocation_manifest() {
         .unwrap();
     assert!(
         result.status.success(),
-        "mt.exe failed: {}",
+        "mt.exe failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
 
-    let manifest = fs::read_to_string(extracted.path()).unwrap();
+    let manifest = fs::read_to_string(extracted).unwrap();
     assert!(manifest.contains(
         "<consoleAllocationPolicy xmlns=\"http://schemas.microsoft.com/SMI/2024/WindowsSettings\">detached</consoleAllocationPolicy>"
     ));
