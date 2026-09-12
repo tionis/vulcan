@@ -539,17 +539,20 @@ fn plan_windows_task(
     let definition_argument = definition_path.to_string_lossy().into_owned();
     let definition = render_windows_task_xml(executable, user_sid);
     let commands = match action {
-        DaemonServiceAction::Install => vec![DaemonServiceCommand::new(
-            "schtasks.exe",
-            &[
-                "/Create",
-                "/TN",
-                &task_name,
-                "/XML",
-                &definition_argument,
-                "/F",
-            ],
-        )],
+        DaemonServiceAction::Install => vec![
+            DaemonServiceCommand::new(
+                "schtasks.exe",
+                &[
+                    "/Create",
+                    "/TN",
+                    &task_name,
+                    "/XML",
+                    &definition_argument,
+                    "/F",
+                ],
+            ),
+            DaemonServiceCommand::new("schtasks.exe", &["/Run", "/TN", &task_name]),
+        ],
         DaemonServiceAction::Uninstall => {
             vec![
                 DaemonServiceCommand::new("schtasks.exe", &["/Delete", "/TN", &task_name, "/F"])
@@ -623,7 +626,7 @@ fn render_windows_task_xml(executable: &Path, user_sid: &str) -> String {
   <Actions Context="CurrentUser">
     <Exec>
       <Command>{executable}</Command>
-      <Arguments>daemon start</Arguments>
+      <Arguments>daemon start --detach</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -818,7 +821,7 @@ mod tests {
         )
         .expect("Windows task plan");
 
-        assert_eq!(plan.commands.len(), 1);
+        assert_eq!(plan.commands.len(), 2);
         assert_eq!(plan.commands[0].program, "schtasks.exe");
         assert!(plan.commands[0]
             .arguments
@@ -839,8 +842,13 @@ mod tests {
         assert!(definition.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(definition.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(definition.contains("Vulcan Bin/vulcan.exe</Command>"));
-        assert!(definition.contains("<Arguments>daemon start</Arguments>"));
+        assert!(definition.contains("<Arguments>daemon start --detach</Arguments>"));
         assert!(!definition.contains("<Password>"));
+        assert_eq!(plan.commands[1].program, "schtasks.exe");
+        assert_eq!(
+            plan.commands[1].arguments,
+            ["/Run", "/TN", "Vulcan Daemon (S-1-5-21-111-222-333-1001)"]
+        );
     }
 
     #[test]

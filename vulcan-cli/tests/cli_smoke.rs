@@ -8060,7 +8060,7 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
         assert!(install["definition"].as_str().is_some_and(|definition| {
             definition.contains("<LogonType>InteractiveToken</LogonType>")
                 && definition.contains("<RunLevel>LeastPrivilege</RunLevel>")
-                && definition.contains("<Arguments>daemon start</Arguments>")
+                && definition.contains("<Arguments>daemon start --detach</Arguments>")
         }));
         assert_eq!(install["commands"][0]["program"], "schtasks.exe");
         let arguments = install["commands"][0]["arguments"]
@@ -8074,6 +8074,10 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
                     .as_str()
                     .is_some_and(|name| name.starts_with("Vulcan Daemon (S-1-"))
         }));
+        assert_eq!(install["commands"][1]["program"], "schtasks.exe");
+        assert!(install["commands"][1]["arguments"]
+            .as_array()
+            .is_some_and(|arguments| arguments.first() == Some(&serde_json::json!("/Run"))));
     }
     #[cfg(target_os = "macos")]
     {
@@ -14921,6 +14925,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("macOS installs a restartable per-user LaunchAgent"));
     assert!(sync_skill.contains("bound to the current user SID"));
     assert!(sync_skill.contains("needs no Administrator terminal or stored password"));
+    assert!(sync_skill.contains("runs the registered task"));
+    assert!(sync_skill.contains("no long-running console remains visible"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
     assert!(sync_skill.contains("vulcan sync schedule show <wiki>"));

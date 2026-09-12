@@ -206,7 +206,9 @@ vulcan daemon status
 Linux uses `systemd --user`, macOS uses a LaunchAgent in `~/Library/LaunchAgents`, and Windows uses
 a Task Scheduler logon task bound to the current user SID. The Windows task uses the current
 interactive token at least privilege, stores no password, and does not require an Administrator
-terminal. To remove only the service projection:
+terminal. Installation starts it immediately through Task Scheduler; subsequent logons launch the
+daemon through its detached background path without leaving a terminal window open. To remove only
+the service projection:
 
 ```sh
 vulcan daemon uninstall --dry-run
