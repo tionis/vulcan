@@ -435,6 +435,12 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 - [x] CLI JSON output snapshot tests for every command
 - [x] Doctor reports zero issues on clean, well-formed vaults
 
+### 6.7 Automated security scanning
+- [x] Keep advanced CodeQL configuration in the repository for Rust, Actions, Python, and JavaScript/TypeScript
+- [x] Run the broader `security-extended` query suite on pull requests, main-branch pushes, and a weekly schedule
+- [x] Pin scanner actions and test the checked-in workflow contract alongside supply-chain policy checks
+- [x] Triage the initial CodeQL backlog, remediate credential transport, and disposition proven false positives with audit comments
+
 ---
 
 ## Phase 7: Post-v1 workflow features

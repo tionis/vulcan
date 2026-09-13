@@ -18,6 +18,9 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+      - name: Test checked-in security automation
+        run: python -m unittest discover -s scripts/security/tests -v
+
   msrv:
     runs-on: ubuntu-latest
     steps:
