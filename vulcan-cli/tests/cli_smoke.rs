@@ -14928,6 +14928,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("runs the registered task"));
     assert!(sync_skill.contains("Windows 11 24H2 or newer"));
     assert!(sync_skill.contains("no transient or"));
+    assert!(sync_skill.contains("every Git subprocess"));
+    assert!(sync_skill.contains("does not flash Git terminal"));
     assert!(sync_skill.contains("no separate launcher binary is needed"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));

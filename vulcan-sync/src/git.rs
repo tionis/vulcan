@@ -20,6 +20,8 @@ const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 const COMMAND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 #[cfg(unix)]
 const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const WINDOWS_GIT_CREATION_FLAGS: u32 = 0x0800_0000; // CREATE_NO_WINDOW
 const REQUIREMENTS_CACHE_VERSION: u32 = 1;
 const DEVICE_LOCAL_VULCAN_PATHS: [&str; 4] = [
     ".vulcan/config.local.toml",
@@ -1552,7 +1554,7 @@ impl GitCliEngine {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        configure_process_group(command);
+        configure_git_process(command);
         let mut child = command.spawn().map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 GitEngineError::ExecutableUnavailable {
@@ -4191,13 +4193,19 @@ fn hash_path(hasher: &mut blake3::Hasher, path: &Path) {
 }
 
 #[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
+fn configure_git_process(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     command.process_group(0);
 }
 
-#[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
+#[cfg(windows)]
+fn configure_git_process(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(WINDOWS_GIT_CREATION_FLAGS);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_git_process(_command: &mut Command) {}
 
 #[cfg(unix)]
 fn terminate_process_group(child: &mut Child) {
@@ -5225,6 +5233,14 @@ fn bounded_lossy(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_git_children_are_created_without_a_console_window() {
+        // Keep this in sync with CREATE_NO_WINDOW in the Windows SDK. The
+        // shared spawn boundary applies it to every GitCliEngine operation.
+        assert_eq!(WINDOWS_GIT_CREATION_FLAGS, 0x0800_0000);
+    }
 
     #[test]
     fn parses_bounded_remote_reference_lists_and_rejects_namespace_escape() {

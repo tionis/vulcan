@@ -214,7 +214,9 @@ interactive token at least privilege, stores no password, and does not require a
 terminal. Installation starts it immediately through Task Scheduler; subsequent logons launch the
 daemon through its detached background path. On the supported Windows 11 24H2 or newer baseline,
 the executable's console-allocation manifest prevents even a transient terminal window from being
-created. No second launcher executable is installed. To remove only the service projection:
+created. Git subprocesses launched by background synchronization also use Windows' no-window
+process creation mode, including helpers they spawn. No second launcher executable is installed.
+To remove only the service projection:
 
 ```sh
 vulcan daemon uninstall --dry-run
