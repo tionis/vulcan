@@ -8,6 +8,11 @@ pub struct WriteLockGuard {
     file: File,
 }
 
+#[derive(Debug)]
+pub struct ReadLockGuard {
+    file: File,
+}
+
 pub fn acquire_write_lock(paths: &VaultPaths) -> Result<WriteLockGuard, std::io::Error> {
     ensure_vulcan_dir(paths)?;
     let file = OpenOptions::new()
@@ -21,7 +26,26 @@ pub fn acquire_write_lock(paths: &VaultPaths) -> Result<WriteLockGuard, std::io:
     Ok(WriteLockGuard { file })
 }
 
+pub fn acquire_read_lock(paths: &VaultPaths) -> Result<ReadLockGuard, std::io::Error> {
+    ensure_vulcan_dir(paths)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(paths.vulcan_dir().join("write.lock"))?;
+    fs2::FileExt::lock_shared(&file)?;
+
+    Ok(ReadLockGuard { file })
+}
+
 impl Drop for WriteLockGuard {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+impl Drop for ReadLockGuard {
     fn drop(&mut self) {
         let _ = fs2::FileExt::unlock(&self.file);
     }

@@ -7,9 +7,10 @@ use std::time::SystemTime;
 use vulcan_core::mdbase::{
     compile_mdbase_query, discover_mdbase_files, execute_mdbase_query, load_mdbase_collection,
     load_mdbase_contract_registry, load_mdbase_records_with_contracts_filtered,
-    load_mdbase_type_registry, MdbaseCollection, MdbaseContractDefinition,
-    MdbaseContractImplementation, MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel,
-    MdbaseQueryResult, MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry,
+    load_mdbase_type_registry, MdbaseCollection, MdbaseConsistentReadGuard,
+    MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
+    MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult, MdbaseRecordDocument,
+    MdbaseTypeDefinition, MdbaseTypeRegistry,
 };
 use vulcan_core::{PermissionFilter, VaultPaths};
 
@@ -66,6 +67,7 @@ pub struct MdbaseReadReport {
 }
 
 struct LoadedCollection {
+    _read_guard: Option<MdbaseConsistentReadGuard>,
     collection: MdbaseCollection,
     types: MdbaseTypeRegistry,
     contracts: MdbaseContractRegistry,
@@ -290,6 +292,8 @@ pub fn parse_mdbase_query(source: &str) -> Result<serde_json::Value, AppError> {
 }
 
 fn load_collection(paths: &VaultPaths) -> Result<LoadedCollection, AppError> {
+    let read_guard =
+        vulcan_core::mdbase::acquire_mdbase_consistent_read(paths).map_err(AppError::operation)?;
     let collection = load_mdbase_collection(paths.vault_root())
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("not an mdbase collection: missing mdbase.yaml"))?;
@@ -297,6 +301,7 @@ fn load_collection(paths: &VaultPaths) -> Result<LoadedCollection, AppError> {
     let contracts =
         load_mdbase_contract_registry(&collection, &types).map_err(AppError::operation)?;
     Ok(LoadedCollection {
+        _read_guard: read_guard,
         collection,
         types,
         contracts,
@@ -359,8 +364,15 @@ fn ensure_allowed(filter: Option<&PermissionFilter>, path: &str) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
+    use vulcan_core::mdbase::{
+        apply_mdbase_write_transaction, build_mdbase_write_preview, MdbaseWriteApplyRequest,
+        MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
+    };
+    use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
 
     fn fixture() -> (tempfile::TempDir, VaultPaths) {
@@ -484,5 +496,54 @@ mod tests {
             parse_mdbase_query(r#"{"where":"true"}"#).expect("JSON"),
             serde_json::json!({"where": "true"})
         );
+    }
+
+    #[test]
+    fn cooperating_read_reports_a_transaction_that_needs_recovery() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).expect("initialize transaction state");
+        let collection = load_mdbase_collection(directory.path())
+            .expect("load collection")
+            .expect("collection");
+        let issued_at = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let preview = build_mdbase_write_preview(
+            &collection,
+            MdbaseWritePreviewRequest {
+                plan_id: "read-boundary".to_string(),
+                caller_id: "caller".to_string(),
+                instance_id: "instance".to_string(),
+                operation: "update".to_string(),
+                issued_at,
+                expires_at: Utc.with_ymd_and_hms(2026, 9, 13, 12, 10, 0).unwrap(),
+                permission_revision: "grant:v1".to_string(),
+                config_revision: "config:v1".to_string(),
+                changes: vec![MdbaseWritePreviewChangeRequest {
+                    path: "tasks/public.md".to_string(),
+                    after: Some("---\ntype: task\ntitle: Changed\n---\nBody\n".to_string()),
+                }],
+                relevant_record_namespaces: vec!["tasks/**".to_string()],
+                generated_values: BTreeMap::new(),
+            },
+        )
+        .expect("preview");
+        let request = MdbaseWriteApplyRequest {
+            preview: &preview,
+            verification: MdbaseWritePreviewVerification {
+                caller_id: "caller",
+                instance_id: "instance",
+                operation: "update",
+                permission_revision: "grant:v1",
+                config_revision: "config:v1",
+                now: Utc.with_ymd_and_hms(2026, 9, 13, 12, 1, 0).unwrap(),
+            },
+            idempotency_key: "read-boundary",
+        };
+        apply_mdbase_write_transaction(&paths, &collection, &request, |_| {
+            Err("simulated cache failure".to_string())
+        })
+        .expect("canonical write committed");
+
+        let error = build_mdbase_status_report(&paths, None).unwrap_err();
+        assert!(error.to_string().contains("recovery is required"));
     }
 }

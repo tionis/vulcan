@@ -428,6 +428,11 @@ fn preview_digest(preview: &MdbaseWritePreview) -> Result<String, MdbaseWritePre
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
 }
 
+#[cfg(test)]
+pub(crate) fn preview_digest_for_test(preview: &MdbaseWritePreview) -> String {
+    preview_digest(preview).expect("test preview serializes")
+}
+
 fn timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(SecondsFormat::Secs, true)
 }

@@ -36,6 +36,8 @@ mod write_authorization;
 pub use write_authorization::*;
 mod write_preview;
 pub use write_preview::*;
+mod write_transaction;
+pub use write_transaction::*;
 
 pub const MDBASE_CONFIG_FILE_NAME: &str = "mdbase.yaml";
 pub const MDBASE_LOCK_FILE_NAME: &str = "mdbase.lock.yaml";
