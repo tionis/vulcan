@@ -135,6 +135,11 @@ impl OpenAiCompatibleSemanticProvider {
                 "semantic agent base URL must be an absolute HTTP(S) URL without credentials, query, or fragment",
             ));
         }
+        crate::credential_transport::validate_credential_transport(
+            &endpoint,
+            api_key.is_some(),
+            "semantic agent",
+        )?;
         let path = endpoint.path().trim_end_matches('/');
         endpoint.set_path(&format!("{path}/chat/completions"));
         let model = model.into();
@@ -1996,6 +2001,20 @@ mod tests {
     #[cfg(unix)]
     use tempfile::tempdir;
     use vulcan_sync::{GitChange, GitChangeKind};
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn semantic_provider_rejects_credentials_over_remote_http() {
+        let error = match super::OpenAiCompatibleSemanticProvider::new(
+            "http://api.example.com/v1",
+            "fixture-model",
+            Some("secret".to_string()),
+        ) {
+            Ok(_) => panic!("remote cleartext endpoint must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("credentials require HTTPS"));
+    }
 
     #[test]
     fn deterministic_groups_are_top_level_and_sorted() {

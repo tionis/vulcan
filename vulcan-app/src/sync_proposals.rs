@@ -402,12 +402,22 @@ impl OpenAiCompatibleResolutionProvider {
                 "agent base URL must be an absolute HTTP(S) URL without credentials, query, or fragment",
             ));
         }
+        crate::credential_transport::validate_credential_transport(
+            &endpoint,
+            api_key.is_some(),
+            "agent",
+        )?;
         let path = endpoint.path().trim_end_matches('/');
         endpoint.set_path(&format!("{path}/chat/completions"));
         let model = model.into();
         validate_text("agent model", &model)?;
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
+            .redirect(if api_key.is_some() {
+                reqwest::redirect::Policy::none()
+            } else {
+                reqwest::redirect::Policy::limited(10)
+            })
             .build()
             .map_err(AppError::operation)?;
         Ok(Self {
@@ -3494,6 +3504,20 @@ mod tests {
     use tempfile::{tempdir, TempDir};
     use vulcan_core::{paths::initialize_vulcan_dir, scan_vault, ScanMode};
     use vulcan_sync::{GitCliEngine, GitSyncOptions};
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn resolution_provider_rejects_credentials_over_remote_http() {
+        let error = match OpenAiCompatibleResolutionProvider::new(
+            "http://api.example.com/v1",
+            "fixture-model",
+            Some("secret".to_string()),
+        ) {
+            Ok(_) => panic!("remote cleartext endpoint must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("credentials require HTTPS"));
+    }
 
     #[test]
     fn reviewed_resolution_can_create_a_synthesized_conflict_destination() {

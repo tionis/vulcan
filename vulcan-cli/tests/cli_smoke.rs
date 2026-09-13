@@ -14979,6 +14979,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .expect("index maintenance skill should be readable");
     assert!(index_skill.contains("content-comparing polling"));
     assert!(index_skill.contains("incremental safety rescan"));
+    assert!(index_skill.contains("remote cleartext endpoints fail before any request is sent"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));
@@ -14988,6 +14989,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("every accepted path must appear exactly once"));
     assert!(git_skill.contains("--editor --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
+    assert!(git_skill.contains("credentialed plain HTTP is limited to loopback services"));
     assert!(git_skill.contains("sent as exact UTF-8 with a content hash"));
     assert!(git_skill.contains("vault_search`, `vault_query`, and `vault_links`"));
     assert!(git_skill.contains("--allow-broad-context"));

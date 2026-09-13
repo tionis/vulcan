@@ -4,6 +4,7 @@ use crate::provider::{
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -51,7 +52,7 @@ impl Default for OpenAICompatibleConfig {
 #[derive(Debug, Clone)]
 pub struct OpenAICompatibleProvider {
     client: Client,
-    endpoint_url: String,
+    endpoint_url: reqwest::Url,
     api_key: Option<String>,
     metadata: Arc<Mutex<ModelMetadata>>,
     max_concurrency: usize,
@@ -61,14 +62,42 @@ pub struct OpenAICompatibleProvider {
 
 impl OpenAICompatibleProvider {
     pub fn new(config: OpenAICompatibleConfig) -> Result<Self, String> {
+        let mut endpoint_url = reqwest::Url::parse(&config.base_url)
+            .map_err(|error| format!("invalid embeddings base URL: {error}"))?;
+        if !matches!(endpoint_url.scheme(), "http" | "https")
+            || endpoint_url.host_str().is_none()
+            || !endpoint_url.username().is_empty()
+            || endpoint_url.password().is_some()
+            || endpoint_url.query().is_some()
+            || endpoint_url.fragment().is_some()
+        {
+            return Err(
+                "embeddings base URL must be an absolute HTTP(S) URL without credentials, query, or fragment"
+                    .to_string(),
+            );
+        }
+        if config.api_key.is_some() && !credential_transport_is_secure(&endpoint_url) {
+            return Err(
+                "embedding API keys require HTTPS unless the endpoint uses loopback HTTP"
+                    .to_string(),
+            );
+        }
+        let path = endpoint_url.path().trim_end_matches('/');
+        endpoint_url.set_path(&format!("{path}/embeddings"));
+
         let client = Client::builder()
             .timeout(config.request_timeout)
+            .redirect(if config.api_key.is_some() {
+                reqwest::redirect::Policy::none()
+            } else {
+                reqwest::redirect::Policy::limited(10)
+            })
             .build()
             .map_err(|error| format!("failed to build embeddings HTTP client: {error}"))?;
 
         Ok(Self {
             client,
-            endpoint_url: format!("{}/embeddings", config.base_url.trim_end_matches('/')),
+            endpoint_url,
             api_key: config.api_key,
             metadata: Arc::new(Mutex::new(ModelMetadata {
                 provider_name: config.provider_name,
@@ -84,6 +113,19 @@ impl OpenAICompatibleProvider {
             retry_base_delay: config.retry_base_delay,
         })
     }
+}
+
+fn credential_transport_is_secure(endpoint: &reqwest::Url) -> bool {
+    endpoint.scheme() == "https"
+        || (endpoint.scheme() == "http"
+            && endpoint.host_str().is_some_and(|host| {
+                host.eq_ignore_ascii_case("localhost")
+                    || host
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .parse::<IpAddr>()
+                        .is_ok_and(|address| address.is_loopback())
+            }))
 }
 
 impl EmbeddingProvider for OpenAICompatibleProvider {
@@ -164,7 +206,7 @@ impl EmbeddingProvider for OpenAICompatibleProvider {
 
 fn request_embeddings(
     client: &Client,
-    endpoint_url: &str,
+    endpoint_url: &reqwest::Url,
     api_key: Option<&str>,
     model_name: &str,
     inputs: &[String],
@@ -187,13 +229,13 @@ fn request_embeddings(
 
 fn execute_embedding_request(
     client: &Client,
-    endpoint_url: &str,
+    endpoint_url: &reqwest::Url,
     api_key: Option<&str>,
     model_name: &str,
     inputs: &[String],
 ) -> Result<Vec<EmbeddingResult>, EmbeddingError> {
     let mut request = client
-        .post(endpoint_url)
+        .post(endpoint_url.clone())
         .header(CONTENT_TYPE, "application/json");
     if let Some(api_key) = api_key {
         request = request.header(AUTHORIZATION, format!("Bearer {api_key}"));
@@ -299,6 +341,38 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
     use ulid::Ulid;
+
+    #[test]
+    fn credentials_require_https_or_a_loopback_http_endpoint() {
+        for allowed in [
+            "https://api.example.com/v1",
+            "http://localhost:11434/v1",
+            "http://127.0.0.2:11434/v1",
+            "http://[::1]:11434/v1",
+        ] {
+            OpenAICompatibleProvider::new(OpenAICompatibleConfig {
+                base_url: allowed.to_string(),
+                api_key: Some("secret".to_string()),
+                ..OpenAICompatibleConfig::default()
+            })
+            .expect("secure or loopback endpoint");
+        }
+
+        let error = OpenAICompatibleProvider::new(OpenAICompatibleConfig {
+            base_url: "http://api.example.com/v1".to_string(),
+            api_key: Some("secret".to_string()),
+            ..OpenAICompatibleConfig::default()
+        })
+        .expect_err("remote cleartext endpoint must fail");
+        assert!(error.contains("API keys require HTTPS"));
+
+        OpenAICompatibleProvider::new(OpenAICompatibleConfig {
+            base_url: "http://api.example.com/v1".to_string(),
+            api_key: None,
+            ..OpenAICompatibleConfig::default()
+        })
+        .expect("credential-free HTTP remains available");
+    }
 
     #[test]
     fn provider_batches_requests_and_learns_dimensions() {

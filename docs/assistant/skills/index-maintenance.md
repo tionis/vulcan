@@ -38,6 +38,7 @@ Use this skill when derived state may be stale, broken, slow, or incomplete.
 - Do not treat stale cache output as note truth; rescan before making write decisions.
 - If watch output remains stale beyond the safety-rescan interval, inspect callback/scan diagnostics rather than assuming the operating-system watcher is authoritative. Errors confined to ignored `.vulcan` transient files are intentionally not treated as source changes.
 - Vector search depends on provider/config/model state, so inspect queue/status before assuming semantic search is broken.
+- When `embedding.api_key_env` resolves to a credential, use an HTTPS provider URL. Plain HTTP is accepted with credentials only for loopback services such as local Ollama; remote cleartext endpoints fail before any request is sent.
 
 ## Example Moves
 

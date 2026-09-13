@@ -28,6 +28,8 @@
 //! launching, or direct stdout/stderr rendering. Those concerns belong in
 //! `vulcan-cli` or a future daemon transport adapter.
 
+#[cfg(feature = "web")]
+mod credential_transport;
 mod durable_file;
 mod error;
 
