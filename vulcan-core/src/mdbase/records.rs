@@ -87,6 +87,23 @@ pub struct MdbaseRecordSet {
     pub records: Vec<MdbaseRecordDocument>,
 }
 
+/// Proposed-source analysis used by managed write routing before persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseRecordDraftAnalysis {
+    pub types: Vec<String>,
+    pub diagnostics: Vec<MdbaseRecordDiagnostic>,
+}
+
+impl MdbaseRecordDraftAnalysis {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == MdbaseRecordDiagnosticSeverity::Error)
+    }
+}
+
 impl MdbaseRecordSet {
     #[must_use]
     pub fn get(&self, path: &str) -> Option<&MdbaseRecordDocument> {
@@ -210,6 +227,18 @@ pub fn load_mdbase_record(
     load_mdbase_record_at_clock(collection, types, path, include_source, &clock)
 }
 
+/// Analyze exact proposed record source without writing it to the collection.
+#[must_use]
+pub fn analyze_mdbase_record_source(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    source: &str,
+) -> MdbaseRecordDraftAnalysis {
+    let clock = operation_clock(collection);
+    analyze_record_source(collection, types, path, source, &clock)
+}
+
 fn load_mdbase_record_at_clock(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
@@ -248,7 +277,49 @@ fn build_mdbase_record(
     include_source: bool,
     clock: &MdbaseCelClock,
 ) -> MdbaseRecordDocument {
+    let analysis = analyze_record_source(collection, types, path, &source, clock);
     let parse_source = source.strip_prefix('\u{feff}').unwrap_or(&source);
+    let parsed = parse_document(parse_source, &VaultConfig::default());
+    let frontmatter = if parsed.raw_frontmatter.is_some() {
+        if let Some(frontmatter) = parsed.frontmatter.as_ref().and_then(yaml_mapping_to_json) {
+            frontmatter
+        } else {
+            serde_json::json!({})
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let body = record_body(&source).to_string();
+    let behavior = compose_mdbase_type_behavior(types, &analysis.types);
+    let effective_frontmatter = apply_mdbase_read_defaults(&frontmatter, &behavior.read_defaults);
+    let revision = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
+    let file = file_metadata(path, metadata);
+    MdbaseRecordDocument {
+        path: path.to_string(),
+        revision,
+        types: analysis.types,
+        frontmatter,
+        effective_frontmatter,
+        body,
+        document: include_source.then_some(source),
+        file,
+        links: Vec::new(),
+        tags: Vec::new(),
+        display: behavior.display,
+        contract_views: Vec::new(),
+        diagnostics: analysis.diagnostics,
+    }
+}
+
+fn analyze_record_source(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    source: &str,
+    clock: &MdbaseCelClock,
+) -> MdbaseRecordDraftAnalysis {
+    let parse_source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let parsed = parse_document(parse_source, &VaultConfig::default());
     let severity = validation_severity(collection.config.settings.validation);
     let mut diagnostics = Vec::new();
@@ -277,10 +348,9 @@ fn build_mdbase_record(
     } else {
         serde_json::json!({})
     };
-
-    let body = record_body(&source).to_string();
+    let body = record_body(source);
     let matched =
-        match_mdbase_record_types_with_context(collection, types, path, &frontmatter, &body, clock);
+        match_mdbase_record_types_with_context(collection, types, path, &frontmatter, body, clock);
     diagnostics.extend(matched.diagnostics.into_iter().map(|diagnostic| {
         record_diagnostic(
             severity,
@@ -291,7 +361,6 @@ fn build_mdbase_record(
             diagnostic.type_name,
         )
     }));
-
     let behavior = compose_mdbase_type_behavior(types, &matched.types);
     diagnostics.extend(
         behavior
@@ -318,23 +387,9 @@ fn build_mdbase_record(
             &mut diagnostics,
         );
     }
-    let effective_frontmatter = apply_mdbase_read_defaults(&frontmatter, &behavior.read_defaults);
-    let revision = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
-    let file = file_metadata(path, metadata);
     sort_record_diagnostics(&mut diagnostics);
-    MdbaseRecordDocument {
-        path: path.to_string(),
-        revision,
+    MdbaseRecordDraftAnalysis {
         types: matched.types,
-        frontmatter,
-        effective_frontmatter,
-        body,
-        document: include_source.then_some(source),
-        file,
-        links: Vec::new(),
-        tags: Vec::new(),
-        display: behavior.display,
-        contract_views: Vec::new(),
         diagnostics,
     }
 }
@@ -944,6 +999,43 @@ mod tests {
         assert_eq!(record.body, "Body before inline:: value\n");
         assert!(record.document.is_none());
         assert!(record.types.is_empty());
+    }
+
+    #[test]
+    fn proposed_source_analysis_validates_without_reading_or_writing_the_record() {
+        let directory = tempdir().expect("collection directory");
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(
+            &directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [type, title]\n    properties:\n      type: {const: task}\n      title: {type: string}\n---\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("collection should load")
+            .expect("collection should exist");
+        let types = load_mdbase_type_registry(&collection).expect("types should load");
+        let path = "tasks/proposed.md";
+
+        let valid = analyze_mdbase_record_source(
+            &collection,
+            &types,
+            path,
+            "---\ntype: task\ntitle: Proposed\n---\nBody\n",
+        );
+        assert!(valid.is_valid());
+        assert_eq!(valid.types, ["task"]);
+
+        let invalid =
+            analyze_mdbase_record_source(&collection, &types, path, "---\ntype: task\n---\nBody\n");
+        assert!(!invalid.is_valid());
+        assert_eq!(invalid.types, ["task"]);
+        assert!(invalid
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema_required"));
+        assert!(!directory.path().join(path).exists());
     }
 
     #[test]

@@ -34,6 +34,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - `note patch` fails on multiple matches by design. Narrow the scope with `--section`, `--heading`, `--block-ref`, or `--lines` instead of forcing a broad replacement.
 - Prefer section, heading, block-ref, or `--match`-based targeting over whole-note rewrites.
 - Keep frontmatter changes structured. If the task is really metadata work, use `update` or `unset` instead of editing YAML by hand.
+- Note creates, replacements, appends, patches, and deletes targeting an mdbase record path use the collection's validated, journaled write boundary. Treat validation errors as blockers and do not bypass them with raw filesystem edits; explicit repair is a separate workflow that must be intentionally requested.
 
 ## Example Moves
 

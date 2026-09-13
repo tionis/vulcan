@@ -14848,11 +14848,13 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
         .expect("agents template should be readable")
         .contains("Use Vulcan as the primary automation surface"));
-    assert!(
+    let note_operations =
         fs::read_to_string(vault_root.join(".agents/skills/note-operations/SKILL.md"))
-            .expect("bundled skill should be readable")
-            .contains("managed: true")
-    );
+            .expect("bundled skill should be readable");
+    assert!(note_operations.contains("managed: true"));
+    assert!(note_operations.contains("mdbase record path"));
+    assert!(note_operations.contains("validated, journaled write boundary"));
+    assert!(note_operations.contains("explicit repair is a separate workflow"));
     let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));

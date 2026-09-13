@@ -8,16 +8,17 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
-    apply_mdbase_write_transaction_with_preflight, authorize_mdbase_write_validation_scope,
-    build_mdbase_write_preview, compile_mdbase_query, discover_mdbase_files, execute_mdbase_query,
-    load_mdbase_collection, load_mdbase_contract_registry,
-    load_mdbase_records_with_contracts_filtered, load_mdbase_type_registry,
-    MdbaseAuthorizedValidationScope, MdbaseCollection, MdbaseConsistentReadGuard,
-    MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
-    MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult, MdbaseRecordDocument,
-    MdbaseTypeDefinition, MdbaseTypeRegistry, MdbaseWriteApplyRequest,
-    MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome, MdbaseWritePreview,
-    MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
+    analyze_mdbase_record_source, apply_mdbase_write_transaction_with_preflight,
+    authorize_mdbase_write_validation_scope, build_mdbase_write_preview, compile_mdbase_query,
+    discover_mdbase_files, execute_mdbase_query, is_mdbase_record_path, load_mdbase_collection,
+    load_mdbase_contract_registry, load_mdbase_records_with_contracts_filtered,
+    load_mdbase_type_registry, MdbaseAuthorizedValidationScope, MdbaseCollection,
+    MdbaseConsistentReadGuard, MdbaseContractDefinition, MdbaseContractImplementation,
+    MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult,
+    MdbaseRecordDiagnostic, MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry,
+    MdbaseWriteApplyRequest, MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome,
+    MdbaseWritePreview, MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest,
+    MdbaseWritePreviewVerification,
 };
 use vulcan_core::{
     auto_commit, initialize_vulcan_dir, load_vault_config, resolve_permission_profile,
@@ -93,6 +94,34 @@ pub struct MdbaseWriteApplyReport {
     pub auto_commit: Option<AutoCommitReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follow_up_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MdbaseManagedWriteMode {
+    Validated,
+    RawRepair,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdbaseManagedNoteWriteRequest<'a> {
+    pub path: &'a str,
+    pub before: Option<&'a str>,
+    pub after: Option<&'a str>,
+    pub operation: MdbaseWriteOperation,
+    pub mode: MdbaseManagedWriteMode,
+    pub dry_run: bool,
+    pub permission_profile: Option<&'a str>,
+    pub quiet: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MdbaseManagedNoteWriteReport {
+    pub mode: MdbaseManagedWriteMode,
+    pub plan: MdbaseWritePlanReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apply: Option<MdbaseWriteApplyReport>,
+    pub diagnostics: Vec<MdbaseRecordDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -560,6 +589,114 @@ pub fn apply_mdbase_write(
     Ok(report)
 }
 
+/// Route one generic note mutation through mdbase when its old or proposed
+/// path belongs to the collection. `None` means the path is ordinary Markdown
+/// and the caller should use its existing mutation workflow.
+pub fn apply_managed_mdbase_note_write(
+    paths: &VaultPaths,
+    request: &MdbaseManagedNoteWriteRequest<'_>,
+) -> Result<Option<MdbaseManagedNoteWriteReport>, AppError> {
+    let Some(collection) =
+        load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?
+    else {
+        return Ok(None);
+    };
+    if !is_mdbase_record_path(&collection, request.path).map_err(AppError::operation)? {
+        return Ok(None);
+    }
+    let types = load_mdbase_type_registry(&collection).map_err(AppError::operation)?;
+    let selection = resolve_permission_profile(paths, request.permission_profile)
+        .map_err(AppError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    // Prove affected-path authority before inspecting record-dependent type
+    // membership. The full constraint scope is proved by plan_mdbase_write.
+    guard
+        .check_read_path(request.path)
+        .and_then(|()| guard.check_write_path(request.path))
+        .map_err(AppError::operation)?;
+
+    let before_analysis = request
+        .before
+        .map(|source| analyze_mdbase_record_source(&collection, &types, request.path, source));
+    let after_analysis = request
+        .after
+        .map(|source| analyze_mdbase_record_source(&collection, &types, request.path, source));
+    let diagnostics = after_analysis
+        .as_ref()
+        .map_or_else(Vec::new, |analysis| analysis.diagnostics.clone());
+    if request.mode == MdbaseManagedWriteMode::Validated
+        && after_analysis
+            .as_ref()
+            .is_some_and(|analysis| !analysis.is_valid())
+    {
+        let summary = diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
+            })
+            .take(3)
+            .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::operation(format!(
+            "mdbase validation rejected the managed note write: {summary}; use explicit raw repair only when preserving invalid source is intentional"
+        )));
+    }
+    let mut matched_types = before_analysis
+        .iter()
+        .flat_map(|analysis| analysis.types.iter())
+        .chain(
+            after_analysis
+                .iter()
+                .flat_map(|analysis| analysis.types.iter()),
+        )
+        .filter(|type_name| types.get(type_name).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    matched_types.sort();
+    matched_types.dedup();
+    let now = DateTime::<Utc>::from(SystemTime::now());
+    let plan = plan_mdbase_write(
+        paths,
+        &MdbaseWritePlanRequest {
+            caller_id: "vulcan-app.note".to_string(),
+            instance_id: ulid::Ulid::new().to_string().to_lowercase(),
+            operation: request.operation.clone(),
+            changes: vec![MdbaseWriteChangeRequest {
+                path: request.path.to_string(),
+                after: request.after.map(str::to_string),
+            }],
+            matched_types,
+            generated_values: BTreeMap::new(),
+            permission_profile: request.permission_profile.map(str::to_string),
+            ttl_seconds: None,
+        },
+        now,
+    )?;
+    let apply = if request.dry_run {
+        None
+    } else {
+        Some(apply_mdbase_write(
+            paths,
+            &plan,
+            &MdbaseWriteExecutionOptions {
+                idempotency_key: ulid::Ulid::new().to_string().to_lowercase(),
+                // Existing command adapters retain their established
+                // auto-commit boundary and changed-path aggregation.
+                no_commit: true,
+                quiet: request.quiet,
+            },
+            DateTime::<Utc>::from(SystemTime::now()),
+        )?)
+    };
+    Ok(Some(MdbaseManagedNoteWriteReport {
+        mode: request.mode,
+        plan,
+        apply,
+        diagnostics,
+    }))
+}
+
 fn validate_plan_request(request: &MdbaseWritePlanRequest) -> Result<(), AppError> {
     let ttl = request
         .ttl_seconds
@@ -815,13 +952,19 @@ fn ensure_allowed(filter: Option<&PermissionFilter>, path: &str) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::notes::{
+        apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
+        MarkdownTarget, NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest,
+        NotePatchRequest, NoteSetRequest,
+    };
     use chrono::TimeZone;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
     use vulcan_core::mdbase::{
-        apply_mdbase_write_transaction, build_mdbase_write_preview, MdbaseWriteApplyRequest,
-        MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
+        apply_mdbase_write_transaction, build_mdbase_write_preview, list_mdbase_write_outbox,
+        MdbaseWriteApplyRequest, MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest,
+        MdbaseWritePreviewVerification,
     };
     use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
@@ -1156,5 +1299,192 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn generic_note_set_uses_validated_journaled_mdbase_write() {
+        let (directory, paths) = fixture();
+        let replacement = "---\ntype: task\ntitle: Changed through note set\n---\nBody\n";
+
+        let report = apply_note_set(
+            &paths,
+            &NoteSetRequest {
+                note: "tasks/public.md".to_string(),
+                replacement: replacement.to_string(),
+                preserve_frontmatter: false,
+            },
+            None,
+            true,
+        )
+        .expect("managed note set should succeed");
+
+        assert_eq!(report.content, replacement);
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("record source"),
+            replacement
+        );
+        let outbox = list_mdbase_write_outbox(&paths).expect("outbox should be readable");
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].operation, "update");
+        assert_eq!(outbox[0].paths.len(), 1);
+        assert_eq!(outbox[0].paths[0].path, "tasks/public.md");
+    }
+
+    #[test]
+    fn generic_note_create_append_patch_and_delete_share_the_mdbase_journal() {
+        let (directory, paths) = fixture();
+        let created = "---\ntype: task\ntitle: New\n---\nBody\n";
+        apply_note_create(
+            &paths,
+            &NoteCreateRequest {
+                path: "tasks/new.md".to_string(),
+                template: None,
+                frontmatter: None,
+                body: created.to_string(),
+            },
+            None,
+            true,
+        )
+        .expect("managed note create should succeed");
+        apply_note_append(
+            &paths,
+            &NoteAppendRequest {
+                note: Some("tasks/new.md".to_string()),
+                text: "Extra\n".to_string(),
+                mode: NoteAppendMode::Append,
+                heading: None,
+                periodic: None,
+                date: None,
+                vars: std::collections::HashMap::default(),
+            },
+            None,
+            true,
+        )
+        .expect("managed note append should succeed");
+        apply_note_patch(
+            &paths,
+            &NotePatchRequest {
+                target: MarkdownTarget {
+                    display_path: "tasks/new.md".to_string(),
+                    absolute_path: directory.path().join("tasks/new.md"),
+                    vault_relative_path: Some("tasks/new.md".to_string()),
+                    config: VaultConfig::default(),
+                },
+                section_id: None,
+                heading: None,
+                block_ref: None,
+                lines: None,
+                find: "Extra".to_string(),
+                replace: "Patched".to_string(),
+                replace_all: false,
+                dry_run: false,
+            },
+            None,
+            true,
+        )
+        .expect("managed note patch should succeed");
+        apply_note_delete(
+            &paths,
+            &NoteDeleteRequest {
+                note: "tasks/new.md".to_string(),
+                dry_run: false,
+            },
+            None,
+            true,
+        )
+        .expect("managed note delete should succeed");
+
+        assert!(!directory.path().join("tasks/new.md").exists());
+        let outbox = list_mdbase_write_outbox(&paths).expect("outbox should be readable");
+        assert_eq!(outbox.len(), 4);
+        assert_eq!(
+            outbox
+                .iter()
+                .map(|event| event.operation.as_str())
+                .collect::<Vec<_>>(),
+            ["create", "update", "update", "delete"]
+        );
+    }
+
+    #[test]
+    fn generic_and_direct_validated_writes_reject_the_same_invalid_draft() {
+        let (directory, paths) = fixture();
+        let original = fs::read_to_string(directory.path().join("tasks/public.md"))
+            .expect("original record source");
+        let invalid = "---\ntype: task\n---\nBody\n";
+
+        let direct_error = apply_managed_mdbase_note_write(
+            &paths,
+            &MdbaseManagedNoteWriteRequest {
+                path: "tasks/public.md",
+                before: Some(&original),
+                after: Some(invalid),
+                operation: MdbaseWriteOperation::Update,
+                mode: MdbaseManagedWriteMode::Validated,
+                dry_run: true,
+                permission_profile: None,
+                quiet: true,
+            },
+        )
+        .expect_err("direct managed write should reject invalid source");
+        let note_error = apply_note_set(
+            &paths,
+            &NoteSetRequest {
+                note: "tasks/public.md".to_string(),
+                replacement: invalid.to_string(),
+                preserve_frontmatter: false,
+            },
+            None,
+            true,
+        )
+        .expect_err("generic note set should reject invalid source");
+
+        assert_eq!(direct_error.message(), note_error.message());
+        assert!(note_error.message().contains("schema_required"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("record source"),
+            original
+        );
+        assert!(list_mdbase_write_outbox(&paths)
+            .expect("outbox should be readable")
+            .is_empty());
+    }
+
+    #[test]
+    fn explicit_raw_repair_keeps_diagnostics_and_uses_the_write_journal() {
+        let (directory, paths) = fixture();
+        let original = fs::read_to_string(directory.path().join("tasks/public.md"))
+            .expect("original record source");
+        let invalid = "---\ntype: task\n---\nBody\n";
+
+        let report = apply_managed_mdbase_note_write(
+            &paths,
+            &MdbaseManagedNoteWriteRequest {
+                path: "tasks/public.md",
+                before: Some(&original),
+                after: Some(invalid),
+                operation: MdbaseWriteOperation::Update,
+                mode: MdbaseManagedWriteMode::RawRepair,
+                dry_run: false,
+                permission_profile: None,
+                quiet: true,
+            },
+        )
+        .expect("raw repair should run")
+        .expect("record path should be managed");
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
+        }));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("record source"),
+            invalid
+        );
+        assert_eq!(
+            list_mdbase_write_outbox(&paths)
+                .expect("outbox should be readable")
+                .len(),
+            1
+        );
     }
 }

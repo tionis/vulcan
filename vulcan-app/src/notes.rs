@@ -1,3 +1,7 @@
+use crate::mdbase::{
+    apply_managed_mdbase_note_write, MdbaseManagedNoteWriteRequest, MdbaseManagedWriteMode,
+    MdbaseWriteOperation,
+};
 use crate::plugins;
 use crate::templates::{
     find_frontmatter_block, load_named_template, parse_frontmatter_document,
@@ -282,18 +286,32 @@ pub fn apply_note_create(
     } else {
         render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?
     };
-    dispatch_note_write_plugin_hooks(
+    if !apply_mdbase_note_change(
         paths,
-        permission_profile,
-        &final_path,
-        "create",
-        None,
-        &content,
-        quiet,
-    )?;
-    secure_create(paths.vault_root(), Path::new(&final_path), &content)
-        .map_err(AppError::operation)?;
-    dispatch_note_create_plugin_hooks(paths, permission_profile, &final_path, &content, quiet);
+        &MdbaseManagedNoteWriteRequest {
+            path: &final_path,
+            before: None,
+            after: Some(&content),
+            operation: MdbaseWriteOperation::Create,
+            mode: MdbaseManagedWriteMode::Validated,
+            dry_run: false,
+            permission_profile,
+            quiet,
+        },
+    )? {
+        dispatch_note_write_plugin_hooks(
+            paths,
+            permission_profile,
+            &final_path,
+            "create",
+            None,
+            &content,
+            quiet,
+        )?;
+        secure_create(paths.vault_root(), Path::new(&final_path), &content)
+            .map_err(AppError::operation)?;
+        dispatch_note_create_plugin_hooks(paths, permission_profile, &final_path, &content, quiet);
+    }
     changed_paths.push(final_path.clone());
     changed_paths.sort();
     changed_paths.dedup();
@@ -398,19 +416,43 @@ pub fn apply_note_append(
         ),
     };
 
-    dispatch_note_write_plugin_hooks(
+    if !apply_mdbase_note_change(
         paths,
-        permission_profile,
-        &target.path,
-        "append",
-        Some(&target.existing),
-        &content,
-        quiet,
-    )?;
-    secure_write(paths.vault_root(), Path::new(&target.path), &content)
-        .map_err(AppError::operation)?;
-    if target.created {
-        dispatch_note_create_plugin_hooks(paths, permission_profile, &target.path, &content, quiet);
+        &MdbaseManagedNoteWriteRequest {
+            path: &target.path,
+            before: (!target.created).then_some(target.existing.as_str()),
+            after: Some(&content),
+            operation: if target.created {
+                MdbaseWriteOperation::Create
+            } else {
+                MdbaseWriteOperation::Update
+            },
+            mode: MdbaseManagedWriteMode::Validated,
+            dry_run: false,
+            permission_profile,
+            quiet,
+        },
+    )? {
+        dispatch_note_write_plugin_hooks(
+            paths,
+            permission_profile,
+            &target.path,
+            "append",
+            Some(&target.existing),
+            &content,
+            quiet,
+        )?;
+        secure_write(paths.vault_root(), Path::new(&target.path), &content)
+            .map_err(AppError::operation)?;
+        if target.created {
+            dispatch_note_create_plugin_hooks(
+                paths,
+                permission_profile,
+                &target.path,
+                &content,
+                quiet,
+            );
+        }
     }
     let path = target.path.clone();
 
@@ -441,16 +483,31 @@ pub fn apply_note_set(
     } else {
         request.replacement.clone()
     };
-    dispatch_note_write_plugin_hooks(
+    if !apply_mdbase_note_change(
         paths,
-        permission_profile,
-        &path,
-        "set",
-        Some(&existing),
-        &content,
-        quiet,
-    )?;
-    secure_write(paths.vault_root(), Path::new(&path), &content).map_err(AppError::operation)?;
+        &MdbaseManagedNoteWriteRequest {
+            path: &path,
+            before: Some(&existing),
+            after: Some(&content),
+            operation: MdbaseWriteOperation::Update,
+            mode: MdbaseManagedWriteMode::Validated,
+            dry_run: false,
+            permission_profile,
+            quiet,
+        },
+    )? {
+        dispatch_note_write_plugin_hooks(
+            paths,
+            permission_profile,
+            &path,
+            "set",
+            Some(&existing),
+            &content,
+            quiet,
+        )?;
+        secure_write(paths.vault_root(), Path::new(&path), &content)
+            .map_err(AppError::operation)?;
+    }
 
     Ok(NoteSetReport {
         path: path.clone(),
@@ -512,8 +569,21 @@ pub fn apply_note_patch(
         )?
     };
 
-    if !request.dry_run {
-        if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
+    if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
+        let routed = apply_mdbase_note_change(
+            paths,
+            &MdbaseManagedNoteWriteRequest {
+                path: relative_path,
+                before: Some(&source),
+                after: Some(&application.updated_content),
+                operation: MdbaseWriteOperation::Update,
+                mode: MdbaseManagedWriteMode::Validated,
+                dry_run: request.dry_run,
+                permission_profile,
+                quiet,
+            },
+        )?;
+        if !request.dry_run && !routed {
             dispatch_note_write_plugin_hooks(
                 paths,
                 permission_profile,
@@ -523,18 +593,16 @@ pub fn apply_note_patch(
                 &application.updated_content,
                 quiet,
             )?;
-        }
-        if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
             secure_write(
                 paths.vault_root(),
                 Path::new(relative_path),
                 &application.updated_content,
             )
             .map_err(AppError::operation)?;
-        } else {
-            fs::write(&request.target.absolute_path, &application.updated_content)
-                .map_err(AppError::operation)?;
         }
+    } else if !request.dry_run {
+        fs::write(&request.target.absolute_path, &application.updated_content)
+            .map_err(AppError::operation)?;
     }
 
     Ok(NotePatchReport {
@@ -571,8 +639,23 @@ pub fn apply_note_delete(
         Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => Vec::new(),
         Err(error) => return Err(AppError::operation(error)),
     };
+    let source =
+        secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
 
-    if !request.dry_run {
+    if !apply_mdbase_note_change(
+        paths,
+        &MdbaseManagedNoteWriteRequest {
+            path: &path,
+            before: Some(&source),
+            after: None,
+            operation: MdbaseWriteOperation::Delete,
+            mode: MdbaseManagedWriteMode::Validated,
+            dry_run: request.dry_run,
+            permission_profile,
+            quiet,
+        },
+    )? && !request.dry_run
+    {
         fs::remove_file(paths.vault_root().join(&path)).map_err(AppError::operation)?;
         dispatch_note_delete_plugin_hooks(paths, permission_profile, &path, quiet);
     }
@@ -585,6 +668,13 @@ pub fn apply_note_delete(
         backlinks,
         changed_paths: vec![path],
     })
+}
+
+fn apply_mdbase_note_change(
+    paths: &VaultPaths,
+    request: &MdbaseManagedNoteWriteRequest<'_>,
+) -> Result<bool, AppError> {
+    apply_managed_mdbase_note_write(paths, request).map(|report| report.is_some())
 }
 
 pub fn diagnose_note_contents(

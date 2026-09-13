@@ -874,6 +874,111 @@ pub fn discover_mdbase_files(
     Ok(discovery)
 }
 
+/// Determine whether a collection-relative path is governed as an mdbase
+/// record, including paths that do not exist yet.
+///
+/// This applies the same extension, exclusion, control-directory, derived
+/// directory, subfolder, and nested-collection boundaries as discovery.
+pub fn is_mdbase_record_path(
+    collection: &MdbaseCollection,
+    path: &str,
+) -> Result<bool, MdbaseDiscoveryError> {
+    let Ok(path) = normalize_relative_input_path(
+        path,
+        RelativePathOptions {
+            expected_extension: None,
+            append_extension_if_missing: false,
+        },
+    ) else {
+        return Ok(false);
+    };
+    if matches!(
+        path.as_str(),
+        MDBASE_CONFIG_FILE_NAME | MDBASE_LOCK_FILE_NAME
+    ) {
+        return Ok(false);
+    }
+    let relative = Path::new(&path);
+    if !collection
+        .config
+        .settings
+        .record_extensions
+        .iter()
+        .any(|extension| has_extension(relative, extension))
+    {
+        return Ok(false);
+    }
+    let parent = relative.parent().and_then(Path::to_str).unwrap_or("");
+    if !collection.config.settings.include_subfolders && !parent.is_empty() {
+        return Ok(false);
+    }
+    let control_folders = [
+        collection.config.settings.types_folder.as_str(),
+        collection.config.settings.contracts_folder.as_str(),
+    ];
+    let components = relative
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    if components
+        .iter()
+        .any(|component| matches!(*component, ".git" | ".mdbase" | ".vulcan" | "node_modules"))
+        || control_folders
+            .iter()
+            .any(|folder| path == **folder || path.starts_with(&format!("{folder}/")))
+    {
+        return Ok(false);
+    }
+    let excludes = compile_excludes(&collection.config.settings.exclude)
+        .expect("exclusion globs are validated while loading mdbase.yaml");
+    if is_excluded(&excludes, &path, false)
+        || ancestor_is_excluded_or_nested(collection, relative, &excludes)?
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn ancestor_is_excluded_or_nested(
+    collection: &MdbaseCollection,
+    relative: &Path,
+    excludes: &GlobSet,
+) -> Result<bool, MdbaseDiscoveryError> {
+    let mut ancestor = PathBuf::new();
+    let parent_components = relative.parent().into_iter().flat_map(Path::components);
+    for component in parent_components {
+        ancestor.push(component.as_os_str());
+        let ancestor_text = ancestor
+            .to_str()
+            .ok_or_else(|| MdbaseDiscoveryError::NonUtf8Path {
+                path: collection.root.join(&ancestor),
+            })?;
+        if is_excluded(excludes, ancestor_text, true) {
+            return Ok(true);
+        }
+        let marker = collection
+            .root
+            .join(&ancestor)
+            .join(MDBASE_CONFIG_FILE_NAME);
+        match fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(MdbaseDiscoveryError::Io {
+                    path: marker,
+                    source,
+                })
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Load valid `kind: mdbase.type` files into a deterministic registry.
 ///
 /// Names are matched case-insensitively while the authored spelling remains
@@ -2702,6 +2807,63 @@ settings:
         assert_eq!(discovered.type_files, ["Schema/Types/Person.md"]);
         assert_eq!(discovered.contract_files, ["Schema/Contracts/People.md"]);
         assert_eq!(discovered.nested_collections, ["Nested"]);
+    }
+
+    #[test]
+    fn record_path_classification_covers_proposed_paths_and_discovery_exclusions() {
+        let directory = tempdir().expect("temporary directory should exist");
+        write_config(
+            directory.path(),
+            r#"spec_version: "0.3.0"
+settings:
+  types_folder: Schema/Types
+  contracts_folder: Schema/Contracts
+  record_extensions: [md, markdown]
+  exclude: [Archive/**, "**/*.draft.md"]
+"#,
+        );
+        write_file(directory.path(), "Nested/mdbase.yaml");
+
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        for path in ["New.md", "Notes/New.markdown", "Schema/Other.md"] {
+            assert!(
+                is_mdbase_record_path(&collection, path).expect("path should classify"),
+                "{path} should be a record path"
+            );
+        }
+        for path in [
+            "Notes/New.txt",
+            "Notes/Ignored.draft.md",
+            "Schema/Types/Task.md",
+            "Schema/Contracts/Tasks.md",
+            "Archive/Old.md",
+            ".mdbase/state.md",
+            ".vulcan/internal.md",
+            "Nested/Child.md",
+            MDBASE_LOCK_FILE_NAME,
+        ] {
+            assert!(
+                !is_mdbase_record_path(&collection, path).expect("path should classify"),
+                "{path} should not be a record path"
+            );
+        }
+    }
+
+    #[test]
+    fn record_path_classification_respects_flat_collections() {
+        let directory = tempdir().expect("temporary directory should exist");
+        write_config(
+            directory.path(),
+            "spec_version: \"0.3.0\"\nsettings:\n  include_subfolders: false\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+
+        assert!(is_mdbase_record_path(&collection, "Root.md").expect("root path"));
+        assert!(!is_mdbase_record_path(&collection, "Notes/Nested.md").expect("nested path"));
     }
 
     #[test]

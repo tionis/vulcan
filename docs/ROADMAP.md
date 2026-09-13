@@ -7527,6 +7527,8 @@ The current refresh avoids unchanged SQLite row writes but still derives the who
 
 - [x] Centralize mdbase create/update/delete/rename/batch orchestration in `vulcan-app`, reusing secure path handling, atomic writes, scan refresh, permission checks, dry-run reports, plugin events, and opt-in git commits.
 - [ ] Route App/script and generic managed note/property/task edits affecting collection records through that same mdbase-validating pipeline, accounting for old/proposed membership; define explicit raw repair with normal permissions/recovery and resulting diagnostics, never silent fallback on validation failure. Add cross-entrypoint write parity tests before claiming unified routing.
+  - [x] Route reusable App note create/set/append/patch/delete workflows through proposed-source validation and the cooperating-write journal, with explicit raw-repair mode and note/direct-boundary parity tests.
+  - [ ] Route generic property/task mutations and script transaction commits through the same boundary, then add full cross-entrypoint parity coverage before completing the parent item.
 - [ ] Add opaque content-derived revisions and `if_revision` preconditions; preserve the current file and return `concurrent_modification` on mismatch.
 - [ ] Implement the normative draft pipeline: draft type membership, lifecycle, one post-lifecycle membership check, JSON Schema validation, collection validators, atomic persistence, derived-state refresh, then events.
 - [ ] Implement `now`, `today`, `uuid`, `ulid`, `slugify`, `copy`, and `literal` lifecycle providers, guarded lifecycle actions after CEL, and deterministic conflict diagnostics across matched types.
