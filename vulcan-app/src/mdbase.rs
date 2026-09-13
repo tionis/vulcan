@@ -1,18 +1,99 @@
-//! Reusable, non-mutating mdbase collection read workflows.
+//! Reusable mdbase collection read and journaled write workflows.
 
-use crate::AppError;
-use chrono::{DateTime, Utc};
-use serde::Serialize;
+use crate::{plugins, AppError};
+use chrono::{DateTime, TimeDelta, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
-    compile_mdbase_query, discover_mdbase_files, execute_mdbase_query, load_mdbase_collection,
-    load_mdbase_contract_registry, load_mdbase_records_with_contracts_filtered,
-    load_mdbase_type_registry, MdbaseCollection, MdbaseConsistentReadGuard,
+    apply_mdbase_write_transaction_with_preflight, authorize_mdbase_write_validation_scope,
+    build_mdbase_write_preview, compile_mdbase_query, discover_mdbase_files, execute_mdbase_query,
+    load_mdbase_collection, load_mdbase_contract_registry,
+    load_mdbase_records_with_contracts_filtered, load_mdbase_type_registry,
+    MdbaseAuthorizedValidationScope, MdbaseCollection, MdbaseConsistentReadGuard,
     MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
     MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult, MdbaseRecordDocument,
-    MdbaseTypeDefinition, MdbaseTypeRegistry,
+    MdbaseTypeDefinition, MdbaseTypeRegistry, MdbaseWriteApplyRequest,
+    MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome, MdbaseWritePreview,
+    MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
 };
-use vulcan_core::{PermissionFilter, VaultPaths};
+use vulcan_core::{
+    auto_commit, initialize_vulcan_dir, load_vault_config, resolve_permission_profile,
+    AutoCommitReport, ConfigDiagnosticKind, GitTrigger, PermissionFilter, PermissionGuard,
+    PluginEvent, ProfilePermissionGuard, ScanMode, ScanSummary, VaultConfig, VaultPaths,
+};
+
+const DEFAULT_WRITE_PREVIEW_TTL_SECONDS: i64 = 300;
+const MAX_WRITE_PREVIEW_TTL_SECONDS: i64 = 3_600;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MdbaseWriteOperation {
+    Create,
+    Update,
+    Delete,
+    Rename { from: String, to: String },
+    Batch,
+}
+
+impl MdbaseWriteOperation {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Delete => "delete",
+            Self::Rename { .. } => "rename",
+            Self::Batch => "batch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseWriteChangeRequest {
+    pub path: String,
+    /// Exact proposed UTF-8 Markdown, or `None` to delete the path.
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseWritePlanRequest {
+    pub caller_id: String,
+    pub instance_id: String,
+    pub operation: MdbaseWriteOperation,
+    pub changes: Vec<MdbaseWriteChangeRequest>,
+    pub matched_types: Vec<String>,
+    pub generated_values: BTreeMap<String, serde_json::Value>,
+    pub permission_profile: Option<String>,
+    pub ttl_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseWritePlanReport {
+    pub dry_run: bool,
+    pub permission_profile: String,
+    pub authorization: MdbaseAuthorizedValidationScope,
+    pub preview: MdbaseWritePreview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseWriteExecutionOptions {
+    pub idempotency_key: String,
+    pub no_commit: bool,
+    pub quiet: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseWriteApplyReport {
+    pub dry_run: bool,
+    pub outcome: MdbaseWriteOutcome,
+    pub scan: Option<ScanSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_commit: Option<AutoCommitReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub follow_up_errors: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MdbaseStatusReport {
@@ -67,7 +148,7 @@ pub struct MdbaseReadReport {
 }
 
 struct LoadedCollection {
-    _read_guard: Option<MdbaseConsistentReadGuard>,
+    read_guard: Option<MdbaseConsistentReadGuard>,
     collection: MdbaseCollection,
     types: MdbaseTypeRegistry,
     contracts: MdbaseContractRegistry,
@@ -291,6 +372,376 @@ pub fn parse_mdbase_query(source: &str) -> Result<serde_json::Value, AppError> {
     serde_json::to_value(yaml).map_err(AppError::operation)
 }
 
+/// Build an immutable, authorization-bound dry-run for an mdbase mutation.
+///
+/// Planning reads exact before-images but performs no canonical or cache
+/// mutation and dispatches no plugin lifecycle events.
+pub fn plan_mdbase_write(
+    paths: &VaultPaths,
+    request: &MdbaseWritePlanRequest,
+    now: DateTime<Utc>,
+) -> Result<MdbaseWritePlanReport, AppError> {
+    validate_plan_request(request)?;
+    let loaded = load_collection(paths)?;
+    for type_name in &request.matched_types {
+        if loaded.types.get(type_name).is_none() {
+            return Err(AppError::operation(format!(
+                "unknown mdbase type in proposed draft: {type_name}"
+            )));
+        }
+    }
+    let selection = resolve_permission_profile(paths, request.permission_profile.as_deref())
+        .map_err(AppError::operation)?;
+    let config = load_write_config(paths)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    let affected_paths = request
+        .changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    // Before-images are part of every reviewed plan, including absence
+    // preconditions for creates, so affected paths require both capabilities.
+    let authorization = authorize_mdbase_write_validation_scope(
+        &loaded.collection,
+        &loaded.types,
+        "",
+        &MdbaseWriteAuthorizationRequest {
+            read_paths: affected_paths.clone(),
+            write_paths: affected_paths,
+            matched_types: request.matched_types.clone(),
+        },
+        &guard,
+    )
+    .map_err(AppError::operation)?;
+    let ttl = request
+        .ttl_seconds
+        .unwrap_or(DEFAULT_WRITE_PREVIEW_TTL_SECONDS);
+    let preview = build_mdbase_write_preview(
+        &loaded.collection,
+        MdbaseWritePreviewRequest {
+            plan_id: ulid::Ulid::new().to_string().to_lowercase(),
+            caller_id: request.caller_id.clone(),
+            instance_id: request.instance_id.clone(),
+            operation: request.operation.name().to_string(),
+            issued_at: now,
+            expires_at: now + TimeDelta::seconds(ttl),
+            permission_revision: permission_revision(guard.selection())?,
+            config_revision: config_revision(&config)?,
+            changes: request
+                .changes
+                .iter()
+                .map(|change| MdbaseWritePreviewChangeRequest {
+                    path: change.path.clone(),
+                    after: change.after.clone(),
+                })
+                .collect(),
+            matched_types: request.matched_types.clone(),
+            relevant_record_namespaces: authorization.collection_record_namespaces.clone(),
+            generated_values: request.generated_values.clone(),
+        },
+    )
+    .map_err(AppError::operation)?;
+    validate_operation_shape(&request.operation, &preview)?;
+    Ok(MdbaseWritePlanReport {
+        dry_run: true,
+        permission_profile: guard.selection().name.clone(),
+        authorization,
+        preview,
+    })
+}
+
+/// Apply an exact reviewed plan through the crash-safe mdbase transaction.
+/// Cache refresh is part of consistency; plugin delivery and opt-in Git occur
+/// only after the canonical transaction commits and are never repeated for an
+/// idempotent replay.
+pub fn apply_mdbase_write(
+    paths: &VaultPaths,
+    plan: &MdbaseWritePlanReport,
+    options: &MdbaseWriteExecutionOptions,
+    now: DateTime<Utc>,
+) -> Result<MdbaseWriteApplyReport, AppError> {
+    if !plan.dry_run {
+        return Err(AppError::operation("invalid mdbase write plan"));
+    }
+    let mut loaded = load_collection(paths)?;
+    let selection = resolve_permission_profile(paths, Some(&plan.permission_profile))
+        .map_err(AppError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    let affected_paths = plan
+        .preview
+        .changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    let authorization = authorize_mdbase_write_validation_scope(
+        &loaded.collection,
+        &loaded.types,
+        "",
+        &MdbaseWriteAuthorizationRequest {
+            read_paths: affected_paths.clone(),
+            write_paths: affected_paths,
+            matched_types: plan.preview.matched_types.clone(),
+        },
+        &guard,
+    )
+    .map_err(AppError::operation)?;
+    if authorization != plan.authorization {
+        return Err(AppError::operation(
+            "mdbase write authorization changed; create and review a new preview",
+        ));
+    }
+
+    let config = load_write_config(paths)?;
+    let should_commit =
+        !options.no_commit && config.git.auto_commit && config.git.trigger == GitTrigger::Mutation;
+    if should_commit {
+        guard.check_git().map_err(AppError::operation)?;
+    }
+    let permission_revision = permission_revision(guard.selection())?;
+    let config_revision = config_revision(&config)?;
+    let profile = plan.permission_profile.clone();
+    let plugin_payload = write_plugin_payload(&plan.preview);
+    let quiet = options.quiet;
+    let mut scan = None;
+    // The consistent-read guard must be released before the transaction takes
+    // the exclusive vault lock. Control/type data remains immutable-plan input
+    // and is reverified by the transaction itself.
+    drop(loaded.read_guard.take());
+    initialize_vulcan_dir(paths).map_err(AppError::operation)?;
+    let apply_request = MdbaseWriteApplyRequest {
+        preview: &plan.preview,
+        verification: MdbaseWritePreviewVerification {
+            caller_id: &plan.preview.caller_id,
+            instance_id: &plan.preview.instance_id,
+            operation: &plan.preview.operation,
+            permission_revision: &permission_revision,
+            config_revision: &config_revision,
+            now,
+        },
+        idempotency_key: &options.idempotency_key,
+    };
+    let outcome = apply_mdbase_write_transaction_with_preflight(
+        paths,
+        &loaded.collection,
+        &apply_request,
+        || {
+            plugins::dispatch_plugin_event(
+                paths,
+                Some(&profile),
+                PluginEvent::OnNoteWrite,
+                &plugin_payload,
+                quiet,
+            )
+            .map_err(|error| error.to_string())
+        },
+        |_| {
+            let summary = vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental)
+                .map_err(|error| error.to_string())?;
+            scan = Some(summary);
+            Ok(())
+        },
+    )
+    .map_err(AppError::operation)?;
+
+    let mut report = MdbaseWriteApplyReport {
+        dry_run: false,
+        outcome,
+        scan,
+        auto_commit: None,
+        follow_up_errors: Vec::new(),
+    };
+    if report.outcome.replayed {
+        return Ok(report);
+    }
+    dispatch_committed_path_events(paths, plan, options.quiet);
+    if should_commit && report.outcome.follow_up_error.is_none() {
+        apply_auto_commit(paths, plan, &config.git, options, &mut report);
+    }
+    Ok(report)
+}
+
+fn validate_plan_request(request: &MdbaseWritePlanRequest) -> Result<(), AppError> {
+    let ttl = request
+        .ttl_seconds
+        .unwrap_or(DEFAULT_WRITE_PREVIEW_TTL_SECONDS);
+    if !(1..=MAX_WRITE_PREVIEW_TTL_SECONDS).contains(&ttl) {
+        return Err(AppError::operation(
+            "mdbase write preview TTL must be between 1 and 3600 seconds",
+        ));
+    }
+    if request.caller_id.trim().is_empty() || request.instance_id.trim().is_empty() {
+        return Err(AppError::operation(
+            "mdbase writes require non-empty caller and instance identifiers",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_operation_shape(
+    operation: &MdbaseWriteOperation,
+    preview: &MdbaseWritePreview,
+) -> Result<(), AppError> {
+    let valid = match operation {
+        MdbaseWriteOperation::Create => {
+            preview.changes.len() == 1
+                && preview.changes[0].before.is_none()
+                && preview.changes[0].after.is_some()
+        }
+        MdbaseWriteOperation::Update => {
+            preview.changes.len() == 1
+                && preview.changes[0].before.is_some()
+                && preview.changes[0].after.is_some()
+        }
+        MdbaseWriteOperation::Delete => {
+            preview.changes.len() == 1
+                && preview.changes[0].before.is_some()
+                && preview.changes[0].after.is_none()
+        }
+        MdbaseWriteOperation::Rename { from, to } => {
+            from != to
+                && preview.changes.iter().any(|change| {
+                    change.path == *from && change.before.is_some() && change.after.is_none()
+                })
+                && preview.changes.iter().any(|change| {
+                    change.path == *to && change.before.is_none() && change.after.is_some()
+                })
+        }
+        MdbaseWriteOperation::Batch => !preview.changes.is_empty(),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::operation(format!(
+            "mdbase {} request does not match the observed before/after state",
+            operation.name()
+        )))
+    }
+}
+
+fn permission_revision(
+    selection: &vulcan_core::ResolvedPermissionProfile,
+) -> Result<String, AppError> {
+    revision("permission", selection)
+}
+
+fn config_revision(config: &VaultConfig) -> Result<String, AppError> {
+    revision("config", config)
+}
+
+fn load_write_config(paths: &VaultPaths) -> Result<VaultConfig, AppError> {
+    let loaded = load_vault_config(paths);
+    if let Some(diagnostic) = loaded
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.kind == ConfigDiagnosticKind::ParseFailure)
+    {
+        return Err(AppError::operation(format!(
+            "cannot plan or apply an mdbase write with invalid configuration at {}: {}",
+            diagnostic.path.display(),
+            diagnostic.message
+        )));
+    }
+    Ok(loaded.config)
+}
+
+fn revision(label: &str, value: &impl Serialize) -> Result<String, AppError> {
+    let bytes = serde_json::to_vec(value).map_err(AppError::operation)?;
+    Ok(format!("{label}:sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn write_plugin_payload(preview: &MdbaseWritePreview) -> serde_json::Value {
+    json!({
+        "kind": PluginEvent::OnNoteWrite,
+        "operation": preview.operation,
+        "plan_id": preview.plan_id,
+        "changes": preview.changes,
+    })
+}
+
+fn dispatch_committed_path_events(paths: &VaultPaths, plan: &MdbaseWritePlanReport, quiet: bool) {
+    for change in &plan.preview.changes {
+        let event = match (&change.before, &change.after) {
+            (None, Some(_)) => Some(PluginEvent::OnNoteCreate),
+            (Some(_), None) => Some(PluginEvent::OnNoteDelete),
+            _ => None,
+        };
+        if let Some(event) = event {
+            let _ = plugins::dispatch_plugin_event(
+                paths,
+                Some(&plan.permission_profile),
+                event,
+                &json!({
+                    "kind": event,
+                    "operation": plan.preview.operation,
+                    "plan_id": plan.preview.plan_id,
+                    "path": change.path,
+                    "content": change.after,
+                }),
+                quiet,
+            );
+        }
+    }
+}
+
+fn apply_auto_commit(
+    paths: &VaultPaths,
+    plan: &MdbaseWritePlanReport,
+    git: &vulcan_core::GitConfig,
+    options: &MdbaseWriteExecutionOptions,
+    report: &mut MdbaseWriteApplyReport,
+) {
+    let changed_paths = plan
+        .preview
+        .changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    let payload = json!({
+        "kind": PluginEvent::OnPreCommit,
+        "operation": plan.preview.operation,
+        "plan_id": plan.preview.plan_id,
+        "files": changed_paths,
+    });
+    if let Err(error) = plugins::dispatch_plugin_event(
+        paths,
+        Some(&plan.permission_profile),
+        PluginEvent::OnPreCommit,
+        &payload,
+        options.quiet,
+    ) {
+        report
+            .follow_up_errors
+            .push(format!("auto-commit preflight failed: {error}"));
+        return;
+    }
+    match auto_commit(
+        paths.vault_root(),
+        git,
+        &format!("mdbase {}", plan.preview.operation),
+        &changed_paths,
+    ) {
+        Ok(commit) => {
+            let post_payload = json!({
+                "kind": PluginEvent::OnPostCommit,
+                "operation": plan.preview.operation,
+                "plan_id": plan.preview.plan_id,
+                "commit": commit,
+            });
+            let _ = plugins::dispatch_plugin_event(
+                paths,
+                Some(&plan.permission_profile),
+                PluginEvent::OnPostCommit,
+                &post_payload,
+                options.quiet,
+            );
+            report.auto_commit = Some(commit);
+        }
+        Err(error) => report
+            .follow_up_errors
+            .push(format!("auto-commit failed: {error}")),
+    }
+}
+
 fn load_collection(paths: &VaultPaths) -> Result<LoadedCollection, AppError> {
     let read_guard =
         vulcan_core::mdbase::acquire_mdbase_consistent_read(paths).map_err(AppError::operation)?;
@@ -301,7 +752,7 @@ fn load_collection(paths: &VaultPaths) -> Result<LoadedCollection, AppError> {
     let contracts =
         load_mdbase_contract_registry(&collection, &types).map_err(AppError::operation)?;
     Ok(LoadedCollection {
-        _read_guard: read_guard,
+        read_guard,
         collection,
         types,
         contracts,
@@ -374,6 +825,22 @@ mod tests {
     };
     use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+
+    fn write_plan_request(
+        operation: MdbaseWriteOperation,
+        changes: Vec<MdbaseWriteChangeRequest>,
+    ) -> MdbaseWritePlanRequest {
+        MdbaseWritePlanRequest {
+            caller_id: "test-caller".to_string(),
+            instance_id: "test-instance".to_string(),
+            operation,
+            changes,
+            matched_types: vec!["task".to_string()],
+            generated_values: BTreeMap::new(),
+            permission_profile: None,
+            ttl_seconds: Some(300),
+        }
+    }
 
     fn fixture() -> (tempfile::TempDir, VaultPaths) {
         let directory = tempdir().expect("temp directory");
@@ -521,6 +988,7 @@ mod tests {
                     path: "tasks/public.md".to_string(),
                     after: Some("---\ntype: task\ntitle: Changed\n---\nBody\n".to_string()),
                 }],
+                matched_types: vec!["task".to_string()],
                 relevant_record_namespaces: vec!["tasks/**".to_string()],
                 generated_values: BTreeMap::new(),
             },
@@ -545,5 +1013,148 @@ mod tests {
 
         let error = build_mdbase_status_report(&paths, None).unwrap_err();
         assert!(error.to_string().contains("recovery is required"));
+    }
+
+    #[test]
+    fn dry_run_then_apply_updates_cache_and_replay_has_no_follow_up_work() {
+        let (directory, paths) = fixture();
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let plan = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Update,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/public.md".to_string(),
+                    after: Some("---\ntype: task\ntitle: Updated\n---\nBody\n".to_string()),
+                }],
+            ),
+            now,
+        )
+        .expect("plan update");
+        assert!(plan.dry_run);
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).unwrap(),
+            "---\ntype: task\ntitle: Public\n---\nBody\n"
+        );
+        assert!(!directory.path().join(".vulcan").exists());
+
+        let options = MdbaseWriteExecutionOptions {
+            idempotency_key: "update-public".to_string(),
+            no_commit: true,
+            quiet: true,
+        };
+        let report =
+            apply_mdbase_write(&paths, &plan, &options, now + chrono::Duration::seconds(1))
+                .expect("apply update");
+        assert!(!report.outcome.replayed);
+        assert!(report.scan.is_some());
+        assert!(report.follow_up_errors.is_empty());
+        assert!(fs::read_to_string(directory.path().join("tasks/public.md"))
+            .unwrap()
+            .contains("title: Updated"));
+
+        let replay =
+            apply_mdbase_write(&paths, &plan, &options, now + chrono::Duration::seconds(2))
+                .expect("idempotent replay");
+        assert!(replay.outcome.replayed);
+        assert!(replay.scan.is_none());
+        assert!(replay.auto_commit.is_none());
+    }
+
+    #[test]
+    fn operation_shapes_cover_create_delete_rename_and_batch_without_mutation() {
+        let (directory, paths) = fixture();
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let create = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Create,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/new.md".to_string(),
+                    after: Some("---\ntype: task\ntitle: New\n---\n".to_string()),
+                }],
+            ),
+            now,
+        )
+        .expect("create plan");
+        assert_eq!(create.preview.operation, "create");
+
+        let delete = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Delete,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/public.md".to_string(),
+                    after: None,
+                }],
+            ),
+            now,
+        )
+        .expect("delete plan");
+        assert_eq!(delete.preview.operation, "delete");
+
+        let rename = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Rename {
+                    from: "tasks/public.md".to_string(),
+                    to: "tasks/renamed.md".to_string(),
+                },
+                vec![
+                    MdbaseWriteChangeRequest {
+                        path: "tasks/public.md".to_string(),
+                        after: None,
+                    },
+                    MdbaseWriteChangeRequest {
+                        path: "tasks/renamed.md".to_string(),
+                        after: Some("---\ntype: task\ntitle: Public\n---\nBody\n".to_string()),
+                    },
+                ],
+            ),
+            now,
+        )
+        .expect("rename plan");
+        assert_eq!(rename.preview.changes.len(), 2);
+
+        let batch = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Batch,
+                vec![
+                    MdbaseWriteChangeRequest {
+                        path: "tasks/public.md".to_string(),
+                        after: Some("---\ntype: task\ntitle: Batched\n---\nBody\n".to_string()),
+                    },
+                    MdbaseWriteChangeRequest {
+                        path: "tasks/new.md".to_string(),
+                        after: Some("---\ntype: task\ntitle: New\n---\n".to_string()),
+                    },
+                ],
+            ),
+            now,
+        )
+        .expect("batch plan");
+        assert_eq!(batch.preview.changes.len(), 2);
+        assert!(!directory.path().join("tasks/new.md").exists());
+        assert!(directory.path().join("tasks/public.md").exists());
+    }
+
+    #[test]
+    fn operation_shape_mismatch_is_rejected() {
+        let (_directory, paths) = fixture();
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let error = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Create,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/public.md".to_string(),
+                    after: Some("replacement".to_string()),
+                }],
+            ),
+            now,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("does not match"));
     }
 }

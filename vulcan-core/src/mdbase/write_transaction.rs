@@ -12,6 +12,7 @@ use std::fmt::{Display, Formatter};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tempfile::NamedTempFile;
 use ulid::Ulid;
 
@@ -186,6 +187,27 @@ where
     apply_with_boundary_hook(paths, collection, request, reconcile, |_| Ok(()))
 }
 
+/// Apply one bounded mdbase batch with a blocking application-layer preflight.
+///
+/// The preflight runs under the vault write lock, after recovery, idempotency
+/// replay detection, and preview verification, but before journal creation or
+/// canonical mutation. This lets reusable orchestration dispatch blocking
+/// lifecycle hooks exactly once without opening a time-of-check/time-of-use
+/// window.
+pub fn apply_mdbase_write_transaction_with_preflight<P, F>(
+    paths: &VaultPaths,
+    collection: &super::MdbaseCollection,
+    request: &MdbaseWriteApplyRequest<'_>,
+    preflight: P,
+    reconcile: F,
+) -> Result<MdbaseWriteOutcome, MdbaseWriteTransactionError>
+where
+    P: FnOnce() -> Result<(), String>,
+    F: FnMut(&MdbaseWriteOutboxEvent) -> Result<(), String>,
+{
+    apply_with_preflight_boundary_hook(paths, collection, request, preflight, reconcile, |_| Ok(()))
+}
+
 /// Recover the single vault-wide mdbase write journal, if present.
 ///
 /// Cooperating reads, scans, mutations, and sync entrypoints call this while
@@ -349,10 +371,26 @@ fn apply_with_boundary_hook<F, H>(
     paths: &VaultPaths,
     collection: &super::MdbaseCollection,
     request: &MdbaseWriteApplyRequest<'_>,
+    reconcile: F,
+    boundary: H,
+) -> Result<MdbaseWriteOutcome, MdbaseWriteTransactionError>
+where
+    F: FnMut(&MdbaseWriteOutboxEvent) -> Result<(), String>,
+    H: FnMut(&str) -> Result<(), MdbaseWriteTransactionError>,
+{
+    apply_with_preflight_boundary_hook(paths, collection, request, || Ok(()), reconcile, boundary)
+}
+
+fn apply_with_preflight_boundary_hook<P, F, H>(
+    paths: &VaultPaths,
+    collection: &super::MdbaseCollection,
+    request: &MdbaseWriteApplyRequest<'_>,
+    preflight: P,
     mut reconcile: F,
     mut boundary: H,
 ) -> Result<MdbaseWriteOutcome, MdbaseWriteTransactionError>
 where
+    P: FnOnce() -> Result<(), String>,
     F: FnMut(&MdbaseWriteOutboxEvent) -> Result<(), String>,
     H: FnMut(&str) -> Result<(), MdbaseWriteTransactionError>,
 {
@@ -368,6 +406,12 @@ where
         return Ok(receipt.outcome);
     }
     validate_apply(paths, collection, request)?;
+    preflight().map_err(|error| {
+        MdbaseWriteTransactionError::new(
+            "preflight_failed",
+            format!("mdbase write preflight failed: {error}"),
+        )
+    })?;
 
     let mut journal = WriteJournal {
         version: MDBASE_WRITE_JOURNAL_VERSION,
@@ -1282,7 +1326,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn timestamp_now() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+    chrono::DateTime::<Utc>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 fn bounded_message(message: &str) -> String {
@@ -1310,6 +1354,7 @@ mod tests {
     };
     use crate::paths::initialize_vulcan_dir;
     use chrono::TimeZone;
+    use std::cell::Cell;
     use tempfile::tempdir;
 
     fn write(root: &Path, path: &str, contents: &str) {
@@ -1352,6 +1397,7 @@ mod tests {
                 permission_revision: "grant:v1".to_string(),
                 config_revision: "config:v1".to_string(),
                 changes,
+                matched_types: vec!["task".to_string()],
                 relevant_record_namespaces: vec!["records/**".to_string()],
                 generated_values: BTreeMap::new(),
             },
@@ -1434,6 +1480,49 @@ mod tests {
             !acknowledge_mdbase_write_outbox(&paths, &outcome.transaction_id)
                 .expect("idempotent acknowledgement")
         );
+    }
+
+    #[test]
+    fn preflight_runs_once_and_is_skipped_for_idempotent_replay() {
+        let (_directory, paths, collection) = fixture();
+        let preview = preview(
+            &collection,
+            vec![MdbaseWritePreviewChangeRequest {
+                path: "records/a.md".to_string(),
+                after: Some("after a\n".to_string()),
+            }],
+        );
+        let request = MdbaseWriteApplyRequest {
+            preview: &preview,
+            verification: verification(),
+            idempotency_key: "preflight-once",
+        };
+        let calls = Cell::new(0);
+        apply_mdbase_write_transaction_with_preflight(
+            &paths,
+            &collection,
+            &request,
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .expect("first apply");
+        let replay = apply_mdbase_write_transaction_with_preflight(
+            &paths,
+            &collection,
+            &request,
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .expect("replay");
+
+        assert!(replay.replayed);
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]

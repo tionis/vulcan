@@ -25,6 +25,8 @@ pub struct MdbaseWritePreviewRequest {
     pub permission_revision: String,
     pub config_revision: String,
     pub changes: Vec<MdbaseWritePreviewChangeRequest>,
+    /// Type membership computed from the proposed draft and bound into the plan.
+    pub matched_types: Vec<String>,
     /// Collection-relative record namespaces authorized for global validation.
     pub relevant_record_namespaces: Vec<String>,
     /// Values produced once by lifecycle providers during planning.
@@ -81,6 +83,8 @@ pub struct MdbaseWritePreview {
     pub permission_revision: String,
     pub config_revision: String,
     pub changes: Vec<MdbaseWritePreviewChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_types: Vec<String>,
     pub absence_preconditions: Vec<String>,
     pub accepted_revisions: BTreeMap<String, String>,
     pub directory_memberships: Vec<MdbaseDirectoryMembership>,
@@ -156,6 +160,7 @@ pub fn build_mdbase_write_preview(
     changes.sort_by(|left, right| left.path.cmp(&right.path));
     absence_preconditions.sort();
 
+    let matched_types = normalize_names(&request.matched_types, "matched type")?;
     let namespaces = normalize_namespaces(&request.relevant_record_namespaces)?;
     let (directory_memberships, mut accepted_revisions) =
         snapshot_record_scope(collection, &namespaces)?;
@@ -179,6 +184,7 @@ pub fn build_mdbase_write_preview(
         permission_revision: request.permission_revision,
         config_revision: request.config_revision,
         changes,
+        matched_types,
         absence_preconditions,
         accepted_revisions,
         directory_memberships,
@@ -343,6 +349,21 @@ fn normalize_namespaces(namespaces: &[String]) -> Result<Vec<String>, MdbaseWrit
     Ok(normalized.into_iter().collect())
 }
 
+fn normalize_names(values: &[String], label: &str) -> Result<Vec<String>, MdbaseWritePreviewError> {
+    let mut normalized = BTreeSet::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+            return Err(MdbaseWritePreviewError::new(
+                "preview_invalid",
+                format!("invalid mdbase {label}"),
+            ));
+        }
+        normalized.insert(value.to_string());
+    }
+    Ok(normalized.into_iter().collect())
+}
+
 fn normalize_relative_path(path: &str) -> Result<String, MdbaseWritePreviewError> {
     let normalized = path.replace('\\', "/");
     if normalized.is_empty()
@@ -442,6 +463,7 @@ mod tests {
     use super::*;
     use crate::mdbase::load_mdbase_collection;
     use chrono::Duration;
+    use chrono::TimeZone;
     use std::fs;
     use tempfile::tempdir;
 
@@ -479,6 +501,7 @@ mod tests {
                 path: "tasks/a.md".to_string(),
                 after: Some("---\ntype: task\n---\nupdated\n".to_string()),
             }],
+            matched_types: vec!["task".to_string()],
             relevant_record_namespaces: vec!["tasks/**".to_string()],
             generated_values: BTreeMap::from([
                 ("now".to_string(), serde_json::json!("2026-09-08T12:00:00Z")),
@@ -657,5 +680,19 @@ mod tests {
             verify(&collection, &tampered, now).unwrap_err().code,
             "preview_invalid"
         );
+    }
+
+    #[test]
+    fn matched_types_are_normalized_and_integrity_bound() {
+        let (_directory, collection) = fixture();
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 12, 0, 0).unwrap();
+        let mut request = request(now);
+        request.matched_types = vec![" task ".to_string(), "task".to_string()];
+        let mut preview = build_mdbase_write_preview(&collection, request).expect("preview");
+        assert_eq!(preview.matched_types, vec!["task"]);
+
+        preview.matched_types.push("secret".to_string());
+        let error = verify(&collection, &preview, now + Duration::minutes(1)).unwrap_err();
+        assert_eq!(error.code, "preview_invalid");
     }
 }

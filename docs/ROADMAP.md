@@ -7525,7 +7525,7 @@ The current refresh avoids unchanged SQLite row writes but still derives the who
 - [x] Bind previews to config/type/contract/schema/grant revisions, relevant directory membership, source/absence preconditions, and fixed generated values; invalidate on phantom records or control drift.
 - [x] Implement the bounded all-or-nothing cooperating-reader batch/rename journal, crash recovery, external-drift preservation, post-consistency outbox, and durable idempotency contract. Do not claim isolation from direct filesystem editors.
 
-- [ ] Centralize mdbase create/update/delete/rename/batch orchestration in `vulcan-app`, reusing secure path handling, atomic writes, scan refresh, permission checks, dry-run reports, plugin events, and opt-in git commits.
+- [x] Centralize mdbase create/update/delete/rename/batch orchestration in `vulcan-app`, reusing secure path handling, atomic writes, scan refresh, permission checks, dry-run reports, plugin events, and opt-in git commits.
 - [ ] Route App/script and generic managed note/property/task edits affecting collection records through that same mdbase-validating pipeline, accounting for old/proposed membership; define explicit raw repair with normal permissions/recovery and resulting diagnostics, never silent fallback on validation failure. Add cross-entrypoint write parity tests before claiming unified routing.
 - [ ] Add opaque content-derived revisions and `if_revision` preconditions; preserve the current file and return `concurrent_modification` on mismatch.
 - [ ] Implement the normative draft pipeline: draft type membership, lifecycle, one post-lifecycle membership check, JSON Schema validation, collection validators, atomic persistence, derived-state refresh, then events.
