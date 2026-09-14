@@ -11142,6 +11142,102 @@ fn config_import_tasknotes_json_output_writes_config_and_reports_mapping() {
 }
 
 #[test]
+fn config_import_tasknotes_migrates_legacy_mdbase_assets() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/tasknotes")).expect("plugin dir");
+    fs::create_dir_all(vault_root.join("_types")).expect("types dir");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+    fs::write(
+        vault_root.join(".obsidian/plugins/tasknotes/data.json"),
+        r#"{"enableMdbaseSpec":true,"tasksFolder":"Tasks"}"#,
+    )
+    .expect("plugin settings");
+    fs::write(
+        vault_root.join("mdbase.yaml"),
+        "spec_version: 0.3.0\nsettings:\n  types_folder: _types\n  exclude: [_types]\n",
+    )
+    .expect("mdbase config");
+    fs::write(
+        vault_root.join("_types/task.md"),
+        r"---
+name: task
+display_name_key: title
+strict: false
+path_pattern: Tasks/{title}.md
+match:
+  where:
+    tags: {contains: task}
+fields:
+  title: {type: string, required: true, tn_role: title}
+  status: {type: enum, values: [open, done], default: open, tn_role: status}
+x-tasknotes:
+  nlp: {triggers: []}
+---
+TaskNotes mdbase-spec v0.2.0.
+",
+    )
+    .expect("legacy type");
+
+    let preview = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 path"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "tasknotes",
+            "--preview",
+        ])
+        .assert()
+        .success();
+    let preview = parse_stdout_json(&preview);
+    assert!(preview["migrated_files"]
+        .as_array()
+        .is_some_and(|files| files
+            .iter()
+            .any(|file| { file["target"] == "_types/task.md" && file["action"] == "copy" })));
+    assert!(fs::read_to_string(vault_root.join("_types/task.md"))
+        .expect("legacy type")
+        .contains("display_name_key"));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 path"),
+            "config",
+            "import",
+            "tasknotes",
+            "--apply",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let settings = fs::read_to_string(vault_root.join(".obsidian/plugins/tasknotes/data.json"))
+        .expect("plugin settings");
+    assert!(settings.contains("\"enableMdbaseSpec\":false"));
+
+    let status = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 path"),
+            "--output",
+            "json",
+            "mdbase",
+            "status",
+        ])
+        .assert()
+        .success();
+    let status = parse_stdout_json(&status);
+    assert_eq!(status["valid"], true);
+    assert_eq!(status["result"]["types"], 1);
+}
+
+#[test]
 fn tasks_blocked_json_output_lists_blockers() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -14985,6 +15081,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("Never put a provider key in `daemon.toml`"));
     assert!(permission_skill.contains("no device-local import command"));
     assert!(permission_skill.contains("repository-scoped read capability"));
+    assert!(permission_skill.contains("converts a recognized generated mdbase 0.2"));
+    assert!(permission_skill.contains("disables `enableMdbaseSpec`"));
     let index_skill =
         fs::read_to_string(vault_root.join(".agents/skills/index-maintenance/SKILL.md"))
             .expect("index maintenance skill should be readable");
@@ -15419,6 +15517,8 @@ fn skill_list_and_get_surface_bundled_skills() {
             .expect("configuration skill should be installed");
     assert!(configuration.contains("vulcan config import <source> --preview"));
     assert!(configuration.contains("unsupported values are reported as skipped"));
+    assert!(configuration.contains("converts a recognized generated mdbase 0.2"));
+    assert!(configuration.contains("disables `enableMdbaseSpec`"));
     assert!(configuration.contains("vulcan daemon companion --output json"));
     assert!(configuration.contains("native `SecretStorage`"));
 }

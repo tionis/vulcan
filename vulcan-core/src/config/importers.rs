@@ -1,8 +1,13 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
+use crate::mdbase::{
+    bundled_mdbase_schema, migrate_tasknotes_v02_type, validate_mdbase_schema_value,
+    MDBASE_CANONICAL_SCHEMA_BASE,
+};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ConfigImportMapping {
@@ -1001,13 +1006,19 @@ impl PluginImporter for TaskNotesImporter {
             dry_run,
         )?;
         let migration = tasknotes_migrate_view_files(paths, &raw, dry_run)?;
+        let mdbase_migration = tasknotes_migrate_mdbase_assets(paths, &raw, dry_run)?;
         report.source_paths.extend(migration.source_paths);
+        report.source_paths.extend(mdbase_migration.source_paths);
         report.source_paths.sort();
         report.source_paths.dedup();
         report.migrated_files = migration.migrated_files;
+        report
+            .migrated_files
+            .extend(mdbase_migration.migrated_files);
         report.skipped.append(&mut skipped);
         report.skipped.extend(tasknotes_skipped_settings(&raw));
         report.skipped.extend(migration.skipped);
+        report.skipped.extend(mdbase_migration.skipped);
         if report
             .migrated_files
             .iter()
@@ -2119,6 +2130,266 @@ pub(super) struct TaskNotesViewMigrationResult {
     pub(super) skipped: Vec<ImportSkippedSetting>,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct TaskNotesMdbaseMigrationResult {
+    source_paths: Vec<PathBuf>,
+    pub(super) migrated_files: Vec<ImportMigratedFile>,
+    skipped: Vec<ImportSkippedSetting>,
+}
+
+struct PlannedTaskNotesMdbaseWrite {
+    path: PathBuf,
+    before: String,
+    after: String,
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn tasknotes_migrate_mdbase_assets(
+    paths: &VaultPaths,
+    raw: &Value,
+    dry_run: bool,
+) -> Result<TaskNotesMdbaseMigrationResult, ConfigImportError> {
+    let mut result = TaskNotesMdbaseMigrationResult::default();
+    let config_path = paths.vault_root().join("mdbase.yaml");
+    if !config_path.is_file() {
+        if raw.get("enableMdbaseSpec").and_then(Value::as_bool) == Some(true) {
+            result.skipped.push(ImportSkippedSetting {
+                source: "enableMdbaseSpec".to_string(),
+                reason:
+                    "TaskNotes mdbase generation is enabled, but mdbase.yaml has not been generated"
+                        .to_string(),
+            });
+        }
+        return Ok(result);
+    }
+
+    let config_source = fs::read_to_string(&config_path)?;
+    let config_yaml: serde_yaml::Value = serde_yaml::from_str(&config_source)
+        .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
+    let config: Value = serde_json::to_value(config_yaml)
+        .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
+    let spec_version = config
+        .get("spec_version")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !spec_version.starts_with("0.2") && spec_version != "0.3.0" {
+        result.skipped.push(ImportSkippedSetting {
+            source: "enableMdbaseSpec".to_string(),
+            reason: format!(
+                "mdbase.yaml declares unsupported spec version `{spec_version}`; no collection assets were changed"
+            ),
+        });
+        return Ok(result);
+    }
+    let types_folder = config
+        .pointer("/settings/types_folder")
+        .and_then(Value::as_str)
+        .unwrap_or("_types");
+    let types_folder = normalize_relative_input_path(
+        types_folder,
+        RelativePathOptions {
+            expected_extension: None,
+            append_extension_if_missing: false,
+        },
+    )
+    .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
+    let type_path = paths.vault_root().join(&types_folder).join("task.md");
+    if !type_path.is_file() {
+        result.skipped.push(ImportSkippedSetting {
+            source: "enableMdbaseSpec".to_string(),
+            reason: format!(
+                "TaskNotes type file `{types_folder}/task.md` was not found; no collection assets were changed"
+            ),
+        });
+        return Ok(result);
+    }
+
+    let type_source = fs::read_to_string(&type_path)?;
+    let Some(type_migration) = migrate_tasknotes_v02_type(&type_source)
+        .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?
+    else {
+        return Ok(result);
+    };
+    let migrated_config = if spec_version == "0.3.0" {
+        config_source.clone()
+    } else {
+        replace_top_level_yaml_scalar(&config_source, "spec_version", "\"0.3.0\"")?
+    };
+    validate_mdbase_migration_document("config.schema.json", &migrated_config, false)?;
+    validate_mdbase_migration_document(
+        "type-file.schema.json",
+        &type_migration.rendered_source,
+        true,
+    )?;
+
+    let plugin_path = paths
+        .vault_root()
+        .join(".obsidian/plugins/tasknotes/data.json");
+    let plugin_source = fs::read_to_string(&plugin_path)?;
+    let migrated_plugin = if raw.get("enableMdbaseSpec").and_then(Value::as_bool) == Some(true) {
+        disable_tasknotes_mdbase_generator(&plugin_source)?
+    } else {
+        plugin_source.clone()
+    };
+
+    let mut writes = Vec::new();
+    push_mdbase_migration_write(
+        &mut writes,
+        config_path.clone(),
+        config_source,
+        migrated_config,
+    );
+    push_mdbase_migration_write(
+        &mut writes,
+        type_path.clone(),
+        type_source,
+        type_migration.rendered_source,
+    );
+    push_mdbase_migration_write(
+        &mut writes,
+        plugin_path.clone(),
+        plugin_source,
+        migrated_plugin,
+    );
+    if !dry_run {
+        apply_tasknotes_mdbase_writes(&writes)?;
+    }
+
+    result
+        .source_paths
+        .extend([config_path, type_path, plugin_path]);
+    result.migrated_files = writes
+        .into_iter()
+        .map(|write| ImportMigratedFile {
+            source: write.path.clone(),
+            target: write.path,
+            action: ImportMigratedFileAction::Copy,
+        })
+        .collect();
+    Ok(result)
+}
+
+fn push_mdbase_migration_write(
+    writes: &mut Vec<PlannedTaskNotesMdbaseWrite>,
+    path: PathBuf,
+    before: String,
+    after: String,
+) {
+    if before != after {
+        writes.push(PlannedTaskNotesMdbaseWrite {
+            path,
+            before,
+            after,
+        });
+    }
+}
+
+fn validate_mdbase_migration_document(
+    schema_name: &str,
+    source: &str,
+    frontmatter: bool,
+) -> Result<(), ConfigImportError> {
+    let yaml = if frontmatter {
+        source
+            .strip_prefix("---\n")
+            .and_then(|source| source.split_once("\n---"))
+            .map(|(yaml, _)| yaml)
+            .ok_or_else(|| {
+                ConfigImportError::InvalidConfig(
+                    "migrated TaskNotes type has invalid frontmatter delimiters".to_string(),
+                )
+            })?
+    } else {
+        source
+    };
+    let value: serde_yaml::Value = serde_yaml::from_str(yaml)
+        .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
+    let value = serde_json::to_value(value)
+        .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
+    let schema = bundled_mdbase_schema(&format!("{MDBASE_CANONICAL_SCHEMA_BASE}{schema_name}"))
+        .expect("bundled mdbase migration schema");
+    let schema: Value = serde_json::from_str(schema.json)?;
+    let diagnostics = validate_mdbase_schema_value(&schema, &value)
+        .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(ConfigImportError::InvalidConfig(format!(
+            "migrated TaskNotes asset failed {schema_name}: {}",
+            diagnostics
+                .iter()
+                .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )))
+    }
+}
+
+fn replace_top_level_yaml_scalar(
+    source: &str,
+    key: &str,
+    replacement: &str,
+) -> Result<String, ConfigImportError> {
+    let mut replaced = false;
+    let mut output = String::with_capacity(source.len());
+    for line in source.split_inclusive('\n') {
+        if !replaced && line.starts_with(&format!("{key}:")) {
+            output.push_str(key);
+            output.push_str(": ");
+            output.push_str(replacement);
+            output.push('\n');
+            replaced = true;
+        } else {
+            output.push_str(line);
+        }
+    }
+    if replaced {
+        Ok(output)
+    } else {
+        Err(ConfigImportError::InvalidConfig(format!(
+            "could not locate top-level `{key}` in mdbase.yaml"
+        )))
+    }
+}
+
+fn disable_tasknotes_mdbase_generator(source: &str) -> Result<String, ConfigImportError> {
+    let expression = regex::Regex::new(r#"("enableMdbaseSpec"\s*:\s*)true"#)
+        .expect("static regex should compile");
+    if expression.find_iter(source).count() != 1 {
+        return Err(ConfigImportError::InvalidConfig(
+            "could not uniquely disable TaskNotes enableMdbaseSpec setting".to_string(),
+        ));
+    }
+    Ok(expression.replace(source, "${1}false").into_owned())
+}
+
+fn apply_tasknotes_mdbase_writes(
+    writes: &[PlannedTaskNotesMdbaseWrite],
+) -> Result<(), ConfigImportError> {
+    let mut staged = Vec::new();
+    for write in writes {
+        let parent = write.path.parent().ok_or_else(|| {
+            ConfigImportError::InvalidConfig(format!(
+                "migration target has no parent: {}",
+                write.path.display()
+            ))
+        })?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(write.after.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        staged.push(temporary);
+    }
+    for (applied, (write, temporary)) in writes.iter().zip(staged).enumerate() {
+        if let Err(error) = temporary.persist(&write.path) {
+            for rollback in writes[..applied].iter().rev() {
+                let _ = fs::write(&rollback.path, &rollback.before);
+            }
+            return Err(ConfigImportError::Io(error.error));
+        }
+    }
+    Ok(())
+}
+
 fn tasknotes_view_target_path(command: &str) -> Option<&'static str> {
     match command {
         "open-calendar-view" => Some("TaskNotes/Views/mini-calendar-default.base"),
@@ -2449,12 +2720,8 @@ pub(super) fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSettin
     push_tasknotes_skipped_group(
         &mut skipped,
         settings,
-        &[
-            "enableBases",
-            "enableMdbaseSpec",
-            "autoCreateDefaultBasesFiles",
-        ],
-        "TaskNotes Bases integration settings are not yet supported",
+        &["enableBases", "autoCreateDefaultBasesFiles"],
+        "TaskNotes Bases view integration settings are not yet supported",
     );
     push_tasknotes_skipped_group(
         &mut skipped,

@@ -57,7 +57,9 @@ mod obsidian;
 mod partial;
 
 #[cfg(test)]
-use importers::{tasknotes_migrate_view_files, tasknotes_skipped_settings};
+use importers::{
+    tasknotes_migrate_mdbase_assets, tasknotes_migrate_view_files, tasknotes_skipped_settings,
+};
 
 use partial::{
     PartialPermissionProfile, PartialPermissionsConfig, PartialPluginRegistration,

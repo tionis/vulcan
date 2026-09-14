@@ -847,6 +847,8 @@ Notes:
   Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit
   Use `config import --all` to apply every detected importer in registry order.
   Use `config import --list` to inspect detectable sources without writing.
+  TaskNotes import migrates recognized generated mdbase 0.2 assets to 0.3 and disables the
+  legacy generator so it cannot overwrite the migrated type; always preview this control-file change.
   When git auto-commit is enabled for mutations, config edits, config CRUD, plugin config changes, and config imports participate like other mutating commands.
 
 Examples:

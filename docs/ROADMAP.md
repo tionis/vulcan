@@ -7592,7 +7592,7 @@ The current refresh avoids unchanged SQLite row writes but still derives the who
 - [ ] Load canonical `type: view` records as ordinary mdbase records and implement stable named-view discovery, inheritance/merge rules, invocation context, advisory presentation, and headless execution.
 - [ ] Adapt existing `.base` discovery/evaluation to the mdbase saved-view source envelope without converting `.base` files or making mdbase CEL the Bases expression language; keep source revisions and full-document writable operations explicit.
 - [ ] Evaluate the upstream `obsidian_bases_views` optional feature against Vulcan's existing oracle/snapshot corpus and claim it only when source ordering, formulas, filters, grouping, properties, and diagnostics match.
-- [ ] Import TaskNotes `enableMdbaseSpec` and generated collection assets through an explicit preview/apply workflow that preserves unrelated settings and never partially migrates a live collection.
+- [x] Import TaskNotes `enableMdbaseSpec` and generated collection assets through an explicit preview/apply workflow that preserves unrelated settings and never partially migrates a live collection.
 
 #### MDB.9 Watch, daemon, permissions, and rollout
 

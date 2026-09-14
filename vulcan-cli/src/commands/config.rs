@@ -463,7 +463,7 @@ fn print_config_import_batch_report(
                 }
                 for file in &item.migrated_files {
                     println!(
-                        "    view: {} -> {} ({})",
+                        "    file: {} -> {} ({})",
                         file.source.display(),
                         file.target.display(),
                         render_config_import_migrated_file_action(report.dry_run, file.action)
@@ -574,7 +574,7 @@ fn print_config_import_report(
             }
             for file in &report.migrated_files {
                 println!(
-                    "  view: {} -> {} ({})",
+                    "  file: {} -> {} ({})",
                     file.source.display(),
                     file.target.display(),
                     render_config_import_migrated_file_action(report.dry_run, file.action)
