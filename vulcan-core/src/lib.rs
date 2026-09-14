@@ -276,9 +276,10 @@ pub use query::{
     StructuredQueryPageMeta, StructuredQueryPlan,
 };
 pub use refactor::{
-    bulk_set_property, bulk_set_property_on_paths, merge_tags, rename_alias, rename_block_ref,
-    rename_heading, rename_property, set_note_property, BulkMutationReport, RefactorChange,
-    RefactorError, RefactorFileReport, RefactorReport,
+    bulk_set_property, bulk_set_property_on_paths, merge_tags, plan_property_mutations_on_paths,
+    rename_alias, rename_block_ref, rename_heading, rename_property, set_note_property,
+    BulkMutationReport, PlannedPropertyMutation, RefactorChange, RefactorError, RefactorFileReport,
+    RefactorReport,
 };
 pub use render::{render_markdown_fragment_html, render_markdown_html};
 pub use resolver::{

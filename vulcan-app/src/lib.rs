@@ -45,6 +45,7 @@ pub mod mdbase_conformance;
 pub mod notes;
 pub mod outline_markdown;
 pub mod plugins;
+pub mod properties;
 pub mod publish;
 pub mod pull;
 pub mod scan;

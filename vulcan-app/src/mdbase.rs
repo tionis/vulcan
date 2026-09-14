@@ -115,6 +115,23 @@ pub struct MdbaseManagedNoteWriteRequest<'a> {
     pub quiet: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdbaseManagedNoteWriteChange<'a> {
+    pub path: &'a str,
+    pub before: Option<&'a str>,
+    pub after: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdbaseManagedNoteWriteBatchRequest<'a> {
+    pub changes: &'a [MdbaseManagedNoteWriteChange<'a>],
+    pub operation: MdbaseWriteOperation,
+    pub mode: MdbaseManagedWriteMode,
+    pub dry_run: bool,
+    pub permission_profile: Option<&'a str>,
+    pub quiet: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MdbaseManagedNoteWriteReport {
     pub mode: MdbaseManagedWriteMode,
@@ -596,13 +613,53 @@ pub fn apply_managed_mdbase_note_write(
     paths: &VaultPaths,
     request: &MdbaseManagedNoteWriteRequest<'_>,
 ) -> Result<Option<MdbaseManagedNoteWriteReport>, AppError> {
+    let changes = [MdbaseManagedNoteWriteChange {
+        path: request.path,
+        before: request.before,
+        after: request.after,
+    }];
+    apply_managed_mdbase_note_writes(
+        paths,
+        &MdbaseManagedNoteWriteBatchRequest {
+            changes: &changes,
+            operation: request.operation.clone(),
+            mode: request.mode,
+            dry_run: request.dry_run,
+            permission_profile: request.permission_profile,
+            quiet: request.quiet,
+        },
+    )
+}
+
+/// Route a homogeneous set of generic note mutations through one mdbase
+/// transaction. `None` means none of the paths are collection records; mixing
+/// managed and ordinary Markdown paths is rejected so callers must partition
+/// the write set explicitly.
+pub fn apply_managed_mdbase_note_writes(
+    paths: &VaultPaths,
+    request: &MdbaseManagedNoteWriteBatchRequest<'_>,
+) -> Result<Option<MdbaseManagedNoteWriteReport>, AppError> {
+    if request.changes.is_empty() {
+        return Ok(None);
+    }
     let Some(collection) =
         load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?
     else {
         return Ok(None);
     };
-    if !is_mdbase_record_path(&collection, request.path).map_err(AppError::operation)? {
+    let managed = request
+        .changes
+        .iter()
+        .map(|change| is_mdbase_record_path(&collection, change.path))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::operation)?;
+    if managed.iter().all(|managed| !managed) {
         return Ok(None);
+    }
+    if managed.iter().any(|managed| !managed) {
+        return Err(AppError::operation(
+            "managed mdbase write batches cannot mix collection records with ordinary Markdown paths",
+        ));
     }
     let types = load_mdbase_type_registry(&collection).map_err(AppError::operation)?;
     let selection = resolve_permission_profile(paths, request.permission_profile)
@@ -610,63 +667,36 @@ pub fn apply_managed_mdbase_note_write(
     let guard = ProfilePermissionGuard::new(paths, selection);
     // Prove affected-path authority before inspecting record-dependent type
     // membership. The full constraint scope is proved by plan_mdbase_write.
-    guard
-        .check_read_path(request.path)
-        .and_then(|()| guard.check_write_path(request.path))
-        .map_err(AppError::operation)?;
+    for change in request.changes {
+        guard
+            .check_read_path(change.path)
+            .and_then(|()| guard.check_write_path(change.path))
+            .map_err(AppError::operation)?;
+    }
 
-    let before_analysis = request
-        .before
-        .map(|source| analyze_mdbase_record_source(&collection, &types, request.path, source));
-    let after_analysis = request
-        .after
-        .map(|source| analyze_mdbase_record_source(&collection, &types, request.path, source));
-    let diagnostics = after_analysis
-        .as_ref()
-        .map_or_else(Vec::new, |analysis| analysis.diagnostics.clone());
-    if request.mode == MdbaseManagedWriteMode::Validated
-        && after_analysis
-            .as_ref()
-            .is_some_and(|analysis| !analysis.is_valid())
-    {
-        let summary = diagnostics
-            .iter()
-            .filter(|diagnostic| {
-                diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
-            })
-            .take(3)
-            .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
-            .collect::<Vec<_>>()
-            .join("; ");
+    let drafts = analyze_managed_write_drafts(&collection, &types, request.changes);
+    if request.mode == MdbaseManagedWriteMode::Validated && drafts.invalid {
+        let summary = validation_error_summary(&drafts.diagnostics);
         return Err(AppError::operation(format!(
             "mdbase validation rejected the managed note write: {summary}; use explicit raw repair only when preserving invalid source is intentional"
         )));
     }
-    let mut matched_types = before_analysis
-        .iter()
-        .flat_map(|analysis| analysis.types.iter())
-        .chain(
-            after_analysis
-                .iter()
-                .flat_map(|analysis| analysis.types.iter()),
-        )
-        .filter(|type_name| types.get(type_name).is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    matched_types.sort();
-    matched_types.dedup();
     let now = DateTime::<Utc>::from(SystemTime::now());
     let plan = plan_mdbase_write(
         paths,
         &MdbaseWritePlanRequest {
-            caller_id: "vulcan-app.note".to_string(),
+            caller_id: "vulcan-app.managed-write".to_string(),
             instance_id: ulid::Ulid::new().to_string().to_lowercase(),
             operation: request.operation.clone(),
-            changes: vec![MdbaseWriteChangeRequest {
-                path: request.path.to_string(),
-                after: request.after.map(str::to_string),
-            }],
-            matched_types,
+            changes: request
+                .changes
+                .iter()
+                .map(|change| MdbaseWriteChangeRequest {
+                    path: change.path.to_string(),
+                    after: change.after.map(str::to_string),
+                })
+                .collect(),
+            matched_types: drafts.matched_types,
             generated_values: BTreeMap::new(),
             permission_profile: request.permission_profile.map(str::to_string),
             ttl_seconds: None,
@@ -693,8 +723,70 @@ pub fn apply_managed_mdbase_note_write(
         mode: request.mode,
         plan,
         apply,
-        diagnostics,
+        diagnostics: drafts.diagnostics,
     }))
+}
+
+struct ManagedWriteDrafts {
+    diagnostics: Vec<MdbaseRecordDiagnostic>,
+    matched_types: Vec<String>,
+    invalid: bool,
+}
+
+fn analyze_managed_write_drafts(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    changes: &[MdbaseManagedNoteWriteChange<'_>],
+) -> ManagedWriteDrafts {
+    let analyses = changes
+        .iter()
+        .map(|change| {
+            let before = change
+                .before
+                .map(|source| analyze_mdbase_record_source(collection, types, change.path, source));
+            let after = change
+                .after
+                .map(|source| analyze_mdbase_record_source(collection, types, change.path, source));
+            (before, after)
+        })
+        .collect::<Vec<_>>();
+    let diagnostics = analyses
+        .iter()
+        .flat_map(|(_, after)| {
+            after
+                .iter()
+                .flat_map(|analysis| analysis.diagnostics.clone())
+        })
+        .collect::<Vec<_>>();
+    let invalid = analyses
+        .iter()
+        .any(|(_, after)| after.as_ref().is_some_and(|analysis| !analysis.is_valid()));
+    let mut matched_types = analyses
+        .iter()
+        .flat_map(|(before, after)| before.iter().chain(after.iter()))
+        .flat_map(|analysis| analysis.types.iter())
+        .filter(|type_name| types.get(type_name).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    matched_types.sort();
+    matched_types.dedup();
+    ManagedWriteDrafts {
+        diagnostics,
+        matched_types,
+        invalid,
+    }
+}
+
+fn validation_error_summary(diagnostics: &[MdbaseRecordDiagnostic]) -> String {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
+        })
+        .take(3)
+        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn validate_plan_request(request: &MdbaseWritePlanRequest) -> Result<(), AppError> {
@@ -1299,6 +1391,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn managed_batch_rejects_mixed_record_and_ordinary_paths() {
+        let (directory, paths) = fixture();
+        let record = fs::read_to_string(directory.path().join("tasks/public.md")).unwrap();
+        let type_file = fs::read_to_string(directory.path().join("_types/task.md")).unwrap();
+        let changes = [
+            MdbaseManagedNoteWriteChange {
+                path: "tasks/public.md",
+                before: Some(&record),
+                after: Some(&record),
+            },
+            MdbaseManagedNoteWriteChange {
+                path: "_types/task.md",
+                before: Some(&type_file),
+                after: Some(&type_file),
+            },
+        ];
+
+        let error = apply_managed_mdbase_note_writes(
+            &paths,
+            &MdbaseManagedNoteWriteBatchRequest {
+                changes: &changes,
+                operation: MdbaseWriteOperation::Batch,
+                mode: MdbaseManagedWriteMode::Validated,
+                dry_run: true,
+                permission_profile: None,
+                quiet: true,
+            },
+        )
+        .expect_err("mixed managed batch should fail");
+
+        assert!(error.message().contains("cannot mix"));
+        assert!(!directory.path().join(".vulcan").exists());
     }
 
     #[test]

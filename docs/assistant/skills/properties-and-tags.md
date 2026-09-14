@@ -32,6 +32,7 @@ Use this skill when the task depends on frontmatter consistency, property querie
 - Do not treat free text as if it were indexed structured metadata.
 - Bulk metadata changes should be tested with `--dry-run` when available.
 - Ambiguous note selection is a data-quality problem. Resolve that before mutating properties.
+- `update` and `unset` preflight every selected mdbase record and commit managed records through one validated journal batch. Treat collection validation errors as blockers; an ordinary metadata request never implies raw repair or direct YAML/filesystem bypass.
 
 ## Example Moves
 

@@ -419,22 +419,15 @@ pub fn bulk_set_property_on_paths(
     dry_run: bool,
 ) -> Result<BulkMutationReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
-
-    let desired_value = parse_property_value(value)?;
-    let mut plans = Vec::new();
-
-    for path in note_paths {
-        let normalized = normalize_bulk_note_path(path)?;
-        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
-        let Some((edit, changes)) =
-            plan_set_note_property_replacement(&source, &normalized, key, desired_value.as_ref())?
-        else {
-            continue;
-        };
-        if let Some(plan) = build_file_plan(&normalized, &source, &[edit], changes) {
-            plans.push(plan);
-        }
-    }
+    let planned = plan_property_mutations_on_paths(paths, note_paths, key, value)?;
+    let plans = planned
+        .into_iter()
+        .map(|plan| FilePlan {
+            path: plan.path,
+            updated_contents: plan.after,
+            changes: plan.changes,
+        })
+        .collect();
 
     let action = if value.is_some() {
         "bulk_update"
@@ -450,6 +443,45 @@ pub fn bulk_set_property_on_paths(
         value: value.map(str::to_string),
         files: inner.files,
     })
+}
+
+/// Exact source-level property mutations for application-layer orchestration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedPropertyMutation {
+    pub path: String,
+    pub before: String,
+    pub after: String,
+    pub changes: Vec<RefactorChange>,
+}
+
+/// Plan property changes without writing files or refreshing derived state.
+pub fn plan_property_mutations_on_paths(
+    paths: &VaultPaths,
+    note_paths: &[String],
+    key: &str,
+    value: Option<&str>,
+) -> Result<Vec<PlannedPropertyMutation>, RefactorError> {
+    let desired_value = parse_property_value(value)?;
+    let mut plans = Vec::new();
+
+    for path in note_paths {
+        let normalized = normalize_bulk_note_path(path)?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
+        let Some((edit, changes)) =
+            plan_set_note_property_replacement(&source, &normalized, key, desired_value.as_ref())?
+        else {
+            continue;
+        };
+        if let Some(plan) = build_file_plan(&normalized, &source, &[edit], changes) {
+            plans.push(PlannedPropertyMutation {
+                path: plan.path,
+                before: source,
+                after: plan.updated_contents,
+                changes: plan.changes,
+            });
+        }
+    }
+    Ok(plans)
 }
 
 /// Fetch the vault-relative paths of all notes matching the given `--where` filters.
@@ -1631,6 +1663,34 @@ mod tests {
             .expect_err("unsafe bulk path must be rejected");
             assert!(error.to_string().contains("expected a relative .md path"));
         }
+    }
+
+    #[test]
+    fn property_mutation_planner_returns_exact_sources_without_writing() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault dir");
+        let original = "---\ntitle: Planned\n---\nBody\n";
+        fs::write(vault_root.join("Planned.md"), original).expect("note");
+        let paths = VaultPaths::new(&vault_root);
+
+        let plans = plan_property_mutations_on_paths(
+            &paths,
+            &["Planned.md".to_string()],
+            "status",
+            Some("active"),
+        )
+        .expect("property mutation should plan");
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].path, "Planned.md");
+        assert_eq!(plans[0].before, original);
+        assert!(plans[0].after.contains("status: active"));
+        assert_eq!(
+            fs::read_to_string(vault_root.join("Planned.md")).expect("unchanged note"),
+            original
+        );
+        assert!(!vault_root.join(".vulcan").exists());
     }
 
     #[cfg(unix)]

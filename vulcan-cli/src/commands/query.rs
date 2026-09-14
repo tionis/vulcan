@@ -12,12 +12,12 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use vulcan_app::properties::apply_bulk_property_mutation;
 use vulcan_core::{
-    bulk_set_property_on_paths, evaluate_dql_with_filter, execute_query_report_with_filter,
-    list_properties, list_query_fields, load_vault_config, query_backlinks_with_filter,
-    query_links_with_filter, query_notes_with_filter, search_vault_with_filter, NamedCount,
-    NoteQuery, PermissionGuard, PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery,
-    VaultPaths,
+    evaluate_dql_with_filter, execute_query_report_with_filter, list_properties, list_query_fields,
+    load_vault_config, query_backlinks_with_filter, query_links_with_filter,
+    query_notes_with_filter, search_vault_with_filter, NamedCount, NoteQuery, PermissionGuard,
+    PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
 };
 
 pub(crate) fn handle_backlinks_command(
@@ -355,8 +355,16 @@ pub(crate) fn handle_update_command(
     for path in &note_paths {
         guard.check_write_path(path).map_err(CliError::operation)?;
     }
-    let report = bulk_set_property_on_paths(paths, &note_paths, key, Some(value), dry_run)
-        .map_err(CliError::operation)?;
+    let report = apply_bulk_property_mutation(
+        paths,
+        &note_paths,
+        key,
+        Some(value),
+        dry_run,
+        cli.permissions.as_deref(),
+        cli.quiet,
+    )
+    .map_err(CliError::operation)?;
     if !dry_run {
         auto_commit
             .commit(
@@ -404,8 +412,16 @@ pub(crate) fn handle_unset_command(
     for path in &note_paths {
         guard.check_write_path(path).map_err(CliError::operation)?;
     }
-    let report = bulk_set_property_on_paths(paths, &note_paths, key, None, dry_run)
-        .map_err(CliError::operation)?;
+    let report = apply_bulk_property_mutation(
+        paths,
+        &note_paths,
+        key,
+        None,
+        dry_run,
+        cli.permissions.as_deref(),
+        cli.quiet,
+    )
+    .map_err(CliError::operation)?;
     if !dry_run {
         auto_commit
             .commit(

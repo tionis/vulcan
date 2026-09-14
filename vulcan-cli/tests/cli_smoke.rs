@@ -22,6 +22,7 @@ use vulcan_app::sync_proposals::{
     ResolutionProposalOptions,
 };
 use vulcan_app::sync_state::SyncStateStore;
+use vulcan_core::mdbase::list_mdbase_write_outbox;
 use vulcan_core::{CacheDatabase, VaultPaths};
 use zip::ZipArchive;
 
@@ -14855,6 +14856,12 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("mdbase record path"));
     assert!(note_operations.contains("validated, journaled write boundary"));
     assert!(note_operations.contains("explicit repair is a separate workflow"));
+    let properties =
+        fs::read_to_string(vault_root.join(".agents/skills/properties-and-tags/SKILL.md"))
+            .expect("properties skill should be readable");
+    assert!(properties.contains("preflight every selected mdbase record"));
+    assert!(properties.contains("one validated journal batch"));
+    assert!(properties.contains("never implies raw repair"));
     let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));
@@ -24957,6 +24964,80 @@ fn note_update_command_reads_note_paths_from_stdin() {
         fs::read_to_string(vault_root.join("Mixed.md")).expect("Mixed.md should be readable");
     assert!(backlog.contains("status: done"));
     assert!(mixed.contains("status: done"));
+}
+
+#[test]
+fn note_property_commands_validate_and_batch_mdbase_records() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("_types")).expect("type directory");
+    fs::create_dir_all(vault_root.join("tasks")).expect("records directory");
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n")
+        .expect("collection config");
+    fs::write(
+        vault_root.join("_types/task.md"),
+        "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [type, title]\n    properties:\n      type: {const: task}\n      title: {type: string}\n      status: {type: string}\n---\n",
+    )
+    .expect("task type");
+    for (path, title) in [("tasks/one.md", "One"), ("tasks/two.md", "Two")] {
+        fs::write(
+            vault_root.join(path),
+            format!("---\ntype: task\ntitle: {title}\n---\nBody\n"),
+        )
+        .expect("record");
+    }
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("vault path should be UTF-8");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("tasks/one.md\ntasks/two.md\n")
+        .args([
+            "--vault",
+            vault,
+            "note",
+            "update",
+            "--stdin",
+            "--key",
+            "status",
+            "--value",
+            "done",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+
+    let outbox = list_mdbase_write_outbox(&VaultPaths::new(&vault_root)).expect("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].operation, "batch");
+    assert_eq!(outbox[0].paths.len(), 2);
+
+    let before_one = fs::read_to_string(vault_root.join("tasks/one.md")).expect("record");
+    let before_two = fs::read_to_string(vault_root.join("tasks/two.md")).expect("record");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("tasks/one.md\ntasks/two.md\n")
+        .args([
+            "--vault",
+            vault,
+            "note",
+            "unset",
+            "--stdin",
+            "--key",
+            "title",
+            "--no-commit",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("schema_required"));
+    assert_eq!(
+        fs::read_to_string(vault_root.join("tasks/one.md")).expect("record"),
+        before_one
+    );
+    assert_eq!(
+        fs::read_to_string(vault_root.join("tasks/two.md")).expect("record"),
+        before_two
+    );
 }
 
 #[test]
