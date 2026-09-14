@@ -421,7 +421,7 @@ where
         phase: JournalPhase::Preparing,
         planned_directories: planned_directories(collection, request.preview)?,
         created_directories: Vec::new(),
-        case_only_renames: case_only_renames(request.preview)?,
+        case_only_renames: case_only_renames(collection, request.preview)?,
         applied_paths: Vec::new(),
         committed_at: None,
         follow_up_error: None,
@@ -631,17 +631,30 @@ fn apply_change(
     change: &MdbaseWritePreviewChange,
     direction: RecoveryDirection,
 ) -> Result<(), MdbaseWriteTransactionError> {
+    // A case-insensitive filesystem exposes the source bytes when the
+    // destination spelling is read during preview. Transactionally the
+    // destination is still absent: the source must be removed first, and a
+    // rollback must remove the destination before restoring the source name.
+    let logical_before = if journal
+        .case_only_renames
+        .iter()
+        .any(|rename| rename.to == change.path)
+    {
+        None
+    } else {
+        change.before.as_deref()
+    };
     let (expected, desired) = match direction {
-        RecoveryDirection::RollForward => (&change.before, &change.after),
-        RecoveryDirection::RollBack => (&change.after, &change.before),
+        RecoveryDirection::RollForward => (logical_before, change.after.as_deref()),
+        RecoveryDirection::RollBack => (change.after.as_deref(), logical_before),
     };
     let observed = read_optional(collection, &change.path).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to inspect a transaction path", error)
     })?;
-    if observed == *desired {
+    if observed.as_deref() == desired {
         return Ok(());
     }
-    if observed != *expected {
+    if observed.as_deref() != expected {
         block_journal(paths, journal, &change.path, observed)?;
         return Err(MdbaseWriteTransactionError::blocked(
             &journal.transaction_id,
@@ -653,13 +666,13 @@ fn apply_change(
         collection,
         journal,
         change,
-        desired.as_deref(),
+        desired,
         expected.is_none(),
     )?;
     let observed = read_optional(collection, &change.path).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to verify a transaction path", error)
     })?;
-    if observed != *desired {
+    if observed.as_deref() != desired {
         block_journal(paths, journal, &change.path, observed)?;
         return Err(MdbaseWriteTransactionError::blocked(
             &journal.transaction_id,
@@ -795,26 +808,35 @@ fn planned_directories(
 }
 
 fn case_only_renames(
+    collection: &super::MdbaseCollection,
     preview: &MdbaseWritePreview,
 ) -> Result<Vec<CaseOnlyRename>, MdbaseWriteTransactionError> {
     let deletions = preview
         .changes
         .iter()
         .filter(|change| change.before.is_some() && change.after.is_none());
-    let creations = preview
+    let destination_changes = preview
         .changes
         .iter()
-        .filter(|change| change.before.is_none() && change.after.is_some())
+        .filter(|change| change.after.is_some())
         .collect::<Vec<_>>();
     let mut renames = Vec::new();
-    let mut destinations = BTreeSet::new();
+    let mut matched_destinations = BTreeSet::new();
     for deletion in deletions {
-        let matches = creations
-            .iter()
-            .filter(|creation| {
-                deletion.path != creation.path && deletion.path.eq_ignore_ascii_case(&creation.path)
-            })
-            .collect::<Vec<_>>();
+        let mut matches = Vec::new();
+        for destination in &destination_changes {
+            if deletion.path == destination.path
+                || !deletion.path.eq_ignore_ascii_case(&destination.path)
+            {
+                continue;
+            }
+            let is_logically_absent = destination.before.is_none()
+                || (destination.before == deletion.before
+                    && paths_alias_existing_file(collection, &deletion.path, &destination.path)?);
+            if is_logically_absent {
+                matches.push(*destination);
+            }
+        }
         if matches.len() > 1 {
             return Err(MdbaseWriteTransactionError::new(
                 "invalid_request",
@@ -822,7 +844,7 @@ fn case_only_renames(
             ));
         }
         if let Some(creation) = matches.first() {
-            if !destinations.insert(creation.path.clone()) {
+            if !matched_destinations.insert(creation.path.clone()) {
                 return Err(MdbaseWriteTransactionError::new(
                     "invalid_request",
                     "case-only mdbase rename destination is duplicated",
@@ -836,6 +858,24 @@ fn case_only_renames(
     }
     renames.sort_by(|left, right| left.from.cmp(&right.from));
     Ok(renames)
+}
+
+fn paths_alias_existing_file(
+    collection: &super::MdbaseCollection,
+    left: &str,
+    right: &str,
+) -> Result<bool, MdbaseWriteTransactionError> {
+    let canonicalize = |path: &str| match fs::canonicalize(collection.root.join(path)) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(MdbaseWriteTransactionError::io(
+            "failed to resolve a possible case-only rename path",
+            error,
+        )),
+    };
+    Ok(canonicalize(left)?
+        .zip(canonicalize(right)?)
+        .is_some_and(|(left, right)| left == right))
 }
 
 fn ordered_change_indices(
@@ -1362,6 +1402,21 @@ mod tests {
         fs::create_dir_all(path.parent().expect("fixture parent"))
             .expect("create fixture directory");
         fs::write(path, contents).expect("write fixture");
+    }
+
+    fn directory_entry_names(root: &Path, path: &str) -> Vec<String> {
+        let mut names = fs::read_dir(root.join(path))
+            .expect("read fixture directory")
+            .map(|entry| {
+                entry
+                    .expect("read fixture entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names
     }
 
     fn fixture() -> (
@@ -2010,9 +2065,68 @@ mod tests {
         )
         .expect("case-only rename");
         assert!(saw_explicit_rename);
-        assert!(!directory.path().join("records/Name.md").exists());
+        assert!(!directory_entry_names(directory.path(), "records")
+            .iter()
+            .any(|name| name == "Name.md"));
+        assert!(directory_entry_names(directory.path(), "records")
+            .iter()
+            .any(|name| name == "name.md"));
         assert_eq!(
             fs::read_to_string(directory.path().join("records/name.md")).unwrap(),
+            "rename me\n"
+        );
+    }
+
+    #[test]
+    fn interrupted_case_only_rename_restores_the_original_spelling() {
+        let (directory, paths, collection) = fixture();
+        write(directory.path(), "records/Name.md", "rename me\n");
+        let rename_preview = preview(
+            &collection,
+            vec![
+                MdbaseWritePreviewChangeRequest {
+                    path: "records/Name.md".to_string(),
+                    after: None,
+                },
+                MdbaseWritePreviewChangeRequest {
+                    path: "records/name.md".to_string(),
+                    after: Some("rename me\n".to_string()),
+                },
+            ],
+        );
+        let request = MdbaseWriteApplyRequest {
+            preview: &rename_preview,
+            verification: verification(),
+            idempotency_key: "case-only-rollback",
+        };
+        let mut replacements = 0;
+        let interrupted = apply_with_boundary_hook(
+            &paths,
+            &collection,
+            &request,
+            |_| Ok(()),
+            |boundary| {
+                if boundary == "after_replace" {
+                    replacements += 1;
+                    if replacements == 1 {
+                        return Err(MdbaseWriteTransactionError::new(
+                            "interrupted",
+                            "fault injection",
+                        ));
+                    }
+                }
+                Ok(())
+            },
+        );
+        assert_eq!(interrupted.unwrap_err().code, "interrupted");
+
+        recover_mdbase_write_transaction(&paths, &collection, |_| Ok(()))
+            .expect("roll back case-only rename");
+        let names = directory_entry_names(directory.path(), "records");
+        assert!(names.iter().any(|name| name == "Name.md"));
+        assert!(!names.iter().any(|name| name == "name.md"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("records/Name.md")).unwrap(),
             "rename me\n"
         );
     }
