@@ -1381,6 +1381,9 @@ fn sync_directory(directory: &Path) -> Result<(), MdbaseWriteTransactionError> {
 }
 
 #[cfg(not(unix))]
+// Keep the fallible signature shared with Unix so durability call sites cannot
+// accidentally discard Unix directory-sync failures behind platform cfgs.
+#[allow(clippy::unnecessary_wraps)]
 fn sync_directory(_directory: &Path) -> Result<(), MdbaseWriteTransactionError> {
     Ok(())
 }
