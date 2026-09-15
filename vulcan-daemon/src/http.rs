@@ -8,6 +8,7 @@ use crate::companion::{
 };
 use crate::credentials::CompanionCredential;
 use crate::registry::{WikiId, WikiRegistry};
+use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
 #[cfg(test)]
 use axum::body::Body;
@@ -22,13 +23,12 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use vulcan_app::sync_state::SyncStateStore;
@@ -48,7 +48,7 @@ pub struct CompanionHttpState {
     pub credential: Arc<CompanionCredential>,
     pub resolution_agent: Option<Arc<CompanionResolutionAgent>>,
     pub semantic_agent: Option<Arc<CompanionSemanticAgent>>,
-    pub shutdown: Option<Arc<AtomicBool>>,
+    pub shutdown: Option<Arc<ShutdownSignal>>,
 }
 
 impl CompanionHttpState {
@@ -138,6 +138,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         )
         .route("/events", get(events))
         .route("/shutdown", post(shutdown))
+        .layer(Extension(Arc::new(SnapshotHub::default())))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -228,7 +229,11 @@ async fn authorize_request(
         );
     }
 
+    let mutation = matches!(*request.method(), Method::POST | Method::DELETE);
     let response = next.run(request).await;
+    if mutation && response.status().is_success() {
+        state.supervisor.notify_change();
+    }
     cors_response(response, origin.as_deref())
 }
 
@@ -327,7 +332,7 @@ async fn shutdown(State(state): State<CompanionHttpState>) -> Result<Json<Value>
             "daemon shutdown is not available on this companion service",
         ))
     })?;
-    shutdown.store(true, Ordering::Release);
+    shutdown.cancel();
     Ok(Json(serde_json::json!({
         "version": COMPANION_PROTOCOL_VERSION,
         "stopping": true
@@ -534,6 +539,7 @@ async fn cancel_aggregate_job(
 
 async fn events(
     State(state): State<CompanionHttpState>,
+    Extension(hub): Extension<Arc<SnapshotHub>>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -547,7 +553,7 @@ async fn events(
     upgrade
         .protocols([WEBSOCKET_PROTOCOL])
         .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
-        .on_upgrade(move |socket| stream_events(socket, state))
+        .on_upgrade(move |socket| stream_events(socket, state, hub))
 }
 
 fn websocket_authorized(headers: &HeaderMap, credential: &CompanionCredential) -> bool {
@@ -567,9 +573,85 @@ fn websocket_authorized(headers: &HeaderMap, credential: &CompanionCredential) -
     version && authorized
 }
 
-async fn stream_events(mut socket: WebSocket, state: CompanionHttpState) {
-    let mut interval = tokio::time::interval(Duration::from_millis(500));
-    let mut previous = None;
+#[derive(Default)]
+struct SnapshotHub(tokio::sync::Mutex<Weak<SnapshotFeed>>);
+
+struct SnapshotFeed {
+    receiver: tokio::sync::watch::Receiver<Option<Arc<str>>>,
+    task: tokio::task::AbortHandle,
+}
+
+impl Drop for SnapshotFeed {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl SnapshotHub {
+    async fn subscribe(&self, state: CompanionHttpState) -> Arc<SnapshotFeed> {
+        let mut current = self.0.lock().await;
+        if let Some(feed) = current.upgrade() {
+            return feed;
+        }
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let task = tokio::spawn(publish_snapshots(state, sender, Duration::from_secs(30)));
+        let feed = Arc::new(SnapshotFeed {
+            receiver,
+            task: task.abort_handle(),
+        });
+        *current = Arc::downgrade(&feed);
+        feed
+    }
+}
+
+async fn publish_snapshots(
+    state: CompanionHttpState,
+    sender: tokio::sync::watch::Sender<Option<Arc<str>>>,
+    reconciliation: Duration,
+) {
+    // Subscribe before the first read so mutations during reconstruction are
+    // retained. Every connection shares this producer; none means no producer.
+    let mut changes = state.supervisor.subscribe_changes();
+    let mut previous: Option<Arc<str>> = None;
+    loop {
+        let snapshot_state = state.clone();
+        let snapshot = tokio::task::spawn_blocking(move || {
+            event_snapshot(&snapshot_state).and_then(|snapshot| {
+                serde_json::to_string(&snapshot).map_err(|error| {
+                    CompanionError::new(CompanionErrorKind::Internal, error.to_string())
+                })
+            })
+        })
+        .await;
+        let Ok(Ok(serialized)) = snapshot else {
+            return;
+        };
+        if previous.as_deref() != Some(serialized.as_str()) {
+            let serialized: Arc<str> = serialized.into();
+            sender.send_replace(Some(Arc::clone(&serialized)));
+            previous = Some(serialized);
+        }
+        tokio::select! {
+            result = changes.changed() => { if result.is_err() { return; } }
+            () = tokio::time::sleep(reconciliation) => {}
+            () = sender.closed() => return,
+        }
+    }
+}
+
+async fn stream_events(mut socket: WebSocket, state: CompanionHttpState, hub: Arc<SnapshotHub>) {
+    let feed = hub.subscribe(state).await;
+    let mut snapshots = feed.receiver.clone();
+    let initial = snapshots.borrow_and_update().clone();
+    if let Some(initial) = initial {
+        if socket
+            .send(Message::Text(initial.to_string().into()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
     loop {
         tokio::select! {
             message = socket.recv() => {
@@ -578,20 +660,11 @@ async fn stream_events(mut socket: WebSocket, state: CompanionHttpState) {
                     _ => {}
                 }
             }
-            _ = interval.tick() => {
-                let snapshot_state = state.clone();
-                let snapshot = tokio::task::spawn_blocking(move || event_snapshot(&snapshot_state)).await;
-                let Ok(Ok(snapshot)) = snapshot else {
-                    break;
-                };
-                let Ok(serialized) = serde_json::to_string(&snapshot) else {
-                    break;
-                };
-                if previous.as_deref() == Some(serialized.as_str()) {
-                    continue;
-                }
-                previous = Some(serialized.clone());
-                if socket.send(Message::Text(serialized.into())).await.is_err() {
+            result = snapshots.changed() => {
+                if result.is_err() { break; }
+                let snapshot = snapshots.borrow_and_update().clone();
+                let Some(snapshot) = snapshot else { continue; };
+                if socket.send(Message::Text(snapshot.to_string().into())).await.is_err() {
                     break;
                 }
             }
@@ -696,6 +769,91 @@ mod tests {
             .await
             .expect("response body");
         serde_json::from_slice(&body).expect("JSON response")
+    }
+
+    #[tokio::test]
+    async fn event_feed_is_shared_wakes_on_jobs_and_releases_on_disconnect() {
+        let (_temporary, state) = fixture();
+        let hub = SnapshotHub::default();
+        let first = hub.subscribe(state.clone()).await;
+        let second = hub.subscribe(state.clone()).await;
+        assert!(Arc::ptr_eq(&first, &second));
+        let mut receiver = first.receiver.clone();
+        tokio::time::timeout(Duration::from_secs(2), receiver.wait_for(Option::is_some))
+            .await
+            .unwrap()
+            .unwrap();
+        receiver.borrow_and_update();
+        let registration = state.registry.load().unwrap().vaults.remove(0);
+        state
+            .supervisor
+            .enqueue(
+                registration.id.as_str(),
+                &registration.path,
+                vulcan_sync::SyncJobTrigger::Manual,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), receiver.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let value: Value =
+            serde_json::from_str(receiver.borrow_and_update().as_deref().unwrap()).unwrap();
+        assert_eq!(value["jobs"].as_array().unwrap().len(), 1);
+        assert!(Arc::ptr_eq(
+            receiver.borrow().as_ref().unwrap(),
+            second.receiver.borrow().as_ref().unwrap()
+        ));
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        drop(second);
+        assert!(weak.upgrade().is_none());
+        tokio::time::timeout(Duration::from_secs(2), receiver.changed())
+            .await
+            .unwrap()
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn event_feed_reconciles_changes_made_outside_the_daemon() {
+        let (_temporary, state) = fixture();
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        let worker = tokio::spawn(publish_snapshots(
+            state.clone(),
+            sender,
+            Duration::from_millis(20),
+        ));
+        tokio::time::timeout(Duration::from_secs(2), receiver.wait_for(Option::is_some))
+            .await
+            .unwrap()
+            .unwrap();
+        receiver.borrow_and_update();
+        let registration = state.registry.load().unwrap().vaults.remove(0);
+        // This mutates the registry directly, without a supervisor notification.
+        state
+            .registry
+            .update(
+                &registration.id,
+                &crate::registry::UpdateWikiRequest {
+                    sync_paused: Some(true),
+                    groups_to_add: vec![],
+                    groups_to_remove: vec![],
+                    permissions_profile: None,
+                },
+                false,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), receiver.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let value: Value = serde_json::from_str(receiver.borrow().as_deref().unwrap()).unwrap();
+        assert_eq!(value["vaults"][0]["sync_paused"], true);
+        drop(receiver);
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

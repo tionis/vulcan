@@ -7,7 +7,8 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex};
+use std::sync::Mutex;
+#[cfg(test)]
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use ulid::Ulid;
@@ -118,7 +119,8 @@ struct SupervisorInner {
 pub struct SyncSupervisor {
     state_path: PathBuf,
     inner: Mutex<SupervisorInner>,
-    work_available: Condvar,
+    changes: tokio::sync::watch::Sender<u64>,
+    worker: Mutex<Option<std::thread::Thread>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -215,6 +217,33 @@ impl From<serde_json::Error> for SupervisorError {
 }
 
 impl SyncSupervisor {
+    pub(crate) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    pub(crate) fn notify_change(&self) {
+        self.changes
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .expect("worker registration lock")
+            .as_ref()
+        {
+            worker.unpark();
+        }
+    }
+
+    pub(crate) fn register_worker(&self) {
+        *self.worker.lock().expect("worker registration lock") = Some(std::thread::current());
+    }
+
+    fn persist(&self, state: &PersistedSupervisorState) -> Result<(), SupervisorError> {
+        persist_state(&self.state_path, state)?;
+        self.notify_change();
+        Ok(())
+    }
+
     pub fn user_default() -> Result<Self, SupervisorError> {
         let sync_state = vulcan_app::sync_state::SyncStateStore::user_default()
             .map_err(|error| SupervisorError::InvalidState(error.to_string()))?;
@@ -243,7 +272,8 @@ impl SyncSupervisor {
         }
         Ok(Self {
             state_path,
-            work_available: Condvar::new(),
+            changes: tokio::sync::watch::channel(0).0,
+            worker: Mutex::new(None),
             inner: Mutex::new(SupervisorInner {
                 state,
                 queue,
@@ -259,7 +289,8 @@ impl SyncSupervisor {
         let state = load_state(&state_path)?;
         Ok(Self {
             state_path,
-            work_available: Condvar::new(),
+            changes: tokio::sync::watch::channel(0).0,
+            worker: Mutex::new(None),
             inner: Mutex::new(SupervisorInner {
                 state,
                 queue: VecDeque::new(),
@@ -355,8 +386,7 @@ impl SyncSupervisor {
             job_id: enqueue.job.job.id.clone(),
         });
         trim_supervisor_state(&mut inner.state);
-        persist_state(&self.state_path, &inner.state)?;
-        self.work_available.notify_all();
+        self.persist(&inner.state)?;
         Ok(IdempotentEnqueueSyncReport {
             enqueue,
             replay: false,
@@ -445,8 +475,7 @@ impl SyncSupervisor {
                 aggregate_id: id.clone(),
             });
         trim_supervisor_state(&mut inner.state);
-        persist_state(&self.state_path, &inner.state)?;
-        self.work_available.notify_all();
+        self.persist(&inner.state)?;
         let persisted = inner
             .state
             .aggregates
@@ -469,29 +498,35 @@ impl SyncSupervisor {
         let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
         let report = enqueue_locked(&mut inner, wiki_id, vault, trigger, watch);
         trim_supervisor_state(&mut inner.state);
-        persist_state(&self.state_path, &inner.state)?;
-        self.work_available.notify_all();
+        self.persist(&inner.state)?;
         Ok(report)
     }
 
-    /// Waits for runnable work without touching the durable ledger. The bounded
-    /// wait lets the process worker check shutdown even when no jobs arrive.
-    /// Check under the enqueue mutex so work arriving before the wait is not lost.
-    pub(crate) fn wait_for_work(&self, timeout: Duration) -> Result<(), SupervisorError> {
-        let inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
-        let (_guard, _) = self
-            .work_available
-            .wait_timeout_while(inner, timeout, |inner| {
-                inner.queue.is_empty()
-                    || !inner.state.jobs.iter().any(|job| {
+    /// Waits without timers or disk I/O. Register before checking state so a
+    /// concurrent enqueue/cancellation leaves an unpark token for this thread.
+    pub(crate) fn wait_for_work(
+        &self,
+        stop: &crate::shutdown::ShutdownSignal,
+    ) -> Result<(), SupervisorError> {
+        self.register_worker();
+        stop.register_current_thread();
+        while !stop.is_cancelled() {
+            let ready = {
+                let inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+                !inner.queue.is_empty()
+                    && inner.state.jobs.iter().any(|job| {
                         job.job.state == SyncJobState::Queued
                             && !inner.state.jobs.iter().any(|other| {
                                 other.job.wiki_id == job.job.wiki_id
                                     && other.job.state == SyncJobState::Running
                             })
                     })
-            })
-            .map_err(|_| SupervisorError::Poisoned)?;
+            };
+            if ready {
+                break;
+            }
+            std::thread::park();
+        }
         Ok(())
     }
 
@@ -537,7 +572,7 @@ impl SyncSupervisor {
         // the in-memory queue. An empty claim must not serialize and fsync the
         // entire retained history on every idle worker iteration.
         if claimed.is_some() {
-            persist_state(&self.state_path, &inner.state)?;
+            self.persist(&inner.state)?;
         }
         Ok(claimed)
     }
@@ -566,8 +601,7 @@ impl SyncSupervisor {
         job.job.error = error;
         let completed = job.clone();
         inner.cancellations.remove(id);
-        persist_state(&self.state_path, &inner.state)?;
-        self.work_available.notify_all();
+        self.persist(&inner.state)?;
         Ok(completed)
     }
 
@@ -590,14 +624,14 @@ impl SyncSupervisor {
         }
         job.job.status = Some(status);
         let updated = job.clone();
-        persist_state(&self.state_path, &inner.state)?;
+        self.persist(&inner.state)?;
         Ok(updated)
     }
 
     pub fn cancel(&self, id: &str) -> Result<SupervisedSyncJob, SupervisorError> {
         let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
         let job = cancel_locked(&mut inner, id)?;
-        persist_state(&self.state_path, &inner.state)?;
+        self.persist(&inner.state)?;
         Ok(job)
     }
 
@@ -660,7 +694,7 @@ impl SyncSupervisor {
                 cancel_locked(&mut inner, &child.job_id)?;
             }
         }
-        persist_state(&self.state_path, &inner.state)?;
+        self.persist(&inner.state)?;
         let aggregate = inner
             .state
             .aggregates
@@ -1131,7 +1165,9 @@ mod tests {
             let waiting = std::sync::Arc::clone(&supervisor);
             let (sender, receiver) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
-                waiting.wait_for_work(Duration::from_secs(5)).unwrap();
+                waiting
+                    .wait_for_work(&crate::shutdown::ShutdownSignal::default())
+                    .unwrap();
                 sender.send(()).unwrap();
             });
             // The empty worker must stay asleep; enqueuing then wakes it long
@@ -1170,33 +1206,46 @@ mod tests {
             worker.join().unwrap();
             // Work queued before waiting must also return without a new signal.
             let start = std::time::Instant::now();
-            supervisor.wait_for_work(Duration::from_secs(5)).unwrap();
+            supervisor
+                .wait_for_work(&crate::shutdown::ShutdownSignal::default())
+                .unwrap();
             assert!(start.elapsed() < Duration::from_secs(2));
             assert!(supervisor.claim_next().unwrap().is_some());
         }
     }
 
     #[test]
-    fn worker_wait_times_out_when_follow_up_is_blocked() {
-        let temporary = tempdir().unwrap();
-        let supervisor = supervisor(temporary.path());
-        let first = supervisor
-            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
-            .unwrap();
-        supervisor.claim_next().unwrap().unwrap();
-        supervisor
-            .enqueue("alpha", temporary.path(), SyncJobTrigger::Watch)
-            .unwrap();
-        let timeout = Duration::from_millis(30);
-        let start = std::time::Instant::now();
-        supervisor.wait_for_work(timeout).unwrap();
-        assert!(start.elapsed() >= timeout);
-        supervisor
-            .complete(&first.job.job.id, SyncJobState::Succeeded, None, None)
-            .unwrap();
-        let start = std::time::Instant::now();
-        supervisor.wait_for_work(Duration::from_secs(5)).unwrap();
-        assert!(start.elapsed() < Duration::from_secs(2));
+    fn worker_waits_for_blocked_follow_up_and_wakes_on_completion_or_shutdown() {
+        use std::sync::{mpsc, Arc};
+        for cancel in [false, true] {
+            let temporary = tempdir().unwrap();
+            let supervisor = Arc::new(supervisor(temporary.path()));
+            let first = supervisor
+                .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
+                .unwrap();
+            supervisor.claim_next().unwrap().unwrap();
+            supervisor
+                .enqueue("alpha", temporary.path(), SyncJobTrigger::Watch)
+                .unwrap();
+            let signal = Arc::new(crate::shutdown::ShutdownSignal::default());
+            let waiting = Arc::clone(&supervisor);
+            let thread_signal = Arc::clone(&signal);
+            let (sender, receiver) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                waiting.wait_for_work(&thread_signal).unwrap();
+                sender.send(()).unwrap();
+            });
+            assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+            if cancel {
+                signal.cancel();
+            } else {
+                supervisor
+                    .complete(&first.job.job.id, SyncJobState::Succeeded, None, None)
+                    .unwrap();
+            }
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+            worker.join().unwrap();
+        }
     }
 
     #[test]

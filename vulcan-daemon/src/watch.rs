@@ -1,6 +1,7 @@
 //! Filesystem watcher scheduling for registered synchronized wikis.
 
 use crate::registry::WikiRegistration;
+use crate::shutdown::ShutdownSignal;
 use crate::supervisor::{SupervisorError, SyncSupervisor, SyncWatchMetadata};
 use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeSet;
@@ -113,6 +114,30 @@ struct RegisteredWatchers {
     _polling: Option<PollWatcher>,
 }
 
+struct WatchEventSender {
+    sender: Option<mpsc::Sender<(WatchSource, notify::Result<Event>)>>,
+    thread: std::thread::Thread,
+}
+
+impl WatchEventSender {
+    fn send(&self, source: WatchSource, event: notify::Result<Event>) {
+        let _ = self
+            .sender
+            .as_ref()
+            .expect("live watcher sender")
+            .send((source, event));
+        self.thread.unpark();
+    }
+}
+
+impl Drop for WatchEventSender {
+    fn drop(&mut self) {
+        // Also wake on backend failure/disconnection, when no callback arrives.
+        drop(self.sender.take());
+        self.thread.unpark();
+    }
+}
+
 /// Watches one registered worktree and turns event batches into idempotent
 /// supervisor triggers. Startup always schedules reconciliation before the
 /// event loop begins.
@@ -122,6 +147,45 @@ pub fn watch_registered_wiki_until<S>(
     state_store: &SyncStateStore,
     options: &DaemonWatchOptions,
     should_stop: S,
+) -> Result<(), DaemonWatchError>
+where
+    S: Fn() -> bool,
+{
+    watch_registered_wiki(
+        registration,
+        supervisor,
+        state_store,
+        options,
+        should_stop,
+        false,
+    )
+}
+
+pub(crate) fn watch_registered_wiki_with_stop(
+    registration: &WikiRegistration,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    options: &DaemonWatchOptions,
+    stop: &ShutdownSignal,
+) -> Result<(), DaemonWatchError> {
+    stop.register_current_thread();
+    watch_registered_wiki(
+        registration,
+        supervisor,
+        state_store,
+        options,
+        || stop.is_cancelled(),
+        true,
+    )
+}
+
+fn watch_registered_wiki<S>(
+    registration: &WikiRegistration,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    options: &DaemonWatchOptions,
+    should_stop: S,
+    wakeable: bool,
 ) -> Result<(), DaemonWatchError>
 where
     S: Fn() -> bool,
@@ -170,8 +234,24 @@ where
             return Ok(());
         }
         let now = Instant::now();
-        let timeout = batch.next_timeout(now, debounce, max_dirty);
-        match receiver.recv_timeout(timeout) {
+        let message = if wakeable {
+            match receiver.try_recv() {
+                Ok(event) => Ok(event),
+                Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::RecvTimeoutError::Disconnected),
+                Err(mpsc::TryRecvError::Empty) if !batch.is_ready(now, debounce, max_dirty) => {
+                    if let Some(timeout) = batch.deadline_timeout(now, debounce, max_dirty) {
+                        std::thread::park_timeout(timeout);
+                    } else {
+                        std::thread::park();
+                    }
+                    continue;
+                }
+                Err(mpsc::TryRecvError::Empty) => Err(mpsc::RecvTimeoutError::Timeout),
+            }
+        } else {
+            receiver.recv_timeout(batch.next_timeout(now, debounce, max_dirty))
+        };
+        match message {
             Ok((_, Ok(event))) => {
                 let now = Instant::now();
                 batch.push_event(&paths, &event, now, || {
@@ -234,9 +314,12 @@ fn register_watchers(
     sender: &mpsc::Sender<(WatchSource, notify::Result<Event>)>,
     fallback_poll_interval: Duration,
 ) -> Result<RegisteredWatchers, notify::Error> {
-    let native_sender = sender.clone();
+    let native_sender = WatchEventSender {
+        sender: Some(sender.clone()),
+        thread: std::thread::current(),
+    };
     let native = notify::recommended_watcher(move |event| {
-        let _ = native_sender.send((WatchSource::Native, event));
+        native_sender.send(WatchSource::Native, event);
     })
     .and_then(|mut watcher| {
         watcher.watch(path, RecursiveMode::Recursive)?;
@@ -263,10 +346,13 @@ fn finish_watcher_registration(
         }
         Err(error) => error,
     };
-    let polling_sender = sender.clone();
+    let polling_sender = WatchEventSender {
+        sender: Some(sender.clone()),
+        thread: std::thread::current(),
+    };
     let polling = PollWatcher::new(
         move |event| {
-            let _ = polling_sender.send((WatchSource::Polling, event));
+            polling_sender.send(WatchSource::Polling, event);
         },
         Config::default()
             .with_poll_interval(fallback_poll_interval)
@@ -371,9 +457,18 @@ impl WatchBatch {
     }
 
     fn next_timeout(&self, now: Instant, debounce: Duration, max_dirty: Duration) -> Duration {
-        let Some(first_dirty) = self.first_dirty else {
-            return WATCH_POLL_INTERVAL;
-        };
+        self.deadline_timeout(now, debounce, max_dirty)
+            .unwrap_or(WATCH_POLL_INTERVAL)
+            .min(WATCH_POLL_INTERVAL)
+    }
+
+    fn deadline_timeout(
+        &self,
+        now: Instant,
+        debounce: Duration,
+        max_dirty: Duration,
+    ) -> Option<Duration> {
+        let first_dirty = self.first_dirty?;
         let debounce_remaining = self
             .last_dirty
             .unwrap_or(first_dirty)
@@ -384,7 +479,7 @@ impl WatchBatch {
             .checked_add(max_dirty)
             .unwrap_or(now)
             .saturating_duration_since(now);
-        WATCH_POLL_INTERVAL.min(debounce_remaining.min(max_remaining))
+        Some(debounce_remaining.min(max_remaining))
     }
 
     fn is_ready(&self, now: Instant, debounce: Duration, max_dirty: Duration) -> bool {
@@ -659,10 +754,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn dangling_symlink_never_schedules_recovery() {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        };
+        use std::sync::Arc;
 
         let temporary = tempdir().expect("temporary directory");
         let vault = temporary.path().join("vault");
@@ -690,22 +782,22 @@ mod tests {
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"),
         );
         let state_store = SyncStateStore::at(temporary.path().join("state"));
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(ShutdownSignal::default());
         let task_stop = Arc::clone(&stop);
         let task_supervisor = Arc::clone(&supervisor);
         let watcher = std::thread::spawn(move || {
-            watch_registered_wiki_until(
+            watch_registered_wiki_with_stop(
                 &registration,
                 &task_supervisor,
                 &state_store,
                 &DaemonWatchOptions::default(),
-                || task_stop.load(Ordering::Acquire),
+                &task_stop,
             )
             .expect("watcher runs");
         });
         // Allow watcher batches to settle without generating recovery work.
         std::thread::sleep(Duration::from_secs(5));
-        stop.store(true, Ordering::Release);
+        stop.cancel();
         watcher.join().expect("watcher thread");
 
         let jobs = supervisor.list().expect("jobs");
@@ -737,6 +829,48 @@ mod tests {
             metadata.watcher_errors,
             vec!["malformed apply marker", "watch queue overflow"]
         );
+    }
+
+    #[test]
+    fn idle_watch_has_no_timer_and_dirty_watch_uses_its_deadline() {
+        let mut batch = WatchBatch::default();
+        let now = Instant::now();
+        let debounce = Duration::from_millis(250);
+        let maximum = Duration::from_secs(2);
+        assert_eq!(batch.deadline_timeout(now, debounce, maximum), None);
+        batch.mark_dirty(now);
+        assert_eq!(
+            batch.deadline_timeout(now, debounce, maximum),
+            Some(debounce)
+        );
+        assert_eq!(
+            batch.deadline_timeout(now + debounce, debounce, maximum),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn backend_disconnect_wakes_a_parked_watcher() {
+        let (sender, receiver) = mpsc::channel();
+        let (ready, thread_receiver) = mpsc::channel();
+        let (done, completion) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready.send(std::thread::current()).unwrap();
+            loop {
+                match receiver.try_recv() {
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                    Err(mpsc::TryRecvError::Empty) => std::thread::park(),
+                    Ok(_) => panic!("no event was sent"),
+                }
+            }
+            done.send(()).unwrap();
+        });
+        drop(WatchEventSender {
+            sender: Some(sender),
+            thread: thread_receiver.recv().unwrap(),
+        });
+        completion.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
     }
 
     #[test]

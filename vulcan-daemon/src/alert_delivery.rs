@@ -5,6 +5,7 @@ use crate::registry::{
     DaemonCommandNotificationConfig, DaemonNotificationConfig, DaemonWebhookFormat,
     DaemonWebhookNotificationConfig, WikiId, WikiRegistry,
 };
+use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +15,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -217,7 +217,7 @@ pub fn spawn_alert_delivery(
     state_root: &Path,
     registry: WikiRegistry,
     supervisor: &SyncSupervisor,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
 ) -> Result<Option<(AlertDeliverySender, AlertDeliveryWorker)>, AlertDeliveryError> {
     let sinks = configured_sinks(config);
     if sinks.is_empty() {
@@ -343,7 +343,7 @@ fn process_pending(
     sinks: &[DeliverySink],
     registry: &WikiRegistry,
     client: Option<&reqwest::blocking::Client>,
-    stop: &AtomicBool,
+    stop: &ShutdownSignal,
 ) {
     let Some(ledger) = ledger else {
         return;
@@ -356,7 +356,7 @@ fn process_pending(
         return;
     };
     for (job_id, sink_id, alert) in pending {
-        if stop.load(Ordering::Acquire) {
+        if stop.is_cancelled() {
             return;
         }
         let Some(sink) = sinks.iter().find(|sink| sink.id() == sink_id) else {

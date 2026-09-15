@@ -19,6 +19,7 @@ pub mod registry;
 pub mod runtime;
 pub mod semantic_worker;
 pub mod service;
+pub mod shutdown;
 pub mod status;
 pub mod supervisor;
 pub mod sync;

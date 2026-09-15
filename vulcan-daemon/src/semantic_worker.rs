@@ -2,12 +2,12 @@
 
 use crate::companion::CompanionSemanticAgent;
 use crate::registry::{DaemonSemanticWorkerConfig, WikiRegistry};
+use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,7 +21,6 @@ use vulcan_core::{
 use vulcan_sync::SyncJobState;
 
 pub const SEMANTIC_WORKER_STATUS_VERSION: u32 = 1;
-const WAIT_SLICE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticWorkerStatus {
@@ -73,7 +72,7 @@ pub fn spawn_semantic_worker(
     state_store: Arc<SyncStateStore>,
     daemon_state_root: PathBuf,
     agent: Arc<CompanionSemanticAgent>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
 ) -> JoinHandle<Result<(), String>> {
     thread::spawn(move || loop {
         let report = execute_semantic_worker_pass(
@@ -239,14 +238,8 @@ fn save_status(path: &Path, report: &SemanticWorkerStatus) -> Result<(), String>
     Ok(())
 }
 
-fn wait_until_next_poll(stop: &AtomicBool, duration: Duration) -> bool {
-    let mut remaining = duration;
-    while !stop.load(Ordering::Acquire) && !remaining.is_zero() {
-        let slice = remaining.min(WAIT_SLICE);
-        thread::sleep(slice);
-        remaining = remaining.saturating_sub(slice);
-    }
-    stop.load(Ordering::Acquire)
+fn wait_until_next_poll(stop: &ShutdownSignal, duration: Duration) -> bool {
+    stop.wait_timeout(duration)
 }
 
 fn unix_time_ms() -> Result<u64, String> {
@@ -263,14 +256,14 @@ mod tests {
     use super::{
         execute_semantic_worker_pass, load_semantic_worker_status, save_status,
         semantic_worker_status_path, wait_until_next_poll, SemanticWorkerStatus,
-        SemanticWorkerStatusEntry, SEMANTIC_WORKER_STATUS_VERSION, WAIT_SLICE,
+        SemanticWorkerStatusEntry, SEMANTIC_WORKER_STATUS_VERSION,
     };
     use crate::companion::CompanionSemanticAgent;
     use crate::registry::{
         AddWikiRequest, DaemonSemanticWorkerConfig, UpdateWikiRequest, WikiId, WikiRegistry,
     };
+    use crate::shutdown::ShutdownSignal;
     use crate::supervisor::SyncSupervisor;
-    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
     use tempfile::tempdir;
     use vulcan_app::sync::SyncCancellationToken;
@@ -301,9 +294,8 @@ mod tests {
 
     #[test]
     fn worker_wait_observes_shutdown_without_waiting_for_the_full_poll() {
-        let stop = AtomicBool::new(true);
+        let stop = ShutdownSignal::new(true);
         assert!(wait_until_next_poll(&stop, Duration::from_secs(60)));
-        assert!(WAIT_SLICE < Duration::from_secs(1));
     }
 
     #[test]

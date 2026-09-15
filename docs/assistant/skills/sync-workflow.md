@@ -243,6 +243,7 @@ they commit.
   polling runs only if native watcher setup fails, with a 30-second interval; it can be costly
   on large worktrees. Periodic sync reconciliation (every five minutes by default) repairs
   missed notifications. To request reconciliation immediately, use `vulcan sync run <wiki>`.
+- Companion connections share one status stream. Daemon jobs and successful companion mutations trigger updates; changes made by external processes are reconciled every 30 seconds while a companion is connected. Use `vulcan sync status <wiki>` for an immediate status read. With no companion connected, the stream performs no background snapshot work.
 - The daemon is quiet by default. Run `vulcan --verbose daemon start` (or with `--detach`,
   which carries the flag to the background child and its `daemon.log`) for operational stderr
   lines: one per completed sync job with wiki, triggers, state/outcome, watch-trigger detail,

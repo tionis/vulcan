@@ -1,12 +1,14 @@
 //! Repository-advertised realtime sync wake-up listeners.
 
 use crate::registry::{RegistryError, WikiRegistration, WikiRegistry};
+use crate::shutdown::ShutdownSignal;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
 use reqwest::redirect::Policy;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -19,7 +21,6 @@ use vulcan_sync::{
     GitEngine, GitRemote, NotificationEndpoint, SyncJobTrigger,
 };
 
-const STOP_POLL: Duration = Duration::from_millis(50);
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +93,7 @@ impl From<SupervisorError> for NotificationRuntimeError {
 
 struct ListenerTask {
     registration: WikiRegistration,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
     handle: JoinHandle<Result<(), NotificationRuntimeError>>,
 }
 
@@ -107,7 +108,7 @@ pub async fn run_notification_runtime_until(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
     options: NotificationRuntimeOptions,
-    should_stop: Arc<AtomicBool>,
+    should_stop: Arc<ShutdownSignal>,
 ) -> Result<(), NotificationRuntimeError> {
     validate_options(&options)?;
     let client = build_notification_client(Duration::from_millis(options.connect_timeout_ms))?;
@@ -115,7 +116,7 @@ pub async fn run_notification_runtime_until(
     let mut listeners = BTreeMap::<String, ListenerTask>::new();
 
     loop {
-        if should_stop.load(Ordering::Acquire) {
+        if should_stop.is_cancelled() {
             stop_all_listeners(&mut listeners).await;
             return Ok(());
         }
@@ -249,7 +250,7 @@ fn spawn_listener(
     if verbose {
         eprintln!("{}", listener_line(registration.id.as_str()));
     }
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(ShutdownSignal::new(false));
     let task_stop = Arc::clone(&stop);
     let task_registration = registration.clone();
     let handle = tokio::spawn(async move {
@@ -268,7 +269,7 @@ async fn stop_all_listeners(listeners: &mut BTreeMap<String, ListenerTask>) {
 
 async fn stop_listeners(tasks: Vec<ListenerTask>) {
     for task in &tasks {
-        task.stop.store(true, Ordering::Release);
+        task.stop.cancel();
     }
     for task in tasks {
         let _ = task.handle.await;
@@ -280,7 +281,7 @@ async fn run_listener(
     supervisor: Arc<SyncSupervisor>,
     options: NotificationRuntimeOptions,
     client: reqwest::Client,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
 ) -> Result<(), NotificationRuntimeError> {
     let advertisement_refresh = Duration::from_millis(options.advertisement_refresh_ms);
     let mut endpoint = None;
@@ -292,7 +293,7 @@ async fn run_listener(
     let mut last_diagnostic = None;
 
     loop {
-        if stop.load(Ordering::Acquire) {
+        if stop.is_cancelled() {
             return Ok(());
         }
         if endpoint.is_none() || Instant::now() >= refresh_at {
@@ -414,7 +415,7 @@ enum RefreshResult {
 
 async fn refresh_for_registration_interruptible(
     registration: &WikiRegistration,
-    stop: &Arc<AtomicBool>,
+    stop: &Arc<ShutdownSignal>,
 ) -> RefreshResult {
     let registration = registration.clone();
     let refresh = tokio::task::spawn_blocking(move || refresh_for_registration(&registration));
@@ -492,13 +493,11 @@ fn wake_line(wiki_id: &str, endpoint: &NotificationEndpoint) -> String {
     )
 }
 
-async fn wait_until_stopped(stop: &Arc<AtomicBool>) {
-    while !stop.load(Ordering::Acquire) {
-        tokio::time::sleep(STOP_POLL).await;
-    }
+async fn wait_until_stopped(stop: &Arc<ShutdownSignal>) {
+    stop.cancelled().await;
 }
 
-async fn wait_for_stop(stop: &Arc<AtomicBool>, duration: Duration) -> bool {
+async fn wait_for_stop(stop: &Arc<ShutdownSignal>, duration: Duration) -> bool {
     tokio::select! {
         () = wait_until_stopped(stop) => true,
         () = tokio::time::sleep(duration) => false,
@@ -682,7 +681,7 @@ mod tests {
             .expect("register wiki");
         let supervisor =
             Arc::new(SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"));
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(ShutdownSignal::new(false));
         let runtime = tokio::spawn(run_notification_runtime_until(
             registry,
             Arc::clone(&supervisor),
@@ -714,7 +713,7 @@ mod tests {
         })
         .await
         .expect("remote notification job");
-        stop.store(true, Ordering::Release);
+        stop.cancel();
         tokio::time::timeout(Duration::from_secs(2), runtime)
             .await
             .expect("bounded runtime shutdown")
@@ -776,7 +775,7 @@ mod tests {
         }
         let supervisor =
             Arc::new(SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"));
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(ShutdownSignal::new(false));
         let runtime = tokio::spawn(run_notification_runtime_until(
             registry,
             Arc::clone(&supervisor),
@@ -808,7 +807,7 @@ mod tests {
         })
         .await
         .expect("remote notification jobs for both wikis");
-        stop.store(true, Ordering::Release);
+        stop.cancel();
         tokio::time::timeout(Duration::from_secs(2), runtime)
             .await
             .expect("bounded runtime shutdown")

@@ -16,10 +16,11 @@ use crate::notifications::{
 use crate::registry::DaemonAgentConfig;
 use crate::registry::{RegistryError, WikiRegistrationStatus, WikiRegistry};
 use crate::runtime::{
-    run_sync_trigger_runtime_until, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
+    run_sync_trigger_runtime_with_stop, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
 };
 use crate::semantic_worker::spawn_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
+use crate::shutdown::ShutdownSignal;
 use crate::status::{wiki_sync_status, DaemonWikiSyncStatus};
 use crate::supervisor::{SupervisorError, SyncSupervisor};
 use crate::sync::{
@@ -35,7 +36,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -49,8 +49,6 @@ use vulcan_sync::{GitBranchSync, SyncErrorCategory, SyncJobState, SyncJobTrigger
 pub const DAEMON_RUNTIME_VERSION: u32 = 1;
 const RUNTIME_FILE: &str = "runtime.json";
 const LOCK_FILE: &str = "process.lock";
-const JOB_STOP_POLL: Duration = Duration::from_secs(1);
-const SHUTDOWN_POLL: Duration = Duration::from_millis(50);
 const HTTP_RESPONSE_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,7 +303,7 @@ async fn run_daemon(
             config.vaults.len(),
         );
     }
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(ShutdownSignal::new(false));
     let workers = DaemonWorkers::spawn(
         context,
         &config,
@@ -329,13 +327,13 @@ async fn run_daemon(
             () = wait_for_stop(Arc::clone(&shutdown_stop)) => {}
             signal = tokio::signal::ctrl_c() => {
                 if signal.is_ok() {
-                    shutdown_stop.store(true, Ordering::Release);
+                    shutdown_stop.cancel();
                 }
             }
         }
     })
     .await;
-    stop.store(true, Ordering::Release);
+    stop.cancel();
     let workers_result = workers.join().await;
     drop(runtime_guard);
     serve?;
@@ -358,7 +356,7 @@ impl DaemonWorkers {
         supervisor: &Arc<SyncSupervisor>,
         state_store: &Arc<SyncStateStore>,
         semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
-        stop: &Arc<AtomicBool>,
+        stop: &Arc<ShutdownSignal>,
     ) -> Self {
         let (alert_sender, alert_delivery) = match spawn_alert_delivery(
             &config.notifications,
@@ -447,7 +445,7 @@ impl DaemonWorkers {
 fn spawn_notification_runtime(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
     verbose: bool,
 ) -> tokio::task::JoinHandle<Result<(), DaemonProcessError>> {
     tokio::spawn(async move {
@@ -463,7 +461,7 @@ fn spawn_notification_runtime(
         .await
         .map_err(DaemonProcessError::Notifications);
         if result.is_err() {
-            stop.store(true, Ordering::Release);
+            stop.cancel();
         }
         result
     })
@@ -532,29 +530,27 @@ fn configured_api_key(agent: &DaemonAgentConfig) -> Result<Option<String>, Daemo
         .transpose()
 }
 
-async fn wait_for_stop(stop: Arc<AtomicBool>) {
-    while !stop.load(Ordering::Acquire) {
-        tokio::time::sleep(SHUTDOWN_POLL).await;
-    }
+async fn wait_for_stop(stop: Arc<ShutdownSignal>) {
+    stop.cancelled().await;
 }
 
 fn spawn_trigger_runtime(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
     state_store: Arc<SyncStateStore>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
 ) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
     thread::spawn(move || {
-        let result = run_sync_trigger_runtime_until(
+        let result = run_sync_trigger_runtime_with_stop(
             &registry,
             &supervisor,
             &state_store,
             &SyncTriggerRuntimeOptions::default(),
-            || stop.load(Ordering::Acquire),
+            &stop,
         )
         .map_err(DaemonProcessError::Runtime);
         if result.is_err() {
-            stop.store(true, Ordering::Release);
+            stop.cancel();
         }
         result
     })
@@ -564,7 +560,7 @@ fn spawn_job_worker(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
     state_store: Arc<SyncStateStore>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
     verbose: bool,
     alert_sender: Option<AlertDeliverySender>,
 ) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
@@ -574,7 +570,7 @@ fn spawn_job_worker(
             let mut last_branch_diagnostics = BTreeMap::<String, String>::new();
             let retained = supervisor.list()?;
             let mut alerts = SyncAlertTracker::from_retained_jobs(&retained);
-            while !stop.load(Ordering::Acquire) {
+            while !stop.is_cancelled() {
                 match execute_next_sync_job_with_state_store_and_engine(
                     &supervisor,
                     &registry,
@@ -610,13 +606,13 @@ fn spawn_job_worker(
                             eprintln!("{line}");
                         }
                     }
-                    None => supervisor.wait_for_work(JOB_STOP_POLL)?,
+                    None => supervisor.wait_for_work(&stop)?,
                 }
             }
             Ok(())
         })();
         if result.is_err() {
-            stop.store(true, Ordering::Release);
+            stop.cancel();
         }
         result
     })

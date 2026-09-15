@@ -1,12 +1,12 @@
 //! Registry-driven lifecycle and periodic trigger coordination.
 
 use crate::registry::{RegistryError, WikiRegistration, WikiRegistry};
+use crate::shutdown::ShutdownSignal;
 use crate::supervisor::{SupervisorError, SyncSupervisor, SyncWatchMetadata};
-use crate::watch::{watch_registered_wiki_until, DaemonWatchError, DaemonWatchOptions};
+use crate::watch::{watch_registered_wiki_with_stop, DaemonWatchError, DaemonWatchOptions};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -73,7 +73,7 @@ impl From<SupervisorError> for SyncTriggerRuntimeError {
 
 struct WatcherTask {
     registration: WikiRegistration,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ShutdownSignal>,
     handle: JoinHandle<Result<(), DaemonWatchError>>,
 }
 
@@ -86,6 +86,44 @@ pub fn run_sync_trigger_runtime_until<S>(
     state_store: &SyncStateStore,
     options: &SyncTriggerRuntimeOptions,
     should_stop: S,
+) -> Result<(), SyncTriggerRuntimeError>
+where
+    S: Fn() -> bool,
+{
+    run_sync_trigger_runtime(
+        registry,
+        supervisor,
+        state_store,
+        options,
+        should_stop,
+        None,
+    )
+}
+
+pub(crate) fn run_sync_trigger_runtime_with_stop(
+    registry: &WikiRegistry,
+    supervisor: &Arc<SyncSupervisor>,
+    state_store: &SyncStateStore,
+    options: &SyncTriggerRuntimeOptions,
+    stop: &ShutdownSignal,
+) -> Result<(), SyncTriggerRuntimeError> {
+    run_sync_trigger_runtime(
+        registry,
+        supervisor,
+        state_store,
+        options,
+        || stop.is_cancelled(),
+        Some(stop),
+    )
+}
+
+fn run_sync_trigger_runtime<S>(
+    registry: &WikiRegistry,
+    supervisor: &Arc<SyncSupervisor>,
+    state_store: &SyncStateStore,
+    options: &SyncTriggerRuntimeOptions,
+    should_stop: S,
+    stop: Option<&ShutdownSignal>,
 ) -> Result<(), SyncTriggerRuntimeError>
 where
     S: Fn() -> bool,
@@ -126,10 +164,13 @@ where
 
         let timeout = next_registry_refresh
             .saturating_duration_since(Instant::now())
-            .min(next_remote_poll.saturating_duration_since(Instant::now()))
-            .min(RUNTIME_STOP_POLL);
+            .min(next_remote_poll.saturating_duration_since(Instant::now()));
         if !timeout.is_zero() {
-            thread::sleep(timeout);
+            if let Some(stop) = stop {
+                stop.wait_timeout(timeout);
+            } else {
+                thread::sleep(timeout.min(RUNTIME_STOP_POLL));
+            }
         }
     }
 }
@@ -244,16 +285,16 @@ fn spawn_watcher(
     state_store: SyncStateStore,
     options: DaemonWatchOptions,
 ) -> WatcherTask {
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(ShutdownSignal::new(false));
     let thread_stop = Arc::clone(&stop);
     let thread_registration = registration.clone();
     let handle = thread::spawn(move || {
-        watch_registered_wiki_until(
+        watch_registered_wiki_with_stop(
             &thread_registration,
             &supervisor,
             &state_store,
             &options,
-            || thread_stop.load(Ordering::Acquire),
+            &thread_stop,
         )
     });
     WatcherTask {
@@ -284,7 +325,7 @@ fn stop_all_watchers(watchers: &mut BTreeMap<String, WatcherTask>) {
 }
 
 fn stop_watcher(task: WatcherTask) {
-    task.stop.store(true, Ordering::Release);
+    task.stop.cancel();
     let _ = task.handle.join();
 }
 
