@@ -14952,6 +14952,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("mdbase record path"));
     assert!(note_operations.contains("validated, journaled write boundary"));
     assert!(note_operations.contains("explicit repair is a separate workflow"));
+    assert!(note_operations.contains("reports `concurrent_modification`"));
+    assert!(note_operations.contains("Never replay a stale whole-note replacement blindly"));
     let js_api = fs::read_to_string(vault_root.join(".agents/skills/js-api-guide/SKILL.md"))
         .expect("JS API skill should be readable");
     assert!(js_api.contains("standalone write is an implicit validated commit"));
@@ -14960,6 +14962,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let properties =
         fs::read_to_string(vault_root.join(".agents/skills/properties-and-tags/SKILL.md"))
             .expect("properties skill should be readable");
+    assert!(properties.contains("managed `concurrent_modification`"));
+    assert!(properties.contains("Rerun the query"));
     assert!(properties.contains("preflight every selected mdbase record"));
     assert!(properties.contains("one validated journal batch"));
     assert!(properties.contains("never implies raw repair"));

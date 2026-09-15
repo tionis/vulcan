@@ -33,6 +33,7 @@ Use this skill when the task depends on frontmatter consistency, property querie
 - Bulk metadata changes should be tested with `--dry-run` when available.
 - Ambiguous note selection is a data-quality problem. Resolve that before mutating properties.
 - `update` and `unset` preflight every selected mdbase record and commit managed records through one validated journal batch. Treat collection validation errors as blockers; an ordinary metadata request never implies raw repair or direct YAML/filesystem bypass.
+- A managed `concurrent_modification` means the source changed after selection. Rerun the query, review the current values, and form a new mutation instead of forcing the stale batch.
 
 ## Example Moves
 

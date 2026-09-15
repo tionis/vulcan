@@ -7580,7 +7580,7 @@ The current refresh avoids unchanged SQLite row writes but still derives the who
   - [x] Route generic `update`/`unset` property mutations through App-layer planning and permission checks, preflight all selected records, and commit managed records in one journal batch with CLI parity coverage.
   - [x] Route TaskNotes, inline-task, conversion-batch, pomodoro/reminder, and cross-boundary archive mutations through the same proposed-source validation and cooperating-write journal, with create/update/batch/rename parity tests.
   - [x] Route standalone script writes as implicit validated commits and explicit `vault.transaction()` writes as one proposed-source journal batch; restore originals without a journal on validation failure, and cover core callbacks, App validation, and the CLI entrypoint.
-- [ ] Add opaque content-derived revisions and `if_revision` preconditions; preserve the current file and return `concurrent_modification` on mismatch.
+- [x] Add opaque content-derived revisions and `if_revision` preconditions; preserve the current file and return `concurrent_modification` on mismatch.
 - [ ] Implement the normative draft pipeline: draft type membership, lifecycle, one post-lifecycle membership check, JSON Schema validation, collection validators, atomic persistence, derived-state refresh, then events.
 - [ ] Implement `now`, `today`, `uuid`, `ulid`, `slugify`, `copy`, and `literal` lifecycle providers, guarded lifecycle actions after CEL, and deterministic conflict diagnostics across matched types.
 - [ ] Preserve unrelated Markdown, link style, aliases, anchors, line endings, and exact supplied source when policy does not require reserialization; update references on rename through the existing rewrite planner.

@@ -4,6 +4,7 @@ use std::io;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppError {
     message: String,
+    code: Option<String>,
     sync_error: Option<vulcan_sync::SyncError>,
 }
 
@@ -12,6 +13,16 @@ impl AppError {
     pub fn operation(error: impl Display) -> Self {
         Self {
             message: error.to_string(),
+            code: None,
+            sync_error: None,
+        }
+    }
+
+    #[must_use]
+    pub fn operation_with_code(code: impl Into<String>, error: impl Display) -> Self {
+        Self {
+            message: error.to_string(),
+            code: Some(code.into()),
             sync_error: None,
         }
     }
@@ -20,6 +31,7 @@ impl AppError {
     pub fn sync(error: vulcan_sync::SyncError) -> Self {
         Self {
             message: error.message.clone(),
+            code: None,
             sync_error: Some(error),
         }
     }
@@ -27,6 +39,11 @@ impl AppError {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
     }
 
     #[must_use]

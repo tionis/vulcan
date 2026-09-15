@@ -1,6 +1,6 @@
 use super::{
-    discover_mdbase_files, mdbase_control_revisions, mdbase_glob, MdbaseCollection,
-    MdbaseControlRevisions,
+    discover_mdbase_files, mdbase_content_revision, mdbase_control_revisions, mdbase_glob,
+    MdbaseCollection, MdbaseControlRevisions,
 };
 use crate::paths::secure_read_to_string;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -38,6 +38,8 @@ pub struct MdbaseWritePreviewChangeRequest {
     pub path: String,
     /// Exact proposed bytes, or `None` for deletion.
     pub after: Option<String>,
+    /// Opaque content revision the caller requires at this path.
+    pub if_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +60,8 @@ pub struct MdbaseWritePreviewChange {
     /// Exact reviewed bytes to persist, or `None` for deletion.
     pub after: Option<String>,
     pub before_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +100,7 @@ pub struct MdbaseWritePreview {
 pub struct MdbaseWritePreviewError {
     pub code: String,
     pub message: String,
+    pub path: Option<String>,
 }
 
 impl MdbaseWritePreviewError {
@@ -103,6 +108,17 @@ impl MdbaseWritePreviewError {
         Self {
             code: code.to_string(),
             message: message.into(),
+            path: None,
+        }
+    }
+
+    pub(super) fn concurrent(path: &str) -> Self {
+        Self {
+            code: "concurrent_modification".to_string(),
+            message:
+                "the mdbase record no longer matches if_revision; read the current record and retry"
+                    .to_string(),
+            path: Some(path.to_string()),
         }
     }
 
@@ -146,7 +162,12 @@ pub fn build_mdbase_write_preview(
             ));
         }
         let before = read_optional_source(collection, &path)?;
-        let before_revision = before.as_deref().map(content_revision);
+        let before_revision = before.as_deref().map(mdbase_content_revision);
+        if let Some(expected) = requested.if_revision.as_deref() {
+            if before_revision.as_deref() != Some(expected) {
+                return Err(MdbaseWritePreviewError::concurrent(&path));
+            }
+        }
         if before.is_none() {
             absence_preconditions.push(path.clone());
         }
@@ -155,6 +176,7 @@ pub fn build_mdbase_write_preview(
             before,
             after: requested.after,
             before_revision,
+            if_revision: requested.if_revision,
         });
     }
     changes.sort_by(|left, right| left.path.cmp(&right.path));
@@ -242,10 +264,14 @@ pub fn verify_mdbase_write_preview(
         return Err(MdbaseWritePreviewError::stale());
     }
     for change in &preview.changes {
-        if read_optional_source(collection, &change.path)
-            .map_err(|_| MdbaseWritePreviewError::stale())?
-            != change.before
-        {
+        let current = read_optional_source(collection, &change.path)
+            .map_err(|_| MdbaseWritePreviewError::stale())?;
+        if let Some(expected) = change.if_revision.as_deref() {
+            if current.as_deref().map(mdbase_content_revision).as_deref() != Some(expected) {
+                return Err(MdbaseWritePreviewError::concurrent(&change.path));
+            }
+        }
+        if current != change.before {
             return Err(MdbaseWritePreviewError::stale());
         }
     }
@@ -289,6 +315,16 @@ fn validate_request(request: &MdbaseWritePreviewRequest) -> Result<(), MdbaseWri
             "mdbase write preview expiry must be after its issue time",
         ));
     }
+    for change in &request.changes {
+        if change.if_revision.as_ref().is_some_and(|revision| {
+            revision.is_empty() || revision.len() > 256 || revision.chars().any(char::is_control)
+        }) {
+            return Err(MdbaseWritePreviewError::new(
+                "preview_invalid",
+                "mdbase if_revision must be a bounded non-empty opaque value",
+            ));
+        }
+    }
     if request.changes.is_empty() {
         return Err(MdbaseWritePreviewError::new(
             "preview_invalid",
@@ -326,7 +362,7 @@ fn snapshot_record_scope(
                     "a discovered mdbase record disappeared while planning",
                 )
             })?;
-            accepted_revisions.insert(path.clone(), content_revision(&source));
+            accepted_revisions.insert(path.clone(), mdbase_content_revision(&source));
         }
         memberships.push(MdbaseDirectoryMembership {
             namespace: namespace.clone(),
@@ -423,10 +459,6 @@ fn canonical_collection_root(
         })
 }
 
-fn content_revision(source: &str) -> String {
-    format!("sha256:{:x}", Sha256::digest(source.as_bytes()))
-}
-
 fn membership_digest(namespace: &str, paths: &[String]) -> String {
     let mut digest = Sha256::new();
     digest.update(namespace.as_bytes());
@@ -500,6 +532,7 @@ mod tests {
             changes: vec![MdbaseWritePreviewChangeRequest {
                 path: "tasks/a.md".to_string(),
                 after: Some("---\ntype: task\n---\nupdated\n".to_string()),
+                if_revision: None,
             }],
             matched_types: vec!["task".to_string()],
             relevant_record_namespaces: vec!["tasks/**".to_string()],
@@ -543,6 +576,51 @@ mod tests {
         assert_eq!(preview.generated_values["uuid"], "fixed-uuid");
         assert!(preview.digest.starts_with("sha256:"));
         verify(&collection, &preview, now).expect("unchanged preview verifies");
+    }
+
+    #[test]
+    fn if_revision_is_opaque_bound_and_rechecked_against_current_content() {
+        let (directory, collection) = fixture();
+        let now = "2026-09-08T12:00:00Z".parse().expect("time");
+        let original = "---\ntype: task\n---\na\n";
+        let expected = mdbase_content_revision(original);
+        let mut matching = request(now);
+        matching.changes[0].if_revision = Some(expected.clone());
+        let preview = build_mdbase_write_preview(&collection, matching).expect("matching revision");
+        assert_eq!(
+            preview.changes[0].if_revision.as_deref(),
+            Some(expected.as_str())
+        );
+
+        write(
+            directory.path(),
+            "tasks/a.md",
+            "---\ntype: task\n---\nexternal\n",
+        );
+        let error = verify(&collection, &preview, now).expect_err("changed source must fail");
+        assert_eq!(error.code, "concurrent_modification");
+        assert_eq!(error.path.as_deref(), Some("tasks/a.md"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/a.md")).expect("current source"),
+            "---\ntype: task\n---\nexternal\n"
+        );
+
+        let error = build_mdbase_write_preview(&collection, {
+            let mut stale = request(now);
+            stale.changes[0].if_revision = Some("opaque-stale-token".to_string());
+            stale
+        })
+        .expect_err("stale opaque revision must fail");
+        assert_eq!(error.code, "concurrent_modification");
+        assert_eq!(error.path.as_deref(), Some("tasks/a.md"));
+
+        let error = build_mdbase_write_preview(&collection, {
+            let mut invalid = request(now);
+            invalid.changes[0].if_revision = Some(String::new());
+            invalid
+        })
+        .expect_err("empty revision must be invalid");
+        assert_eq!(error.code, "preview_invalid");
     }
 
     #[test]
@@ -618,6 +696,7 @@ mod tests {
         create.changes[0] = MdbaseWritePreviewChangeRequest {
             path: "tasks/new.md".to_string(),
             after: Some("new\n".to_string()),
+            if_revision: None,
         };
         let preview = build_mdbase_write_preview(&collection, create).expect("create preview");
         assert_eq!(preview.absence_preconditions, ["tasks/new.md"]);

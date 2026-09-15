@@ -18,6 +18,15 @@ use std::time::SystemTime;
 
 pub const MDBASE_RECORD_MODEL_VERSION: u32 = 1;
 
+/// Derive the opaque revision used for compare-and-swap record writes.
+///
+/// Callers must compare this value for equality and must not interpret its
+/// current encoding.
+#[must_use]
+pub fn mdbase_content_revision(source: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(source.as_bytes()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MdbaseRecordDiagnosticSeverity {
@@ -293,7 +302,7 @@ fn build_mdbase_record(
     let body = record_body(&source).to_string();
     let behavior = compose_mdbase_type_behavior(types, &analysis.types);
     let effective_frontmatter = apply_mdbase_read_defaults(&frontmatter, &behavior.read_defaults);
-    let revision = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
+    let revision = mdbase_content_revision(&source);
     let file = file_metadata(path, metadata);
     MdbaseRecordDocument {
         path: path.to_string(),
@@ -981,7 +990,7 @@ mod tests {
         assert_eq!(record.file.ext, "md");
         assert_eq!(record.file.folder, "tasks");
         assert_eq!(record.file.size, source.len() as u64);
-        assert!(record.revision.starts_with("sha256:"));
+        assert_eq!(record.revision, mdbase_content_revision(source));
     }
 
     #[test]

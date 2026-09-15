@@ -1,6 +1,6 @@
 use super::{
-    verify_mdbase_write_preview, MdbaseWritePreview, MdbaseWritePreviewChange,
-    MdbaseWritePreviewVerification,
+    mdbase_content_revision, verify_mdbase_write_preview, MdbaseWritePreview,
+    MdbaseWritePreviewChange, MdbaseWritePreviewVerification,
 };
 use crate::paths::{ensure_vulcan_dir, secure_read_to_string, VaultPaths};
 use crate::write_lock::{acquire_read_lock, acquire_write_lock, ReadLockGuard};
@@ -96,6 +96,15 @@ impl MdbaseWriteTransactionError {
             message: "mdbase transaction recovery found externally changed bytes; explicit repair is required".to_string(),
             transaction_id: Some(transaction_id.to_string()),
             path: Some(path.to_string()),
+        }
+    }
+
+    fn from_preview(error: super::MdbaseWritePreviewError) -> Self {
+        Self {
+            code: error.code,
+            message: error.message,
+            transaction_id: None,
+            path: error.path,
         }
     }
 }
@@ -435,8 +444,12 @@ where
     save_journal(paths, &mut journal)?;
     boundary("replacements_staged")?;
 
-    verify_mdbase_write_preview(collection, request.preview, &request.verification)
-        .map_err(|error| MdbaseWriteTransactionError::new(error.code.as_str(), error.message))?;
+    if let Err(error) =
+        verify_mdbase_write_preview(collection, request.preview, &request.verification)
+    {
+        clear_transaction(paths, &journal.transaction_id)?;
+        return Err(MdbaseWriteTransactionError::from_preview(error));
+    }
     recheck_planned_directories(collection, &journal.planned_directories)?;
     create_planned_directories(paths, collection, &mut journal)?;
     journal.phase = JournalPhase::Applying;
@@ -600,7 +613,7 @@ fn validate_apply(
     }
     ensure_collection_belongs_to_vault(paths, collection)?;
     verify_mdbase_write_preview(collection, request.preview, &request.verification)
-        .map_err(|error| MdbaseWriteTransactionError::new(error.code.as_str(), error.message))
+        .map_err(MdbaseWriteTransactionError::from_preview)
 }
 
 fn operation_identity(
@@ -651,7 +664,16 @@ fn apply_change(
     let observed = read_optional(collection, &change.path).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to inspect a transaction path", error)
     })?;
-    if observed.as_deref() == desired {
+    let revision_conflict = direction == RecoveryDirection::RollForward
+        && change.if_revision.is_some()
+        && observed.as_deref() != expected;
+    if revision_conflict && journal.applied_paths.is_empty() {
+        clear_transaction(paths, &journal.transaction_id)?;
+        return Err(MdbaseWriteTransactionError::from_preview(
+            super::MdbaseWritePreviewError::concurrent(&change.path),
+        ));
+    }
+    if observed.as_deref() == desired && !revision_conflict {
         return Ok(());
     }
     if observed.as_deref() != expected {
@@ -1015,7 +1037,7 @@ fn outbox_event(
             .map(|change| MdbaseWritePathEvent {
                 path: change.path.clone(),
                 before_revision: change.before_revision.clone(),
-                after_revision: change.after.as_deref().map(content_revision),
+                after_revision: change.after.as_deref().map(mdbase_content_revision),
             })
             .collect(),
     })
@@ -1357,10 +1379,6 @@ fn receipt_path(paths: &VaultPaths, identity: &OperationIdentity) -> PathBuf {
     ))
 }
 
-fn content_revision(contents: &str) -> String {
-    sha256(contents.as_bytes())
-}
-
 fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -1483,10 +1501,12 @@ mod tests {
                 MdbaseWritePreviewChangeRequest {
                     path: "records/a.md".to_string(),
                     after: Some("after a\n".to_string()),
+                    if_revision: None,
                 },
                 MdbaseWritePreviewChangeRequest {
                     path: "records/new.md".to_string(),
                     after: Some("new\n".to_string()),
+                    if_revision: None,
                 },
             ],
         );
@@ -1548,6 +1568,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/a.md".to_string(),
                 after: Some("after a\n".to_string()),
+                if_revision: None,
             }],
         );
         let request = MdbaseWriteApplyRequest {
@@ -1592,10 +1613,12 @@ mod tests {
                 MdbaseWritePreviewChangeRequest {
                     path: "records/a.md".to_string(),
                     after: Some("after a\n".to_string()),
+                    if_revision: None,
                 },
                 MdbaseWritePreviewChangeRequest {
                     path: "records/b.md".to_string(),
                     after: Some("after b\n".to_string()),
+                    if_revision: None,
                 },
             ],
         );
@@ -1682,6 +1705,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/a.md".to_string(),
                 after: Some("after a\n".to_string()),
+                if_revision: None,
             }],
         );
         let request = MdbaseWriteApplyRequest {
@@ -1731,6 +1755,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/a.md".to_string(),
                 after: Some("after a\n".to_string()),
+                if_revision: None,
             }],
         );
         let request = MdbaseWriteApplyRequest {
@@ -1771,6 +1796,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/a.md".to_string(),
                 after: Some("after a\n".to_string()),
+                if_revision: None,
             }],
         );
         let request = MdbaseWriteApplyRequest {
@@ -1819,6 +1845,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/a.md".to_string(),
                 after: Some("after a\n".to_string()),
+                if_revision: None,
             }],
         );
         let request = MdbaseWriteApplyRequest {
@@ -1849,6 +1876,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/a.md".to_string(),
                 after: Some("after a\n".to_string()),
+                if_revision: None,
             }],
         );
         preview.changes = (0..=MDBASE_WRITE_MAX_CHANGED_FILES)
@@ -1857,6 +1885,7 @@ mod tests {
                 before: None,
                 after: Some(String::new()),
                 before_revision: None,
+                if_revision: None,
             })
             .collect();
         preview.digest = super::super::write_preview::preview_digest_for_test(&preview);
@@ -1879,6 +1908,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "new/deep/record.md".to_string(),
                 after: Some("new\n".to_string()),
+                if_revision: None,
             }],
         );
         let request = MdbaseWriteApplyRequest {
@@ -1926,6 +1956,7 @@ mod tests {
                 vec![MdbaseWritePreviewChangeRequest {
                     path: "records/a.md".to_string(),
                     after: Some("after a\n".to_string()),
+                    if_revision: None,
                 }],
             );
             let request = MdbaseWriteApplyRequest {
@@ -1961,6 +1992,47 @@ mod tests {
     }
 
     #[test]
+    fn first_path_revision_race_preserves_external_bytes_without_a_journal() {
+        let (directory, paths, collection) = fixture();
+        let preview = preview(
+            &collection,
+            vec![MdbaseWritePreviewChangeRequest {
+                path: "records/a.md".to_string(),
+                after: Some("planned\n".to_string()),
+                if_revision: Some(mdbase_content_revision("before a\n")),
+            }],
+        );
+        let request = MdbaseWriteApplyRequest {
+            preview: &preview,
+            verification: verification(),
+            idempotency_key: "revision-race",
+        };
+
+        let error = apply_with_boundary_hook(
+            &paths,
+            &collection,
+            &request,
+            |_| Ok(()),
+            |boundary| {
+                if boundary == "before_replace" {
+                    write(directory.path(), "records/a.md", "external\n");
+                }
+                Ok(())
+            },
+        )
+        .expect_err("revision race must fail");
+
+        assert_eq!(error.code, "concurrent_modification");
+        assert_eq!(error.path.as_deref(), Some("records/a.md"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("records/a.md")).expect("external source"),
+            "external\n"
+        );
+        assert!(!journal_path(&paths).exists());
+        assert!(list_mdbase_write_outbox(&paths).expect("outbox").is_empty());
+    }
+
+    #[test]
     fn concurrent_creator_and_phantom_membership_are_preserved_and_rejected() {
         let (directory, paths, collection) = fixture();
         let create_preview = preview(
@@ -1968,6 +2040,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/new.md".to_string(),
                 after: Some("planned\n".to_string()),
+                if_revision: None,
             }],
         );
         let request = MdbaseWriteApplyRequest {
@@ -2000,6 +2073,7 @@ mod tests {
             vec![MdbaseWritePreviewChangeRequest {
                 path: "records/a.md".to_string(),
                 after: Some("planned\n".to_string()),
+                if_revision: None,
             }],
         );
         write(
@@ -2033,10 +2107,12 @@ mod tests {
                 MdbaseWritePreviewChangeRequest {
                     path: "records/Name.md".to_string(),
                     after: None,
+                    if_revision: None,
                 },
                 MdbaseWritePreviewChangeRequest {
                     path: "records/name.md".to_string(),
                     after: Some("rename me\n".to_string()),
+                    if_revision: None,
                 },
             ],
         );
@@ -2090,10 +2166,12 @@ mod tests {
                 MdbaseWritePreviewChangeRequest {
                     path: "records/Name.md".to_string(),
                     after: None,
+                    if_revision: None,
                 },
                 MdbaseWritePreviewChangeRequest {
                     path: "records/name.md".to_string(),
                     after: Some("rename me\n".to_string()),
+                    if_revision: None,
                 },
             ],
         );

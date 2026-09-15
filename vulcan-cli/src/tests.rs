@@ -13,6 +13,18 @@ use vulcan_core::expression::functions::parse_date_like_string;
 
 const CLI_TEST_STACK_BYTES: &str = "8388608";
 
+#[test]
+fn app_concurrency_errors_keep_their_machine_readable_cli_code() {
+    let error = CliError::from(vulcan_app::AppError::operation_with_code(
+        "concurrent_modification",
+        "read the current record and retry",
+    ));
+
+    assert_eq!(error.code(), "concurrent_modification");
+    assert_eq!(error.to_string(), "read the current record and retry");
+    assert_eq!(error.exit_code(), 1);
+}
+
 extern "C" fn configure_cli_test_thread_stack() {
     std::env::set_var("RUST_MIN_STACK", CLI_TEST_STACK_BYTES);
 }

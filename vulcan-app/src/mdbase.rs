@@ -13,13 +13,13 @@ use vulcan_core::mdbase::{
     authorize_mdbase_write_validation_scope, build_mdbase_write_preview, compile_mdbase_query,
     discover_mdbase_files, execute_mdbase_query, is_mdbase_record_path, load_mdbase_collection,
     load_mdbase_contract_registry, load_mdbase_records_with_contracts_filtered,
-    load_mdbase_type_registry, MdbaseAuthorizedValidationScope, MdbaseCollection,
-    MdbaseConsistentReadGuard, MdbaseContractDefinition, MdbaseContractImplementation,
-    MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult,
-    MdbaseRecordDiagnostic, MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry,
-    MdbaseWriteApplyRequest, MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome,
-    MdbaseWritePreview, MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest,
-    MdbaseWritePreviewVerification,
+    load_mdbase_type_registry, mdbase_content_revision, MdbaseAuthorizedValidationScope,
+    MdbaseCollection, MdbaseConsistentReadGuard, MdbaseContractDefinition,
+    MdbaseContractImplementation, MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel,
+    MdbaseQueryResult, MdbaseRecordDiagnostic, MdbaseRecordDocument, MdbaseTypeDefinition,
+    MdbaseTypeRegistry, MdbaseWriteApplyRequest, MdbaseWriteAuthorizationRequest,
+    MdbaseWriteOutcome, MdbaseWritePreview, MdbaseWritePreviewChangeRequest,
+    MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
 };
 use vulcan_core::{
     auto_commit, initialize_vulcan_dir, load_vault_config, resolve_permission_profile,
@@ -58,6 +58,9 @@ pub struct MdbaseWriteChangeRequest {
     pub path: String,
     /// Exact proposed UTF-8 Markdown, or `None` to delete the path.
     pub after: Option<String>,
+    /// Opaque content revision required at the current path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -539,6 +542,7 @@ pub fn plan_mdbase_write(
                 .map(|change| MdbaseWritePreviewChangeRequest {
                     path: change.path.clone(),
                     after: change.after.clone(),
+                    if_revision: change.if_revision.clone(),
                 })
                 .collect(),
             matched_types: request.matched_types.clone(),
@@ -546,7 +550,7 @@ pub fn plan_mdbase_write(
             generated_values: request.generated_values.clone(),
         },
     )
-    .map_err(AppError::operation)?;
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     validate_operation_shape(&request.operation, &preview)?;
     Ok(MdbaseWritePlanReport {
         dry_run: true,
@@ -647,7 +651,7 @@ pub fn apply_mdbase_write(
             Ok(())
         },
     )
-    .map_err(AppError::operation)?;
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
 
     let mut report = MdbaseWriteApplyReport {
         dry_run: false,
@@ -758,6 +762,7 @@ pub fn apply_managed_mdbase_note_writes(
                 .map(|change| MdbaseWriteChangeRequest {
                     path: change.path.to_string(),
                     after: change.after.map(str::to_string),
+                    if_revision: change.before.map(mdbase_content_revision),
                 })
                 .collect(),
             matched_types: drafts.matched_types,
@@ -1295,6 +1300,7 @@ mod tests {
                 changes: vec![MdbaseWritePreviewChangeRequest {
                     path: "tasks/public.md".to_string(),
                     after: Some("---\ntype: task\ntitle: Changed\n---\nBody\n".to_string()),
+                    if_revision: None,
                 }],
                 matched_types: vec!["task".to_string()],
                 relevant_record_namespaces: vec!["tasks/**".to_string()],
@@ -1334,6 +1340,7 @@ mod tests {
                 vec![MdbaseWriteChangeRequest {
                     path: "tasks/public.md".to_string(),
                     after: Some("---\ntype: task\ntitle: Updated\n---\nBody\n".to_string()),
+                    if_revision: None,
                 }],
             ),
             now,
@@ -1370,6 +1377,69 @@ mod tests {
     }
 
     #[test]
+    fn if_revision_rejects_stale_plans_and_preserves_external_bytes() {
+        let (directory, paths) = fixture();
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let original =
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("original source");
+        let revision = mdbase_content_revision(&original);
+        let replacement = "---\ntype: task\ntitle: Updated\n---\nBody\n";
+
+        let stale = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Update,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/public.md".to_string(),
+                    after: Some(replacement.to_string()),
+                    if_revision: Some("opaque-stale-token".to_string()),
+                }],
+            ),
+            now,
+        )
+        .expect_err("stale revision should fail while planning");
+        assert_eq!(stale.code(), Some("concurrent_modification"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("source unchanged"),
+            original
+        );
+
+        let plan = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Update,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/public.md".to_string(),
+                    after: Some(replacement.to_string()),
+                    if_revision: Some(revision),
+                }],
+            ),
+            now,
+        )
+        .expect("matching revision should plan");
+        let external = "---\ntype: task\ntitle: External\n---\nBody\n";
+        fs::write(directory.path().join("tasks/public.md"), external).expect("external edit");
+
+        let error = apply_mdbase_write(
+            &paths,
+            &plan,
+            &MdbaseWriteExecutionOptions {
+                idempotency_key: "revision-race".to_string(),
+                no_commit: true,
+                quiet: true,
+            },
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("changed revision should fail while applying");
+        assert_eq!(error.code(), Some("concurrent_modification"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("external source"),
+            external
+        );
+        assert!(list_mdbase_write_outbox(&paths).expect("outbox").is_empty());
+    }
+
+    #[test]
     fn operation_shapes_cover_create_delete_rename_and_batch_without_mutation() {
         let (directory, paths) = fixture();
         let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
@@ -1380,6 +1450,7 @@ mod tests {
                 vec![MdbaseWriteChangeRequest {
                     path: "tasks/new.md".to_string(),
                     after: Some("---\ntype: task\ntitle: New\n---\n".to_string()),
+                    if_revision: None,
                 }],
             ),
             now,
@@ -1394,6 +1465,7 @@ mod tests {
                 vec![MdbaseWriteChangeRequest {
                     path: "tasks/public.md".to_string(),
                     after: None,
+                    if_revision: None,
                 }],
             ),
             now,
@@ -1412,10 +1484,12 @@ mod tests {
                     MdbaseWriteChangeRequest {
                         path: "tasks/public.md".to_string(),
                         after: None,
+                        if_revision: None,
                     },
                     MdbaseWriteChangeRequest {
                         path: "tasks/renamed.md".to_string(),
                         after: Some("---\ntype: task\ntitle: Public\n---\nBody\n".to_string()),
+                        if_revision: None,
                     },
                 ],
             ),
@@ -1432,10 +1506,12 @@ mod tests {
                     MdbaseWriteChangeRequest {
                         path: "tasks/public.md".to_string(),
                         after: Some("---\ntype: task\ntitle: Batched\n---\nBody\n".to_string()),
+                        if_revision: None,
                     },
                     MdbaseWriteChangeRequest {
                         path: "tasks/new.md".to_string(),
                         after: Some("---\ntype: task\ntitle: New\n---\n".to_string()),
+                        if_revision: None,
                     },
                 ],
             ),
@@ -1458,6 +1534,7 @@ mod tests {
                 vec![MdbaseWriteChangeRequest {
                     path: "tasks/public.md".to_string(),
                     after: Some("replacement".to_string()),
+                    if_revision: None,
                 }],
             ),
             now,
@@ -1649,6 +1726,40 @@ mod tests {
         assert!(list_mdbase_write_outbox(&paths)
             .expect("outbox should be readable")
             .is_empty());
+    }
+
+    #[test]
+    fn managed_write_uses_its_before_image_as_a_revision_precondition() {
+        let (directory, paths) = fixture();
+        let original =
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("original source");
+        let external = "---\ntype: task\ntitle: External\n---\nBody\n";
+        fs::write(directory.path().join("tasks/public.md"), external).expect("external edit");
+
+        let error = apply_managed_mdbase_note_write(
+            &paths,
+            &MdbaseManagedNoteWriteRequest {
+                path: "tasks/public.md",
+                before: Some(&original),
+                after: Some("---\ntype: task\ntitle: Proposed\n---\nBody\n"),
+                operation: MdbaseWriteOperation::Update,
+                mode: MdbaseManagedWriteMode::Validated,
+                dry_run: false,
+                permission_profile: None,
+                quiet: true,
+            },
+        )
+        .expect_err("stale before-image must reject the managed write");
+
+        assert_eq!(error.code(), Some("concurrent_modification"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("external source"),
+            external
+        );
+        assert!(!directory
+            .path()
+            .join(".vulcan/mdbase-write/journal.json")
+            .exists());
     }
 
     #[test]

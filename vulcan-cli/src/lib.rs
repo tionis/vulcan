@@ -661,7 +661,15 @@ impl std::error::Error for CliError {}
 
 impl From<vulcan_app::AppError> for CliError {
     fn from(error: vulcan_app::AppError) -> Self {
-        Self::operation(error)
+        let code = match error.code() {
+            Some("concurrent_modification") => "concurrent_modification",
+            _ => "operation_failed",
+        };
+        Self {
+            exit_code: 1,
+            code,
+            message: error.to_string(),
+        }
     }
 }
 
