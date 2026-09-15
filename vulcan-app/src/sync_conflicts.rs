@@ -45,7 +45,14 @@ pub struct SyncConflictRecord {
     pub preserved_record_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance_revision: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Records written before the projection rename stored the same
+    /// `tree`/`published`/`applied` payload under `materialization`; the
+    /// obsolete `directory`/`copies` fields are ignored on load.
+    #[serde(
+        default,
+        alias = "materialization",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub projection: Option<SyncConflictProjectionRecord>,
     pub paths: Vec<SyncConflictPathRecord>,
     pub diagnostics: String,
@@ -1240,7 +1247,7 @@ impl SyncConflictStore {
         }
         let resolution: SyncConflictResolutionRecord =
             serde_json::from_slice(&source).map_err(AppError::operation)?;
-        if resolution.version != SYNC_CONFLICT_RESOLUTION_VERSION
+        if !(1..=SYNC_CONFLICT_RESOLUTION_VERSION).contains(&resolution.version)
             || resolution.conflict_id != conflict_id
         {
             return Err(AppError::operation(
@@ -1486,7 +1493,7 @@ fn validate_record(
     repository_key: &str,
     conflict_id: &str,
 ) -> Result<(), AppError> {
-    if record.version != SYNC_CONFLICT_RECORD_VERSION
+    if !(1..=SYNC_CONFLICT_RECORD_VERSION).contains(&record.version)
         || record.repository_key != repository_key
         || record.id != conflict_id
     {
@@ -1802,5 +1809,142 @@ mod tests {
         assert!(directory.join("artifacts").exists());
         // Re-running is a no-op.
         assert_eq!(store.prune_resolved_artifacts(&key).expect("re-prune"), 0);
+    }
+
+    fn write_version_one_record(
+        store: &SyncConflictStore,
+        key: &str,
+        id: &str,
+        work_tree: &Path,
+    ) -> PathBuf {
+        let directory = store.conflict_directory(key, id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let record = serde_json::json!({
+            "version": 1,
+            "id": id,
+            "repository_key": key,
+            "work_tree": work_tree,
+            "base_revision": "base",
+            "local_revision": "local",
+            "remote_revision": "remote",
+            "scope": "paths",
+            "policy_version": 1,
+            "policy_hash": "policy",
+            "preserved_base_ref": null,
+            "preserved_local_ref": "refs/local",
+            "preserved_remote_ref": "refs/remote",
+            "provenance_revision": "provenance",
+            "materialization": {
+                "directory": format!(".sync-conflicts/{id}"),
+                "tree": "tree",
+                "copies": [{
+                    "original_path": "Home.md",
+                    "copy_path": format!(".sync-conflicts/{id}/local/Home.md"),
+                    "object_id": "object",
+                    "mode": "100644"
+                }],
+                "published": true,
+                "applied": true
+            },
+            "paths": [{
+                "path": "Home.md",
+                "base": {"revision": "base"},
+                "local": {"revision": "local"},
+                "remote": {"revision": "remote"}
+            }],
+            "diagnostics": "conflict"
+        });
+        let record_path = directory.join("record.json");
+        fs::write(
+            &record_path,
+            serde_json::to_vec_pretty(&record).expect("record"),
+        )
+        .expect("record file");
+        record_path
+    }
+
+    #[test]
+    fn version_one_records_migrate_their_materialization_into_projection() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        write_version_one_record(&store, &key, &id, temporary.path());
+
+        let record = store.get(&key, &id).expect("legacy record loads");
+        assert_eq!(record.version, 1);
+        let projection = record.projection.as_ref().expect("projection migrated");
+        assert_eq!(projection.tree, "tree");
+        assert!(projection.published);
+        assert!(projection.applied);
+        assert_eq!(
+            store
+                .list(&key)
+                .expect("list legacy records")
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![id.as_str()]
+        );
+    }
+
+    #[test]
+    fn version_one_resolution_records_remain_readable() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        write_version_one_record(&store, &key, &id, temporary.path());
+        let resolution = serde_json::json!({
+            "version": 1,
+            "conflict_id": id,
+            "base_revision": "base",
+            "local_revision": "local",
+            "remote_revision": "remote",
+            "recovery_revision": "recovery",
+            "resolved_tree": "tree",
+            "resolution_commit": "commit",
+            "published": true,
+            "applied": true
+        });
+        fs::write(
+            store
+                .conflict_directory(&key, &id)
+                .expect("directory")
+                .join("resolution.json"),
+            serde_json::to_vec_pretty(&resolution).expect("resolution"),
+        )
+        .expect("resolution file");
+
+        let loaded = store
+            .get_resolution(&key, &id)
+            .expect("legacy resolution loads")
+            .expect("resolution present");
+        assert_eq!(loaded.version, 1);
+        assert_eq!(
+            store.resolution_state(&key, &id).expect("state"),
+            SyncConflictResolutionState::Resolved
+        );
+    }
+
+    #[test]
+    fn unsupported_future_record_versions_still_fail_closed() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let record_path = write_version_one_record(&store, &key, &id, temporary.path());
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&record_path).expect("record source"))
+                .expect("record JSON");
+        value["version"] = serde_json::json!(SYNC_CONFLICT_RECORD_VERSION + 1);
+        fs::write(
+            &record_path,
+            serde_json::to_vec_pretty(&value).expect("record"),
+        )
+        .expect("tampered record");
+
+        let error = store.get(&key, &id).expect_err("future version must fail");
+        assert!(error.to_string().contains("version or identity mismatch"));
     }
 }
