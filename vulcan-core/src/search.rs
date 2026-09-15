@@ -644,36 +644,10 @@ fn keyword_search_hits(
             headings: row.get(8)?,
         })
     })?;
-    let mut candidates = rows.collect::<Result<Vec<_>, _>>()?;
-    let default_case_sensitive = prepared.match_case.unwrap_or(false);
-    apply_content_filters(
-        &mut candidates,
-        &prepared.content_terms,
-        default_case_sensitive,
-    );
-    apply_scope_filters(
-        connection,
-        &mut candidates,
-        prepared.expression.as_ref(),
-        default_case_sensitive,
-    )?;
-    apply_task_filters(
-        &mut candidates,
-        &prepared.task_terms,
-        &prepared.task_todo_terms,
-        &prepared.task_done_terms,
-        default_case_sensitive,
-    );
-    apply_case_filters(
-        &mut candidates,
-        prepared.expression.as_ref(),
-        default_case_sensitive,
-    );
-    annotate_matched_lines(&mut candidates, prepared, default_case_sensitive);
-    let mut hits = candidates
-        .into_iter()
-        .map(|candidate| candidate.hit)
-        .collect::<Vec<_>>();
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut hits = collect_filtered_batches(rows, limit, |candidates| {
+        filter_search_candidates(connection, candidates, prepared)
+    })?;
 
     if query.explain {
         for (index, hit) in hits.iter_mut().enumerate() {
@@ -689,12 +663,69 @@ fn keyword_search_hits(
             });
         }
     }
-
-    if has_section_scope || has_regex {
-        hits.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
-    }
-
     Ok(hits)
+}
+
+const SEARCH_CANDIDATE_BATCH_SIZE: usize = 128;
+
+/// SQL already supplies the requested ranking. Filter bounded batches in that
+/// order and stop after enough survivors; a rejected batch is not exhaustion.
+fn collect_filtered_batches<I, F>(
+    mut rows: I,
+    limit: usize,
+    mut filter: F,
+) -> Result<Vec<SearchHit>, SearchError>
+where
+    I: Iterator<Item = Result<SearchCandidate, rusqlite::Error>>,
+    F: FnMut(&mut Vec<SearchCandidate>) -> Result<(), SearchError>,
+{
+    let mut hits = Vec::new();
+    while hits.len() < limit {
+        let mut candidates = rows
+            .by_ref()
+            .take(SEARCH_CANDIDATE_BATCH_SIZE)
+            .collect::<Result<Vec<_>, _>>()?;
+        if candidates.is_empty() {
+            break;
+        }
+        filter(&mut candidates)?;
+        hits.extend(
+            candidates
+                .into_iter()
+                .take(limit - hits.len())
+                .map(|candidate| candidate.hit),
+        );
+    }
+    Ok(hits)
+}
+
+fn filter_search_candidates(
+    connection: &Connection,
+    candidates: &mut Vec<SearchCandidate>,
+    prepared: &PreparedSearchQuery,
+) -> Result<(), SearchError> {
+    let default_case_sensitive = prepared.match_case.unwrap_or(false);
+    apply_content_filters(candidates, &prepared.content_terms, default_case_sensitive);
+    apply_scope_filters(
+        connection,
+        candidates,
+        prepared.expression.as_ref(),
+        default_case_sensitive,
+    )?;
+    apply_task_filters(
+        candidates,
+        &prepared.task_terms,
+        &prepared.task_todo_terms,
+        &prepared.task_done_terms,
+        default_case_sensitive,
+    );
+    apply_case_filters(
+        candidates,
+        prepared.expression.as_ref(),
+        default_case_sensitive,
+    );
+    annotate_matched_lines(candidates, prepared, default_case_sensitive);
+    Ok(())
 }
 
 fn apply_content_filters(
@@ -3093,6 +3124,88 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn candidate_stream_is_bounded_and_continues_after_rejected_batches() {
+        let read = std::cell::Cell::new(0);
+        let rows = (0..10_000).map(|index| {
+            read.set(read.get() + 1);
+            Ok(SearchCandidate {
+                hit: SearchHit {
+                    document_path: format!("{index}.md"),
+                    chunk_id: index.to_string(),
+                    heading_path: vec![],
+                    snippet: String::new(),
+                    matched_line: None,
+                    section_id: None,
+                    line_spans: vec![],
+                    rank: 0.0,
+                    explain: None,
+                },
+                content: index.to_string(),
+                document_title: String::new(),
+                aliases: String::new(),
+                headings: String::new(),
+            })
+        });
+        let hits = collect_filtered_batches(rows, 3, |batch| {
+            assert!(batch.len() <= SEARCH_CANDIDATE_BATCH_SIZE);
+            batch.retain(|candidate| {
+                candidate.content.parse::<usize>().unwrap() >= 2 * SEARCH_CANDIDATE_BATCH_SIZE
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(hits.len(), 3);
+        assert_eq!(
+            hits[0].document_path,
+            format!("{}.md", 2 * SEARCH_CANDIDATE_BATCH_SIZE)
+        );
+        assert_eq!(read.get(), 3 * SEARCH_CANDIDATE_BATCH_SIZE);
+        assert!(collect_filtered_batches(
+            std::iter::once(Err(rusqlite::Error::InvalidQuery)),
+            0,
+            |_| unreachable!()
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn batched_regex_and_section_limits_preserve_sorted_results() {
+        let temporary = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        for index in 0..300 {
+            let text = if index < 260 {
+                "# Heading\nalpha only\n"
+            } else {
+                "# Heading\nalpha beta\n"
+            };
+            fs::write(temporary.path().join(format!("{index:03}.md")), text).unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        for text in ["/beta/", "section:(alpha beta)", "alpha OR /beta/"] {
+            for sort in [
+                SearchSort::PathAsc,
+                SearchSort::PathDesc,
+                SearchSort::Relevance,
+            ] {
+                let mut query = SearchQuery {
+                    text: text.into(),
+                    sort: Some(sort),
+                    limit: None,
+                    explain: true,
+                    ..Default::default()
+                };
+                let all = search_vault(&paths, &query).unwrap();
+                assert!(all.hits.len() >= 3);
+                query.limit = Some(3);
+                let limited = search_vault(&paths, &query).unwrap();
+                assert_eq!(limited.hits, all.hits[..3], "{text} {sort:?}");
+            }
+        }
+    }
 
     #[test]
     fn search_returns_ranked_chunk_hits_with_snippets() {
