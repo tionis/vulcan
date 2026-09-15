@@ -156,12 +156,13 @@ they commit.
   Provider output is an untrusted retained proposal, not an accepted merge. Review it, then preview
   exact approval with `sync resolve --approve-proposal <proposal-id> --dry-run`, or reject it with
   `sync reject <conflict-id> <proposal-id> --dry-run`.
-- A published conflict materialization keeps accepted remote bytes at the original path and local
-  copies under `.sync-conflicts/<id>/local/`. Do not edit or push that managed tree manually; a
-  reviewed Vulcan resolution removes it atomically.
+- A published conflict projection keeps accepted remote bytes provisionally at the original path
+  so clean merged paths can continue synchronizing, but it does not place conflict artifacts in the
+  vault. Inspect the preserved base/local/remote inputs with `sync conflicts`, reviewed resolution
+  modes, or explicit exports rather than treating the visible remote bytes as a semantic winner.
 - Git may report synthesized destinations for directory-rename or file-location conflicts that do
   not exist in either candidate tree. Vulcan preserves those structural conflicts without a
-  materialized tree and refuses path-side selection with a specific diagnostic; do not reinterpret
+  projected tree and refuses path-side selection with a specific diagnostic; do not reinterpret
   that refusal as a missing-file deletion or edit hidden refs to force a result.
 - A sync cycle that fails with "would overwrite untracked worktree files excluded by Git ignore
   rules" refuses to apply the accepted tree over a device-local ignored file that shares a path

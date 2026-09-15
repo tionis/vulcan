@@ -475,7 +475,7 @@ fn rollover_live_epoch(
             &previous_tree,
             &[],
             &format!(
-                "vulcan live epoch root\n\nVulcan-Sync-Version: 1\nVulcan-Ref-Namespace: {VULCAN_REF_NAMESPACE_VERSION}\nVulcan-Sync-Epoch: {epoch_id}\nVulcan-Sync-Previous-Epoch: {previous}\nVulcan-Sync-Epoch-Archive: {remote_archive_ref}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Semantic: false\n"
+                "vulcan live epoch root\n\nVulcan-Sync-Version: 2\nVulcan-Ref-Namespace: {VULCAN_REF_NAMESPACE_VERSION}\nVulcan-Sync-Epoch: {epoch_id}\nVulcan-Sync-Previous-Epoch: {previous}\nVulcan-Sync-Epoch-Archive: {remote_archive_ref}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Semantic: false\n"
             ),
         )
         .map_err(AppError::operation)?;

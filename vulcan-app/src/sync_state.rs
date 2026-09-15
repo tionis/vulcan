@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use ulid::Ulid;
 use vulcan_sync::GitSyncDeviceId;
 
-pub const SYNC_JOURNAL_VERSION: u32 = 1;
+pub const SYNC_JOURNAL_VERSION: u32 = 2;
 const MAX_SYNC_JOURNAL_BYTES: u64 = 1024 * 1024;
 const SYNC_DEVICE_IDENTITY_VERSION: u32 = 1;
-pub const SYNC_APPLY_MARKER_VERSION: u32 = 1;
+pub const SYNC_APPLY_MARKER_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SyncDeviceIdentity {

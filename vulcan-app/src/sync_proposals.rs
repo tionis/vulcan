@@ -23,9 +23,10 @@ use vulcan_core::{
     ProfilePermissionGuard, QueryAst, ScanSummary, SearchQuery, VaultPaths,
 };
 use vulcan_sync::{
-    conflict_proposal_resolution_ref, conflict_recovery_ref, GitAutomaticMergeValidation,
-    GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitOid, GitPushResult,
-    GitRefName, GitRemote, GitResolvedPath, GitSyncOptions, GitSyncRefs, SyncCancellationToken,
+    conflict_proposal_resolution_ref, conflict_recovery_ref,
+    remote_conflict_proposal_resolution_ref, GitAutomaticMergeValidation, GitCaptureRequest,
+    GitContentMergeResolutionRequest, GitEngine, GitOid, GitPushResult, GitRefName, GitRemote,
+    GitResolvedPath, GitSyncOptions, GitSyncRefs, SyncCancellationToken,
 };
 
 pub const RESOLUTION_PROPOSAL_VERSION: u32 = 3;
@@ -2152,7 +2153,7 @@ fn apply_approved_proposal(
                 target_ref: recovery_ref,
                 target_before: None,
                 message: format!(
-                    "vulcan proposal recovery snapshot\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {}\nVulcan-Sync-Source: {local}\nVulcan-Sync-Semantic: false\n",
+                    "vulcan proposal recovery snapshot\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {}\nVulcan-Sync-Source: {local}\nVulcan-Sync-Semantic: false\n",
                     context.record.id,
                     context.proposal.proposal_id,
                     device_id.as_str(),
@@ -2505,7 +2506,7 @@ fn prepare_proposal_resolution(
             &tree,
             &parents,
             &format!(
-                "vulcan conflict proposal resolution\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Resolution-Provider: {}\nVulcan-Resolution-Model: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {device_id}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {remote}+{local}\nVulcan-Sync-Semantic: false\n",
+                "vulcan conflict proposal resolution\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Resolution-Provider: {}\nVulcan-Resolution-Model: {}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {device_id}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {remote}+{local}\nVulcan-Sync-Semantic: false\n",
                 record.id,
                 proposal.proposal_id,
                 proposal.provider,
@@ -2612,6 +2613,39 @@ fn publish_proposal_resolution(
             return Err(AppError::operation(
                 "the remote live ref no longer matches the proposal inputs",
             ));
+        }
+    }
+    let proposal_id = resolution.proposal_id.as_deref().ok_or_else(|| {
+        AppError::operation("approved proposal resolution has no proposal identity")
+    })?;
+    let resolved_ref =
+        remote_conflict_proposal_resolution_ref(&resolution.conflict_id, proposal_id)
+            .map_err(AppError::operation)?;
+    match engine
+        .remote_ref(repository, &options.remote, &resolved_ref)
+        .map_err(AppError::operation)?
+    {
+        Some(existing) if existing == commit => {}
+        Some(_) => {
+            return Err(AppError::operation(format!(
+                "remote proposal resolution `{resolved_ref}` identifies a different commit"
+            )));
+        }
+        None => {
+            if engine
+                .push_ref(repository, &options.remote, &commit, &resolved_ref, None)
+                .map_err(AppError::operation)?
+                == GitPushResult::Rejected
+            {
+                let existing = engine
+                    .remote_ref(repository, &options.remote, &resolved_ref)
+                    .map_err(AppError::operation)?;
+                if existing.as_ref() != Some(&commit) {
+                    return Err(AppError::operation(format!(
+                        "remote proposal resolution `{resolved_ref}` was created concurrently with a different commit"
+                    )));
+                }
+            }
         }
     }
     resolution.published = true;
@@ -4463,6 +4497,21 @@ mod tests {
             Some(proposal.proposal_id.as_str())
         );
         assert!(resolution.applied);
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(&fixture.reader)
+            .expect("proposal repository");
+        let remote_resolution_ref =
+            remote_conflict_proposal_resolution_ref(&fixture.record.id, &proposal.proposal_id)
+                .expect("proposal resolution ref");
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &sync_options.remote, &remote_resolution_ref,)
+                .expect("remote proposal resolution ref")
+                .as_ref()
+                .map(GitOid::as_str),
+            Some(resolution.resolution_commit.as_str())
+        );
         assert_audit_and_idempotency(fixture, proposal, sync_options);
     }
 

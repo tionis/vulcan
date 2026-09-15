@@ -1,9 +1,10 @@
 use crate::{GitEngineError, GitRefName, GitRemote};
 
-pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 1;
+pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 2;
 pub const DEFAULT_REMOTE_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 pub const REMOTE_EPOCH_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/epochs";
 pub const REMOTE_DEVICE_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/devices";
+pub const REMOTE_CONFLICT_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/conflicts";
 pub const LOCAL_VULCAN_REF_ROOT: &str = "refs/vulcan";
 
 pub const LOCAL_RECOVERY_REF_NAMESPACES: &[&str] = &[
@@ -53,6 +54,12 @@ pub fn conflict_ref(conflict_id: &str, role: &str) -> Result<GitRefName, GitEngi
     local_ref(&["conflicts", conflict_id, role])
 }
 
+pub fn remote_conflict_ref(conflict_id: &str, role: &str) -> Result<GitRefName, GitEngineError> {
+    GitRefName::parse(format!(
+        "{REMOTE_CONFLICT_BRANCH_ROOT}/{conflict_id}/{role}"
+    ))
+}
+
 pub fn conflict_recovery_ref(
     conflict_id: &str,
     recovery_id: &str,
@@ -75,6 +82,15 @@ pub fn conflict_proposal_resolution_ref(
         "proposals",
         proposal_id,
     ])
+}
+
+pub fn remote_conflict_proposal_resolution_ref(
+    conflict_id: &str,
+    proposal_id: &str,
+) -> Result<GitRefName, GitEngineError> {
+    GitRefName::parse(format!(
+        "{REMOTE_CONFLICT_BRANCH_ROOT}/{conflict_id}/resolved/proposals/{proposal_id}"
+    ))
 }
 
 pub fn detached_recovery_ref(recovery_id: &str) -> Result<GitRefName, GitEngineError> {
@@ -107,7 +123,7 @@ mod tests {
 
     #[test]
     fn namespace_builders_are_versioned_stable_and_reject_unsafe_components() {
-        assert_eq!(VULCAN_REF_NAMESPACE_VERSION, 1);
+        assert_eq!(VULCAN_REF_NAMESPACE_VERSION, 2);
         let remote = GitRemote::parse("origin").expect("remote");
         let live = GitRefName::parse(DEFAULT_REMOTE_LIVE_REF).expect("live ref");
         let profile = sync_profile_key(&remote, &live);
@@ -142,6 +158,21 @@ mod tests {
                 .expect("epoch ref")
                 .as_str(),
             format!("refs/heads/__vulcan-sync/epochs/{profile}/epoch")
+        );
+        assert_eq!(
+            remote_conflict_ref("0123456789abcdef0123456789abcdef", "record")
+                .expect("remote conflict record ref")
+                .as_str(),
+            "refs/heads/__vulcan-sync/conflicts/0123456789abcdef0123456789abcdef/record"
+        );
+        assert_eq!(
+            remote_conflict_proposal_resolution_ref(
+                "0123456789abcdef0123456789abcdef",
+                "abcdef0123456789abcdef0123456789",
+            )
+            .expect("remote proposal resolution ref")
+            .as_str(),
+            "refs/heads/__vulcan-sync/conflicts/0123456789abcdef0123456789abcdef/resolved/proposals/abcdef0123456789abcdef0123456789"
         );
         assert!(conflict_ref("../escape", "local").is_err());
         assert!(local_sync_ref(&profile, "bad role").is_err());

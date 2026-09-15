@@ -1968,35 +1968,18 @@ mod tests {
         );
     }
 
-    fn assert_materialization_candidate(record: &SyncConflictRecord) {
-        let materialization = record
-            .materialization
-            .as_ref()
-            .expect("materialization candidate");
-        assert_eq!(materialization.copies.len(), 1);
-        assert!(materialization.published);
-        assert!(materialization.applied);
-        assert_eq!(materialization.copies[0].original_path, "Home.md");
-        assert!(materialization.copies[0]
-            .copy_path
-            .starts_with(&format!(".sync-conflicts/{}/local/", record.id)));
+    fn assert_projection_candidate(record: &SyncConflictRecord) {
+        let projection = record.projection.as_ref().expect("projection candidate");
+        assert!(projection.published);
+        assert!(projection.applied);
     }
 
-    fn assert_materialized_worktree(reader: &Path, record: &SyncConflictRecord) {
-        let copy_path = &record
-            .materialization
-            .as_ref()
-            .expect("materialization")
-            .copies[0]
-            .copy_path;
+    fn assert_projected_worktree(reader: &Path) {
         assert_eq!(
             fs::read_to_string(reader.join("Home.md")).expect("accepted remote bytes"),
             "writer\n"
         );
-        assert_eq!(
-            fs::read_to_string(reader.join(copy_path)).expect("local conflict copy"),
-            "reader\n"
-        );
+        assert!(!reader.join(".sync-conflicts").exists());
     }
 
     fn assert_conflict_artifacts(store: &SyncStateStore, record: &SyncConflictRecord) {
@@ -2164,13 +2147,13 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .contains("introduces a new ambiguous wikilink link-resolution problem"));
         assert!(fixture.reader.join("Writer/Target.md").exists());
         assert!(fixture.reader.join("Reader/Target.md").exists());
-        let materialization = report
+        let projection = report
             .conflict_record
             .as_ref()
-            .and_then(|record| record.materialization.as_ref())
-            .expect("safe materialization");
-        assert!(materialization.published);
-        assert!(materialization.applied);
+            .and_then(|record| record.projection.as_ref())
+            .expect("safe projection");
+        assert!(projection.published);
+        assert!(projection.applied);
     }
 
     #[test]
@@ -3355,10 +3338,10 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert_eq!(record.paths[0].path, "Home.md");
         assert!(record.preserved_record_ref.is_some());
         assert!(record.provenance_revision.is_some());
-        assert_materialization_candidate(&record);
+        assert_projection_candidate(&record);
         assert_overlapping_text_classification(&record);
         assert_conflict_artifacts(&store, &record);
         assert_conflict_read_workflows(&VaultPaths::new(&reader), &store, &record);
-        assert_materialized_worktree(&reader, &record);
+        assert_projected_worktree(&reader);
     }
 }

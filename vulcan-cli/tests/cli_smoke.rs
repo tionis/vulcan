@@ -4782,7 +4782,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let bootstrap_json = parse_stdout_json(&bootstrap);
     assert_eq!(bootstrap_json["outcome"], "bootstrapped");
     assert_eq!(bootstrap_json["actions"], serde_json::json!(["pushed"]));
-    assert_eq!(bootstrap_json["refs"]["namespace_version"], 1);
+    assert_eq!(bootstrap_json["refs"]["namespace_version"], 2);
     assert_eq!(
         bootstrap_json["requirements"]["required_filters"],
         serde_json::json!([])
@@ -7024,7 +7024,9 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
         fs::read_to_string(reader.join("Writer.md")).expect("clean merged note"),
         "clean remote addition\n"
     );
-    assert!(!reader.join(".sync-conflicts").join(&id).exists());
+    assert!(!reader.join(".sync-conflicts").exists());
+    let remote_resolution_ref = format!("refs/heads/__vulcan-sync/conflicts/{id}/resolved/side");
+    assert!(!run_git_stdout(&reader, &["ls-remote", "origin", &remote_resolution_ref]).is_empty());
 
     let list = parse_stdout_json(&run(&["conflicts"]));
     assert_eq!(list["count"], 0);
@@ -7574,18 +7576,7 @@ fn sync_resolve_cli_resumes_a_published_unapplied_resolution() {
         serde_json::to_vec_pretty(&resolution).expect("serialize pending resolution"),
     )
     .expect("write simulated interrupted state");
-    let record: Value = serde_json::from_slice(
-        &fs::read(resolution_path.with_file_name("record.json"))
-            .expect("conflict record should exist"),
-    )
-    .expect("conflict record should be JSON");
-    let copy_path = record["materialization"]["copies"][0]["copy_path"]
-        .as_str()
-        .expect("materialized copy path");
     fs::write(reader.join("Home.md"), "writer\n").expect("restore accepted conflict side");
-    let copy = reader.join(copy_path);
-    fs::create_dir_all(copy.parent().expect("copy parent")).expect("copy parent directory");
-    fs::write(copy, "reader\n").expect("restore materialized local copy");
 
     let resumed = parse_stdout_json(&run(&["resolve", &id, "--side", "local"]));
     assert_eq!(resumed["outcome"], "resolved");
@@ -15018,10 +15009,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("validation.checks"));
     assert!(git_skill.contains("device-local automation ceiling"));
     assert!(git_skill.contains("conflict_record"));
-    assert!(git_skill.contains("conflict.materialization"));
-    assert!(git_skill.contains("`.sync-conflicts/<id>/local/`"));
+    assert!(git_skill.contains("conflict.projection"));
+    assert!(git_skill.contains("no conflict artifacts enter the vault"));
     assert!(git_skill.contains("When `published` and `applied` are true"));
-    assert!(git_skill.contains("removes the hidden directory atomically"));
+    assert!(git_skill.contains("immutable record ref is also published remotely"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));

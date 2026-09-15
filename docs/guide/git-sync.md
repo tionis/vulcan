@@ -90,7 +90,7 @@ Do not place the detached Git directory in shared storage. Uninstalling Termux c
 
 ## Conflicts and recovery
 
-A conflicting sync preserves the immutable candidates and may publish a safe materialization. The accepted remote bytes remain at the original path, the competing local bytes appear below `.sync-conflicts/<conflict-id>/local/`, and clean paths continue synchronizing. The hidden directory is not indexed as notes.
+A conflicting sync preserves the immutable candidates and may publish a safe projection. The accepted remote bytes remain provisionally at the original path, clean paths continue synchronizing, and no conflict artifacts are written into the vault. The immutable conflict-record ref is also published to the remote so the record and both candidate histories remain Git-reachable.
 
 Inspect and resolve through Vulcan rather than editing its refs or conflict-copy structure manually:
 
@@ -105,8 +105,9 @@ Complete-file, patch, editor, and reviewed agent-proposal modes are also availab
 `--file '<conflict-path>=<reviewed-source>'` arguments for mixed conflicts containing `.obsidian`
 state, binary content, or Git-synthesized rename destinations: complete-file resolution accepts
 those locally reviewed bytes without exposing them to an LLM. Agent proposals intentionally reject
-the entire conflict when any input is ineligible. Successful resolution removes the hidden conflict
-directory atomically while retaining the original Git objects and durable conflict record.
+the entire conflict when any input is ineligible. Successful resolution closes the conflict state
+by publishing the reviewed tree and a remote resolution ref while retaining the original Git
+objects and durable conflict record.
 
 If a finite cycle is interrupted or the network is unavailable, rerun `vulcan sync run`. Device-local journals and Git refs retain the captured state; do not delete them or replace the vault with a fresh clone as a recovery shortcut.
 
