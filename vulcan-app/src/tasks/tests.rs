@@ -16,6 +16,7 @@ use crate::templates::render_note_from_parts;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::fs;
 use tempfile::tempdir;
+use vulcan_core::mdbase::list_mdbase_write_outbox;
 use vulcan_core::{
     initialize_vulcan_dir, load_vault_config, scan_vault_with_progress, ScanMode, VaultPaths,
 };
@@ -534,6 +535,179 @@ fn apply_task_archive_moves_completed_task_into_archive_folder() {
         .expect("archived task")
         .replace("\r\n", "\n");
     assert!(rendered.contains(&format!("- {}", config.tasknotes.field_mapping.archive_tag)));
+}
+
+#[test]
+fn managed_task_set_uses_validated_write_journal() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    seed_mdbase_task_type(&paths);
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Tasks/Managed.md",
+        "Managed",
+        "open",
+        &[],
+        "",
+    )
+    .expect("seed task");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan should succeed");
+
+    apply_task_set(
+        &paths,
+        &TaskSetRequest {
+            task: "Tasks/Managed".to_string(),
+            property: "status".to_string(),
+            value: "done".to_string(),
+            dry_run: false,
+        },
+    )
+    .expect("managed task update should succeed");
+
+    let outbox = list_mdbase_write_outbox(&paths).expect("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].operation, "update");
+    assert_eq!(outbox[0].paths[0].path, "Tasks/Managed.md");
+}
+
+#[test]
+fn managed_task_add_uses_create_journal() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    seed_mdbase_task_type(&paths);
+
+    let report = apply_task_add(
+        &paths,
+        &TaskAddRequest {
+            text: "Journal new task".to_string(),
+            no_nlp: true,
+            status: None,
+            priority: None,
+            due: None,
+            scheduled: None,
+            contexts: Vec::new(),
+            projects: Vec::new(),
+            tags: Vec::new(),
+            template: None,
+            dry_run: false,
+        },
+    )
+    .expect("managed task creation should succeed");
+
+    assert!(temp_dir.path().join(&report.path).exists());
+    let outbox = list_mdbase_write_outbox(&paths).expect("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].operation, "create");
+    assert_eq!(outbox[0].paths[0].path, report.path);
+}
+
+#[test]
+fn managed_task_line_conversion_uses_one_batch_journal() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    seed_mdbase_task_type(&paths);
+    fs::write(
+        temp_dir.path().join("Inbox.md"),
+        "- [ ] Convert this task\n",
+    )
+    .expect("seed inbox");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan should succeed");
+
+    let report = apply_task_convert(
+        &paths,
+        &TaskConvertRequest {
+            file: "Inbox".to_string(),
+            line: Some(1),
+            dry_run: false,
+        },
+    )
+    .expect("managed line conversion should succeed");
+
+    assert!(temp_dir.path().join(&report.target_path).exists());
+    let outbox = list_mdbase_write_outbox(&paths).expect("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].operation, "batch");
+    assert_eq!(outbox[0].paths.len(), 2);
+}
+
+#[test]
+fn invalid_managed_task_set_fails_before_writing() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    seed_mdbase_task_type(&paths);
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Tasks/Managed.md",
+        "Managed",
+        "open",
+        &[],
+        "",
+    )
+    .expect("seed task");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan should succeed");
+    let original = fs::read_to_string(temp_dir.path().join("Tasks/Managed.md")).unwrap();
+
+    let error = apply_task_set(
+        &paths,
+        &TaskSetRequest {
+            task: "Tasks/Managed".to_string(),
+            property: "title".to_string(),
+            value: "null".to_string(),
+            dry_run: false,
+        },
+    )
+    .expect_err("required title removal should fail");
+
+    assert!(error.message().contains("schema_required"));
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Tasks/Managed.md")).unwrap(),
+        original
+    );
+    assert!(list_mdbase_write_outbox(&paths).expect("outbox").is_empty());
+}
+
+#[test]
+fn managed_task_archive_journals_cross_boundary_rename() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    seed_mdbase_task_type(&paths);
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Tasks/Done.md",
+        "Done",
+        &first_completed_status_for_test(&config),
+        &[],
+        "",
+    )
+    .expect("seed completed task");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan should succeed");
+
+    let report = apply_task_archive(
+        &paths,
+        &TaskArchiveRequest {
+            task: "Tasks/Done".to_string(),
+            dry_run: false,
+        },
+    )
+    .expect("archive should succeed");
+
+    assert!(!temp_dir.path().join("Tasks/Done.md").exists());
+    assert!(temp_dir.path().join(&report.path).exists());
+    let outbox = list_mdbase_write_outbox(&paths).expect("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].operation, "rename");
+    assert_eq!(outbox[0].paths.len(), 2);
 }
 
 #[test]
@@ -1319,6 +1493,36 @@ fn seed_tasknote(
         fs::create_dir_all(parent).map_err(AppError::operation)?;
     }
     fs::write(absolute_path, rendered).map_err(AppError::operation)
+}
+
+fn seed_mdbase_task_type(paths: &VaultPaths) {
+    fs::write(
+        paths.vault_root().join("mdbase.yaml"),
+        "spec_version: \"0.3.0\"\nsettings:\n  exclude: [TaskNotes/Archive/**]\n",
+    )
+    .expect("mdbase config");
+    fs::create_dir_all(paths.vault_root().join("_types")).expect("type directory");
+    fs::write(
+        paths.vault_root().join("_types/task.md"),
+        concat!(
+            "---\n",
+            "kind: mdbase.type\n",
+            "name: task\n",
+            "version: 1\n",
+            "match:\n",
+            "  path_glob: 'Tasks/*.md'\n",
+            "schema:\n",
+            "  dialect: json-schema-2020-12\n",
+            "  value:\n",
+            "    type: object\n",
+            "    required: [title]\n",
+            "    properties:\n",
+            "      title: {type: string}\n",
+            "      status: {type: string}\n",
+            "---\n",
+        ),
+    )
+    .expect("task type");
 }
 
 fn write_tasks_query_fixture(paths: &VaultPaths) {

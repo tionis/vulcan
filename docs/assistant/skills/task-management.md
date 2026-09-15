@@ -31,6 +31,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 - Do not assume task mutation exists everywhere the query layer does; inspect the concrete command first.
 - Recurring tasks and dependencies need more care than one-off checkbox edits.
 - If the task is actually about TaskNotes note files, prefer the TaskNotes-aware commands rather than hand-editing the generated note.
+- In an mdbase collection, task create/update/convert/archive workflows preflight proposed records and commit through the validated journal. Treat a validation failure as a schema or collection-rule conflict; do not bypass it with a direct Markdown edit.
 
 ## Example Moves
 

@@ -634,7 +634,9 @@ pub fn apply_managed_mdbase_note_write(
 /// Route a homogeneous set of generic note mutations through one mdbase
 /// transaction. `None` means none of the paths are collection records; mixing
 /// managed and ordinary Markdown paths is rejected so callers must partition
-/// the write set explicitly.
+/// the write set explicitly. A rename may cross the collection boundary: the
+/// complete move stays crash-safe, while validation only governs the endpoint
+/// that is an mdbase record.
 pub fn apply_managed_mdbase_note_writes(
     paths: &VaultPaths,
     request: &MdbaseManagedNoteWriteBatchRequest<'_>,
@@ -656,7 +658,8 @@ pub fn apply_managed_mdbase_note_writes(
     if managed.iter().all(|managed| !managed) {
         return Ok(None);
     }
-    if managed.iter().any(|managed| !managed) {
+    let boundary_rename = matches!(request.operation, MdbaseWriteOperation::Rename { .. });
+    if managed.iter().any(|managed| !managed) && !boundary_rename {
         return Err(AppError::operation(
             "managed mdbase write batches cannot mix collection records with ordinary Markdown paths",
         ));
@@ -674,7 +677,7 @@ pub fn apply_managed_mdbase_note_writes(
             .map_err(AppError::operation)?;
     }
 
-    let drafts = analyze_managed_write_drafts(&collection, &types, request.changes);
+    let drafts = analyze_managed_write_drafts(&collection, &types, request.changes, &managed);
     if request.mode == MdbaseManagedWriteMode::Validated && drafts.invalid {
         let summary = validation_error_summary(&drafts.diagnostics);
         return Err(AppError::operation(format!(
@@ -737,10 +740,15 @@ fn analyze_managed_write_drafts(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
     changes: &[MdbaseManagedNoteWriteChange<'_>],
+    managed: &[bool],
 ) -> ManagedWriteDrafts {
     let analyses = changes
         .iter()
-        .map(|change| {
+        .zip(managed)
+        .map(|(change, managed)| {
+            if !managed {
+                return (None, None);
+            }
             let before = change
                 .before
                 .map(|source| analyze_mdbase_record_source(collection, types, change.path, source));

@@ -14958,6 +14958,12 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(properties.contains("preflight every selected mdbase record"));
     assert!(properties.contains("one validated journal batch"));
     assert!(properties.contains("never implies raw repair"));
+    let task_management =
+        fs::read_to_string(vault_root.join(".agents/skills/task-management/SKILL.md"))
+            .expect("task management skill should be readable");
+    assert!(task_management.contains("task create/update/convert/archive workflows"));
+    assert!(task_management.contains("commit through the validated journal"));
+    assert!(task_management.contains("do not bypass it with a direct Markdown edit"));
     let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));

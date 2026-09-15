@@ -1,3 +1,8 @@
+use crate::mdbase::{
+    apply_managed_mdbase_note_write, apply_managed_mdbase_note_writes,
+    MdbaseManagedNoteWriteBatchRequest, MdbaseManagedNoteWriteChange,
+    MdbaseManagedNoteWriteRequest, MdbaseManagedWriteMode, MdbaseWriteOperation,
+};
 use crate::notes::{
     normalize_date_argument, normalize_note_path, render_periodic_note_contents,
     resolve_existing_note_path,
@@ -21,6 +26,7 @@ use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
 };
 use vulcan_core::expression::parse_expression;
+use vulcan_core::mdbase::{is_mdbase_record_path, load_mdbase_collection};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
@@ -127,6 +133,7 @@ pub struct TaskPomodoroStatusItem {
 #[derive(Debug, Clone)]
 struct LoadedTaskNote {
     path: String,
+    source: String,
     body: String,
     frontmatter: YamlMapping,
     frontmatter_json: Value,
@@ -763,7 +770,15 @@ pub fn apply_task_add(
         .map_err(AppError::operation)?;
     let frontmatter_json = tasknote_frontmatter_json(&merged_frontmatter);
 
-    if !request.dry_run {
+    let routed = route_task_note_write(
+        paths,
+        &relative_path,
+        None,
+        Some(&rendered),
+        MdbaseWriteOperation::Create,
+        request.dry_run,
+    )?;
+    if !request.dry_run && !routed {
         if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).map_err(AppError::operation)?;
         }
@@ -819,7 +834,20 @@ pub fn apply_task_create(
     let task = format!("{}:{}", relative_path, insertion.line_number);
     let changed_paths = vec![relative_path.clone()];
 
-    if !request.dry_run {
+    let operation = if created_note {
+        MdbaseWriteOperation::Create
+    } else {
+        MdbaseWriteOperation::Update
+    };
+    let routed = route_task_note_write(
+        paths,
+        &relative_path,
+        (!created_note).then_some(existing.as_str()),
+        Some(&insertion.updated),
+        operation,
+        request.dry_run,
+    )?;
+    if !request.dry_run && !routed {
         if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).map_err(AppError::operation)?;
         }
@@ -893,7 +921,19 @@ pub fn apply_task_convert(
         vec![relative_path.clone()]
     };
 
-    if !request.dry_run && !task_changes.is_empty() {
+    let routed = if task_changes.is_empty() {
+        false
+    } else {
+        route_task_note_write(
+            paths,
+            &relative_path,
+            Some(&source),
+            Some(&rendered),
+            MdbaseWriteOperation::Update,
+            request.dry_run,
+        )?
+    };
+    if !request.dry_run && !task_changes.is_empty() && !routed {
         fs::write(paths.vault_root().join(&relative_path), rendered)
             .map_err(AppError::operation)?;
     }
@@ -3147,14 +3187,48 @@ fn apply_task_convert_line(
     let frontmatter_json = tasknote_frontmatter_json(&planned.frontmatter);
     let changed_paths = vec![source_path.clone(), planned.relative_path.clone()];
 
+    route_task_note_batch(
+        paths,
+        &[
+            MdbaseManagedNoteWriteChange {
+                path: &planned.relative_path,
+                before: None,
+                after: Some(&rendered_task),
+            },
+            MdbaseManagedNoteWriteChange {
+                path: &source_path,
+                before: Some(&source),
+                after: Some(&updated_source),
+            },
+        ],
+        dry_run,
+    )?;
+
     if !dry_run {
+        let collection = load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?;
         let task_path = paths.vault_root().join(&planned.relative_path);
-        if let Some(parent) = task_path.parent() {
-            fs::create_dir_all(parent).map_err(AppError::operation)?;
+        let task_is_managed = collection
+            .as_ref()
+            .map(|collection| is_mdbase_record_path(collection, &planned.relative_path))
+            .transpose()
+            .map_err(AppError::operation)?
+            .unwrap_or(false);
+        let source_is_managed = collection
+            .as_ref()
+            .map(|collection| is_mdbase_record_path(collection, &source_path))
+            .transpose()
+            .map_err(AppError::operation)?
+            .unwrap_or(false);
+        if !task_is_managed {
+            if let Some(parent) = task_path.parent() {
+                fs::create_dir_all(parent).map_err(AppError::operation)?;
+            }
+            fs::write(&task_path, rendered_task).map_err(AppError::operation)?;
         }
-        fs::write(&task_path, rendered_task).map_err(AppError::operation)?;
-        fs::write(paths.vault_root().join(&source_path), updated_source)
-            .map_err(AppError::operation)?;
+        if !source_is_managed {
+            fs::write(paths.vault_root().join(&source_path), updated_source)
+                .map_err(AppError::operation)?;
+        }
     }
 
     Ok(TaskConvertReport {
@@ -4078,6 +4152,70 @@ fn markdown_heading_level(line: &str) -> Option<usize> {
         .then_some(hashes)
 }
 
+fn route_task_note_write(
+    paths: &VaultPaths,
+    path: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+    operation: MdbaseWriteOperation,
+    dry_run: bool,
+) -> Result<bool, AppError> {
+    apply_managed_mdbase_note_write(
+        paths,
+        &MdbaseManagedNoteWriteRequest {
+            path,
+            before,
+            after,
+            operation,
+            mode: MdbaseManagedWriteMode::Validated,
+            dry_run,
+            permission_profile: None,
+            quiet: true,
+        },
+    )
+    .map(|report| report.is_some())
+}
+
+fn route_task_note_batch(
+    paths: &VaultPaths,
+    changes: &[MdbaseManagedNoteWriteChange<'_>],
+    dry_run: bool,
+) -> Result<(), AppError> {
+    let Some(collection) =
+        load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?
+    else {
+        return Ok(());
+    };
+    let managed_changes = changes
+        .iter()
+        .filter_map(|change| {
+            is_mdbase_record_path(&collection, change.path)
+                .map(|managed| managed.then_some(change.clone()))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::operation)?;
+    if managed_changes.is_empty() {
+        return Ok(());
+    }
+
+    let request = |dry_run| MdbaseManagedNoteWriteBatchRequest {
+        changes: &managed_changes,
+        operation: MdbaseWriteOperation::Batch,
+        mode: MdbaseManagedWriteMode::Validated,
+        dry_run,
+        permission_profile: None,
+        quiet: true,
+    };
+    apply_managed_mdbase_note_writes(paths, &request(true))?
+        .ok_or_else(|| AppError::operation("task write batch contained no managed records"))?;
+    if !dry_run {
+        apply_managed_mdbase_note_writes(paths, &request(false))?
+            .ok_or_else(|| AppError::operation("task write batch contained no managed records"))?;
+    }
+    Ok(())
+}
+
 fn apply_tasknote_mutation<F>(
     paths: &VaultPaths,
     task: &str,
@@ -4121,7 +4259,48 @@ where
     changed_paths.sort();
     changed_paths.dedup();
 
-    if !dry_run && !changed_paths.is_empty() {
+    let routed = if changed_paths.is_empty() {
+        false
+    } else if let Some(destination) = moved_to.as_ref() {
+        let rename_changes = [
+            MdbaseManagedNoteWriteChange {
+                path: &loaded.path,
+                before: Some(&loaded.source),
+                after: None,
+            },
+            MdbaseManagedNoteWriteChange {
+                path: destination,
+                before: None,
+                after: Some(&rendered),
+            },
+        ];
+        apply_managed_mdbase_note_writes(
+            paths,
+            &MdbaseManagedNoteWriteBatchRequest {
+                changes: &rename_changes,
+                operation: MdbaseWriteOperation::Rename {
+                    from: loaded.path.clone(),
+                    to: destination.clone(),
+                },
+                mode: MdbaseManagedWriteMode::Validated,
+                dry_run,
+                permission_profile: None,
+                quiet: true,
+            },
+        )?
+        .is_some()
+    } else {
+        route_task_note_write(
+            paths,
+            &loaded.path,
+            Some(&loaded.source),
+            Some(&rendered),
+            MdbaseWriteOperation::Update,
+            dry_run,
+        )?
+    };
+
+    if !dry_run && !changed_paths.is_empty() && !routed {
         let source_path = paths.vault_root().join(&loaded.path);
         if let Some(destination) = moved_to.as_ref() {
             let destination_path = paths.vault_root().join(destination);
@@ -4198,6 +4377,7 @@ fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, 
 
     Ok(LoadedTaskNote {
         path,
+        source,
         body: normalize_tasknote_body(&body),
         frontmatter,
         frontmatter_json,
@@ -4489,7 +4669,28 @@ where
         Vec::new()
     };
 
-    if !dry_run && has_writes {
+    let routed = if has_writes {
+        let before = (!loaded.created)
+            .then(|| render_note_from_parts(Some(&loaded.frontmatter), &loaded.body))
+            .transpose()
+            .map_err(AppError::operation)?;
+        route_task_note_write(
+            paths,
+            &loaded.path,
+            before.as_deref(),
+            Some(&rendered),
+            if loaded.created {
+                MdbaseWriteOperation::Create
+            } else {
+                MdbaseWriteOperation::Update
+            },
+            dry_run,
+        )?
+    } else {
+        false
+    };
+
+    if !dry_run && has_writes && !routed {
         let absolute_path = paths.vault_root().join(&loaded.path);
         if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).map_err(AppError::operation)?;
@@ -5073,7 +5274,19 @@ fn apply_inline_task_reschedule(
         vec![resolved.path.clone()]
     };
 
-    if !request.dry_run && !changes.is_empty() {
+    let routed = if changes.is_empty() {
+        false
+    } else {
+        route_task_note_write(
+            paths,
+            &resolved.path,
+            Some(&source),
+            Some(&rendered),
+            MdbaseWriteOperation::Update,
+            request.dry_run,
+        )?
+    };
+    if !request.dry_run && !changes.is_empty() && !routed {
         fs::write(&absolute_path, rendered).map_err(AppError::operation)?;
     }
 
@@ -5111,7 +5324,19 @@ fn apply_inline_task_complete(
         vec![resolved.path.clone()]
     };
 
-    if !request.dry_run && !changes.is_empty() {
+    let routed = if changes.is_empty() {
+        false
+    } else {
+        route_task_note_write(
+            paths,
+            &resolved.path,
+            Some(&source),
+            Some(&rendered),
+            MdbaseWriteOperation::Update,
+            request.dry_run,
+        )?
+    };
+    if !request.dry_run && !changes.is_empty() && !routed {
         fs::write(&absolute_path, rendered).map_err(AppError::operation)?;
     }
 
