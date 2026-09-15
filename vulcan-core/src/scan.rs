@@ -13,10 +13,10 @@ use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, VaultPaths, PARSER_VERSION};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -277,8 +277,42 @@ pub fn scan_vault_unlocked_with_progress<F>(
 where
     F: FnMut(ScanProgress),
 {
+    scan_inventory(paths, mode, on_progress, None)
+}
+
+/// Update known files directly. Structural/ignore changes and uncertain paths
+/// use ordinary discovery so ignored files and deleted subtrees stay correct.
+pub(crate) fn scan_watched_paths(
+    paths: &VaultPaths,
+    changed: &BTreeSet<String>,
+) -> Result<ScanSummary, ScanError> {
+    let _lock = acquire_write_lock(paths)?;
+    scan_inventory(paths, ScanMode::Incremental, &mut |_| {}, Some(changed))
+}
+
+#[allow(clippy::too_many_lines)]
+fn scan_inventory<F>(
+    paths: &VaultPaths,
+    mode: ScanMode,
+    on_progress: &mut F,
+    changed: Option<&BTreeSet<String>>,
+) -> Result<ScanSummary, ScanError>
+where
+    F: FnMut(ScanProgress),
+{
     let config = load_vault_config(paths).config;
-    let discovered = discover_files(paths.vault_root())?;
+    let mut database = CacheDatabase::open(paths)?;
+    let targeted = changed
+        .map(|changed| watched_inventory(paths, database.connection(), changed))
+        .transpose()?
+        .flatten();
+    let (discovered, existing) = match targeted {
+        Some(inventory) => inventory,
+        None => (
+            discover_files(paths.vault_root())?,
+            load_cached_documents(database.connection())?,
+        ),
+    };
     emit_scan_progress(
         on_progress,
         ScanProgress {
@@ -296,8 +330,6 @@ where
         .iter()
         .map(|file| file.relative_path.clone())
         .collect::<HashSet<_>>();
-    let mut database = CacheDatabase::open(paths)?;
-    let existing = load_cached_documents(database.connection())?;
     let deleted_paths = existing
         .keys()
         .filter(|path| !current_paths.contains(*path))
@@ -507,6 +539,83 @@ where
         }
     };
     Ok(summary)
+}
+
+type ScanInventory = (Vec<DiscoveredFile>, HashMap<String, CachedDocument>);
+
+fn watched_inventory(
+    paths: &VaultPaths,
+    connection: &Connection,
+    changed: &BTreeSet<String>,
+) -> Result<Option<ScanInventory>, ScanError> {
+    if changed.is_empty() {
+        return Ok(None);
+    }
+    let mut statement = connection.prepare("SELECT id, file_size, file_mtime, content_hash, parser_version FROM documents WHERE path = ?1")?;
+    let mut files = Vec::new();
+    let mut cached = HashMap::new();
+    let root = fs::canonicalize(paths.vault_root())?;
+    for relative in changed {
+        let path = Path::new(relative);
+        if path
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            || path
+                .components()
+                .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+        {
+            return Ok(None);
+        }
+        let Some(mut document) = statement
+            .query_row([relative], |row| {
+                Ok(CachedDocument {
+                    id: row.get(0)?,
+                    file_size: row.get(1)?,
+                    file_mtime: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    parser_version: row.get(4)?,
+                })
+            })
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let absolute_path = root.join(path);
+        let metadata = match fs::symlink_metadata(&absolute_path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if fs::canonicalize(&absolute_path)? != absolute_path {
+            return Ok(None);
+        }
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        let Some(filename) = path.file_stem().and_then(|value| value.to_str()) else {
+            return Ok(None);
+        };
+        files.push(DiscoveredFile {
+            relative_path: relative.clone(),
+            filename: filename.to_string(),
+            kind: detect_document_kind(path),
+            extension,
+            file_size: i64::try_from(metadata.len()).map_err(|_| ScanError::MetadataOverflow {
+                field: "file_size",
+                path: absolute_path.clone(),
+            })?,
+            file_mtime: system_time_to_millis(metadata.modified()?, &absolute_path)?,
+            absolute_path,
+        });
+        // A native write signal is evidence even when size and timestamp were
+        // preserved. Hash this file rather than trusting its cached metadata.
+        document.file_mtime = -1;
+        cached.insert(relative.clone(), document);
+    }
+    Ok(Some((files, cached)))
 }
 
 /// File that needs I/O work during incremental scan.

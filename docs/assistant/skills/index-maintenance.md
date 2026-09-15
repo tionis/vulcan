@@ -29,7 +29,7 @@ Use this skill when derived state may be stale, broken, slow, or incomplete.
 - Use `vulcan cache verify` and `vulcan doctor` to distinguish cache problems from source-note problems.
 - Use `vulcan repair` for derived index repair paths before manually deleting cache files.
 - Use `vulcan vectors ...` for embedding queue, neighbors, duplicates, clusters, and vector repair.
-- Long-running watch surfaces fall back to content-comparing polling when the native backend cannot start or its runtime channel fails. They also perform a bounded incremental safety rescan, so a native watcher that silently misses an event does not leave search or preview output stale indefinitely.
+- Long-running watch surfaces fall back to content-comparing polling every 30 seconds when the native backend cannot start or its runtime channel fails. Native events use the configured quiet-period debounce; known-file edits scan only the signaled files, while structural changes trigger full discovery. An incremental safety rescan every 30 seconds repairs missed events. Use `vulcan scan` when immediate reconciliation is needed.
 
 ## Guardrails
 

@@ -15103,6 +15103,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .expect("index maintenance skill should be readable");
     assert!(index_skill.contains("content-comparing polling"));
     assert!(index_skill.contains("incremental safety rescan"));
+    assert!(index_skill.contains("Use `vulcan scan` when immediate reconciliation is needed"));
     assert!(index_skill.contains("remote cleartext endpoints fail before any request is sent"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
