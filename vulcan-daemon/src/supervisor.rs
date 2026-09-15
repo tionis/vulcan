@@ -7,7 +7,8 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_sync::{
@@ -117,6 +118,7 @@ struct SupervisorInner {
 pub struct SyncSupervisor {
     state_path: PathBuf,
     inner: Mutex<SupervisorInner>,
+    work_available: Condvar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -241,6 +243,7 @@ impl SyncSupervisor {
         }
         Ok(Self {
             state_path,
+            work_available: Condvar::new(),
             inner: Mutex::new(SupervisorInner {
                 state,
                 queue,
@@ -256,6 +259,7 @@ impl SyncSupervisor {
         let state = load_state(&state_path)?;
         Ok(Self {
             state_path,
+            work_available: Condvar::new(),
             inner: Mutex::new(SupervisorInner {
                 state,
                 queue: VecDeque::new(),
@@ -352,6 +356,7 @@ impl SyncSupervisor {
         });
         trim_supervisor_state(&mut inner.state);
         persist_state(&self.state_path, &inner.state)?;
+        self.work_available.notify_all();
         Ok(IdempotentEnqueueSyncReport {
             enqueue,
             replay: false,
@@ -441,6 +446,7 @@ impl SyncSupervisor {
             });
         trim_supervisor_state(&mut inner.state);
         persist_state(&self.state_path, &inner.state)?;
+        self.work_available.notify_all();
         let persisted = inner
             .state
             .aggregates
@@ -464,7 +470,29 @@ impl SyncSupervisor {
         let report = enqueue_locked(&mut inner, wiki_id, vault, trigger, watch);
         trim_supervisor_state(&mut inner.state);
         persist_state(&self.state_path, &inner.state)?;
+        self.work_available.notify_all();
         Ok(report)
+    }
+
+    /// Waits for runnable work without touching the durable ledger. The bounded
+    /// wait lets the process worker check shutdown even when no jobs arrive.
+    /// Check under the enqueue mutex so work arriving before the wait is not lost.
+    pub(crate) fn wait_for_work(&self, timeout: Duration) -> Result<(), SupervisorError> {
+        let inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let (_guard, _) = self
+            .work_available
+            .wait_timeout_while(inner, timeout, |inner| {
+                inner.queue.is_empty()
+                    || !inner.state.jobs.iter().any(|job| {
+                        job.job.state == SyncJobState::Queued
+                            && !inner.state.jobs.iter().any(|other| {
+                                other.job.wiki_id == job.job.wiki_id
+                                    && other.job.state == SyncJobState::Running
+                            })
+                    })
+            })
+            .map_err(|_| SupervisorError::Poisoned)?;
+        Ok(())
     }
 
     pub fn claim_next(&self) -> Result<Option<ClaimedSyncJob>, SupervisorError> {
@@ -505,7 +533,12 @@ impl SyncSupervisor {
             break Some(ClaimedSyncJob { job, cancellation });
         };
         inner.queue.extend(deferred);
-        persist_state(&self.state_path, &inner.state)?;
+        // Removing stale queue entries or deferring blocked jobs only changes
+        // the in-memory queue. An empty claim must not serialize and fsync the
+        // entire retained history on every idle worker iteration.
+        if claimed.is_some() {
+            persist_state(&self.state_path, &inner.state)?;
+        }
         Ok(claimed)
     }
 
@@ -534,6 +567,7 @@ impl SyncSupervisor {
         let completed = job.clone();
         inner.cancellations.remove(id);
         persist_state(&self.state_path, &inner.state)?;
+        self.work_available.notify_all();
         Ok(completed)
     }
 
@@ -1028,6 +1062,141 @@ mod tests {
 
     fn supervisor(root: &Path) -> SyncSupervisor {
         SyncSupervisor::at(root.join("jobs.json")).expect("supervisor")
+    }
+
+    #[test]
+    fn empty_claims_do_not_create_or_rewrite_the_ledger() {
+        let temporary = tempdir().expect("temporary directory");
+        let supervisor = supervisor(temporary.path());
+        assert!(supervisor.claim_next().unwrap().is_none());
+        assert!(!supervisor.state_path.exists());
+
+        let first = supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        supervisor.claim_next().unwrap().unwrap();
+        assert_eq!(
+            load_state(&supervisor.state_path).unwrap().jobs[0]
+                .job
+                .state,
+            SyncJobState::Running
+        );
+        supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Watch)
+            .unwrap();
+        // A queued follow-up blocked by the running job is also an empty claim.
+        assert_claim_does_not_write(&supervisor);
+        supervisor
+            .complete(&first.job.job.id, SyncJobState::Succeeded, None, None)
+            .unwrap();
+        let follow_up = supervisor.claim_next().unwrap().unwrap();
+        supervisor
+            .complete(&follow_up.job.job.id, SyncJobState::Succeeded, None, None)
+            .unwrap();
+        // Retained history and cancelled queue entries must not cause idle I/O.
+        let cancelled = supervisor
+            .enqueue("beta", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        supervisor.cancel(&cancelled.job.job.id).unwrap();
+        assert_claim_does_not_write(&supervisor);
+    }
+
+    fn assert_claim_does_not_write(supervisor: &SyncSupervisor) {
+        let timestamp = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
+        fs::File::options()
+            .write(true)
+            .open(&supervisor.state_path)
+            .unwrap()
+            .set_modified(timestamp)
+            .unwrap();
+        let before = fs::read(&supervisor.state_path).unwrap();
+        for _ in 0..10 {
+            assert!(supervisor.claim_next().unwrap().is_none());
+        }
+        assert_eq!(fs::read(&supervisor.state_path).unwrap(), before);
+        assert_eq!(
+            fs::metadata(&supervisor.state_path)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            timestamp
+        );
+    }
+
+    #[test]
+    fn worker_wait_wakes_for_each_enqueue_surface() {
+        for surface in 0..3 {
+            let temporary = tempdir().unwrap();
+            let supervisor = std::sync::Arc::new(supervisor(temporary.path()));
+            let waiting = std::sync::Arc::clone(&supervisor);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                waiting.wait_for_work(Duration::from_secs(5)).unwrap();
+                sender.send(()).unwrap();
+            });
+            // The empty worker must stay asleep; enqueuing then wakes it long
+            // before its shutdown-check deadline, including idempotent routes.
+            assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+            match surface {
+                0 => {
+                    supervisor
+                        .enqueue("alpha", temporary.path(), SyncJobTrigger::Watch)
+                        .unwrap();
+                }
+                1 => {
+                    supervisor
+                        .enqueue_idempotent(
+                            "test",
+                            "key",
+                            "alpha",
+                            temporary.path(),
+                            SyncJobTrigger::Manual,
+                        )
+                        .unwrap();
+                }
+                _ => {
+                    supervisor
+                        .enqueue_aggregate_idempotent(
+                            "test",
+                            "key",
+                            "all",
+                            vec![("alpha".into(), temporary.path().into())],
+                            SyncJobTrigger::Manual,
+                        )
+                        .unwrap();
+                }
+            }
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+            worker.join().unwrap();
+            // Work queued before waiting must also return without a new signal.
+            let start = std::time::Instant::now();
+            supervisor.wait_for_work(Duration::from_secs(5)).unwrap();
+            assert!(start.elapsed() < Duration::from_secs(2));
+            assert!(supervisor.claim_next().unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn worker_wait_times_out_when_follow_up_is_blocked() {
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        let first = supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        supervisor.claim_next().unwrap().unwrap();
+        supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Watch)
+            .unwrap();
+        let timeout = Duration::from_millis(30);
+        let start = std::time::Instant::now();
+        supervisor.wait_for_work(timeout).unwrap();
+        assert!(start.elapsed() >= timeout);
+        supervisor
+            .complete(&first.job.job.id, SyncJobState::Succeeded, None, None)
+            .unwrap();
+        let start = std::time::Instant::now();
+        supervisor.wait_for_work(Duration::from_secs(5)).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

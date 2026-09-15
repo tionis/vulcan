@@ -49,7 +49,7 @@ use vulcan_sync::{GitBranchSync, SyncErrorCategory, SyncJobState, SyncJobTrigger
 pub const DAEMON_RUNTIME_VERSION: u32 = 1;
 const RUNTIME_FILE: &str = "runtime.json";
 const LOCK_FILE: &str = "process.lock";
-const JOB_POLL: Duration = Duration::from_millis(100);
+const JOB_STOP_POLL: Duration = Duration::from_secs(1);
 const SHUTDOWN_POLL: Duration = Duration::from_millis(50);
 const HTTP_RESPONSE_LIMIT: usize = 1024 * 1024;
 
@@ -610,7 +610,7 @@ fn spawn_job_worker(
                             eprintln!("{line}");
                         }
                     }
-                    None => thread::sleep(JOB_POLL),
+                    None => supervisor.wait_for_work(JOB_STOP_POLL)?,
                 }
             }
             Ok(())
