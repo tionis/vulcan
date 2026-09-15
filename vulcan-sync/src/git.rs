@@ -9,15 +9,17 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(all(test, unix))]
+use std::time::Instant;
 use tempfile::{NamedTempFile, TempDir};
 use ulid::Ulid;
+use wait_timeout::ChildExt;
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
-const COMMAND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 #[cfg(unix)]
 const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
 #[cfg(windows)]
@@ -1597,17 +1599,13 @@ impl GitCliEngine {
             let stdin_writer = input
                 .zip(stdin)
                 .map(|(input, mut stdin)| scope.spawn(move || stdin.write_all(input)));
-            let started = Instant::now();
-            let (status, timed_out) = loop {
-                if let Some(status) = child.try_wait()? {
-                    break (status, false);
-                }
-                if started.elapsed() >= self.command_timeout {
+            let (status, timed_out) =
+                if let Some(status) = child.wait_timeout(self.command_timeout)? {
+                    (status, false)
+                } else {
                     terminate_process_group(&mut child);
-                    break (child.wait()?, true);
-                }
-                std::thread::sleep(COMMAND_WAIT_POLL_INTERVAL);
-            };
+                    (child.wait()?, true)
+                };
             let stdout = join_reader(stdout_reader, operation, "stdout")?;
             let stderr = join_reader(stderr_reader, operation, "stderr")?;
             if let Some(writer) = stdin_writer {
@@ -4221,15 +4219,8 @@ fn terminate_process_group(child: &mut Child) {
     }
     // SIGTERM lets Git run its lock-file cleanup handlers; escalate to
     // SIGKILL only when the process group ignores the grace period.
-    let deadline = Instant::now() + TERMINATION_GRACE_PERIOD;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(COMMAND_WAIT_POLL_INTERVAL);
-            }
-            _ => break,
-        }
+    if matches!(child.wait_timeout(TERMINATION_GRACE_PERIOD), Ok(Some(_))) {
+        return;
     }
     // SAFETY: same process-group reasoning as the SIGTERM above; the grace
     // period expired without the child exiting.
@@ -6348,6 +6339,30 @@ mod tests {
                 .command_timeout(),
             Duration::from_millis(1)
         );
+    }
+
+    #[test]
+    fn concurrent_command_waits_preserve_completion_and_output() {
+        std::thread::scope(|scope| {
+            let workers = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let engine =
+                            GitCliEngine::default().with_command_timeout(Duration::from_secs(5));
+                        let mut command = Command::new("git");
+                        command.arg("--version");
+                        let result = engine.execute(command).unwrap();
+                        assert!(result.status.success());
+                        assert!(String::from_utf8(result.stdout)
+                            .unwrap()
+                            .starts_with("git version"));
+                    })
+                })
+                .collect::<Vec<_>>();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
     }
 
     #[test]

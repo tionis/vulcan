@@ -4701,6 +4701,7 @@ dependencies = [
  "ulid",
  "unicode-normalization",
  "url",
+ "wait-timeout",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ tempfile.workspace = true
 ulid.workspace = true
 unicode-normalization.workspace = true
 url.workspace = true
+wait-timeout.workspace = true
 
 [dev-dependencies]
 
