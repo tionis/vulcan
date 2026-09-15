@@ -16,6 +16,7 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use vulcan_app::mdbase::mdbase_js_mutation_committer;
 use vulcan_core::{
     DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession, JsRuntimeSandbox,
     VaultPaths,
@@ -136,6 +137,11 @@ pub(crate) fn run_js_repl(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            mutation_committer: Some(mdbase_js_mutation_committer(
+                paths,
+                permission_profile,
+                true,
+            )),
             tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },
@@ -191,6 +197,11 @@ pub(crate) fn run_js_repl_with_preload(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            mutation_committer: Some(mdbase_js_mutation_committer(
+                paths,
+                permission_profile,
+                true,
+            )),
             tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },

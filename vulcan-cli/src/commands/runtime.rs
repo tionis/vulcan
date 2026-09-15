@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::time::Duration;
+use vulcan_app::mdbase::mdbase_js_mutation_committer;
 #[cfg(feature = "web")]
 use vulcan_app::web::{
     apply_web_fetch_report, execute_web_search, prepare_web_search,
@@ -551,6 +552,11 @@ fn run_js_command(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            mutation_committer: Some(mdbase_js_mutation_committer(
+                paths,
+                permission_profile,
+                true,
+            )),
             tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },
@@ -574,6 +580,11 @@ fn run_js_eval(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            mutation_committer: Some(mdbase_js_mutation_committer(
+                paths,
+                permission_profile,
+                true,
+            )),
             tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },

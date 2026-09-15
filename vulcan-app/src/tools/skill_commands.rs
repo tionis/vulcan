@@ -1,3 +1,4 @@
+use crate::mdbase::mdbase_js_mutation_committer;
 use crate::{trust, AppError};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -328,7 +329,12 @@ fn run_skill_command_tool_with_context(
         current_file.as_deref(),
         DataviewJsEvalOptions {
             sandbox: Some(command.sandbox.unwrap_or(JsRuntimeSandbox::Strict)),
-            permission_profile: effective_permission_profile,
+            permission_profile: effective_permission_profile.clone(),
+            mutation_committer: Some(mdbase_js_mutation_committer(
+                paths,
+                effective_permission_profile.as_deref(),
+                true,
+            )),
             tool_registry: Some(build_custom_tool_js_registry_with_context(
                 paths,
                 registry_options,

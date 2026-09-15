@@ -1,3 +1,4 @@
+use crate::mdbase::mdbase_js_mutation_committer;
 use crate::scan::refresh_cache_incrementally;
 use crate::tools::{build_custom_tool_js_registry, CustomToolRegistryOptions};
 use crate::{plugins, templates, tools, AppError};
@@ -207,6 +208,11 @@ pub fn build_dataview_query_js_report(
             timeout: None,
             sandbox: None,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            mutation_committer: Some(mdbase_js_mutation_committer(
+                paths,
+                permission_profile,
+                true,
+            )),
             tool_registry: Some(build_custom_tool_js_registry(
                 paths,
                 permission_profile,

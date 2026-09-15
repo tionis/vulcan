@@ -14952,6 +14952,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("mdbase record path"));
     assert!(note_operations.contains("validated, journaled write boundary"));
     assert!(note_operations.contains("explicit repair is a separate workflow"));
+    let js_api = fs::read_to_string(vault_root.join(".agents/skills/js-api-guide/SKILL.md"))
+        .expect("JS API skill should be readable");
+    assert!(js_api.contains("standalone write is an implicit validated commit"));
+    assert!(js_api.contains("complete proposed change set through one journal batch"));
+    assert!(js_api.contains("validation failure restores every original"));
     let properties =
         fs::read_to_string(vault_root.join(".agents/skills/properties-and-tags/SKILL.md"))
             .expect("properties skill should be readable");
@@ -24133,6 +24138,70 @@ fn run_json_output_executes_script_files_and_named_scripts() {
     assert!(help_text.contains("Parameters:"));
     assert!(help_text.contains("Example:"));
     assert!(help_text.contains("See also: vault.notes(), vault.query()"));
+}
+
+#[test]
+fn run_transaction_uses_mdbase_validation_and_one_journal_batch() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("mdbase config");
+    fs::create_dir_all(vault_root.join("_types")).expect("type directory");
+    fs::write(
+        vault_root.join("_types/task.md"),
+        concat!(
+            "---\n",
+            "kind: mdbase.type\n",
+            "name: task\n",
+            "version: 1\n",
+            "schema:\n",
+            "  dialect: json-schema-2020-12\n",
+            "  value:\n",
+            "    type: object\n",
+            "    required: [type, title]\n",
+            "    properties:\n",
+            "      type: {const: task}\n",
+            "      title: {type: string}\n",
+            "---\n",
+        ),
+    )
+    .expect("task type");
+    run_scan(&vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan/scripts")).expect("scripts directory");
+    fs::write(
+        vault_root.join(".vulcan/scripts/mdb-transaction.js"),
+        r#"
+        vault.transaction((tx) => {
+          tx.create("tasks/one", { frontmatter: { type: "task", title: "One" } });
+          tx.create("tasks/two", { frontmatter: { type: "task", title: "Two" } });
+        });
+        "committed";
+        "#,
+    )
+    .expect("script");
+
+    let result = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "run",
+            "mdb-transaction",
+            "--sandbox",
+            "fs",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&result)["value"], "committed");
+
+    let outbox = list_mdbase_write_outbox(&VaultPaths::new(&vault_root)).expect("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].operation, "batch");
+    assert_eq!(outbox[0].paths.len(), 2);
+    assert!(vault_root.join("tasks/one.md").exists());
+    assert!(vault_root.join("tasks/two.md").exists());
 }
 
 #[test]

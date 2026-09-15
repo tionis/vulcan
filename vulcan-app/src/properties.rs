@@ -129,6 +129,7 @@ fn apply_managed_property_batch(
             changes,
             operation,
             mode: MdbaseManagedWriteMode::Validated,
+            allow_mixed_paths: false,
             dry_run,
             permission_profile,
             quiet,

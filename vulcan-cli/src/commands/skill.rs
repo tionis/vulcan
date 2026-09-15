@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
+use vulcan_app::mdbase::mdbase_js_mutation_committer;
 use vulcan_core::{
     evaluate_dataview_js_with_options, list_assistant_skills, load_assistant_skill,
     load_vault_config, resolve_permission_profile, validate_json_value_against_schema,
@@ -281,6 +282,11 @@ fn run_skill_command(
             .and_then(Path::to_str),
         DataviewJsEvalOptions {
             sandbox: Some(command.sandbox.unwrap_or(JsRuntimeSandbox::Strict)),
+            mutation_committer: Some(mdbase_js_mutation_committer(
+                paths,
+                permission_profile.as_deref(),
+                true,
+            )),
             permission_profile,
             tool_registry: Some(crate::tools::runtime_tool_registry(
                 paths,

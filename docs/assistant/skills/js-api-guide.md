@@ -34,6 +34,7 @@ Use this skill when the workflow genuinely needs scripting or multi-step logic r
 - If reusable executable behavior should be callable from CLI, MCP, and other scripts, declare it as a skill command in `metadata.vulcan.commands` with `expose: true`, then call it through `tools.call(...)`.
 - For write-capable custom tools, prefer `tool.input(defaults)`, `vault.plan(...)`, and `tool.result()` over ad hoc JSON envelopes.
 - Write helpers do not work below `fs`, and web helpers do not work below `net`.
+- In an mdbase collection, each standalone write is an implicit validated commit, while `vault.transaction()` sends the complete proposed change set through one journal batch. A validation failure restores every original and creates no write journal; fix the proposed records instead of bypassing the transaction.
 - Treat the sandbox boundary as real. Do not assume unrestricted shell or network access.
 
 ## Example Moves

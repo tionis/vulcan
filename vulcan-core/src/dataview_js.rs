@@ -56,6 +56,22 @@ pub trait DataviewJsToolRegistry: Send + Sync {
     fn call(&self, name: &str, input: &Value, options: Option<&Value>) -> Result<Value, String>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataviewJsMutationChange {
+    pub path: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+/// Application-layer commit boundary for script mutations.
+///
+/// Returning `true` means the committer persisted the complete change set.
+/// Returning `false` asks the core runtime to preserve its ordinary Markdown
+/// behavior after restoring the staged originals.
+pub trait DataviewJsMutationCommitter: Send + Sync {
+    fn commit(&self, changes: &[DataviewJsMutationChange]) -> Result<bool, String>;
+}
+
 #[derive(Clone, Default)]
 pub struct DataviewJsEvalOptions {
     pub timeout: Option<Duration>,
@@ -65,6 +81,7 @@ pub struct DataviewJsEvalOptions {
     pub deterministic_static: bool,
     pub disable_policy_hooks: bool,
     pub tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
+    pub mutation_committer: Option<Arc<dyn DataviewJsMutationCommitter>>,
 }
 
 impl std::fmt::Debug for DataviewJsEvalOptions {
@@ -80,6 +97,10 @@ impl std::fmt::Debug for DataviewJsEvalOptions {
             .field(
                 "tool_registry",
                 &self.tool_registry.as_ref().map(|_| "<registered>"),
+            )
+            .field(
+                "mutation_committer",
+                &self.mutation_committer.as_ref().map(|_| "<registered>"),
             )
             .finish()
     }
@@ -248,8 +269,9 @@ mod runtime {
     use serde::{Deserialize, Serialize};
 
     use super::{
-        DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-        DataviewJsToolDescriptor, DataviewJsToolRegistry,
+        DataviewJsError, DataviewJsEvalOptions, DataviewJsMutationChange,
+        DataviewJsMutationCommitter, DataviewJsOutput, DataviewJsResult, DataviewJsToolDescriptor,
+        DataviewJsToolRegistry,
     };
     use crate::config::{
         load_vault_config, JsRuntimeConfig, JsRuntimeSandbox, VaultConfig, WebConfig,
@@ -303,6 +325,7 @@ mod runtime {
         runtime_timeout: Option<Duration>,
         transaction: Mutex<Option<JsTransactionState>>,
         tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
+        mutation_committer: Option<Arc<dyn DataviewJsMutationCommitter>>,
     }
 
     #[derive(Debug, Default)]
@@ -3539,6 +3562,7 @@ globalThis.Function = undefined;
                 runtime_timeout: timeout,
                 transaction: Mutex::new(None),
                 tool_registry: options.tool_registry,
+                mutation_committer: options.mutation_committer,
             });
             let outputs = Arc::new(Mutex::new(Vec::new()));
             let runtime =
@@ -4635,13 +4659,34 @@ globalThis.Function = undefined;
     }
 
     fn commit_transaction(state: &JsEvalState) -> Result<(), DataviewJsError> {
-        let mut transaction = state.transaction.lock().map_err(|_| {
-            DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
-        })?;
-        if transaction.is_none() {
+        let transaction = {
+            let mut transaction = state.transaction.lock().map_err(|_| {
+                DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
+            })?;
+            transaction.take()
+        };
+        let Some(transaction) = transaction else {
             return Ok(());
+        };
+        let Some(committer) = state.mutation_committer.as_ref() else {
+            return scan_and_reload_state(state);
+        };
+
+        let changes = transaction_changes(state, &transaction)?;
+        restore_transaction_originals(state, &transaction)?;
+        let handled = match committer.commit(&changes) {
+            Ok(handled) => handled,
+            Err(error) => {
+                scan_and_reload_state(state)?;
+                return Err(DataviewJsError::Message(error));
+            }
+        };
+        if !handled {
+            if let Err(error) = apply_transaction_changes(state, &changes) {
+                restore_transaction_originals(state, &transaction)?;
+                return Err(error);
+            }
         }
-        *transaction = None;
         scan_and_reload_state(state)
     }
 
@@ -4656,8 +4701,45 @@ globalThis.Function = undefined;
             return Ok(());
         };
 
-        for (path, original) in transaction.originals {
-            let absolute = state.paths.vault_root().join(&path);
+        restore_transaction_originals(state, &transaction)?;
+        scan_and_reload_state(state)
+    }
+
+    fn transaction_changes(
+        state: &JsEvalState,
+        transaction: &JsTransactionState,
+    ) -> Result<Vec<DataviewJsMutationChange>, DataviewJsError> {
+        let mut paths = transaction.originals.keys().cloned().collect::<Vec<_>>();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let absolute = state.paths.vault_root().join(&path);
+                let after = if absolute.is_file() {
+                    Some(
+                        fs::read_to_string(&absolute)
+                            .map_err(|error| DataviewJsError::Message(error.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                Ok(DataviewJsMutationChange {
+                    before: transaction.originals.get(&path).cloned().flatten(),
+                    path,
+                    after,
+                })
+            })
+            .collect()
+    }
+
+    fn restore_transaction_originals(
+        state: &JsEvalState,
+        transaction: &JsTransactionState,
+    ) -> Result<(), DataviewJsError> {
+        let mut originals = transaction.originals.iter().collect::<Vec<_>>();
+        originals.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (path, original) in originals {
+            let absolute = state.paths.vault_root().join(path);
             match original {
                 Some(contents) => {
                     if let Some(parent) = absolute.parent() {
@@ -4675,12 +4757,65 @@ globalThis.Function = undefined;
                 }
             }
         }
+        Ok(())
+    }
 
-        scan_and_reload_state(state)
+    fn apply_transaction_changes(
+        state: &JsEvalState,
+        changes: &[DataviewJsMutationChange],
+    ) -> Result<(), DataviewJsError> {
+        for change in changes {
+            let absolute = state.paths.vault_root().join(&change.path);
+            match change.after.as_ref() {
+                Some(contents) => {
+                    if let Some(parent) = absolute.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                    }
+                    fs::write(&absolute, contents)
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                }
+                None if absolute.is_file() => fs::remove_file(&absolute)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?,
+                None => {}
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
     fn apply_js_mutation(
+        state: &JsEvalState,
+        kind: &str,
+        payload: Value,
+    ) -> Result<Value, DataviewJsError> {
+        let needs_implicit_transaction = state.mutation_committer.is_some()
+            && state
+                .transaction
+                .lock()
+                .map_err(|_| {
+                    DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
+                })?
+                .is_none();
+        if !needs_implicit_transaction {
+            return apply_js_mutation_inner(state, kind, payload);
+        }
+
+        begin_transaction(state)?;
+        match apply_js_mutation_inner(state, kind, payload) {
+            Ok(value) => {
+                commit_transaction(state)?;
+                Ok(value)
+            }
+            Err(error) => {
+                rollback_transaction(state)?;
+                Err(error)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+    fn apply_js_mutation_inner(
         state: &JsEvalState,
         kind: &str,
         payload: Value,
@@ -6307,6 +6442,25 @@ globalThis.Function = undefined;
 
         use super::*;
 
+        struct RecordingMutationCommitter {
+            calls: Mutex<Vec<Vec<DataviewJsMutationChange>>>,
+            reject: bool,
+        }
+
+        impl DataviewJsMutationCommitter for RecordingMutationCommitter {
+            fn commit(&self, changes: &[DataviewJsMutationChange]) -> Result<bool, String> {
+                self.calls
+                    .lock()
+                    .map_err(|_| "recording committer lock poisoned".to_string())?
+                    .push(changes.to_vec());
+                if self.reject {
+                    Err("proposed script write rejected".to_string())
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+
         #[test]
         fn dataviewjs_exposes_current_page_lookup_and_pages_helpers() {
             let temp_dir = tempdir().expect("temp dir should be created");
@@ -7101,6 +7255,86 @@ cpu_limit_ms = 25
                 DataviewJsError::Message(message) if message.contains("rollback")
             ));
             assert!(!vault_root.join("Temp.md").exists());
+        }
+
+        #[test]
+        fn dataviewjs_routes_implicit_and_explicit_transaction_commits() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan directory");
+            fs::write(vault_root.join("Alpha.md"), "# Alpha\n").expect("alpha note");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let committer = Arc::new(RecordingMutationCommitter {
+                calls: Mutex::new(Vec::new()),
+                reject: false,
+            });
+
+            evaluate_dataview_js_with_options(
+                &paths,
+                r##"
+                vault.append("Alpha", "implicit");
+                vault.transaction((tx) => {
+                  tx.append("Alpha", "explicit");
+                  tx.create("Beta", { content: "# Beta" });
+                });
+                "##,
+                None,
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    mutation_committer: Some(committer.clone()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("script writes should commit");
+
+            let calls = committer.calls.lock().expect("committer calls");
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].len(), 1);
+            assert_eq!(calls[0][0].path, "Alpha.md");
+            assert_eq!(calls[1].len(), 2);
+            assert_eq!(calls[1][0].path, "Alpha.md");
+            assert_eq!(calls[1][1].path, "Beta.md");
+            assert!(fs::read_to_string(vault_root.join("Alpha.md"))
+                .expect("alpha note")
+                .contains("explicit"));
+            assert!(vault_root.join("Beta.md").exists());
+        }
+
+        #[test]
+        fn dataviewjs_commit_rejection_restores_originals() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan directory");
+            fs::write(vault_root.join("Alpha.md"), "# Alpha\n").expect("alpha note");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let committer = Arc::new(RecordingMutationCommitter {
+                calls: Mutex::new(Vec::new()),
+                reject: true,
+            });
+
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                r##"vault.transaction((tx) => {
+                  tx.append("Alpha", "rejected");
+                  tx.create("Beta", { content: "# Beta" });
+                })"##,
+                None,
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    mutation_committer: Some(committer),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("committer should reject the transaction");
+
+            assert!(error.to_string().contains("proposed script write rejected"));
+            assert_eq!(
+                fs::read_to_string(vault_root.join("Alpha.md")).expect("alpha note"),
+                "# Alpha\n"
+            );
+            assert!(!vault_root.join("Beta.md").exists());
         }
 
         #[test]

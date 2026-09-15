@@ -443,6 +443,7 @@ __vulcanPolicyHandler(__vulcanPolicyInput);\n",
                 deterministic_static: false,
                 disable_policy_hooks: true,
                 tool_registry: None,
+                mutation_committer: None,
             },
         )
         .map_err(|error| PermissionError::PolicyHookDenied {

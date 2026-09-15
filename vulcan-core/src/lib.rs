@@ -154,8 +154,9 @@ pub use config::{
 pub use content_transforms::apply_content_transforms;
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
-    DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession,
-    DataviewJsToolDefinition, DataviewJsToolDescriptor, DataviewJsToolRegistry,
+    DataviewJsError, DataviewJsEvalOptions, DataviewJsMutationChange, DataviewJsMutationCommitter,
+    DataviewJsOutput, DataviewJsResult, DataviewJsSession, DataviewJsToolDefinition,
+    DataviewJsToolDescriptor, DataviewJsToolRegistry,
 };
 pub use decomposition::{
     plan_document_decomposition, plan_document_decomposition_with_aligned_outline,

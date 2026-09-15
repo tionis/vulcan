@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
     analyze_mdbase_record_source, apply_mdbase_write_transaction_with_preflight,
@@ -22,8 +23,9 @@ use vulcan_core::mdbase::{
 };
 use vulcan_core::{
     auto_commit, initialize_vulcan_dir, load_vault_config, resolve_permission_profile,
-    AutoCommitReport, ConfigDiagnosticKind, GitTrigger, PermissionFilter, PermissionGuard,
-    PluginEvent, ProfilePermissionGuard, ScanMode, ScanSummary, VaultConfig, VaultPaths,
+    AutoCommitReport, ConfigDiagnosticKind, DataviewJsMutationChange, DataviewJsMutationCommitter,
+    GitTrigger, PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, ScanMode,
+    ScanSummary, VaultConfig, VaultPaths,
 };
 
 const DEFAULT_WRITE_PREVIEW_TTL_SECONDS: i64 = 300;
@@ -127,6 +129,9 @@ pub struct MdbaseManagedNoteWriteBatchRequest<'a> {
     pub changes: &'a [MdbaseManagedNoteWriteChange<'a>],
     pub operation: MdbaseWriteOperation,
     pub mode: MdbaseManagedWriteMode,
+    /// Include ordinary Markdown companions in the same cooperating
+    /// transaction when at least one changed path is an mdbase record.
+    pub allow_mixed_paths: bool,
     pub dry_run: bool,
     pub permission_profile: Option<&'a str>,
     pub quiet: bool,
@@ -151,6 +156,61 @@ pub struct MdbaseStatusReport {
     pub nested_collections: Vec<String>,
     pub valid: bool,
     pub diagnostics: Vec<MdbaseDiagnostic>,
+}
+
+struct MdbaseJsMutationCommitter {
+    paths: VaultPaths,
+    permission_profile: Option<String>,
+    quiet: bool,
+}
+
+impl DataviewJsMutationCommitter for MdbaseJsMutationCommitter {
+    fn commit(&self, changes: &[DataviewJsMutationChange]) -> Result<bool, String> {
+        let operation = match changes {
+            [change] => match (&change.before, &change.after) {
+                (None, Some(_)) => MdbaseWriteOperation::Create,
+                (Some(_), None) => MdbaseWriteOperation::Delete,
+                (Some(_), Some(_)) => MdbaseWriteOperation::Update,
+                (None, None) => MdbaseWriteOperation::Batch,
+            },
+            _ => MdbaseWriteOperation::Batch,
+        };
+        let changes = changes
+            .iter()
+            .map(|change| MdbaseManagedNoteWriteChange {
+                path: &change.path,
+                before: change.before.as_deref(),
+                after: change.after.as_deref(),
+            })
+            .collect::<Vec<_>>();
+        apply_managed_mdbase_note_writes(
+            &self.paths,
+            &MdbaseManagedNoteWriteBatchRequest {
+                changes: &changes,
+                operation,
+                mode: MdbaseManagedWriteMode::Validated,
+                allow_mixed_paths: true,
+                dry_run: false,
+                permission_profile: self.permission_profile.as_deref(),
+                quiet: self.quiet,
+            },
+        )
+        .map(|report| report.is_some())
+        .map_err(|error| error.to_string())
+    }
+}
+
+#[must_use]
+pub fn mdbase_js_mutation_committer(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Arc<dyn DataviewJsMutationCommitter> {
+    Arc::new(MdbaseJsMutationCommitter {
+        paths: paths.clone(),
+        permission_profile: permission_profile.map(ToOwned::to_owned),
+        quiet,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -624,6 +684,7 @@ pub fn apply_managed_mdbase_note_write(
             changes: &changes,
             operation: request.operation.clone(),
             mode: request.mode,
+            allow_mixed_paths: false,
             dry_run: request.dry_run,
             permission_profile: request.permission_profile,
             quiet: request.quiet,
@@ -631,12 +692,12 @@ pub fn apply_managed_mdbase_note_write(
     )
 }
 
-/// Route a homogeneous set of generic note mutations through one mdbase
-/// transaction. `None` means none of the paths are collection records; mixing
-/// managed and ordinary Markdown paths is rejected so callers must partition
-/// the write set explicitly. A rename may cross the collection boundary: the
-/// complete move stays crash-safe, while validation only governs the endpoint
-/// that is an mdbase record.
+/// Route a set of generic note mutations through one mdbase transaction.
+/// `None` means none of the paths are collection records. Mixed managed and
+/// ordinary Markdown paths are rejected unless the caller explicitly opts into
+/// a cooperating transaction; renames may always cross the collection boundary.
+/// The complete write stays crash-safe, while validation only governs endpoints
+/// that are mdbase records.
 pub fn apply_managed_mdbase_note_writes(
     paths: &VaultPaths,
     request: &MdbaseManagedNoteWriteBatchRequest<'_>,
@@ -659,7 +720,7 @@ pub fn apply_managed_mdbase_note_writes(
         return Ok(None);
     }
     let boundary_rename = matches!(request.operation, MdbaseWriteOperation::Rename { .. });
-    if managed.iter().any(|managed| !managed) && !boundary_rename {
+    if managed.iter().any(|managed| !managed) && !boundary_rename && !request.allow_mixed_paths {
         return Err(AppError::operation(
             "managed mdbase write batches cannot mix collection records with ordinary Markdown paths",
         ));
@@ -1068,6 +1129,10 @@ mod tests {
     };
     use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+    use vulcan_core::{
+        evaluate_dataview_js_with_options, scan_vault, DataviewJsEvalOptions, JsRuntimeSandbox,
+        ScanMode,
+    };
 
     fn write_plan_request(
         operation: MdbaseWriteOperation,
@@ -1425,6 +1490,7 @@ mod tests {
                 changes: &changes,
                 operation: MdbaseWriteOperation::Batch,
                 mode: MdbaseManagedWriteMode::Validated,
+                allow_mixed_paths: false,
                 dry_run: true,
                 permission_profile: None,
                 quiet: true,
@@ -1583,6 +1649,97 @@ mod tests {
         assert!(list_mdbase_write_outbox(&paths)
             .expect("outbox should be readable")
             .is_empty());
+    }
+
+    #[test]
+    fn script_transaction_commits_managed_changes_as_one_journal_batch() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).expect("initialize transaction state");
+        scan_vault(&paths, ScanMode::Full).expect("scan fixture");
+
+        evaluate_dataview_js_with_options(
+            &paths,
+            r#"
+            vault.transaction((tx) => {
+              tx.set("tasks/public", "---\ntype: task\ntitle: Updated\n---\nBody\n");
+              tx.create("tasks/new", {
+                content: "Body",
+                frontmatter: { type: "task", title: "New" }
+              });
+            });
+            "#,
+            None,
+            DataviewJsEvalOptions {
+                sandbox: Some(JsRuntimeSandbox::Fs),
+                mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, true)),
+                ..DataviewJsEvalOptions::default()
+            },
+        )
+        .expect("script transaction should commit");
+
+        assert!(fs::read_to_string(directory.path().join("tasks/public.md"))
+            .expect("updated record")
+            .contains("title: Updated"));
+        assert!(directory.path().join("tasks/new.md").exists());
+        let outbox = list_mdbase_write_outbox(&paths).expect("outbox");
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].operation, "batch");
+        assert_eq!(outbox[0].paths.len(), 2);
+    }
+
+    #[test]
+    fn standalone_script_write_preserves_its_journal_operation() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).expect("initialize transaction state");
+        scan_vault(&paths, ScanMode::Full).expect("scan fixture");
+
+        evaluate_dataview_js_with_options(
+            &paths,
+            r#"vault.set("tasks/public", "---\ntype: task\ntitle: Updated\n---\nBody\n")"#,
+            None,
+            DataviewJsEvalOptions {
+                sandbox: Some(JsRuntimeSandbox::Fs),
+                mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, true)),
+                ..DataviewJsEvalOptions::default()
+            },
+        )
+        .expect("standalone script write should commit");
+
+        assert!(fs::read_to_string(directory.path().join("tasks/public.md"))
+            .expect("updated record")
+            .contains("title: Updated"));
+        let outbox = list_mdbase_write_outbox(&paths).expect("outbox");
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].operation, "update");
+        assert_eq!(outbox[0].paths.len(), 1);
+    }
+
+    #[test]
+    fn invalid_script_write_restores_source_without_a_journal() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).expect("initialize transaction state");
+        scan_vault(&paths, ScanMode::Full).expect("scan fixture");
+        let original =
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("original record");
+
+        let error = evaluate_dataview_js_with_options(
+            &paths,
+            r#"vault.set("tasks/public", "---\ntype: task\n---\nBody\n")"#,
+            None,
+            DataviewJsEvalOptions {
+                sandbox: Some(JsRuntimeSandbox::Fs),
+                mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, true)),
+                ..DataviewJsEvalOptions::default()
+            },
+        )
+        .expect_err("invalid script write should fail");
+
+        assert!(error.to_string().contains("schema_required"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).expect("record source"),
+            original
+        );
+        assert!(list_mdbase_write_outbox(&paths).expect("outbox").is_empty());
     }
 
     #[test]
