@@ -515,11 +515,52 @@ pub struct GitSyncReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pause: Option<GitSyncPause>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "serialize_sync_report_application")]
     pub application: Option<GitTreeApplyPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<GitBranchSync>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<GitSyncPreview>,
+}
+
+#[derive(Serialize)]
+struct GitTreeApplyReportSummary<'a> {
+    expected_revision: &'a GitOid,
+    target_revision: &'a GitOid,
+    additions: usize,
+    updates: usize,
+    deletions: usize,
+    type_changes: usize,
+    paths: &'a [crate::GitTreeApplyPath],
+    paths_returned: usize,
+    paths_complete: bool,
+    path_count: usize,
+}
+
+#[allow(clippy::ref_option)] // serde's field serializer receives a reference to the field type.
+fn serialize_sync_report_application<S>(
+    application: &Option<GitTreeApplyPlan>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let summary = application.as_ref().map(|application| {
+        let paths_returned = application.paths.len().min(MAX_SYNC_REPORT_CONFLICT_PATHS);
+        GitTreeApplyReportSummary {
+            expected_revision: &application.expected_revision,
+            target_revision: &application.target_revision,
+            additions: application.additions,
+            updates: application.updates,
+            deletions: application.deletions,
+            type_changes: application.type_changes,
+            paths: &application.paths[..paths_returned],
+            paths_returned,
+            paths_complete: paths_returned == application.paths.len(),
+            path_count: application.paths.len(),
+        }
+    });
+    summary.serialize(serializer)
 }
 
 #[derive(Serialize)]
@@ -3742,6 +3783,8 @@ mod tests {
         struct Wrapper {
             #[serde(serialize_with = "serialize_sync_report_conflict")]
             conflict: Option<GitSyncConflict>,
+            #[serde(serialize_with = "serialize_sync_report_application")]
+            application: Option<GitTreeApplyPlan>,
         }
 
         let paths = (0..10_000)
@@ -3778,14 +3821,31 @@ mod tests {
                 remote: git_ref("refs/vulcan/sync/conflicts/conflict-1/remote"),
                 record: git_ref("refs/vulcan/sync/conflicts/conflict-1/record"),
             },
-            provenance_revision: oid,
+            provenance_revision: oid.clone(),
             projection: None,
             merge_tree: None,
             diagnostics: "d".repeat(10_000),
         };
 
+        let application = GitTreeApplyPlan {
+            expected_revision: oid.clone(),
+            target_revision: oid,
+            additions: 0,
+            updates: 10_000,
+            deletions: 0,
+            type_changes: 0,
+            paths: (0..10_000)
+                .map(|index| crate::GitTreeApplyPath {
+                    path: format!("notes/{index:05}.md"),
+                    action: crate::GitTreeApplyAction::Update,
+                    expected: None,
+                    target: None,
+                })
+                .collect(),
+        };
         let encoded = serde_json::to_vec(&Wrapper {
             conflict: Some(conflict),
+            application: Some(application),
         })
         .expect("serialize summary");
         let value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
@@ -3807,6 +3867,10 @@ mod tests {
         );
         assert_eq!(summary["diagnostics_complete"], false);
         assert_eq!(summary["detail_conflict_id"], "conflict-1");
+        let application = &value["application"];
+        assert_eq!(application["path_count"], 10_000);
+        assert_eq!(application["paths"].as_array().expect("paths").len(), 16);
+        assert_eq!(application["paths_complete"], false);
         assert!(
             encoded.len() < 128 * 1024,
             "summary was {} bytes",
