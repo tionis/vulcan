@@ -6,12 +6,12 @@ use crate::{McpToolAnnotations, McpToolPackArg, McpToolPackModeArg, ToolRegistry
 
 use super::schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
-    config_show_output_schema, daily_list_input_schema, daily_show_input_schema,
-    empty_object_schema, generic_report_output_schema, graph_communities_input_schema,
-    index_scan_input_schema, index_scan_output_schema, note_append_input_schema,
-    note_append_output_schema, note_create_input_schema, note_create_output_schema,
-    note_delete_input_schema, note_delete_output_schema, note_get_input_schema,
-    note_get_output_schema, note_info_input_schema, note_info_output_schema,
+    config_show_output_schema, daily_input_schema, daily_list_input_schema, daily_output_schema,
+    daily_show_input_schema, empty_object_schema, generic_report_output_schema,
+    graph_communities_input_schema, index_scan_input_schema, index_scan_output_schema,
+    note_append_input_schema, note_append_output_schema, note_create_input_schema,
+    note_create_output_schema, note_delete_input_schema, note_delete_output_schema,
+    note_get_input_schema, note_get_output_schema, note_info_input_schema, note_info_output_schema,
     note_outline_input_schema, note_outline_output_schema, note_patch_input_schema,
     note_patch_output_schema, note_set_input_schema, note_set_output_schema, query_input_schema,
     search_input_schema, search_output_schema, status_output_schema, suggest_links_input_schema,
@@ -116,6 +116,7 @@ pub(super) enum McpToolId {
     Search,
     Query,
     Status,
+    Daily,
     DailyShow,
     DailyList,
     TaskList,
@@ -192,6 +193,7 @@ pub(super) const PACK_SEARCH: &[McpToolPack] = &[McpToolPack::Search];
 pub(super) const PACK_STATUS: &[McpToolPack] = &[McpToolPack::Status];
 pub(super) const PACK_CUSTOM: &[McpToolPack] = &[McpToolPack::Custom];
 pub(super) const PACK_DAILY: &[McpToolPack] = &[McpToolPack::Daily];
+const PACK_DAILY_READ: &[McpToolPack] = &[McpToolPack::NotesRead, McpToolPack::Daily];
 pub(super) const PACK_TASKS: &[McpToolPack] = &[McpToolPack::Tasks];
 pub(super) const PACK_NOTES_WRITE: &[McpToolPack] = &[McpToolPack::NotesWrite];
 const PACK_NOTES_READ_WRITE: &[McpToolPack] = &[McpToolPack::NotesRead, McpToolPack::NotesWrite];
@@ -274,6 +276,18 @@ pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         input_schema: empty_object_schema,
         output_schema: Some(status_output_schema),
         examples: &["vulcan status --output json"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::Daily,
+        name: "daily",
+        title: "Read Daily Notes",
+        description: "Read structurally known daily notes. Use operation=latest for the newest existing daily note, operation=today only for today's date, show for a known date, and list/range for windows. Prefer this over search or generic query for journal requests.",
+        packs: PACK_DAILY_READ,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: daily_input_schema,
+        output_schema: Some(daily_output_schema),
+        examples: &["daily {\"operation\":\"latest\",\"include_content\":true}"],
     },
     McpToolCatalogEntry {
         id: McpToolId::DailyShow,

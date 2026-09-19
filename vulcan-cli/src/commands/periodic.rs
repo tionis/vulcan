@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use vulcan_app::browse::{build_periodic_list_report, PeriodicListItem};
+use vulcan_app::periodic::{read_daily_note, DailyNoteReadReport, DailyReadTarget};
 use vulcan_app::templates::{
     load_named_template, render_loaded_template, LoadedTemplateRenderRequest, TemplateEngineKind,
     TemplateRunMode,
@@ -119,6 +120,15 @@ pub(crate) fn handle_daily_command(
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
     match command {
+        DailyCommand::Latest => {
+            let report = run_daily_latest_command(paths, true)?;
+            if let Some(path) = report.path.as_deref() {
+                crate::selected_permission_guard(cli, paths)?
+                    .check_read_path(path)
+                    .map_err(CliError::operation)?;
+            }
+            print_daily_read_report(cli.output, &report, stdout_is_tty, use_stdout_color)
+        }
         DailyCommand::Today { no_edit, no_commit } => {
             check_periodic_write_access(cli, paths, "daily", None)?;
             let report = run_periodic_open_command(
@@ -182,6 +192,34 @@ pub(crate) fn handle_daily_command(
                 "daily",
             )?;
             print_daily_append_report(cli.output, &report)
+        }
+    }
+}
+
+pub(crate) fn run_daily_latest_command(
+    paths: &VaultPaths,
+    include_content: bool,
+) -> Result<DailyNoteReadReport, CliError> {
+    read_daily_note(paths, DailyReadTarget::Latest, include_content).map_err(CliError::operation)
+}
+
+fn print_daily_read_report(
+    output: OutputFormat,
+    report: &DailyNoteReadReport,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown if report.exists => print_markdown_output(
+            output,
+            report.content.as_deref().unwrap_or_default(),
+            stdout_is_tty,
+            use_stdout_color,
+        ),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!("No daily notes found.");
+            Ok(())
         }
     }
 }
@@ -360,7 +398,7 @@ pub(crate) fn current_utc_date_string() -> String {
     vulcan_app::templates::TemplateTimestamp::current().default_date_string()
 }
 
-fn normalize_date_argument(date: Option<&str>) -> Result<String, CliError> {
+pub(crate) fn normalize_date_argument(date: Option<&str>) -> Result<String, CliError> {
     match date
         .map(str::trim)
         .filter(|value| !value.is_empty())

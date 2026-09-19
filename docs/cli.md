@@ -243,6 +243,7 @@ Shared behavior:
 ### Periodic note commands
 
 - `vulcan daily today [--no-edit] [--no-commit]`: open or create today's daily note.
+- `vulcan daily latest`: read the newest existing daily note from the configured daily-note folder. JSON includes `date`, `path`, `exists`, and `content`.
 - `vulcan daily show [date]`: print one daily note's contents. Defaults to today.
 - `vulcan daily list [--from <date>] [--to <date>] [--week] [--month]`: list daily notes and extracted schedule events across a date window.
 - `vulcan daily export-ics [--from <date>] [--to <date>] [--week] [--month] [--path <file.ics>] [--calendar-name <name>]`: export extracted daily-note events as an ICS calendar. Without `--path`, the calendar is written to stdout.
@@ -258,6 +259,9 @@ Behavior:
 - Periodic note defaults come from `[periodic.*]` in `.vulcan/config.toml`.
 - Custom period types use the same config map: define `[periodic.<name>]` with `unit = "days|weeks|months|quarters|years"`, `interval = <n>`, and an optional `anchor_date = "YYYY-MM-DD"` to align the cycle.
 - `daily list` uses the configured weekly start when `--week` is selected and includes parsed schedule events from the `events` cache table.
+- MCP exposes a stable high-level `daily` read tool with `latest`, `today`, `show`, `list`, and `range` operations. `latest` can include content in the same call; `today` returns `exists: false` when absent rather than substituting another date.
+- MCP initialization includes concise routing instructions. Common reads are on the default surface; adaptive packs remain opt-in for less-common capabilities because not every host refreshes callable schemas after `notifications/tools/list_changed`.
+- MCP `query` defaults to 50 compact results, supports `path_prefix`, `filename_pattern`, `limit`, `offset`, field projection, and page metadata, and requires explicit opt-in above 200 rows (hard maximum 1000).
 - `daily export-ics` uses the same cached events and emits a one-way RFC 5545 calendar export.
 - Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning.
 - Use `periodic weekly` and `periodic monthly` directly; Vulcan does not ship compatibility aliases for the old top-level forms.

@@ -912,10 +912,12 @@ See also:
 
 const DAILY_COMMAND_AFTER_HELP: &str = "\
 Notes:
+  `latest` reads the newest existing configured daily note; it does not mean today.
   `list --week` and `list --month` expand around the current date using the configured periodic week start.
   `show` defaults to today. `append` creates the daily note first when it does not exist.
 
 Examples:
+  vulcan daily latest
   vulcan daily today
   vulcan daily today --no-edit
   vulcan daily show 2026-04-03
@@ -3713,6 +3715,8 @@ pub struct PeriodicOpenArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum DailyCommand {
+    #[command(about = "Display the newest existing daily note")]
+    Latest,
     #[command(about = "Open or create today's daily note")]
     Today {
         #[arg(long, help = "Create the note without opening it in the editor")]

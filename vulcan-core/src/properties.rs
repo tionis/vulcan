@@ -170,7 +170,6 @@ pub struct NoteRecord {
     pub file_name: String,
     pub file_ext: String,
     pub file_mtime: i64,
-    #[serde(skip)]
     pub file_ctime: i64,
     pub file_size: i64,
     pub properties: Value,
@@ -2156,7 +2155,7 @@ fn legacy_filter_needs_expression_fallback(operator: FilterOperator, value: &str
 fn is_legacy_filter_field(field: &str) -> bool {
     matches!(
         field,
-        "file.path" | "file.name" | "file.ext" | "file.mtime" | "file.tags"
+        "file.path" | "file.name" | "file.ext" | "file.extension" | "file.mtime" | "file.tags"
     ) || (!field.starts_with("file.")
         && !field.is_empty()
         && field
@@ -2259,10 +2258,15 @@ fn parse_filter_field(field: &str) -> FilterField {
     match field {
         "file.path" => FilterField::FilePath,
         "file.name" => FilterField::FileName,
-        "file.ext" => FilterField::FileExt,
+        "file.ext" | "file.extension" => FilterField::FileExt,
         "file.mtime" => FilterField::FileMtime,
         "file.tags" => FilterField::FileTags,
-        other => FilterField::Property(other.to_string()),
+        other => FilterField::Property(
+            other
+                .strip_prefix("properties.")
+                .unwrap_or(other)
+                .to_string(),
+        ),
     }
 }
 
@@ -2621,9 +2625,13 @@ fn sort_key_for_note(note: &NoteRecord, sort_by: &str) -> SortKey {
     match sort_by {
         "file.path" => SortKey::Text(note.document_path.clone()),
         "file.name" => SortKey::Text(note.file_name.clone()),
-        "file.ext" => SortKey::Text(note.file_ext.clone()),
+        "file.ext" | "file.extension" => SortKey::Text(note.file_ext.clone()),
+        "file.ctime" => SortKey::Integer(note.file_ctime),
         "file.mtime" => SortKey::Integer(note.file_mtime),
-        key => match note.properties.get(key) {
+        key => match note
+            .properties
+            .get(key.strip_prefix("properties.").unwrap_or(key))
+        {
             Some(Value::Null) | None => SortKey::Null,
             Some(Value::Bool(value_bool)) => SortKey::Bool(*value_bool),
             Some(Value::Number(value_number)) => {

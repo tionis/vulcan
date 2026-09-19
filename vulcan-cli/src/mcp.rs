@@ -5,7 +5,10 @@ mod protocol;
 mod schemas;
 
 use crate::app_config;
-use crate::commands::periodic::{run_daily_list_command, run_daily_show_command};
+use crate::commands::periodic::{
+    current_utc_date_string, normalize_date_argument, run_daily_latest_command,
+    run_daily_list_command, run_daily_show_command,
+};
 use crate::commands::runtime::{run_web_fetch_command, run_web_search_command};
 use crate::commands::tasks::{
     run_tasks_complete_command, run_tasks_create_command, run_tasks_list_command,
@@ -30,8 +33,9 @@ use catalog::{
     tool_visible, visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack,
     McpToolPackMode, McpVisibilityRequirement, ALL_MCP_TOOL_PACKS,
 };
+use globset::Glob;
 use protocol::{
-    McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs,
+    McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs,
     McpDailyListArgs, McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams,
     McpMethodError, McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs,
     McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs,
@@ -1321,7 +1325,8 @@ impl McpServerCore {
             "serverInfo": {
                 "name": "vulcan",
                 "version": env!("CARGO_PKG_VERSION"),
-            }
+            },
+            "instructions": "Routing: daily/journal requests use `daily` (`latest` means newest existing, not today). Known note/path/title uses `note_get` or `note_outline`. Subject/content discovery uses `search`. Metadata, property, or path selection uses `query`. Prefer domain APIs, then exact reads, then structured query, then full-text/semantic search. Do not use search to locate structurally known resources. Query results are bounded by default."
         })
     }
 
@@ -1931,7 +1936,8 @@ impl McpServerCore {
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::Query => {
-                let args: McpQueryArgs = parse_tool_arguments(arguments)?;
+                let mut args: McpQueryArgs = parse_tool_arguments(arguments)?;
+                validate_mcp_query_page(&args)?;
                 if args.query.is_some() && args.json.is_some() {
                     return Err(McpMethodError::invalid_params(
                         "`query` accepts either `query` or `json`, not both",
@@ -1960,14 +1966,25 @@ impl McpServerCore {
                             "`query.filters`, `sort`, and `desc` cannot be combined with DQL",
                         ));
                     }
-                    let result = evaluate_dql_with_filter(
+                    let mut result = evaluate_dql_with_filter(
                         &self.paths,
                         dql,
                         None,
                         Some(&self.guard.read_filter()),
                     )
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    let start = args.offset.min(result.rows.len());
+                    let end = start.saturating_add(args.limit).min(result.rows.len());
+                    result.rows = result.rows[start..end].to_vec();
                     return self.serialize_tool_report(tool.name, &result);
+                }
+                if let Some(path_prefix) = args.path_prefix.as_deref() {
+                    if args.query.is_none() && args.json.is_none() {
+                        args.filters.push(format!(
+                            "file.path starts_with {}",
+                            serde_json::to_string(path_prefix).expect("string serialization")
+                        ));
+                    }
                 }
                 let report = match (args.query.as_deref(), args.json.as_deref()) {
                     (Some(dsl), None) => {
@@ -2002,8 +2019,8 @@ impl McpServerCore {
                     }
                     (None, None) => {
                         let note_query = NoteQuery {
-                            filters: args.filters,
-                            sort_by: args.sort,
+                            filters: args.filters.clone(),
+                            sort_by: args.sort.clone(),
                             sort_descending: args.desc,
                         };
                         let notes_report = query_notes_with_filter(
@@ -2023,7 +2040,8 @@ impl McpServerCore {
                     }
                     (Some(_), Some(_)) => unreachable!("checked above"),
                 };
-                self.serialize_tool_report(tool.name, &report)
+                let structured = bounded_mcp_query_report(report, &args)?;
+                Ok(self.tool_success_response(tool.name, structured))
             }
             McpToolId::Status => {
                 let report = run_status_command(&self.paths).map_err(cli_tool_error)?;
@@ -2073,6 +2091,63 @@ impl McpServerCore {
                         .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     self.serialize_tool_report(tool.name, &report)
                 }
+            }
+            McpToolId::Daily => {
+                let args: McpDailyArgs = parse_tool_arguments(arguments)?;
+                let structured = match args.operation.as_str() {
+                    "latest" => {
+                        let mut report =
+                            run_daily_latest_command(&self.paths, false).map_err(cli_tool_error)?;
+                        self.include_daily_content_after_access(&mut report, args.include_content)?;
+                        serde_json::to_value(report)
+                            .map_err(|error| McpMethodError::internal(error.to_string()))?
+                    }
+                    "today" | "show" => {
+                        let date = if args.operation == "today" {
+                            current_utc_date_string()
+                        } else {
+                            let raw = args.date.as_deref().ok_or_else(|| {
+                                McpMethodError::invalid_params(
+                                    "daily operation `show` requires `date`",
+                                )
+                            })?;
+                            normalize_date_argument(Some(raw)).map_err(cli_tool_error)?
+                        };
+                        let mut report = vulcan_app::periodic::read_daily_note(
+                            &self.paths,
+                            vulcan_app::periodic::DailyReadTarget::Date(&date),
+                            false,
+                        )
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                        report.operation.clone_from(&args.operation);
+                        self.include_daily_content_after_access(&mut report, args.include_content)?;
+                        serde_json::to_value(report)
+                            .map_err(|error| McpMethodError::internal(error.to_string()))?
+                    }
+                    "list" | "range" => {
+                        let items = run_daily_list_command(
+                            &self.paths,
+                            args.from.as_deref(),
+                            args.to.as_deref(),
+                            args.week,
+                            args.month,
+                        )
+                        .map_err(cli_tool_error)?
+                        .into_iter()
+                        .filter(|item| self.guard.check_read_path(&item.path).is_ok())
+                        .collect::<Vec<_>>();
+                        serde_json::json!({
+                            "operation": args.operation,
+                            "items": items,
+                        })
+                    }
+                    other => {
+                        return Err(McpMethodError::invalid_params(format!(
+                            "unsupported `daily.operation`: {other}"
+                        )));
+                    }
+                };
+                Ok(self.tool_success_response(tool.name, structured))
             }
             McpToolId::DailyShow => {
                 let args: McpDailyShowArgs = parse_tool_arguments(arguments)?;
@@ -2706,6 +2781,26 @@ impl McpServerCore {
             true,
         );
         Ok(summary)
+    }
+
+    fn include_daily_content_after_access(
+        &self,
+        report: &mut vulcan_app::periodic::DailyNoteReadReport,
+        include_content: bool,
+    ) -> Result<(), McpMethodError> {
+        let Some(path) = report.path.as_deref() else {
+            return Ok(());
+        };
+        self.guard
+            .check_read_path(path)
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+        if include_content && report.exists {
+            report.content = Some(
+                fs::read_to_string(self.paths.vault_root().join(path))
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?,
+            );
+        }
+        Ok(())
     }
 
     fn ensure_adaptive_tool_pack_mode(&self) -> Result<(), McpMethodError> {
@@ -4866,6 +4961,139 @@ fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {
 
 fn default_search_limit() -> usize {
     20
+}
+
+const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
+const MCP_QUERY_SOFT_MAX: usize = 200;
+const MCP_QUERY_HARD_MAX: usize = 1_000;
+
+fn default_query_limit() -> usize {
+    MCP_QUERY_DEFAULT_LIMIT
+}
+
+fn validate_mcp_query_page(args: &McpQueryArgs) -> Result<(), McpMethodError> {
+    if args.limit == 0 {
+        return Err(McpMethodError::invalid_params(
+            "`query.limit` must be at least 1",
+        ));
+    }
+    if args.limit > MCP_QUERY_HARD_MAX {
+        return Err(McpMethodError::invalid_params(format!(
+            "`query.limit` cannot exceed {MCP_QUERY_HARD_MAX}"
+        )));
+    }
+    if args.limit > MCP_QUERY_SOFT_MAX && !args.allow_large_results {
+        return Err(McpMethodError::invalid_params(format!(
+            "`query.limit` above {MCP_QUERY_SOFT_MAX} requires `allow_large_results: true`"
+        )));
+    }
+    Ok(())
+}
+
+fn bounded_mcp_query_report(
+    report: QueryReport,
+    args: &McpQueryArgs,
+) -> Result<Value, McpMethodError> {
+    let matcher = args
+        .filename_pattern
+        .as_deref()
+        .map(|pattern| {
+            Glob::new(pattern)
+                .map(|glob| glob.compile_matcher())
+                .map_err(|error| {
+                    McpMethodError::invalid_params(format!(
+                        "invalid `query.filename_pattern` glob: {error}"
+                    ))
+                })
+        })
+        .transpose()?;
+    let path_prefix = args
+        .path_prefix
+        .as_deref()
+        .map(|value| value.trim_matches('/'));
+    let notes = report
+        .notes
+        .into_iter()
+        .filter(|note| {
+            path_prefix.is_none_or(|prefix| note.document_path.starts_with(prefix))
+                && matcher.as_ref().is_none_or(|matcher| {
+                    std::path::Path::new(&note.document_path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| matcher.is_match(name))
+                })
+        })
+        .collect::<Vec<_>>();
+    let total_count = notes.len();
+    let start = report
+        .query
+        .offset
+        .saturating_add(args.offset)
+        .min(total_count);
+    let limit = report.query.limit.unwrap_or(args.limit).min(args.limit);
+    let end = start.saturating_add(limit).min(total_count);
+    let rows = notes[start..end]
+        .iter()
+        .map(|note| {
+            let value = serde_json::to_value(note)
+                .map_err(|error| McpMethodError::internal(error.to_string()))?;
+            if !args.fields.is_empty() {
+                return Ok(mcp_select_fields(&value, &args.fields));
+            }
+            let mut object = value.as_object().cloned().unwrap_or_default();
+            if !args.include_properties {
+                object.remove("properties");
+            }
+            object.remove("links");
+            Ok(Value::Object(object))
+        })
+        .collect::<Result<Vec<_>, McpMethodError>>()?;
+    Ok(serde_json::json!({
+        "query": report.query,
+        "notes": rows,
+        "page": {
+            "limit": limit,
+            "offset": start,
+            "returned": end.saturating_sub(start),
+            "total_count": total_count,
+            "has_more": end < total_count,
+            "next_offset": (end < total_count).then_some(end),
+        }
+    }))
+}
+
+fn mcp_select_fields(value: &Value, fields: &[String]) -> Value {
+    let Some(object) = value.as_object() else {
+        return value.clone();
+    };
+    let mut selected = Map::new();
+    for field in fields {
+        let direct = object.get(field).cloned();
+        let nested = field.split_once('.').and_then(|(namespace, key)| {
+            object
+                .get(namespace)
+                .and_then(Value::as_object)
+                .and_then(|values| values.get(key))
+                .cloned()
+        });
+        let alias = match field.as_str() {
+            "file.path" => object.get("document_path").cloned(),
+            "file.name" => object.get("file_name").cloned(),
+            "file.ext" | "file.extension" => object.get("file_ext").cloned(),
+            "file.mtime" => object.get("file_mtime").cloned(),
+            "file.ctime" => object.get("file_ctime").cloned(),
+            "file.tags" => object.get("tags").cloned(),
+            _ => None,
+        };
+        if let Some(field_value) = direct.or(nested).or(alias) {
+            selected.insert(field.clone(), field_value);
+        }
+    }
+    Value::Object(selected)
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_search_context_size() -> usize {

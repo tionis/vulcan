@@ -45,6 +45,7 @@ pub mod mdbase_conformance;
 pub mod notes;
 pub mod obsidian_companion;
 pub mod outline_markdown;
+pub mod periodic;
 pub mod plugins;
 pub mod properties;
 pub mod publish;

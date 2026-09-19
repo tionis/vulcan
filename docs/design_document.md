@@ -1423,6 +1423,8 @@ The CLI's tool surface is designed for gradual discovery rather than loading all
 
 **Core tools (always in the runtime's initial prompt, ~10):** The initial prompt for an external runtime such as `pi` should include full schemas for the most frequently used tools: `note_get`, `note_create`, `note_set`, `note_append`, `note_patch`, `search`, `query`, `update_property`, `unset_property`, `inbox`. These cover the vast majority of vault interactions.
 
+For generic MCP clients, the stable read/navigation surface also includes a compact high-level `daily` tool. It owns `latest`, `today`, `show`, `list`, and `range` operations; `latest` returns the newest existing note from the configured daily-note convention and can include content in one response. Legacy `daily_show` and `daily_list` remain available in the explicit daily pack for compatibility. Common navigation must not depend on a host honoring dynamic tool-list changes.
+
 **Discovery meta-tools (always available):**
 - **`describe`** — returns a compact listing of all commands with one-line descriptions. Cheap to call, gives the LLM a map of what exists.
 - **`help <command>`** — returns the full schema for a specific command: parameters, types, defaults, examples. The LLM reads this right before calling an unfamiliar tool.
@@ -1495,6 +1497,8 @@ That means Vulcan should treat MCP as a **server-native discovery surface**, not
 - Command help, `AGENTS.md`, assistant config summaries, skill indexes/content, and similar reference material should be exposed over MCP `resources`, because generic MCP clients cannot rely on injected skills or out-of-band files.
 - Reusable workflow starters should be stored as prompt files in the vault's configured prompts folder and exposed through MCP `prompts`, not hidden in a server-only prompt catalog. Prompt and resource list changes should surface through the corresponding MCP notifications.
 - Progressive disclosure for MCP should come from protocol-visible discovery primitives (`resources`, `prompts`, targeted help, and permission-filtered completion), not from assuming the host preloads a curated system prompt.
+- MCP initialization carries a short routing hierarchy: domain operation, exact note read, structured query, full-text search, then semantic/general fallback. Query tools apply bounded defaults and compact projections so an omitted limit cannot dump the vault.
+- Adaptive pack mutation is only a server capability. A usable client lifecycle still requires processing `notifications/tools/list_changed`, refreshing `tools/list`, and replacing callable schemas. Hosts that cache imported tool definitions must use an adequate static startup surface instead.
 - The current Phase 9 implementation may expose the MCP registry over a minimal single-vault Streamable HTTP listener, but the future axum daemon/router should reuse the same registry, auth constraints, and session semantics rather than redefining the MCP contract.
 
 This keeps the subprocess harness story and the MCP story aligned in spirit while acknowledging that they have different discovery constraints.

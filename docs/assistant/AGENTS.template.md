@@ -17,6 +17,14 @@ Useful command groups:
 - Web and git: `web search`, `web fetch`, `git status`, `git diff`, `git log`, `git commit`
 - Periodic notes: `daily ...`, `periodic weekly`, `periodic monthly`, `periodic ...`
 
+Retrieval routing:
+
+- Daily/journal request: `daily latest`, `daily show`, or MCP `daily`; “latest” means newest existing, not today.
+- Known note/path/title: `note get` / MCP `note_get`.
+- Metadata, property, or path selection: `query`.
+- Subject/content discovery: `search`.
+- Prefer domain operations, then exact reads, then structured query, then full-text or semantic search.
+
 Documentation workflow:
 
 - Read `.agents/skills/*/SKILL.md` for task-specific usage patterns.

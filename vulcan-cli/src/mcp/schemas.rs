@@ -271,6 +271,22 @@ pub(super) fn query_input_schema() -> Value {
                 "engine",
                 schema_string_enum("Query parser.", &["auto", "dsl", "dql"]),
             ),
+            (
+                "path_prefix",
+                schema_string("Restrict notes to this vault-relative path prefix."),
+            ),
+            (
+                "filename_pattern",
+                schema_string("Glob matched against the filename including extension, for example `????-??-??.md`."),
+            ),
+            ("limit", schema_integer("Maximum rows to return; defaults to 50 and is capped at 200 unless allow_large_results is true.")),
+            ("offset", schema_integer("Zero-based result offset.")),
+            (
+                "fields",
+                schema_array(schema_string("Projected result field."), "Fields to include in each note row."),
+            ),
+            ("include_properties", schema_boolean("Include the complete properties object; false by default.")),
+            ("allow_large_results", schema_boolean("Explicitly opt in to limits above 200, up to the hard maximum of 1000.")),
         ],
         &[],
     )
@@ -284,6 +300,50 @@ pub(super) fn daily_show_input_schema() -> Value {
         )],
         &[],
     )
+}
+
+pub(super) fn daily_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "operation",
+                schema_string_enum(
+                    "Daily-note read operation. `latest` means the newest existing note; `today` never substitutes another date.",
+                    &["latest", "today", "show", "list", "range"],
+                ),
+            ),
+            (
+                "date",
+                schema_string("Date required by `show` (YYYY-MM-DD or a supported date expression)."),
+            ),
+            (
+                "include_content",
+                schema_boolean("Include Markdown content for latest/today/show; defaults to true."),
+            ),
+            ("from", schema_string("Start date for list/range.")),
+            ("to", schema_string("End date for list/range.")),
+            ("week", schema_boolean("Use the current configured week window.")),
+            ("month", schema_boolean("Use the current configured month window.")),
+        ],
+        &["operation"],
+    )
+}
+
+pub(super) fn daily_output_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "operation": { "type": "string" },
+            "date": { "type": ["string", "null"] },
+            "path": { "type": ["string", "null"] },
+            "exists": { "type": "boolean" },
+            "content": { "type": "string" },
+            "reason": { "type": "string" },
+            "items": { "type": "array" }
+        },
+        "required": ["operation"],
+        "additionalProperties": true
+    })
 }
 
 pub(super) fn daily_list_input_schema() -> Value {

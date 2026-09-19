@@ -373,9 +373,13 @@ struct McpSession {
 
 impl McpSession {
     fn start(vault_root: &Path, extra_args: &[&str]) -> Self {
+        Self::start_at(vault_root, extra_args, FIXED_NOW)
+    }
+
+    fn start_at(vault_root: &Path, extra_args: &[&str], fixed_now: &str) -> Self {
         let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
         command
-            .env("VULCAN_FIXED_NOW", FIXED_NOW)
+            .env("VULCAN_FIXED_NOW", fixed_now)
             .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
             .args(extra_args)
             .stdin(Stdio::piped())
@@ -28605,7 +28609,14 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
 
-    for expected in ["note_get", "note_outline", "search", "query", "status"] {
+    for expected in [
+        "note_get",
+        "note_outline",
+        "search",
+        "query",
+        "daily",
+        "status",
+    ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
             "default pack selection should expose `{expected}`"
@@ -29118,6 +29129,210 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
 }
 
 #[test]
+fn daily_latest_cli_returns_newest_existing_note_with_content() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+    for date in ["2026-09-01", "2026-09-03", "2026-09-08"] {
+        fs::write(
+            vault_root.join(format!("Journal/Daily/{date}.md")),
+            format!("# {date}\n\nEntry for {date}.\n"),
+        )
+        .expect("daily note");
+    }
+
+    let output = cargo_vulcan_at_time("2026-09-15T12:00:00Z")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "daily",
+            "latest",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&output);
+    assert_eq!(report["date"], "2026-09-08");
+    assert_eq!(report["path"], "Journal/Daily/2026-09-08.md");
+    assert_eq!(report["exists"], true);
+    assert!(report["content"]
+        .as_str()
+        .is_some_and(|content| content.contains("Entry for 2026-09-08")));
+}
+
+#[test]
+fn mcp_daily_is_stable_and_distinguishes_latest_today_and_absence() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+    for date in ["2026-09-01", "2026-09-03", "2026-09-08", "2026-09-15"] {
+        fs::write(
+            vault_root.join(format!("Journal/Daily/{date}.md")),
+            format!("# {date}\n\nEntry for {date}.\n"),
+        )
+        .expect("daily note");
+    }
+
+    let mut session = McpSession::start_at(&vault_root, &[], "2026-09-15T12:00:00Z");
+    let initialize = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    assert!(
+        initialize.last().expect("initialize")["result"]["instructions"]
+            .as_str()
+            .is_some_and(|instructions| instructions.contains("latest"))
+    );
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/list"
+    }));
+    assert!(tools.last().expect("tools")["result"]["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "daily")));
+
+    let latest = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": { "name": "daily", "arguments": { "operation": "latest", "include_content": true } }
+    }));
+    let latest = &latest.last().expect("latest")["result"]["structuredContent"];
+    assert_eq!(latest["date"], "2026-09-15");
+    assert!(latest["content"]
+        .as_str()
+        .is_some_and(|content| content.contains("Entry for 2026-09-15")));
+
+    let today = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": { "name": "daily", "arguments": { "operation": "today" } }
+    }));
+    let today = &today.last().expect("today")["result"]["structuredContent"];
+    assert_eq!(today["date"], "2026-09-15");
+    assert_eq!(today["exists"], true);
+
+    fs::remove_file(vault_root.join("Journal/Daily/2026-09-15.md")).expect("remove today");
+    let missing = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": { "name": "daily", "arguments": { "operation": "today" } }
+    }));
+    let missing = &missing.last().expect("missing today")["result"]["structuredContent"];
+    assert_eq!(missing["date"], "2026-09-15");
+    assert_eq!(missing["exists"], false);
+    assert_eq!(missing["reason"], "daily_note_not_found");
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_daily_latest_returns_typed_no_notes_response() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let response = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "daily", "arguments": { "operation": "latest", "include_content": true } }
+    }));
+    let report = &response.last().expect("latest")["result"]["structuredContent"];
+    assert_eq!(report["exists"], false);
+    assert_eq!(report["reason"], "no_daily_notes");
+    assert!(report["date"].is_null());
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_query_defaults_to_bounded_compact_results_and_supports_structural_filters() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+    for index in 0..75 {
+        fs::write(
+            vault_root.join(format!("Note-{index:03}.md")),
+            format!("---\nlarge: value-{index}\n---\n# Note {index}\n"),
+        )
+        .expect("note");
+    }
+    for date in ["2026-09-01", "2026-09-03", "2026-09-08"] {
+        fs::write(
+            vault_root.join(format!("Journal/Daily/{date}.md")),
+            format!("# {date}\n"),
+        )
+        .expect("daily note");
+    }
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let bounded = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "query", "arguments": {} }
+    }));
+    let bounded = &bounded.last().expect("query")["result"]["structuredContent"];
+    assert_eq!(bounded["notes"].as_array().map(Vec::len), Some(50));
+    assert_eq!(bounded["page"]["has_more"], true);
+    assert!(bounded["notes"][0].get("properties").is_none());
+
+    let newest = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {
+            "name": "query",
+            "arguments": {
+                "path_prefix": "Journal/Daily",
+                "filename_pattern": "????-??-??.md",
+                "sort": "file.name",
+                "desc": true,
+                "limit": 1
+            }
+        }
+    }));
+    let newest = &newest.last().expect("newest")["result"]["structuredContent"];
+    assert_eq!(
+        newest["notes"][0]["document_path"],
+        "Journal/Daily/2026-09-08.md"
+    );
+    assert_eq!(newest["page"]["returned"], 1);
+
+    let explicit_property = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {
+            "name": "query",
+            "arguments": {
+                "filters": [
+                    "properties.large = value-74",
+                    "file.extension = md"
+                ],
+                "fields": ["file.path", "properties.large"]
+            }
+        }
+    }));
+    let explicit_property =
+        &explicit_property.last().expect("explicit property")["result"]["structuredContent"];
+    assert_eq!(explicit_property["notes"][0]["file.path"], "Note-074.md");
+    assert_eq!(
+        explicit_property["notes"][0]["properties.large"],
+        "value-74"
+    );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
 fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -29354,6 +29569,26 @@ fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
             "enabled packs should expose `{expected}`"
         );
     }
+
+    let created = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "note_create",
+            "arguments": {
+                "path": "Adaptive refresh.md",
+                "body": "Callable after tools/list refresh.\n",
+                "no_commit": true
+            }
+        }
+    }));
+    assert_eq!(
+        created.last().expect("note_create response")["result"]["isError"],
+        false,
+        "a newly discovered adaptive tool should be callable in the same MCP session"
+    );
+    assert!(vault_root.join("Adaptive refresh.md").is_file());
 
     assert!(session.finish().is_empty());
 }

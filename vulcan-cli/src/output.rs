@@ -113,7 +113,8 @@ fn file_alias_field_value(object: &Map<String, Value>, field: &str) -> Option<Va
     let alias = match field {
         "file.path" => "document_path",
         "file.name" => "file_name",
-        "file.ext" => "file_ext",
+        "file.ext" | "file.extension" => "file_ext",
+        "file.ctime" => "file_ctime",
         "file.mtime" => "file_mtime",
         "file.tags" => "tags",
         "file.starred" => "starred",

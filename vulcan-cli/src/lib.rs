@@ -3720,7 +3720,10 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Site { .. } => true,
         Command::Daily { command } => matches!(
             command,
-            DailyCommand::Show { .. } | DailyCommand::List { .. } | DailyCommand::ExportIcs { .. }
+            DailyCommand::Latest
+                | DailyCommand::Show { .. }
+                | DailyCommand::List { .. }
+                | DailyCommand::ExportIcs { .. }
         ),
         Command::Periodic { command, .. } => {
             matches!(command, Some(PeriodicSubcommand::List { .. }))

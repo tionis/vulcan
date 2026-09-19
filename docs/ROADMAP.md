@@ -7110,6 +7110,15 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Add regression tests showing that `describe --format mcp` and live MCP exposure stay in sync for the same selected pack set
 - [x] Update help snapshots and CLI/MCP fixtures to cover the new pack model and adaptive-mode documentation
 
+### 9.23.8 Stable retrieval surface and bounded navigation
+
+- [x] Add a stable high-level MCP `daily` tool with `latest`, `today`, `show`, `list`, and `range`; keep legacy daily tools compatible
+- [x] Add shared configured-folder daily lookup and `vulcan daily latest`, including one-call content retrieval and typed absence
+- [x] Put common note, search, query, and daily reads on the default MCP surface and add concise initialization routing instructions
+- [x] Bound MCP note queries by default, add pagination metadata and compact projection, and support explicit path-prefix and filename-glob filters
+- [x] Prove the complete adaptive stdio lifecycle through notification, refreshed `tools/list`, and a call to the newly exposed tool; document hosts that cache imported tool lists
+- [x] Keep daily-note identity structural; do not add redundant `type`/`date` frontmatter solely for lookup because configured folder/format semantics remain authoritative
+
 ---
 
 ## Phase 9.24: Vault-native skill command tools

@@ -8202,10 +8202,16 @@
       },
       {
         "about": "Open, inspect, and append to daily notes",
-        "after_help": "Notes:\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily today\n  vulcan daily today --no-edit\n  vulcan daily show 2026-04-03\n  vulcan daily list --week\n  vulcan daily export-ics --month --path Journal.ics\n  vulcan daily append \"Called Alice\" --heading \"## Log\"",
+        "after_help": "Notes:\n  `latest` reads the newest existing configured daily note; it does not mean today.\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily latest\n  vulcan daily today\n  vulcan daily today --no-edit\n  vulcan daily show 2026-04-03\n  vulcan daily list --week\n  vulcan daily export-ics --month --path Journal.ics\n  vulcan daily append \"Called Alice\" --heading \"## Log\"",
         "name": "daily",
         "options": [],
         "subcommands": [
+          {
+            "about": "Display the newest existing daily note",
+            "name": "latest",
+            "options": [],
+            "subcommands": []
+          },
           {
             "about": "Open or create today's daily note",
             "name": "today",

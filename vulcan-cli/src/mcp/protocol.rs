@@ -227,6 +227,20 @@ pub(super) struct McpQueryArgs {
     pub(super) desc: bool,
     #[serde(default)]
     pub(super) engine: Option<String>,
+    #[serde(default)]
+    pub(super) path_prefix: Option<String>,
+    #[serde(default)]
+    pub(super) filename_pattern: Option<String>,
+    #[serde(default = "crate::mcp::default_query_limit")]
+    pub(super) limit: usize,
+    #[serde(default)]
+    pub(super) offset: usize,
+    #[serde(default)]
+    pub(super) fields: Vec<String>,
+    #[serde(default)]
+    pub(super) include_properties: bool,
+    #[serde(default)]
+    pub(super) allow_large_results: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,6 +253,24 @@ pub(super) struct McpDailyShowArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct McpDailyListArgs {
+    #[serde(default)]
+    pub(super) from: Option<String>,
+    #[serde(default)]
+    pub(super) to: Option<String>,
+    #[serde(default)]
+    pub(super) week: bool,
+    #[serde(default)]
+    pub(super) month: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct McpDailyArgs {
+    pub(super) operation: String,
+    #[serde(default)]
+    pub(super) date: Option<String>,
+    #[serde(default = "crate::mcp::default_true")]
+    pub(super) include_content: bool,
     #[serde(default)]
     pub(super) from: Option<String>,
     #[serde(default)]
