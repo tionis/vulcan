@@ -8,6 +8,7 @@ use serde::{Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use vulcan_core::{
     load_vault_config, parse_document, LinkResolutionProblem, ResolverDocument, ResolverIndex,
     ResolverLink, ScanSummary, VaultConfig, VaultPaths,
@@ -67,7 +68,24 @@ pub struct VaultSyncReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(serialize_with = "serialize_sync_report_conflict_record")]
     pub conflict_record: Option<SyncConflictRecord>,
+    pub operational_stats: SyncOperationalStats,
     pub state: VaultSyncStateReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncOperationalStats {
+    pub version: u32,
+    pub automatic_resolution_paths: usize,
+    pub conflict_paths: usize,
+    pub conflict_groups: usize,
+    pub formatting_candidate_paths: usize,
+    pub preserved_input_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_subprocesses: Option<u64>,
+    pub elapsed_ms: u64,
+    pub backend_cycle_ms: u64,
+    pub conflict_state_ms: u64,
+    pub cache_refresh_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -1031,12 +1049,10 @@ pub fn sync_git_vault_with_observer_and_engine(
     cancellation: &SyncCancellationToken,
     delegate: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
+    let started = Instant::now();
+    let subprocesses_before = engine.subprocess_count();
     check_sync_start(cancellation)?;
-    // Resolve the repository root before keying any durable state: invoking
-    // from a vault subdirectory must not fragment the journal identity or
-    // miss the root-anchored config and cache below the root. A failed
-    // discovery keeps the invocation path so the retained error journal
-    // still reports the underlying engine failure.
+    // Key durable state on the discovered root, while retaining failed invocation paths.
     let resolved_paths = resolved_repository_paths(engine, paths);
     let paths = &resolved_paths;
     let options = configured_git_sync_options(paths, options)?;
@@ -1066,6 +1082,7 @@ pub fn sync_git_vault_with_observer_and_engine(
         delegate,
         tree_validator: VaultTreeValidator::new(validation_config),
     };
+    let backend_started = Instant::now();
     let sync = match vulcan_sync::sync_git_once_with_control(
         engine,
         paths.vault_root(),
@@ -1087,8 +1104,11 @@ pub fn sync_git_vault_with_observer_and_engine(
             return Err(AppError::sync(classified));
         }
     };
+    let backend_cycle = backend_started.elapsed();
+    let conflict_state_started = Instant::now();
     let conflict_record =
         persist_and_update_conflicts(engine, &sync, &mut journal, state_store, !options.dry_run)?;
+    let conflict_state = conflict_state_started.elapsed();
     journal.git_dir = Some(sync.repository.git_dir.clone());
     journal.local_snapshot = sync.local_snapshot.as_ref().map(ToString::to_string);
     journal.accepted = sync.accepted.as_ref().map(ToString::to_string);
@@ -1100,24 +1120,28 @@ pub fn sync_git_vault_with_observer_and_engine(
     if !options.dry_run {
         state_store.save(&journal)?;
     }
-    let (cache_refresh, cache_refresh_error) = refresh_cache_after_sync(paths, &sync, &options);
-    let repository_key = journal.repository_key.clone();
-    let retained = if options.dry_run {
-        previous
-    } else if matches!(
+    let (cache_refresh, cache_refresh_error, cache_refresh_duration) =
+        refresh_cache_after_sync_with_timing(paths, &sync, &options);
+    let (repository_key, retained) = retain_sync_journal(
+        state_store,
+        options.dry_run,
         sync.outcome,
-        GitSyncOutcome::Paused | GitSyncOutcome::Conflicted
-    ) {
-        Some(journal)
-    } else {
-        state_store.clear(&journal.repository_key)?;
-        None
-    };
+        journal,
+        previous,
+    )?;
+    let timings = SyncOperationTimings::new(
+        subprocesses_before,
+        started,
+        [backend_cycle, conflict_state, cache_refresh_duration],
+    );
+    let operational_stats =
+        sync_operational_stats(engine, &timings, &sync, conflict_record.as_ref());
     Ok(VaultSyncReport {
         sync,
         cache_refresh,
         cache_refresh_error,
         conflict_record,
+        operational_stats,
         state: VaultSyncStateReport {
             repository_key,
             journal_path,
@@ -1125,6 +1149,113 @@ pub fn sync_git_vault_with_observer_and_engine(
             retained,
         },
     })
+}
+
+fn refresh_cache_after_sync_with_timing(
+    paths: &VaultPaths,
+    sync: &GitSyncReport,
+    options: &GitSyncOptions,
+) -> (Option<ScanSummary>, Option<String>, Duration) {
+    let required = !options.dry_run
+        && sync.actions.contains(&GitSyncAction::WorktreeApplied)
+        && paths.cache_db().is_file();
+    let started = Instant::now();
+    let (report, error) = refresh_cache_after_sync(paths, sync, options);
+    let duration = if required {
+        started.elapsed()
+    } else {
+        Duration::ZERO
+    };
+    (report, error, duration)
+}
+
+fn retain_sync_journal(
+    state_store: &SyncStateStore,
+    dry_run: bool,
+    outcome: GitSyncOutcome,
+    journal: SyncJournal,
+    previous: Option<SyncJournal>,
+) -> Result<(String, Option<SyncJournal>), AppError> {
+    let repository_key = journal.repository_key.clone();
+    let retained = if dry_run {
+        previous
+    } else if matches!(outcome, GitSyncOutcome::Paused | GitSyncOutcome::Conflicted) {
+        Some(journal)
+    } else {
+        state_store.clear(&repository_key)?;
+        None
+    };
+    Ok((repository_key, retained))
+}
+
+struct SyncOperationTimings {
+    subprocesses_before: Option<u64>,
+    elapsed: Duration,
+    backend_cycle: Duration,
+    conflict_state: Duration,
+    cache_refresh: Duration,
+}
+
+impl SyncOperationTimings {
+    fn new(subprocesses_before: Option<u64>, started: Instant, stages: [Duration; 3]) -> Self {
+        Self {
+            subprocesses_before,
+            elapsed: started.elapsed(),
+            backend_cycle: stages[0],
+            conflict_state: stages[1],
+            cache_refresh: stages[2],
+        }
+    }
+}
+
+fn sync_operational_stats(
+    engine: &dyn GitEngine,
+    timings: &SyncOperationTimings,
+    sync: &GitSyncReport,
+    conflict_record: Option<&SyncConflictRecord>,
+) -> SyncOperationalStats {
+    let automatic_resolution_paths = sync.automatic_resolutions.len();
+    let conflict_paths = conflict_record.map_or(0, |record| record.paths.len());
+    let conflict_groups = conflict_record.map_or(0, |record| conflict_groups(record).len());
+    let formatting_candidate_paths = conflict_record.map_or(0, |record| {
+        record
+            .paths
+            .iter()
+            .filter(|path| {
+                path.classification
+                    .as_ref()
+                    .is_some_and(|classification| classification.formatting_candidate)
+            })
+            .count()
+    });
+    let preserved_input_bytes = conflict_record.map_or(0, |record| {
+        record.paths.iter().fold(0_u64, |total, path| {
+            [&path.base, &path.local, &path.remote]
+                .into_iter()
+                .filter_map(|side| side.bytes)
+                .fold(total, u64::saturating_add)
+        })
+    });
+    SyncOperationalStats {
+        version: 1,
+        automatic_resolution_paths,
+        conflict_paths,
+        conflict_groups,
+        formatting_candidate_paths,
+        preserved_input_bytes,
+        git_subprocesses: timings
+            .subprocesses_before
+            .zip(engine.subprocess_count())
+            .map(|(before, after)| after.saturating_sub(before)),
+        elapsed_ms: duration_millis(timings.elapsed),
+        backend_cycle_ms: duration_millis(timings.backend_cycle),
+        conflict_state_ms: duration_millis(timings.conflict_state),
+        cache_refresh_ms: duration_millis(timings.cache_refresh),
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn refresh_cache_after_sync(
@@ -2143,6 +2274,24 @@ mod tests {
         assert_eq!(read(&record.paths[0].base.artifact), b"base\n");
         assert_eq!(read(&record.paths[0].local.artifact), b"reader\n");
         assert_eq!(read(&record.paths[0].remote.artifact), b"writer\n");
+    }
+
+    fn assert_conflict_operational_stats(report: &VaultSyncReport) {
+        assert_eq!(report.operational_stats.version, 1);
+        assert_eq!(report.operational_stats.automatic_resolution_paths, 0);
+        assert_eq!(report.operational_stats.conflict_paths, 1);
+        assert_eq!(report.operational_stats.conflict_groups, 1);
+        assert_eq!(report.operational_stats.formatting_candidate_paths, 0);
+        assert_eq!(report.operational_stats.preserved_input_bytes, 19);
+        assert!(report
+            .operational_stats
+            .git_subprocesses
+            .is_some_and(|count| count > 0));
+        assert_eq!(report.operational_stats.cache_refresh_ms, 0);
+        let serialized = serde_json::to_string(&report.operational_stats).expect("serialize stats");
+        for private_value in ["Home.md", "writer", "reader"] {
+            assert!(!serialized.contains(private_value));
+        }
     }
 
     #[test]
@@ -3569,6 +3718,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &store,
         )
         .expect("conflict report");
+        assert_conflict_operational_stats(&report);
         let record = report.conflict_record.expect("durable conflict record");
         assert_eq!(record.paths.len(), 1);
         assert_eq!(record.paths[0].path, "Home.md");

@@ -249,7 +249,10 @@ fn execute_claimed_job(
         Err(error) => return complete_execution_error(supervisor, &id, error),
     };
     options.remote_observation = remote_observation_for_triggers(&claimed.job.triggers);
-    let engine = engine.clone().with_command_timeout(options.command_timeout);
+    let engine = engine
+        .clone()
+        .with_command_timeout(options.command_timeout)
+        .with_fresh_metrics();
     let mut observer = SupervisorProgressObserver {
         supervisor,
         job_id: &id,

@@ -146,6 +146,10 @@ they commit.
   device-local artifacts.
   A fully applied resolution prunes its artifact copies automatically (newest 32 retained); the
   immutable refs remain the durable byte archive.
+- Use JSON `operational_stats`, or the concise `--verbose` human line, to assess one cycle's scale:
+  automatic and conflicted paths, groups, formatting candidates, preserved input bytes, Git
+  subprocesses, and coarse timings. These are content-free observations for that cycle, not durable
+  progress for every older conflict; use `sync conflicts` for accumulated actionable state.
 - For a large record, page detail with `--path-offset <n> --path-limit <1-256>`. Read
   `path_page.total` and `path_page.next_offset` rather than assuming the returned path array is
   complete. Summary and detail progress counts identify pending, prepared, published, applied, and

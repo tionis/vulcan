@@ -8,6 +8,7 @@ use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 #[cfg(all(test, unix))]
@@ -61,6 +62,12 @@ const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
 /// A typed boundary over the repository implementation used by Git-backed sync.
 pub trait GitEngine: Send + Sync {
     fn kind(&self) -> GitEngineKind;
+
+    /// Returns the number of successfully spawned Git subprocesses on the
+    /// current thread when the engine can observe that boundary.
+    fn subprocess_count(&self) -> Option<u64> {
+        None
+    }
 
     fn installation(&self) -> Result<GitInstallation, GitEngineError>;
 
@@ -1458,6 +1465,7 @@ pub struct GitCliEngine {
     command_timeout: Duration,
     installation: Arc<OnceLock<GitInstallation>>,
     pending_requirements: Arc<Mutex<BTreeMap<PathBuf, GitRequirementsCache>>>,
+    subprocess_count: Arc<AtomicU64>,
 }
 
 impl PartialEq for GitCliEngine {
@@ -1482,6 +1490,7 @@ impl GitCliEngine {
             command_timeout: DEFAULT_GIT_COMMAND_TIMEOUT,
             installation: Arc::new(OnceLock::new()),
             pending_requirements: Arc::new(Mutex::new(BTreeMap::new())),
+            subprocess_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1499,6 +1508,22 @@ impl GitCliEngine {
     pub fn with_command_timeout(mut self, timeout: Duration) -> Self {
         self.command_timeout = timeout.max(Duration::from_millis(1));
         self
+    }
+
+    /// Starts an independently counted transaction while retaining immutable
+    /// installation and repository-requirement caches.
+    #[must_use]
+    pub fn with_fresh_metrics(mut self) -> Self {
+        self.subprocess_count = Arc::new(AtomicU64::new(0));
+        self
+    }
+
+    fn record_subprocess(&self) {
+        self.subprocess_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn observed_subprocess_count(&self) -> u64 {
+        self.subprocess_count.load(Ordering::Relaxed)
     }
 
     /// Recreates a registered detached Git directory without checking remote
@@ -1686,6 +1711,7 @@ impl GitCliEngine {
                 GitEngineError::Io(source)
             }
         })?;
+        self.record_subprocess();
         let mut stdout = child
             .stdout
             .take()
@@ -1774,6 +1800,7 @@ impl GitCliEngine {
                 GitEngineError::Io(source)
             }
         })?;
+        self.record_subprocess();
         let stdout = child
             .stdout
             .take()
@@ -2298,6 +2325,10 @@ pub(crate) const GIT_OPERATION_MARKERS: &[(&str, &str)] = &[
 impl GitEngine for GitCliEngine {
     fn kind(&self) -> GitEngineKind {
         GitEngineKind::Cli
+    }
+
+    fn subprocess_count(&self) -> Option<u64> {
+        Some(self.observed_subprocess_count())
     }
 
     fn installation(&self) -> Result<GitInstallation, GitEngineError> {
@@ -7609,6 +7640,7 @@ mod tests {
             .expect("repository");
         let first = engine.write_blob(&repository, b"123456").expect("blob");
         let second = engine.write_blob(&repository, b"abcdef").expect("blob");
+        let before_batch = engine.subprocess_count().expect("CLI metrics");
 
         let error = engine
             .read_blobs_bounded(&repository, &[first, second], 10, 10)
@@ -7616,6 +7648,14 @@ mod tests {
         assert!(error
             .to_string()
             .contains("aggregate blob contents exceed the 10 byte read limit"));
+        assert_eq!(
+            engine.subprocess_count().expect("CLI metrics") - before_batch,
+            1,
+            "the streaming batch spawn is counted once"
+        );
+        let fresh = engine.clone().with_fresh_metrics();
+        assert_eq!(fresh.subprocess_count(), Some(0));
+        assert!(engine.subprocess_count().is_some_and(|count| count > 0));
     }
 
     #[test]

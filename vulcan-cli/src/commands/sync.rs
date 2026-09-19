@@ -3133,6 +3133,7 @@ fn print_sync_report(
                 if let Some(accepted) = &report.sync.accepted {
                     println!("Accepted: {accepted}");
                 }
+                print_sync_operational_stats(&report.operational_stats);
             }
             if report
                 .sync
@@ -3198,6 +3199,24 @@ fn print_sync_report(
             Ok(())
         }
     }
+}
+
+fn print_sync_operational_stats(stats: &vulcan_app::sync::SyncOperationalStats) {
+    println!(
+        "Operational stats: {} automatic, {} conflicted, {} groups, {} formatting candidates, {} preserved input bytes, {} Git subprocesses; {} ms total (backend {}, conflict state {}, cache {}).",
+        stats.automatic_resolution_paths,
+        stats.conflict_paths,
+        stats.conflict_groups,
+        stats.formatting_candidate_paths,
+        stats.preserved_input_bytes,
+        stats
+            .git_subprocesses
+            .map_or_else(|| "unavailable".to_string(), |count| count.to_string()),
+        stats.elapsed_ms,
+        stats.backend_cycle_ms,
+        stats.conflict_state_ms,
+        stats.cache_refresh_ms,
+    );
 }
 
 fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
