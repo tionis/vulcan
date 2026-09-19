@@ -363,6 +363,10 @@ pub struct GitConflictClassification {
     pub configured_resolution: MergeResolution,
     pub effective_resolution: MergeResolution,
     pub diagnostic_code: String,
+    /// Conservative review hint only. This never changes the required
+    /// resolution action or authorizes an automatic winner.
+    #[serde(default)]
+    pub formatting_candidate: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3007,6 +3011,12 @@ fn classify_conflicts(
                 remote_object,
                 file_kind,
             );
+            let formatting_candidate = formatting_candidate(
+                file_kind,
+                object_data(base_object),
+                object_data(local_object),
+                object_data(remote_object),
+            );
             Ok(GitConflictClassification {
                 path: path.clone(),
                 class,
@@ -3015,9 +3025,48 @@ fn classify_conflicts(
                 configured_resolution: decision.resolution,
                 effective_resolution: MergeResolution::RequireReview,
                 diagnostic_code: conflict_diagnostic_code(class).to_string(),
+                formatting_candidate,
             })
         })
         .collect()
+}
+
+fn formatting_candidate(
+    file_kind: MergeFileKind,
+    base: Option<&[u8]>,
+    local: Option<&[u8]>,
+    remote: Option<&[u8]>,
+) -> bool {
+    if !matches!(file_kind, MergeFileKind::Markdown | MergeFileKind::Text) {
+        return false;
+    }
+    let Some(local) = local.and_then(|value| std::str::from_utf8(value).ok()) else {
+        return false;
+    };
+    let Some(remote) = remote.and_then(|value| std::str::from_utf8(value).ok()) else {
+        return false;
+    };
+    let base = base.and_then(|value| std::str::from_utf8(value).ok());
+    formatting_equivalent(local, remote)
+        || base.is_some_and(|base| {
+            formatting_equivalent(base, local) || formatting_equivalent(base, remote)
+        })
+}
+
+fn formatting_equivalent(left: &str, right: &str) -> bool {
+    left != right
+        && !has_format_sensitive_markdown(left)
+        && !has_format_sensitive_markdown(right)
+        && left.split_whitespace().eq(right.split_whitespace())
+}
+
+fn has_format_sensitive_markdown(value: &str) -> bool {
+    value.contains("```")
+        || value.contains("~~~")
+        || value.contains("  \n")
+        || value.lines().any(|line| {
+            line.starts_with('\t') || line.starts_with("    ") || line.trim_start().starts_with('<')
+        })
 }
 
 fn conflict_class(
@@ -5997,5 +6046,27 @@ mod tests {
             report.conflict.expect("conflict").policy_hash,
             policy.policy_hash().expect("policy hash")
         );
+    }
+
+    #[test]
+    fn formatter_candidates_are_hints_and_exclude_sensitive_markdown() {
+        assert!(formatting_candidate(
+            MergeFileKind::Markdown,
+            Some(b"A paragraph with several words.\n"),
+            Some(b"A paragraph\nwith several words.\n"),
+            Some(b"A paragraph with several words.\n"),
+        ));
+        assert!(!formatting_candidate(
+            MergeFileKind::Markdown,
+            Some(b"hard break  \nnext\n"),
+            Some(b"hard break\nnext\n"),
+            Some(b"hard break  \nnext changed\n"),
+        ));
+        assert!(!formatting_candidate(
+            MergeFileKind::Markdown,
+            Some(b"```text\na b\n```\n"),
+            Some(b"```text\na   b\n```\n"),
+            Some(b"```text\na b changed\n```\n"),
+        ));
     }
 }

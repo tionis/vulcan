@@ -148,6 +148,8 @@ they commit.
   complete. Summary and detail progress counts identify pending, prepared, published, applied, and
   rebase-required groups without reading file contents. In paged JSON, `progress.groups` is scoped
   to the returned paths when `groups_complete` is false; the counters remain global.
+- Treat `classification.formatting_candidate` only as a review-order hint. It never authorizes a
+  side or automatic merge, and sensitive Markdown shapes deliberately remain unclassified.
 - Never choose a winner implicitly. Preview one explicit side with
   `vulcan sync resolve <id> --side base|local|remote --dry-run`.
   For a large path conflict, inspect each path's `group_id`, then repeat

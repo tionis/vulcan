@@ -6958,6 +6958,10 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
         detail["record"]["paths"][0]["classification"]["diagnostic_code"],
         "sync.conflict.overlapping-text"
     );
+    assert_eq!(
+        detail["record"]["paths"][0]["classification"]["formatting_candidate"],
+        false
+    );
     assert_eq!(detail["resolution"], "unresolved");
     let paged = parse_stdout_json(&command(&[&id, "--path-limit", "1"]));
     assert_eq!(paged["path_page"]["offset"], 0);
