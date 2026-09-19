@@ -2995,6 +2995,7 @@ struct PreparedOutput {
     tool_calls: Vec<ResolutionProposalToolCall>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_agent_request(
     paths: &VaultPaths,
     engine: &dyn GitEngine,
@@ -3006,10 +3007,25 @@ fn build_agent_request(
         .base_revision
         .as_deref()
         .ok_or_else(|| AppError::operation("agent resolution requires one merge base"))?;
+    let conflict_paths = conflict_path_names(record);
+    let base_oid = GitOid::parse(base).map_err(AppError::operation)?;
+    let local_oid = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let remote_oid = GitOid::parse(&record.remote_revision).map_err(AppError::operation)?;
+    let base_objects = engine
+        .path_objects(repository, &base_oid, &conflict_paths)
+        .map_err(AppError::operation)?;
+    let local_objects = engine
+        .path_objects(repository, &local_oid, &conflict_paths)
+        .map_err(AppError::operation)?;
+    let remote_objects = engine
+        .path_objects(repository, &remote_oid, &conflict_paths)
+        .map_err(AppError::operation)?;
     let mut total = 0_usize;
     let mut files = Vec::with_capacity(record.paths.len());
     for path in &record.paths {
-        let mut side = |revision: Option<&str>| -> Result<ResolutionAgentSide, AppError> {
+        let mut side = |revision: Option<&str>,
+                        objects: Option<&BTreeMap<String, vulcan_sync::GitPathObject>>|
+         -> Result<ResolutionAgentSide, AppError> {
             let Some(revision) = revision else {
                 return Ok(ResolutionAgentSide {
                     revision: None,
@@ -3017,11 +3033,8 @@ fn build_agent_request(
                     content: None,
                 });
             };
-            let revision_oid = GitOid::parse(revision).map_err(AppError::operation)?;
-            let object = engine
-                .path_object(repository, &revision_oid, &path.path)
-                .map_err(AppError::operation)?;
-            let content = object.as_ref().and_then(|object| object.data.clone());
+            let object = objects.and_then(|objects| objects.get(&path.path));
+            let content = object.and_then(|object| object.data.clone());
             if content
                 .as_ref()
                 .is_some_and(|data| data.len() > MAX_AGENT_FILE_BYTES)
@@ -3032,23 +3045,23 @@ fn build_agent_request(
                 )));
             }
             total = total.saturating_add(content.as_ref().map_or(0, Vec::len));
+            if total > MAX_AGENT_TOTAL_BYTES {
+                return Err(AppError::operation(
+                    "conflict inputs exceed the total agent byte limit",
+                ));
+            }
             Ok(ResolutionAgentSide {
                 revision: Some(revision.to_string()),
-                mode: object.as_ref().map(|object| object.mode.clone()),
+                mode: object.map(|object| object.mode.clone()),
                 content,
             })
         };
         files.push(ResolutionAgentFile {
             path: path.path.clone(),
-            base: side(Some(base))?,
-            local: side(Some(&record.local_revision))?,
-            remote: side(Some(&record.remote_revision))?,
+            base: side(Some(base), Some(&base_objects))?,
+            local: side(Some(&record.local_revision), Some(&local_objects))?,
+            remote: side(Some(&record.remote_revision), Some(&remote_objects))?,
         });
-    }
-    if total > MAX_AGENT_TOTAL_BYTES {
-        return Err(AppError::operation(
-            "conflict inputs exceed the total agent byte limit",
-        ));
     }
     let mut context_paths = options.focused_context.clone();
     context_paths.sort();
@@ -3534,6 +3547,8 @@ mod tests {
     use super::*;
     use crate::sync::sync_git_vault_with_state_store;
     use crate::sync_conflicts::{SyncConflictPathRecord, SyncConflictSideRecord};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use tempfile::{tempdir, TempDir};
     use vulcan_core::{paths::initialize_vulcan_dir, scan_vault, ScanMode};
@@ -3763,6 +3778,60 @@ mod tests {
 
     fn conflict_fixture() -> ConflictFixture {
         conflict_fixture_with_split_targets(false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_request_reads_conflict_sides_with_bounded_git_processes() {
+        let fixture = conflict_fixture();
+        let mut record = fixture.record.clone();
+        let prototype = record.paths[0].clone();
+        record.paths = (0..200)
+            .map(|index| SyncConflictPathRecord {
+                path: format!("missing-{index:03}.md"),
+                ..prototype.clone()
+            })
+            .collect();
+        let trace = fixture.reader.join("agent-git-invocations.log");
+        let wrapper = fixture.reader.join("agent-git-wrapper");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                trace.display()
+            ),
+        )
+        .expect("Git wrapper");
+        let mut permissions = fs::metadata(&wrapper)
+            .expect("wrapper metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
+        let engine = GitCliEngine::new(&wrapper);
+        let repository = engine
+            .discover_repository(&fixture.reader)
+            .expect("repository");
+        fs::write(&trace, "").expect("reset trace");
+
+        let request = build_agent_request(
+            &VaultPaths::new(&fixture.reader),
+            &engine,
+            &repository,
+            &record,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+        )
+        .expect("agent request");
+
+        assert_eq!(request.files.len(), 200);
+        assert_eq!(
+            fs::read_to_string(&trace).expect("trace").lines().count(),
+            3,
+            "one tree inventory per immutable side, independent of path count"
+        );
     }
 
     fn conflict_fixture_with_split_targets(split_targets: bool) -> ConflictFixture {
