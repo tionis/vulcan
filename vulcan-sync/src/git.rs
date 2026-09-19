@@ -195,21 +195,20 @@ pub trait GitEngine: Send + Sync {
             .filter(|entry| entry.kind == "blob")
             .map(|entry| entry.oid.clone())
             .collect::<Vec<_>>();
-        let mut blobs = self.read_blobs(repository, &blob_ids)?;
+        let blobs = self.read_blobs(repository, &blob_ids)?;
         entries
             .into_iter()
             .map(|entry| {
-                let data =
-                    if entry.kind == "blob" {
-                        Some(blobs.remove(&entry.oid).ok_or_else(|| {
-                            GitEngineError::InvalidOutput {
-                                operation: "read selected Git path objects",
-                                detail: format!("batch response omitted blob `{}`", entry.oid),
-                            }
-                        })?)
-                    } else {
-                        None
-                    };
+                let data = if entry.kind == "blob" {
+                    Some(blobs.get(&entry.oid).cloned().ok_or_else(|| {
+                        GitEngineError::InvalidOutput {
+                            operation: "read selected Git path objects",
+                            detail: format!("batch response omitted blob `{}`", entry.oid),
+                        }
+                    })?)
+                } else {
+                    None
+                };
                 Ok((
                     entry.path,
                     GitPathObject {
@@ -7378,6 +7377,36 @@ mod tests {
             blobs.get(&second).map(Vec::as_slice),
             Some(b"second blob".as_slice())
         );
+    }
+
+    #[test]
+    fn selected_path_objects_reuse_identical_blob_contents() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        std::fs::write(temporary.path().join("first.md"), "same contents\n")
+            .expect("first fixture note");
+        std::fs::write(temporary.path().join("second.md"), "same contents\n")
+            .expect("second fixture note");
+        run_git(temporary.path(), &["add", "."]);
+        run_git(temporary.path(), &["commit", "-m", "identical blobs"]);
+        let revision = GitOid::parse(run_git_capture(temporary.path(), &["rev-parse", "HEAD"]))
+            .expect("revision");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let objects = engine
+            .path_objects(
+                &repository,
+                &revision,
+                &["first.md".to_string(), "second.md".to_string()],
+            )
+            .expect("selected objects sharing one blob");
+
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects["first.md"].oid, objects["second.md"].oid);
+        assert_eq!(objects["first.md"].data, objects["second.md"].data);
     }
 
     #[cfg(unix)]
