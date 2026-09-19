@@ -8180,6 +8180,51 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
 }
 
 #[test]
+fn daemon_conflict_worker_runs_and_exposes_latest_status() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    successful_process_json(&daemon(&["config", "set-bind", "127.0.0.1:0"]));
+    successful_process_json(&daemon(&[
+        "config",
+        "set-agent",
+        "resolution",
+        "--base-url",
+        "http://127.0.0.1:9/v1",
+        "--model",
+        "fixture-model",
+    ]));
+    successful_process_json(&daemon(&[
+        "config",
+        "set-conflict-worker",
+        "--wiki",
+        "missing",
+        "--poll-seconds",
+        "1",
+    ]));
+    successful_process_json(&daemon(&["start", "--detach"]));
+    let worker_status = state_home.join("vulcan/daemon/conflict-worker.json");
+    for _ in 0..40 {
+        if worker_status.is_file() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        worker_status.is_file(),
+        "conflict worker status should appear"
+    );
+    let status = successful_process_json(&daemon(&["conflict-status"]));
+    assert_eq!(status["version"], 1);
+    assert_eq!(status["entries"][0]["wiki_id"], "missing");
+    assert!(status["entries"][0]["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("no longer exists")));
+    successful_process_json(&daemon(&["stop"]));
+}
+
+#[test]
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
     let temporary = TempDir::new().expect("temp dir should be created");
@@ -15154,6 +15199,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("reference Obsidian companion"));
     assert!(git_skill.contains("skip busy, paused, or conflicted state"));
     assert!(git_skill.contains("vulcan daemon config set-agent resolution"));
+    assert!(git_skill.contains("daemon config set-conflict-worker --wiki <id>"));
+    assert!(git_skill.contains("daemon conflict-status"));
     assert!(git_skill.contains("agent_semantic_plans: true"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
@@ -15212,6 +15259,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("every Git subprocess"));
     assert!(sync_skill.contains("does not flash Git terminal"));
     assert!(sync_skill.contains("no separate launcher binary is needed"));
+    assert!(sync_skill.contains("vulcan daemon config set-conflict-worker"));
+    assert!(sync_skill.contains("vulcan daemon conflict-status"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
     assert!(sync_skill.contains("vulcan sync schedule show <wiki>"));
@@ -15251,6 +15300,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
     assert!(permission_skill.contains("vulcan daemon config show"));
+    assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
     assert!(permission_skill.contains("synchronized plugin data"));
     assert!(permission_skill.contains("native `SecretStorage`"));

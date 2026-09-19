@@ -221,3 +221,36 @@ per-wiki outcome outside the vault. Disable it with
 and installed Linux/macOS services can read them from `$XDG_CONFIG_HOME/vulcan/daemon.env`
 (normally `~/.config/vulcan/daemon.env`). Keep that file mode `0600` on Unix and use literal
 `NAME=value` records; inherited environment variables take precedence.
+
+To dedicate this daemon to unattended high-confidence conflict resolution, configure its resolution
+provider, opt in locally in each selected vault, and add an explicit worker allowlist:
+
+```sh
+vulcan daemon config set-agent resolution \
+  --base-url <openai-compatible-url> \
+  --model <model> \
+  --api-key-env VULCAN_RESOLUTION_KEY
+vulcan --vault /path/to/vault config set sync.agent_auto_accept true --target local
+vulcan daemon config set-conflict-worker \
+  --wiki personal \
+  --max-groups-per-run 128 \
+  --poll-seconds 30 \
+  --dry-run
+# Review the non-secret preview, rerun without --dry-run, then restart the daemon.
+vulcan daemon conflict-status
+```
+
+The worker skips paused or actively syncing wikis and only sends pending singleton Markdown or text
+overlaps with complete regular-file evidence under strict byte ceilings. It never enables broad
+context. Binary, structural, missing-side, device-state, oversized, and other ineligible conflicts
+remain available for ordinary review. Provider output still passes the normal exact-path, syntax,
+link, deletion, tree, recovery, stale-input, and remote-lease checks before it can be accepted. A
+provider failure is reported in durable status and backs off for five minutes across daemon restarts.
+Disable unattended resolution with `vulcan daemon config clear-conflict-worker`; disabling the local
+`sync.agent_auto_accept` switch is an additional per-vault stop. Run only one configured resolver
+daemon for a vault: claims are shared inside one daemon process, while Git leases provide safety—not
+token-spend coordination—across devices.
+
+Accepted resolutions immediately advance the canonical sync history consumed by other devices. To
+also maintain readable commits on `main`, configure the semantic worker above; it can organize and
+message the accepted bytes but cannot modify them.

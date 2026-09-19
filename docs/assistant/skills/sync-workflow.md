@@ -333,6 +333,15 @@ they commit.
   `vulcan daemon config set-semantic-worker --wiki <id> --quiet-seconds <n> --maximum-wait-seconds <n> --poll-seconds <n>`.
   The allowlist is explicit; paused/busy wikis are skipped. Restart after changing configuration,
   inspect `vulcan daemon semantic-status`, and disable with `daemon config clear-semantic-worker`.
+- For a designated unattended resolver, configure the daemon resolution agent, enable
+  `sync.agent_auto_accept` only in each selected vault's local config, then preview and apply
+  `vulcan daemon config set-conflict-worker --wiki <id> --max-groups-per-run <1..128> --poll-seconds <n>`.
+  Restart the daemon and inspect `vulcan daemon conflict-status`. The worker only auto-submits
+  bounded singleton Markdown/text overlaps with complete regular-file evidence and no broad
+  context; everything else remains reviewable. Disable it with `daemon config clear-conflict-worker`.
+  Do not configure a second resolver daemon for the same vault merely for availability: process
+  claims prevent duplicate calls locally, while remote leases prevent unsafe publication but not
+  duplicate provider spending across devices.
 
 ## Android and detached Git data
 
