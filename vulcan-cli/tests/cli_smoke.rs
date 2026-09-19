@@ -7069,6 +7069,68 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
 }
 
 #[test]
+fn sync_group_resolution_reconciles_a_published_batch_after_live_advances() {
+    let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let run = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args(["--output", "json", "sync"])
+            .args(arguments)
+            .assert()
+            .success()
+    };
+    let detail = parse_stdout_json(&run(&["conflicts", &id]));
+    let group_id = detail["record"]["paths"][0]["group_id"]
+        .as_str()
+        .expect("conflict group ID");
+    let resolved = parse_stdout_json(&run(&[
+        "resolve", &id, "--side", "local", "--group", group_id,
+    ]));
+    let repository_key = resolved["repository_key"].as_str().expect("repository key");
+    let batch_id = resolved["batch_id"].as_str().expect("batch ID");
+
+    fs::write(reader.join("Later.md"), "later accepted change\n").expect("later note");
+    let advanced = parse_stdout_json(&run(&["run"]));
+    assert!(matches!(
+        advanced["outcome"].as_str(),
+        Some("pushed" | "merged" | "up_to_date")
+    ));
+    let batch_path = state_home
+        .join("vulcan/sync/repositories")
+        .join(repository_key)
+        .join("conflicts")
+        .join(&id)
+        .join("batches")
+        .join(format!("{batch_id}.json"));
+    let mut batch: Value =
+        serde_json::from_slice(&fs::read(&batch_path).expect("batch state should exist"))
+            .expect("batch state should be JSON");
+    batch["applied"] = Value::Bool(false);
+    fs::write(
+        &batch_path,
+        serde_json::to_vec_pretty(&batch).expect("serialize interrupted batch"),
+    )
+    .expect("write interrupted batch");
+
+    let resumed = parse_stdout_json(&run(&[
+        "resolve", &id, "--side", "local", "--group", group_id,
+    ]));
+    assert_eq!(resumed["outcome"], "resolved");
+    assert_eq!(resumed["batch_id"], batch_id);
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("resolved note"),
+        "reader\n"
+    );
+    assert_eq!(
+        fs::read_to_string(reader.join("Later.md")).expect("later note retained"),
+        "later accepted change\n"
+    );
+}
+
+#[test]
 fn sync_resolve_cli_applies_reviewed_supplied_files_through_a_proposal() {
     let (temporary, state_home, reader, id) = setup_cli_sync_conflict();
     let source = temporary.path().join("resolved-home.md");

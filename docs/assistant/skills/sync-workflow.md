@@ -153,8 +153,10 @@ they commit.
   For a large path conflict, inspect each path's `group_id`, then repeat
   `--group <group-id>` to preview and apply one bounded batch of complete groups. A successful
   batch is overlaid on the current accepted tree, so earlier batches and unrelated later edits are
-  retained; unselected groups remain actionable. If a selected group's provisional object changed,
-  stop for fresh reconciliation rather than replaying the original divergence.
+  retained; unselected groups remain actionable. Interrupted unpublished batches become
+  `needs_rebase` and replan when selected inputs are unchanged; published batches can apply a later
+  accepted descendant. If a selected group's provisional object changed, stop for fresh
+  reconciliation rather than replaying the original divergence.
   For a `tree_validation` conflict with no individual conflict paths, the selected side replaces
   the complete candidate tree; this is the explicit escape hatch when Git merged cleanly but
   Vulcan's whole-tree link or deletion policy rejected the result.

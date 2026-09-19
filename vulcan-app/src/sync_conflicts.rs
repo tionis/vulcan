@@ -804,20 +804,39 @@ fn resolve_sync_conflict_groups_with_state_store(
         .remote_ref(&repository, &options.remote, &options.live_ref)
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("the remote live ref is missing"))?;
-    let frontier = active_batch
+    let prepared_frontier = active_batch
         .as_ref()
         .map(|batch| GitOid::parse(&batch.expected_revision).map_err(AppError::operation))
         .transpose()?
         .unwrap_or_else(|| current.clone());
+    let mut replan_unpublished = false;
+    let mut published_descendant = false;
     if let Some(batch) = active_batch.as_ref() {
         let commit = GitOid::parse(&batch.resolution_commit).map_err(AppError::operation)?;
-        if current != frontier && current != commit {
-            return Err(AppError::operation(
-                "the remote live ref moved beyond the prepared conflict batch",
-            ));
+        if current != prepared_frontier && current != commit {
+            if batch.published
+                && engine
+                    .is_ancestor(&repository, &commit, &current)
+                    .map_err(AppError::operation)?
+            {
+                published_descendant = true;
+            } else if !batch.published {
+                replan_unpublished = true;
+            } else {
+                return Err(AppError::operation(
+                    "the remote live ref diverged from the published conflict batch",
+                ));
+            }
         }
     }
-    ensure_group_frontier_unchanged(&engine, &repository, record, &frontier, &selected_paths)?;
+    let frontier = if replan_unpublished || published_descendant {
+        current.clone()
+    } else {
+        prepared_frontier
+    };
+    if !published_descendant {
+        ensure_group_frontier_unchanged(&engine, &repository, record, &frontier, &selected_paths)?;
+    }
     let frontier_tree = engine
         .tree_oid(&repository, &frontier)
         .map_err(AppError::operation)?;
@@ -827,22 +846,32 @@ fn resolve_sync_conflict_groups_with_state_store(
     let worktree_tree = engine
         .snapshot_worktree_tree(&repository, Some(&current))
         .map_err(AppError::operation)?;
-    if worktree_tree != frontier_tree && worktree_tree != current_tree {
+    let prepared_tree = active_batch
+        .as_ref()
+        .map(|batch| GitOid::parse(&batch.resolved_tree).map_err(AppError::operation))
+        .transpose()?;
+    if worktree_tree != frontier_tree
+        && worktree_tree != current_tree
+        && prepared_tree.as_ref() != Some(&worktree_tree)
+    {
         return Err(AppError::operation(
             "the worktree does not match the current accepted live tree; synchronize or preserve local edits before resolving groups",
         ));
     }
-    let batch_id = active_batch.as_ref().map_or_else(
-        || {
-            conflict_batch_id(
-                &record.id,
-                &group_ids,
-                current.as_str(),
-                &format!("side:{}", resolution_side_name(options.side)),
-            )
-        },
-        |batch| batch.batch_id.clone(),
-    );
+    let batch_id = active_batch
+        .as_ref()
+        .filter(|_| !replan_unpublished)
+        .map_or_else(
+            || {
+                conflict_batch_id(
+                    &record.id,
+                    &group_ids,
+                    current.as_str(),
+                    &format!("side:{}", resolution_side_name(options.side)),
+                )
+            },
+            |batch| batch.batch_id.clone(),
+        );
     if options.dry_run {
         return Ok(group_resolution_report(
             context,
@@ -889,7 +918,7 @@ fn resolve_sync_conflict_group_batch(
     selected_paths: &[String],
     current: &GitOid,
     batch_id: &str,
-    existing_batch: Option<SyncConflictBatchRecord>,
+    mut existing_batch: Option<SyncConflictBatchRecord>,
 ) -> Result<ResolveSyncConflictReport, AppError> {
     verify_preserved_conflict_refs(engine, repository, record)?;
     let device_id = state_store
@@ -918,6 +947,75 @@ fn resolve_sync_conflict_group_batch(
         .update_ref(repository, &immutable_recovery_ref, &capture.commit)
         .map_err(AppError::operation)?;
 
+    if let Some(batch) = existing_batch.as_mut() {
+        let expected = GitOid::parse(&batch.expected_revision).map_err(AppError::operation)?;
+        let commit = GitOid::parse(&batch.resolution_commit).map_err(AppError::operation)?;
+        if *current != expected && *current != commit {
+            if batch.published
+                && engine
+                    .is_ancestor(repository, &commit, current)
+                    .map_err(AppError::operation)?
+            {
+                let recorded_tree =
+                    GitOid::parse(&batch.resolved_tree).map_err(AppError::operation)?;
+                let commit_tree = engine
+                    .tree_oid(repository, &commit)
+                    .map_err(AppError::operation)?;
+                if commit_tree != recorded_tree {
+                    return Err(AppError::operation(
+                        "published conflict batch commit does not match its recorded tree",
+                    ));
+                }
+                if capture.tree != commit_tree
+                    && capture.tree
+                        != engine
+                            .tree_oid(repository, current)
+                            .map_err(AppError::operation)?
+                {
+                    return Err(AppError::operation(
+                        "the worktree changed while reconciling the published conflict batch; its recovery snapshot was retained",
+                    ));
+                }
+                if capture.tree
+                    != engine
+                        .tree_oid(repository, current)
+                        .map_err(AppError::operation)?
+                {
+                    engine
+                        .apply_tree(repository, &capture.commit, current)
+                        .map_err(AppError::operation)?;
+                }
+                update_resolution_sync_refs(engine, repository, options, current)?;
+                let cache_refresh = if paths.cache_db().is_file() {
+                    Some(refresh_cache_incrementally(paths)?)
+                } else {
+                    None
+                };
+                batch.recovery_revision = capture.commit.to_string();
+                batch.applied = true;
+                store.save_batch(&context.repository_key, batch)?;
+                let progress = store.group_progress(&context.repository_key, record)?;
+                return Ok(group_resolution_report(
+                    context,
+                    options,
+                    ResolveSyncConflictOutcome::Resolved,
+                    batch.group_ids.clone(),
+                    Some(batch.batch_id.clone()),
+                    progress.pending_groups + progress.needs_rebase_groups,
+                    Some(batch.recovery_revision.clone()),
+                    Some(batch.resolution_commit.clone()),
+                    cache_refresh,
+                ));
+            }
+            if !batch.published {
+                batch.needs_rebase = true;
+                batch.recovery_revision = capture.commit.to_string();
+                store.save_batch(&context.repository_key, batch)?;
+                existing_batch = None;
+            }
+        }
+    }
+
     if let Some(mut batch) = existing_batch {
         let expected = GitOid::parse(&batch.expected_revision).map_err(AppError::operation)?;
         let expected_tree = engine
@@ -925,6 +1023,15 @@ fn resolve_sync_conflict_group_batch(
             .map_err(AppError::operation)?;
         let tree = GitOid::parse(&batch.resolved_tree).map_err(AppError::operation)?;
         let commit = GitOid::parse(&batch.resolution_commit).map_err(AppError::operation)?;
+        if engine
+            .tree_oid(repository, &commit)
+            .map_err(AppError::operation)?
+            != tree
+        {
+            return Err(AppError::operation(
+                "prepared conflict batch commit does not match its recorded tree",
+            ));
+        }
         if capture.tree != expected_tree && capture.tree != tree {
             return Err(AppError::operation(
                 "the worktree changed while the conflict batch was pending; its recovery snapshot was retained",
