@@ -15,7 +15,7 @@ use vulcan_sync::{
     GitAutomaticMergeValidation, GitCaptureRequest, GitConflictClassification, GitConflictScope,
     GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest,
     GitOid, GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict,
-    GitSyncOptions, GitSyncRefs,
+    GitSyncOptions, GitSyncRefs, SyncCancellationToken,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 4;
@@ -382,6 +382,102 @@ pub struct ResolveSyncConflictOptions {
     pub dry_run: bool,
 }
 
+/// A reviewed proposal is pinned to one accepted revision and one exact
+/// output tree. Unlike side selection, it must never be silently replanned.
+pub(crate) struct ResolveProposalConflictGroupsOptions<'a> {
+    pub group_ids: &'a [String],
+    pub proposal_id: &'a str,
+    pub expected_revision: &'a GitOid,
+    pub proposed_tree: &'a GitOid,
+    pub resolved_paths: &'a [GitResolvedPath],
+    pub remote: &'a GitRemote,
+    pub live_ref: &'a GitRefName,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConflictGroupResolutionResult {
+    pub outcome: ResolveSyncConflictOutcome,
+    pub group_ids: Vec<String>,
+    pub batch_id: Option<String>,
+    pub remaining_groups: usize,
+    pub recovery_revision: Option<String>,
+    pub resolution_commit: Option<String>,
+    pub cache_refresh: Option<ScanSummary>,
+}
+
+#[derive(Clone, Copy)]
+enum ConflictGroupMethod<'a> {
+    Side(SyncConflictResolutionSide),
+    Proposal {
+        proposal_id: &'a str,
+        expected_revision: &'a GitOid,
+        proposed_tree: &'a GitOid,
+        resolved_paths: &'a [GitResolvedPath],
+    },
+}
+
+impl ConflictGroupMethod<'_> {
+    fn identity(self) -> String {
+        match self {
+            Self::Side(side) => format!("side:{}", resolution_side_name(side)),
+            Self::Proposal { proposal_id, .. } => format!("proposal:{proposal_id}"),
+        }
+    }
+
+    const fn side(self) -> Option<SyncConflictResolutionSide> {
+        match self {
+            Self::Side(side) => Some(side),
+            Self::Proposal { .. } => None,
+        }
+    }
+
+    fn matches_batch(self, batch: &SyncConflictBatchRecord) -> bool {
+        match self {
+            Self::Side(side) => batch.side == Some(side) && batch.proposal_id.is_none(),
+            Self::Proposal {
+                proposal_id,
+                expected_revision,
+                proposed_tree,
+                ..
+            } => {
+                batch.side.is_none()
+                    && batch.proposal_id.as_deref() == Some(proposal_id)
+                    && batch.expected_revision == expected_revision.as_str()
+                    && batch.resolved_tree == proposed_tree.as_str()
+            }
+        }
+    }
+
+    const fn permits_replanning(self) -> bool {
+        matches!(self, Self::Side(_))
+    }
+}
+
+struct ConflictGroupOptions<'a> {
+    group_ids: &'a [String],
+    method: ConflictGroupMethod<'a>,
+    remote: &'a GitRemote,
+    live_ref: &'a GitRefName,
+    dry_run: bool,
+    cancellation: Option<&'a SyncCancellationToken>,
+}
+
+impl ConflictGroupOptions<'_> {
+    fn check_cancelled(&self) -> Result<(), AppError> {
+        if self
+            .cancellation
+            .is_some_and(SyncCancellationToken::is_cancelled)
+        {
+            Err(AppError::operation(
+                "conflict group resolution was cancelled",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConflictResolutionRecord {
     pub version: u32,
@@ -729,7 +825,6 @@ pub fn resolve_sync_conflict_with_state_store(
     )
 }
 
-#[allow(clippy::too_many_lines)]
 fn resolve_sync_conflict_groups_with_state_store(
     paths: &VaultPaths,
     options: &ResolveSyncConflictOptions,
@@ -738,12 +833,105 @@ fn resolve_sync_conflict_groups_with_state_store(
     record: &SyncConflictRecord,
     context: &ResolutionContext,
 ) -> Result<ResolveSyncConflictReport, AppError> {
-    let mut group_ids = options.group_ids.clone();
+    let result = resolve_conflict_groups_with_state_store(
+        paths,
+        &ConflictGroupOptions {
+            group_ids: &options.group_ids,
+            method: ConflictGroupMethod::Side(options.side),
+            remote: &options.remote,
+            live_ref: &options.live_ref,
+            dry_run: options.dry_run,
+            cancellation: None,
+        },
+        state_store,
+        store,
+        record,
+        context,
+    )?;
+    Ok(group_resolution_report(context, options, result))
+}
+
+/// Applies an already validated proposal through the same durable group
+/// transaction as side selection. Proposal identity/content authorization
+/// remains the caller's responsibility; this boundary verifies the exact
+/// group coverage, immutable output tree, accepted frontier and application.
+pub(crate) fn resolve_proposal_conflict_groups_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    options: &ResolveProposalConflictGroupsOptions<'_>,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+) -> Result<ConflictGroupResolutionResult, AppError> {
+    validate_hex_id("proposal ID", options.proposal_id)?;
+    let options = ConflictGroupOptions {
+        group_ids: options.group_ids,
+        method: ConflictGroupMethod::Proposal {
+            proposal_id: options.proposal_id,
+            expected_revision: options.expected_revision,
+            proposed_tree: options.proposed_tree,
+            resolved_paths: options.resolved_paths,
+        },
+        remote: options.remote,
+        live_ref: options.live_ref,
+        dry_run: options.dry_run,
+        cancellation: Some(cancellation),
+    };
+    options.check_cancelled()?;
+    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let repository_key = crate::sync_state::repository_state_key(&vault);
+    let context = ResolutionContext {
+        vault,
+        repository_key,
+        conflict_id: conflict_id.to_string(),
+    };
+    let store = SyncConflictStore::from_state_store(state_store);
+    let record = store.get(&context.repository_key, conflict_id)?;
+    if !same_work_tree(&record.work_tree, &context.vault) {
+        return Err(AppError::operation(
+            "sync conflict record does not belong to the selected worktree",
+        ));
+    }
+    if store.resolution_state(&context.repository_key, conflict_id)?
+        == SyncConflictResolutionState::Superseded
+    {
+        return Err(AppError::operation(
+            "the proposal conflict was superseded by later synchronization",
+        ));
+    }
+    if store
+        .get_effective_resolution(&context.repository_key, conflict_id)?
+        .is_some()
+    {
+        return Err(AppError::operation(
+            "the conflict already has a complete resolution in progress or applied",
+        ));
+    }
+    resolve_conflict_groups_with_state_store(
+        paths,
+        &options,
+        state_store,
+        &store,
+        &record,
+        &context,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn resolve_conflict_groups_with_state_store(
+    paths: &VaultPaths,
+    options: &ConflictGroupOptions<'_>,
+    state_store: &SyncStateStore,
+    store: &SyncConflictStore,
+    record: &SyncConflictRecord,
+    context: &ResolutionContext,
+) -> Result<ConflictGroupResolutionResult, AppError> {
+    options.check_cancelled()?;
+    let mut group_ids = options.group_ids.to_vec();
     group_ids.sort();
     group_ids.dedup();
-    if group_ids.len() > MAX_CONFLICT_GROUPS_PER_BATCH {
+    if group_ids.is_empty() || group_ids.len() > MAX_CONFLICT_GROUPS_PER_BATCH {
         return Err(AppError::operation(format!(
-            "one conflict batch may select at most {MAX_CONFLICT_GROUPS_PER_BATCH} groups"
+            "one conflict batch must select between 1 and {MAX_CONFLICT_GROUPS_PER_BATCH} groups"
         )));
     }
     let groups = conflict_groups(record);
@@ -777,23 +965,34 @@ fn resolve_sync_conflict_groups_with_state_store(
         .list_batches(&context.repository_key, &record.id)?
         .into_iter()
         .find(|batch| {
-            batch.group_ids == group_ids && batch.side == Some(options.side) && !batch.needs_rebase
+            batch.group_ids == group_ids
+                && options.method.matches_batch(batch)
+                && !batch.needs_rebase
         });
     if selected_states
         .iter()
         .all(|state| *state == SyncConflictGroupState::Applied)
     {
-        return Ok(group_resolution_report(
-            context,
-            options,
-            ResolveSyncConflictOutcome::AlreadyResolved,
+        if active_batch.is_none() && !options.method.permits_replanning() {
+            return Err(AppError::operation(
+                "the selected groups were applied by another conflict resolution",
+            ));
+        }
+        return Ok(ConflictGroupResolutionResult {
+            outcome: ResolveSyncConflictOutcome::AlreadyResolved,
             group_ids,
-            active_batch.as_ref().map(|batch| batch.batch_id.clone()),
-            progress.pending_groups + progress.needs_rebase_groups,
-            None,
-            None,
-            None,
-        ));
+            batch_id: active_batch.as_ref().map(|batch| batch.batch_id.clone()),
+            remaining_groups: progress.pending_groups + progress.needs_rebase_groups,
+            recovery_revision: active_batch
+                .as_ref()
+                .filter(|_| !options.method.permits_replanning())
+                .map(|batch| batch.recovery_revision.clone()),
+            resolution_commit: active_batch
+                .as_ref()
+                .filter(|_| !options.method.permits_replanning())
+                .map(|batch| batch.resolution_commit.clone()),
+            cache_refresh: None,
+        });
     }
     if active_batch.is_none()
         && selected_states.iter().any(|state| {
@@ -818,14 +1017,19 @@ fn resolve_sync_conflict_groups_with_state_store(
         .map_err(AppError::operation)?;
     reject_unsafe_resolution(&safety)?;
     let current = engine
-        .remote_ref(&repository, &options.remote, &options.live_ref)
+        .remote_ref(&repository, options.remote, options.live_ref)
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("the remote live ref is missing"))?;
     let prepared_frontier = active_batch
         .as_ref()
         .map(|batch| GitOid::parse(&batch.expected_revision).map_err(AppError::operation))
         .transpose()?
-        .unwrap_or_else(|| current.clone());
+        .unwrap_or_else(|| match options.method {
+            ConflictGroupMethod::Side(_) => current.clone(),
+            ConflictGroupMethod::Proposal {
+                expected_revision, ..
+            } => expected_revision.clone(),
+        });
     let mut replan_unpublished = false;
     let mut published_descendant = false;
     if let Some(batch) = active_batch.as_ref() {
@@ -837,14 +1041,18 @@ fn resolve_sync_conflict_groups_with_state_store(
                     .map_err(AppError::operation)?
             {
                 published_descendant = true;
-            } else if !batch.published {
+            } else if !batch.published && options.method.permits_replanning() {
                 replan_unpublished = true;
+            } else if !batch.published {
+                return Err(stale_group_proposal());
             } else {
                 return Err(AppError::operation(
                     "the remote live ref diverged from the published conflict batch",
                 ));
             }
         }
+    } else if current != prepared_frontier {
+        return Err(stale_group_proposal());
     }
     let frontier = if replan_unpublished || published_descendant {
         current.clone()
@@ -854,6 +1062,14 @@ fn resolve_sync_conflict_groups_with_state_store(
     if !published_descendant {
         ensure_group_frontier_unchanged(&engine, &repository, record, &frontier, &selected_paths)?;
     }
+    validate_group_method_tree(
+        paths,
+        &engine,
+        &repository,
+        record,
+        options.method,
+        &selected_paths,
+    )?;
     let frontier_tree = engine
         .tree_oid(&repository, &frontier)
         .map_err(AppError::operation)?;
@@ -884,23 +1100,21 @@ fn resolve_sync_conflict_groups_with_state_store(
                     &record.id,
                     &group_ids,
                     current.as_str(),
-                    &format!("side:{}", resolution_side_name(options.side)),
+                    &options.method.identity(),
                 )
             },
             |batch| batch.batch_id.clone(),
         );
     if options.dry_run {
-        return Ok(group_resolution_report(
-            context,
-            options,
-            ResolveSyncConflictOutcome::Planned,
+        return Ok(ConflictGroupResolutionResult {
+            outcome: ResolveSyncConflictOutcome::Planned,
             group_ids,
-            Some(batch_id),
-            progress.pending_groups + progress.needs_rebase_groups,
-            None,
-            None,
-            None,
-        ));
+            batch_id: Some(batch_id),
+            remaining_groups: progress.pending_groups + progress.needs_rebase_groups,
+            recovery_revision: None,
+            resolution_commit: None,
+            cache_refresh: None,
+        });
     }
 
     let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
@@ -921,10 +1135,85 @@ fn resolve_sync_conflict_groups_with_state_store(
     )
 }
 
+fn stale_group_proposal() -> AppError {
+    AppError::operation(
+        "the accepted live frontier moved after the proposal was prepared; create and review a new proposal",
+    )
+}
+
+fn validate_group_method_tree(
+    paths: &VaultPaths,
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    record: &SyncConflictRecord,
+    method: ConflictGroupMethod<'_>,
+    selected_paths: &[String],
+) -> Result<(), AppError> {
+    let ConflictGroupMethod::Proposal {
+        expected_revision,
+        proposed_tree,
+        resolved_paths,
+        ..
+    } = method
+    else {
+        return Ok(());
+    };
+    let expected_paths = selected_paths
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let supplied_paths = resolved_paths
+        .iter()
+        .map(|path| path.path.as_str())
+        .collect::<BTreeSet<_>>();
+    if supplied_paths != expected_paths || supplied_paths.len() != resolved_paths.len() {
+        return Err(AppError::operation(
+            "proposal outputs must cover every selected conflict path exactly once",
+        ));
+    }
+    let objects = engine
+        .path_objects(repository, proposed_tree, selected_paths)
+        .map_err(AppError::operation)?;
+    for path in resolved_paths {
+        let valid = objects.get(&path.path).is_some_and(|object| {
+            object.kind == "blob"
+                && matches!(object.mode.as_str(), "100644" | "100755")
+                && path.mode.as_deref() == Some(object.mode.as_str())
+                && path.data.is_some()
+                && object.data.as_deref() == path.data.as_deref()
+        });
+        if !valid {
+            return Err(AppError::operation(format!(
+                "proposal tree does not contain the exact reviewed bytes and mode for `{}`",
+                path.path
+            )));
+        }
+    }
+    if engine
+        .changed_paths(repository, expected_revision, proposed_tree)
+        .map_err(AppError::operation)?
+        .iter()
+        .any(|path| !expected_paths.contains(path.as_str()))
+    {
+        return Err(AppError::operation(
+            "proposal tree changes paths outside its selected conflict groups",
+        ));
+    }
+    validate_conflict_group_tree(
+        paths,
+        engine,
+        repository,
+        record,
+        expected_revision,
+        proposed_tree,
+        selected_paths,
+    )
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn resolve_sync_conflict_group_batch(
     paths: &VaultPaths,
-    options: &ResolveSyncConflictOptions,
+    options: &ConflictGroupOptions<'_>,
     state_store: &SyncStateStore,
     store: &SyncConflictStore,
     record: &SyncConflictRecord,
@@ -936,8 +1225,22 @@ fn resolve_sync_conflict_group_batch(
     current: &GitOid,
     batch_id: &str,
     mut existing_batch: Option<SyncConflictBatchRecord>,
-) -> Result<ResolveSyncConflictReport, AppError> {
+) -> Result<ConflictGroupResolutionResult, AppError> {
+    options.check_cancelled()?;
     verify_preserved_conflict_refs(engine, repository, record)?;
+    reject_unsafe_resolution(
+        &engine
+            .safety_state(repository)
+            .map_err(AppError::operation)?,
+    )?;
+    validate_group_method_tree(
+        paths,
+        engine,
+        repository,
+        record,
+        options.method,
+        selected_paths,
+    )?;
     let device_id = state_store
         .load_or_create_device_id(true)?
         .expect("mutating device identity creation returns an identity");
@@ -1012,19 +1315,20 @@ fn resolve_sync_conflict_group_batch(
                 batch.applied = true;
                 store.save_batch(&context.repository_key, batch)?;
                 let progress = store.group_progress(&context.repository_key, record)?;
-                return Ok(group_resolution_report(
-                    context,
-                    options,
-                    ResolveSyncConflictOutcome::Resolved,
-                    batch.group_ids.clone(),
-                    Some(batch.batch_id.clone()),
-                    progress.pending_groups + progress.needs_rebase_groups,
-                    Some(batch.recovery_revision.clone()),
-                    Some(batch.resolution_commit.clone()),
+                return Ok(ConflictGroupResolutionResult {
+                    outcome: ResolveSyncConflictOutcome::Resolved,
+                    group_ids: batch.group_ids.clone(),
+                    batch_id: Some(batch.batch_id.clone()),
+                    remaining_groups: progress.pending_groups + progress.needs_rebase_groups,
+                    recovery_revision: Some(batch.recovery_revision.clone()),
+                    resolution_commit: Some(batch.resolution_commit.clone()),
                     cache_refresh,
-                ));
+                });
             }
             if !batch.published {
+                if !options.method.permits_replanning() {
+                    return Err(stale_group_proposal());
+                }
                 batch.needs_rebase = true;
                 batch.recovery_revision = capture.commit.to_string();
                 store.save_batch(&context.repository_key, batch)?;
@@ -1080,19 +1384,33 @@ fn resolve_sync_conflict_group_batch(
         ));
     }
 
-    let resolved_paths =
-        selected_side_paths(engine, repository, record, options.side, selected_paths)?;
-    let tree = engine
-        .resolve_merge_tree_with_paths(
-            repository,
-            &GitContentMergeResolutionRequest {
-                base: current.clone(),
-                accepted_remote: current.clone(),
-                local_candidate: current.clone(),
-                paths: resolved_paths,
-            },
-        )
-        .map_err(AppError::operation)?;
+    let tree = match options.method {
+        ConflictGroupMethod::Side(side) => {
+            let resolved_paths =
+                selected_side_paths(engine, repository, record, side, selected_paths)?;
+            engine
+                .resolve_merge_tree_with_paths(
+                    repository,
+                    &GitContentMergeResolutionRequest {
+                        base: current.clone(),
+                        accepted_remote: current.clone(),
+                        local_candidate: current.clone(),
+                        paths: resolved_paths,
+                    },
+                )
+                .map_err(AppError::operation)?
+        }
+        ConflictGroupMethod::Proposal {
+            expected_revision,
+            proposed_tree,
+            ..
+        } => {
+            if current != expected_revision {
+                return Err(stale_group_proposal());
+            }
+            proposed_tree.clone()
+        }
+    };
     validate_conflict_group_tree(
         paths,
         engine,
@@ -1102,16 +1420,24 @@ fn resolve_sync_conflict_group_batch(
         &tree,
         selected_paths,
     )?;
+    let method_trailer = match options.method {
+        ConflictGroupMethod::Side(side) => {
+            format!("Vulcan-Resolution-Side: {}", resolution_side_name(side))
+        }
+        ConflictGroupMethod::Proposal { proposal_id, .. } => {
+            format!("Vulcan-Proposal: {proposal_id}")
+        }
+    };
+    options.check_cancelled()?;
     let commit = engine
         .create_commit(
             repository,
             &tree,
             std::slice::from_ref(current),
             &format!(
-                "vulcan conflict batch resolution\n\nVulcan-Conflict: {}\nVulcan-Conflict-Batch: {batch_id}\nVulcan-Conflict-Selection: {}\nVulcan-Resolution-Side: {}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {current}\nVulcan-Sync-Semantic: false\n",
+                "vulcan conflict batch resolution\n\nVulcan-Conflict: {}\nVulcan-Conflict-Batch: {batch_id}\nVulcan-Conflict-Selection: {}\n{method_trailer}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {current}\nVulcan-Sync-Semantic: false\n",
                 record.id,
                 conflict_group_selection_digest(group_ids),
-                resolution_side_name(options.side),
                 device_id.as_str(),
                 record.policy_version,
                 record.policy_hash,
@@ -1131,8 +1457,11 @@ fn resolve_sync_conflict_group_batch(
         group_ids: group_ids.to_vec(),
         group_path_counts: selected_group_path_counts(record, group_ids),
         expected_revision: current.to_string(),
-        side: Some(options.side),
-        proposal_id: None,
+        side: options.method.side(),
+        proposal_id: match options.method {
+            ConflictGroupMethod::Side(_) => None,
+            ConflictGroupMethod::Proposal { proposal_id, .. } => Some(proposal_id.to_string()),
+        },
         recovery_revision: capture.commit.to_string(),
         resolved_tree: tree.to_string(),
         resolution_commit: commit.to_string(),
@@ -1179,7 +1508,7 @@ fn validate_conflict_group_tree(
 #[allow(clippy::too_many_arguments)]
 fn publish_and_apply_conflict_group_batch(
     paths: &VaultPaths,
-    options: &ResolveSyncConflictOptions,
+    options: &ConflictGroupOptions<'_>,
     store: &SyncConflictStore,
     record: &SyncConflictRecord,
     context: &ResolutionContext,
@@ -1189,9 +1518,11 @@ fn publish_and_apply_conflict_group_batch(
     mut batch: SyncConflictBatchRecord,
     commit: &GitOid,
     tree: &GitOid,
-) -> Result<ResolveSyncConflictReport, AppError> {
+) -> Result<ConflictGroupResolutionResult, AppError> {
+    options.check_cancelled()?;
     publish_conflict_group_batch(engine, repository, options, &mut batch)?;
     store.save_batch(&context.repository_key, &batch)?;
+    options.check_cancelled()?;
     if capture.tree != *tree {
         engine
             .apply_tree(repository, &capture.commit, commit)
@@ -1206,17 +1537,15 @@ fn publish_and_apply_conflict_group_batch(
     batch.applied = true;
     store.save_batch(&context.repository_key, &batch)?;
     let progress = store.group_progress(&context.repository_key, record)?;
-    Ok(group_resolution_report(
-        context,
-        options,
-        ResolveSyncConflictOutcome::Resolved,
-        batch.group_ids.clone(),
-        Some(batch.batch_id.clone()),
-        progress.pending_groups + progress.needs_rebase_groups,
-        Some(batch.recovery_revision),
-        Some(batch.resolution_commit),
+    Ok(ConflictGroupResolutionResult {
+        outcome: ResolveSyncConflictOutcome::Resolved,
+        group_ids: batch.group_ids.clone(),
+        batch_id: Some(batch.batch_id.clone()),
+        remaining_groups: progress.pending_groups + progress.needs_rebase_groups,
+        recovery_revision: Some(batch.recovery_revision),
+        resolution_commit: Some(batch.resolution_commit),
         cache_refresh,
-    ))
+    })
 }
 
 fn resolve_sync_conflict_locked(
@@ -1436,17 +1765,10 @@ impl ResolutionContext {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn group_resolution_report(
     context: &ResolutionContext,
     options: &ResolveSyncConflictOptions,
-    outcome: ResolveSyncConflictOutcome,
-    group_ids: Vec<String>,
-    batch_id: Option<String>,
-    remaining_groups: usize,
-    recovery_revision: Option<String>,
-    resolution_commit: Option<String>,
-    cache_refresh: Option<ScanSummary>,
+    result: ConflictGroupResolutionResult,
 ) -> ResolveSyncConflictReport {
     ResolveSyncConflictReport {
         vault: context.vault.clone(),
@@ -1454,13 +1776,13 @@ fn group_resolution_report(
         conflict_id: context.conflict_id.clone(),
         side: options.side,
         dry_run: options.dry_run,
-        outcome,
-        group_ids,
-        batch_id,
-        remaining_groups: Some(remaining_groups),
-        recovery_revision,
-        resolution_commit,
-        cache_refresh,
+        outcome: result.outcome,
+        group_ids: result.group_ids,
+        batch_id: result.batch_id,
+        remaining_groups: Some(result.remaining_groups),
+        recovery_revision: result.recovery_revision,
+        resolution_commit: result.resolution_commit,
+        cache_refresh: result.cache_refresh,
     }
 }
 
@@ -1750,13 +2072,13 @@ fn ensure_group_frontier_unchanged(
 fn publish_conflict_group_batch(
     engine: &dyn GitEngine,
     repository: &GitRepository,
-    options: &ResolveSyncConflictOptions,
+    options: &ConflictGroupOptions<'_>,
     batch: &mut SyncConflictBatchRecord,
 ) -> Result<(), AppError> {
     let expected = GitOid::parse(&batch.expected_revision).map_err(AppError::operation)?;
     let commit = GitOid::parse(&batch.resolution_commit).map_err(AppError::operation)?;
     match engine
-        .remote_ref(repository, &options.remote, &options.live_ref)
+        .remote_ref(repository, options.remote, options.live_ref)
         .map_err(AppError::operation)?
         .as_ref()
     {
@@ -1765,9 +2087,9 @@ fn publish_conflict_group_batch(
             if engine
                 .push_ref(
                     repository,
-                    &options.remote,
+                    options.remote,
                     &commit,
-                    &options.live_ref,
+                    options.live_ref,
                     Some(&expected),
                 )
                 .map_err(AppError::operation)?
@@ -1790,7 +2112,7 @@ fn publish_conflict_group_batch(
     )
     .map_err(AppError::operation)?;
     match engine
-        .remote_ref(repository, &options.remote, &remote_ref)
+        .remote_ref(repository, options.remote, &remote_ref)
         .map_err(AppError::operation)?
     {
         Some(existing) if existing == commit => {}
@@ -1801,7 +2123,7 @@ fn publish_conflict_group_batch(
         }
         None => {
             if engine
-                .push_ref(repository, &options.remote, &commit, &remote_ref, None)
+                .push_ref(repository, options.remote, &commit, &remote_ref, None)
                 .map_err(AppError::operation)?
                 == GitPushResult::Rejected
             {
@@ -1818,7 +2140,7 @@ fn publish_conflict_group_batch(
 fn update_resolution_sync_refs(
     engine: &dyn GitEngine,
     repository: &GitRepository,
-    options: &ResolveSyncConflictOptions,
+    options: &ConflictGroupOptions<'_>,
     commit: &GitOid,
 ) -> Result<(), AppError> {
     let refs = GitSyncRefs::for_options(&GitSyncOptions {
@@ -3601,6 +3923,389 @@ fn validate_hex_id(label: &str, value: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+
+    struct GroupProposalFixture {
+        _temporary: tempfile::TempDir,
+        paths: VaultPaths,
+        store: SyncStateStore,
+        record: SyncConflictRecord,
+        engine: vulcan_sync::GitCliEngine,
+        repository: GitRepository,
+        group_ids: Vec<String>,
+        expected: GitOid,
+        remote: GitRemote,
+        live_ref: GitRefName,
+    }
+
+    fn group_git(directory: &Path, arguments: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .current_dir(directory)
+            .args(arguments)
+            .output()
+            .expect("Git should launch");
+        assert!(
+            output.status.success(),
+            "Git failed: {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("Git stdout is UTF-8")
+    }
+
+    impl GroupProposalFixture {
+        #[allow(clippy::too_many_lines)]
+        fn new() -> Self {
+            use crate::sync::sync_git_vault_with_state_store;
+
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let remote_path = temporary.path().join("remote.git");
+            let writer = temporary.path().join("writer");
+            let reader = temporary.path().join("reader");
+            group_git(
+                temporary.path(),
+                &[
+                    "init",
+                    "--quiet",
+                    "--bare",
+                    remote_path.to_str().expect("remote path"),
+                ],
+            );
+            fs::create_dir(&writer).expect("writer directory");
+            group_git(
+                &writer,
+                &["-c", "init.defaultBranch=main", "init", "--quiet"],
+            );
+            group_git(&writer, &["config", "user.name", "Vulcan Test"]);
+            group_git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+            group_git(
+                &writer,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    remote_path.to_str().expect("remote path"),
+                ],
+            );
+            for path in ["A.md", "B.md"] {
+                fs::write(writer.join(path), format!("base {path}\n")).expect("base note");
+            }
+            group_git(&writer, &["add", "--all"]);
+            group_git(&writer, &["commit", "--quiet", "-m", "base"]);
+            let store = SyncStateStore::at(temporary.path().join("state"));
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(&writer),
+                &GitSyncOptions::default(),
+                &store,
+            )
+            .expect("bootstrap");
+            group_git(
+                temporary.path(),
+                &[
+                    "-c",
+                    "core.autocrlf=false",
+                    "clone",
+                    "--quiet",
+                    writer.to_str().expect("writer path"),
+                    reader.to_str().expect("reader path"),
+                ],
+            );
+            group_git(
+                &reader,
+                &[
+                    "remote",
+                    "set-url",
+                    "origin",
+                    remote_path.to_str().expect("remote path"),
+                ],
+            );
+            group_git(&reader, &["config", "user.name", "Vulcan Test"]);
+            group_git(&reader, &["config", "user.email", "vulcan@example.invalid"]);
+            let paths = VaultPaths::new(&reader);
+            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
+                .expect("reader baseline");
+            for path in ["A.md", "B.md"] {
+                fs::write(writer.join(path), format!("remote {path}\n")).expect("remote edit");
+                fs::write(reader.join(path), format!("local {path}\n")).expect("local edit");
+            }
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(&writer),
+                &GitSyncOptions::default(),
+                &store,
+            )
+            .expect("writer push");
+            let record =
+                sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
+                    .expect("preserved conflict")
+                    .conflict_record
+                    .expect("conflict record");
+            let group_ids = vec![record
+                .paths
+                .iter()
+                .find(|path| path.path == "A.md")
+                .expect("A conflict")
+                .group_id
+                .clone()];
+            let expected = GitOid::parse(conflict_live_input(&record).expect("accepted input"))
+                .expect("accepted revision");
+            let engine = vulcan_sync::GitCliEngine::default();
+            let repository = engine
+                .discover_repository(paths.vault_root())
+                .expect("repository");
+            Self {
+                _temporary: temporary,
+                paths,
+                store,
+                record,
+                engine,
+                repository,
+                group_ids,
+                expected,
+                remote: GitRemote::parse("origin").expect("remote"),
+                live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref"),
+            }
+        }
+
+        fn tree(&self, paths: &[GitResolvedPath]) -> GitOid {
+            self.engine
+                .resolve_merge_tree_with_paths(
+                    &self.repository,
+                    &GitContentMergeResolutionRequest {
+                        base: self.expected.clone(),
+                        accepted_remote: self.expected.clone(),
+                        local_candidate: self.expected.clone(),
+                        paths: paths.to_vec(),
+                    },
+                )
+                .expect("proposal tree")
+        }
+
+        fn options<'a>(
+            &'a self,
+            tree: &'a GitOid,
+            outputs: &'a [GitResolvedPath],
+            dry_run: bool,
+        ) -> ResolveProposalConflictGroupsOptions<'a> {
+            ResolveProposalConflictGroupsOptions {
+                group_ids: &self.group_ids,
+                proposal_id: "dddddddddddddddddddddddddddddddd",
+                expected_revision: &self.expected,
+                proposed_tree: tree,
+                resolved_paths: outputs,
+                remote: &self.remote,
+                live_ref: &self.live_ref,
+                dry_run,
+            }
+        }
+
+        fn advance_unrelated(&self) {
+            fs::write(self.paths.vault_root().join("Unrelated.md"), "later\n")
+                .expect("unrelated edit");
+            crate::sync::sync_git_vault_with_state_store(
+                &self.paths,
+                &GitSyncOptions::default(),
+                &self.store,
+            )
+            .expect("unrelated live advancement");
+        }
+    }
+
+    fn proposal_output(path: &str, content: &str) -> GitResolvedPath {
+        GitResolvedPath {
+            path: path.to_string(),
+            mode: Some("100644".to_string()),
+            data: Some(content.as_bytes().to_vec()),
+        }
+    }
+
+    #[test]
+    fn proposal_group_resolution_applies_exact_tree_and_leaves_other_groups_pending() {
+        let fixture = GroupProposalFixture::new();
+        let outputs = vec![proposal_output("A.md", "reviewed A\n")];
+        let tree = fixture.tree(&outputs);
+        let cancellation = SyncCancellationToken::default();
+        let refs_before = group_git(fixture.paths.vault_root(), &["show-ref"]);
+        let preview = resolve_proposal_conflict_groups_with_state_store(
+            &fixture.paths,
+            &fixture.record.id,
+            &fixture.options(&tree, &outputs, true),
+            &cancellation,
+            &fixture.store,
+        )
+        .expect("proposal preview");
+        assert_eq!(preview.outcome, ResolveSyncConflictOutcome::Planned);
+        assert_eq!(
+            refs_before,
+            group_git(fixture.paths.vault_root(), &["show-ref"])
+        );
+        let store = SyncConflictStore::from_state_store(&fixture.store);
+        assert!(store
+            .list_batches(&fixture.record.repository_key, &fixture.record.id)
+            .expect("batches")
+            .is_empty());
+        assert_eq!(
+            fs::read_to_string(fixture.paths.vault_root().join("A.md")).expect("unchanged A"),
+            "remote A.md\n"
+        );
+
+        let options = fixture.options(&tree, &outputs, false);
+        let applied = resolve_proposal_conflict_groups_with_state_store(
+            &fixture.paths,
+            &fixture.record.id,
+            &options,
+            &cancellation,
+            &fixture.store,
+        )
+        .expect("proposal application");
+        assert_eq!(applied.outcome, ResolveSyncConflictOutcome::Resolved);
+        assert_eq!(applied.remaining_groups, 1);
+        assert_eq!(
+            fs::read_to_string(fixture.paths.vault_root().join("A.md")).expect("reviewed A"),
+            "reviewed A\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.paths.vault_root().join("B.md")).expect("pending B"),
+            "remote B.md\n"
+        );
+        let batches = store
+            .list_batches(&fixture.record.repository_key, &fixture.record.id)
+            .expect("durable batch");
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].side, None);
+        assert_eq!(batches[0].proposal_id.as_deref(), Some(options.proposal_id));
+        assert!(batches[0].published && batches[0].applied);
+        assert!(store
+            .get_effective_resolution(&fixture.record.repository_key, &fixture.record.id)
+            .expect("whole-conflict state")
+            .is_none());
+        let repeated = resolve_proposal_conflict_groups_with_state_store(
+            &fixture.paths,
+            &fixture.record.id,
+            &options,
+            &cancellation,
+            &fixture.store,
+        )
+        .expect("idempotent approval");
+        assert_eq!(
+            repeated.outcome,
+            ResolveSyncConflictOutcome::AlreadyResolved
+        );
+        assert_eq!(repeated.resolution_commit, applied.resolution_commit);
+    }
+
+    #[test]
+    fn proposal_groups_never_replan_new_or_prepared_output_after_frontier_movement() {
+        let fixture = GroupProposalFixture::new();
+        let outputs = vec![proposal_output("A.md", "reviewed A\n")];
+        let tree = fixture.tree(&outputs);
+        let options = fixture.options(&tree, &outputs, false);
+        let commit = fixture
+            .engine
+            .create_commit(
+                &fixture.repository,
+                &tree,
+                std::slice::from_ref(&fixture.expected),
+                "prepared proposal",
+            )
+            .expect("prepared commit");
+        fixture.advance_unrelated();
+        let cancellation = SyncCancellationToken::default();
+        let store = SyncConflictStore::from_state_store(&fixture.store);
+        for prepared in [false, true] {
+            let batch = SyncConflictBatchRecord {
+                version: SYNC_CONFLICT_BATCH_VERSION,
+                conflict_id: fixture.record.id.clone(),
+                batch_id: conflict_batch_id(
+                    &fixture.record.id,
+                    &fixture.group_ids,
+                    fixture.expected.as_str(),
+                    &format!("proposal:{}", options.proposal_id),
+                ),
+                group_ids: fixture.group_ids.clone(),
+                group_path_counts: selected_group_path_counts(&fixture.record, &fixture.group_ids),
+                selection_digest: conflict_group_selection_digest(&fixture.group_ids),
+                expected_revision: fixture.expected.to_string(),
+                side: None,
+                proposal_id: Some(options.proposal_id.to_string()),
+                recovery_revision: fixture.expected.to_string(),
+                resolved_tree: tree.to_string(),
+                resolution_commit: commit.to_string(),
+                published: false,
+                applied: false,
+                needs_rebase: false,
+            };
+            if prepared {
+                store
+                    .save_batch(&fixture.record.repository_key, &batch)
+                    .expect("prepared batch");
+            }
+            let error = resolve_proposal_conflict_groups_with_state_store(
+                &fixture.paths,
+                &fixture.record.id,
+                &options,
+                &cancellation,
+                &fixture.store,
+            )
+            .expect_err("pinned proposal must not be replanned");
+            assert!(error
+                .to_string()
+                .contains("create and review a new proposal"));
+            let retained = store
+                .list_batches(&fixture.record.repository_key, &fixture.record.id)
+                .expect("retained batches");
+            assert_eq!(retained, if prepared { vec![batch] } else { Vec::new() });
+        }
+        assert_eq!(
+            fs::read_to_string(fixture.paths.vault_root().join("A.md")).expect("unchanged A"),
+            "remote A.md\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.paths.vault_root().join("Unrelated.md"))
+                .expect("unrelated change"),
+            "later\n"
+        );
+    }
+
+    #[test]
+    fn proposal_group_preview_rejects_unselected_changes_and_inexact_outputs() {
+        let fixture = GroupProposalFixture::new();
+        let outputs = vec![proposal_output("A.md", "reviewed A\n")];
+        let overbroad = fixture.tree(&[
+            outputs[0].clone(),
+            proposal_output("B.md", "unreviewed B\n"),
+        ]);
+        let error = resolve_proposal_conflict_groups_with_state_store(
+            &fixture.paths,
+            &fixture.record.id,
+            &fixture.options(&overbroad, &outputs, true),
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("out-of-selection write must fail");
+        assert!(error
+            .to_string()
+            .contains("outside its selected conflict groups"));
+        let exact = fixture.tree(&outputs);
+        let wrong_outputs = vec![proposal_output("A.md", "different A\n")];
+        let error = resolve_proposal_conflict_groups_with_state_store(
+            &fixture.paths,
+            &fixture.record.id,
+            &fixture.options(&exact, &wrong_outputs, true),
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("output byte mismatch must fail");
+        assert!(error.to_string().contains("exact reviewed bytes and mode"));
+        let error = resolve_proposal_conflict_groups_with_state_store(
+            &fixture.paths,
+            &fixture.record.id,
+            &fixture.options(&exact, &[], true),
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("incomplete selected outputs must fail");
+        assert!(error
+            .to_string()
+            .contains("every selected conflict path exactly once"));
+    }
 
     fn absent_side(revision: &str) -> SyncConflictSideRecord {
         SyncConflictSideRecord {

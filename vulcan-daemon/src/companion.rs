@@ -578,6 +578,7 @@ impl<'a> CompanionService<'a> {
                 permission_profile: profile.to_string(),
                 focused_context: request.context.clone(),
                 allow_broad_context: request.allow_broad_context,
+                group_ids: Vec::new(),
             },
             agent.provider.as_ref(),
             &vulcan_app::sync::SyncCancellationToken::default(),

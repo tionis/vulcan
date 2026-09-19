@@ -1001,6 +1001,7 @@ fn run_sync_propose(
         permission_profile: profile.to_string(),
         focused_context: context.to_vec(),
         allow_broad_context,
+        group_ids: Vec::new(),
     };
     let cancellation = vulcan_app::sync::SyncCancellationToken::default();
     if auto_accept {
@@ -1999,7 +2000,8 @@ fn run_sync_resolve(
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
-    if !groups.is_empty() && !matches!(resolution, CliResolution::Side(_)) {
+    if !groups.is_empty() && !matches!(resolution, CliResolution::Side(_) | CliResolution::Files(_))
+    {
         return Err(CliError::operation(
             "--group currently requires --side; grouped file, patch, editor, and proposal workflows use selection-scoped proposals",
         ));
@@ -2022,6 +2024,7 @@ fn run_sync_resolve(
             registration_profile.as_deref(),
             conflict_id,
             specifications,
+            groups,
             target,
             dry_run,
         ),
@@ -2064,17 +2067,20 @@ fn run_sync_resolve(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_file_resolution(
     cli: &Cli,
     paths: &VaultPaths,
     registration_profile: Option<&str>,
     conflict_id: &str,
     specifications: &[String],
+    groups: &[String],
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    let (proposal_options, approval_options) =
+    let (mut proposal_options, approval_options) =
         manual_resolution_options(cli, registration_profile, target, dry_run)?;
+    proposal_options.group_ids = groups.to_vec();
     let supplied = read_supplied_resolution_files(specifications)?;
     if dry_run {
         let report = preview_supplied_resolution(
@@ -2251,6 +2257,7 @@ fn manual_resolution_options(
             permission_profile: profile.to_string(),
             focused_context: Vec::new(),
             allow_broad_context: false,
+            group_ids: Vec::new(),
         },
         approval_options(target, dry_run)?,
     ))
