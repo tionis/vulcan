@@ -2874,10 +2874,12 @@ fn build_conflict_projection(
     if conflict_paths.is_empty() {
         return Ok(None);
     }
+    let remote_objects = engine.path_objects(repository, remote, conflict_paths)?;
+    let local_objects = engine.path_objects(repository, local, conflict_paths)?;
     let mut resolved = Vec::new();
     for path in conflict_paths {
-        let remote_object = engine.path_object(repository, remote, path)?;
-        let local_object = engine.path_object(repository, local, path)?;
+        let remote_object = remote_objects.get(path);
+        let local_object = local_objects.get(path);
         // Git can report a synthesized destination for directory-rename and
         // file-location conflicts even though that path exists in neither
         // input tree. A path-only projection cannot faithfully preserve
@@ -2886,16 +2888,12 @@ fn build_conflict_projection(
         if remote_object.is_none() && local_object.is_none() {
             return Ok(None);
         }
-        if remote_object
-            .as_ref()
-            .is_some_and(|object| !is_projectable_blob(object))
-            || local_object
-                .as_ref()
-                .is_some_and(|object| !is_projectable_blob(object))
+        if remote_object.is_some_and(|object| !is_projectable_blob(object))
+            || local_object.is_some_and(|object| !is_projectable_blob(object))
         {
             return Ok(None);
         }
-        resolved.push(resolved_path(path.clone(), remote_object.as_ref()));
+        resolved.push(resolved_path(path.clone(), remote_object));
     }
     let tree = engine.resolve_merge_tree_with_paths(
         repository,
@@ -2945,21 +2943,24 @@ fn classify_conflicts(
     paths: &[String],
     diagnostics: &str,
 ) -> Result<Vec<GitConflictClassification>, GitSyncError> {
+    let base_objects = base
+        .map(|base| engine.path_objects(repository, base, paths))
+        .transpose()?
+        .unwrap_or_default();
+    let local_objects = engine.path_objects(repository, local, paths)?;
+    let remote_objects = engine.path_objects(repository, remote, paths)?;
     paths
         .iter()
         .map(|path| {
-            let base_object = base
-                .map(|base| engine.path_object(repository, base, path))
-                .transpose()?
-                .flatten();
-            let local_object = engine.path_object(repository, local, path)?;
-            let remote_object = engine.path_object(repository, remote, path)?;
+            let base_object = base_objects.get(path);
+            let local_object = local_objects.get(path);
+            let remote_object = remote_objects.get(path);
             let file_kind = MergeFileKind::classify(
                 path,
                 &[
-                    object_data(base_object.as_ref()),
-                    object_data(local_object.as_ref()),
-                    object_data(remote_object.as_ref()),
+                    object_data(base_object),
+                    object_data(local_object),
+                    object_data(remote_object),
                 ],
             );
             let decision = options
@@ -2975,9 +2976,9 @@ fn classify_conflicts(
                 path,
                 paths,
                 diagnostics,
-                base_object.as_ref(),
-                local_object.as_ref(),
-                remote_object.as_ref(),
+                base_object,
+                local_object,
+                remote_object,
                 file_kind,
             );
             Ok(GitConflictClassification {
@@ -3068,18 +3069,21 @@ fn try_structured_merge(
     if paths.is_empty() {
         return Ok(None);
     }
+    let base_objects = engine
+        .path_objects(repository, base, paths)
+        .map_err(|error| error.to_string())?;
+    let local_objects = engine
+        .path_objects(repository, local, paths)
+        .map_err(|error| error.to_string())?;
+    let remote_objects = engine
+        .path_objects(repository, remote, paths)
+        .map_err(|error| error.to_string())?;
     let mut resolved_paths = Vec::with_capacity(paths.len());
     let mut resolutions = Vec::with_capacity(paths.len());
     for path in paths {
-        let base_object = engine
-            .path_object(repository, base, path)
-            .map_err(|error| error.to_string())?;
-        let local_object = engine
-            .path_object(repository, local, path)
-            .map_err(|error| error.to_string())?;
-        let remote_object = engine
-            .path_object(repository, remote, path)
-            .map_err(|error| error.to_string())?;
+        let base_object = base_objects.get(path);
+        let local_object = local_objects.get(path);
+        let remote_object = remote_objects.get(path);
         if [&base_object, &local_object, &remote_object]
             .into_iter()
             .flatten()
@@ -3090,9 +3094,9 @@ fn try_structured_merge(
         let kind = MergeFileKind::classify(
             path,
             &[
-                object_data(base_object.as_ref()),
-                object_data(local_object.as_ref()),
-                object_data(remote_object.as_ref()),
+                object_data(base_object),
+                object_data(local_object),
+                object_data(remote_object),
             ],
         );
         let decision = options
@@ -3105,20 +3109,18 @@ fn try_structured_merge(
         let crate::structured_merge::StructuredMergeOutcome::Resolved(data) =
             crate::structured_merge::merge_structured_path(
                 kind,
-                object_data(base_object.as_ref()),
-                object_data(local_object.as_ref()),
-                object_data(remote_object.as_ref()),
+                object_data(base_object),
+                object_data(local_object),
+                object_data(remote_object),
                 local.as_str(),
                 remote.as_str(),
             )?
         else {
             return Ok(None);
         };
-        let MergedObjectMode::Resolved(mode) = merge_object_mode(
-            base_object.as_ref(),
-            local_object.as_ref(),
-            remote_object.as_ref(),
-        ) else {
+        let MergedObjectMode::Resolved(mode) =
+            merge_object_mode(base_object, local_object, remote_object)
+        else {
             return Ok(None);
         };
         if data.is_none() {
@@ -3178,6 +3180,13 @@ fn validate_resolved_tree(
     tree: &GitOid,
     resolved_paths: &[GitResolvedPath],
 ) -> Result<(), String> {
+    let selected = resolved_paths
+        .iter()
+        .map(|path| path.path.clone())
+        .collect::<Vec<_>>();
+    let actual_objects = engine
+        .path_objects(repository, tree, &selected)
+        .map_err(|error| error.to_string())?;
     for resolved in resolved_paths {
         let Some(expected_data) = resolved.data.as_ref() else {
             return Err(format!(
@@ -3185,9 +3194,8 @@ fn validate_resolved_tree(
                 resolved.path
             ));
         };
-        let actual = engine
-            .path_object(repository, tree, &resolved.path)
-            .map_err(|error| error.to_string())?
+        let actual = actual_objects
+            .get(&resolved.path)
             .ok_or_else(|| format!("resolved tree omitted `{}`", resolved.path))?;
         if actual.kind != "blob"
             || actual.mode.as_str() != resolved.mode.as_deref().unwrap_or_default()

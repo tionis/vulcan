@@ -176,6 +176,53 @@ pub trait GitEngine: Send + Sync {
         path: &str,
     ) -> Result<Option<GitPathObject>, GitEngineError>;
 
+    /// Reads metadata and contents for selected paths with work bounded by
+    /// repository-wide tree and object batches rather than by path count.
+    fn path_objects(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        paths: &[String],
+    ) -> Result<BTreeMap<String, GitPathObject>, GitEngineError> {
+        let selected = paths.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let entries = self
+            .tree_entries(repository, revision)?
+            .into_iter()
+            .filter(|entry| selected.contains(entry.path.as_str()))
+            .collect::<Vec<_>>();
+        let blob_ids = entries
+            .iter()
+            .filter(|entry| entry.kind == "blob")
+            .map(|entry| entry.oid.clone())
+            .collect::<Vec<_>>();
+        let mut blobs = self.read_blobs(repository, &blob_ids)?;
+        entries
+            .into_iter()
+            .map(|entry| {
+                let data =
+                    if entry.kind == "blob" {
+                        Some(blobs.remove(&entry.oid).ok_or_else(|| {
+                            GitEngineError::InvalidOutput {
+                                operation: "read selected Git path objects",
+                                detail: format!("batch response omitted blob `{}`", entry.oid),
+                            }
+                        })?)
+                    } else {
+                        None
+                    };
+                Ok((
+                    entry.path,
+                    GitPathObject {
+                        oid: entry.oid,
+                        mode: entry.mode,
+                        kind: entry.kind,
+                        data,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     /// Reads a set of known blob objects through one repository command.
     /// Duplicate object IDs are collapsed in the returned map.
     fn read_blobs(
@@ -359,6 +406,18 @@ pub trait GitEngine: Send + Sync {
     /// worktree, the user's index, or any temporary files.
     fn write_blob(&self, repository: &GitRepository, data: &[u8])
         -> Result<GitOid, GitEngineError>;
+
+    /// Writes multiple blobs while preserving input order. Engines may
+    /// override this to use one bounded process transaction.
+    fn write_blobs(
+        &self,
+        repository: &GitRepository,
+        data: &[&[u8]],
+    ) -> Result<Vec<GitOid>, GitEngineError> {
+        data.iter()
+            .map(|data| self.write_blob(repository, data))
+            .collect()
+    }
 
     /// Creates a single-file `100644` tree for one blob without touching the
     /// worktree, the user's index, or any temporary files.
@@ -3180,40 +3239,7 @@ impl GitEngine for GitCliEngine {
             "prepare a structured merge resolution",
             ["read-tree", merge_tree.as_str()],
         )?;
-        for resolved in &request.paths {
-            validate_repository_path(&resolved.path)?;
-            match (&resolved.mode, &resolved.data) {
-                (Some(mode), Some(data)) => {
-                    validate_resolved_blob(mode, data)?;
-                    let oid = self.write_blob(repository, data)?;
-                    let mut command = self.index_command(repository, &index_path)?;
-                    command
-                        .args(["update-index", "--add", "--cacheinfo"])
-                        .arg(mode)
-                        .arg(oid.as_str())
-                        .arg(&resolved.path);
-                    ensure_success("install a structured merge result", self.execute(command)?)?;
-                }
-                (None, None) => {
-                    let mut command = self.index_command(repository, &index_path)?;
-                    command
-                        .args(["update-index", "--force-remove", "--"])
-                        .arg(&resolved.path);
-                    ensure_success(
-                        "install a structured merge deletion",
-                        self.execute(command)?,
-                    )?;
-                }
-                _ => {
-                    return Err(GitEngineError::UnsupportedRepository {
-                        detail: format!(
-                            "structured merge path `{}` must provide both mode and data or neither",
-                            resolved.path
-                        ),
-                    });
-                }
-            }
-        }
+        install_content_merge_paths(self, repository, &index_path, request)?;
         GitOid::parse(
             self.index_capture(
                 repository,
@@ -3275,6 +3301,45 @@ impl GitEngine for GitCliEngine {
             self.execute_with_input(command, "write a Git blob", data)?,
         )?;
         GitOid::parse(decode_stdout("write a Git blob", output.stdout)?.trim())
+    }
+
+    fn write_blobs(
+        &self,
+        repository: &GitRepository,
+        data: &[&[u8]],
+    ) -> Result<Vec<GitOid>, GitEngineError> {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let directory = tempfile::tempdir_in(&repository.git_dir)?;
+        let mut input = Vec::new();
+        for (index, bytes) in data.iter().enumerate() {
+            let path = directory.path().join(format!("blob-{index:06}"));
+            std::fs::write(&path, bytes)?;
+            writeln!(input, "{}", path.display()).expect("writing to a Vec cannot fail");
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["hash-object", "-w", "--stdin-paths"]);
+        let output = ensure_success(
+            "write Git blobs in a batch",
+            self.execute_with_input(command, "write Git blobs in a batch", &input)?,
+        )?;
+        let stdout = decode_stdout("write Git blobs in a batch", output.stdout)?;
+        let oids = stdout
+            .lines()
+            .map(GitOid::parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        if oids.len() != data.len() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "write Git blobs in a batch",
+                detail: format!(
+                    "expected {} object IDs but Git returned {}",
+                    data.len(),
+                    oids.len()
+                ),
+            });
+        }
+        Ok(oids)
     }
 
     fn create_single_file_tree(
@@ -5134,6 +5199,68 @@ fn validate_repository_path(path: &str) -> Result<(), GitEngineError> {
     } else {
         Ok(())
     }
+}
+
+fn install_content_merge_paths(
+    engine: &GitCliEngine,
+    repository: &GitRepository,
+    index_path: &Path,
+    request: &GitContentMergeResolutionRequest,
+) -> Result<(), GitEngineError> {
+    let mut blob_inputs = Vec::new();
+    for resolved in &request.paths {
+        validate_repository_path(&resolved.path)?;
+        match (&resolved.mode, &resolved.data) {
+            (Some(mode), Some(data)) => {
+                validate_resolved_blob(mode, data)?;
+                blob_inputs.push(data.as_slice());
+            }
+            (None, None) => {}
+            _ => {
+                return Err(GitEngineError::UnsupportedRepository {
+                    detail: format!(
+                        "structured merge path `{}` must provide both mode and data or neither",
+                        resolved.path
+                    ),
+                });
+            }
+        }
+    }
+    let mut blob_oids = engine.write_blobs(repository, &blob_inputs)?.into_iter();
+    let null_oid = "0".repeat(request.base.as_str().len());
+    let mut index_input = Vec::new();
+    for resolved in &request.paths {
+        match (&resolved.mode, &resolved.data) {
+            (Some(mode), Some(_)) => {
+                let oid = blob_oids
+                    .next()
+                    .ok_or_else(|| GitEngineError::InvalidOutput {
+                        operation: "install structured merge results",
+                        detail: "batch blob writer returned too few object IDs".to_string(),
+                    })?;
+                write!(index_input, "{mode} {oid}\t{}\0", resolved.path)
+                    .expect("writing to a Vec cannot fail");
+            }
+            (None, None) => {
+                write!(index_input, "0 {null_oid}\t{}\0", resolved.path)
+                    .expect("writing to a Vec cannot fail");
+            }
+            _ => unreachable!("resolved path shape was validated above"),
+        }
+    }
+    if blob_oids.next().is_some() {
+        return Err(GitEngineError::InvalidOutput {
+            operation: "install structured merge results",
+            detail: "batch blob writer returned too many object IDs".to_string(),
+        });
+    }
+    let mut command = engine.index_command(repository, index_path)?;
+    command.args(["update-index", "-z", "--index-info"]);
+    ensure_success(
+        "install structured merge results",
+        engine.execute_with_input(command, "install structured merge results", &index_input)?,
+    )?;
+    Ok(())
 }
 
 fn validate_resolved_blob(mode: &str, data: &[u8]) -> Result<(), GitEngineError> {
@@ -7250,6 +7377,77 @@ mod tests {
         assert_eq!(
             blobs.get(&second).map(Vec::as_slice),
             Some(b"second blob".as_slice())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_path_objects_and_blob_writes_use_bounded_git_processes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        for index in 0..200 {
+            std::fs::write(
+                temporary.path().join(format!("note-{index:03}.md")),
+                format!("note {index}\n"),
+            )
+            .expect("fixture note");
+        }
+        run_git(temporary.path(), &["add", "."]);
+        run_git(temporary.path(), &["commit", "-m", "fixture"]);
+        let revision = GitOid::parse(run_git_capture(temporary.path(), &["rev-parse", "HEAD"]))
+            .expect("revision");
+        let trace = temporary.path().join("git-invocations.log");
+        let wrapper = temporary.path().join("git-wrapper");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                trace.display()
+            ),
+        )
+        .expect("Git wrapper");
+        let mut permissions = std::fs::metadata(&wrapper)
+            .expect("wrapper metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
+        let engine = GitCliEngine::new(&wrapper);
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        std::fs::write(&trace, "").expect("reset trace");
+        let paths = (0..200)
+            .map(|index| format!("note-{index:03}.md"))
+            .collect::<Vec<_>>();
+
+        let objects = engine
+            .path_objects(&repository, &revision, &paths)
+            .expect("selected objects");
+        assert_eq!(objects.len(), paths.len());
+        assert_eq!(
+            std::fs::read_to_string(&trace)
+                .expect("read trace")
+                .lines()
+                .count(),
+            2,
+            "one tree inventory and one batch blob read"
+        );
+
+        std::fs::write(&trace, "").expect("reset trace");
+        let inputs = paths.iter().map(String::as_bytes).collect::<Vec<_>>();
+        let written = engine
+            .write_blobs(&repository, &inputs)
+            .expect("batch blob write");
+        assert_eq!(written.len(), inputs.len());
+        assert_eq!(
+            std::fs::read_to_string(&trace)
+                .expect("read trace")
+                .lines()
+                .count(),
+            1,
+            "all blobs are written by one Git process"
         );
     }
 

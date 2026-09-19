@@ -5,6 +5,7 @@ use crate::scan::refresh_cache_incrementally;
 use crate::sync_state::{same_work_tree, SyncStateStore};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::{ScanSummary, VaultPaths};
@@ -1090,41 +1091,51 @@ impl SyncConflictStore {
             AppError::operation("cannot preserve a sync conflict for a bare repository")
         })?;
         fs::create_dir_all(directory.join("artifacts")).map_err(AppError::operation)?;
+        let base_objects = conflict
+            .base
+            .as_ref()
+            .map(|revision| engine.path_objects(repository, revision, &conflict.paths))
+            .transpose()
+            .map_err(AppError::operation)?
+            .unwrap_or_default();
+        let local_objects = engine
+            .path_objects(repository, &conflict.local, &conflict.paths)
+            .map_err(AppError::operation)?;
+        let remote_objects = engine
+            .path_objects(repository, &conflict.remote, &conflict.paths)
+            .map_err(AppError::operation)?;
+        let classifications = conflict
+            .classifications
+            .iter()
+            .map(|classification| (classification.path.as_str(), classification))
+            .collect::<BTreeMap<_, _>>();
         let mut paths = Vec::with_capacity(conflict.paths.len());
         for (index, path) in conflict.paths.iter().enumerate() {
             paths.push(SyncConflictPathRecord {
                 path: path.clone(),
-                classification: conflict
-                    .classifications
-                    .iter()
-                    .find(|classification| classification.path == *path)
-                    .cloned(),
+                classification: classifications
+                    .get(path.as_str())
+                    .map(|value| (*value).clone()),
                 base: preserve_side(
-                    engine,
-                    repository,
                     &directory,
                     index,
                     "base",
                     conflict.base.as_ref(),
-                    path,
+                    base_objects.get(path),
                 )?,
                 local: preserve_side(
-                    engine,
-                    repository,
                     &directory,
                     index,
                     "local",
                     Some(&conflict.local),
-                    path,
+                    local_objects.get(path),
                 )?,
                 remote: preserve_side(
-                    engine,
-                    repository,
                     &directory,
                     index,
                     "remote",
                     Some(&conflict.remote),
-                    path,
+                    remote_objects.get(path),
                 )?,
             });
         }
@@ -1429,13 +1440,11 @@ impl SyncConflictStore {
 }
 
 fn preserve_side(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
     conflict_directory: &Path,
     index: usize,
     side: &str,
     revision: Option<&GitOid>,
-    path: &str,
+    object: Option<&vulcan_sync::GitPathObject>,
 ) -> Result<SyncConflictSideRecord, AppError> {
     let Some(revision) = revision else {
         return Ok(SyncConflictSideRecord {
@@ -1448,9 +1457,6 @@ fn preserve_side(
             bytes: None,
         });
     };
-    let object = engine
-        .path_object(repository, revision, path)
-        .map_err(AppError::operation)?;
     let Some(object) = object else {
         return Ok(SyncConflictSideRecord {
             revision: revision.to_string(),
@@ -1462,13 +1468,13 @@ fn preserve_side(
             bytes: None,
         });
     };
-    let (artifact, content_hash, bytes) = if let Some(data) = object.data {
+    let (artifact, content_hash, bytes) = if let Some(data) = object.data.as_deref() {
         let relative = PathBuf::from(format!("artifacts/{index:04}-{side}.bin"));
         let path = conflict_directory.join(&relative);
-        write_bytes_noclobber(&path, &data)?;
+        write_bytes_noclobber(&path, data)?;
         (
             Some(relative),
-            Some(blake3::hash(&data).to_hex().to_string()),
+            Some(blake3::hash(data).to_hex().to_string()),
             Some(data.len() as u64),
         )
     } else {
@@ -1477,8 +1483,8 @@ fn preserve_side(
     Ok(SyncConflictSideRecord {
         revision: revision.to_string(),
         object_id: Some(object.oid.to_string()),
-        mode: Some(object.mode),
-        kind: Some(object.kind),
+        mode: Some(object.mode.clone()),
+        kind: Some(object.kind.clone()),
         artifact,
         content_hash,
         bytes,
