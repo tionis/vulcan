@@ -71,6 +71,12 @@ struct VaultListQuery {
     group: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ConflictDetailQuery {
+    path_offset: Option<usize>,
+    path_limit: Option<usize>,
+}
+
 #[derive(Debug, Serialize)]
 struct CompanionEventSnapshot {
     version: u32,
@@ -428,9 +434,29 @@ async fn list_conflicts(
 async fn conflict_detail(
     State(state): State<CompanionHttpState>,
     Path((id, conflict)): Path<(String, String)>,
+    query: Result<Query<ConflictDetailQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_wiki_id(id)?;
-    let result = blocking(move || state.service().conflict_detail(&id, &conflict)).await?;
+    let Query(query) = query.map_err(request_rejection)?;
+    if query.path_offset.is_some() && query.path_limit.is_none() {
+        return Err(ApiError(CompanionError::new(
+            CompanionErrorKind::InvalidRequest,
+            "path_offset requires path_limit",
+        )));
+    }
+    let result = blocking(move || {
+        if let Some(limit) = query.path_limit {
+            state.service().conflict_detail_page(
+                &id,
+                &conflict,
+                query.path_offset.unwrap_or_default(),
+                limit,
+            )
+        } else {
+            state.service().conflict_detail(&id, &conflict)
+        }
+    })
+    .await?;
     Ok(Json(serde_json::to_value(result).map_err(json_error)?))
 }
 

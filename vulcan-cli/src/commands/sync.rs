@@ -434,8 +434,8 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Doctor { wiki, target } => {
             run_sync_doctor(cli, paths, wiki.as_deref(), target)
         }
-        SyncCommand::Conflicts { conflict_id, wiki } => {
-            run_sync_conflicts(cli, paths, wiki.as_deref(), conflict_id.as_deref())
+        command @ SyncCommand::Conflicts { .. } => {
+            handle_sync_conflicts_command(cli, paths, command)
         }
         SyncCommand::Propose {
             conflict_id,
@@ -870,6 +870,30 @@ fn handle_retention_command(
         )),
         _ => None,
     }
+}
+
+fn handle_sync_conflicts_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &SyncCommand,
+) -> Result<(), CliError> {
+    let SyncCommand::Conflicts {
+        conflict_id,
+        path_offset,
+        path_limit,
+        wiki,
+    } = command
+    else {
+        unreachable!("conflicts handler receives a conflicts command")
+    };
+    run_sync_conflicts(
+        cli,
+        paths,
+        wiki.as_deref(),
+        conflict_id.as_deref(),
+        *path_offset,
+        *path_limit,
+    )
 }
 
 fn handle_sync_resolve_command(
@@ -2622,11 +2646,28 @@ fn run_sync_conflicts(
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
     conflict_id: Option<&str>,
+    path_offset: usize,
+    path_limit: Option<usize>,
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    if conflict_id.is_none() && (path_offset != 0 || path_limit.is_some()) {
+        return Err(CliError::operation(
+            "--path-offset and --path-limit require a conflict ID",
+        ));
+    }
     if let Some(conflict_id) = conflict_id {
-        let report = get_sync_conflict(&paths, conflict_id).map_err(CliError::operation)?;
+        let report = if let Some(limit) = path_limit {
+            vulcan_app::sync_conflicts::get_sync_conflict_page(
+                &paths,
+                conflict_id,
+                path_offset,
+                limit,
+            )
+        } else {
+            get_sync_conflict(&paths, conflict_id)
+        }
+        .map_err(CliError::operation)?;
         print_sync_conflict_detail(cli.output, &report, wiki)
     } else {
         let report = list_sync_conflicts(&paths).map_err(CliError::operation)?;
@@ -2651,10 +2692,11 @@ fn print_sync_conflict_list(
     }
     for conflict in &report.conflicts {
         println!(
-            "{}\t{:?}\t{} path(s)\t{}",
+            "{}\t{:?}\t{} path(s), {} pending group(s)\t{}",
             conflict.id,
             conflict.scope,
-            conflict.paths.len(),
+            conflict.path_count,
+            conflict.pending_group_count,
             conflict.paths.join(", ")
         );
         println!(
@@ -2695,15 +2737,41 @@ fn print_sync_conflict_detail(
     if let Some(base) = &report.record.base_revision {
         println!("Base:   {base}");
     }
+    println!(
+        "Progress: {} pending, {} prepared, {} published, {} applied, {} need rebase ({} total groups)",
+        report.progress.pending_groups,
+        report.progress.prepared_groups,
+        report.progress.published_groups,
+        report.progress.applied_groups,
+        report.progress.needs_rebase_groups,
+        report.progress.total_groups,
+    );
     for path in &report.record.paths {
         if let Some(classification) = &path.classification {
             println!(
-                "Path:   {} ({:?}; {:?})",
-                path.path, classification.class, classification.effective_resolution
+                "Path:   {} [group {} {:?}] ({:?}; {:?})",
+                path.path,
+                path.group_id,
+                path.group_kind,
+                classification.class,
+                classification.effective_resolution
             );
         } else {
-            println!("Path:   {}", path.path);
+            println!(
+                "Path:   {} [group {} {:?}]",
+                path.path, path.group_id, path.group_kind
+            );
         }
+    }
+    if let Some(page) = &report.path_page {
+        println!(
+            "Path page: offset {}, returned {}, total {}{}",
+            page.offset,
+            report.record.paths.len(),
+            page.total,
+            page.next_offset
+                .map_or_else(String::new, |offset| format!(", next offset {offset}"))
+        );
     }
     if report.resolution == SyncConflictResolutionState::Superseded {
         println!("Action: none; later synchronization superseded this immutable history record.");

@@ -9316,6 +9316,28 @@
                 ]
               },
               {
+                "help": "Zero-based path offset for paged conflict detail",
+                "id": "path_offset",
+                "long": "path-offset",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH_OFFSET"
+                ]
+              },
+              {
+                "help": "Return at most this many paths (1-256) with explicit page metadata",
+                "id": "path_limit",
+                "long": "path-limit",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COUNT"
+                ]
+              },
+              {
                 "help": "Optional registered wiki ID",
                 "id": "wiki",
                 "long": "wiki",

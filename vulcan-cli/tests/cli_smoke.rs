@@ -6944,6 +6944,8 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
     assert!(detail["record"]["preserved_record_ref"].is_string());
     assert!(detail["record"]["provenance_revision"].is_string());
     assert_eq!(detail["record"]["paths"][0]["path"], "Home.md");
+    assert!(detail["record"]["paths"][0]["group_id"].is_string());
+    assert_eq!(detail["progress"]["total_groups"], 1);
     assert_eq!(
         detail["record"]["paths"][0]["classification"]["class"],
         "overlapping_text"
@@ -6957,6 +6959,10 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
         "sync.conflict.overlapping-text"
     );
     assert_eq!(detail["resolution"], "unresolved");
+    let paged = parse_stdout_json(&command(&[&id, "--path-limit", "1"]));
+    assert_eq!(paged["path_page"]["offset"], 0);
+    assert_eq!(paged["path_page"]["limit"], 1);
+    assert_eq!(paged["path_page"]["total"], 1);
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
         "writer\n"

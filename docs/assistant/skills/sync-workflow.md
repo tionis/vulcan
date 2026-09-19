@@ -143,6 +143,10 @@ they commit.
   device-local artifacts.
   A fully applied resolution prunes its artifact copies automatically (newest 32 retained); the
   immutable refs remain the durable byte archive.
+- For a large record, page detail with `--path-offset <n> --path-limit <1-256>`. Read
+  `path_page.total` and `path_page.next_offset` rather than assuming the returned path array is
+  complete. Summary and detail progress counts identify pending, prepared, published, applied, and
+  rebase-required groups without reading file contents.
 - Never choose a winner implicitly. Preview one explicit side with
   `vulcan sync resolve <id> --side base|local|remote --dry-run`.
   For a large path conflict, inspect each path's `group_id`, then repeat

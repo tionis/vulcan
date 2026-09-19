@@ -2686,6 +2686,8 @@ fn parses_sync_conflicts_commands() {
         Command::Sync {
             command: SyncCommand::Conflicts {
                 conflict_id: None,
+                path_offset: 0,
+                path_limit: None,
                 wiki: Some("personal".to_string()),
             },
         }
@@ -2695,6 +2697,10 @@ fn parses_sync_conflicts_commands() {
         "sync",
         "conflicts",
         "0123456789abcdef0123456789abcdef",
+        "--path-offset",
+        "128",
+        "--path-limit",
+        "64",
     ])
     .expect("sync conflict detail should parse");
     assert!(matches!(
@@ -2702,6 +2708,8 @@ fn parses_sync_conflicts_commands() {
         Command::Sync {
             command: SyncCommand::Conflicts {
                 conflict_id: Some(_),
+                path_offset: 128,
+                path_limit: Some(64),
                 wiki: None,
             }
         }

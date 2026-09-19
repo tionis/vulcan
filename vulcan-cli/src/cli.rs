@@ -4035,6 +4035,18 @@ pub enum SyncCommand {
     Conflicts {
         #[arg(help = "Immutable conflict ID; omit to list conflicts")]
         conflict_id: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 0,
+            help = "Zero-based path offset for paged conflict detail"
+        )]
+        path_offset: usize,
+        #[arg(
+            long,
+            value_name = "COUNT",
+            help = "Return at most this many paths (1-256) with explicit page metadata"
+        )]
+        path_limit: Option<usize>,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
     },

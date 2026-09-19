@@ -19,9 +19,10 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Mutex;
 use vulcan_app::sync_conflicts::{
-    get_sync_conflict_with_state_store, list_sync_conflicts_with_state_store,
-    resolve_sync_conflict_with_state_store, ResolveSyncConflictOptions, ResolveSyncConflictReport,
-    SyncConflictDetailReport, SyncConflictListReport, SyncConflictResolutionSide,
+    get_sync_conflict_page_with_state_store, get_sync_conflict_with_state_store,
+    list_sync_conflicts_with_state_store, resolve_sync_conflict_with_state_store,
+    ResolveSyncConflictOptions, ResolveSyncConflictReport, SyncConflictDetailReport,
+    SyncConflictListReport, SyncConflictResolutionSide,
 };
 use vulcan_app::sync_proposals::{
     approve_resolution_proposal_with_state_store, create_resolution_proposal_with_provider,
@@ -75,11 +76,20 @@ pub struct CompanionCapabilities {
     pub transports: Vec<String>,
     pub sync_backends: Vec<String>,
     pub conflict_resolution_sides: Vec<SyncConflictResolutionSide>,
+    pub conflict_contract: CompanionConflictCapabilities,
     pub agent_conflict_proposals: bool,
     pub agent_conflict_proposal_limit_per_conflict: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_conflict_proposal_claim_scope: Option<CompanionProposalClaimScope>,
     pub agent_semantic_plans: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CompanionConflictCapabilities {
+    pub path_pagination: bool,
+    pub maximum_path_page_size: usize,
+    pub group_batches: bool,
+    pub maximum_groups_per_batch: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -383,6 +393,12 @@ impl<'a> CompanionService<'a> {
                 SyncConflictResolutionSide::Local,
                 SyncConflictResolutionSide::Remote,
             ],
+            conflict_contract: CompanionConflictCapabilities {
+                path_pagination: true,
+                maximum_path_page_size: 256,
+                group_batches: true,
+                maximum_groups_per_batch: 128,
+            },
             agent_conflict_proposals: self.resolution_agent.is_some(),
             agent_conflict_proposal_limit_per_conflict: u32::from(self.resolution_agent.is_some()),
             agent_conflict_proposal_claim_scope: self
@@ -478,6 +494,24 @@ impl<'a> CompanionService<'a> {
         get_sync_conflict_with_state_store(
             &VaultPaths::new(registration.path),
             conflict_id,
+            self.state_store,
+        )
+        .map_err(map_app_error)
+    }
+
+    pub fn conflict_detail_page(
+        &self,
+        wiki_id: &WikiId,
+        conflict_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<SyncConflictDetailReport, CompanionError> {
+        let registration = self.checked_git_registration(wiki_id)?;
+        get_sync_conflict_page_with_state_store(
+            &VaultPaths::new(registration.path),
+            conflict_id,
+            offset,
+            limit,
             self.state_store,
         )
         .map_err(map_app_error)
@@ -1082,6 +1116,16 @@ mod tests {
         assert_eq!(value["protocol_version"], json!(1));
         assert_eq!(value["sync_contract_version"], json!(1));
         assert_eq!(value["agent_conflict_proposals"], json!(false));
+        assert_eq!(value["conflict_contract"]["path_pagination"], json!(true));
+        assert_eq!(
+            value["conflict_contract"]["maximum_path_page_size"],
+            json!(256)
+        );
+        assert_eq!(value["conflict_contract"]["group_batches"], json!(true));
+        assert_eq!(
+            value["conflict_contract"]["maximum_groups_per_batch"],
+            json!(128)
+        );
         assert_eq!(
             value["agent_conflict_proposal_limit_per_conflict"],
             json!(0)

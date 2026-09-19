@@ -291,6 +291,9 @@ pub struct SyncConflictSummary {
     pub id: String,
     pub scope: GitConflictScope,
     pub paths: Vec<String>,
+    pub path_count: usize,
+    pub group_count: usize,
+    pub pending_group_count: usize,
     pub base_revision: Option<String>,
     pub local_revision: String,
     pub remote_revision: String,
@@ -422,8 +425,20 @@ pub struct SyncConflictListReport {
 pub struct SyncConflictDetailReport {
     pub record: SyncConflictRecord,
     pub resolution: SyncConflictResolutionState,
+    pub progress: SyncConflictProgress,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_page: Option<SyncConflictPathPageInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supersession: Option<SyncConflictSupersessionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncConflictPathPageInfo {
+    pub offset: usize,
+    pub limit: usize,
+    pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 pub fn list_sync_conflicts(
@@ -446,12 +461,17 @@ pub fn list_sync_conflicts_with_state_store(
         .map(|record| {
             let resolution = store.resolution_state(&repository_key, &record.id)?;
             let scope = effective_conflict_scope(&record);
+            let progress = store.group_progress(&repository_key, &record)?;
+            let path_count = record.paths.len();
             Ok((
                 resolution,
                 SyncConflictSummary {
                     id: record.id,
                     scope,
                     paths: record.paths.into_iter().map(|path| path.path).collect(),
+                    path_count,
+                    group_count: progress.total_groups,
+                    pending_group_count: progress.pending_groups + progress.needs_rebase_groups,
                     base_revision: record.base_revision,
                     local_revision: record.local_revision,
                     remote_revision: record.remote_revision,
@@ -499,9 +519,67 @@ pub fn get_sync_conflict_with_state_store(
     let record = store.get(&repository_key, conflict_id)?;
     let resolution = store.resolution_state(&repository_key, conflict_id)?;
     let supersession = store.get_supersession(&repository_key, conflict_id)?;
+    let progress = store.group_progress(&repository_key, &record)?;
     Ok(SyncConflictDetailReport {
         record,
         resolution,
+        progress,
+        path_page: None,
+        supersession,
+    })
+}
+
+pub fn get_sync_conflict_page(
+    paths: &vulcan_core::VaultPaths,
+    conflict_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<SyncConflictDetailReport, AppError> {
+    if limit == 0 || limit > 256 {
+        return Err(AppError::operation(
+            "sync conflict path page limit must be between 1 and 256",
+        ));
+    }
+    let state_store = SyncStateStore::user_default()?;
+    get_sync_conflict_page_with_state_store(paths, conflict_id, offset, limit, &state_store)
+}
+
+pub fn get_sync_conflict_page_with_state_store(
+    paths: &vulcan_core::VaultPaths,
+    conflict_id: &str,
+    offset: usize,
+    limit: usize,
+    state_store: &SyncStateStore,
+) -> Result<SyncConflictDetailReport, AppError> {
+    if limit == 0 || limit > 256 {
+        return Err(AppError::operation(
+            "sync conflict path page limit must be between 1 and 256",
+        ));
+    }
+    let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let repository_key = crate::sync_state::repository_state_key(&work_tree);
+    let store = SyncConflictStore::from_state_store(state_store);
+    let full_record = store.get(&repository_key, conflict_id)?;
+    let total = full_record.paths.len();
+    let progress = store.group_progress(&repository_key, &full_record)?;
+    let mut record = full_record;
+    record.paths = record.paths.into_iter().skip(offset).take(limit).collect();
+    let resolution = store.resolution_state(&repository_key, conflict_id)?;
+    let supersession = store.get_supersession(&repository_key, conflict_id)?;
+    let next_offset = offset
+        .saturating_add(record.paths.len())
+        .lt(&total)
+        .then(|| offset + record.paths.len());
+    Ok(SyncConflictDetailReport {
+        record,
+        resolution,
+        progress,
+        path_page: Some(SyncConflictPathPageInfo {
+            offset,
+            limit,
+            total,
+            next_offset,
+        }),
         supersession,
     })
 }
@@ -3257,6 +3335,51 @@ mod tests {
         );
         let loaded = store.get(&key, &id).expect("paged record loads");
         assert_eq!(loaded, record);
+    }
+
+    #[test]
+    fn conflict_detail_pages_report_explicit_bounds_and_progress() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let canonical = fs::canonicalize(&vault).expect("canonical vault");
+        let key = crate::sync_state::repository_state_key(&canonical);
+        let id = "b".repeat(32);
+        let state_store = SyncStateStore::at(temporary.path().join("state"));
+        let store = SyncConflictStore::from_state_store(&state_store);
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let mut record = unresolved_record(&id, &key, &canonical);
+        let prototype = record.paths[0].clone();
+        record.paths = (0..300)
+            .map(|index| SyncConflictPathRecord {
+                path: format!("Notes/{index:03}.md"),
+                ..prototype.clone()
+            })
+            .collect();
+        assign_conflict_groups(record.scope, &mut record.paths);
+        write_paged_record_noclobber(&directory, &record).expect("record");
+
+        let page = get_sync_conflict_page_with_state_store(
+            &VaultPaths::new(&vault),
+            &id,
+            128,
+            64,
+            &state_store,
+        )
+        .expect("detail page");
+        assert_eq!(page.record.paths.len(), 64);
+        assert_eq!(page.record.paths[0].path, "Notes/128.md");
+        assert_eq!(page.progress.total_paths, 300);
+        assert_eq!(
+            page.path_page,
+            Some(SyncConflictPathPageInfo {
+                offset: 128,
+                limit: 64,
+                total: 300,
+                next_offset: Some(192),
+            })
+        );
     }
 
     #[test]
