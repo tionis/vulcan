@@ -7007,16 +7007,33 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
             .assert()
             .success()
     };
+    let detail = parse_stdout_json(&run(&["conflicts", &id]));
+    let group_id = detail["record"]["paths"][0]["group_id"]
+        .as_str()
+        .expect("conflict group ID")
+        .to_string();
 
-    let dry_run = parse_stdout_json(&run(&["resolve", &id, "--side", "local", "--dry-run"]));
+    let dry_run = parse_stdout_json(&run(&[
+        "resolve",
+        &id,
+        "--side",
+        "local",
+        "--group",
+        &group_id,
+        "--dry-run",
+    ]));
     assert_eq!(dry_run["outcome"], "planned");
     assert_eq!(dry_run["side"], "local");
+    assert_eq!(dry_run["group_ids"][0], group_id);
+    assert!(dry_run["batch_id"].is_string());
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
         "writer\n"
     );
 
-    let resolved = parse_stdout_json(&run(&["resolve", &id, "--side", "local"]));
+    let resolved = parse_stdout_json(&run(&[
+        "resolve", &id, "--side", "local", "--group", &group_id,
+    ]));
     assert_eq!(resolved["outcome"], "resolved");
     assert!(resolved["recovery_revision"].is_string());
     assert!(resolved["resolution_commit"].is_string());
@@ -7029,14 +7046,19 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
         "clean remote addition\n"
     );
     assert!(!reader.join(".sync-conflicts").exists());
-    let remote_resolution_ref = format!("refs/heads/__vulcan-sync/conflicts/{id}/resolved/side");
+    let remote_resolution_ref = format!(
+        "refs/heads/__vulcan-sync/conflicts/{id}/resolved/batches/{}",
+        resolved["batch_id"].as_str().expect("batch ID")
+    );
     assert!(!run_git_stdout(&reader, &["ls-remote", "origin", &remote_resolution_ref]).is_empty());
 
     let list = parse_stdout_json(&run(&["conflicts"]));
     assert_eq!(list["count"], 0);
     let detail = parse_stdout_json(&run(&["conflicts", &id]));
     assert_eq!(detail["resolution"], "resolved");
-    let repeated = parse_stdout_json(&run(&["resolve", &id, "--side", "local"]));
+    let repeated = parse_stdout_json(&run(&[
+        "resolve", &id, "--side", "local", "--group", &group_id,
+    ]));
     assert_eq!(repeated["outcome"], "already_resolved");
 }
 

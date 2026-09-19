@@ -124,6 +124,8 @@ impl SyncSelectionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ConflictResolveRequest {
     pub side: SyncConflictResolutionSide,
+    #[serde(default)]
+    pub group_ids: Vec<String>,
     #[serde(default = "default_remote")]
     pub remote: String,
     #[serde(default = "default_live_ref")]
@@ -493,6 +495,7 @@ impl<'a> CompanionService<'a> {
             conflict_id,
             &ResolveSyncConflictOptions {
                 side: request.side,
+                group_ids: request.group_ids.clone(),
                 remote: GitRemote::parse(&request.remote)
                     .map_err(|error| invalid_request(error.to_string()))?,
                 live_ref: GitRefName::parse(&request.live_ref)

@@ -884,6 +884,7 @@ fn handle_sync_resolve_command(
         files,
         patch,
         editor,
+        groups,
         wiki,
         target,
         dry_run,
@@ -903,6 +904,7 @@ fn handle_sync_resolve_command(
             patch.as_deref(),
             *editor,
         ),
+        groups,
         target,
         *dry_run,
     )
@@ -1960,17 +1962,24 @@ fn cli_resolution<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_sync_resolve(
     cli: &Cli,
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
     conflict_id: &str,
     resolution: CliResolution<'_>,
+    groups: &[String],
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    if !groups.is_empty() && !matches!(resolution, CliResolution::Side(_)) {
+        return Err(CliError::operation(
+            "--group currently requires --side; grouped file, patch, editor, and proposal workflows use selection-scoped proposals",
+        ));
+    }
     match resolution {
         CliResolution::Proposal(proposal_id) => {
             let report = approve_resolution_proposal(
@@ -2019,6 +2028,7 @@ fn run_sync_resolve(
                         SyncConflictSideArg::Local => SyncConflictResolutionSide::Local,
                         SyncConflictSideArg::Remote => SyncConflictResolutionSide::Remote,
                     },
+                    group_ids: groups.to_vec(),
                     remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
                     live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
                     dry_run,

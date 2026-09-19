@@ -4335,6 +4335,7 @@ mod tests {
             &fixture.record.id,
             &ResolveSyncConflictOptions {
                 side: SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
                 remote: sync_options.remote.clone(),
                 live_ref: sync_options.live_ref.clone(),
                 dry_run: true,

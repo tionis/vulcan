@@ -2157,7 +2157,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
-    fn later_successful_sync_supersedes_an_unresolvable_older_conflict() {
+    fn later_conflicting_frontier_keeps_grouped_evidence_but_requires_reconciliation() {
         let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
         fs::write(fixture.writer.join("Home.md"), "writer one\n").expect("writer edit");
         fs::write(fixture.reader.join("Home.md"), "reader\n").expect("reader edit");
@@ -2196,8 +2196,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &fixture.store,
         )
         .expect("active conflicts");
-        assert_eq!(listed.count, 0);
-        assert_eq!(listed.superseded_count, 1);
+        assert_eq!(listed.count, 1);
+        assert_eq!(listed.superseded_count, 0);
         let historical = crate::sync_conflicts::get_sync_conflict_with_state_store(
             &VaultPaths::new(&fixture.reader),
             &first.id,
@@ -2206,19 +2206,16 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         .expect("historical conflict");
         assert_eq!(
             historical.resolution,
-            crate::sync_conflicts::SyncConflictResolutionState::Superseded
+            crate::sync_conflicts::SyncConflictResolutionState::Unresolved
         );
-        assert_eq!(
-            historical
-                .supersession
-                .and_then(|item| item.replacement_conflict_id),
-            None
-        );
+        assert!(historical.supersession.is_none());
+        let group_id = historical.record.paths[0].group_id.clone();
         let stale_resolution = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
             &VaultPaths::new(&fixture.reader),
             &first.id,
             &crate::sync_conflicts::ResolveSyncConflictOptions {
                 side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: vec![group_id],
                 remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
                 live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
                     .expect("live ref"),
@@ -2226,10 +2223,99 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             },
             &fixture.store,
         )
-        .expect_err("superseded history cannot be resolved");
+        .expect_err("changed selected group requires reconciliation");
         assert!(stale_resolution
             .to_string()
-            .contains("retained only as history"));
+            .contains("require a fresh reconciliation"));
+    }
+
+    #[test]
+    fn grouped_side_resolution_survives_restart_and_unrelated_live_advancement() {
+        let fixture = structured_sync_fixture(&[("A.md", "base a\n"), ("B.md", "base b\n")]);
+        fs::write(fixture.writer.join("A.md"), "remote a\n").expect("remote A");
+        fs::write(fixture.writer.join("B.md"), "remote b\n").expect("remote B");
+        fs::write(fixture.reader.join("A.md"), "local a\n").expect("local A");
+        fs::write(fixture.reader.join("B.md"), "local b\n").expect("local B");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer conflict inputs");
+        let conflict = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("reader conflict")
+        .conflict_record
+        .expect("durable conflict");
+        let group_for = |path: &str| {
+            conflict
+                .paths
+                .iter()
+                .find(|item| item.path == path)
+                .expect("conflict path")
+                .group_id
+                .clone()
+        };
+        let options = |group_id: String| crate::sync_conflicts::ResolveSyncConflictOptions {
+            side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+            group_ids: vec![group_id],
+            remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+            live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                .expect("live ref"),
+            dry_run: false,
+        };
+
+        let first = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &options(group_for("A.md")),
+            &fixture.store,
+        )
+        .expect("first group resolution");
+        assert_eq!(first.remaining_groups, Some(1));
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("A.md")).expect("resolved A"),
+            "local a\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("B.md")).expect("pending B"),
+            "remote b\n"
+        );
+
+        fs::write(fixture.reader.join("Unrelated.md"), "later\n").expect("unrelated edit");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("unrelated live advancement");
+        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.store,
+        )
+        .expect("conflict remains actionable after restart");
+        assert_eq!(listed.count, 1);
+
+        let second = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &options(group_for("B.md")),
+            &fixture.store,
+        )
+        .expect("second group resolution");
+        assert_eq!(second.remaining_groups, Some(0));
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("B.md")).expect("resolved B"),
+            "local b\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Unrelated.md"))
+                .expect("unrelated edit retained"),
+            "later\n"
+        );
     }
 
     #[test]
@@ -2530,6 +2616,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &conflict.id,
             &crate::sync_conflicts::ResolveSyncConflictOptions {
                 side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
                 remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
                 live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
                     .expect("live ref"),

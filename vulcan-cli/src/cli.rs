@@ -4127,6 +4127,13 @@ pub enum SyncCommand {
             help = "Open temporary conflict-marker files in $VISUAL/$EDITOR"
         )]
         editor: bool,
+        #[arg(
+            long = "group",
+            value_name = "GROUP_ID",
+            action = ArgAction::Append,
+            help = "Resolve only these complete conflict groups; repeat for a bounded batch"
+        )]
+        groups: Vec<String>,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
         #[command(flatten)]

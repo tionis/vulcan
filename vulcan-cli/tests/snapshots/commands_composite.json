@@ -9584,6 +9584,17 @@
                 ]
               },
               {
+                "help": "Resolve only these complete conflict groups; repeat for a bounded batch",
+                "id": "groups",
+                "long": "group",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP_ID"
+                ]
+              },
+              {
                 "help": "Optional registered wiki ID",
                 "id": "wiki",
                 "long": "wiki",

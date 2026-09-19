@@ -2717,6 +2717,8 @@ fn parses_sync_resolve_command() {
         "0123456789abcdef0123456789abcdef",
         "--side",
         "local",
+        "--group",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "--wiki",
         "personal",
         "--dry-run",
@@ -2732,6 +2734,7 @@ fn parses_sync_resolve_command() {
                 files: Vec::new(),
                 patch: None,
                 editor: false,
+                groups: vec!["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()],
                 wiki: Some("personal".to_string()),
                 target: SyncTargetArgs {
                     remote: "origin".to_string(),
