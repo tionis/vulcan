@@ -170,12 +170,12 @@ pub fn execute_conflict_worker_pass(
             }) {
                 return status_skipped(wiki_id, 0, "a file-tree sync job is active");
             }
-            if previous.get(wiki_id.as_str()).is_some_and(|entry| {
+            if let Some(entry) = previous.get(wiki_id.as_str()).filter(|entry| {
                 entry
                     .retry_after_unix_ms
                     .is_some_and(|retry| retry > now_unix_ms)
             }) {
-                return status_skipped(wiki_id, 0, "waiting for provider error backoff");
+                return status_backoff(entry);
             }
             run_for_registration(config, registration, state_store, agent, now_unix_ms)
         })
@@ -374,6 +374,12 @@ fn status_skipped(
         error: None,
         retry_after_unix_ms: None,
     }
+}
+
+fn status_backoff(previous: &ConflictWorkerStatusEntry) -> ConflictWorkerStatusEntry {
+    let mut entry = previous.clone();
+    entry.skipped = Some("waiting for provider error backoff".to_string());
+    entry
 }
 
 fn status_error(
@@ -688,5 +694,22 @@ mod tests {
             status.entries[0].skipped.as_deref(),
             Some("waiting for provider error backoff")
         );
+        assert_eq!(status.entries[0].error.as_deref(), Some("provider failed"));
+        assert_eq!(status.entries[0].retry_after_unix_ms, Some(10_000));
+
+        let next_status = execute_conflict_worker_pass(
+            &config,
+            &registry,
+            &supervisor,
+            &store,
+            &CompanionResolutionAgent::new(ResolvingProvider),
+            Some(&status),
+            6_000,
+        );
+        assert_eq!(
+            next_status.entries[0].skipped.as_deref(),
+            Some("waiting for provider error backoff")
+        );
+        assert_eq!(next_status.entries[0].retry_after_unix_ms, Some(10_000));
     }
 }
