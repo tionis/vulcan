@@ -956,6 +956,13 @@ pub struct EditorResolutionPlan {
     pub repository_key: String,
     pub conflict_id: String,
     pub files: Vec<EditorResolutionFile>,
+    pub selection: Option<ResolutionProposalSelection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedPatchResolution {
+    pub paths: Vec<ResolutionAgentPathOutput>,
+    pub selection: Option<ResolutionProposalSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1070,6 +1077,51 @@ pub fn create_supplied_resolution_proposal_with_state_store(
     cancellation: &SyncCancellationToken,
     state_store: &SyncStateStore,
 ) -> Result<ResolutionProposal, AppError> {
+    create_supplied_resolution_proposal_with_expected_selection(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        supplied,
+        None,
+        cancellation,
+        state_store,
+    )
+}
+
+pub fn create_supplied_resolution_proposal_with_selection(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    supplied: Vec<ResolutionAgentPathOutput>,
+    expected_selection: &ResolutionProposalSelection,
+    cancellation: &SyncCancellationToken,
+) -> Result<ResolutionProposal, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    create_supplied_resolution_proposal_with_expected_selection(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        supplied,
+        Some(expected_selection),
+        cancellation,
+        &state_store,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn create_supplied_resolution_proposal_with_expected_selection(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    supplied: Vec<ResolutionAgentPathOutput>,
+    expected_selection: Option<&ResolutionProposalSelection>,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+) -> Result<ResolutionProposal, AppError> {
     if approval_options.dry_run {
         return Err(AppError::operation(
             "supplied-resolution proposal requires mutating mode",
@@ -1083,6 +1135,17 @@ pub fn create_supplied_resolution_proposal_with_state_store(
         approval_options,
         state_store,
     )?;
+    if expected_selection.is_some()
+        && manual
+            .selection
+            .as_ref()
+            .map(|selection| &selection.persisted)
+            != expected_selection
+    {
+        return Err(AppError::operation(
+            "the accepted conflict frontier changed after the reviewed resolution was prepared; prepare and review it again",
+        ));
+    }
     let base_revision = manual
         .record
         .base_revision
@@ -1211,7 +1274,7 @@ pub fn preview_patch_resolution(
         .engine
         .check_patch(&manual.repository, &local, patch)
         .map_err(AppError::operation)?;
-    require_exact_conflict_paths(&manual.record, &patch_paths)?;
+    require_exact_selected_paths(&manual.record, manual.selection.as_ref(), &patch_paths)?;
     Ok(PatchResolutionPreviewReport {
         vault: manual.vault,
         repository_key: manual.repository_key,
@@ -1236,30 +1299,65 @@ pub fn resolution_paths_from_patch(
     approval_options: &ApproveResolutionProposalOptions,
     patch: &[u8],
 ) -> Result<Vec<ResolutionAgentPathOutput>, AppError> {
+    Ok(prepare_patch_resolution(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        patch,
+    )?
+    .paths)
+}
+
+pub fn prepare_patch_resolution(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    patch: &[u8],
+) -> Result<PreparedPatchResolution, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    prepare_patch_resolution_with_state_store(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        patch,
+        &state_store,
+    )
+}
+
+fn prepare_patch_resolution_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    patch: &[u8],
+    state_store: &SyncStateStore,
+) -> Result<PreparedPatchResolution, AppError> {
     if approval_options.dry_run {
         return Err(AppError::operation(
             "patch resolution paths require mutating mode",
         ));
     }
-    let state_store = SyncStateStore::user_default()?;
     let manual = prepare_manual_resolution_scope(
         paths,
         conflict_id,
         proposal_options,
         approval_options,
-        &state_store,
+        state_store,
     )?;
     let local = GitOid::parse(&manual.record.local_revision).map_err(AppError::operation)?;
     let patch_paths = manual
         .engine
         .check_patch(&manual.repository, &local, patch)
         .map_err(AppError::operation)?;
-    require_exact_conflict_paths(&manual.record, &patch_paths)?;
+    require_exact_selected_paths(&manual.record, manual.selection.as_ref(), &patch_paths)?;
     let tree = manual
         .engine
         .apply_patch_to_tree(&manual.repository, &local, patch)
         .map_err(AppError::operation)?;
-    patch_paths
+    let paths = patch_paths
         .into_iter()
         .map(|path| {
             let object = manual
@@ -1272,12 +1370,19 @@ pub fn resolution_paths_from_patch(
             let data = object.data.ok_or_else(|| {
                 AppError::operation(format!("supplied patch path `{path}` is not a blob"))
             })?;
-            Ok(ResolutionAgentPathOutput {
+            Ok::<_, AppError>(ResolutionAgentPathOutput {
                 path,
                 content: data,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PreparedPatchResolution {
+        paths,
+        selection: manual
+            .selection
+            .as_ref()
+            .map(|selection| selection.persisted.clone()),
+    })
 }
 
 pub fn prepare_editor_resolution(
@@ -1287,12 +1392,28 @@ pub fn prepare_editor_resolution(
     approval_options: &ApproveResolutionProposalOptions,
 ) -> Result<EditorResolutionPlan, AppError> {
     let state_store = SyncStateStore::user_default()?;
-    let manual = prepare_manual_resolution_scope(
+    prepare_editor_resolution_with_state_store(
         paths,
         conflict_id,
         proposal_options,
         approval_options,
         &state_store,
+    )
+}
+
+fn prepare_editor_resolution_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    state_store: &SyncStateStore,
+) -> Result<EditorResolutionPlan, AppError> {
+    let manual = prepare_manual_resolution_scope(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        state_store,
     )?;
     let base = GitOid::parse(
         manual
@@ -1306,7 +1427,12 @@ pub fn prepare_editor_resolution(
     let remote = GitOid::parse(&manual.record.remote_revision).map_err(AppError::operation)?;
     let mut total = 0_usize;
     let mut files = Vec::with_capacity(manual.record.paths.len());
-    for conflict_path in &manual.record.paths {
+    for conflict_path in manual.record.paths.iter().filter(|path| {
+        manual
+            .selection
+            .as_ref()
+            .is_none_or(|selection| selection.paths.contains(&path.path))
+    }) {
         let base_content = editor_side_content(
             &manual.engine,
             &manual.repository,
@@ -1356,6 +1482,10 @@ pub fn prepare_editor_resolution(
         repository_key: manual.repository_key,
         conflict_id: conflict_id.to_string(),
         files,
+        selection: manual
+            .selection
+            .as_ref()
+            .map(|selection| selection.persisted.clone()),
     })
 }
 
@@ -1622,13 +1752,15 @@ fn resolve_proposal_selection(
     }))
 }
 
-fn require_exact_conflict_paths(
+fn require_exact_selected_paths(
     record: &SyncConflictRecord,
+    selection: Option<&ResolvedProposalSelection>,
     actual: &[String],
 ) -> Result<(), AppError> {
     let mut expected = record
         .paths
         .iter()
+        .filter(|path| selection.is_none_or(|selection| selection.paths.contains(&path.path)))
         .map(|path| path.path.clone())
         .collect::<Vec<_>>();
     expected.sort();
@@ -4446,6 +4578,93 @@ mod tests {
             .expect("group progress");
         assert_eq!(progress.applied_groups, 1);
         assert_eq!(progress.pending_groups, 1);
+    }
+
+    #[test]
+    fn selected_patch_and_editor_handoffs_stay_pinned_to_the_reviewed_frontier() {
+        use crate::sync_conflicts::{
+            resolve_sync_conflict_with_state_store, ResolveSyncConflictOptions,
+            SyncConflictResolutionSide,
+        };
+
+        let fixture = two_path_conflict_fixture();
+        let group_id = |name: &str| {
+            fixture
+                .record
+                .paths
+                .iter()
+                .find(|path| path.path == name)
+                .expect("conflict path")
+                .group_id
+                .clone()
+        };
+        let home_group = group_id("Home.md");
+        let other_group = group_id("Other.md");
+        let proposal_options = ResolutionProposalOptions {
+            permission_profile: "unrestricted".to_string(),
+            focused_context: Vec::new(),
+            allow_broad_context: false,
+            group_ids: vec![home_group],
+        };
+        let approval_options = ApproveResolutionProposalOptions {
+            remote: GitRemote::parse("origin").expect("remote"),
+            live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref"),
+            dry_run: false,
+            automatic: false,
+        };
+        let prepared = prepare_patch_resolution_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal_options,
+            &approval_options,
+            b"diff --git a/Home.md b/Home.md\n--- a/Home.md\n+++ b/Home.md\n@@ -1 +1 @@\n-reader home\n+patched home\n",
+            &fixture.store,
+        )
+        .expect("selected patch");
+        assert_eq!(prepared.paths.len(), 1);
+        assert_eq!(prepared.paths[0].path, "Home.md");
+        let selection = prepared.selection.clone().expect("patch selection");
+
+        let editor = prepare_editor_resolution_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal_options,
+            &approval_options,
+            &fixture.store,
+        )
+        .expect("selected editor plan");
+        assert_eq!(editor.files.len(), 1);
+        assert_eq!(editor.files[0].path, "Home.md");
+        assert_eq!(editor.selection.as_ref(), Some(&selection));
+
+        resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolveSyncConflictOptions {
+                side: SyncConflictResolutionSide::Remote,
+                group_ids: vec![other_group],
+                remote: approval_options.remote.clone(),
+                live_ref: approval_options.live_ref.clone(),
+                dry_run: false,
+            },
+            &fixture.store,
+        )
+        .expect("advance accepted frontier with sibling group");
+
+        let error = create_supplied_resolution_proposal_with_expected_selection(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal_options,
+            &approval_options,
+            prepared.paths,
+            Some(&selection),
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("reviewed patch must not rebind to a later accepted frontier");
+        assert!(error
+            .to_string()
+            .contains("frontier changed after the reviewed resolution was prepared"));
     }
 
     #[test]

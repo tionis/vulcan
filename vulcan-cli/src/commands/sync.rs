@@ -36,10 +36,11 @@ use vulcan_app::sync_notifications::{
 };
 use vulcan_app::sync_proposals::{
     approve_resolution_proposal, create_resolution_proposal, create_supplied_resolution_proposal,
-    prepare_editor_resolution, preview_patch_resolution, preview_supplied_resolution,
-    reject_resolution_proposal, resolution_paths_from_patch, ApproveResolutionProposalOptions,
-    ApproveResolutionProposalReport, EditorResolutionPlan, PatchResolutionPreviewReport,
-    RejectResolutionProposalReport, ResolutionAgentPathOutput, ResolutionProposalOptions,
+    create_supplied_resolution_proposal_with_selection, prepare_editor_resolution,
+    prepare_patch_resolution, preview_patch_resolution, preview_supplied_resolution,
+    reject_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
+    EditorResolutionPlan, PatchResolutionPreviewReport, RejectResolutionProposalReport,
+    ResolutionAgentPathOutput, ResolutionProposalOptions, ResolutionProposalSelection,
     SuppliedResolutionPreviewReport,
 };
 #[cfg(feature = "web")]
@@ -2000,10 +2001,9 @@ fn run_sync_resolve(
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
-    if !groups.is_empty() && !matches!(resolution, CliResolution::Side(_) | CliResolution::Files(_))
-    {
+    if !groups.is_empty() && matches!(resolution, CliResolution::Proposal(_)) {
         return Err(CliError::operation(
-            "--group currently requires --side; grouped file, patch, editor, and proposal workflows use selection-scoped proposals",
+            "--group is already bound into the retained proposal selected by --approve-proposal",
         ));
     }
     match resolution {
@@ -2034,6 +2034,7 @@ fn run_sync_resolve(
             registration_profile.as_deref(),
             conflict_id,
             source,
+            groups,
             target,
             dry_run,
         ),
@@ -2042,6 +2043,7 @@ fn run_sync_resolve(
             &paths,
             registration_profile.as_deref(),
             conflict_id,
+            groups,
             target,
             dry_run,
         ),
@@ -2100,23 +2102,27 @@ fn run_file_resolution(
         &proposal_options,
         &approval_options,
         supplied,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_patch_resolution(
     cli: &Cli,
     paths: &VaultPaths,
     registration_profile: Option<&str>,
     conflict_id: &str,
     source: &str,
+    groups: &[String],
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
     let patch = std::fs::read(source).map_err(|error| {
         CliError::operation(format!("cannot read resolution patch `{source}`: {error}"))
     })?;
-    let (proposal_options, approval_options) =
+    let (mut proposal_options, approval_options) =
         manual_resolution_options(cli, registration_profile, target, dry_run)?;
+    proposal_options.group_ids = groups.to_vec();
     if dry_run {
         let report = preview_patch_resolution(
             paths,
@@ -2128,7 +2134,7 @@ fn run_patch_resolution(
         .map_err(CliError::operation)?;
         return print_patch_resolution_preview(cli.output, &report);
     }
-    let supplied = resolution_paths_from_patch(
+    let prepared = prepare_patch_resolution(
         paths,
         conflict_id,
         &proposal_options,
@@ -2142,7 +2148,8 @@ fn run_patch_resolution(
         conflict_id,
         &proposal_options,
         &approval_options,
-        supplied,
+        prepared.paths,
+        prepared.selection.as_ref(),
     )
 }
 
@@ -2151,11 +2158,13 @@ fn run_editor_resolution(
     paths: &VaultPaths,
     registration_profile: Option<&str>,
     conflict_id: &str,
+    groups: &[String],
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    let (proposal_options, approval_options) =
+    let (mut proposal_options, approval_options) =
         manual_resolution_options(cli, registration_profile, target, dry_run)?;
+    proposal_options.group_ids = groups.to_vec();
     let plan = prepare_editor_resolution(paths, conflict_id, &proposal_options, &approval_options)
         .map_err(CliError::operation)?;
     if dry_run {
@@ -2169,6 +2178,7 @@ fn run_editor_resolution(
         &proposal_options,
         &approval_options,
         supplied,
+        plan.selection.as_ref(),
     )
 }
 
@@ -2282,16 +2292,29 @@ fn run_supplied_resolution(
     proposal_options: &ResolutionProposalOptions,
     approval_options: &ApproveResolutionProposalOptions,
     supplied: Vec<ResolutionAgentPathOutput>,
+    expected_selection: Option<&ResolutionProposalSelection>,
 ) -> Result<(), CliError> {
     let cancellation = vulcan_app::sync::SyncCancellationToken::default();
-    let proposal = create_supplied_resolution_proposal(
-        paths,
-        conflict_id,
-        proposal_options,
-        approval_options,
-        supplied,
-        &cancellation,
-    )
+    let proposal = if let Some(selection) = expected_selection {
+        create_supplied_resolution_proposal_with_selection(
+            paths,
+            conflict_id,
+            proposal_options,
+            approval_options,
+            supplied,
+            selection,
+            &cancellation,
+        )
+    } else {
+        create_supplied_resolution_proposal(
+            paths,
+            conflict_id,
+            proposal_options,
+            approval_options,
+            supplied,
+            &cancellation,
+        )
+    }
     .map_err(CliError::operation)?;
     let report = approve_resolution_proposal(
         paths,

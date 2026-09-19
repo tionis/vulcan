@@ -170,10 +170,12 @@ they commit.
   `--dry-run` to launch the editor and apply the reviewed files. When an actively edited vault
   repeatedly changes during review, pause automatic sync first and close the editor that is
   rewriting those files; manual `sync resolve` remains available while paused.
-- Large reviewed-file resolutions may repeat `--group <group-id>` with `--file` and must supply
-  exactly every path in those complete groups. The retained proposal is pinned to the current
-  accepted revision; if that revision moves before approval, create and review a fresh proposal
-  rather than expecting reviewed bytes to rebase automatically. Unselected groups remain pending.
+- Large reviewed resolutions may repeat `--group <group-id>` with `--file`, `--patch`, or
+  `--editor`. Files and patches must cover exactly every path in those complete groups; the editor
+  materializes only those paths. The retained proposal is pinned to the accepted revision captured
+  before reading the patch or launching the editor. If that revision moves during review, prepare
+  and review a fresh result rather than expecting reviewed bytes to rebase automatically.
+  Unselected groups remain pending.
 - Generate model help only when requested with `vulcan sync propose <id> --model <model> ...`.
   Provider output is an untrusted retained proposal, not an accepted merge. Review it, then preview
   exact approval with `sync resolve --approve-proposal <proposal-id> --dry-run`, or reject it with
