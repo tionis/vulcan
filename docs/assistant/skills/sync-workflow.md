@@ -146,7 +146,8 @@ they commit.
 - For a large record, page detail with `--path-offset <n> --path-limit <1-256>`. Read
   `path_page.total` and `path_page.next_offset` rather than assuming the returned path array is
   complete. Summary and detail progress counts identify pending, prepared, published, applied, and
-  rebase-required groups without reading file contents.
+  rebase-required groups without reading file contents. In paged JSON, `progress.groups` is scoped
+  to the returned paths when `groups_complete` is false; the counters remain global.
 - Never choose a winner implicitly. Preview one explicit side with
   `vulcan sync resolve <id> --side base|local|remote --dry-run`.
   For a large path conflict, inspect each path's `group_id`, then repeat

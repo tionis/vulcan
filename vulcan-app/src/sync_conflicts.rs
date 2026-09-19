@@ -128,6 +128,10 @@ pub struct SyncConflictBatchRecord {
     pub conflict_id: String,
     pub batch_id: String,
     pub group_ids: Vec<String>,
+    /// Immutable path cardinality for every selected group. New records use
+    /// this to compute global progress without rereading every evidence page.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub group_path_counts: BTreeMap<String, usize>,
     pub selection_digest: String,
     pub expected_revision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +184,11 @@ pub struct SyncConflictProgress {
     pub needs_rebase_groups: usize,
     pub total_paths: usize,
     pub pending_paths: usize,
+    /// Number of group detail records included in this response. This can be
+    /// smaller than `total_groups` for a paged conflict-detail request.
+    pub returned_groups: usize,
+    /// Whether `groups` contains the complete group inventory.
+    pub groups_complete: bool,
     pub groups: Vec<SyncConflictGroupProgress>,
 }
 
@@ -218,6 +227,8 @@ struct SyncConflictPathPage {
 struct SyncConflictPathManifest {
     version: u32,
     path_count: usize,
+    #[serde(default)]
+    group_count: Option<usize>,
     paths_digest: String,
     path_pages: Vec<SyncConflictPathPageRef>,
 }
@@ -266,6 +277,23 @@ pub fn conflict_group_selection_digest(group_ids: &[String]) -> String {
         input.extend_from_slice(id.as_bytes());
     }
     blake3::hash(&input).to_hex().to_string()
+}
+
+fn selected_group_path_counts(
+    record: &SyncConflictRecord,
+    group_ids: &[String],
+) -> BTreeMap<String, usize> {
+    let selected = group_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut counts = BTreeMap::new();
+    for path in &record.paths {
+        if selected.contains(path.group_id.as_str()) {
+            *counts.entry(path.group_id.clone()).or_insert(0) += 1;
+        }
+    }
+    counts
 }
 
 #[must_use]
@@ -517,9 +545,10 @@ pub fn get_sync_conflict_with_state_store(
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let store = SyncConflictStore::from_state_store(state_store);
     let record = store.get(&repository_key, conflict_id)?;
-    let resolution = store.resolution_state(&repository_key, conflict_id)?;
-    let supersession = store.get_supersession(&repository_key, conflict_id)?;
     let progress = store.group_progress(&repository_key, &record)?;
+    let resolution =
+        store.resolution_state_with_progress(&repository_key, conflict_id, &progress)?;
+    let supersession = store.get_supersession(&repository_key, conflict_id)?;
     Ok(SyncConflictDetailReport {
         record,
         resolution,
@@ -559,12 +588,10 @@ pub fn get_sync_conflict_page_with_state_store(
     let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let store = SyncConflictStore::from_state_store(state_store);
-    let full_record = store.get(&repository_key, conflict_id)?;
-    let total = full_record.paths.len();
-    let progress = store.group_progress(&repository_key, &full_record)?;
-    let mut record = full_record;
-    record.paths = record.paths.into_iter().skip(offset).take(limit).collect();
-    let resolution = store.resolution_state(&repository_key, conflict_id)?;
+    let (record, total, progress) =
+        store.get_page_and_progress(&repository_key, conflict_id, offset, limit)?;
+    let resolution =
+        store.resolution_state_with_progress(&repository_key, conflict_id, &progress)?;
     let supersession = store.get_supersession(&repository_key, conflict_id)?;
     let next_offset = offset
         .saturating_add(record.paths.len())
@@ -978,6 +1005,7 @@ fn resolve_sync_conflict_group_batch(
         batch_id: batch_id.to_string(),
         selection_digest: conflict_group_selection_digest(group_ids),
         group_ids: group_ids.to_vec(),
+        group_path_counts: selected_group_path_counts(record, group_ids),
         expected_revision: current.to_string(),
         side: Some(options.side),
         proposal_id: None,
@@ -2107,6 +2135,58 @@ impl SyncConflictStore {
         Ok(record)
     }
 
+    /// Loads only the requested path slice into the returned record. Paged
+    /// records are scanned one bounded page at a time to validate their
+    /// aggregate digest and compute global progress counters without ever
+    /// retaining the complete path inventory in memory.
+    pub fn get_page_and_progress(
+        &self,
+        repository_key: &str,
+        conflict_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(SyncConflictRecord, usize, SyncConflictProgress), AppError> {
+        let path = self
+            .conflict_directory(repository_key, conflict_id)?
+            .join("record.json");
+        let metadata = fs::metadata(&path).map_err(AppError::operation)?;
+        if metadata.len() > MAX_CONFLICT_RECORD_BYTES {
+            return Err(AppError::operation(format!(
+                "sync conflict record at {} exceeds the {} byte limit",
+                path.display(),
+                MAX_CONFLICT_RECORD_BYTES
+            )));
+        }
+        let source = fs::read(&path).map_err(AppError::operation)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&source).map_err(AppError::operation)?;
+        if value.get("path_pages").is_none() {
+            let mut record: SyncConflictRecord =
+                serde_json::from_value(value).map_err(AppError::operation)?;
+            assign_conflict_groups(record.scope, &mut record.paths);
+            validate_record(&record, repository_key, conflict_id)?;
+            let total = record.paths.len();
+            let progress = self.group_progress(repository_key, &record)?;
+            record.paths = record.paths.into_iter().skip(offset).take(limit).collect();
+            let progress = progress_for_selected_paths(progress, &record.paths);
+            return Ok((record, total, progress));
+        }
+        if metadata.len() > MAX_CONFLICT_MANIFEST_BYTES {
+            return Err(AppError::operation(format!(
+                "sync conflict manifest at {} exceeds the {} byte limit",
+                path.display(),
+                MAX_CONFLICT_MANIFEST_BYTES
+            )));
+        }
+        let batches = self.list_batches(repository_key, conflict_id)?;
+        load_paged_record_slice(&path, value, offset, limit, &batches).and_then(
+            |(record, total, progress)| {
+                validate_record(&record, repository_key, conflict_id)?;
+                Ok((record, total, progress))
+            },
+        )
+    }
+
     pub fn get_resolution(
         &self,
         repository_key: &str,
@@ -2356,14 +2436,23 @@ impl SyncConflictStore {
         repository_key: &str,
         conflict_id: &str,
     ) -> Result<SyncConflictResolutionState, AppError> {
+        let record = self.get(repository_key, conflict_id)?;
+        let progress = self.group_progress(repository_key, &record)?;
+        self.resolution_state_with_progress(repository_key, conflict_id, &progress)
+    }
+
+    fn resolution_state_with_progress(
+        &self,
+        repository_key: &str,
+        conflict_id: &str,
+        progress: &SyncConflictProgress,
+    ) -> Result<SyncConflictResolutionState, AppError> {
         if self
             .get_resolution(repository_key, conflict_id)?
             .is_some_and(|resolution| resolution.applied)
         {
             return Ok(SyncConflictResolutionState::Resolved);
         }
-        let record = self.get(repository_key, conflict_id)?;
-        let progress = self.group_progress(repository_key, &record)?;
         if progress.total_groups > 0 && progress.applied_groups == progress.total_groups {
             return Ok(SyncConflictResolutionState::Resolved);
         }
@@ -2456,12 +2545,16 @@ fn validate_batch_record(
     let mut canonical = batch.group_ids.clone();
     canonical.sort();
     canonical.dedup();
+    let counted_groups = batch.group_path_counts.keys().cloned().collect::<Vec<_>>();
     if batch.version != SYNC_CONFLICT_BATCH_VERSION
         || batch.conflict_id != conflict_id
         || batch.batch_id != batch_id
         || canonical.is_empty()
         || canonical.len() > MAX_CONFLICT_GROUPS_PER_BATCH
         || canonical != batch.group_ids
+        || (!batch.group_path_counts.is_empty()
+            && (counted_groups != batch.group_ids
+                || batch.group_path_counts.values().any(|count| *count == 0)))
         || batch.selection_digest != conflict_group_selection_digest(&canonical)
         || batch.side.is_some() == batch.proposal_id.is_some()
         || batch.applied && !batch.published
@@ -2494,6 +2587,8 @@ fn summarize_group_progress(groups: Vec<SyncConflictGroupProgress>) -> SyncConfl
         needs_rebase_groups: 0,
         total_paths: 0,
         pending_paths: 0,
+        returned_groups: groups.len(),
+        groups_complete: true,
         groups,
     };
     for group in &progress.groups {
@@ -2619,6 +2714,10 @@ fn write_paged_record_noclobber(
         serde_json::json!(record.paths.len()),
     );
     object.insert(
+        "group_count".to_string(),
+        serde_json::json!(conflict_groups(record).len()),
+    );
+    object.insert(
         "paths_digest".to_string(),
         serde_json::json!(blake3::hash(&paths_bytes).to_hex().to_string()),
     );
@@ -2704,6 +2803,7 @@ fn load_paged_record(
         .as_object_mut()
         .ok_or_else(|| AppError::operation("sync conflict manifest must be an object"))?;
     object.remove("path_count");
+    object.remove("group_count");
     object.remove("paths_digest");
     object.remove("path_pages");
     object.insert(
@@ -2711,6 +2811,394 @@ fn load_paged_record(
         serde_json::to_value(paths).map_err(AppError::operation)?,
     );
     serde_json::from_value(value).map_err(AppError::operation)
+}
+
+#[allow(clippy::too_many_lines)]
+fn load_paged_record_slice(
+    manifest_path: &Path,
+    mut value: serde_json::Value,
+    offset: usize,
+    limit: usize,
+    batches: &[SyncConflictBatchRecord],
+) -> Result<(SyncConflictRecord, usize, SyncConflictProgress), AppError> {
+    let manifest: SyncConflictPathManifest =
+        serde_json::from_value(value.clone()).map_err(AppError::operation)?;
+    if !(3..=SYNC_CONFLICT_RECORD_VERSION).contains(&manifest.version) {
+        return Err(AppError::operation(
+            "sync conflict path manifest has an unsupported version",
+        ));
+    }
+    let referenced_count = manifest
+        .path_pages
+        .iter()
+        .try_fold(0usize, |total, page| total.checked_add(page.count))
+        .ok_or_else(|| AppError::operation("sync conflict path-page count overflow"))?;
+    if referenced_count != manifest.path_count {
+        return Err(AppError::operation(
+            "sync conflict path pages do not match the manifest count",
+        ));
+    }
+    let directory = manifest_path
+        .parent()
+        .ok_or_else(|| AppError::operation("sync conflict manifest has no parent directory"))?;
+    if let Some(group_count) = manifest.group_count {
+        if batches.iter().all(|batch| {
+            !batch.group_path_counts.is_empty()
+                && batch.group_path_counts.len() == batch.group_ids.len()
+        }) {
+            return load_indexed_paged_record_slice(
+                value,
+                &manifest,
+                directory,
+                offset,
+                limit,
+                group_count,
+                batches,
+            );
+        }
+    }
+    let assignments = group_batch_assignments(batches);
+    let mut selected_paths = Vec::with_capacity(limit.min(manifest.path_count));
+    let mut selected_groups = BTreeMap::<String, SyncConflictGroupProgress>::new();
+    let mut all_groups = BTreeMap::<
+        String,
+        (
+            SyncConflictGroupKind,
+            usize,
+            SyncConflictGroupState,
+            Option<String>,
+        ),
+    >::new();
+    let mut paths_hasher = blake3::Hasher::new();
+    paths_hasher.update(b"[");
+    let mut absolute_index = 0usize;
+    for (expected_index, page_ref) in manifest.path_pages.iter().enumerate() {
+        let page = read_conflict_path_page(directory, &manifest, page_ref, expected_index)?;
+        for path in page.paths {
+            if absolute_index > 0 {
+                paths_hasher.update(b",");
+            }
+            paths_hasher.update(&serde_json::to_vec(&path).map_err(AppError::operation)?);
+            let (state, batch_id) = assignments
+                .get(&path.group_id)
+                .cloned()
+                .unwrap_or((SyncConflictGroupState::Pending, None));
+            let aggregate = all_groups.entry(path.group_id.clone()).or_insert((
+                path.group_kind,
+                0,
+                state,
+                batch_id.clone(),
+            ));
+            if aggregate.0 != path.group_kind || aggregate.2 != state {
+                return Err(AppError::operation(
+                    "sync conflict group metadata is inconsistent across path pages",
+                ));
+            }
+            aggregate.1 += 1;
+            if absolute_index >= offset && absolute_index < offset.saturating_add(limit) {
+                selected_groups
+                    .entry(path.group_id.clone())
+                    .or_insert_with(|| SyncConflictGroupProgress {
+                        id: path.group_id.clone(),
+                        kind: path.group_kind,
+                        paths: Vec::new(),
+                        state,
+                        batch_id: batch_id.clone(),
+                    })
+                    .paths
+                    .push(path.path.clone());
+                selected_paths.push(path);
+            }
+            absolute_index += 1;
+        }
+    }
+    paths_hasher.update(b"]");
+    if absolute_index != manifest.path_count
+        || paths_hasher.finalize().to_hex().as_str() != manifest.paths_digest
+    {
+        return Err(AppError::operation(
+            "sync conflict path pages do not match the manifest count or digest",
+        ));
+    }
+
+    let mut progress = SyncConflictProgress {
+        total_groups: all_groups.len(),
+        pending_groups: 0,
+        prepared_groups: 0,
+        published_groups: 0,
+        applied_groups: 0,
+        needs_rebase_groups: 0,
+        total_paths: manifest.path_count,
+        pending_paths: 0,
+        returned_groups: 0,
+        groups_complete: false,
+        groups: selected_groups.into_values().collect(),
+    };
+    for (_, path_count, state, _) in all_groups.values() {
+        match state {
+            SyncConflictGroupState::Pending => {
+                progress.pending_groups += 1;
+                progress.pending_paths += path_count;
+            }
+            SyncConflictGroupState::Prepared => progress.prepared_groups += 1,
+            SyncConflictGroupState::Published => progress.published_groups += 1,
+            SyncConflictGroupState::Applied => progress.applied_groups += 1,
+            SyncConflictGroupState::NeedsRebase => {
+                progress.needs_rebase_groups += 1;
+                progress.pending_paths += path_count;
+            }
+        }
+    }
+    progress.returned_groups = progress.groups.len();
+    progress.groups_complete = progress.returned_groups == progress.total_groups;
+
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| AppError::operation("sync conflict manifest must be an object"))?;
+    object.remove("path_count");
+    object.remove("group_count");
+    object.remove("paths_digest");
+    object.remove("path_pages");
+    object.insert(
+        "paths".to_string(),
+        serde_json::to_value(selected_paths).map_err(AppError::operation)?,
+    );
+    let record = serde_json::from_value(value).map_err(AppError::operation)?;
+    Ok((record, manifest.path_count, progress))
+}
+
+#[allow(clippy::too_many_lines)]
+fn load_indexed_paged_record_slice(
+    mut value: serde_json::Value,
+    manifest: &SyncConflictPathManifest,
+    directory: &Path,
+    offset: usize,
+    limit: usize,
+    group_count: usize,
+    batches: &[SyncConflictBatchRecord],
+) -> Result<(SyncConflictRecord, usize, SyncConflictProgress), AppError> {
+    let assignments = group_batch_assignments_with_counts(batches);
+    if assignments.len() > group_count {
+        return Err(AppError::operation(
+            "sync conflict batch progress exceeds the manifest group count",
+        ));
+    }
+    let mut progress = SyncConflictProgress {
+        total_groups: group_count,
+        pending_groups: group_count - assignments.len(),
+        prepared_groups: 0,
+        published_groups: 0,
+        applied_groups: 0,
+        needs_rebase_groups: 0,
+        total_paths: manifest.path_count,
+        pending_paths: manifest.path_count,
+        returned_groups: 0,
+        groups_complete: false,
+        groups: Vec::new(),
+    };
+    for (state, path_count, _) in assignments.values() {
+        if *path_count > manifest.path_count {
+            return Err(AppError::operation(
+                "sync conflict batch path count exceeds the manifest path count",
+            ));
+        }
+        match state {
+            SyncConflictGroupState::Pending => progress.pending_groups += 1,
+            SyncConflictGroupState::Prepared => {
+                progress.prepared_groups += 1;
+                progress.pending_paths = progress
+                    .pending_paths
+                    .checked_sub(*path_count)
+                    .ok_or_else(|| AppError::operation("invalid conflict batch path counts"))?;
+            }
+            SyncConflictGroupState::Published => {
+                progress.published_groups += 1;
+                progress.pending_paths = progress
+                    .pending_paths
+                    .checked_sub(*path_count)
+                    .ok_or_else(|| AppError::operation("invalid conflict batch path counts"))?;
+            }
+            SyncConflictGroupState::Applied => {
+                progress.applied_groups += 1;
+                progress.pending_paths = progress
+                    .pending_paths
+                    .checked_sub(*path_count)
+                    .ok_or_else(|| AppError::operation("invalid conflict batch path counts"))?;
+            }
+            SyncConflictGroupState::NeedsRebase => progress.needs_rebase_groups += 1,
+        }
+    }
+
+    let end = offset.saturating_add(limit).min(manifest.path_count);
+    let mut selected_paths = Vec::with_capacity(end.saturating_sub(offset));
+    let mut selected_groups = BTreeMap::<String, SyncConflictGroupProgress>::new();
+    let mut page_start = 0usize;
+    for (expected_index, page_ref) in manifest.path_pages.iter().enumerate() {
+        let page_end = page_start
+            .checked_add(page_ref.count)
+            .ok_or_else(|| AppError::operation("sync conflict path-page count overflow"))?;
+        let expected_file = format!("paths-{expected_index:06}.json");
+        if page_ref.file != expected_file || page_ref.count > MAX_CONFLICT_PATHS_PER_PAGE {
+            return Err(AppError::operation(format!(
+                "sync conflict manifest contains an invalid path-page reference `{}`",
+                page_ref.file
+            )));
+        }
+        if page_end > offset && page_start < end {
+            let page = read_conflict_path_page(directory, manifest, page_ref, expected_index)?;
+            let take_start = offset.saturating_sub(page_start);
+            let take_end = end.min(page_end) - page_start;
+            for path in page
+                .paths
+                .into_iter()
+                .skip(take_start)
+                .take(take_end.saturating_sub(take_start))
+            {
+                let (state, _, batch_id) = assignments.get(&path.group_id).cloned().unwrap_or((
+                    SyncConflictGroupState::Pending,
+                    0,
+                    None,
+                ));
+                selected_groups
+                    .entry(path.group_id.clone())
+                    .or_insert_with(|| SyncConflictGroupProgress {
+                        id: path.group_id.clone(),
+                        kind: path.group_kind,
+                        paths: Vec::new(),
+                        state,
+                        batch_id,
+                    })
+                    .paths
+                    .push(path.path.clone());
+                selected_paths.push(path);
+            }
+        }
+        page_start = page_end;
+    }
+    if page_start != manifest.path_count || selected_paths.len() != end.saturating_sub(offset) {
+        return Err(AppError::operation(
+            "sync conflict path pages do not match the manifest count",
+        ));
+    }
+    progress.groups = selected_groups.into_values().collect();
+    progress.returned_groups = progress.groups.len();
+    progress.groups_complete = progress.returned_groups == progress.total_groups;
+
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| AppError::operation("sync conflict manifest must be an object"))?;
+    object.remove("path_count");
+    object.remove("group_count");
+    object.remove("paths_digest");
+    object.remove("path_pages");
+    object.insert(
+        "paths".to_string(),
+        serde_json::to_value(selected_paths).map_err(AppError::operation)?,
+    );
+    let record = serde_json::from_value(value).map_err(AppError::operation)?;
+    Ok((record, manifest.path_count, progress))
+}
+
+fn read_conflict_path_page(
+    directory: &Path,
+    manifest: &SyncConflictPathManifest,
+    page_ref: &SyncConflictPathPageRef,
+    expected_index: usize,
+) -> Result<SyncConflictPathPage, AppError> {
+    let expected_file = format!("paths-{expected_index:06}.json");
+    if page_ref.file != expected_file || page_ref.count > MAX_CONFLICT_PATHS_PER_PAGE {
+        return Err(AppError::operation(format!(
+            "sync conflict manifest contains an invalid path-page reference `{}`",
+            page_ref.file
+        )));
+    }
+    let page_path = directory.join("path-pages").join(&page_ref.file);
+    let metadata = fs::metadata(&page_path).map_err(AppError::operation)?;
+    if !metadata.is_file() || metadata.len() > MAX_CONFLICT_PATH_PAGE_BYTES {
+        return Err(AppError::operation(format!(
+            "sync conflict path page at {} is not a bounded regular file",
+            page_path.display()
+        )));
+    }
+    let bytes = fs::read(&page_path).map_err(AppError::operation)?;
+    if blake3::hash(&bytes).to_hex().as_str() != page_ref.digest {
+        return Err(AppError::operation(format!(
+            "sync conflict path page at {} does not match its manifest digest",
+            page_path.display()
+        )));
+    }
+    let page: SyncConflictPathPage = serde_json::from_slice(&bytes).map_err(AppError::operation)?;
+    if page.version != manifest.version
+        || page.index != expected_index
+        || page.paths.len() != page_ref.count
+    {
+        return Err(AppError::operation(format!(
+            "sync conflict path page at {} has invalid identity or count",
+            page_path.display()
+        )));
+    }
+    Ok(page)
+}
+
+fn group_batch_assignments(
+    batches: &[SyncConflictBatchRecord],
+) -> BTreeMap<String, (SyncConflictGroupState, Option<String>)> {
+    let mut assignments = BTreeMap::new();
+    for batch in batches {
+        let state = batch.state();
+        for group_id in &batch.group_ids {
+            let replace = assignments.get(group_id).is_none_or(|(previous, _)| {
+                group_state_priority(state) > group_state_priority(*previous)
+            });
+            if replace {
+                assignments.insert(group_id.clone(), (state, Some(batch.batch_id.clone())));
+            }
+        }
+    }
+    assignments
+}
+
+fn group_batch_assignments_with_counts(
+    batches: &[SyncConflictBatchRecord],
+) -> BTreeMap<String, (SyncConflictGroupState, usize, Option<String>)> {
+    let mut assignments = BTreeMap::new();
+    for batch in batches {
+        let state = batch.state();
+        for group_id in &batch.group_ids {
+            let replace = assignments.get(group_id).is_none_or(
+                |(previous, _, _): &(SyncConflictGroupState, usize, Option<String>)| {
+                    group_state_priority(state) > group_state_priority(*previous)
+                },
+            );
+            if replace {
+                assignments.insert(
+                    group_id.clone(),
+                    (
+                        state,
+                        batch.group_path_counts.get(group_id).copied().unwrap_or(0),
+                        Some(batch.batch_id.clone()),
+                    ),
+                );
+            }
+        }
+    }
+    assignments
+}
+
+fn progress_for_selected_paths(
+    mut progress: SyncConflictProgress,
+    paths: &[SyncConflictPathRecord],
+) -> SyncConflictProgress {
+    let selected = paths
+        .iter()
+        .map(|path| path.group_id.as_str())
+        .collect::<BTreeSet<_>>();
+    progress
+        .groups
+        .retain(|group| selected.contains(group.id.as_str()));
+    progress.returned_groups = progress.groups.len();
+    progress.groups_complete = progress.returned_groups == progress.total_groups;
+    progress
 }
 
 #[cfg(test)]
@@ -3350,6 +3838,8 @@ mod tests {
         let directory = store.conflict_directory(&key, &id).expect("directory");
         fs::create_dir_all(&directory).expect("conflict directory");
         let mut record = unresolved_record(&id, &key, &canonical);
+        record.paths[0].local.object_id = Some("1".repeat(40));
+        record.paths[0].remote.object_id = Some("2".repeat(40));
         let prototype = record.paths[0].clone();
         record.paths = (0..300)
             .map(|index| SyncConflictPathRecord {
@@ -3371,6 +3861,14 @@ mod tests {
         assert_eq!(page.record.paths.len(), 64);
         assert_eq!(page.record.paths[0].path, "Notes/128.md");
         assert_eq!(page.progress.total_paths, 300);
+        assert_eq!(page.progress.total_groups, 300);
+        assert_eq!(page.progress.returned_groups, 64);
+        assert!(!page.progress.groups_complete);
+        assert_eq!(page.progress.groups.len(), 64);
+        assert!(page.progress.groups.iter().all(|group| group
+            .paths
+            .iter()
+            .all(|path| path.as_str() >= "Notes/128.md" && path.as_str() < "Notes/192.md")));
         assert_eq!(
             page.path_page,
             Some(SyncConflictPathPageInfo {
@@ -3380,6 +3878,18 @@ mod tests {
                 next_offset: Some(192),
             })
         );
+
+        fs::remove_file(directory.join("path-pages/paths-000002.json"))
+            .expect("remove an unrequested page");
+        let bounded = get_sync_conflict_page_with_state_store(
+            &VaultPaths::new(&vault),
+            &id,
+            0,
+            32,
+            &state_store,
+        )
+        .expect("unrequested evidence pages are not read");
+        assert_eq!(bounded.record.paths.len(), 32);
     }
 
     #[test]
@@ -3463,6 +3973,7 @@ mod tests {
                 batch_id,
                 selection_digest: conflict_group_selection_digest(&group_ids),
                 group_ids,
+                group_path_counts: BTreeMap::new(),
                 expected_revision: expected.to_string(),
                 side: Some(SyncConflictResolutionSide::Local),
                 proposal_id: None,
