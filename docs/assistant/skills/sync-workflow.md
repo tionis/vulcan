@@ -50,7 +50,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    detect whether differing trees conflict; use `--output json` for `preview.file_state`, observed
    refs, and branch detail. Registered previews also inspect durable conflict records. An up-to-date
    file lane can coexist with actionable retained conflicts, which remain an attention state until
-   reviewed through `vulcan sync conflicts --wiki <id>`. Later successful synchronization or a
+   reviewed through `vulcan sync conflicts --wiki <id>`. Deterministically mergeable sibling paths
+   may already be present in the projected tree while the record lists only paths still requiring
+   review. Later successful synchronization or a
    replacement conflict marks obsolete attempts as superseded immutable history and removes them
    from the active count; an unavailable conflict count makes the inspection incomplete instead of
    implying zero.
