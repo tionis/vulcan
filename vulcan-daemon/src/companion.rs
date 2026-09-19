@@ -234,6 +234,10 @@ impl CompanionSemanticAgent {
 }
 
 impl CompanionResolutionAgent {
+    pub(crate) fn provider(&self) -> &dyn ResolutionAgentProvider {
+        self.provider.as_ref()
+    }
+
     #[must_use]
     pub fn new(provider: impl ResolutionAgentProvider + 'static) -> Self {
         Self {
@@ -256,7 +260,10 @@ impl CompanionResolutionAgent {
         Ok(Self::new(provider))
     }
 
-    fn claim_conflict(&self, key: String) -> Result<CompanionConflictClaim<'_>, CompanionError> {
+    pub(crate) fn claim_conflict(
+        &self,
+        key: String,
+    ) -> Result<CompanionConflictClaim<'_>, CompanionError> {
         let mut active = self.active_conflicts.lock().map_err(|_| {
             CompanionError::new(
                 CompanionErrorKind::Internal,
@@ -273,7 +280,7 @@ impl CompanionResolutionAgent {
     }
 }
 
-struct CompanionConflictClaim<'a> {
+pub(crate) struct CompanionConflictClaim<'a> {
     agent: &'a CompanionResolutionAgent,
     key: String,
 }

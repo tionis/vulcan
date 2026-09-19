@@ -14,6 +14,7 @@ use vulcan_app::obsidian_companion::{
     install_obsidian_companion, ObsidianCompanionInstallReport, ObsidianCompanionInstallRequest,
 };
 use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
+use vulcan_daemon::conflict_worker::{load_conflict_worker_status, ConflictWorkerStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground,
@@ -89,9 +90,14 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
                 })?;
             print_semantic_worker_status(cli.output, &status)
         }
-        DaemonCommand::ConflictStatus => Err(CliError::operation(
-            "the conflict worker has not completed a pass",
-        )),
+        DaemonCommand::ConflictStatus => {
+            let status = load_conflict_worker_status(&context.state_root)
+                .map_err(CliError::operation)?
+                .ok_or_else(|| {
+                    CliError::operation("the conflict worker has not completed a pass")
+                })?;
+            print_conflict_worker_status(cli.output, &status)
+        }
         DaemonCommand::AlertStatus => {
             let config = context.registry.load().map_err(CliError::operation)?;
             let status = alert_delivery_status(&config.notifications, &context.state_root)
@@ -249,6 +255,29 @@ fn print_semantic_worker_status(
     for entry in &status.entries {
         if let Some(report) = &entry.report {
             println!("{}: {:?}", entry.wiki_id, report.outcome);
+        } else if let Some(detail) = &entry.skipped {
+            println!("{}: skipped ({detail})", entry.wiki_id);
+        } else if let Some(error) = &entry.error {
+            println!("{}: error ({error})", entry.wiki_id);
+        }
+    }
+    Ok(())
+}
+
+fn print_conflict_worker_status(
+    output: OutputFormat,
+    status: &ConflictWorkerStatus,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(status);
+    }
+    println!("Conflict worker checked at {} ms", status.checked_unix_ms);
+    for entry in &status.entries {
+        if let Some(proposal) = &entry.proposal_id {
+            println!(
+                "{}: auto-accepted {} group(s) with proposal {}",
+                entry.wiki_id, entry.eligible_groups, proposal
+            );
         } else if let Some(detail) = &entry.skipped {
             println!("{}: skipped ({detail})", entry.wiki_id);
         } else if let Some(error) = &entry.error {

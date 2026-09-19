@@ -10,6 +10,7 @@ pub mod alert_delivery;
 pub mod alerts;
 pub mod clone;
 pub mod companion;
+pub mod conflict_worker;
 pub mod credentials;
 pub mod environment;
 pub mod http;

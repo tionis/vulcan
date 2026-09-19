@@ -6,6 +6,7 @@ use crate::alert_delivery::{
 };
 use crate::alerts::SyncAlertTracker;
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
+use crate::conflict_worker::spawn_conflict_worker;
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
 use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
@@ -256,11 +257,7 @@ async fn run_daemon(
     })?;
 
     let (resolution_agent, semantic_agent) = agents;
-    if config.semantic_worker.is_some() && semantic_agent.is_none() {
-        return Err(DaemonProcessError::Configuration(
-            "the semantic worker requires a configured semantic agent".to_string(),
-        ));
-    }
+    validate_worker_agents(&config, resolution_agent.as_ref(), semantic_agent.as_ref())?;
     let requested_bind = config.bind.parse::<SocketAddr>().map_err(|error| {
         DaemonProcessError::Configuration(format!(
             "invalid daemon bind address `{}`: {error}",
@@ -309,6 +306,7 @@ async fn run_daemon(
         &config,
         &supervisor,
         &state_store,
+        resolution_agent.as_ref(),
         semantic_agent.as_ref(),
         &stop,
     );
@@ -341,12 +339,31 @@ async fn run_daemon(
     Ok(())
 }
 
+fn validate_worker_agents(
+    config: &crate::registry::DaemonConfig,
+    resolution_agent: Option<&Arc<CompanionResolutionAgent>>,
+    semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
+) -> Result<(), DaemonProcessError> {
+    if config.semantic_worker.is_some() && semantic_agent.is_none() {
+        return Err(DaemonProcessError::Configuration(
+            "the semantic worker requires a configured semantic agent".to_string(),
+        ));
+    }
+    if config.conflict_worker.is_some() && resolution_agent.is_none() {
+        return Err(DaemonProcessError::Configuration(
+            "the conflict worker requires a configured resolution agent".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 struct DaemonWorkers {
     trigger: thread::JoinHandle<Result<(), DaemonProcessError>>,
     sync: thread::JoinHandle<Result<(), DaemonProcessError>>,
     notifications: tokio::task::JoinHandle<Result<(), DaemonProcessError>>,
     alert_delivery: Option<AlertDeliveryWorker>,
     semantic: Option<thread::JoinHandle<Result<(), String>>>,
+    conflict: Option<thread::JoinHandle<Result<(), String>>>,
 }
 
 impl DaemonWorkers {
@@ -355,6 +372,7 @@ impl DaemonWorkers {
         config: &crate::registry::DaemonConfig,
         supervisor: &Arc<SyncSupervisor>,
         state_store: &Arc<SyncStateStore>,
+        resolution_agent: Option<&Arc<CompanionResolutionAgent>>,
         semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
         stop: &Arc<ShutdownSignal>,
     ) -> Self {
@@ -401,6 +419,17 @@ impl DaemonWorkers {
                 context.verbose,
             ),
             alert_delivery,
+            conflict: config.conflict_worker.clone().map(|worker_config| {
+                spawn_conflict_worker(
+                    worker_config,
+                    context.registry.clone(),
+                    Arc::clone(supervisor),
+                    Arc::clone(state_store),
+                    context.state_root.clone(),
+                    Arc::clone(resolution_agent.expect("conflict worker agent was validated")),
+                    Arc::clone(stop),
+                )
+            }),
             semantic: config.semantic_worker.clone().map(|worker_config| {
                 spawn_semantic_worker(
                     worker_config,
@@ -435,6 +464,14 @@ impl DaemonWorkers {
                 .join()
                 .map_err(|_| {
                     DaemonProcessError::Worker("daemon semantic worker panicked".to_string())
+                })?
+                .map_err(DaemonProcessError::Worker)?;
+        }
+        if let Some(worker) = self.conflict {
+            worker
+                .join()
+                .map_err(|_| {
+                    DaemonProcessError::Worker("daemon conflict worker panicked".to_string())
                 })?
                 .map_err(DaemonProcessError::Worker)?;
         }
@@ -891,7 +928,7 @@ impl Drop for RuntimeRecordGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{DaemonConfig, WikiId, WikiRegistration};
+    use crate::registry::{DaemonConfig, DaemonConflictWorkerConfig, WikiId, WikiRegistration};
     use std::process::Command;
     use ulid::Ulid;
 
@@ -956,6 +993,25 @@ mod tests {
             }],
             ..DaemonConfig::default()
         }
+    }
+
+    #[test]
+    fn conflict_worker_requires_a_resolution_agent() {
+        let config = DaemonConfig {
+            conflict_worker: Some(DaemonConflictWorkerConfig {
+                wikis: vec![WikiId::parse("notes").expect("wiki ID")],
+                remote: "origin".to_string(),
+                live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                max_groups_per_run: 1,
+                poll_seconds: 30,
+            }),
+            ..DaemonConfig::default()
+        };
+        let error = validate_worker_agents(&config, None, None)
+            .expect_err("worker without provider must fail");
+        assert!(error
+            .to_string()
+            .contains("conflict worker requires a configured resolution agent"));
     }
 
     fn assert_daemon_sync_attempted(context: &DaemonProcessContext) {
