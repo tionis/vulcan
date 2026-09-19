@@ -21,7 +21,8 @@ use vulcan_daemon::process::{
 };
 use vulcan_daemon::registry::{
     DaemonAgentConfig, DaemonAgentKind, DaemonCommandNotificationConfig, DaemonConfig,
-    DaemonSemanticWorkerConfig, DaemonWebhookFormat, DaemonWebhookNotificationConfig, WikiId,
+    DaemonConflictWorkerConfig, DaemonSemanticWorkerConfig, DaemonWebhookFormat,
+    DaemonWebhookNotificationConfig, WikiId,
 };
 use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
@@ -88,6 +89,9 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
                 })?;
             print_semantic_worker_status(cli.output, &status)
         }
+        DaemonCommand::ConflictStatus => Err(CliError::operation(
+            "the conflict worker has not completed a pass",
+        )),
         DaemonCommand::AlertStatus => {
             let config = context.registry.load().map_err(CliError::operation)?;
             let status = alert_delivery_status(&config.notifications, &context.state_root)
@@ -438,6 +442,9 @@ fn handle_config(
     if let Some(config) = handle_notification_config(context, command) {
         return print_config(output, &config?);
     }
+    if let Some(config) = handle_worker_config(context, command) {
+        return print_config(output, &config?);
+    }
     let config = match command {
         DaemonConfigCommand::Show => context.registry.load().map_err(CliError::operation)?,
         DaemonConfigCommand::SetBind { bind, dry_run } => context
@@ -466,6 +473,34 @@ fn handle_config(
             .registry
             .clear_agent(daemon_agent_kind(*kind), *dry_run)
             .map_err(CliError::operation)?,
+        DaemonConfigCommand::SetSemanticWorker { .. }
+        | DaemonConfigCommand::ClearSemanticWorker { .. }
+        | DaemonConfigCommand::SetConflictWorker { .. }
+        | DaemonConfigCommand::ClearConflictWorker { .. } => {
+            unreachable!("worker configuration is dispatched above")
+        }
+        DaemonConfigCommand::SetNotifications { .. }
+        | DaemonConfigCommand::SetNotificationWebhook { .. }
+        | DaemonConfigCommand::SetNotificationCommand { .. }
+        | DaemonConfigCommand::RemoveNotificationSink { .. } => {
+            unreachable!("notification configuration is dispatched above")
+        }
+    };
+    print_config(output, &config)
+}
+
+fn parse_worker_wikis(wiki: &[String]) -> Result<Vec<WikiId>, CliError> {
+    wiki.iter()
+        .map(|id| WikiId::parse(id.clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CliError::operation)
+}
+
+fn handle_worker_config(
+    context: &DaemonProcessContext,
+    command: &DaemonConfigCommand,
+) -> Option<Result<DaemonConfig, CliError>> {
+    let result = match command {
         DaemonConfigCommand::SetSemanticWorker {
             wiki,
             semantic_ref,
@@ -476,38 +511,51 @@ fn handle_config(
             poll_seconds,
             no_publish,
             dry_run,
-        } => context
-            .registry
-            .set_semantic_worker(
-                DaemonSemanticWorkerConfig {
-                    wikis: wiki
-                        .iter()
-                        .map(|id| WikiId::parse(id.clone()))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(CliError::operation)?,
-                    semantic_ref: semantic_ref.clone(),
-                    remote: remote.clone(),
-                    live_ref: live_ref.clone(),
-                    publish: !*no_publish,
-                    quiet_seconds: *quiet_seconds,
-                    maximum_wait_seconds: *maximum_wait_seconds,
-                    poll_seconds: *poll_seconds,
+        } => context.registry.set_semantic_worker(
+            DaemonSemanticWorkerConfig {
+                wikis: match parse_worker_wikis(wiki) {
+                    Ok(wikis) => wikis,
+                    Err(error) => return Some(Err(error)),
                 },
-                *dry_run,
-            )
-            .map_err(CliError::operation)?,
-        DaemonConfigCommand::ClearSemanticWorker { dry_run } => context
-            .registry
-            .clear_semantic_worker(*dry_run)
-            .map_err(CliError::operation)?,
-        DaemonConfigCommand::SetNotifications { .. }
-        | DaemonConfigCommand::SetNotificationWebhook { .. }
-        | DaemonConfigCommand::SetNotificationCommand { .. }
-        | DaemonConfigCommand::RemoveNotificationSink { .. } => {
-            unreachable!("notification configuration is dispatched above")
+                semantic_ref: semantic_ref.clone(),
+                remote: remote.clone(),
+                live_ref: live_ref.clone(),
+                publish: !*no_publish,
+                quiet_seconds: *quiet_seconds,
+                maximum_wait_seconds: *maximum_wait_seconds,
+                poll_seconds: *poll_seconds,
+            },
+            *dry_run,
+        ),
+        DaemonConfigCommand::ClearSemanticWorker { dry_run } => {
+            context.registry.clear_semantic_worker(*dry_run)
         }
+        DaemonConfigCommand::SetConflictWorker {
+            wiki,
+            remote,
+            live_ref,
+            max_groups_per_run,
+            poll_seconds,
+            dry_run,
+        } => context.registry.set_conflict_worker(
+            DaemonConflictWorkerConfig {
+                wikis: match parse_worker_wikis(wiki) {
+                    Ok(wikis) => wikis,
+                    Err(error) => return Some(Err(error)),
+                },
+                remote: remote.clone(),
+                live_ref: live_ref.clone(),
+                max_groups_per_run: *max_groups_per_run,
+                poll_seconds: *poll_seconds,
+            },
+            *dry_run,
+        ),
+        DaemonConfigCommand::ClearConflictWorker { dry_run } => {
+            context.registry.clear_conflict_worker(*dry_run)
+        }
+        _ => return None,
     };
-    print_config(output, &config)
+    Some(result.map_err(CliError::operation))
 }
 
 fn handle_notification_config(

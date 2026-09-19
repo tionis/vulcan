@@ -4540,6 +4540,8 @@ pub enum DaemonCommand {
     Status,
     #[command(about = "Show the latest daemon semantic-worker pass")]
     SemanticStatus,
+    #[command(about = "Show the latest daemon conflict-worker pass")]
+    ConflictStatus,
     #[command(about = "Show configured notification sinks and pending deliveries")]
     AlertStatus,
     #[command(about = "Request graceful daemon shutdown")]
@@ -4654,6 +4656,45 @@ pub enum DaemonConfigCommand {
     },
     #[command(about = "Disable the daemon semantic-commit worker")]
     ClearSemanticWorker {
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(about = "Configure automatic high-confidence conflict resolution")]
+    SetConflictWorker {
+        #[arg(
+            long,
+            required = true,
+            help = "Registered wiki ID; repeat for each wiki"
+        )]
+        wiki: Vec<String>,
+        #[arg(long, default_value = "origin", help = "Git remote")]
+        remote: String,
+        #[arg(
+            long,
+            default_value = "refs/heads/__vulcan-sync/live",
+            help = "Accepted live branch"
+        )]
+        live_ref: String,
+        #[arg(
+            long,
+            default_value_t = 128,
+            help = "Maximum conflict groups proposed in one worker run"
+        )]
+        max_groups_per_run: usize,
+        #[arg(
+            long,
+            default_value_t = 30,
+            help = "Low-frequency daemon poll interval"
+        )]
+        poll_seconds: u64,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Disable the daemon conflict-resolution worker")]
+    ClearConflictWorker {
         #[arg(long, help = "Report without writing daemon configuration")]
         dry_run: bool,
     },

@@ -2571,6 +2571,44 @@ fn parses_daemon_semantic_worker_configuration() {
 }
 
 #[test]
+fn parses_daemon_conflict_worker_configuration() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-conflict-worker",
+        "--wiki",
+        "personal",
+        "--max-groups-per-run",
+        "64",
+        "--poll-seconds",
+        "15",
+        "--dry-run",
+    ])
+    .expect("conflict worker command parses");
+    let Command::Daemon {
+        command:
+            DaemonCommand::Config {
+                command:
+                    DaemonConfigCommand::SetConflictWorker {
+                        wiki,
+                        max_groups_per_run,
+                        poll_seconds,
+                        dry_run,
+                        ..
+                    },
+            },
+    } = cli.command
+    else {
+        panic!("expected conflict worker config");
+    };
+    assert_eq!(wiki, ["personal"]);
+    assert_eq!(max_groups_per_run, 64);
+    assert_eq!(poll_seconds, 15);
+    assert!(dry_run);
+}
+
+#[test]
 fn parses_daemon_desktop_notification_configuration() {
     let cli = Cli::try_parse_from([
         "vulcan",

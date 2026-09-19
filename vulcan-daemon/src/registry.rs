@@ -80,6 +80,8 @@ pub struct DaemonConfig {
     pub semantic_agent: Option<DaemonAgentConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_worker: Option<DaemonSemanticWorkerConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_worker: Option<DaemonConflictWorkerConfig>,
     #[serde(default, skip_serializing_if = "DaemonNotificationConfig::is_default")]
     pub notifications: DaemonNotificationConfig,
     #[serde(default, rename = "vault")]
@@ -98,6 +100,7 @@ impl Default for DaemonConfig {
             resolution_agent: None,
             semantic_agent: None,
             semantic_worker: None,
+            conflict_worker: None,
             notifications: DaemonNotificationConfig::default(),
             vaults: Vec::new(),
         }
@@ -180,6 +183,19 @@ pub struct DaemonSemanticWorkerConfig {
     pub poll_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonConflictWorkerConfig {
+    pub wikis: Vec<WikiId>,
+    #[serde(default = "default_sync_remote")]
+    pub remote: String,
+    #[serde(default = "default_sync_live_ref")]
+    pub live_ref: String,
+    #[serde(default = "default_conflict_worker_max_groups")]
+    pub max_groups_per_run: usize,
+    #[serde(default = "default_conflict_worker_poll_seconds")]
+    pub poll_seconds: u64,
+}
+
 fn default_semantic_ref() -> String {
     "refs/heads/main".to_string()
 }
@@ -205,6 +221,14 @@ const fn default_semantic_maximum_wait_seconds() -> u64 {
 }
 
 const fn default_semantic_poll_seconds() -> u64 {
+    30
+}
+
+const fn default_conflict_worker_max_groups() -> usize {
+    128
+}
+
+const fn default_conflict_worker_poll_seconds() -> u64 {
     30
 }
 
@@ -548,6 +572,25 @@ impl WikiRegistry {
         })
     }
 
+    pub fn set_conflict_worker(
+        &self,
+        worker: DaemonConflictWorkerConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_conflict_worker_config(&worker)?;
+            config.conflict_worker = Some(worker);
+            Ok(config.clone())
+        })
+    }
+
+    pub fn clear_conflict_worker(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            config.conflict_worker = None;
+            Ok(config.clone())
+        })
+    }
+
     pub fn set_desktop_notifications(
         &self,
         enabled: bool,
@@ -636,6 +679,9 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     }
     if let Some(worker) = &config.semantic_worker {
         validate_semantic_worker_config(worker)?;
+    }
+    if let Some(worker) = &config.conflict_worker {
+        validate_conflict_worker_config(worker)?;
     }
     validate_notification_config(&config.notifications)?;
     Ok(())
@@ -777,6 +823,39 @@ fn validate_semantic_worker_config(
     if !(1..=3_600).contains(&worker.poll_seconds) {
         return Err(RegistryError::InvalidDaemonSetting(
             "semantic worker poll interval must be between 1 and 3600 seconds".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_conflict_worker_config(
+    worker: &DaemonConflictWorkerConfig,
+) -> Result<(), RegistryError> {
+    if worker.wikis.is_empty() {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "conflict worker requires at least one explicit wiki".to_string(),
+        ));
+    }
+    let unique = worker.wikis.iter().collect::<BTreeSet<_>>();
+    if unique.len() != worker.wikis.len() {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "conflict worker wiki IDs must be unique".to_string(),
+        ));
+    }
+    GitRemote::parse(worker.remote.clone()).map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!("invalid conflict worker remote: {error}"))
+    })?;
+    GitRefName::parse(worker.live_ref.clone()).map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!("invalid conflict worker live ref: {error}"))
+    })?;
+    if !(1..=128).contains(&worker.max_groups_per_run) {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "conflict worker group limit must be between 1 and 128".to_string(),
+        ));
+    }
+    if !(1..=3_600).contains(&worker.poll_seconds) {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "conflict worker poll interval must be between 1 and 3600 seconds".to_string(),
         ));
     }
     Ok(())
@@ -1133,6 +1212,23 @@ mod tests {
             .clear_semantic_worker(false)
             .expect("clear semantic worker")
             .semantic_worker
+            .is_none());
+
+        let conflict_worker = DaemonConflictWorkerConfig {
+            wikis: vec![WikiId::parse("personal").expect("wiki ID")],
+            remote: "origin".to_string(),
+            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+            max_groups_per_run: 64,
+            poll_seconds: 15,
+        };
+        let configured = registry
+            .set_conflict_worker(conflict_worker.clone(), false)
+            .expect("set conflict worker");
+        assert_eq!(configured.conflict_worker.as_ref(), Some(&conflict_worker));
+        assert!(registry
+            .clear_conflict_worker(false)
+            .expect("clear conflict worker")
+            .conflict_worker
             .is_none());
 
         let preview = registry

@@ -10852,6 +10852,12 @@
             "subcommands": []
           },
           {
+            "about": "Show the latest daemon conflict-worker pass",
+            "name": "conflict-status",
+            "options": [],
+            "subcommands": []
+          },
+          {
             "about": "Show configured notification sinks and pending deliveries",
             "name": "alert-status",
             "options": [],
@@ -11178,6 +11184,103 @@
               {
                 "about": "Disable the daemon semantic-commit worker",
                 "name": "clear-semantic-worker",
+                "options": [
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Configure automatic high-confidence conflict resolution",
+                "name": "set-conflict-worker",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; repeat for each wiki",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Accepted live branch",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Maximum conflict groups proposed in one worker run",
+                    "id": "max_groups_per_run",
+                    "long": "max-groups-per-run",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "MAX_GROUPS_PER_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Low-frequency daemon poll interval",
+                    "id": "poll_seconds",
+                    "long": "poll-seconds",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "POLL_SECONDS"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Disable the daemon conflict-resolution worker",
+                "name": "clear-conflict-worker",
                 "options": [
                   {
                     "help": "Report without writing daemon configuration",
