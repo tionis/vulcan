@@ -273,6 +273,12 @@ they commit.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.
+- Install or update the embedded Obsidian companion with `vulcan daemon companion install
+  [<wiki>] --dry-run`, review the managed files and target, then rerun without `--dry-run`. Omit the
+  wiki only when global `--vault` resolves to the intended registration. The installer seeds the
+  non-secret endpoint/wiki settings only on first install and preserves later `data.json` choices;
+  it never pairs the bearer token. Enable the plugin, then perform the explicit `--reveal-token`
+  handoff into Obsidian `SecretStorage`.
 - The reference Obsidian companion requests editor save, debounces completed writes, displays
   authenticated state, and previews conflicts. By default it shows one bounded notice per failed
   daemon job or retained failed transaction, deduplicated by durable job/transaction identity

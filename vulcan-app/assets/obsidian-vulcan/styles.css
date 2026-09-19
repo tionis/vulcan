@@ -1,0 +1,31 @@
+.vulcan-companion-status[data-state="conflicted"],
+.vulcan-companion-status[data-state="error"] {
+  color: var(--text-error);
+}
+
+.vulcan-companion-status[data-state="offline"],
+.vulcan-companion-status[data-state="paused"] {
+  color: var(--text-warning);
+}
+
+.vulcan-companion-details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1rem;
+}
+
+.vulcan-companion-details dt {
+  font-weight: var(--font-semibold);
+}
+
+.vulcan-companion-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.vulcan-companion-preview {
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

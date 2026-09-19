@@ -4,7 +4,7 @@
   "private": true,
   "description": "Thin Obsidian client for Vulcan's authenticated loopback companion protocol",
   "scripts": {
-    "build": "esbuild plugin.js --bundle --external:obsidian --platform=browser --format=cjs --target=es2022 --outfile=main.js",
+    "build": "esbuild plugin.js --bundle --external:obsidian --platform=browser --format=cjs --target=es2022 --outfile=main.js && node scripts/sync-assets.js",
     "check": "npm run build && node --check main.js && node --check plugin.js && node --check protocol.js && node --check core.js",
     "test": "node --test test/*.test.js"
   },

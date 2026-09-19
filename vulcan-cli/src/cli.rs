@@ -627,6 +627,8 @@ Examples:
   vulcan daemon status --output json
   vulcan daemon semantic-status --output json
   vulcan daemon config set-semantic-worker --wiki personal --dry-run
+  vulcan daemon companion install personal --dry-run
+  vulcan daemon companion install personal
   vulcan daemon companion --reveal-token --output json
   vulcan daemon stop
   vulcan daemon uninstall --dry-run";
@@ -4466,6 +4468,8 @@ pub enum DaemonCommand {
     Stop,
     #[command(about = "Show local companion connection details")]
     Companion {
+        #[command(subcommand)]
+        command: Option<DaemonCompanionCommand>,
         #[arg(
             long,
             help = "Include the bearer token for explicit transfer into device-local client storage"
@@ -4476,6 +4480,17 @@ pub enum DaemonCommand {
     Config {
         #[command(subcommand)]
         command: DaemonConfigCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DaemonCompanionCommand {
+    #[command(about = "Install or update the bundled Obsidian companion in a registered vault")]
+    Install {
+        #[arg(help = "Registered wiki ID; inferred from --vault when omitted")]
+        wiki: Option<String>,
+        #[arg(long, help = "Report files that would change without writing them")]
+        dry_run: bool,
     },
 }
 

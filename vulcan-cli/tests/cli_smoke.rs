@@ -7774,6 +7774,69 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 }
 
 #[test]
+fn daemon_companion_install_places_embedded_assets_and_preserves_configuration() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vault = temporary.path().join("personal");
+    fs::create_dir_all(vault.join(".obsidian")).expect("Obsidian vault");
+    init_git_repo(&vault);
+
+    let added = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "vault",
+            "add",
+            "personal",
+            vault.to_str().expect("vault path"),
+        ])
+        .output()
+        .expect("vault add should run");
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stdout)
+    );
+
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    let dry_run =
+        successful_process_json(&daemon(&["companion", "install", "personal", "--dry-run"]));
+    assert_eq!(dry_run["dry_run"], true);
+    assert_eq!(dry_run["wiki_id"], "personal");
+    assert_eq!(dry_run["pairing"], "required");
+    assert!(!vault.join(".obsidian/plugins/vulcan-companion").exists());
+
+    let installed = successful_process_json(&daemon(&["companion", "install", "personal"]));
+    assert_eq!(installed["changed"], true);
+    let plugin = vault.join(".obsidian/plugins/vulcan-companion");
+    for name in ["manifest.json", "main.js", "styles.css"] {
+        assert_eq!(
+            fs::read(plugin.join(name)).expect("installed asset"),
+            fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("workspace root")
+                    .join("integrations/obsidian-vulcan")
+                    .join(name)
+            )
+            .expect("source asset")
+        );
+    }
+    let data = fs::read_to_string(plugin.join("data.json")).expect("plugin data");
+    assert!(data.contains("\"wikiId\": \"personal\""));
+    fs::write(plugin.join("data.json"), "{\"wikiId\":\"custom\"}\n").expect("custom plugin data");
+
+    let current = successful_process_json(&daemon(&["companion", "install", "personal"]));
+    assert_eq!(current["changed"], false);
+    assert_eq!(current["preserved_files"], serde_json::json!(["data.json"]));
+    assert_eq!(
+        fs::read_to_string(plugin.join("data.json")).expect("preserved data"),
+        "{\"wikiId\":\"custom\"}\n"
+    );
+}
+
+#[test]
 fn daemon_status_human_output_explains_each_registered_wiki() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -14987,6 +15050,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("--group-by hunk"));
     assert!(git_skill.contains("vulcan daemon status"));
     assert!(git_skill.contains("vulcan daemon companion --reveal-token"));
+    assert!(git_skill.contains("vulcan daemon companion install [<wiki>] --dry-run"));
     assert!(git_skill.contains("reference Obsidian companion"));
     assert!(git_skill.contains("skip busy, paused, or conflicted state"));
     assert!(git_skill.contains("vulcan daemon config set-agent resolution"));
@@ -15038,6 +15102,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan sync clone <remote> <shared-path> --dry-run"));
     assert!(sync_skill.contains("vulcan daemon install --dry-run"));
     assert!(sync_skill.contains("vulcan daemon uninstall --dry-run"));
+    assert!(sync_skill.contains("vulcan daemon companion install"));
     assert!(sync_skill.contains("macOS installs a restartable per-user LaunchAgent"));
     assert!(sync_skill.contains("bound to the current user SID"));
     assert!(sync_skill.contains("needs no Administrator terminal or stored password"));
@@ -15532,6 +15597,7 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(configuration.contains("converts a recognized generated mdbase 0.2"));
     assert!(configuration.contains("disables `enableMdbaseSpec`"));
     assert!(configuration.contains("vulcan daemon companion --output json"));
+    assert!(configuration.contains("vulcan daemon companion install"));
     assert!(configuration.contains("native `SecretStorage`"));
 }
 

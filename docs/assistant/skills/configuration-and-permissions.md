@@ -36,18 +36,19 @@ permission profiles, or diagnoses permission and trust failures.
 10. Use `vulcan daemon config show` for process-owned settings. Preview `set-bind`, `set-agent resolution|semantic --base-url <url> --model <model> [--api-key-env <name>]`, or `clear-agent` with `--dry-run` before applying it. Restart the daemon after changing provider configuration; startup reads any named credential from the inherited environment or the protected device-local `daemon.env`, with inherited values taking precedence, and capabilities advertise only providers that were constructed successfully.
 11. Use `vulcan daemon companion --output json` for non-secret local-client connection metadata. `--reveal-token` is an explicit bearer-authority transfer and its output belongs only in device-local client storage, never shared configuration or synchronized plugin data.
 12. The reference Obsidian companion requires Obsidian 1.11.4+ and stores the bearer token through native `SecretStorage`; its ordinary plugin data contains only allowlisted non-secret endpoint/wiki/trigger preferences. Keep the daemon loopback-only and use the registration's permission profile as the authority boundary.
-13. For interactive Templater creation-rule setup, use `vulcan config edit`: its structured folder and regex rule editors can add/remove rows, and folder fields suggest current vault directories without rejecting manually entered paths.
-14. Realtime sync notification setup has no device-local import command or daemon setting. The
+13. Preview companion installation with `vulcan daemon companion install [<wiki>] --dry-run`, then apply after checking the registered vault and managed files. First install seeds only the non-secret endpoint/wiki preferences; upgrades preserve `data.json`, and pairing still requires the explicit token handoff into Obsidian `SecretStorage`.
+14. For interactive Templater creation-rule setup, use `vulcan config edit`: its structured folder and regex rule editors can add/remove rows, and folder fields suggest current vault directories without rejecting manually entered paths.
+15. Realtime sync notification setup has no device-local import command or daemon setting. The
     daemon discovers `notification.json` from the repository's exact
     `refs/vulcan/notifications` ref. The registration's effective profile must allow Git and
     network access to the advertised endpoint origin before the daemon connects.
-15. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
+16. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
     Preview `vulcan daemon config set-notifications --desktop true --dry-run`, apply it, and restart
     the daemon to opt into native desktop delivery. This setting contains no credential and a
     desktop delivery failure never changes the retained sync result. Enabling it reconciles the
     current retained terminal job into the durable alert ledger once; successful delivery prevents
     repeat alerts on later restarts.
-16. Add remote alerts with `daemon config set-notification-webhook <name> --url <url>
+17. Add remote alerts with `daemon config set-notification-webhook <name> --url <url>
     --format json|ntfy [--token-env <name>] --dry-run`, or an absolute shell-free local bridge with
     `set-notification-command <name> --program <path> [--arg <literal>]... --dry-run`. Restart after
     applying configuration and inspect the secret-minimal queue with `daemon alert-status`. Remove

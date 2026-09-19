@@ -5,19 +5,29 @@ selected wiki's synchronization state, requests finite sync jobs, can debounce c
 vault writes into sync triggers, and provides a dry-run-first UI for choosing a preserved conflict
 side. It never invokes Git, moves Vulcan refs, or implements its own synchronization state machine.
 
-## Current installation
+## Installation
 
-Copy the release artifacts `manifest.json`, bundled `main.js`, and `styles.css` into:
+Install or update the companion directly from the Vulcan binary. The wiki must already be registered
+and must contain a real `.obsidian/` directory:
+
+```sh
+vulcan daemon companion install personal --dry-run
+vulcan daemon companion install personal
+```
+
+Omit `personal` to infer the registration from global `--vault`. The command embeds and writes
+`manifest.json`, bundled `main.js`, and `styles.css` into:
 
 ```text
 <vault>/.obsidian/plugins/vulcan-companion/
 ```
 
-Enable **Vulcan Companion** in Obsidian's community plugin settings. Obsidian 1.11.4 or newer is
-required because the bearer credential uses the native device-local `SecretStorage` API. The
-plugin works on desktop and mobile; Android still needs a reachable Vulcan daemon running in
-Termux or a later native bridge. One-shot `vulcan sync run` remains available without this plugin
-or the daemon.
+On first install it also seeds `data.json` with only the non-secret configured daemon endpoint and
+registered wiki ID. Updates preserve existing plugin settings and unrelated files. Enable **Vulcan
+Companion** in Obsidian's community plugin settings. Obsidian 1.11.4 or newer is required because
+the bearer credential uses the native device-local `SecretStorage` API. The plugin works on desktop
+and mobile; Android still needs a reachable Vulcan daemon running in Termux or a later native
+bridge. One-shot `vulcan sync run` remains available without this plugin or the daemon.
 
 ## Pairing with the local daemon
 
@@ -53,8 +63,8 @@ default and does not expose an arbitrary Git command.
 
 ## Tests
 
-Install the pinned development dependencies, build the self-contained desktop/mobile bundle, and
-run the protocol tests:
+Install the pinned development dependencies, build the self-contained desktop/mobile bundle (which
+also refreshes the assets embedded by `vulcan-app`), and run the protocol tests:
 
 ```sh
 cd integrations/obsidian-vulcan

@@ -1,0 +1,9 @@
+{
+  "id": "vulcan-companion",
+  "name": "Vulcan Companion",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Thin status, sync, and conflict-review client for the local Vulcan daemon.",
+  "author": "Vulcan contributors",
+  "isDesktopOnly": false
+}

@@ -43,6 +43,7 @@ pub mod integrations;
 pub mod mdbase;
 pub mod mdbase_conformance;
 pub mod notes;
+pub mod obsidian_companion;
 pub mod outline_markdown;
 pub mod plugins;
 pub mod properties;

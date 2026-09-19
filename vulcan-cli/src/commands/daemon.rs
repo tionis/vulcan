@@ -1,7 +1,7 @@
 use crate::output::print_json;
 use crate::{
-    Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonConfigCommand, DaemonWebhookFormatArg,
-    OutputFormat,
+    Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonCompanionCommand, DaemonConfigCommand,
+    DaemonWebhookFormatArg, OutputFormat,
 };
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
@@ -10,6 +10,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use vulcan_app::obsidian_companion::{
+    install_obsidian_companion, ObsidianCompanionInstallReport, ObsidianCompanionInstallRequest,
+};
 use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::process::{
@@ -95,11 +98,99 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
             let status = request_daemon_shutdown(&context).map_err(CliError::operation)?;
             print_status(cli.output, &status)
         }
-        DaemonCommand::Companion { reveal_token } => {
-            print_companion(cli.output, &context, *reveal_token)
-        }
+        DaemonCommand::Companion {
+            command,
+            reveal_token,
+        } => match command {
+            Some(DaemonCompanionCommand::Install { wiki, dry_run }) => {
+                if *reveal_token {
+                    return Err(CliError::operation(
+                        "--reveal-token cannot be combined with companion install",
+                    ));
+                }
+                install_companion(cli, &context, wiki.as_deref(), *dry_run)
+            }
+            None => print_companion(cli.output, &context, *reveal_token),
+        },
         DaemonCommand::Config { command } => handle_config(cli.output, &context, command),
     }
+}
+
+fn install_companion(
+    cli: &Cli,
+    context: &DaemonProcessContext,
+    wiki: Option<&str>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let registration = match wiki {
+        Some(wiki) => {
+            let id = WikiId::parse(wiki).map_err(CliError::operation)?;
+            context
+                .registry
+                .show(&id)
+                .map_err(CliError::operation)?
+                .registration
+        }
+        None => context
+            .registry
+            .find_by_path(&cli.vault)
+            .map_err(CliError::operation)?,
+    };
+    let config = context.registry.load().map_err(CliError::operation)?;
+    let base_url = format!("http://{}", config.bind);
+    let report = install_obsidian_companion(&ObsidianCompanionInstallRequest {
+        vault_root: &registration.path,
+        base_url: &base_url,
+        wiki_id: registration.id.as_str(),
+        dry_run,
+    })
+    .map_err(CliError::operation)?;
+    print_companion_install(cli.output, &report)
+}
+
+fn print_companion_install(
+    output: OutputFormat,
+    report: &ObsidianCompanionInstallReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.dry_run {
+        if report.changed {
+            println!(
+                "Would install or update Vulcan Companion {} in {}",
+                report.plugin_version,
+                report.plugin_directory.display()
+            );
+        } else {
+            println!(
+                "Vulcan Companion {} is already current in {}",
+                report.plugin_version,
+                report.plugin_directory.display()
+            );
+        }
+    } else if report.changed {
+        println!(
+            "Installed Vulcan Companion {} in {}",
+            report.plugin_version,
+            report.plugin_directory.display()
+        );
+    } else {
+        println!(
+            "Vulcan Companion {} is already current in {}",
+            report.plugin_version,
+            report.plugin_directory.display()
+        );
+    }
+    if !report.changed_files.is_empty() {
+        println!("Files: {}", report.changed_files.join(", "));
+    }
+    println!("Daemon endpoint: {}", report.base_url);
+    println!("Registered wiki: {}", report.wiki_id);
+    println!(
+        "Enable the plugin in Obsidian, then store the token from `vulcan daemon companion --reveal-token` in its settings."
+    );
+    Ok(())
 }
 
 fn print_alert_delivery_status(

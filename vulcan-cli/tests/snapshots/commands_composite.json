@@ -10576,7 +10576,7 @@
       },
       {
         "about": "Run and inspect the multi-wiki synchronization daemon",
-        "after_help": "Notes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon install --dry-run\n  vulcan daemon install\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon semantic-status --output json\n  vulcan daemon config set-semantic-worker --wiki personal --dry-run\n  vulcan daemon companion --reveal-token --output json\n  vulcan daemon stop\n  vulcan daemon uninstall --dry-run",
+        "after_help": "Notes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon install --dry-run\n  vulcan daemon install\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon semantic-status --output json\n  vulcan daemon config set-semantic-worker --wiki personal --dry-run\n  vulcan daemon companion install personal --dry-run\n  vulcan daemon companion install personal\n  vulcan daemon companion --reveal-token --output json\n  vulcan daemon stop\n  vulcan daemon uninstall --dry-run",
         "name": "daemon",
         "options": [],
         "subcommands": [
@@ -10701,7 +10701,40 @@
                 ]
               }
             ],
-            "subcommands": []
+            "subcommands": [
+              {
+                "about": "Install or update the bundled Obsidian companion in a registered vault",
+                "name": "install",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; inferred from --vault when omitted",
+                    "id": "wiki",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Report files that would change without writing them",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           },
           {
             "about": "Inspect or change device-local daemon configuration",

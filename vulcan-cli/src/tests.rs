@@ -2464,10 +2464,12 @@ fn parses_daemon_lifecycle_commands() {
             .expect("daemon companion provisioning should parse")
             .command,
         Command::Daemon {
-            command: DaemonCommand::Companion { reveal_token: true },
+            command: DaemonCommand::Companion {
+                command: None,
+                reveal_token: true,
+            },
         }
     );
-
     let configure = Cli::try_parse_from([
         "vulcan",
         "daemon",
@@ -2494,6 +2496,31 @@ fn parses_daemon_lifecycle_commands() {
                     api_key_env: Some("VULCAN_AGENT_KEY".to_string()),
                     dry_run: true,
                 },
+            },
+        }
+    );
+}
+
+#[test]
+fn parses_daemon_companion_install_command() {
+    assert_eq!(
+        Cli::try_parse_from([
+            "vulcan",
+            "daemon",
+            "companion",
+            "install",
+            "personal",
+            "--dry-run",
+        ])
+        .expect("companion install should parse")
+        .command,
+        Command::Daemon {
+            command: DaemonCommand::Companion {
+                command: Some(DaemonCompanionCommand::Install {
+                    wiki: Some("personal".to_string()),
+                    dry_run: true,
+                }),
+                reveal_token: false,
             },
         }
     );
