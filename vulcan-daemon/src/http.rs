@@ -1057,7 +1057,9 @@ mod tests {
             .header(AUTHORIZATION, format!("Bearer {}", state.credential.token))
             .header(PROTOCOL_VERSION_HEADER, "1")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"context":[],"allow_broad_context":false}"#))
+            .body(Body::from(
+                r#"{"proposal_contract_version":2,"context":[],"allow_broad_context":false}"#,
+            ))
             .expect("request");
         let response = companion_router(state)
             .oneshot(request)

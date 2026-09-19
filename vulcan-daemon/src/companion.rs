@@ -43,8 +43,9 @@ use vulcan_sync::DEFAULT_REMOTE_LIVE_REF;
 use vulcan_sync::{GitRefName, GitRemote, SyncJobTrigger, SYNC_CONTRACT_VERSION};
 
 pub const COMPANION_PROTOCOL_VERSION: u32 = 1;
+pub const CONFLICT_PROPOSAL_REQUEST_VERSION: u32 = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompanionOperation {
     Capabilities,
@@ -69,7 +70,7 @@ pub enum CompanionOperation {
     DaemonShutdown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompanionCapabilities {
     pub protocol_version: u32,
     pub sync_contract_version: u32,
@@ -85,15 +86,32 @@ pub struct CompanionCapabilities {
     pub agent_semantic_plans: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl CompanionCapabilities {
+    #[must_use]
+    pub fn supports_scoped_agent_proposals(&self) -> bool {
+        self.agent_conflict_proposals
+            && self
+                .operations
+                .contains(&CompanionOperation::ConflictProposalCreate)
+            && self.conflict_contract.scoped_agent_proposals
+            && self.conflict_contract.agent_proposal_request_version
+                == CONFLICT_PROPOSAL_REQUEST_VERSION
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompanionConflictCapabilities {
     pub path_pagination: bool,
     pub maximum_path_page_size: usize,
     pub group_batches: bool,
     pub maximum_groups_per_batch: usize,
+    #[serde(default)]
+    pub scoped_agent_proposals: bool,
+    #[serde(default)]
+    pub agent_proposal_request_version: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompanionProposalClaimScope {
     DaemonProcess,
@@ -146,7 +164,9 @@ pub struct ConflictResolveRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConflictProposalRequest {
+    pub proposal_contract_version: u32,
     #[serde(default)]
     pub group_ids: Vec<String>,
     #[serde(default)]
@@ -405,6 +425,8 @@ impl<'a> CompanionService<'a> {
                 maximum_path_page_size: 256,
                 group_batches: true,
                 maximum_groups_per_batch: 128,
+                scoped_agent_proposals: self.resolution_agent.is_some(),
+                agent_proposal_request_version: CONFLICT_PROPOSAL_REQUEST_VERSION,
             },
             agent_conflict_proposals: self.resolution_agent.is_some(),
             agent_conflict_proposal_limit_per_conflict: u32::from(self.resolution_agent.is_some()),
@@ -554,6 +576,12 @@ impl<'a> CompanionService<'a> {
         conflict_id: &str,
         request: &ConflictProposalRequest,
     ) -> Result<ResolutionProposal, CompanionError> {
+        if request.proposal_contract_version != CONFLICT_PROPOSAL_REQUEST_VERSION {
+            return Err(invalid_request(format!(
+                "conflict proposal request version {} is unsupported; expected {}",
+                request.proposal_contract_version, CONFLICT_PROPOSAL_REQUEST_VERSION
+            )));
+        }
         let agent = self.resolution_agent.ok_or_else(|| {
             CompanionError::new(
                 CompanionErrorKind::NotFound,
@@ -1140,6 +1168,14 @@ mod tests {
             json!(128)
         );
         assert_eq!(
+            value["conflict_contract"]["scoped_agent_proposals"],
+            json!(false)
+        );
+        assert_eq!(
+            value["conflict_contract"]["agent_proposal_request_version"],
+            json!(CONFLICT_PROPOSAL_REQUEST_VERSION)
+        );
+        assert_eq!(
             value["agent_conflict_proposal_limit_per_conflict"],
             json!(0)
         );
@@ -1248,6 +1284,10 @@ mod tests {
 
         assert_eq!(value["agent_conflict_proposals"], json!(true));
         assert_eq!(
+            value["conflict_contract"]["scoped_agent_proposals"],
+            json!(true)
+        );
+        assert_eq!(
             value["agent_conflict_proposal_limit_per_conflict"],
             json!(1)
         );
@@ -1259,7 +1299,41 @@ mod tests {
             .as_array()
             .expect("operations")
             .contains(&json!("conflict_proposal_create")));
+        assert!(service.capabilities().supports_scoped_agent_proposals());
         assert!(!value.to_string().contains("agent.example.test"));
+    }
+
+    #[test]
+    fn legacy_agent_capabilities_never_authorize_scoped_requests() {
+        let temporary = tempdir().expect("temporary directory");
+        let (registry, supervisor, state_store, _) = fixture(&temporary);
+        let agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
+        let service = CompanionService::new(&registry, &supervisor, &state_store)
+            .with_resolution_agent(&agent);
+        let mut value = serde_json::to_value(service.capabilities()).expect("capabilities");
+        let conflict = value["conflict_contract"]
+            .as_object_mut()
+            .expect("conflict capability object");
+        conflict.remove("scoped_agent_proposals");
+        conflict.remove("agent_proposal_request_version");
+        let legacy: CompanionCapabilities =
+            serde_json::from_value(value).expect("legacy capability fixture");
+
+        assert!(!legacy.supports_scoped_agent_proposals());
+    }
+
+    #[test]
+    fn conflict_proposal_requests_require_exact_selection_contract_fields() {
+        assert!(serde_json::from_value::<ConflictProposalRequest>(json!({
+            "group_ids": ["0123456789abcdef0123456789abcdef"]
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ConflictProposalRequest>(json!({
+            "proposal_contract_version": CONFLICT_PROPOSAL_REQUEST_VERSION,
+            "group_ids": ["0123456789abcdef0123456789abcdef"],
+            "future_selection": "all"
+        }))
+        .is_err());
     }
 
     #[test]
@@ -1429,6 +1503,7 @@ mod tests {
                 &wiki_id,
                 &conflict_id,
                 &ConflictProposalRequest {
+                    proposal_contract_version: CONFLICT_PROPOSAL_REQUEST_VERSION,
                     group_ids: Vec::new(),
                     context: Vec::new(),
                     allow_broad_context: false,
