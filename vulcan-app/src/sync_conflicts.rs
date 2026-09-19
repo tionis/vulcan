@@ -15,7 +15,7 @@ use vulcan_sync::{
     GitRepository, GitResolvedPath, GitSyncConflict, GitSyncOptions, GitSyncRefs,
 };
 
-pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 2;
+pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 3;
 pub const SYNC_CONFLICT_RESOLUTION_VERSION: u32 = 2;
 pub const SYNC_CONFLICT_SUPERSESSION_VERSION: u32 = 1;
 /// Conflict records were originally written without enforcing the reader's
@@ -23,6 +23,9 @@ pub const SYNC_CONFLICT_SUPERSESSION_VERSION: u32 = 1;
 /// those records until the paged conflict-store format replaces monolithic
 /// JSON records.
 const MAX_CONFLICT_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CONFLICT_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_CONFLICT_PATH_PAGE_BYTES: u64 = 1024 * 1024;
+const MAX_CONFLICT_PATHS_PER_PAGE: usize = 128;
 const MAX_CONFLICT_RESOLUTION_BYTES: u64 = 1024 * 1024;
 /// Fully resolved conflicts keep their records and resolution metadata
 /// forever, but only the newest few resolved conflicts retain the
@@ -97,6 +100,27 @@ pub struct SyncConflictSideRecord {
     pub content_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SyncConflictPathPageRef {
+    file: String,
+    count: usize,
+    digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SyncConflictPathPage {
+    version: u32,
+    index: usize,
+    paths: Vec<SyncConflictPathRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct SyncConflictPathManifest {
+    path_count: usize,
+    paths_digest: String,
+    path_pages: Vec<SyncConflictPathPageRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1134,7 +1158,7 @@ impl SyncConflictStore {
             paths,
             diagnostics: conflict.diagnostics.clone(),
         };
-        write_json_noclobber(&record_path, &record)?;
+        write_paged_record_noclobber(&directory, &record)?;
         self.prune_resolved_artifacts(repository_key)?;
         Ok(record)
     }
@@ -1223,9 +1247,21 @@ impl SyncConflictStore {
                 MAX_CONFLICT_RECORD_BYTES
             )));
         }
-        let record: SyncConflictRecord =
-            serde_json::from_slice(&fs::read(&path).map_err(AppError::operation)?)
-                .map_err(AppError::operation)?;
+        let source = fs::read(&path).map_err(AppError::operation)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&source).map_err(AppError::operation)?;
+        let record = if value.get("path_pages").is_some() {
+            if metadata.len() > MAX_CONFLICT_MANIFEST_BYTES {
+                return Err(AppError::operation(format!(
+                    "sync conflict manifest at {} exceeds the {} byte limit",
+                    path.display(),
+                    MAX_CONFLICT_MANIFEST_BYTES
+                )));
+            }
+            load_paged_record(&path, value)?
+        } else {
+            serde_json::from_value(value).map_err(AppError::operation)?
+        };
         validate_record(&record, repository_key, conflict_id)?;
         Ok(record)
     }
@@ -1449,6 +1485,7 @@ fn preserve_side(
     })
 }
 
+#[cfg(test)]
 fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), AppError> {
     let bytes = serialize_conflict_record(value, MAX_CONFLICT_RECORD_BYTES)?;
     match durable_file::create(path, &bytes)? {
@@ -1460,6 +1497,140 @@ fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), A
     }
 }
 
+fn write_paged_record_noclobber(
+    directory: &Path,
+    record: &SyncConflictRecord,
+) -> Result<(), AppError> {
+    let pages_directory = directory.join("path-pages");
+    fs::create_dir_all(&pages_directory).map_err(AppError::operation)?;
+    let mut page_refs = Vec::new();
+    for (index, paths) in record.paths.chunks(MAX_CONFLICT_PATHS_PER_PAGE).enumerate() {
+        let page = SyncConflictPathPage {
+            version: SYNC_CONFLICT_RECORD_VERSION,
+            index,
+            paths: paths.to_vec(),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&page).map_err(AppError::operation)?;
+        bytes.push(b'\n');
+        if bytes.len() as u64 > MAX_CONFLICT_PATH_PAGE_BYTES {
+            return Err(AppError::operation(format!(
+                "sync conflict path page {index} exceeds the {MAX_CONFLICT_PATH_PAGE_BYTES} byte limit"
+            )));
+        }
+        let file = format!("paths-{index:06}.json");
+        write_bytes_noclobber(&pages_directory.join(&file), &bytes)?;
+        page_refs.push(SyncConflictPathPageRef {
+            file,
+            count: paths.len(),
+            digest: blake3::hash(&bytes).to_hex().to_string(),
+        });
+    }
+
+    let paths_bytes = serde_json::to_vec(&record.paths).map_err(AppError::operation)?;
+    let mut manifest = serde_json::to_value(record).map_err(AppError::operation)?;
+    let object = manifest
+        .as_object_mut()
+        .ok_or_else(|| AppError::operation("sync conflict record must serialize as an object"))?;
+    object.remove("paths");
+    object.insert(
+        "path_count".to_string(),
+        serde_json::json!(record.paths.len()),
+    );
+    object.insert(
+        "paths_digest".to_string(),
+        serde_json::json!(blake3::hash(&paths_bytes).to_hex().to_string()),
+    );
+    object.insert(
+        "path_pages".to_string(),
+        serde_json::to_value(page_refs).map_err(AppError::operation)?,
+    );
+    let mut bytes = serde_json::to_vec_pretty(&manifest).map_err(AppError::operation)?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > MAX_CONFLICT_MANIFEST_BYTES {
+        return Err(AppError::operation(format!(
+            "sync conflict manifest exceeds the {MAX_CONFLICT_MANIFEST_BYTES} byte limit"
+        )));
+    }
+    match durable_file::create(&directory.join("record.json"), &bytes)? {
+        DurableCreate::Created => Ok(()),
+        DurableCreate::AlreadyExists => Err(AppError::operation(format!(
+            "sync conflict record already exists at {}",
+            directory.join("record.json").display()
+        ))),
+    }
+}
+
+fn load_paged_record(
+    manifest_path: &Path,
+    mut value: serde_json::Value,
+) -> Result<SyncConflictRecord, AppError> {
+    let manifest: SyncConflictPathManifest =
+        serde_json::from_value(value.clone()).map_err(AppError::operation)?;
+    let directory = manifest_path
+        .parent()
+        .ok_or_else(|| AppError::operation("sync conflict manifest has no parent directory"))?;
+    let mut paths = Vec::with_capacity(manifest.path_count);
+    for (expected_index, page_ref) in manifest.path_pages.iter().enumerate() {
+        let expected_file = format!("paths-{expected_index:06}.json");
+        if page_ref.file != expected_file || page_ref.count > MAX_CONFLICT_PATHS_PER_PAGE {
+            return Err(AppError::operation(format!(
+                "sync conflict manifest contains an invalid path-page reference `{}`",
+                page_ref.file
+            )));
+        }
+        let page_path = directory.join("path-pages").join(&page_ref.file);
+        let metadata = fs::metadata(&page_path).map_err(AppError::operation)?;
+        if !metadata.is_file() || metadata.len() > MAX_CONFLICT_PATH_PAGE_BYTES {
+            return Err(AppError::operation(format!(
+                "sync conflict path page at {} is not a bounded regular file",
+                page_path.display()
+            )));
+        }
+        let bytes = fs::read(&page_path).map_err(AppError::operation)?;
+        if blake3::hash(&bytes).to_hex().as_str() != page_ref.digest {
+            return Err(AppError::operation(format!(
+                "sync conflict path page at {} does not match its manifest digest",
+                page_path.display()
+            )));
+        }
+        let page: SyncConflictPathPage =
+            serde_json::from_slice(&bytes).map_err(AppError::operation)?;
+        if page.version != SYNC_CONFLICT_RECORD_VERSION
+            || page.index != expected_index
+            || page.paths.len() != page_ref.count
+        {
+            return Err(AppError::operation(format!(
+                "sync conflict path page at {} has invalid identity or count",
+                page_path.display()
+            )));
+        }
+        paths.extend(page.paths);
+    }
+    if paths.len() != manifest.path_count {
+        return Err(AppError::operation(
+            "sync conflict path pages do not match the manifest count",
+        ));
+    }
+    let paths_bytes = serde_json::to_vec(&paths).map_err(AppError::operation)?;
+    if blake3::hash(&paths_bytes).to_hex().as_str() != manifest.paths_digest {
+        return Err(AppError::operation(
+            "sync conflict path pages do not match the manifest digest",
+        ));
+    }
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| AppError::operation("sync conflict manifest must be an object"))?;
+    object.remove("path_count");
+    object.remove("paths_digest");
+    object.remove("path_pages");
+    object.insert(
+        "paths".to_string(),
+        serde_json::to_value(paths).map_err(AppError::operation)?,
+    );
+    serde_json::from_value(value).map_err(AppError::operation)
+}
+
+#[cfg(test)]
 fn serialize_conflict_record(
     value: &SyncConflictRecord,
     maximum_bytes: u64,
@@ -2014,6 +2185,64 @@ mod tests {
         let error = serialize_conflict_record(&record, serialized.len() as u64)
             .expect_err("newline must make the record exceed the bound");
         assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn paged_conflict_records_round_trip_large_path_sets() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let mut record = unresolved_record(&id, &key, temporary.path());
+        let prototype = record.paths[0].clone();
+        record.paths = (0..10_000)
+            .map(|index| SyncConflictPathRecord {
+                path: format!("Notes/{index:05}.md"),
+                ..prototype.clone()
+            })
+            .collect();
+
+        write_paged_record_noclobber(&directory, &record).expect("paged record");
+
+        let manifest = fs::read(directory.join("record.json")).expect("manifest");
+        assert!(
+            u64::try_from(manifest.len()).expect("manifest length fits u64")
+                < MAX_CONFLICT_MANIFEST_BYTES
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest).expect("manifest JSON");
+        assert!(manifest.get("paths").is_none());
+        assert_eq!(manifest["path_count"], serde_json::json!(10_000));
+        assert_eq!(
+            manifest["path_pages"]
+                .as_array()
+                .expect("page references")
+                .len(),
+            79
+        );
+        let loaded = store.get(&key, &id).expect("paged record loads");
+        assert_eq!(loaded, record);
+    }
+
+    #[test]
+    fn incomplete_or_tampered_path_pages_fail_closed() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let record = unresolved_record(&id, &key, temporary.path());
+        write_paged_record_noclobber(&directory, &record).expect("paged record");
+        fs::write(
+            directory.join("path-pages/paths-000000.json"),
+            b"tampered\n",
+        )
+        .expect("tamper page");
+
+        let error = store.get(&key, &id).expect_err("tampered page must fail");
+        assert!(error.to_string().contains("manifest digest"));
     }
 
     #[test]
