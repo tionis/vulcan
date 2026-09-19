@@ -5,7 +5,7 @@ use crate::scan::refresh_cache_incrementally;
 use crate::sync_state::{same_work_tree, SyncStateStore};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::{ScanSummary, VaultPaths};
@@ -19,6 +19,7 @@ use vulcan_sync::{
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 4;
 pub const SYNC_CONFLICT_RESOLUTION_VERSION: u32 = 2;
 pub const SYNC_CONFLICT_SUPERSESSION_VERSION: u32 = 1;
+pub const SYNC_CONFLICT_BATCH_VERSION: u32 = 1;
 /// Conflict records were originally written without enforcing the reader's
 /// 1 MiB ceiling. Keep a bounded compatibility window large enough to recover
 /// those records until the paged conflict-store format replaces monolithic
@@ -28,6 +29,7 @@ const MAX_CONFLICT_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_CONFLICT_PATH_PAGE_BYTES: u64 = 1024 * 1024;
 const MAX_CONFLICT_PATHS_PER_PAGE: usize = 128;
 const MAX_CONFLICT_RESOLUTION_BYTES: u64 = 1024 * 1024;
+const MAX_CONFLICT_GROUPS_PER_BATCH: usize = 128;
 /// Fully resolved conflicts keep their records and resolution metadata
 /// forever, but only the newest few resolved conflicts retain the
 /// device-local artifact copies; the immutable Git refs remain the durable
@@ -108,6 +110,77 @@ pub struct SyncConflictGroup {
     pub paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncConflictGroupState {
+    Pending,
+    Prepared,
+    Published,
+    Applied,
+    NeedsRebase,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConflictBatchRecord {
+    pub version: u32,
+    pub conflict_id: String,
+    pub batch_id: String,
+    pub group_ids: Vec<String>,
+    pub selection_digest: String,
+    pub expected_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<SyncConflictResolutionSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_id: Option<String>,
+    pub recovery_revision: String,
+    pub resolved_tree: String,
+    pub resolution_commit: String,
+    #[serde(default)]
+    pub published: bool,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub needs_rebase: bool,
+}
+
+impl SyncConflictBatchRecord {
+    #[must_use]
+    pub const fn state(&self) -> SyncConflictGroupState {
+        if self.needs_rebase {
+            SyncConflictGroupState::NeedsRebase
+        } else if self.applied {
+            SyncConflictGroupState::Applied
+        } else if self.published {
+            SyncConflictGroupState::Published
+        } else {
+            SyncConflictGroupState::Prepared
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncConflictGroupProgress {
+    pub id: String,
+    pub kind: SyncConflictGroupKind,
+    pub paths: Vec<String>,
+    pub state: SyncConflictGroupState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncConflictProgress {
+    pub total_groups: usize,
+    pub pending_groups: usize,
+    pub prepared_groups: usize,
+    pub published_groups: usize,
+    pub applied_groups: usize,
+    pub needs_rebase_groups: usize,
+    pub total_paths: usize,
+    pub pending_paths: usize,
+    pub groups: Vec<SyncConflictGroupProgress>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConflictSideRecord {
     pub revision: String,
@@ -178,6 +251,37 @@ pub fn conflict_groups(record: &SyncConflictRecord) -> Vec<SyncConflictGroup> {
             group
         })
         .collect()
+}
+
+#[must_use]
+pub fn conflict_group_selection_digest(group_ids: &[String]) -> String {
+    let mut ids = group_ids.to_vec();
+    ids.sort();
+    ids.dedup();
+    let mut input = b"vulcan-conflict-group-selection-v1".to_vec();
+    for id in ids {
+        input.push(0);
+        input.extend_from_slice(id.as_bytes());
+    }
+    blake3::hash(&input).to_hex().to_string()
+}
+
+#[must_use]
+pub fn conflict_batch_id(
+    conflict_id: &str,
+    group_ids: &[String],
+    expected_revision: &str,
+    method_identity: &str,
+) -> String {
+    let selection = conflict_group_selection_digest(group_ids);
+    blake3::hash(
+        format!(
+            "vulcan-conflict-batch-v1\0{conflict_id}\0{selection}\0{expected_revision}\0{method_identity}"
+        )
+        .as_bytes(),
+    )
+    .to_hex()[..32]
+        .to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1404,6 +1508,120 @@ impl SyncConflictStore {
         write_json_replace(&path, resolution)
     }
 
+    pub fn list_batches(
+        &self,
+        repository_key: &str,
+        conflict_id: &str,
+    ) -> Result<Vec<SyncConflictBatchRecord>, AppError> {
+        let directory = self
+            .conflict_directory(repository_key, conflict_id)?
+            .join("batches");
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(AppError::operation(error)),
+        };
+        let mut batches = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(AppError::operation)?;
+            if !entry.file_type().map_err(AppError::operation)?.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let Some(batch_id) = file_name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".json"))
+            else {
+                return Err(AppError::operation("invalid sync conflict batch filename"));
+            };
+            validate_hex_id("conflict batch ID", batch_id)?;
+            let bytes = fs::read(entry.path()).map_err(AppError::operation)?;
+            if bytes.len() as u64 > MAX_CONFLICT_RESOLUTION_BYTES {
+                return Err(AppError::operation(format!(
+                    "sync conflict batch `{batch_id}` exceeds the {MAX_CONFLICT_RESOLUTION_BYTES} byte limit"
+                )));
+            }
+            let batch: SyncConflictBatchRecord =
+                serde_json::from_slice(&bytes).map_err(AppError::operation)?;
+            validate_batch_record(&batch, conflict_id, batch_id)?;
+            batches.push(batch);
+        }
+        batches.sort_by(|left, right| left.batch_id.cmp(&right.batch_id));
+        Ok(batches)
+    }
+
+    pub fn save_batch(
+        &self,
+        repository_key: &str,
+        batch: &SyncConflictBatchRecord,
+    ) -> Result<(), AppError> {
+        validate_batch_record(batch, &batch.conflict_id, &batch.batch_id)?;
+        let record = self.get(repository_key, &batch.conflict_id)?;
+        let known = conflict_groups(&record)
+            .into_iter()
+            .map(|group| group.id)
+            .collect::<BTreeSet<_>>();
+        if batch.group_ids.iter().any(|id| !known.contains(id)) {
+            return Err(AppError::operation(
+                "sync conflict batch selects an unknown resolution group",
+            ));
+        }
+        for existing in self.list_batches(repository_key, &batch.conflict_id)? {
+            if existing.batch_id != batch.batch_id
+                && !existing.needs_rebase
+                && existing
+                    .group_ids
+                    .iter()
+                    .any(|id| batch.group_ids.contains(id))
+            {
+                return Err(AppError::operation(format!(
+                    "sync conflict batch overlaps active batch `{}`",
+                    existing.batch_id
+                )));
+            }
+        }
+        let path = self
+            .conflict_directory(repository_key, &batch.conflict_id)?
+            .join("batches")
+            .join(format!("{}.json", batch.batch_id));
+        write_json_replace(&path, batch)
+    }
+
+    pub fn group_progress(
+        &self,
+        repository_key: &str,
+        record: &SyncConflictRecord,
+    ) -> Result<SyncConflictProgress, AppError> {
+        let batches = self.list_batches(repository_key, &record.id)?;
+        let mut assigned =
+            BTreeMap::<String, (&SyncConflictBatchRecord, SyncConflictGroupState)>::new();
+        for batch in &batches {
+            let state = batch.state();
+            for group_id in &batch.group_ids {
+                let replace = assigned.get(group_id).is_none_or(|(_, previous)| {
+                    group_state_priority(state) > group_state_priority(*previous)
+                });
+                if replace {
+                    assigned.insert(group_id.clone(), (batch, state));
+                }
+            }
+        }
+        let groups = conflict_groups(record)
+            .into_iter()
+            .map(|group| {
+                let assignment = assigned.get(&group.id);
+                SyncConflictGroupProgress {
+                    id: group.id,
+                    kind: group.kind,
+                    paths: group.paths,
+                    state: assignment.map_or(SyncConflictGroupState::Pending, |(_, state)| *state),
+                    batch_id: assignment.map(|(batch, _)| batch.batch_id.clone()),
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(summarize_group_progress(groups))
+    }
+
     pub fn supersede_unresolved_except(
         &self,
         repository_key: &str,
@@ -1552,6 +1770,75 @@ fn conflict_group_id(kind: SyncConflictGroupKind, paths: &[&str]) -> String {
         input.extend_from_slice(path.as_bytes());
     }
     blake3::hash(&input).to_hex()[..32].to_string()
+}
+
+fn validate_batch_record(
+    batch: &SyncConflictBatchRecord,
+    conflict_id: &str,
+    batch_id: &str,
+) -> Result<(), AppError> {
+    validate_hex_id("conflict ID", conflict_id)?;
+    validate_hex_id("conflict batch ID", batch_id)?;
+    let mut canonical = batch.group_ids.clone();
+    canonical.sort();
+    canonical.dedup();
+    if batch.version != SYNC_CONFLICT_BATCH_VERSION
+        || batch.conflict_id != conflict_id
+        || batch.batch_id != batch_id
+        || canonical.is_empty()
+        || canonical.len() > MAX_CONFLICT_GROUPS_PER_BATCH
+        || canonical != batch.group_ids
+        || batch.selection_digest != conflict_group_selection_digest(&canonical)
+        || batch.side.is_some() == batch.proposal_id.is_some()
+        || batch.applied && !batch.published
+        || batch.needs_rebase && (batch.published || batch.applied)
+    {
+        return Err(AppError::operation(
+            "sync conflict batch version, identity, selection, or state is invalid",
+        ));
+    }
+    Ok(())
+}
+
+const fn group_state_priority(state: SyncConflictGroupState) -> u8 {
+    match state {
+        SyncConflictGroupState::Pending => 0,
+        SyncConflictGroupState::NeedsRebase => 1,
+        SyncConflictGroupState::Prepared => 2,
+        SyncConflictGroupState::Published => 3,
+        SyncConflictGroupState::Applied => 4,
+    }
+}
+
+fn summarize_group_progress(groups: Vec<SyncConflictGroupProgress>) -> SyncConflictProgress {
+    let mut progress = SyncConflictProgress {
+        total_groups: groups.len(),
+        pending_groups: 0,
+        prepared_groups: 0,
+        published_groups: 0,
+        applied_groups: 0,
+        needs_rebase_groups: 0,
+        total_paths: 0,
+        pending_paths: 0,
+        groups,
+    };
+    for group in &progress.groups {
+        progress.total_paths += group.paths.len();
+        match group.state {
+            SyncConflictGroupState::Pending => {
+                progress.pending_groups += 1;
+                progress.pending_paths += group.paths.len();
+            }
+            SyncConflictGroupState::Prepared => progress.prepared_groups += 1,
+            SyncConflictGroupState::Published => progress.published_groups += 1,
+            SyncConflictGroupState::Applied => progress.applied_groups += 1,
+            SyncConflictGroupState::NeedsRebase => {
+                progress.needs_rebase_groups += 1;
+                progress.pending_paths += group.paths.len();
+            }
+        }
+    }
+    progress
 }
 
 fn preserve_side(
@@ -2402,6 +2689,73 @@ mod tests {
             .find(|group| group.kind == SyncConflictGroupKind::Structural)
             .expect("structural group");
         assert_eq!(structural.paths, vec!["Home.md", "Moved/two.md"]);
+    }
+
+    #[test]
+    fn batch_progress_is_durable_bounded_and_allows_replanning_stale_groups() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let mut record = unresolved_record(&id, &key, temporary.path());
+        record.paths[0].local.object_id = Some("1".repeat(40));
+        record.paths[0].remote.object_id = Some("2".repeat(40));
+        let mut second = record.paths[0].clone();
+        second.path = "Second.md".to_string();
+        record.paths.push(second);
+        assign_conflict_groups(record.scope, &mut record.paths);
+        write_paged_record_noclobber(&directory, &record).expect("record");
+        let groups = conflict_groups(&record);
+
+        let batch = |group_id: String,
+                     expected: &str,
+                     published: bool,
+                     applied: bool,
+                     needs_rebase: bool| {
+            let group_ids = vec![group_id];
+            let batch_id = conflict_batch_id(&id, &group_ids, expected, "side:local");
+            SyncConflictBatchRecord {
+                version: SYNC_CONFLICT_BATCH_VERSION,
+                conflict_id: id.clone(),
+                batch_id,
+                selection_digest: conflict_group_selection_digest(&group_ids),
+                group_ids,
+                expected_revision: expected.to_string(),
+                side: Some(SyncConflictResolutionSide::Local),
+                proposal_id: None,
+                recovery_revision: "recovery".to_string(),
+                resolved_tree: "tree".to_string(),
+                resolution_commit: "commit".to_string(),
+                published,
+                applied,
+                needs_rebase,
+            }
+        };
+        store
+            .save_batch(&key, &batch(groups[0].id.clone(), "one", true, true, false))
+            .expect("applied batch");
+        store
+            .save_batch(
+                &key,
+                &batch(groups[1].id.clone(), "one", false, false, true),
+            )
+            .expect("stale batch");
+        store
+            .save_batch(
+                &key,
+                &batch(groups[1].id.clone(), "two", false, false, false),
+            )
+            .expect("replacement batch");
+
+        let progress = store.group_progress(&key, &record).expect("progress");
+        assert_eq!(progress.total_groups, 2);
+        assert_eq!(progress.applied_groups, 1);
+        assert_eq!(progress.prepared_groups, 1);
+        assert_eq!(progress.pending_groups, 0);
+        assert_eq!(progress.needs_rebase_groups, 0);
+        assert_eq!(store.list_batches(&key, &id).expect("batches").len(), 3);
     }
 
     #[test]
