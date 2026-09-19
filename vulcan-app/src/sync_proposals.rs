@@ -4173,14 +4173,35 @@ fn build_agent_request(
     let base_oid = GitOid::parse(base).map_err(AppError::operation)?;
     let local_oid = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
     let remote_oid = GitOid::parse(&record.remote_revision).map_err(AppError::operation)?;
+    let mut remaining = MAX_AGENT_TOTAL_BYTES;
     let base_objects = engine
-        .path_objects(repository, &base_oid, &conflict_paths)
+        .path_objects_bounded(
+            repository,
+            &base_oid,
+            &conflict_paths,
+            MAX_AGENT_FILE_BYTES,
+            remaining,
+        )
         .map_err(AppError::operation)?;
+    remaining = remaining.saturating_sub(path_object_bytes(&base_objects));
     let local_objects = engine
-        .path_objects(repository, &local_oid, &conflict_paths)
+        .path_objects_bounded(
+            repository,
+            &local_oid,
+            &conflict_paths,
+            MAX_AGENT_FILE_BYTES,
+            remaining,
+        )
         .map_err(AppError::operation)?;
+    remaining = remaining.saturating_sub(path_object_bytes(&local_objects));
     let remote_objects = engine
-        .path_objects(repository, &remote_oid, &conflict_paths)
+        .path_objects_bounded(
+            repository,
+            &remote_oid,
+            &conflict_paths,
+            MAX_AGENT_FILE_BYTES,
+            remaining,
+        )
         .map_err(AppError::operation)?;
     let mut total = 0_usize;
     let mut files = Vec::with_capacity(conflict_paths.len());
@@ -4272,6 +4293,14 @@ fn build_agent_request(
         broad_context_allowed: options.allow_broad_context,
         tool_contract_version: RESOLUTION_AGENT_TOOL_CONTRACT_VERSION,
     })
+}
+
+fn path_object_bytes(objects: &BTreeMap<String, vulcan_sync::GitPathObject>) -> usize {
+    objects
+        .values()
+        .filter_map(|object| object.data.as_ref())
+        .map(Vec::len)
+        .sum()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

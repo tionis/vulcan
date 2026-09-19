@@ -5,7 +5,7 @@ use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fmt::{Display, Formatter};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -19,6 +19,7 @@ use wait_timeout::ChildExt;
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CONFLICT_BLOB_BATCH_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(unix)]
 const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
@@ -184,6 +185,25 @@ pub trait GitEngine: Send + Sync {
         revision: &GitOid,
         paths: &[String],
     ) -> Result<BTreeMap<String, GitPathObject>, GitEngineError> {
+        self.path_objects_bounded(
+            repository,
+            revision,
+            paths,
+            MAX_CONFLICT_BLOB_BYTES,
+            MAX_CONFLICT_BLOB_BATCH_BYTES,
+        )
+    }
+
+    /// Reads selected path objects while enforcing both unique-object reads
+    /// and logical per-path aggregate bytes before cloning shared blob data.
+    fn path_objects_bounded(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        paths: &[String],
+        per_blob_limit: usize,
+        total_limit: usize,
+    ) -> Result<BTreeMap<String, GitPathObject>, GitEngineError> {
         let selected = paths.iter().map(String::as_str).collect::<BTreeSet<_>>();
         let entries = self
             .tree_entries(repository, revision)?
@@ -195,17 +215,29 @@ pub trait GitEngine: Send + Sync {
             .filter(|entry| entry.kind == "blob")
             .map(|entry| entry.oid.clone())
             .collect::<Vec<_>>();
-        let blobs = self.read_blobs(repository, &blob_ids)?;
+        let blobs = self.read_blobs_bounded(repository, &blob_ids, per_blob_limit, total_limit)?;
+        let mut logical_total = 0_usize;
         entries
             .into_iter()
             .map(|entry| {
                 let data = if entry.kind == "blob" {
-                    Some(blobs.get(&entry.oid).cloned().ok_or_else(|| {
+                    let data =
+                        blobs
+                            .get(&entry.oid)
+                            .ok_or_else(|| GitEngineError::InvalidOutput {
+                                operation: "read selected Git path objects",
+                                detail: format!("batch response omitted blob `{}`", entry.oid),
+                            })?;
+                    logical_total = logical_total.checked_add(data.len()).ok_or_else(|| {
                         GitEngineError::InvalidOutput {
                             operation: "read selected Git path objects",
-                            detail: format!("batch response omitted blob `{}`", entry.oid),
+                            detail: "logical selected-path blob size overflowed".to_string(),
                         }
-                    })?)
+                    })?;
+                    if logical_total > total_limit {
+                        return Err(blob_batch_limit_error(total_limit));
+                    }
+                    Some(data.clone())
                 } else {
                     None
                 };
@@ -229,6 +261,35 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
         objects: &[GitOid],
     ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError>;
+
+    /// Reads known blobs while enforcing individual and aggregate byte limits.
+    /// Engines should reject declared oversize objects before materializing
+    /// their contents; the default preserves compatibility for other engines.
+    fn read_blobs_bounded(
+        &self,
+        repository: &GitRepository,
+        objects: &[GitOid],
+        per_blob_limit: usize,
+        total_limit: usize,
+    ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+        let blobs = self.read_blobs(repository, objects)?;
+        let mut total = 0_usize;
+        for (oid, data) in &blobs {
+            if data.len() > per_blob_limit {
+                return Err(blob_limit_error(oid, per_blob_limit));
+            }
+            total = total
+                .checked_add(data.len())
+                .ok_or_else(|| GitEngineError::InvalidOutput {
+                    operation: "read Git blobs in a batch",
+                    detail: "aggregate blob size overflowed".to_string(),
+                })?;
+            if total > total_limit {
+                return Err(blob_batch_limit_error(total_limit));
+            }
+        }
+        Ok(blobs)
+    }
 
     fn changed_paths(
         &self,
@@ -1689,6 +1750,99 @@ impl GitCliEngine {
         })
     }
 
+    fn read_batch_blobs_with_limits(
+        &self,
+        mut command: Command,
+        input: &[u8],
+        expected: &[GitOid],
+        per_blob_limit: usize,
+        total_limit: usize,
+    ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+        const OPERATION: &str = "read Git blobs in a batch";
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_git_process(&mut command);
+        let mut child = command.spawn().map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                GitEngineError::ExecutableUnavailable {
+                    executable: self.executable.clone(),
+                    source,
+                }
+            } else {
+                GitEngineError::Io(source)
+            }
+        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .expect("piped Git stdout must be available");
+        let mut stderr = child
+            .stderr
+            .take()
+            .expect("piped Git stderr must be available");
+        let mut stdin = child
+            .stdin
+            .take()
+            .expect("piped Git stdin must be available");
+        std::thread::scope(|scope| {
+            let stdout_reader = scope.spawn(move || {
+                parse_batch_blobs_reader(
+                    expected,
+                    BufReader::new(stdout),
+                    per_blob_limit,
+                    total_limit,
+                )
+            });
+            let stderr_reader = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).map(|_| bytes)
+            });
+            let stdin_writer = scope.spawn(move || stdin.write_all(input));
+            let (status, timed_out) =
+                if let Some(status) = child.wait_timeout(self.command_timeout)? {
+                    (status, false)
+                } else {
+                    terminate_process_group(&mut child);
+                    (child.wait()?, true)
+                };
+            let blobs = stdout_reader
+                .join()
+                .map_err(|_| GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: "Git stdout reader panicked".to_string(),
+                })?;
+            let stderr = join_reader(stderr_reader, OPERATION, "stderr")?;
+            let write_result = stdin_writer
+                .join()
+                .map_err(|_| GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: "Git stdin writer panicked".to_string(),
+                })?;
+            if timed_out {
+                return Err(GitEngineError::CommandTimedOut {
+                    operation: OPERATION,
+                    timeout: self.command_timeout,
+                });
+            }
+            let blobs = blobs?;
+            if status.success() {
+                write_result?;
+                Ok(blobs)
+            } else {
+                Err(command_failed(
+                    OPERATION,
+                    &Output {
+                        status,
+                        stdout: Vec::new(),
+                        stderr,
+                    },
+                ))
+            }
+        })
+    }
+
     fn repository_command(&self, repository: &GitRepository) -> Command {
         let mut command = self.command();
         if let Some(work_tree) = &repository.work_tree {
@@ -2567,21 +2721,19 @@ impl GitEngine for GitCliEngine {
             return Ok(None);
         };
         object.data = if object.kind == "blob" {
-            let output = self.repository_output(
-                repository,
-                "read a conflicted blob",
-                ["cat-file", "blob", object.oid.as_str()],
-            )?;
-            if output.stdout.len() > MAX_CONFLICT_BLOB_BYTES {
-                return Err(GitEngineError::InvalidOutput {
+            Some(
+                self.read_blobs_bounded(
+                    repository,
+                    std::slice::from_ref(&object.oid),
+                    MAX_CONFLICT_BLOB_BYTES,
+                    MAX_CONFLICT_BLOB_BYTES,
+                )?
+                .remove(&object.oid)
+                .ok_or_else(|| GitEngineError::InvalidOutput {
                     operation: "read a conflicted blob",
-                    detail: format!(
-                        "blob `{}` exceeds the {MAX_CONFLICT_BLOB_BYTES} byte preservation limit",
-                        object.oid
-                    ),
-                });
-            }
-            Some(output.stdout)
+                    detail: format!("batch response omitted blob `{}`", object.oid),
+                })?,
+            )
         } else {
             None
         };
@@ -2593,6 +2745,21 @@ impl GitEngine for GitCliEngine {
         repository: &GitRepository,
         objects: &[GitOid],
     ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+        self.read_blobs_bounded(
+            repository,
+            objects,
+            MAX_CONFLICT_BLOB_BYTES,
+            MAX_CONFLICT_BLOB_BATCH_BYTES,
+        )
+    }
+
+    fn read_blobs_bounded(
+        &self,
+        repository: &GitRepository,
+        objects: &[GitOid],
+        per_blob_limit: usize,
+        total_limit: usize,
+    ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
         let objects = objects.iter().cloned().collect::<BTreeSet<_>>();
         if objects.is_empty() {
             return Ok(BTreeMap::new());
@@ -2603,11 +2770,13 @@ impl GitEngine for GitCliEngine {
         }
         let mut command = self.repository_command(repository);
         command.args(["cat-file", "--batch"]);
-        let output = ensure_success(
-            "read Git blobs in a batch",
-            self.execute_with_input(command, "read Git blobs in a batch", input.as_bytes())?,
-        )?;
-        parse_batch_blobs(&objects.into_iter().collect::<Vec<_>>(), &output.stdout)
+        self.read_batch_blobs_with_limits(
+            command,
+            input.as_bytes(),
+            &objects.into_iter().collect::<Vec<_>>(),
+            per_blob_limit,
+            total_limit,
+        )
     }
 
     fn changed_paths(
@@ -5002,28 +5171,39 @@ fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<GitTreeEntry>, GitEngineError>
     Ok(entries)
 }
 
-fn parse_batch_blobs(
+fn parse_batch_blobs_reader(
     expected: &[GitOid],
-    bytes: &[u8],
+    mut reader: impl BufRead,
+    per_blob_limit: usize,
+    total_limit: usize,
 ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
     const OPERATION: &str = "read Git blobs in a batch";
-    let mut offset = 0_usize;
     let mut blobs = BTreeMap::new();
+    let mut total = 0_usize;
     for expected_oid in expected {
-        let header_end = bytes[offset..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map(|position| offset + position)
-            .ok_or_else(|| GitEngineError::InvalidOutput {
+        let mut header = Vec::new();
+        let header_bytes = (&mut reader)
+            .take(1025)
+            .read_until(b'\n', &mut header)
+            .map_err(GitEngineError::Io)?;
+        if header_bytes == 0 || !header.ends_with(b"\n") {
+            return Err(GitEngineError::InvalidOutput {
                 operation: OPERATION,
                 detail: "batch response omitted an object header terminator".to_string(),
-            })?;
-        let header = std::str::from_utf8(&bytes[offset..header_end]).map_err(|error| {
-            GitEngineError::InvalidOutput {
+            });
+        }
+        if header.len() > 1024 {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "batch response object header exceeds 1024 bytes".to_string(),
+            });
+        }
+        header.pop();
+        let header =
+            std::str::from_utf8(&header).map_err(|error| GitEngineError::InvalidOutput {
                 operation: OPERATION,
                 detail: error.to_string(),
-            }
-        })?;
+            })?;
         let mut fields = header.split_whitespace();
         let oid = fields.next().unwrap_or_default();
         let kind = fields.next().unwrap_or_default();
@@ -5040,38 +5220,55 @@ fn parse_batch_blobs(
                 operation: OPERATION,
                 detail: format!("invalid blob size in batch header: {error}"),
             })?;
-        if size > MAX_CONFLICT_BLOB_BYTES {
-            return Err(GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: format!(
-                    "blob `{expected_oid}` exceeds the {MAX_CONFLICT_BLOB_BYTES} byte preservation limit"
-                ),
-            });
+        if size > per_blob_limit {
+            return Err(blob_limit_error(expected_oid, per_blob_limit));
         }
-        let data_start = header_end + 1;
-        let data_end =
-            data_start
-                .checked_add(size)
-                .ok_or_else(|| GitEngineError::InvalidOutput {
-                    operation: OPERATION,
-                    detail: "batch blob size overflowed the response offset".to_string(),
-                })?;
-        if bytes.get(data_end) != Some(&b'\n') {
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "aggregate blob size overflowed".to_string(),
+            })?;
+        if total > total_limit {
+            return Err(blob_batch_limit_error(total_limit));
+        }
+        let mut data = vec![0_u8; size];
+        reader
+            .read_exact(&mut data)
+            .map_err(|error| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!("batch response omitted blob content: {error}"),
+            })?;
+        let mut terminator = [0_u8; 1];
+        if reader.read_exact(&mut terminator).is_err() || terminator[0] != b'\n' {
             return Err(GitEngineError::InvalidOutput {
                 operation: OPERATION,
                 detail: "batch response omitted a blob content terminator".to_string(),
             });
         }
-        blobs.insert(expected_oid.clone(), bytes[data_start..data_end].to_vec());
-        offset = data_end + 1;
+        blobs.insert(expected_oid.clone(), data);
     }
-    if offset != bytes.len() {
+    if !reader.fill_buf().map_err(GitEngineError::Io)?.is_empty() {
         return Err(GitEngineError::InvalidOutput {
             operation: OPERATION,
             detail: "batch response contained unexpected trailing data".to_string(),
         });
     }
     Ok(blobs)
+}
+
+fn blob_limit_error(oid: &GitOid, limit: usize) -> GitEngineError {
+    GitEngineError::InvalidOutput {
+        operation: "read Git blobs in a batch",
+        detail: format!("blob `{oid}` exceeds the {limit} byte read limit"),
+    }
+}
+
+fn blob_batch_limit_error(limit: usize) -> GitEngineError {
+    GitEngineError::InvalidOutput {
+        operation: "read Git blobs in a batch",
+        detail: format!("aggregate blob contents exceed the {limit} byte read limit"),
+    }
 }
 
 fn parse_tree_application_paths(bytes: &[u8]) -> Result<Vec<GitTreeApplyPath>, GitEngineError> {
@@ -7380,6 +7577,48 @@ mod tests {
     }
 
     #[test]
+    fn batch_blob_reader_rejects_declared_limits_before_content() {
+        let first = GitOid::parse("1111111111111111111111111111111111111111").expect("OID");
+        let oversized = format!("{first} blob 11\n");
+        let error = parse_batch_blobs_reader(
+            std::slice::from_ref(&first),
+            std::io::Cursor::new(oversized),
+            10,
+            10,
+        )
+        .expect_err("declared per-blob limit");
+        assert!(error.to_string().contains("exceeds the 10 byte read limit"));
+
+        let second = GitOid::parse("2222222222222222222222222222222222222222").expect("OID");
+        let aggregate = format!("{first} blob 6\nfirst!\n{second} blob 6\n");
+        let error =
+            parse_batch_blobs_reader(&[first, second], std::io::Cursor::new(aggregate), 10, 10)
+                .expect_err("declared aggregate limit");
+        assert!(error
+            .to_string()
+            .contains("aggregate blob contents exceed the 10 byte read limit"));
+    }
+
+    #[test]
+    fn git_blob_batch_enforces_caller_aggregate_limit() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let first = engine.write_blob(&repository, b"123456").expect("blob");
+        let second = engine.write_blob(&repository, b"abcdef").expect("blob");
+
+        let error = engine
+            .read_blobs_bounded(&repository, &[first, second], 10, 10)
+            .expect_err("aggregate limit");
+        assert!(error
+            .to_string()
+            .contains("aggregate blob contents exceed the 10 byte read limit"));
+    }
+
+    #[test]
     fn selected_path_objects_reuse_identical_blob_contents() {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
@@ -7407,6 +7646,18 @@ mod tests {
         assert_eq!(objects.len(), 2);
         assert_eq!(objects["first.md"].oid, objects["second.md"].oid);
         assert_eq!(objects["first.md"].data, objects["second.md"].data);
+        let error = engine
+            .path_objects_bounded(
+                &repository,
+                &revision,
+                &["first.md".to_string(), "second.md".to_string()],
+                32,
+                20,
+            )
+            .expect_err("logical duplicate bytes exceed the aggregate limit");
+        assert!(error
+            .to_string()
+            .contains("aggregate blob contents exceed the 20 byte read limit"));
     }
 
     #[cfg(unix)]
