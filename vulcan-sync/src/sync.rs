@@ -12,7 +12,7 @@ use crate::{
     GIT_PLATFORM_PREFLIGHT_VERSION, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
 use std::fs::{self};
@@ -2979,6 +2979,7 @@ fn classify_conflicts(
         .unwrap_or_default();
     let local_objects = engine.path_objects(repository, local, paths)?;
     let remote_objects = engine.path_objects(repository, remote, paths)?;
+    let classification_context = ConflictClassificationContext::new(paths, diagnostics);
     paths
         .iter()
         .map(|path| {
@@ -3004,8 +3005,7 @@ fn classify_conflicts(
                 })?;
             let class = conflict_class(
                 path,
-                paths,
-                diagnostics,
+                &classification_context,
                 base_object,
                 local_object,
                 remote_object,
@@ -3069,30 +3069,98 @@ fn has_format_sensitive_markdown(value: &str) -> bool {
         })
 }
 
+struct ConflictClassificationContext {
+    case_collisions: HashSet<String>,
+    rename_rename: HashSet<String>,
+    directory_file: HashSet<String>,
+    singleton_rename_rename: bool,
+    singleton_directory_file: bool,
+    #[cfg(test)]
+    normalized_paths: usize,
+    #[cfg(test)]
+    diagnostic_lines_scanned: usize,
+}
+
+impl ConflictClassificationContext {
+    fn new(paths: &[String], diagnostics: &str) -> Self {
+        let normalized = paths
+            .iter()
+            .map(|path| path.to_lowercase())
+            .collect::<Vec<_>>();
+        let mut counts = HashMap::<&str, usize>::new();
+        for path in &normalized {
+            *counts.entry(path.as_str()).or_default() += 1;
+        }
+        let case_collisions = paths
+            .iter()
+            .zip(&normalized)
+            .filter(|(_, normalized)| counts[normalized.as_str()] > 1)
+            .map(|(path, _)| path.clone())
+            .collect();
+        let mut rename_rename = HashSet::new();
+        let mut directory_file = HashSet::new();
+        let matcher = (!normalized.is_empty()).then(|| {
+            aho_corasick::AhoCorasick::new(&normalized)
+                .expect("validated conflict paths compile as literal search patterns")
+        });
+        #[cfg(test)]
+        let mut diagnostic_lines_scanned = 0;
+        if let Some(matcher) = matcher {
+            for line in diagnostics.lines() {
+                #[cfg(test)]
+                {
+                    diagnostic_lines_scanned += 1;
+                }
+                let line = line.to_ascii_lowercase();
+                let target = if line.contains("rename/rename") {
+                    Some(&mut rename_rename)
+                } else if line.contains("directory/file") {
+                    Some(&mut directory_file)
+                } else {
+                    None
+                };
+                if let Some(target) = target {
+                    for matched in matcher.find_overlapping_iter(&line) {
+                        target.insert(paths[matched.pattern().as_usize()].clone());
+                    }
+                }
+            }
+        }
+        let diagnostic = (paths.len() == 1).then(|| diagnostics.to_ascii_lowercase());
+        Self {
+            case_collisions,
+            rename_rename,
+            directory_file,
+            singleton_rename_rename: diagnostic
+                .as_ref()
+                .is_some_and(|value| value.contains("rename/rename")),
+            singleton_directory_file: diagnostic
+                .as_ref()
+                .is_some_and(|value| value.contains("directory/file")),
+            #[cfg(test)]
+            normalized_paths: normalized.len(),
+            #[cfg(test)]
+            diagnostic_lines_scanned,
+        }
+    }
+}
+
 fn conflict_class(
     path: &str,
-    paths: &[String],
-    diagnostics: &str,
+    context: &ConflictClassificationContext,
     base: Option<&crate::GitPathObject>,
     local: Option<&crate::GitPathObject>,
     remote: Option<&crate::GitPathObject>,
     file_kind: MergeFileKind,
 ) -> GitConflictClass {
-    let path_key = path.to_lowercase();
-    if paths
-        .iter()
-        .any(|candidate| candidate != path && candidate.to_lowercase() == path_key)
-    {
+    if context.case_collisions.contains(path) {
         return GitConflictClass::CaseCollision;
     }
-    let diagnostic = diagnostics.to_ascii_lowercase();
-    if paths.len() == 1 || diagnostic.contains(&path.to_ascii_lowercase()) {
-        if diagnostic.contains("rename/rename") {
-            return GitConflictClass::RenameRename;
-        }
-        if diagnostic.contains("directory/file") {
-            return GitConflictClass::DirectoryFile;
-        }
+    if context.singleton_rename_rename || context.rename_rename.contains(path) {
+        return GitConflictClass::RenameRename;
+    }
+    if context.singleton_directory_file || context.directory_file.contains(path) {
+        return GitConflictClass::DirectoryFile;
     }
     if [base, local, remote]
         .into_iter()
@@ -3127,6 +3195,26 @@ const fn conflict_diagnostic_code(class: GitConflictClass) -> &'static str {
         GitConflictClass::UnsupportedObject => "sync.conflict.unsupported-object",
         GitConflictClass::Ambiguous => "sync.conflict.ambiguous",
     }
+}
+
+#[cfg(test)]
+fn test_conflict_class(
+    path: &str,
+    paths: &[String],
+    diagnostics: &str,
+    base: Option<&crate::GitPathObject>,
+    local: Option<&crate::GitPathObject>,
+    remote: Option<&crate::GitPathObject>,
+    file_kind: MergeFileKind,
+) -> GitConflictClass {
+    conflict_class(
+        path,
+        &ConflictClassificationContext::new(paths, diagnostics),
+        base,
+        local,
+        remote,
+        file_kind,
+    )
 }
 
 struct StructuredMergeAttempt {
@@ -3597,7 +3685,7 @@ mod tests {
         let binary = conflict_blob(b"\0binary");
         let paths = vec!["Note.md".to_string()];
         assert_eq!(
-            conflict_class(
+            test_conflict_class(
                 "Note.md",
                 &paths,
                 "CONFLICT (content)",
@@ -3609,7 +3697,7 @@ mod tests {
             GitConflictClass::OverlappingText
         );
         assert_eq!(
-            conflict_class(
+            test_conflict_class(
                 "asset.bin",
                 &["asset.bin".to_string()],
                 "CONFLICT (content)",
@@ -3621,7 +3709,7 @@ mod tests {
             GitConflictClass::OverlappingBinary
         );
         assert_eq!(
-            conflict_class(
+            test_conflict_class(
                 "Note.md",
                 &paths,
                 "CONFLICT (modify/delete)",
@@ -3633,7 +3721,7 @@ mod tests {
             GitConflictClass::DeleteModify
         );
         assert_eq!(
-            conflict_class(
+            test_conflict_class(
                 "renamed.md",
                 &["renamed.md".to_string()],
                 "CONFLICT (rename/rename)",
@@ -3645,7 +3733,7 @@ mod tests {
             GitConflictClass::RenameRename
         );
         assert_eq!(
-            conflict_class(
+            test_conflict_class(
                 "Notes",
                 &["Notes".to_string()],
                 "CONFLICT (directory/file)",
@@ -3657,7 +3745,7 @@ mod tests {
             GitConflictClass::DirectoryFile
         );
         assert_eq!(
-            conflict_class(
+            test_conflict_class(
                 "Note.md",
                 &["Note.md".to_string(), "note.md".to_string()],
                 "",
@@ -3669,7 +3757,7 @@ mod tests {
             GitConflictClass::CaseCollision
         );
         assert_eq!(
-            conflict_class(
+            test_conflict_class(
                 ".obsidian/workspace.json",
                 &[".obsidian/workspace.json".to_string()],
                 "CONFLICT (content)",
@@ -3680,6 +3768,31 @@ mod tests {
             ),
             GitConflictClass::DeviceLocalState
         );
+    }
+
+    #[test]
+    fn classification_context_indexes_large_reordered_path_sets_once() {
+        let mut paths = (0..10_000)
+            .map(|index| format!("Notes/Note{index:05}.md"))
+            .collect::<Vec<_>>();
+        paths.push("notes/note00042.md".to_string());
+        let diagnostics = "CONFLICT (rename/rename): Notes/Note00077.md renamed in both branches\n\
+CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
+        let context = ConflictClassificationContext::new(&paths, diagnostics);
+        assert_eq!(context.normalized_paths, paths.len());
+        assert_eq!(context.diagnostic_lines_scanned, 2);
+        assert!(context.case_collisions.contains("Notes/Note00042.md"));
+        assert!(context.case_collisions.contains("notes/note00042.md"));
+        assert!(context.rename_rename.contains("Notes/Note00077.md"));
+        assert!(context.directory_file.contains("Notes/Note00088.md"));
+
+        paths.reverse();
+        let reordered = ConflictClassificationContext::new(&paths, diagnostics);
+        assert_eq!(reordered.normalized_paths, paths.len());
+        assert_eq!(reordered.diagnostic_lines_scanned, 2);
+        assert_eq!(reordered.case_collisions, context.case_collisions);
+        assert_eq!(reordered.rename_rename, context.rename_rename);
+        assert_eq!(reordered.directory_file, context.directory_file);
     }
 
     #[derive(Default)]

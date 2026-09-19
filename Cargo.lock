@@ -4691,6 +4691,7 @@ dependencies = [
 name = "vulcan-sync"
 version = "0.2.1"
 dependencies = [
+ "aho-corasick",
  "blake3",
  "fs2",
  "globset",
