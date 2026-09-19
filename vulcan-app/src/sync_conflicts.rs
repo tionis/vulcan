@@ -2378,14 +2378,47 @@ impl SyncConflictStore {
         if let Some(id) = current_conflict_id {
             validate_hex_id("conflict ID", id)?;
         }
+        let replacement_paths = current_conflict_id
+            .map(|id| self.get(repository_key, id))
+            .transpose()?
+            .map(|record| {
+                record
+                    .paths
+                    .into_iter()
+                    .map(|path| path.path)
+                    .collect::<BTreeSet<_>>()
+            });
         let mut superseded = 0;
         for record in self.list(repository_key)? {
-            if current_conflict_id == Some(record.id.as_str())
-                || self.resolution_state(repository_key, &record.id)?
-                    != SyncConflictResolutionState::Unresolved
-                || (current_conflict_id.is_none()
-                    && record.version >= 4
-                    && !conflict_groups(&record).is_empty())
+            if current_conflict_id == Some(record.id.as_str()) {
+                continue;
+            }
+            let progress = self.group_progress(repository_key, &record)?;
+            if self.resolution_state_with_progress(repository_key, &record.id, &progress)?
+                != SyncConflictResolutionState::Unresolved
+            {
+                continue;
+            }
+            let unfinished_paths = progress
+                .groups
+                .iter()
+                .filter(|group| {
+                    matches!(
+                        group.state,
+                        SyncConflictGroupState::Pending | SyncConflictGroupState::NeedsRebase
+                    )
+                })
+                .flat_map(|group| group.paths.iter())
+                .collect::<BTreeSet<_>>();
+            let has_independent_obligation =
+                replacement_paths
+                    .as_ref()
+                    .map_or(!unfinished_paths.is_empty(), |replacement| {
+                        unfinished_paths
+                            .iter()
+                            .any(|path| !replacement.contains(path.as_str()))
+                    });
+            if has_independent_obligation
                 || (current_conflict_id.is_none()
                     && conflict_live_input(&record)? == current_revision)
             {
@@ -3484,13 +3517,57 @@ mod tests {
             store
                 .supersede_unresolved_except(&key, None, "later")
                 .expect("legacy later live input"),
-            1
+            0
         );
         assert_eq!(
             store
                 .resolution_state(&key, &legacy_id)
                 .expect("legacy state"),
-            SyncConflictResolutionState::Superseded
+            SyncConflictResolutionState::Unresolved
+        );
+    }
+
+    #[test]
+    fn unrelated_replacement_conflict_keeps_pending_groups_actionable() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let old_id = "b".repeat(32);
+        let current_id = "c".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let old_directory = store
+            .conflict_directory(&key, &old_id)
+            .expect("old directory");
+        fs::create_dir_all(&old_directory).expect("old directory");
+        write_json_noclobber(
+            &old_directory.join("record.json"),
+            &unresolved_record(&old_id, &key, temporary.path()),
+        )
+        .expect("old record");
+        let current_directory = store
+            .conflict_directory(&key, &current_id)
+            .expect("current directory");
+        fs::create_dir_all(&current_directory).expect("current directory");
+        let mut current = unresolved_record(&current_id, &key, temporary.path());
+        current.paths[0].path = "Other.md".to_string();
+        assign_conflict_groups(current.scope, &mut current.paths);
+        write_json_noclobber(&current_directory.join("record.json"), &current)
+            .expect("current record");
+
+        assert_eq!(
+            store
+                .supersede_unresolved_except(&key, Some(&current_id), "revision")
+                .expect("reconcile sessions"),
+            0
+        );
+        assert_eq!(
+            store.resolution_state(&key, &old_id).expect("old state"),
+            SyncConflictResolutionState::Unresolved
+        );
+        assert_eq!(
+            store
+                .resolution_state(&key, &current_id)
+                .expect("current state"),
+            SyncConflictResolutionState::Unresolved
         );
     }
 

@@ -53,8 +53,8 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    reviewed through `vulcan sync conflicts --wiki <id>`. Deterministically mergeable sibling paths
    may already be present in the projected tree while the record lists only paths still requiring
    review. Later successful synchronization or a
-   replacement conflict marks obsolete attempts as superseded immutable history and removes them
-   from the active count; an unavailable conflict count makes the inspection incomplete instead of
+   replacement conflict marks an older attempt as superseded immutable history only when the
+   replacement covers every unfinished path; independent pending groups stay active. An unavailable conflict count makes the inspection incomplete instead of
    implying zero.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
