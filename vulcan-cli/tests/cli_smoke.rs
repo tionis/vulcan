@@ -28478,9 +28478,7 @@ fn mcp_http_transport_adaptive_pack_mutation_refreshes_visible_tools() {
         .expect("tools/list should return a tool array")
         .clone();
     assert!(
-        before_tools
-            .iter()
-            .any(|tool| tool["name"] == "tool_pack_enable"),
+        before_tools.iter().any(|tool| tool["name"] == "tool_packs"),
         "adaptive mode should expose the bootstrap tool-pack mutators"
     );
     assert!(
@@ -28495,8 +28493,8 @@ fn mcp_http_transport_adaptive_pack_mutation_refreshes_visible_tools() {
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "tool_pack_enable",
-                "arguments": { "packs": ["web"] }
+                "name": "tool_packs",
+                "arguments": { "operation": "enable", "packs": ["web"] }
             }
         }),
         Some(&session_id),
@@ -28616,6 +28614,7 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         "query",
         "daily",
         "status",
+        "capabilities",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
@@ -28631,6 +28630,8 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         "note_delete",
         "daily_show",
         "daily_list",
+        "graph_communities",
+        "suggest_links",
         "task_list",
         "task_query",
         "task_create",
@@ -28665,6 +28666,20 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
     assert!(
         note_get.get("outputSchema").is_some(),
         "note_get should advertise an output schema"
+    );
+
+    let capabilities = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+        "params": { "name": "capabilities", "arguments": {} }
+    }));
+    let capabilities =
+        &capabilities.last().expect("capabilities response")["result"]["structuredContent"];
+    assert!(capabilities["activeTools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool == "daily")));
+    assert_eq!(
+        capabilities["resultLimits"]["structuredContentBytes"],
+        65_536
     );
 
     let messages = session.send(serde_json::json!({
@@ -29061,6 +29076,8 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
             "notes-read,notes-manage",
             "--tool-pack",
             "web",
+            "--tool-pack",
+            "graph",
         ],
     );
     let _ = session.send(serde_json::json!({
@@ -29088,6 +29105,8 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
         "note_delete",
         "web_search",
         "web_fetch",
+        "graph_communities",
+        "suggest_links",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
@@ -29175,6 +29194,7 @@ fn mcp_daily_is_stable_and_distinguishes_latest_today_and_absence() {
         )
         .expect("daily note");
     }
+    run_scan(&vault_root);
 
     let mut session = McpSession::start_at(&vault_root, &[], "2026-09-15T12:00:00Z");
     let initialize = session.send(serde_json::json!({
@@ -29218,6 +29238,27 @@ fn mcp_daily_is_stable_and_distinguishes_latest_today_and_absence() {
     assert_eq!(today["date"], "2026-09-15");
     assert_eq!(today["exists"], true);
 
+    let list = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 41,
+        "method": "tools/call",
+        "params": {
+            "name": "daily",
+            "arguments": {
+                "operation": "list",
+                "from": "2026-09-01",
+                "to": "2026-09-15",
+                "limit": 2,
+                "order": "desc"
+            }
+        }
+    }));
+    let list = &list.last().expect("daily list")["result"]["structuredContent"];
+    assert_eq!(list["items"][0]["date"], "2026-09-15");
+    assert_eq!(list["items"][1]["date"], "2026-09-08");
+    assert_eq!(list["page"]["next_offset"], 2);
+    assert!(list["items"][0].get("events").is_none());
+
     fs::remove_file(vault_root.join("Journal/Daily/2026-09-15.md")).expect("remove today");
     let missing = session.send(serde_json::json!({
         "jsonrpc": "2.0",
@@ -29250,6 +29291,78 @@ fn mcp_daily_latest_returns_typed_no_notes_response() {
     assert_eq!(report["exists"], false);
     assert_eq!(report["reason"], "no_daily_notes");
     assert!(report["date"].is_null());
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_daily_latest_selects_the_newest_readable_note() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+    for date in ["2026-09-03", "2026-09-08"] {
+        fs::write(
+            vault_root.join(format!("Journal/Daily/{date}.md")),
+            format!("# {date}\n"),
+        )
+        .expect("daily note");
+    }
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.older]
+read = { allow = ["folder:Journal/Daily/**"], deny = ["note:Journal/Daily/2026-09-08.md"] }
+"#,
+    )
+    .expect("permission config");
+
+    let mut session = McpSession::start(&vault_root, &["--permissions", "older"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let response = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "daily", "arguments": { "operation": "latest" } }
+    }));
+    let report = &response.last().expect("latest readable")["result"]["structuredContent"];
+    assert_eq!(report["date"], "2026-09-03");
+    assert_eq!(report["path"], "Journal/Daily/2026-09-03.md");
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_large_structured_results_are_resource_backed_not_duplicated() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(vault_root.join("Large.md"), "x".repeat(70_000)).expect("large note");
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let response = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "note_get", "arguments": { "note": "Large.md" } }
+    }));
+    let result = &response.last().expect("large note response")["result"];
+    assert!(result.get("structuredContent").is_none());
+    let uri = result["content"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["type"] == "resource_link"))
+        .and_then(|item| item["uri"].as_str())
+        .expect("large result resource URI")
+        .to_string();
+    let resource = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "resources/read",
+        "params": { "uri": uri }
+    }));
+    assert!(
+        resource.last().expect("resource response")["result"]["contents"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.len() > 70_000)
+    );
     assert!(session.finish().is_empty());
 }
 
@@ -29288,6 +29401,8 @@ fn mcp_query_defaults_to_bounded_compact_results_and_supports_structural_filters
     assert_eq!(bounded["notes"].as_array().map(Vec::len), Some(50));
     assert_eq!(bounded["page"]["has_more"], true);
     assert!(bounded["notes"][0].get("properties").is_none());
+    assert!(bounded["notes"][0].get("inline_expressions").is_none());
+    assert!(bounded["notes"][0].get("frontmatter").is_none());
 
     let newest = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -29329,6 +29444,51 @@ fn mcp_query_defaults_to_bounded_compact_results_and_supports_structural_filters
         explicit_property["notes"][0]["properties.large"],
         "value-74"
     );
+
+    let first_page = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": { "name": "query", "arguments": {
+            "query": "from notes order by file.name asc limit 20 offset 10",
+            "filename_pattern": "Note-*.md",
+            "limit": 5
+        }}
+    }));
+    let first_page = &first_page.last().expect("first page")["result"]["structuredContent"];
+    assert_eq!(first_page["notes"][0]["file_name"], "Note-010");
+    assert_eq!(first_page["page"]["next_offset"], 5);
+
+    let second_page = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+        "params": { "name": "query", "arguments": {
+            "query": "from notes order by file.name asc limit 20 offset 10",
+            "filename_pattern": "Note-*.md",
+            "limit": 5,
+            "offset": 5
+        }}
+    }));
+    let second_page = &second_page.last().expect("second page")["result"]["structuredContent"];
+    assert_eq!(second_page["notes"][0]["file_name"], "Note-015");
+
+    let dql_rejection = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": { "name": "query", "arguments": {
+            "query": "LIST", "engine": "dql", "path_prefix": "Journal/Daily"
+        }}
+    }));
+    assert!(
+        dql_rejection.last().expect("DQL rejection")["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("DQL supports only"))
+    );
+
+    let ctime = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+        "params": { "name": "query", "arguments": {
+            "filters": ["file.ctime >= 0"], "fields": ["file.path", "file.ctime"], "limit": 1
+        }}
+    }));
+    let ctime = &ctime.last().expect("ctime query")["result"]["structuredContent"];
+    assert!(ctime["notes"][0]["file.ctime"].as_i64().is_some());
     assert!(session.finish().is_empty());
 }
 
@@ -29478,16 +29638,7 @@ fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
         .last()
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
-    for expected in [
-        "note_get",
-        "note_outline",
-        "search",
-        "status",
-        "tool_pack_list",
-        "tool_pack_enable",
-        "tool_pack_disable",
-        "tool_pack_set",
-    ] {
+    for expected in ["note_get", "note_outline", "search", "status", "tool_packs"] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
             "adaptive mode should expose `{expected}`"
@@ -29505,24 +29656,31 @@ fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "tool_pack_list",
-            "arguments": {}
+            "name": "tool_packs",
+            "arguments": { "operation": "list" }
         }
     }));
-    let state = &state.last().expect("tool_pack_list response")["result"]["structuredContent"];
+    let state = &state.last().expect("tool_packs response")["result"]["structuredContent"];
     assert_eq!(state["mode"].as_str(), Some("adaptive"));
     assert_eq!(
         state["selectedToolPacks"],
         serde_json::json!(["notes-read", "search", "status", "tool-packs"])
     );
+    assert_eq!(
+        state["pinnedToolPacks"],
+        serde_json::json!(["notes-read", "search", "status"])
+    );
+    assert!(state["availableToolPacks"]
+        .as_array()
+        .is_some_and(|packs| packs.iter().all(|pack| pack.get("visibleTools").is_none())));
 
     let enable = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 4,
         "method": "tools/call",
         "params": {
-            "name": "tool_pack_enable",
-            "arguments": { "packs": ["web", "notes-write"] }
+            "name": "tool_packs",
+            "arguments": { "operation": "enable", "packs": ["web", "notes-write"] }
         }
     }));
     assert!(
@@ -29531,7 +29689,7 @@ fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
             .any(|message| message["method"] == "notifications/tools/list_changed"),
         "enabling new tool packs should emit tools/list_changed"
     );
-    let state = &enable.last().expect("tool_pack_enable response")["result"]["structuredContent"];
+    let state = &enable.last().expect("tool_packs response")["result"]["structuredContent"];
     assert_eq!(
         state["selectedToolPacks"],
         serde_json::json!([
@@ -29554,10 +29712,7 @@ fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
     for expected in [
-        "tool_pack_list",
-        "tool_pack_enable",
-        "tool_pack_disable",
-        "tool_pack_set",
+        "tool_packs",
         "note_create",
         "note_append",
         "note_patch",
@@ -29590,6 +29745,39 @@ fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
     );
     assert!(vault_root.join("Adaptive refresh.md").is_file());
 
+    let pinned = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "tool_packs",
+            "arguments": { "operation": "set", "packs": ["web"] }
+        }
+    }));
+    let pinned = &pinned.last().expect("tool_packs set response")["result"]["structuredContent"];
+    assert_eq!(
+        pinned["pinnedToolPacks"],
+        serde_json::json!(["notes-read", "search", "status"])
+    );
+    assert!(pinned["activeTools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool == "note_get")));
+
+    let legacy = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": {
+            "name": "tool_pack_enable",
+            "arguments": { "packs": ["notes-write"] }
+        }
+    }));
+    assert_eq!(
+        legacy.last().expect("legacy alias response")["result"]["isError"],
+        false,
+        "cached legacy pack calls should remain callable as hidden aliases"
+    );
+
     assert!(session.finish().is_empty());
 }
 
@@ -29618,9 +29806,9 @@ fn mcp_adaptive_pack_schema_includes_custom_selector() {
         .as_array()
         .expect("describe should return tool definitions")
         .iter()
-        .find(|tool| tool["name"] == "tool_pack_enable")
+        .find(|tool| tool["name"] == "tool_packs")
         .cloned()
-        .expect("tool_pack_enable should be exported");
+        .expect("tool_packs should be exported");
     let describe_enum = describe_tool["inputSchema"]["properties"]["packs"]["items"]["enum"]
         .as_array()
         .expect("describe input schema should expose an enum");
@@ -29648,9 +29836,9 @@ fn mcp_adaptive_pack_schema_includes_custom_selector() {
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array")
         .iter()
-        .find(|tool| tool["name"] == "tool_pack_enable")
+        .find(|tool| tool["name"] == "tool_packs")
         .cloned()
-        .expect("tool_pack_enable should be visible in adaptive mode");
+        .expect("tool_packs should be visible in adaptive mode");
     let live_enum = live_tool["inputSchema"]["properties"]["packs"]["items"]["enum"]
         .as_array()
         .expect("live input schema should expose an enum");

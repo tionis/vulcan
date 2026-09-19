@@ -261,6 +261,14 @@ pub(super) struct McpDailyListArgs {
     pub(super) week: bool,
     #[serde(default)]
     pub(super) month: bool,
+    #[serde(default = "crate::mcp::default_daily_list_limit")]
+    pub(super) limit: usize,
+    #[serde(default)]
+    pub(super) offset: usize,
+    #[serde(default)]
+    pub(super) order: Option<String>,
+    #[serde(default)]
+    pub(super) include_events: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +287,14 @@ pub(super) struct McpDailyArgs {
     pub(super) week: bool,
     #[serde(default)]
     pub(super) month: bool,
+    #[serde(default = "crate::mcp::default_daily_list_limit")]
+    pub(super) limit: usize,
+    #[serde(default)]
+    pub(super) offset: usize,
+    #[serde(default)]
+    pub(super) order: Option<String>,
+    #[serde(default)]
+    pub(super) include_events: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,5 +542,8 @@ pub(super) struct McpIndexScanArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct McpToolPackMutationArgs {
+    #[serde(default = "crate::mcp::default_tool_pack_operation")]
+    pub(super) operation: String,
+    #[serde(default)]
     pub(super) packs: Vec<String>,
 }

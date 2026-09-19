@@ -422,7 +422,7 @@ fn catalog_pack_selection_and_permissions_filter_builtin_tools() {
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
     assert!(visible.contains(&"note_get"));
-    assert!(visible.contains(&"tool_pack_list"));
+    assert!(visible.contains(&"tool_packs"));
     assert!(!visible.contains(&"note_set"));
 }
 

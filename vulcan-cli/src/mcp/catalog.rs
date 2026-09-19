@@ -51,6 +51,7 @@ pub(super) enum McpToolPack {
     NotesRead,
     Search,
     Status,
+    Graph,
     Custom,
     Daily,
     Tasks,
@@ -69,6 +70,7 @@ impl McpToolPack {
             Self::NotesRead => "notes-read",
             Self::Search => "search",
             Self::Status => "status",
+            Self::Graph => "graph",
             Self::Custom => "custom",
             Self::Daily => "daily",
             Self::Tasks => "tasks",
@@ -87,6 +89,7 @@ impl McpToolPack {
             Self::NotesRead => "Read note content and outlines for scoped follow-up work.",
             Self::Search => "Search the vault with structured hits and snippets.",
             Self::Status => "Inspect vault status, cache metadata, and git summary.",
+            Self::Graph => "Inspect graph communities and link suggestions.",
             Self::Custom => "Expose callable vault-defined skill command tools.",
             Self::Daily => {
                 "Read daily notes and daily-note ranges with structured periodic metadata."
@@ -113,6 +116,7 @@ impl McpToolPack {
 pub(super) enum McpToolId {
     NoteGet,
     NoteOutline,
+    Capabilities,
     Search,
     Query,
     Status,
@@ -137,10 +141,7 @@ pub(super) enum McpToolId {
     IndexScan,
     GraphCommunities,
     SuggestLinks,
-    ToolPackList,
-    ToolPackEnable,
-    ToolPackDisable,
-    ToolPackSet,
+    ToolPacks,
     SyncStatus,
     SyncPlan,
     SyncDoctor,
@@ -191,12 +192,12 @@ const fn mcp_annotations(
 pub(super) const PACK_NOTES_READ: &[McpToolPack] = &[McpToolPack::NotesRead];
 pub(super) const PACK_SEARCH: &[McpToolPack] = &[McpToolPack::Search];
 pub(super) const PACK_STATUS: &[McpToolPack] = &[McpToolPack::Status];
+pub(super) const PACK_GRAPH: &[McpToolPack] = &[McpToolPack::Graph];
 pub(super) const PACK_CUSTOM: &[McpToolPack] = &[McpToolPack::Custom];
 pub(super) const PACK_DAILY: &[McpToolPack] = &[McpToolPack::Daily];
 const PACK_DAILY_READ: &[McpToolPack] = &[McpToolPack::NotesRead, McpToolPack::Daily];
 pub(super) const PACK_TASKS: &[McpToolPack] = &[McpToolPack::Tasks];
 pub(super) const PACK_NOTES_WRITE: &[McpToolPack] = &[McpToolPack::NotesWrite];
-const PACK_NOTES_READ_WRITE: &[McpToolPack] = &[McpToolPack::NotesRead, McpToolPack::NotesWrite];
 pub(super) const PACK_NOTES_MANAGE: &[McpToolPack] = &[McpToolPack::NotesManage];
 pub(super) const PACK_WEB: &[McpToolPack] = &[McpToolPack::Web];
 pub(super) const PACK_CONFIG: &[McpToolPack] = &[McpToolPack::Config];
@@ -278,6 +279,18 @@ pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         examples: &["vulcan status --output json"],
     },
     McpToolCatalogEntry {
+        id: McpToolId::Capabilities,
+        name: "capabilities",
+        title: "Inspect MCP Capabilities",
+        description: "Return compact routing guidance, active tools, startup-pinned and optional packs, and result-size limits for this MCP session.",
+        packs: PACK_STATUS,
+        visibility: McpVisibilityRequirement::None,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: empty_object_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["capabilities {}"],
+    },
+    McpToolCatalogEntry {
         id: McpToolId::Daily,
         name: "daily",
         title: "Read Daily Notes",
@@ -318,7 +331,7 @@ pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "graph_communities",
         title: "Inspect Graph Communities",
         description: "Compute note-graph communities, orphan placement hints, and bridge notes.",
-        packs: PACK_NOTES_READ,
+        packs: PACK_GRAPH,
         visibility: McpVisibilityRequirement::Read,
         annotations: mcp_annotations(true, false, false, false),
         input_schema: graph_communities_input_schema,
@@ -330,7 +343,7 @@ pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "suggest_links",
         title: "Suggest Links",
         description: "Read ranked link suggestions, or accept/reject one suggestion when write permissions are available.",
-        packs: PACK_NOTES_READ_WRITE,
+        packs: PACK_GRAPH,
         visibility: McpVisibilityRequirement::Read,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: suggest_links_input_schema,
@@ -583,52 +596,16 @@ pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         examples: &["sync_conflicts {}", "sync_conflicts {\"conflict_id\":\"01...\"}"],
     },
     McpToolCatalogEntry {
-        id: McpToolId::ToolPackList,
-        name: "tool_pack_list",
-        title: "List MCP Tool Packs",
-        description: "Inspect the available MCP tool packs and the current session's selected pack set.",
-        packs: PACK_TOOL_PACKS,
-        visibility: McpVisibilityRequirement::None,
-        annotations: mcp_annotations(true, false, true, false),
-        input_schema: empty_object_schema,
-        output_schema: Some(tool_pack_state_output_schema),
-        examples: &["tool_pack_list"],
-    },
-    McpToolCatalogEntry {
-        id: McpToolId::ToolPackEnable,
-        name: "tool_pack_enable",
-        title: "Enable MCP Tool Packs",
-        description: "Enable one or more MCP tool packs for the current session and refresh the visible tool list.",
+        id: McpToolId::ToolPacks,
+        name: "tool_packs",
+        title: "Manage MCP Tool Packs",
+        description: "List or change optional packs for this session. Startup-selected packs are pinned; registry changes require the client to refresh tools/list.",
         packs: PACK_TOOL_PACKS,
         visibility: McpVisibilityRequirement::None,
         annotations: mcp_annotations(false, false, true, false),
         input_schema: tool_pack_mutation_input_schema,
         output_schema: Some(tool_pack_state_output_schema),
-        examples: &["tool_pack_enable {\"packs\":[\"web\",\"notes-manage\"]}"],
-    },
-    McpToolCatalogEntry {
-        id: McpToolId::ToolPackDisable,
-        name: "tool_pack_disable",
-        title: "Disable MCP Tool Packs",
-        description: "Disable one or more MCP tool packs for the current session and refresh the visible tool list.",
-        packs: PACK_TOOL_PACKS,
-        visibility: McpVisibilityRequirement::None,
-        annotations: mcp_annotations(false, false, true, false),
-        input_schema: tool_pack_mutation_input_schema,
-        output_schema: Some(tool_pack_state_output_schema),
-        examples: &["tool_pack_disable {\"packs\":[\"web\"]}"],
-    },
-    McpToolCatalogEntry {
-        id: McpToolId::ToolPackSet,
-        name: "tool_pack_set",
-        title: "Set MCP Tool Packs",
-        description: "Replace the current session's selected MCP tool packs in one call and refresh the visible tool list.",
-        packs: PACK_TOOL_PACKS,
-        visibility: McpVisibilityRequirement::None,
-        annotations: mcp_annotations(false, false, true, false),
-        input_schema: tool_pack_mutation_input_schema,
-        output_schema: Some(tool_pack_state_output_schema),
-        examples: &["tool_pack_set {\"packs\":[\"notes-read\",\"search\"]}"],
+        examples: &["tool_packs {\"operation\":\"enable\",\"packs\":[\"web\"]}"],
     },
 ];
 
@@ -636,6 +613,7 @@ pub(super) const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
     McpToolPack::NotesRead,
     McpToolPack::Search,
     McpToolPack::Status,
+    McpToolPack::Graph,
     McpToolPack::Custom,
     McpToolPack::Daily,
     McpToolPack::Tasks,
@@ -657,6 +635,7 @@ pub(super) fn expand_tool_pack_arg(value: McpToolPackArg) -> &'static [McpToolPa
         McpToolPackArg::NotesRead => PACK_NOTES_READ,
         McpToolPackArg::Search => PACK_SEARCH,
         McpToolPackArg::Status => PACK_STATUS,
+        McpToolPackArg::Graph => PACK_GRAPH,
         McpToolPackArg::Custom => PACK_CUSTOM,
         McpToolPackArg::Daily => PACK_DAILY,
         McpToolPackArg::Tasks => PACK_TASKS,
@@ -724,6 +703,7 @@ pub(super) fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
         "notes-read" => Some(McpToolPackArg::NotesRead),
         "search" => Some(McpToolPackArg::Search),
         "status" => Some(McpToolPackArg::Status),
+        "graph" => Some(McpToolPackArg::Graph),
         "custom" => Some(McpToolPackArg::Custom),
         "daily" => Some(McpToolPackArg::Daily),
         "tasks" => Some(McpToolPackArg::Tasks),

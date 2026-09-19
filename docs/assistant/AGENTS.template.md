@@ -24,6 +24,8 @@ Retrieval routing:
 - Metadata, property, or path selection: `query`.
 - Subject/content discovery: `search`.
 - Prefer domain operations, then exact reads, then structured query, then full-text or semantic search.
+- MCP query and daily-list pages are bounded; follow `page.next_offset` rather than requesting an unbounded result.
+- MCP startup packs stay pinned for the session. Treat adaptive `tool_packs` changes as optional because the host must refresh callable schemas.
 
 Documentation workflow:
 

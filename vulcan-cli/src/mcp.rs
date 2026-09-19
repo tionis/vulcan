@@ -6,8 +6,8 @@ mod schemas;
 
 use crate::app_config;
 use crate::commands::periodic::{
-    current_utc_date_string, normalize_date_argument, run_daily_latest_command,
-    run_daily_list_command, run_daily_show_command,
+    current_utc_date_string, normalize_date_argument, run_daily_list_command,
+    run_daily_show_command,
 };
 use crate::commands::runtime::{run_web_fetch_command, run_web_search_command};
 use crate::commands::tasks::{
@@ -177,6 +177,7 @@ struct McpServerCore {
     selection: vulcan_core::ResolvedPermissionProfile,
     guard: ProfilePermissionGuard,
     tool_pack_mode: McpToolPackMode,
+    pinned_tool_packs: BTreeSet<McpToolPack>,
     selected_tool_packs: BTreeSet<McpToolPack>,
     stored_resources: BTreeMap<String, McpStoredResource>,
     next_resource_id: u64,
@@ -939,6 +940,11 @@ impl McpServerCore {
             .map_err(permission_error_to_cli)?;
         let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
         let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
+        let pinned_tool_packs = selected_tool_packs
+            .iter()
+            .copied()
+            .filter(|pack| *pack != McpToolPack::ToolPacks)
+            .collect();
         let guard = ProfilePermissionGuard::new(paths, selection.clone());
         let snapshot = McpServerSnapshot {
             tools: tool_fingerprint(
@@ -956,6 +962,7 @@ impl McpServerCore {
             selection,
             guard,
             tool_pack_mode,
+            pinned_tool_packs,
             selected_tool_packs,
             stored_resources: BTreeMap::new(),
             next_resource_id: 1,
@@ -1221,7 +1228,7 @@ impl McpServerCore {
     ) -> Result<McpMethodOutcome, McpMethodError> {
         match method {
             "initialize" => Ok(McpMethodOutcome {
-                response: Some(Self::initialize_result()),
+                response: Some(self.initialize_result()),
                 emit_list_notifications: false,
             }),
             "ping" => Ok(McpMethodOutcome {
@@ -1313,7 +1320,8 @@ impl McpServerCore {
         }
     }
 
-    fn initialize_result() -> Value {
+    fn initialize_result(&self) -> Value {
+        let routes = self.routing_guidance();
         serde_json::json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {
@@ -1326,7 +1334,7 @@ impl McpServerCore {
                 "name": "vulcan",
                 "version": env!("CARGO_PKG_VERSION"),
             },
-            "instructions": "Routing: daily/journal requests use `daily` (`latest` means newest existing, not today). Known note/path/title uses `note_get` or `note_outline`. Subject/content discovery uses `search`. Metadata, property, or path selection uses `query`. Prefer domain APIs, then exact reads, then structured query, then full-text/semantic search. Do not use search to locate structurally known resources. Query results are bounded by default."
+            "instructions": format!("Routing: {} Prefer domain APIs, then exact reads, structured query, full-text search, and only then semantic/general fallback. Results are bounded by default.", routes.join(" "))
         })
     }
 
@@ -1848,6 +1856,27 @@ impl McpServerCore {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
+        let mut legacy_arguments = None;
+        let name = match name {
+            "tool_pack_list" => {
+                let mut normalized = arguments.clone();
+                normalized.insert("operation".to_string(), Value::String("list".to_string()));
+                legacy_arguments = Some(normalized);
+                "tool_packs"
+            }
+            "tool_pack_enable" | "tool_pack_disable" | "tool_pack_set" => {
+                let mut normalized = arguments.clone();
+                let operation = name.trim_start_matches("tool_pack_");
+                normalized.insert(
+                    "operation".to_string(),
+                    Value::String(operation.to_string()),
+                );
+                legacy_arguments = Some(normalized);
+                "tool_packs"
+            }
+            _ => name,
+        };
+        let arguments = legacy_arguments.as_ref().unwrap_or(arguments);
         let Some(tool) = tool_by_name(name) else {
             return self.call_custom_tool(name, arguments);
         };
@@ -1961,9 +1990,16 @@ impl McpServerCore {
                     let dql = args.query.as_deref().ok_or_else(|| {
                         McpMethodError::invalid_params("DQL queries require `query`")
                     })?;
-                    if !args.filters.is_empty() || args.sort.is_some() || args.desc {
+                    if !args.filters.is_empty()
+                        || args.sort.is_some()
+                        || args.desc
+                        || args.path_prefix.is_some()
+                        || args.filename_pattern.is_some()
+                        || !args.fields.is_empty()
+                        || args.include_properties
+                    {
                         return Err(McpMethodError::invalid_params(
-                            "`query.filters`, `sort`, and `desc` cannot be combined with DQL",
+                            "DQL supports only `query`, `engine`, `limit`, and `offset`; use structural query mode for filters, path_prefix, filename_pattern, fields, or include_properties",
                         ));
                     }
                     let mut result = evaluate_dql_with_filter(
@@ -1973,10 +2009,28 @@ impl McpServerCore {
                         Some(&self.guard.read_filter()),
                     )
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    let start = args.offset.min(result.rows.len());
-                    let end = start.saturating_add(args.limit).min(result.rows.len());
+                    let total_count = result.rows.len();
+                    let start = args.offset.min(total_count);
+                    let end = start.saturating_add(args.limit).min(total_count);
                     result.rows = result.rows[start..end].to_vec();
-                    return self.serialize_tool_report(tool.name, &result);
+                    result.result_count = result.rows.len();
+                    let mut structured = serde_json::to_value(result)
+                        .map_err(|error| McpMethodError::internal(error.to_string()))?;
+                    structured
+                        .as_object_mut()
+                        .expect("DQL result serializes as an object")
+                        .insert(
+                            "page".to_string(),
+                            serde_json::json!({
+                                "limit": args.limit,
+                                "offset": args.offset,
+                                "returned": end.saturating_sub(start),
+                                "total_count": total_count,
+                                "has_more": end < total_count,
+                                "next_offset": (end < total_count).then_some(end),
+                            }),
+                        );
+                    return Ok(self.tool_success_response(tool.name, structured));
                 }
                 if let Some(path_prefix) = args.path_prefix.as_deref() {
                     if args.query.is_none() && args.json.is_none() {
@@ -2047,6 +2101,20 @@ impl McpServerCore {
                 let report = run_status_command(&self.paths).map_err(cli_tool_error)?;
                 self.serialize_tool_report(tool.name, &report)
             }
+            McpToolId::Capabilities => Ok(self.tool_success_response(
+                tool.name,
+                serde_json::json!({
+                    "routing": self.routing_guidance(),
+                    "activeTools": self.active_tool_names(),
+                    "toolPacks": self.current_tool_pack_state(),
+                    "resultLimits": {
+                        "inlineTextBytes": MCP_INLINE_TEXT_LIMIT,
+                        "structuredContentBytes": MCP_STRUCTURED_CONTENT_LIMIT,
+                        "queryDefaultRows": MCP_QUERY_DEFAULT_LIMIT,
+                        "queryMaximumRows": MCP_QUERY_HARD_MAX,
+                    },
+                }),
+            )),
             McpToolId::SyncStatus | McpToolId::SyncPlan => {
                 let args: McpSyncTargetArgs = parse_tool_arguments(arguments)?;
                 self.guard
@@ -2096,8 +2164,12 @@ impl McpServerCore {
                 let args: McpDailyArgs = parse_tool_arguments(arguments)?;
                 let structured = match args.operation.as_str() {
                     "latest" => {
-                        let mut report =
-                            run_daily_latest_command(&self.paths, false).map_err(cli_tool_error)?;
+                        let mut report = vulcan_app::periodic::read_latest_daily_note_where(
+                            &self.paths,
+                            false,
+                            |path| self.guard.check_read_path(path).is_ok(),
+                        )
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
                         self.include_daily_content_after_access(&mut report, args.include_content)?;
                         serde_json::to_value(report)
                             .map_err(|error| McpMethodError::internal(error.to_string()))?
@@ -2136,10 +2208,17 @@ impl McpServerCore {
                         .into_iter()
                         .filter(|item| self.guard.check_read_path(&item.path).is_ok())
                         .collect::<Vec<_>>();
-                        serde_json::json!({
-                            "operation": args.operation,
-                            "items": items,
-                        })
+                        let mut page = bounded_daily_list(
+                            items,
+                            args.limit,
+                            args.offset,
+                            args.order.as_deref(),
+                            args.include_events,
+                        )?;
+                        page.as_object_mut()
+                            .expect("daily list page is an object")
+                            .insert("operation".to_string(), Value::String(args.operation));
+                        page
                     }
                     other => {
                         return Err(McpMethodError::invalid_params(format!(
@@ -2171,7 +2250,14 @@ impl McpServerCore {
                     .into_iter()
                     .filter(|item| self.guard.check_read_path(&item.path).is_ok())
                     .collect::<Vec<_>>();
-                self.serialize_tool_report(tool.name, &filtered)
+                let structured = bounded_daily_list(
+                    filtered,
+                    args.limit,
+                    args.offset,
+                    args.order.as_deref(),
+                    args.include_events,
+                )?;
+                Ok(self.tool_success_response(tool.name, structured))
             }
             McpToolId::GraphCommunities => {
                 let args: McpGraphCommunitiesArgs = parse_tool_arguments(arguments)?;
@@ -2663,38 +2749,38 @@ impl McpServerCore {
                 let summary = self.run_index_scan(args.full, args.no_commit)?;
                 self.serialize_tool_report(tool.name, &summary)
             }
-            McpToolId::ToolPackList => {
-                let structured = self.current_tool_pack_state();
-                Ok(self.tool_success_response(tool.name, structured))
-            }
-            McpToolId::ToolPackEnable => {
+            McpToolId::ToolPacks => {
                 self.ensure_adaptive_tool_pack_mode()?;
                 let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
-                let requested = parse_tool_pack_selection_args(&args.packs)?;
-                for pack in resolve_selected_tool_packs(&requested, McpToolPackMode::Static) {
-                    self.selected_tool_packs.insert(pack);
-                }
-                let structured = self.current_tool_pack_state();
-                Ok(self.tool_success_response(tool.name, structured))
-            }
-            McpToolId::ToolPackDisable => {
-                self.ensure_adaptive_tool_pack_mode()?;
-                let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
-                let requested = parse_tool_pack_selection_args(&args.packs)?;
-                for pack in resolve_selected_tool_packs(&requested, McpToolPackMode::Static) {
-                    if pack != McpToolPack::ToolPacks {
-                        self.selected_tool_packs.remove(&pack);
+                let requested = if args.operation == "list" && args.packs.is_empty() {
+                    BTreeSet::new()
+                } else {
+                    let requested = parse_tool_pack_selection_args(&args.packs)?;
+                    resolve_selected_tool_packs(&requested, McpToolPackMode::Static)
+                };
+                match args.operation.as_str() {
+                    "list" => {}
+                    "enable" => self.selected_tool_packs.extend(requested),
+                    "disable" => {
+                        for pack in requested {
+                            if pack != McpToolPack::ToolPacks
+                                && !self.pinned_tool_packs.contains(&pack)
+                            {
+                                self.selected_tool_packs.remove(&pack);
+                            }
+                        }
+                    }
+                    "set" => {
+                        self.selected_tool_packs = self.pinned_tool_packs.clone();
+                        self.selected_tool_packs.extend(requested);
+                        self.selected_tool_packs.insert(McpToolPack::ToolPacks);
+                    }
+                    other => {
+                        return Err(McpMethodError::invalid_params(format!(
+                            "unsupported `tool_packs.operation`: {other}"
+                        )));
                     }
                 }
-                let structured = self.current_tool_pack_state();
-                Ok(self.tool_success_response(tool.name, structured))
-            }
-            McpToolId::ToolPackSet => {
-                self.ensure_adaptive_tool_pack_mode()?;
-                let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
-                let requested = parse_tool_pack_selection_args(&args.packs)?;
-                self.selected_tool_packs =
-                    resolve_selected_tool_packs(&requested, McpToolPackMode::Adaptive);
                 let structured = self.current_tool_pack_state();
                 Ok(self.tool_success_response(tool.name, structured))
             }
@@ -2819,20 +2905,59 @@ impl McpServerCore {
             .copied()
             .map(|pack| {
                 let tools = tool_names_for_pack(pack, &self.selection.profile);
+                let active_tools = if self.selected_tool_packs.contains(&pack) {
+                    tools.clone()
+                } else {
+                    Vec::new()
+                };
                 serde_json::json!({
                     "name": pack.as_str(),
                     "description": pack.description(),
                     "selected": self.selected_tool_packs.contains(&pack),
+                    "pinned": self.pinned_tool_packs.contains(&pack),
                     "adaptiveOnly": pack == McpToolPack::ToolPacks,
-                    "visibleTools": tools,
+                    "toolsIfEnabled": tools,
+                    "activeTools": active_tools,
                 })
             })
             .collect::<Vec<_>>();
         serde_json::json!({
             "mode": self.tool_pack_mode.as_str(),
             "selectedToolPacks": pack_name_list(&self.selected_tool_packs),
+            "pinnedToolPacks": pack_name_list(&self.pinned_tool_packs),
+            "activeTools": self.active_tool_names(),
+            "clientRefreshRequired": matches!(self.tool_pack_mode, McpToolPackMode::Adaptive),
             "availableToolPacks": available,
         })
+    }
+
+    fn active_tool_names(&self) -> Vec<String> {
+        visible_tool_catalog(&self.selected_tool_packs, &self.selection.profile)
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    fn routing_guidance(&self) -> Vec<&'static str> {
+        let active = self
+            .active_tool_names()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut routes = Vec::new();
+        if active.contains("daily") {
+            routes
+                .push("Daily/journal intent: use daily; latest means newest existing, not today.");
+        }
+        if active.contains("note_get") {
+            routes.push("Known note/path/title: use note_get or note_outline.");
+        }
+        if active.contains("query") {
+            routes.push("Metadata/property/path selection: use query.");
+        }
+        if active.contains("search") {
+            routes.push("Subject/content discovery: use search after structural routes.");
+        }
+        routes
     }
 
     fn serialize_tool_report<T: serde::Serialize>(
@@ -2868,11 +2993,17 @@ impl McpServerCore {
                 resource,
             ]
         };
-        serde_json::json!({
+        let mut response = serde_json::json!({
             "content": content,
-            "structuredContent": structured,
             "isError": false,
-        })
+        });
+        if serialized.len() <= MCP_STRUCTURED_CONTENT_LIMIT {
+            response
+                .as_object_mut()
+                .expect("tool response is an object")
+                .insert("structuredContent".to_string(), structured);
+        }
+        response
     }
 
     fn custom_tool_success_response(
@@ -2889,10 +3020,18 @@ impl McpServerCore {
         let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
         let mut content = Vec::new();
         if let Some(text) = text {
-            content.push(serde_json::json!({
-                "type": "text",
-                "text": text,
-            }));
+            if text.len() <= MCP_INLINE_TEXT_LIMIT {
+                content.push(serde_json::json!({
+                    "type": "text",
+                    "text": text,
+                }));
+            } else {
+                content.push(serde_json::json!({
+                    "type": "text",
+                    "text": format!("`{tool_name}` returned text too large to inline; read the linked resource."),
+                }));
+                content.push(self.store_tool_text_resource(tool_name, text));
+            }
         }
         if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
             if text.is_none() {
@@ -2910,11 +3049,17 @@ impl McpServerCore {
             }
             content.push(self.store_tool_result_resource(tool_name, &serialized));
         }
-        serde_json::json!({
+        let mut response = serde_json::json!({
             "content": content,
-            "structuredContent": structured,
             "isError": false,
-        })
+        });
+        if serialized.len() <= MCP_STRUCTURED_CONTENT_LIMIT {
+            response
+                .as_object_mut()
+                .expect("tool response is an object")
+                .insert("structuredContent".to_string(), structured);
+        }
+        response
     }
 
     fn store_tool_result_resource(&mut self, tool_name: &str, serialized: &str) -> Value {
@@ -2936,6 +3081,27 @@ impl McpServerCore {
             "name": name,
             "description": description,
             "mimeType": "application/json",
+        })
+    }
+
+    fn store_tool_text_resource(&mut self, tool_name: &str, text: &str) -> Value {
+        let uri = format!("vulcan://tool-results/{}.txt", self.next_resource_id);
+        self.next_resource_id += 1;
+        let name = format!("{tool_name}-result.txt");
+        self.stored_resources.insert(
+            uri.clone(),
+            McpStoredResource {
+                uri: uri.clone(),
+                mime_type: "text/plain".to_string(),
+                text: text.to_string(),
+            },
+        );
+        serde_json::json!({
+            "type": "resource_link",
+            "uri": uri,
+            "name": name,
+            "description": format!("Full text result for `{tool_name}`"),
+            "mimeType": "text/plain",
         })
     }
 
@@ -4966,9 +5132,76 @@ fn default_search_limit() -> usize {
 const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
 const MCP_QUERY_SOFT_MAX: usize = 200;
 const MCP_QUERY_HARD_MAX: usize = 1_000;
+const MCP_DAILY_LIST_DEFAULT_LIMIT: usize = 20;
+const MCP_DAILY_LIST_MAX_LIMIT: usize = 200;
+const MCP_STRUCTURED_CONTENT_LIMIT: usize = 65_536;
 
 fn default_query_limit() -> usize {
     MCP_QUERY_DEFAULT_LIMIT
+}
+
+fn default_daily_list_limit() -> usize {
+    MCP_DAILY_LIST_DEFAULT_LIMIT
+}
+
+fn default_tool_pack_operation() -> String {
+    "list".to_string()
+}
+
+fn bounded_daily_list<T: serde::Serialize>(
+    items: Vec<T>,
+    limit: usize,
+    offset: usize,
+    order: Option<&str>,
+    include_events: bool,
+) -> Result<Value, McpMethodError> {
+    if limit == 0 || limit > MCP_DAILY_LIST_MAX_LIMIT {
+        return Err(McpMethodError::invalid_params(format!(
+            "`daily.limit` must be between 1 and {MCP_DAILY_LIST_MAX_LIMIT}"
+        )));
+    }
+    let descending = match order.unwrap_or("desc") {
+        "asc" => false,
+        "desc" => true,
+        other => {
+            return Err(McpMethodError::invalid_params(format!(
+                "unsupported `daily.order`: {other}"
+            )));
+        }
+    };
+    let mut items = items
+        .into_iter()
+        .map(|item| {
+            serde_json::to_value(item).map_err(|error| McpMethodError::internal(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    items.sort_by(|left, right| {
+        left.get("date")
+            .and_then(Value::as_str)
+            .cmp(&right.get("date").and_then(Value::as_str))
+    });
+    if descending {
+        items.reverse();
+    }
+    if !include_events {
+        for item in &mut items {
+            item.as_object_mut().map(|object| object.remove("events"));
+        }
+    }
+    let total_count = items.len();
+    let start = offset.min(total_count);
+    let end = start.saturating_add(limit).min(total_count);
+    Ok(serde_json::json!({
+        "items": items[start..end],
+        "page": {
+            "limit": limit,
+            "offset": offset,
+            "returned": end.saturating_sub(start),
+            "total_count": total_count,
+            "has_more": end < total_count,
+            "next_offset": (end < total_count).then_some(end),
+        }
+    }))
 }
 
 fn validate_mcp_query_page(args: &McpQueryArgs) -> Result<(), McpMethodError> {
@@ -5015,24 +5248,32 @@ fn bounded_mcp_query_report(
         .notes
         .into_iter()
         .filter(|note| {
-            path_prefix.is_none_or(|prefix| note.document_path.starts_with(prefix))
-                && matcher.as_ref().is_none_or(|matcher| {
-                    std::path::Path::new(&note.document_path)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| matcher.is_match(name))
-                })
+            path_prefix.is_none_or(|prefix| {
+                prefix.is_empty()
+                    || note.document_path == prefix
+                    || note
+                        .document_path
+                        .strip_prefix(prefix)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            }) && matcher.as_ref().is_none_or(|matcher| {
+                std::path::Path::new(&note.document_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| matcher.is_match(name))
+            })
         })
         .collect::<Vec<_>>();
-    let total_count = notes.len();
-    let start = report
-        .query
-        .offset
-        .saturating_add(args.offset)
-        .min(total_count);
-    let limit = report.query.limit.unwrap_or(args.limit).min(args.limit);
+    let matched_count = notes.len();
+    let query_start = report.query.offset.min(matched_count);
+    let query_end = report.query.limit.map_or(matched_count, |limit| {
+        query_start.saturating_add(limit).min(matched_count)
+    });
+    let query_notes = &notes[query_start..query_end];
+    let total_count = query_notes.len();
+    let start = args.offset.min(total_count);
+    let limit = args.limit;
     let end = start.saturating_add(limit).min(total_count);
-    let rows = notes[start..end]
+    let rows = query_notes[start..end]
         .iter()
         .map(|note| {
             let value = serde_json::to_value(note)
@@ -5040,11 +5281,31 @@ fn bounded_mcp_query_report(
             if !args.fields.is_empty() {
                 return Ok(mcp_select_fields(&value, &args.fields));
             }
-            let mut object = value.as_object().cloned().unwrap_or_default();
-            if !args.include_properties {
-                object.remove("properties");
+            let source = value.as_object().cloned().unwrap_or_default();
+            let mut object = Map::new();
+            for field in [
+                "document_id",
+                "document_path",
+                "file_name",
+                "file_ext",
+                "file_mtime",
+                "file_ctime",
+                "file_size",
+                "tags",
+                "starred",
+                "aliases",
+                "periodic_type",
+                "periodic_date",
+            ] {
+                if let Some(value) = source.get(field) {
+                    object.insert(field.to_string(), value.clone());
+                }
             }
-            object.remove("links");
+            if args.include_properties {
+                if let Some(properties) = source.get("properties") {
+                    object.insert("properties".to_string(), properties.clone());
+                }
+            }
             Ok(Value::Object(object))
         })
         .collect::<Result<Vec<_>, McpMethodError>>()?;
@@ -5056,6 +5317,8 @@ fn bounded_mcp_query_report(
             "offset": start,
             "returned": end.saturating_sub(start),
             "total_count": total_count,
+            "matched_count": matched_count,
+            "query_offset": query_start,
             "has_more": end < total_count,
             "next_offset": (end < total_count).then_some(end),
         }

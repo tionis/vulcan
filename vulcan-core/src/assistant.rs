@@ -392,6 +392,7 @@ pub fn default_assistant_tool_reserved_names() -> Vec<String> {
         "tool_pack_enable".to_string(),
         "tool_pack_list".to_string(),
         "tool_pack_set".to_string(),
+        "tool_packs".to_string(),
         "tool_run".to_string(),
         "tool_set".to_string(),
         "tool_show".to_string(),

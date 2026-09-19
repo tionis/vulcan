@@ -42,9 +42,9 @@ HTTP MCP starts a background vault watcher and runs incremental scans after file
 
 ## ChatGPT Developer Mode
 
-In ChatGPT Developer Mode, add the HTTPS MCP URL exposed by your front door. Refresh tools after changing Vulcan's `--tool-pack` flags or after enabling packs in adaptive mode.
+In ChatGPT Developer Mode, add the HTTPS MCP URL exposed by your front door. Prefer a complete static startup selection: OpenAI-hosted workflows may retain imported MCP tool definitions in conversation context, so mid-conversation registry changes are not a portable discovery mechanism.
 
-Use static packs for hosts that do not react to `notifications/tools/list_changed`. Use adaptive mode only when the host reliably refreshes `tools/list` after pack mutations:
+Use adaptive mode only when the host demonstrably refreshes `tools/list` after pack mutations. Startup-selected packs remain pinned, and optional packs are changed through `tool_packs`:
 
 ```sh
 vulcan --permissions daily-wiki-agent mcp \
@@ -57,8 +57,7 @@ vulcan --permissions daily-wiki-agent mcp \
 
 For daily workflow questions, prefer:
 
-- `daily_show` before `note_get` for today's daily note.
-- `daily_list` for week or month summaries.
+- `daily` with `operation: latest|today|show|list|range` before generic reads or search. List/range calls are paginated and omit full event objects unless requested.
 - `task_list` or `task_query` for task summaries.
 - `task_create`, `task_complete`, and `task_reschedule` for task changes.
 - `index_scan` with `full: false` to refresh stale search/query results, or `full: true` to force a full reindex.

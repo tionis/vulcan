@@ -1164,7 +1164,7 @@ Protocols:
 Supported methods:
   initialize               Negotiate protocol version and report server capabilities
   tools/list               Return the curated headless MCP tool registry
-  tools/call               Execute one MCP tool and return structuredContent + text fallback
+  tools/call               Execute one MCP tool with bounded structured content or a resource link
   prompts/list|get         Discover and render vault prompt files
   resources/list|read      Read help docs, AGENTS.md, assistant summaries, and skill content
   resources/templates/list Enumerate parameterized help and skill resource URIs
@@ -1180,10 +1180,11 @@ Notes:
   Non-loopback HTTP binds require `--auth-token` or OAuth.
   Local OAuth mode makes Vulcan the ChatGPT-facing issuer for authorization-code + PKCE, DCR, IndieAuth-backed login, and bearer-token validation.
   External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.
-  Available packs include `notes-read`, `search`, `status`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.
-  `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.
+  Available packs include `notes-read`, `search`, `status`, `graph`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, `index`, and `sync`.
+  `graph` contains the less-common community and link-suggestion tools; it is not part of the default navigation surface.
+  `adaptive` mode exposes one `tool_packs` controller. Startup packs are pinned, and optional changes still require a client that refreshes `tools/list` after `notifications/tools/list_changed`.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
-  Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.
+  Tool output uses structured JSON reports up to a fixed byte budget; larger results are returned as readable MCP resource links.
 
 Examples:
   vulcan mcp --vault ~/notes
@@ -4869,6 +4870,7 @@ pub enum McpToolPackArg {
     NotesRead,
     Search,
     Status,
+    Graph,
     Custom,
     Daily,
     Tasks,

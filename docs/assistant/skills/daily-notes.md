@@ -1,7 +1,7 @@
 ---
 name: daily-notes
 description: Work with daily and periodic notes, including event extraction.
-version: 2
+version: 3
 tools:
   - daily
   - daily_latest
@@ -29,12 +29,14 @@ Use this skill for daily note creation, review, journaling, and event-oriented w
 - Use CLI `today`/`daily today` only when the intent is to open or create today’s note. Use `daily show` for a read-only known-date lookup.
 - Prefer `daily append` when adding log lines, follow-ups, or structured event entries.
 - Use `daily list` when reviewing several days at once.
+- MCP `daily` list/range defaults to 20 newest-first items, omits full event objects, and returns `page.next_offset`; set `include_events: true` only when event details are needed.
 - Use `daily export-ics` only when the events need to leave the vault.
 
 ## Guardrails
 
 - Do not create a second note for a date that already has a tracked daily note.
 - Do not use search or a vault-wide query to locate daily notes; the daily API uses the configured folder and filename/date semantics directly.
+- Under scoped permissions, “latest” means the newest daily note the caller may read.
 - Keep event syntax consistent so later extraction and export remain reliable.
 - If the workflow spans weeks or months, switch to the `periodic` command group instead of forcing everything through daily notes.
 

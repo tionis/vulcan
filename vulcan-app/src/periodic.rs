@@ -31,7 +31,7 @@ pub fn read_daily_note(
     let config = load_vault_config(paths).config;
     let (operation, date, path) = match target {
         DailyReadTarget::Latest => {
-            let latest = latest_daily_note(paths, &config.periodic)?;
+            let latest = latest_daily_note_where(paths, &config.periodic, |_| true)?;
             (
                 "latest",
                 latest.as_ref().map(|item| item.0.clone()),
@@ -73,9 +73,36 @@ pub fn read_daily_note(
     })
 }
 
-fn latest_daily_note(
+pub fn read_latest_daily_note_where(
+    paths: &VaultPaths,
+    include_content: bool,
+    predicate: impl FnMut(&str) -> bool,
+) -> Result<DailyNoteReadReport, AppError> {
+    let config = load_vault_config(paths).config;
+    let latest = latest_daily_note_where(paths, &config.periodic, predicate)?;
+    let (date, path) = latest.map_or((None, None), |(date, path)| (Some(date), Some(path)));
+    let exists = path.is_some();
+    let content = if include_content {
+        path.as_deref()
+            .map(|path| fs::read_to_string(paths.vault_root().join(path)))
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(DailyNoteReadReport {
+        operation: "latest".to_string(),
+        date,
+        path,
+        exists,
+        content,
+        reason: (!exists).then(|| "no_daily_notes".to_string()),
+    })
+}
+
+fn latest_daily_note_where(
     paths: &VaultPaths,
     config: &vulcan_core::config::PeriodicConfig,
+    mut predicate: impl FnMut(&str) -> bool,
 ) -> Result<Option<(String, String)>, AppError> {
     let daily = config
         .note("daily")
@@ -107,6 +134,9 @@ fn latest_daily_note(
             continue;
         };
         if periodic_match.period_type != "daily" {
+            continue;
+        }
+        if !predicate(&relative_path) {
             continue;
         }
         let candidate = (periodic_match.start_date, relative_path);
@@ -162,5 +192,25 @@ mod tests {
         assert!(report.date.is_none());
         assert!(report.path.is_none());
         assert!(report.content.is_none());
+    }
+
+    #[test]
+    fn latest_filter_is_applied_before_selecting_the_newest_note() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize");
+        fs::create_dir_all(temp.path().join("Journal/Daily")).expect("daily folder");
+        for date in ["2026-09-03", "2026-09-08"] {
+            fs::write(
+                temp.path().join(format!("Journal/Daily/{date}.md")),
+                format!("# {date}\n"),
+            )
+            .expect("daily note");
+        }
+
+        let report =
+            read_latest_daily_note_where(&paths, false, |path| !path.ends_with("2026-09-08.md"))
+                .expect("latest readable");
+        assert_eq!(report.date.as_deref(), Some("2026-09-03"));
     }
 }

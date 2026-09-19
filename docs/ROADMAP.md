@@ -7119,6 +7119,16 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Prove the complete adaptive stdio lifecycle through notification, refreshed `tools/list`, and a call to the newly exposed tool; document hosts that cache imported tool lists
 - [x] Keep daily-note identity structural; do not add redundant `type`/`date` frontmatter solely for lookup because configured folder/format semantics remain authoritative
 
+### 9.23.9 Stable progressive disclosure and bounded results
+
+- [x] Pin startup-selected packs so adaptive calls cannot remove the advertised navigation baseline
+- [x] Collapse adaptive discovery into one `tool_packs` operation tool while retaining hidden legacy call aliases
+- [x] Move graph analysis out of the default read surface and add a compact `capabilities` bridge for tools-only clients
+- [x] Fix structural-query/DQL argument handling, page-offset round trips, compact projection, path boundaries, and `file.ctime` filtering
+- [x] Paginate daily list/range results, omit event detail by default, and select latest after permission filtering
+- [x] Enforce a structured-result byte ceiling and expose oversized results through MCP resources
+- [x] Add regression coverage for pack pinning, legacy aliases, query page continuation, DQL rejection, scoped latest, daily pagination, and large-result resources
+
 ---
 
 ## Phase 9.24: Vault-native skill command tools

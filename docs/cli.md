@@ -45,6 +45,9 @@ The CLI is designed to be self-describing at runtime.
 - `vulcan --output json describe` prints the runtime command schema in machine-oriented JSON.
 - `vulcan --output json describe --format openai-tools` exports OpenAI function-calling tool definitions.
 - `vulcan --output json describe --format mcp` exports MCP-style tool definitions.
+- The default MCP navigation surface exposes exact note reads, search, structured query, daily reads, status, and a compact `capabilities` tool. Graph analysis is available through `--tool-pack graph`.
+- Adaptive MCP sessions expose one `tool_packs` controller; startup-selected packs remain pinned, and clients must still refresh `tools/list` after a list-change notification.
+- MCP query pages default to 50 compact rows, daily list/range pages default to 20 rows, and oversized structured results are returned through session resource links.
 - `vulcan help chatgpt-mcp` documents the private ChatGPT Developer Mode setup, including Authentik/OIDC OAuth, the `daily-wiki-agent` profile, and daily/task packs.
 - `vulcan completions <shell>` generates shell completions.
 

@@ -324,6 +324,10 @@ pub(super) fn daily_input_schema() -> Value {
             ("to", schema_string("End date for list/range.")),
             ("week", schema_boolean("Use the current configured week window.")),
             ("month", schema_boolean("Use the current configured month window.")),
+            ("limit", schema_integer("Maximum list/range items; defaults to 20 and cannot exceed 200.")),
+            ("offset", schema_integer("Zero-based list/range page offset.")),
+            ("order", schema_string_enum("List/range date order.", &["asc", "desc"])),
+            ("include_events", schema_boolean("Include full extracted event objects for list/range; false by default.")),
         ],
         &["operation"],
     )
@@ -340,6 +344,7 @@ pub(super) fn daily_output_schema() -> Value {
             "content": { "type": "string" },
             "reason": { "type": "string" },
             "items": { "type": "array" }
+            ,"page": { "type": "object" }
         },
         "required": ["operation"],
         "additionalProperties": true
@@ -361,6 +366,16 @@ pub(super) fn daily_list_input_schema() -> Value {
             (
                 "month",
                 schema_boolean("Use the current configured month window."),
+            ),
+            (
+                "limit",
+                schema_integer("Maximum items; defaults to 20 and cannot exceed 200."),
+            ),
+            ("offset", schema_integer("Zero-based result offset.")),
+            ("order", schema_string_enum("Date order.", &["asc", "desc"])),
+            (
+                "include_events",
+                schema_boolean("Include full event objects; false by default."),
             ),
         ],
         &[],
@@ -792,30 +807,40 @@ pub(super) fn suggest_links_input_schema() -> Value {
 
 pub(super) fn tool_pack_mutation_input_schema() -> Value {
     schema_object(
-        vec![(
-            "packs",
-            serde_json::json!({
-                "type": "array",
-                "description": "One or more tool-pack selectors to enable, disable, or set.",
-                "items": {
-                    "type": "string",
-                    "enum": [
-                        "notes-read",
-                        "search",
-                        "status",
-                        "custom",
-                        "daily",
-                        "tasks",
-                        "notes-write",
-                        "notes-manage",
-                        "web",
-                        "config",
-                        "index",
-                    ],
-                },
-            }),
-        )],
-        &["packs"],
+        vec![
+            (
+                "operation",
+                schema_string_enum(
+                    "Pack operation. `list` is read-only.",
+                    &["list", "enable", "disable", "set"],
+                ),
+            ),
+            (
+                "packs",
+                serde_json::json!({
+                    "type": "array",
+                    "description": "Tool-pack selectors for enable, disable, or set.",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "notes-read",
+                            "search",
+                            "status",
+                            "graph",
+                            "custom",
+                            "daily",
+                            "tasks",
+                            "notes-write",
+                            "notes-manage",
+                            "web",
+                            "config",
+                            "index",
+                        ],
+                    },
+                }),
+            ),
+        ],
+        &[],
     )
 }
 
@@ -833,12 +858,21 @@ pub(super) fn tool_pack_state_output_schema() -> Value {
                 "items": { "type": "string" },
                 "description": "Canonical tool packs currently selected for this session.",
             },
+            "pinnedToolPacks": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Startup-selected packs that adaptive calls cannot remove.",
+            },
+            "activeTools": {
+                "type": "array",
+                "items": { "type": "string" },
+            },
             "availableToolPacks": {
                 "type": "array",
                 "description": "Available canonical packs with visibility information under the current permission profile.",
             },
         },
-        "required": ["mode", "selectedToolPacks", "availableToolPacks"],
+        "required": ["mode", "selectedToolPacks", "pinnedToolPacks", "activeTools", "availableToolPacks"],
     })
 }
 

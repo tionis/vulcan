@@ -1524,6 +1524,7 @@ fn render_expression_filter_field(field: &FilterField) -> String {
         FilterField::FileName => "file.name".to_string(),
         FilterField::FileExt => "file.ext".to_string(),
         FilterField::FileMtime => "file.mtime".to_string(),
+        FilterField::FileCtime => "file.ctime".to_string(),
         FilterField::FileTags => "file.tags".to_string(),
     }
 }

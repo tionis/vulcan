@@ -2061,6 +2061,7 @@ pub(crate) enum FilterField {
     FileName,
     FileExt,
     FileMtime,
+    FileCtime,
     FileTags,
 }
 
@@ -2155,7 +2156,13 @@ fn legacy_filter_needs_expression_fallback(operator: FilterOperator, value: &str
 fn is_legacy_filter_field(field: &str) -> bool {
     matches!(
         field,
-        "file.path" | "file.name" | "file.ext" | "file.extension" | "file.mtime" | "file.tags"
+        "file.path"
+            | "file.name"
+            | "file.ext"
+            | "file.extension"
+            | "file.mtime"
+            | "file.ctime"
+            | "file.tags"
     ) || (!field.starts_with("file.")
         && !field.is_empty()
         && field
@@ -2179,6 +2186,17 @@ fn partition_note_query_filters(
 
     for filter in filters {
         if let Ok(parsed) = parse_filter_expression(filter) {
+            if parsed.field == FilterField::FileCtime {
+                let expr = Parser::new(filter)
+                    .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?
+                    .parse()
+                    .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
+                post_filters.push(NotePostFilter::Expression {
+                    filter: filter.clone(),
+                    expr,
+                });
+                continue;
+            }
             if matches!(
                 parsed.operator,
                 FilterOperator::Matches | FilterOperator::MatchesI
@@ -2250,7 +2268,7 @@ fn regex_filter_values<'a>(
         FilterField::FileName => Box::new(std::iter::once(note.file_name.as_str())),
         FilterField::FileExt => Box::new(std::iter::once(note.file_ext.as_str())),
         FilterField::FileTags => Box::new(note.tags.iter().map(String::as_str)),
-        FilterField::FileMtime => Box::new(std::iter::empty()),
+        FilterField::FileMtime | FilterField::FileCtime => Box::new(std::iter::empty()),
     }
 }
 
@@ -2260,6 +2278,7 @@ fn parse_filter_field(field: &str) -> FilterField {
         "file.name" => FilterField::FileName,
         "file.ext" | "file.extension" => FilterField::FileExt,
         "file.mtime" => FilterField::FileMtime,
+        "file.ctime" => FilterField::FileCtime,
         "file.tags" => FilterField::FileTags,
         other => FilterField::Property(
             other
@@ -2392,6 +2411,7 @@ fn filter_sql_clause(
                 FilterField::FileName => "file.name".to_string(),
                 FilterField::FileExt => "file.ext".to_string(),
                 FilterField::FileMtime => "file.mtime".to_string(),
+                FilterField::FileCtime => "file.ctime".to_string(),
                 FilterField::FileTags => "file.tags".to_string(),
             }))
         }
@@ -2516,6 +2536,11 @@ fn file_field_clause(
                 PropertyError::InvalidFilter("file.mtime expects an integer value".to_string())
             })?),
         ),
+        (FilterField::FileCtime, _) => {
+            return Err(PropertyError::InvalidFilter(
+                "file.ctime is evaluated after filesystem metadata is loaded".to_string(),
+            ));
+        }
         (FilterField::FileTags, FilterValue::Text(_)) => {
             return file_tags_clause(operator, value, params);
         }
@@ -2526,6 +2551,7 @@ fn file_field_clause(
                 FilterField::FileName => "file.name".to_string(),
                 FilterField::FileExt => "file.ext".to_string(),
                 FilterField::FileMtime => "file.mtime".to_string(),
+                FilterField::FileCtime => "file.ctime".to_string(),
                 FilterField::FileTags => "file.tags".to_string(),
             }))
         }
