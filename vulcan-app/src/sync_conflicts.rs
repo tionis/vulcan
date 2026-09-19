@@ -16,7 +16,7 @@ use vulcan_sync::{
     GitRepository, GitResolvedPath, GitSyncConflict, GitSyncOptions, GitSyncRefs,
 };
 
-pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 3;
+pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 4;
 pub const SYNC_CONFLICT_RESOLUTION_VERSION: u32 = 2;
 pub const SYNC_CONFLICT_SUPERSESSION_VERSION: u32 = 1;
 /// Conflict records were originally written without enforcing the reader's
@@ -79,11 +79,33 @@ pub struct SyncConflictProjectionRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConflictPathRecord {
     pub path: String,
+    /// Stable resolution-group identity. Records before version 4 are
+    /// normalized on load so callers never need a legacy special case.
+    #[serde(default)]
+    pub group_id: String,
+    #[serde(default)]
+    pub group_kind: SyncConflictGroupKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification: Option<GitConflictClassification>,
     pub base: SyncConflictSideRecord,
     pub local: SyncConflictSideRecord,
     pub remote: SyncConflictSideRecord,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncConflictGroupKind {
+    #[default]
+    Path,
+    Structural,
+    WholeTree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncConflictGroup {
+    pub id: String,
+    pub kind: SyncConflictGroupKind,
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,9 +141,43 @@ struct SyncConflictPathPage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct SyncConflictPathManifest {
+    version: u32,
     path_count: usize,
     paths_digest: String,
     path_pages: Vec<SyncConflictPathPageRef>,
+}
+
+/// Derives the stable, bounded group inventory from immutable path evidence.
+/// Structural paths are deliberately kept together until Vulcan has enough
+/// rename/collision topology to prove finer independence.
+#[must_use]
+pub fn conflict_groups(record: &SyncConflictRecord) -> Vec<SyncConflictGroup> {
+    if effective_conflict_scope(record) == GitConflictScope::TreeValidation {
+        return vec![SyncConflictGroup {
+            id: conflict_group_id(SyncConflictGroupKind::WholeTree, &[]),
+            kind: SyncConflictGroupKind::WholeTree,
+            paths: record.paths.iter().map(|path| path.path.clone()).collect(),
+        }];
+    }
+    let mut groups = BTreeMap::<String, SyncConflictGroup>::new();
+    for path in &record.paths {
+        groups
+            .entry(path.group_id.clone())
+            .or_insert_with(|| SyncConflictGroup {
+                id: path.group_id.clone(),
+                kind: path.group_kind,
+                paths: Vec::new(),
+            })
+            .paths
+            .push(path.path.clone());
+    }
+    groups
+        .into_values()
+        .map(|mut group| {
+            group.paths.sort();
+            group
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1113,6 +1169,8 @@ impl SyncConflictStore {
         for (index, path) in conflict.paths.iter().enumerate() {
             paths.push(SyncConflictPathRecord {
                 path: path.clone(),
+                group_id: String::new(),
+                group_kind: SyncConflictGroupKind::Path,
                 classification: classifications
                     .get(path.as_str())
                     .map(|value| (*value).clone()),
@@ -1139,6 +1197,7 @@ impl SyncConflictStore {
                 )?,
             });
         }
+        assign_conflict_groups(conflict.scope, &mut paths);
         let record = SyncConflictRecord {
             version: SYNC_CONFLICT_RECORD_VERSION,
             id: conflict.id.clone(),
@@ -1261,7 +1320,7 @@ impl SyncConflictStore {
         let source = fs::read(&path).map_err(AppError::operation)?;
         let value: serde_json::Value =
             serde_json::from_slice(&source).map_err(AppError::operation)?;
-        let record = if value.get("path_pages").is_some() {
+        let mut record = if value.get("path_pages").is_some() {
             if metadata.len() > MAX_CONFLICT_MANIFEST_BYTES {
                 return Err(AppError::operation(format!(
                     "sync conflict manifest at {} exceeds the {} byte limit",
@@ -1273,6 +1332,7 @@ impl SyncConflictStore {
         } else {
             serde_json::from_value(value).map_err(AppError::operation)?
         };
+        assign_conflict_groups(record.scope, &mut record.paths);
         validate_record(&record, repository_key, conflict_id)?;
         Ok(record)
     }
@@ -1439,6 +1499,61 @@ impl SyncConflictStore {
     }
 }
 
+fn assign_conflict_groups(scope: GitConflictScope, paths: &mut [SyncConflictPathRecord]) {
+    if scope == GitConflictScope::TreeValidation {
+        let group_id = conflict_group_id(SyncConflictGroupKind::WholeTree, &[]);
+        for path in paths {
+            path.group_id.clone_from(&group_id);
+            path.group_kind = SyncConflictGroupKind::WholeTree;
+        }
+        return;
+    }
+
+    let mut structural_paths = paths
+        .iter()
+        .filter(|path| is_structural_conflict_path(path))
+        .map(|path| path.path.as_str())
+        .collect::<Vec<_>>();
+    structural_paths.sort_unstable();
+    let structural_id = (!structural_paths.is_empty())
+        .then(|| conflict_group_id(SyncConflictGroupKind::Structural, &structural_paths));
+    for path in paths {
+        if is_structural_conflict_path(path) {
+            path.group_id.clone_from(
+                structural_id
+                    .as_ref()
+                    .expect("non-empty structural path set has an identity"),
+            );
+            path.group_kind = SyncConflictGroupKind::Structural;
+        } else {
+            path.group_id = conflict_group_id(SyncConflictGroupKind::Path, &[path.path.as_str()]);
+            path.group_kind = SyncConflictGroupKind::Path;
+        }
+    }
+}
+
+fn is_structural_conflict_path(path: &SyncConflictPathRecord) -> bool {
+    path.local.object_id.is_none() && path.remote.object_id.is_none()
+        || path.classification.as_ref().is_some_and(|classification| {
+            matches!(
+                classification.class,
+                vulcan_sync::GitConflictClass::RenameRename
+                    | vulcan_sync::GitConflictClass::DirectoryFile
+                    | vulcan_sync::GitConflictClass::CaseCollision
+                    | vulcan_sync::GitConflictClass::Ambiguous
+            )
+        })
+}
+
+fn conflict_group_id(kind: SyncConflictGroupKind, paths: &[&str]) -> String {
+    let mut input = format!("vulcan-conflict-group-v1\0{kind:?}").into_bytes();
+    for path in paths {
+        input.push(0);
+        input.extend_from_slice(path.as_bytes());
+    }
+    blake3::hash(&input).to_hex()[..32].to_string()
+}
+
 fn preserve_side(
     conflict_directory: &Path,
     index: usize,
@@ -1601,7 +1716,8 @@ fn load_paged_record(
         }
         let page: SyncConflictPathPage =
             serde_json::from_slice(&bytes).map_err(AppError::operation)?;
-        if page.version != SYNC_CONFLICT_RECORD_VERSION
+        if !(3..=SYNC_CONFLICT_RECORD_VERSION).contains(&manifest.version)
+            || page.version != manifest.version
             || page.index != expected_index
             || page.paths.len() != page_ref.count
         {
@@ -1791,7 +1907,7 @@ mod tests {
     }
 
     fn unresolved_record(id: &str, key: &str, work_tree: &Path) -> SyncConflictRecord {
-        SyncConflictRecord {
+        let mut record = SyncConflictRecord {
             version: SYNC_CONFLICT_RECORD_VERSION,
             id: id.to_string(),
             repository_key: key.to_string(),
@@ -1810,13 +1926,17 @@ mod tests {
             projection: None,
             paths: vec![SyncConflictPathRecord {
                 path: "Home.md".to_string(),
+                group_id: String::new(),
+                group_kind: SyncConflictGroupKind::Path,
                 classification: None,
                 base: absent_side("base"),
                 local: absent_side("local"),
                 remote: absent_side("remote"),
             }],
             diagnostics: "conflict".to_string(),
-        }
+        };
+        assign_conflict_groups(record.scope, &mut record.paths);
+        record
     }
 
     #[test]
@@ -1924,6 +2044,8 @@ mod tests {
             projection: None,
             paths: vec![SyncConflictPathRecord {
                 path: "New/remote.md".to_string(),
+                group_id: String::new(),
+                group_kind: SyncConflictGroupKind::Path,
                 classification: None,
                 base: absent_side("base"),
                 local: absent_side("local"),
@@ -2209,6 +2331,7 @@ mod tests {
                 ..prototype.clone()
             })
             .collect();
+        assign_conflict_groups(record.scope, &mut record.paths);
 
         write_paged_record_noclobber(&directory, &record).expect("paged record");
 
@@ -2249,6 +2372,36 @@ mod tests {
 
         let error = store.get(&key, &id).expect_err("tampered page must fail");
         assert!(error.to_string().contains("manifest digest"));
+    }
+
+    #[test]
+    fn conflict_groups_are_deterministic_and_keep_structural_paths_atomic() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut record = unresolved_record(&"b".repeat(32), &"a".repeat(32), temporary.path());
+        let mut ordinary = record.paths[0].clone();
+        ordinary.path = "Notes/plain.md".to_string();
+        ordinary.local.object_id = Some("1".repeat(40));
+        ordinary.remote.object_id = Some("2".repeat(40));
+        let mut structural_two = record.paths[0].clone();
+        structural_two.path = "Moved/two.md".to_string();
+        record.paths = vec![structural_two, ordinary, record.paths[0].clone()];
+        assign_conflict_groups(record.scope, &mut record.paths);
+        let first = conflict_groups(&record);
+
+        record.paths.reverse();
+        for path in &mut record.paths {
+            std::mem::swap(&mut path.local, &mut path.remote);
+        }
+        assign_conflict_groups(record.scope, &mut record.paths);
+        let second = conflict_groups(&record);
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+        let structural = first
+            .iter()
+            .find(|group| group.kind == SyncConflictGroupKind::Structural)
+            .expect("structural group");
+        assert_eq!(structural.paths, vec!["Home.md", "Moved/two.md"]);
     }
 
     #[test]

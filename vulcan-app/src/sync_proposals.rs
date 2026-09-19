@@ -3566,6 +3566,8 @@ mod tests {
         };
         let path = SyncConflictPathRecord {
             path: "Renamed/remote.base".to_string(),
+            group_id: String::new(),
+            group_kind: crate::sync_conflicts::SyncConflictGroupKind::Structural,
             classification: None,
             base: absent("base"),
             local: absent("local"),
