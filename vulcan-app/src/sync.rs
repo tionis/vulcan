@@ -3730,4 +3730,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert_conflict_read_workflows(&VaultPaths::new(&reader), &store, &record);
         assert_projected_worktree(&reader);
     }
+
+    mod storm_tests;
 }

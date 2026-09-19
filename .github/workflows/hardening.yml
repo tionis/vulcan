@@ -36,6 +36,9 @@ jobs:
       - name: Run synthetic large-vault regression harness
         run: cargo test -p vulcan-core vector_duplicates_benchmark_large_synthetic_scan -- --ignored --nocapture
 
+      - name: Run real-Git 10,000-conflict scale acceptance
+        run: cargo test -p vulcan-app conflict_storm_10000_lifecycle -- --ignored --nocapture --test-threads=1
+
   fuzz:
     runs-on: ubuntu-latest
     timeout-minutes: 30
