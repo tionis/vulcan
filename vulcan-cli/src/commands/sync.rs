@@ -2697,7 +2697,16 @@ fn print_sync_conflict_list(
             conflict.scope,
             conflict.path_count,
             conflict.pending_group_count,
-            conflict.paths.join(", ")
+            if conflict.paths_complete {
+                conflict.paths.join(", ")
+            } else {
+                format!(
+                    "{} … ({} of {})",
+                    conflict.paths.join(", "),
+                    conflict.paths_returned,
+                    conflict.path_count
+                )
+            }
         );
         println!(
             "  Inspect: vulcan sync conflicts {}{}",

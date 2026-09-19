@@ -34,6 +34,7 @@ const MAX_CONFLICT_PATH_COUNT: usize = 1_000_000;
 const MAX_CONFLICT_DIAGNOSTICS_BYTES: usize = 1024 * 1024;
 const MAX_CONFLICT_RESOLUTION_BYTES: u64 = 1024 * 1024;
 const MAX_CONFLICT_GROUPS_PER_BATCH: usize = 128;
+const MAX_CONFLICT_SUMMARY_PATHS: usize = 16;
 /// Fully resolved conflicts keep their records and resolution metadata
 /// forever, but only the newest few resolved conflicts retain the
 /// device-local artifact copies; the immutable Git refs remain the durable
@@ -321,6 +322,8 @@ pub struct SyncConflictSummary {
     pub id: String,
     pub scope: GitConflictScope,
     pub paths: Vec<String>,
+    pub paths_returned: usize,
+    pub paths_complete: bool,
     pub path_count: usize,
     pub group_count: usize,
     pub pending_group_count: usize,
@@ -484,21 +487,33 @@ pub fn list_sync_conflicts_with_state_store(
 ) -> Result<SyncConflictListReport, AppError> {
     let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
-    let records = SyncConflictStore::from_state_store(state_store).list(&repository_key)?;
     let store = SyncConflictStore::from_state_store(state_store);
-    let states = records
+    let states = store
+        .list_ids(&repository_key)?
         .into_iter()
-        .map(|record| {
-            let resolution = store.resolution_state(&repository_key, &record.id)?;
+        .map(|conflict_id| {
+            let (record, path_count, progress) = store.get_page_and_progress(
+                &repository_key,
+                &conflict_id,
+                0,
+                MAX_CONFLICT_SUMMARY_PATHS,
+            )?;
+            let resolution =
+                store.resolution_state_with_progress(&repository_key, &record.id, &progress)?;
             let scope = effective_conflict_scope(&record);
-            let progress = store.group_progress(&repository_key, &record)?;
-            let path_count = record.paths.len();
+            let paths = record
+                .paths
+                .into_iter()
+                .map(|path| path.path)
+                .collect::<Vec<_>>();
             Ok((
                 resolution,
                 SyncConflictSummary {
                     id: record.id,
                     scope,
-                    paths: record.paths.into_iter().map(|path| path.path).collect(),
+                    paths_returned: paths.len(),
+                    paths_complete: paths.len() == path_count,
+                    paths,
                     path_count,
                     group_count: progress.total_groups,
                     pending_group_count: progress.pending_groups + progress.needs_rebase_groups,
@@ -2187,6 +2202,16 @@ impl SyncConflictStore {
     }
 
     pub fn list(&self, repository_key: &str) -> Result<Vec<SyncConflictRecord>, AppError> {
+        let mut records = self
+            .list_ids(repository_key)?
+            .into_iter()
+            .map(|id| self.get(repository_key, &id))
+            .collect::<Result<Vec<_>, _>>()?;
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
+    }
+
+    pub fn list_ids(&self, repository_key: &str) -> Result<Vec<String>, AppError> {
         validate_hex_id("repository key", repository_key)?;
         let root = self.root.join(repository_key).join("conflicts");
         let entries = match fs::read_dir(root) {
@@ -2194,7 +2219,7 @@ impl SyncConflictStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(AppError::operation(error)),
         };
-        let mut records = Vec::new();
+        let mut ids = Vec::new();
         for entry in entries {
             let entry = entry.map_err(AppError::operation)?;
             if !entry.file_type().map_err(AppError::operation)?.is_dir() {
@@ -2202,10 +2227,10 @@ impl SyncConflictStore {
             }
             let id = entry.file_name().to_string_lossy().to_string();
             validate_hex_id("conflict ID", &id)?;
-            records.push(self.get(repository_key, &id)?);
+            ids.push(id);
         }
-        records.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(records)
+        ids.sort();
+        Ok(ids)
     }
 
     pub fn get(
@@ -4236,6 +4261,14 @@ mod tests {
         )
         .expect("unrequested evidence pages are not read");
         assert_eq!(bounded.record.paths.len(), 32);
+        let listed = list_sync_conflicts_with_state_store(&VaultPaths::new(&vault), &state_store)
+            .expect("bounded conflict list");
+        assert_eq!(listed.conflicts[0].path_count, 300);
+        assert_eq!(
+            listed.conflicts[0].paths_returned,
+            MAX_CONFLICT_SUMMARY_PATHS
+        );
+        assert!(!listed.conflicts[0].paths_complete);
     }
 
     #[test]
