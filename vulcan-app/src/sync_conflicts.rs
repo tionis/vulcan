@@ -18,7 +18,12 @@ use vulcan_sync::{
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 2;
 pub const SYNC_CONFLICT_RESOLUTION_VERSION: u32 = 2;
 pub const SYNC_CONFLICT_SUPERSESSION_VERSION: u32 = 1;
-const MAX_CONFLICT_RECORD_BYTES: u64 = 1024 * 1024;
+/// Conflict records were originally written without enforcing the reader's
+/// 1 MiB ceiling. Keep a bounded compatibility window large enough to recover
+/// those records until the paged conflict-store format replaces monolithic
+/// JSON records.
+const MAX_CONFLICT_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CONFLICT_RESOLUTION_BYTES: u64 = 1024 * 1024;
 /// Fully resolved conflicts keep their records and resolution metadata
 /// forever, but only the newest few resolved conflicts retain the
 /// device-local artifact copies; the immutable Git refs remain the durable
@@ -1238,11 +1243,11 @@ impl SyncConflictStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(AppError::operation(error)),
         };
-        if source.len() as u64 > MAX_CONFLICT_RECORD_BYTES {
+        if source.len() as u64 > MAX_CONFLICT_RESOLUTION_BYTES {
             return Err(AppError::operation(format!(
                 "sync conflict resolution at {} exceeds the {} byte limit",
                 path.display(),
-                MAX_CONFLICT_RECORD_BYTES
+                MAX_CONFLICT_RESOLUTION_BYTES
             )));
         }
         let mut resolution: SyncConflictResolutionRecord =
@@ -1445,8 +1450,7 @@ fn preserve_side(
 }
 
 fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), AppError> {
-    let mut bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
-    bytes.push(b'\n');
+    let bytes = serialize_conflict_record(value, MAX_CONFLICT_RECORD_BYTES)?;
     match durable_file::create(path, &bytes)? {
         DurableCreate::Created => Ok(()),
         DurableCreate::AlreadyExists => Err(AppError::operation(format!(
@@ -1454,6 +1458,20 @@ fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), A
             path.display()
         ))),
     }
+}
+
+fn serialize_conflict_record(
+    value: &SyncConflictRecord,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>, AppError> {
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(AppError::operation(format!(
+            "sync conflict record exceeds the {maximum_bytes} byte limit"
+        )));
+    }
+    Ok(bytes)
 }
 
 fn write_json_replace<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
@@ -1968,6 +1986,34 @@ mod tests {
 
         let error = store.get(&key, &id).expect_err("future version must fail");
         assert!(error.to_string().contains("version or identity mismatch"));
+    }
+
+    #[test]
+    fn records_above_the_former_one_mebibyte_limit_remain_readable() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let mut record = unresolved_record(&id, &key, temporary.path());
+        record.diagnostics = "x".repeat(1024 * 1024);
+        write_json_noclobber(&directory.join("record.json"), &record)
+            .expect("large legacy-compatible record");
+
+        let loaded = store.get(&key, &id).expect("large record remains readable");
+        assert_eq!(loaded.diagnostics.len(), 1024 * 1024);
+    }
+
+    #[test]
+    fn writer_enforces_the_same_bound_as_the_reader() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let record = unresolved_record(&"b".repeat(32), &"a".repeat(32), temporary.path());
+        let serialized = serde_json::to_vec_pretty(&record).expect("record");
+
+        let error = serialize_conflict_record(&record, serialized.len() as u64)
+            .expect_err("newline must make the record exceed the bound");
+        assert!(error.to_string().contains("exceeds"));
     }
 
     #[test]
