@@ -29,7 +29,7 @@ use vulcan_sync::{
     GitResolvedPath, GitSyncOptions, GitSyncRefs, SyncCancellationToken,
 };
 
-pub const RESOLUTION_PROPOSAL_VERSION: u32 = 3;
+pub const RESOLUTION_PROPOSAL_VERSION: u32 = 4;
 pub const RESOLUTION_AGENT_TOOL_CONTRACT_VERSION: u32 = 3;
 pub const RESOLUTION_PROPOSAL_AUDIT_VERSION: u32 = 1;
 const MAX_AGENT_FILE_BYTES: usize = 16 * 1024 * 1024;
@@ -794,6 +794,13 @@ pub struct ResolutionProposalToolCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolutionProposalSelection {
+    pub group_ids: Vec<String>,
+    pub selection_digest: String,
+    pub accepted_revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolutionProposal {
     pub version: u32,
     pub proposal_id: String,
@@ -803,6 +810,8 @@ pub struct ResolutionProposal {
     pub base_revision: String,
     pub local_revision: String,
     pub remote_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ResolutionProposalSelection>,
     pub policy_version: u32,
     pub policy_hash: String,
     pub provider: String,
@@ -1925,8 +1934,14 @@ pub fn load_resolution_proposal(
             "resolution proposal identity or version mismatch",
         ));
     }
-    if proposal.version == RESOLUTION_PROPOSAL_VERSION
-        && proposal.proposal_id != recompute_current_proposal_id(&proposal)?
+    let expected_id = match proposal.version {
+        3 => Some(recompute_v3_proposal_id(&proposal)?),
+        RESOLUTION_PROPOSAL_VERSION => Some(recompute_current_proposal_id(&proposal)?),
+        _ => None,
+    };
+    if expected_id
+        .as_deref()
+        .is_some_and(|id| id != proposal.proposal_id)
     {
         return Err(AppError::operation(
             "resolution proposal content does not match its immutable ID",
@@ -2930,13 +2945,14 @@ fn assemble_proposal(
             bytes: context.content.len() as u64,
         })
         .collect::<Vec<_>>();
-    let proposal_id = proposal_id(
+    let proposal_id = proposal_id_v4(
         &record.id,
         &identity,
         &proposal_context,
         &prepared.tool_calls,
         &prepared.paths,
         &tree.oid,
+        None,
     )?;
     Ok(ResolutionProposal {
         version: RESOLUTION_PROPOSAL_VERSION,
@@ -2950,6 +2966,7 @@ fn assemble_proposal(
             .expect("proposal creation validated the merge base"),
         local_revision: record.local_revision.clone(),
         remote_revision: record.remote_revision.clone(),
+        selection: None,
         policy_version: record.policy_version,
         policy_hash: record.policy_hash.clone(),
         provider: identity.provider,
@@ -3326,7 +3343,7 @@ fn verify_no_external_mutation(
     Ok(())
 }
 
-fn proposal_id(
+fn proposal_id_v3(
     conflict_id: &str,
     identity: &ResolutionAgentIdentity,
     context: &[ResolutionProposalContext],
@@ -3346,8 +3363,30 @@ fn proposal_id(
     Ok(blake3::hash(&bytes).to_hex()[..32].to_string())
 }
 
-fn recompute_current_proposal_id(proposal: &ResolutionProposal) -> Result<String, AppError> {
-    proposal_id(
+fn proposal_id_v4(
+    conflict_id: &str,
+    identity: &ResolutionAgentIdentity,
+    context: &[ResolutionProposalContext],
+    tool_calls: &[ResolutionProposalToolCall],
+    paths: &[ResolutionProposalPath],
+    tree: &GitOid,
+    selection: Option<&ResolutionProposalSelection>,
+) -> Result<String, AppError> {
+    let bytes = serde_json::to_vec(&(
+        conflict_id,
+        identity,
+        context,
+        tool_calls,
+        paths,
+        tree.as_str(),
+        selection,
+    ))
+    .map_err(AppError::operation)?;
+    Ok(blake3::hash(&bytes).to_hex()[..32].to_string())
+}
+
+fn recompute_v3_proposal_id(proposal: &ResolutionProposal) -> Result<String, AppError> {
+    proposal_id_v3(
         &proposal.conflict_id,
         &ResolutionAgentIdentity {
             provider: proposal.provider.clone(),
@@ -3358,6 +3397,22 @@ fn recompute_current_proposal_id(proposal: &ResolutionProposal) -> Result<String
         &proposal.tool_calls,
         &proposal.paths,
         &GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?,
+    )
+}
+
+fn recompute_current_proposal_id(proposal: &ResolutionProposal) -> Result<String, AppError> {
+    proposal_id_v4(
+        &proposal.conflict_id,
+        &ResolutionAgentIdentity {
+            provider: proposal.provider.clone(),
+            model: proposal.model.clone(),
+            prompt_contract_version: proposal.prompt_contract_version,
+        },
+        &proposal.focused_context,
+        &proposal.tool_calls,
+        &proposal.paths,
+        &GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?,
+        proposal.selection.as_ref(),
     )
 }
 
@@ -4122,6 +4177,64 @@ mod tests {
             &proposal.proposal_id,
         )
         .expect_err("tampered tool evidence must invalidate the proposal ID");
+        assert!(error
+            .to_string()
+            .contains("does not match its immutable ID"));
+    }
+
+    #[test]
+    fn proposal_loader_keeps_version_three_integrity_checks_after_format_upgrade() {
+        let fixture = conflict_fixture();
+        let mut proposal = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("proposal");
+        proposal.version = 3;
+        proposal.selection = None;
+        proposal.proposal_id = recompute_v3_proposal_id(&proposal).expect("version 3 ID");
+        save_proposal(&fixture.store, &proposal).expect("version 3 proposal");
+
+        assert_eq!(
+            load_resolution_proposal(
+                &fixture.store,
+                &proposal.repository_key,
+                &proposal.conflict_id,
+                &proposal.proposal_id,
+            )
+            .expect("valid version 3 proposal"),
+            proposal
+        );
+        let path = proposal_path(
+            &fixture.store,
+            &proposal.repository_key,
+            &proposal.conflict_id,
+            &proposal.proposal_id,
+        );
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("proposal record"))
+                .expect("proposal JSON");
+        json["paths"][0]["content_hash"] = serde_json::json!("0".repeat(64));
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json).expect("tampered JSON"),
+        )
+        .expect("tampered proposal fixture");
+        let error = load_resolution_proposal(
+            &fixture.store,
+            &proposal.repository_key,
+            &proposal.conflict_id,
+            &proposal.proposal_id,
+        )
+        .expect_err("tampered version 3 proposal must fail integrity validation");
         assert!(error
             .to_string()
             .contains("does not match its immutable ID"));
