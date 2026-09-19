@@ -9378,6 +9378,17 @@
                 ]
               },
               {
+                "help": "Limit the proposal to one complete conflict group; repeat for more groups",
+                "id": "groups",
+                "long": "group",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUPS"
+                ]
+              },
+              {
                 "help": "Git remote carrying the live ref",
                 "id": "remote",
                 "long": "remote",

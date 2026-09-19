@@ -35,13 +35,13 @@ use vulcan_app::sync_notifications::{
     SyncNotificationStatusOptions, SyncNotificationStatusReport,
 };
 use vulcan_app::sync_proposals::{
-    approve_resolution_proposal, create_resolution_proposal, create_supplied_resolution_proposal,
-    create_supplied_resolution_proposal_with_selection, prepare_editor_resolution,
-    prepare_patch_resolution, preview_patch_resolution, preview_supplied_resolution,
-    reject_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
-    EditorResolutionPlan, PatchResolutionPreviewReport, RejectResolutionProposalReport,
-    ResolutionAgentPathOutput, ResolutionProposalOptions, ResolutionProposalSelection,
-    SuppliedResolutionPreviewReport,
+    approve_resolution_proposal, create_resolution_proposal_for_target,
+    create_supplied_resolution_proposal, create_supplied_resolution_proposal_with_selection,
+    prepare_editor_resolution, prepare_patch_resolution, preview_patch_resolution,
+    preview_supplied_resolution, reject_resolution_proposal, ApproveResolutionProposalOptions,
+    ApproveResolutionProposalReport, EditorResolutionPlan, PatchResolutionPreviewReport,
+    RejectResolutionProposalReport, ResolutionAgentPathOutput, ResolutionProposalOptions,
+    ResolutionProposalSelection, SuppliedResolutionPreviewReport,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_proposals::{
@@ -400,6 +400,7 @@ mod progress_tests {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_non_cycle_sync_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -441,6 +442,7 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Propose {
             conflict_id,
             wiki,
+            groups,
             target,
             base_url,
             model,
@@ -453,6 +455,7 @@ fn handle_non_cycle_sync_command(
             paths,
             wiki.as_deref(),
             conflict_id,
+            groups,
             base_url,
             model,
             api_key_env.as_deref(),
@@ -971,6 +974,7 @@ fn run_sync_propose(
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
     conflict_id: &str,
+    groups: &[String],
     base_url: &str,
     model: &str,
     api_key_env: Option<&str>,
@@ -1002,7 +1006,7 @@ fn run_sync_propose(
         permission_profile: profile.to_string(),
         focused_context: context.to_vec(),
         allow_broad_context,
-        group_ids: Vec::new(),
+        group_ids: groups.to_vec(),
     };
     let cancellation = vulcan_app::sync::SyncCancellationToken::default();
     if auto_accept {
@@ -1019,10 +1023,12 @@ fn run_sync_propose(
         .map_err(CliError::operation)?;
         print_auto_accept_resolution_proposal(cli.output, &report)
     } else {
-        let proposal = create_resolution_proposal(
+        let proposal = create_resolution_proposal_for_target(
             &paths,
             conflict_id,
             &proposal_options,
+            &GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+            &GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
             &provider,
             &cancellation,
         )

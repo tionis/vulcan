@@ -25,7 +25,8 @@ use vulcan_app::sync_conflicts::{
     SyncConflictListReport, SyncConflictResolutionSide,
 };
 use vulcan_app::sync_proposals::{
-    approve_resolution_proposal_with_state_store, create_resolution_proposal_with_provider,
+    approve_resolution_proposal_with_state_store,
+    create_resolution_proposal_with_provider_for_target,
     reject_resolution_proposal_with_state_store, ApproveResolutionProposalOptions,
     ApproveResolutionProposalReport, RejectResolutionProposalReport, ResolutionAgentProvider,
     ResolutionProposal, ResolutionProposalOptions,
@@ -147,9 +148,15 @@ pub struct ConflictResolveRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ConflictProposalRequest {
     #[serde(default)]
+    pub group_ids: Vec<String>,
+    #[serde(default)]
     pub context: Vec<String>,
     #[serde(default)]
     pub allow_broad_context: bool,
+    #[serde(default = "default_remote")]
+    pub remote: String,
+    #[serde(default = "default_live_ref")]
+    pub live_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -571,15 +578,20 @@ impl<'a> CompanionService<'a> {
                     CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
                 })?;
         }
-        create_resolution_proposal_with_provider(
+        let remote = GitRemote::parse(&request.remote)
+            .map_err(|error| invalid_request(error.to_string()))?;
+        let live_ref = GitRefName::parse(&request.live_ref)
+            .map_err(|error| invalid_request(error.to_string()))?;
+        create_resolution_proposal_with_provider_for_target(
             &paths,
             conflict_id,
             &ResolutionProposalOptions {
                 permission_profile: profile.to_string(),
                 focused_context: request.context.clone(),
                 allow_broad_context: request.allow_broad_context,
-                group_ids: Vec::new(),
+                group_ids: request.group_ids.clone(),
             },
+            Some((&remote, &live_ref)),
             agent.provider.as_ref(),
             &vulcan_app::sync::SyncCancellationToken::default(),
             self.state_store,
@@ -1417,8 +1429,11 @@ mod tests {
                 &wiki_id,
                 &conflict_id,
                 &ConflictProposalRequest {
+                    group_ids: Vec::new(),
                     context: Vec::new(),
                     allow_broad_context: false,
+                    remote: default_remote(),
+                    live_ref: default_live_ref(),
                 },
             )
             .expect("create proposal");

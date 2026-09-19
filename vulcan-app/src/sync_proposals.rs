@@ -81,6 +81,7 @@ pub struct ResolutionAgentRequest {
     pub conflict_id: String,
     pub policy_version: u32,
     pub policy_hash: String,
+    pub selection: Option<ResolutionProposalSelection>,
     pub files: Vec<ResolutionAgentFile>,
     pub focused_context: Vec<ResolutionAgentContextFile>,
     pub broad_context_allowed: bool,
@@ -532,6 +533,7 @@ fn openai_resolution_request(
         "conflict_id": request.conflict_id,
         "policy_version": request.policy_version,
         "policy_hash": request.policy_hash,
+        "selection": request.selection,
         "focused_context": request.focused_context.iter().map(|context| serde_json::json!({
             "path": context.path,
             "content_hash": context.content_hash,
@@ -1782,6 +1784,32 @@ pub fn create_resolution_proposal_with_provider(
     cancellation: &SyncCancellationToken,
     state_store: &SyncStateStore,
 ) -> Result<ResolutionProposal, AppError> {
+    create_resolution_proposal_with_provider_for_target(
+        paths,
+        conflict_id,
+        options,
+        None,
+        provider,
+        cancellation,
+        state_store,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_resolution_proposal_with_provider_for_target(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    options: &ResolutionProposalOptions,
+    target: Option<(&GitRemote, &GitRefName)>,
+    provider: &dyn ResolutionAgentProvider,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+) -> Result<ResolutionProposal, AppError> {
+    if !options.group_ids.is_empty() && target.is_none() {
+        return Err(AppError::operation(
+            "selection-scoped agent proposals require an explicit remote live target",
+        ));
+    }
     cancellation_check(cancellation)?;
     let AgentScope {
         vault,
@@ -1811,6 +1839,7 @@ pub fn create_resolution_proposal_with_provider(
         state_store,
         conflict_id,
         &repository_key,
+        target,
     )?;
     let ProviderRun {
         identity,
@@ -1838,6 +1867,7 @@ pub fn create_resolution_proposal_with_provider(
         state_store,
         base_revision,
         &inputs,
+        target,
         ProviderRun {
             identity,
             output,
@@ -1864,6 +1894,8 @@ fn acquire_proposal_lock(
 struct GenerationInputs {
     refs_before: Vec<(String, Option<String>)>,
     worktree_before: vulcan_sync::GitOid,
+    worktree_base: vulcan_sync::GitOid,
+    selection: Option<ResolvedProposalSelection>,
     request: ResolutionAgentRequest,
 }
 
@@ -1880,40 +1912,71 @@ fn persist_generated_proposal(
     state_store: &SyncStateStore,
     base_revision: &str,
     inputs: &GenerationInputs,
+    target: Option<(&GitRemote, &GitRefName)>,
     run: ProviderRun,
 ) -> Result<ResolutionProposal, AppError> {
+    if let Some(selection) = &inputs.selection {
+        let (remote, live_ref) = target.expect("selected proposal has explicit target");
+        let current = engine
+            .remote_ref(repository, remote, live_ref)
+            .map_err(AppError::operation)?
+            .ok_or_else(|| AppError::operation("the remote live ref is missing"))?;
+        if current.as_str() != selection.persisted.accepted_revision {
+            return Err(AppError::operation(
+                "the accepted conflict frontier moved while the agent proposal was generated; generate a fresh proposal",
+            ));
+        }
+    }
     let prepared = prepare_output(
         engine,
         repository,
         record,
-        None,
+        inputs.selection.as_ref().map(|selection| &selection.paths),
         &run.supplied_context,
         run.output,
         run.tool_calls,
         ResolutionContentSource::Agent,
     )?;
+    let (tree_base, tree_remote, tree_local) = if let Some(selection) = &inputs.selection {
+        let accepted =
+            GitOid::parse(&selection.persisted.accepted_revision).map_err(AppError::operation)?;
+        (accepted.clone(), accepted.clone(), accepted)
+    } else {
+        (
+            GitOid::parse(base_revision).map_err(AppError::operation)?,
+            GitOid::parse(&record.remote_revision).map_err(AppError::operation)?,
+            GitOid::parse(&record.local_revision).map_err(AppError::operation)?,
+        )
+    };
     let proposal_tree = engine
         .resolve_merge_tree_with_paths(
             repository,
             &GitContentMergeResolutionRequest {
-                base: GitOid::parse(base_revision).map_err(AppError::operation)?,
-                accepted_remote: GitOid::parse(&record.remote_revision)
-                    .map_err(AppError::operation)?,
-                local_candidate: GitOid::parse(&record.local_revision)
-                    .map_err(AppError::operation)?,
+                base: tree_base,
+                accepted_remote: tree_remote,
+                local_candidate: tree_local,
                 paths: prepared.git_paths.clone(),
             },
         )
         .map_err(AppError::operation)?;
     verify_tree_objects(engine, repository, &proposal_tree, &prepared.git_paths)?;
-    let conflict_paths = conflict_path_names(record);
+    let conflict_paths = inputs.selection.as_ref().map_or_else(
+        || conflict_path_names(record),
+        |selection| selection.paths.iter().cloned().collect(),
+    );
+    let accepted_revision = inputs
+        .selection
+        .as_ref()
+        .map_or(record.remote_revision.as_str(), |selection| {
+            selection.persisted.accepted_revision.as_str()
+        });
     validate_proposal_whole_tree_inputs(
         paths,
         engine,
         repository,
         base_revision,
         &record.local_revision,
-        &record.remote_revision,
+        accepted_revision,
         &proposal_tree,
         &conflict_paths,
     )?;
@@ -1922,12 +1985,13 @@ fn persist_generated_proposal(
         repository,
         record,
         &inputs.worktree_before,
+        &inputs.worktree_base,
         &inputs.refs_before,
     )?;
     let patch = engine
         .diff_patch(
             repository,
-            &GitOid::parse(&record.remote_revision).map_err(AppError::operation)?,
+            &GitOid::parse(accepted_revision).map_err(AppError::operation)?,
             &proposal_tree,
             &conflict_paths,
         )
@@ -1943,7 +2007,10 @@ fn persist_generated_proposal(
             oid: proposal_tree,
             patch,
         },
-        None,
+        inputs
+            .selection
+            .as_ref()
+            .map(|selection| selection.persisted.clone()),
     )?;
     save_proposal(state_store, &proposal)?;
     Ok(proposal)
@@ -1968,19 +2035,67 @@ fn locked_generation_inputs(
     state_store: &SyncStateStore,
     conflict_id: &str,
     repository_key: &str,
+    target: Option<(&GitRemote, &GitRefName)>,
 ) -> Result<GenerationInputs, AppError> {
     let _pre_lock = acquire_proposal_lock(repository)?;
     ensure_no_existing_proposal(state_store, repository_key, conflict_id)?;
     verify_preserved_conflict_refs(engine, repository, record)?;
     let refs_before = preserved_ref_snapshot(engine, repository, record)?;
-    let local_revision = conflict_worktree_revision(record)?;
+    let store = SyncConflictStore::from_state_store(state_store);
+    let accepted = target
+        .map(|(remote, live_ref)| {
+            engine
+                .remote_ref(repository, remote, live_ref)
+                .map_err(AppError::operation)?
+                .ok_or_else(|| AppError::operation("the remote live ref is missing"))
+        })
+        .transpose()?;
+    let selection = match accepted.as_ref() {
+        Some(accepted) => resolve_proposal_selection(
+            engine,
+            repository,
+            &store,
+            repository_key,
+            record,
+            &options_group_ids(options),
+            accepted,
+        )?,
+        None => None,
+    };
+    let local_revision = selection.as_ref().map_or_else(
+        || conflict_worktree_revision(record),
+        |_| {
+            Ok(accepted
+                .clone()
+                .expect("selected proposal has accepted target"))
+        },
+    )?;
     let worktree_before = engine
         .snapshot_worktree_tree(repository, Some(&local_revision))
         .map_err(AppError::operation)?;
-    let request = build_agent_request(paths, engine, repository, record, options)?;
+    if selection.is_some()
+        && worktree_before
+            != engine
+                .tree_oid(repository, &local_revision)
+                .map_err(AppError::operation)?
+    {
+        return Err(AppError::operation(
+            "the worktree does not match the accepted proposal frontier",
+        ));
+    }
+    let request = build_agent_request(
+        paths,
+        engine,
+        repository,
+        record,
+        options,
+        selection.as_ref(),
+    )?;
     Ok(GenerationInputs {
         refs_before,
         worktree_before,
+        worktree_base: local_revision,
+        selection,
         request,
     })
 }
@@ -2022,10 +2137,15 @@ fn prepare_resolution_scope(
             "conflict `{conflict_id}` was superseded by later synchronization and is retained only as history; choose a currently unresolved record from `vulcan sync conflicts`"
         )));
     }
+    let selected_paths = selected_paths_for_group_ids(&record, &options_group_ids(options))?;
     if require_agent_eligible {
-        validate_agent_conflict_scope(&record)?;
+        validate_agent_conflict_scope(&record, selected_paths.as_ref())?;
     }
-    for path in &record.paths {
+    for path in record.paths.iter().filter(|path| {
+        selected_paths
+            .as_ref()
+            .is_none_or(|selected| selected.contains(&path.path))
+    }) {
         permission_guard
             .check_read_path(&path.path)
             .map_err(AppError::operation)?;
@@ -2036,6 +2156,33 @@ fn prepare_resolution_scope(
         record,
         permission_guard,
     })
+}
+
+fn selected_paths_for_group_ids(
+    record: &SyncConflictRecord,
+    group_ids: &[String],
+) -> Result<Option<BTreeSet<String>>, AppError> {
+    if group_ids.is_empty() {
+        return Ok(None);
+    }
+    let groups = conflict_groups(record)
+        .into_iter()
+        .map(|group| (group.id.clone(), group))
+        .collect::<BTreeMap<_, _>>();
+    let mut paths = BTreeSet::new();
+    for group_id in group_ids {
+        validate_hex_id("conflict group ID", group_id)?;
+        let group = groups
+            .get(group_id)
+            .ok_or_else(|| AppError::operation(format!("unknown conflict group `{group_id}`")))?;
+        if group.kind == SyncConflictGroupKind::WholeTree {
+            return Err(AppError::operation(
+                "whole-tree validation conflicts cannot use a scoped proposal",
+            ));
+        }
+        paths.extend(group.paths.iter().cloned());
+    }
+    Ok(Some(paths))
 }
 
 struct ProviderRun {
@@ -2111,6 +2258,27 @@ pub fn create_resolution_proposal(
     )
 }
 
+pub fn create_resolution_proposal_for_target(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    options: &ResolutionProposalOptions,
+    remote: &GitRemote,
+    live_ref: &GitRefName,
+    provider: &dyn ResolutionAgentProvider,
+    cancellation: &SyncCancellationToken,
+) -> Result<ResolutionProposal, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    create_resolution_proposal_with_provider_for_target(
+        paths,
+        conflict_id,
+        options,
+        Some((remote, live_ref)),
+        provider,
+        cancellation,
+        &state_store,
+    )
+}
+
 pub fn create_and_auto_accept_resolution_proposal(
     paths: &VaultPaths,
     conflict_id: &str,
@@ -2151,10 +2319,11 @@ pub fn create_and_auto_accept_resolution_proposal_with_state_store(
             "agent auto-accept is disabled; set sync.agent_auto_accept=true in device-local config and request it explicitly",
         ));
     }
-    let proposal = create_resolution_proposal_with_provider(
+    let proposal = create_resolution_proposal_with_provider_for_target(
         paths,
         conflict_id,
         proposal_options,
+        Some((&approval_options.remote, &approval_options.live_ref)),
         provider,
         cancellation,
         state_store,
@@ -3451,12 +3620,16 @@ fn build_agent_request(
     repository: &vulcan_sync::GitRepository,
     record: &SyncConflictRecord,
     options: &ResolutionProposalOptions,
+    selection: Option<&ResolvedProposalSelection>,
 ) -> Result<ResolutionAgentRequest, AppError> {
     let base = record
         .base_revision
         .as_deref()
         .ok_or_else(|| AppError::operation("agent resolution requires one merge base"))?;
-    let conflict_paths = conflict_path_names(record);
+    let conflict_paths = selection.map_or_else(
+        || conflict_path_names(record),
+        |selection| selection.paths.iter().cloned().collect(),
+    );
     let base_oid = GitOid::parse(base).map_err(AppError::operation)?;
     let local_oid = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
     let remote_oid = GitOid::parse(&record.remote_revision).map_err(AppError::operation)?;
@@ -3470,8 +3643,12 @@ fn build_agent_request(
         .path_objects(repository, &remote_oid, &conflict_paths)
         .map_err(AppError::operation)?;
     let mut total = 0_usize;
-    let mut files = Vec::with_capacity(record.paths.len());
-    for path in &record.paths {
+    let mut files = Vec::with_capacity(conflict_paths.len());
+    for path in record
+        .paths
+        .iter()
+        .filter(|path| selection.is_none_or(|selection| selection.paths.contains(&path.path)))
+    {
         let mut side = |revision: Option<&str>,
                         objects: Option<&BTreeMap<String, vulcan_sync::GitPathObject>>|
          -> Result<ResolutionAgentSide, AppError> {
@@ -3549,6 +3726,7 @@ fn build_agent_request(
         conflict_id: record.id.clone(),
         policy_version: record.policy_version,
         policy_hash: record.policy_hash.clone(),
+        selection: selection.map(|selection| selection.persisted.clone()),
         files,
         focused_context,
         broad_context_allowed: options.allow_broad_context,
@@ -3763,11 +3941,11 @@ fn verify_no_external_mutation(
     repository: &vulcan_sync::GitRepository,
     record: &SyncConflictRecord,
     expected_tree: &GitOid,
+    worktree_base: &GitOid,
     refs_before: &[(String, Option<String>)],
 ) -> Result<(), AppError> {
-    let local_revision = conflict_worktree_revision(record)?;
     let current = engine
-        .snapshot_worktree_tree(repository, Some(&local_revision))
+        .snapshot_worktree_tree(repository, Some(worktree_base))
         .map_err(AppError::operation)?;
     if &current != expected_tree {
         return Err(AppError::operation(
@@ -4017,8 +4195,15 @@ fn is_internal_context_path(path: &str) -> bool {
         || path.starts_with(".vulcan/")
 }
 
-fn validate_agent_conflict_scope(record: &SyncConflictRecord) -> Result<(), AppError> {
-    for path in &record.paths {
+fn validate_agent_conflict_scope(
+    record: &SyncConflictRecord,
+    selected_paths: Option<&BTreeSet<String>>,
+) -> Result<(), AppError> {
+    for path in record
+        .paths
+        .iter()
+        .filter(|path| selected_paths.is_none_or(|selected| selected.contains(&path.path)))
+    {
         let internal = path.path == ".obsidian"
             || path.path.starts_with(".obsidian/")
             || path.path == ".vulcan"
@@ -4278,10 +4463,11 @@ mod tests {
         ) -> Result<ResolutionAgentOutput, AppError> {
             assert_eq!(request.files.len(), 1);
             assert_eq!(request.files[0].path, "Home.md");
-            assert_eq!(
-                request.files[0].base.content.as_deref(),
-                Some(b"base\n".as_slice())
-            );
+            assert!(request.files[0]
+                .base
+                .content
+                .as_deref()
+                .is_some_and(|content| content.starts_with(b"base")));
             if let Some(context) = request.focused_context.first() {
                 assert_eq!(context.path, "Home.md");
                 assert_eq!(context.content, "writer\n");
@@ -4363,6 +4549,7 @@ mod tests {
                 allow_broad_context: false,
                 group_ids: Vec::new(),
             },
+            None,
         )
         .expect("agent request");
 
@@ -4578,6 +4765,93 @@ mod tests {
             .expect("group progress");
         assert_eq!(progress.applied_groups, 1);
         assert_eq!(progress.pending_groups, 1);
+    }
+
+    #[test]
+    fn selected_agent_proposal_discloses_and_applies_only_selected_groups() {
+        let fixture = two_path_conflict_fixture();
+        let home_group = fixture
+            .record
+            .paths
+            .iter()
+            .find(|path| path.path == "Home.md")
+            .expect("home conflict")
+            .group_id
+            .clone();
+        let remote = GitRemote::parse("origin").expect("remote");
+        let live_ref = GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref");
+        let proposal = create_resolution_proposal_with_provider_for_target(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+                group_ids: vec![home_group.clone()],
+            },
+            Some((&remote, &live_ref)),
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("selected agent proposal");
+        assert_eq!(proposal.paths.len(), 1);
+        assert_eq!(proposal.paths[0].path, "Home.md");
+        assert_eq!(
+            proposal.selection.as_ref().expect("selection").group_ids,
+            [home_group]
+        );
+
+        let report = approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote,
+                live_ref,
+                dry_run: false,
+                automatic: false,
+            },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("approve selected agent proposal");
+        assert_eq!(report.outcome, ApproveResolutionProposalOutcome::Applied);
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("home"),
+            "agent resolution\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Other.md")).expect("other"),
+            "writer other\n"
+        );
+    }
+
+    #[test]
+    fn selected_agent_eligibility_ignores_unselected_ineligible_paths() {
+        let fixture = two_path_conflict_fixture();
+        let mut record = fixture.record;
+        let home = record
+            .paths
+            .iter()
+            .find(|path| path.path == "Home.md")
+            .expect("home conflict");
+        let selected = BTreeSet::from([home.path.clone()]);
+        let other = record
+            .paths
+            .iter_mut()
+            .find(|path| path.path == "Other.md")
+            .expect("other conflict");
+        other.path = ".obsidian/workspace.json".to_string();
+        other
+            .classification
+            .as_mut()
+            .expect("classification")
+            .file_kind = vulcan_sync::MergeFileKind::ObsidianState;
+
+        validate_agent_conflict_scope(&record, Some(&selected))
+            .expect("unselected ineligible path is not disclosed");
+        assert!(validate_agent_conflict_scope(&record, None).is_err());
     }
 
     #[test]
@@ -5697,6 +5971,7 @@ mod tests {
             conflict_id: "b".repeat(32),
             policy_version: 1,
             policy_hash: "c".repeat(64),
+            selection: None,
             files: vec![ResolutionAgentFile {
                 path: "Home.md".to_string(),
                 base: side("base text"),

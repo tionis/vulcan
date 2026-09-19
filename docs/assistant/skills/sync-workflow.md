@@ -177,6 +177,8 @@ they commit.
   and review a fresh result rather than expecting reviewed bytes to rebase automatically.
   Unselected groups remain pending.
 - Generate model help only when requested with `vulcan sync propose <id> --model <model> ...`.
+  For a large conflict, repeat `--group <group-id>` to disclose and propose only complete selected
+  groups; unselected internal, binary, or otherwise ineligible paths are not sent to the provider.
   Provider output is an untrusted retained proposal, not an accepted merge. Review it, then preview
   exact approval with `sync resolve --approve-proposal <proposal-id> --dry-run`, or reject it with
   `sync reject <conflict-id> <proposal-id> --dry-run`.

@@ -4056,6 +4056,12 @@ pub enum SyncCommand {
         conflict_id: String,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
+        #[arg(
+            long = "group",
+            action = ArgAction::Append,
+            help = "Limit the proposal to one complete conflict group; repeat for more groups"
+        )]
+        groups: Vec<String>,
         #[command(flatten)]
         target: SyncTargetArgs,
         #[arg(
