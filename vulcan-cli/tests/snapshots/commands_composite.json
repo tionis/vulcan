@@ -9486,6 +9486,137 @@
             "subcommands": []
           },
           {
+            "about": "Create a review-only proposal by normalizing preserved conflict sides",
+            "name": "format-propose",
+            "options": [
+              {
+                "help": "Immutable conflict ID to normalize",
+                "id": "conflict_id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "CONFLICT_ID"
+                ]
+              },
+              {
+                "help": "Optional registered wiki ID",
+                "id": "wiki",
+                "long": "wiki",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Complete formatting-candidate group to normalize; repeat for a bounded batch",
+                "id": "groups",
+                "long": "group",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "GROUPS"
+                ]
+              },
+              {
+                "help": "Git remote carrying the live ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Fully qualified remote live ref",
+                "id": "live_ref",
+                "long": "live-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIVE_REF"
+                ]
+              },
+              {
+                "help": "Absolute formatter executable path",
+                "id": "formatter",
+                "long": "formatter",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ABSOLUTE_PATH"
+                ]
+              },
+              {
+                "help": "Formatter argument; {file} and {config} placeholders are supported",
+                "id": "formatter_args",
+                "long": "formatter-arg",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FORMATTER_ARGS"
+                ]
+              },
+              {
+                "help": "Exact trimmed output expected from formatter --version",
+                "id": "formatter_version",
+                "long": "formatter-version",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FORMATTER_VERSION"
+                ]
+              },
+              {
+                "help": "Explicit formatter configuration file copied into isolation",
+                "id": "formatter_config",
+                "long": "formatter-config",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FORMATTER_CONFIG"
+                ]
+              },
+              {
+                "help": "Per-process formatter timeout in seconds",
+                "id": "timeout_seconds",
+                "long": "timeout-seconds",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TIMEOUT_SECONDS"
+                ]
+              },
+              {
+                "help": "Run normalization and validation without retaining a proposal",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Explicitly reject a retained conflict proposal",
             "name": "reject",
             "options": [

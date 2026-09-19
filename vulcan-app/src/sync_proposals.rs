@@ -16,9 +16,11 @@ use crate::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-#[cfg(feature = "web")]
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use vulcan_core::search::SearchMode;
 use vulcan_core::{
     execute_query_report_with_filter, paths::secure_read, query_backlinks_with_filter,
@@ -44,6 +46,8 @@ const MAX_CONTEXT_PATHS: usize = 64;
 const MAX_AGENT_TOOL_CALLS: usize = 8;
 const MAX_AGENT_TOOL_ARGUMENT_BYTES: usize = 8 * 1024;
 const MAX_AGENT_TOOL_RESULT_BYTES: usize = 256 * 1024;
+const MAX_FORMATTER_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_FORMATTER_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 #[cfg(feature = "web")]
 const MAX_AGENT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -99,6 +103,26 @@ pub struct ResolutionAgentOutput {
     pub explanation: String,
     pub referenced_context: Vec<String>,
     pub paths: Vec<ResolutionAgentPathOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatterResolutionOptions {
+    pub executable: PathBuf,
+    pub arguments: Vec<String>,
+    pub expected_version: String,
+    pub config: Option<PathBuf>,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum FormatterResolutionReport {
+    Preview {
+        report: SuppliedResolutionPreviewReport,
+    },
+    Proposed {
+        proposal: Box<ResolutionProposal>,
+    },
 }
 
 pub trait ResolutionAgentTools {
@@ -1086,6 +1110,8 @@ pub fn create_supplied_resolution_proposal_with_state_store(
         approval_options,
         supplied,
         None,
+        None,
+        None,
         cancellation,
         state_store,
     )
@@ -1108,6 +1134,8 @@ pub fn create_supplied_resolution_proposal_with_selection(
         approval_options,
         supplied,
         Some(expected_selection),
+        None,
+        None,
         cancellation,
         &state_store,
     )
@@ -1121,6 +1149,8 @@ fn create_supplied_resolution_proposal_with_expected_selection(
     approval_options: &ApproveResolutionProposalOptions,
     supplied: Vec<ResolutionAgentPathOutput>,
     expected_selection: Option<&ResolutionProposalSelection>,
+    identity: Option<ResolutionAgentIdentity>,
+    explanation: Option<String>,
     cancellation: &SyncCancellationToken,
     state_store: &SyncStateStore,
 ) -> Result<ResolutionProposal, AppError> {
@@ -1160,7 +1190,9 @@ fn create_supplied_resolution_proposal_with_expected_selection(
         manual.selection.as_ref().map(|selection| &selection.paths),
         &BTreeSet::new(),
         ResolutionAgentOutput {
-            explanation: "Resolution content supplied explicitly by the user.".to_string(),
+            explanation: explanation.unwrap_or_else(|| {
+                "Resolution content supplied explicitly by the user.".to_string()
+            }),
             referenced_context: Vec::new(),
             paths: supplied,
         },
@@ -1234,7 +1266,7 @@ fn create_supplied_resolution_proposal_with_expected_selection(
     let proposal = assemble_proposal(
         &manual.record,
         manual.repository_key.clone(),
-        SuppliedResolutionProvider::new(Vec::new()).identity(),
+        identity.unwrap_or_else(|| SuppliedResolutionProvider::new(Vec::new()).identity()),
         proposal_options,
         &[],
         prepared,
@@ -1249,6 +1281,514 @@ fn create_supplied_resolution_proposal_with_expected_selection(
     )?;
     save_proposal(state_store, &proposal)?;
     Ok(proposal)
+}
+
+/// Runs an explicitly selected formatter against private copies of every
+/// preserved side, merges the normalized sides, and retains the result for
+/// review. Formatter output is never accepted by this operation.
+pub fn create_formatter_resolution_proposal(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    formatter: &FormatterResolutionOptions,
+    cancellation: &SyncCancellationToken,
+) -> Result<FormatterResolutionReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    create_formatter_resolution_proposal_with_state_store(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        formatter,
+        cancellation,
+        &state_store,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_formatter_resolution_proposal_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    formatter: &FormatterResolutionOptions,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+) -> Result<FormatterResolutionReport, AppError> {
+    validate_formatter_options(formatter)?;
+    cancellation_check(cancellation)?;
+    let scope = prepare_manual_resolution_scope(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        state_store,
+    )?;
+    scope
+        .selection
+        .as_ref()
+        .ok_or_else(|| AppError::operation("formatter proposals require at least one --group"))?;
+    let permission = resolve_permission_profile(paths, Some(&proposal_options.permission_profile))
+        .map_err(AppError::operation)?;
+    ProfilePermissionGuard::new(paths, permission)
+        .check_execute()
+        .map_err(AppError::operation)?;
+    validate_formatter_conflicts(&scope.record, scope.selection.as_ref())?;
+    let selection = scope
+        .selection
+        .as_ref()
+        .expect("formatter selection was required")
+        .persisted
+        .clone();
+    let files = formatter_inputs(&scope)?;
+    drop(scope);
+
+    let executable = fs::canonicalize(&formatter.executable).map_err(|error| {
+        AppError::operation(format!(
+            "cannot resolve formatter executable `{}`: {error}",
+            formatter.executable.display()
+        ))
+    })?;
+    let executable_hash = hash_bounded_file(&executable, MAX_AGENT_FILE_BYTES, "formatter")?;
+    let version = run_formatter_version(&executable, formatter.timeout)?;
+    if version != formatter.expected_version {
+        return Err(AppError::operation(format!(
+            "formatter version mismatch: expected `{}`, got `{version}`",
+            formatter.expected_version
+        )));
+    }
+    let temporary = tempfile::tempdir().map_err(AppError::operation)?;
+    let config = materialize_formatter_config(temporary.path(), formatter.config.as_deref())?;
+    let outputs = format_and_merge_inputs(
+        temporary.path(),
+        &executable,
+        formatter,
+        config.as_ref().map(|value| value.0.as_path()),
+        &files,
+        cancellation,
+    )?;
+    let config_hash = config.as_ref().map_or("none", |value| value.1.as_str());
+    let identity_bytes = serde_json::to_vec(&(
+        executable.to_string_lossy(),
+        executable_hash.as_str(),
+        version.as_str(),
+        config_hash,
+        &formatter.arguments,
+    ))
+    .map_err(AppError::operation)?;
+    let identity = ResolutionAgentIdentity {
+        provider: "vulcan-formatter".to_string(),
+        model: blake3::hash(&identity_bytes).to_hex()[..32].to_string(),
+        prompt_contract_version: 1,
+    };
+    let explanation = format!(
+        "Generated by explicit formatter {} ({version}); executable={}, config={}.",
+        executable.display(),
+        executable_hash,
+        config_hash
+    );
+    cancellation_check(cancellation)?;
+    if approval_options.dry_run {
+        let report = preview_supplied_resolution_with_state_store(
+            paths,
+            conflict_id,
+            proposal_options,
+            approval_options,
+            outputs,
+            state_store,
+        )?;
+        return Ok(FormatterResolutionReport::Preview { report });
+    }
+    let proposal = create_supplied_resolution_proposal_with_expected_selection(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        outputs,
+        Some(&selection),
+        Some(identity),
+        Some(explanation),
+        cancellation,
+        state_store,
+    )?;
+    Ok(FormatterResolutionReport::Proposed {
+        proposal: Box::new(proposal),
+    })
+}
+
+#[derive(Debug)]
+struct FormatterInput {
+    path: String,
+    base: Vec<u8>,
+    local: Vec<u8>,
+    remote: Vec<u8>,
+}
+
+fn validate_formatter_options(options: &FormatterResolutionOptions) -> Result<(), AppError> {
+    if !options.executable.is_absolute() {
+        return Err(AppError::operation(
+            "formatter executable must be an absolute path",
+        ));
+    }
+    if options.expected_version.trim().is_empty() || options.expected_version.len() > 1024 {
+        return Err(AppError::operation(
+            "formatter expected version must contain 1-1024 characters",
+        ));
+    }
+    if options.timeout.is_zero() || options.timeout > Duration::from_secs(300) {
+        return Err(AppError::operation(
+            "formatter timeout must be between 1ms and 300s",
+        ));
+    }
+    if options.arguments.len() > 64
+        || options
+            .arguments
+            .iter()
+            .any(|argument| argument.len() > 4096)
+    {
+        return Err(AppError::operation(
+            "formatter arguments exceed their limit",
+        ));
+    }
+    if options
+        .arguments
+        .iter()
+        .filter(|argument| argument.matches("{file}").count() > 1)
+        .count()
+        > 0
+    {
+        return Err(AppError::operation(
+            "each formatter argument may contain {file} at most once",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_formatter_conflicts(
+    record: &SyncConflictRecord,
+    selection: Option<&ResolvedProposalSelection>,
+) -> Result<(), AppError> {
+    for path in record.paths.iter().filter(|path| {
+        selection.is_none_or(|selection| selection.paths.contains(path.path.as_str()))
+    }) {
+        if !path
+            .classification
+            .as_ref()
+            .is_some_and(|classification| classification.formatting_candidate)
+        {
+            return Err(AppError::operation(format!(
+                "conflict path `{}` is not a conservative formatting candidate",
+                path.path
+            )));
+        }
+        if path.base.object_id.is_none()
+            || path.local.object_id.is_none()
+            || path.remote.object_id.is_none()
+        {
+            return Err(AppError::operation(format!(
+                "formatter proposal requires base, local, and remote blobs for `{}`",
+                path.path
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn formatter_inputs(scope: &ManualResolutionScope) -> Result<Vec<FormatterInput>, AppError> {
+    let selected = &scope
+        .selection
+        .as_ref()
+        .expect("formatter selection was required")
+        .paths;
+    let names = selected.iter().cloned().collect::<Vec<_>>();
+    let base = GitOid::parse(
+        scope
+            .record
+            .base_revision
+            .as_deref()
+            .ok_or_else(|| AppError::operation("formatter proposal requires one merge base"))?,
+    )
+    .map_err(AppError::operation)?;
+    let local = GitOid::parse(&scope.record.local_revision).map_err(AppError::operation)?;
+    let remote = GitOid::parse(&scope.record.remote_revision).map_err(AppError::operation)?;
+    let base_objects = scope
+        .engine
+        .path_objects(&scope.repository, &base, &names)
+        .map_err(AppError::operation)?;
+    let local_objects = scope
+        .engine
+        .path_objects(&scope.repository, &local, &names)
+        .map_err(AppError::operation)?;
+    let remote_objects = scope
+        .engine
+        .path_objects(&scope.repository, &remote, &names)
+        .map_err(AppError::operation)?;
+    let mut total = 0_usize;
+    names
+        .into_iter()
+        .map(|path| {
+            let read = |objects: &BTreeMap<String, vulcan_sync::GitPathObject>, side: &str| {
+                let content = objects
+                    .get(&path)
+                    .and_then(|object| object.data.clone())
+                    .ok_or_else(|| {
+                        AppError::operation(format!(
+                            "formatter proposal requires a {side} blob for `{path}`"
+                        ))
+                    })?;
+                if content.len() > MAX_AGENT_FILE_BYTES {
+                    return Err(AppError::operation(format!(
+                        "formatter input `{path}` exceeds the per-file byte limit"
+                    )));
+                }
+                Ok(content)
+            };
+            let base = read(&base_objects, "base")?;
+            let local = read(&local_objects, "local")?;
+            let remote = read(&remote_objects, "remote")?;
+            total = total.saturating_add(base.len() + local.len() + remote.len());
+            if total > MAX_AGENT_TOTAL_BYTES {
+                return Err(AppError::operation(
+                    "formatter inputs exceed the aggregate byte limit",
+                ));
+            }
+            Ok(FormatterInput {
+                path,
+                base,
+                local,
+                remote,
+            })
+        })
+        .collect()
+}
+
+fn hash_bounded_file(path: &Path, limit: usize, label: &str) -> Result<String, AppError> {
+    let metadata = fs::metadata(path).map_err(AppError::operation)?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(AppError::operation(format!(
+            "{label} must be a regular file no larger than {limit} bytes"
+        )));
+    }
+    let mut file = fs::File::open(path).map_err(AppError::operation)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+    loop {
+        let count = file.read(&mut buffer).map_err(AppError::operation)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn run_formatter_version(executable: &Path, timeout: Duration) -> Result<String, AppError> {
+    let output = run_bounded_command(executable, &["--version".to_string()], None, timeout)?;
+    if !output.status.success() {
+        return Err(AppError::operation(format!(
+            "formatter --version failed: {}",
+            diagnostic(&output)
+        )));
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|_| AppError::operation("formatter --version returned non-UTF-8 output"))
+}
+
+fn materialize_formatter_config(
+    root: &Path,
+    config: Option<&Path>,
+) -> Result<Option<(PathBuf, String)>, AppError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    let hash = hash_bounded_file(config, MAX_FORMATTER_CONFIG_BYTES, "formatter config")?;
+    let extension = config
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("config");
+    let target = root.join(format!("formatter-config.{extension}"));
+    fs::copy(config, &target).map_err(AppError::operation)?;
+    Ok(Some((target, hash)))
+}
+
+fn format_and_merge_inputs(
+    root: &Path,
+    executable: &Path,
+    options: &FormatterResolutionOptions,
+    config: Option<&Path>,
+    inputs: &[FormatterInput],
+    cancellation: &SyncCancellationToken,
+) -> Result<Vec<ResolutionAgentPathOutput>, AppError> {
+    let mut total = 0_usize;
+    inputs
+        .iter()
+        .map(|input| {
+            cancellation_check(cancellation)?;
+            let paths = ["base", "local", "remote"]
+                .map(|side| safe_formatter_path(root, side, &input.path));
+            for (path, content) in paths.iter().zip([&input.base, &input.local, &input.remote]) {
+                fs::create_dir_all(path.parent().expect("formatter path has a parent"))
+                    .map_err(AppError::operation)?;
+                fs::write(path, content).map_err(AppError::operation)?;
+                run_formatter(executable, options, root, path, config)?;
+            }
+            let local = &paths[1];
+            let merge_args = vec![
+                "merge-file".to_string(),
+                "--quiet".to_string(),
+                local.to_string_lossy().into_owned(),
+                paths[0].to_string_lossy().into_owned(),
+                paths[2].to_string_lossy().into_owned(),
+            ];
+            let merged =
+                run_bounded_command(Path::new("git"), &merge_args, Some(root), options.timeout)?;
+            if !merged.status.success() {
+                return Err(AppError::operation(format!(
+                    "normalized sides for `{}` still conflict; review them manually ({})",
+                    input.path,
+                    diagnostic(&merged)
+                )));
+            }
+            let content = fs::read(local).map_err(AppError::operation)?;
+            if content.len() > MAX_AGENT_FILE_BYTES {
+                return Err(AppError::operation(format!(
+                    "formatter output `{}` exceeds the per-file byte limit",
+                    input.path
+                )));
+            }
+            total = total.saturating_add(content.len());
+            if total > MAX_AGENT_TOTAL_BYTES {
+                return Err(AppError::operation(
+                    "formatter outputs exceed the aggregate byte limit",
+                ));
+            }
+            Ok(ResolutionAgentPathOutput {
+                path: input.path.clone(),
+                content,
+            })
+        })
+        .collect()
+}
+
+fn safe_formatter_path(root: &Path, side: &str, relative: &str) -> PathBuf {
+    root.join(side).join(relative)
+}
+
+fn run_formatter(
+    executable: &Path,
+    options: &FormatterResolutionOptions,
+    root: &Path,
+    file: &Path,
+    config: Option<&Path>,
+) -> Result<(), AppError> {
+    let mut saw_file = false;
+    let mut arguments = Vec::with_capacity(options.arguments.len() + 1);
+    for argument in &options.arguments {
+        if argument.contains("{config}") && config.is_none() {
+            return Err(AppError::operation(
+                "formatter argument uses {config} without --formatter-config",
+            ));
+        }
+        saw_file |= argument.contains("{file}");
+        arguments.push(argument.replace("{file}", &file.to_string_lossy()).replace(
+            "{config}",
+            &config.map_or_else(String::new, |value| value.to_string_lossy().into_owned()),
+        ));
+    }
+    if !saw_file {
+        arguments.push(file.to_string_lossy().into_owned());
+    }
+    let output = run_bounded_command(executable, &arguments, Some(root), options.timeout)?;
+    if !output.status.success() {
+        return Err(AppError::operation(format!(
+            "formatter failed for `{}`: {}",
+            file.display(),
+            diagnostic(&output)
+        )));
+    }
+    Ok(())
+}
+
+struct BoundedCommandOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn run_bounded_command(
+    executable: &Path,
+    arguments: &[String],
+    current_dir: Option<&Path>,
+    timeout: Duration,
+) -> Result<BoundedCommandOutput, AppError> {
+    let stdout = tempfile::tempfile().map_err(AppError::operation)?;
+    let stderr = tempfile::tempfile().map_err(AppError::operation)?;
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(
+            stdout.try_clone().map_err(AppError::operation)?,
+        ))
+        .stderr(Stdio::from(
+            stderr.try_clone().map_err(AppError::operation)?,
+        ));
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    let mut child = command.spawn().map_err(|error| {
+        AppError::operation(format!(
+            "cannot execute `{}`: {error}",
+            executable.display()
+        ))
+    })?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(AppError::operation)? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::operation(format!(
+                "command `{}` exceeded its {:?} timeout",
+                executable.display(),
+                timeout
+            )));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    Ok(BoundedCommandOutput {
+        status,
+        stdout: read_bounded_command_file(stdout, "stdout")?,
+        stderr: read_bounded_command_file(stderr, "stderr")?,
+    })
+}
+
+fn read_bounded_command_file(mut file: fs::File, stream: &str) -> Result<Vec<u8>, AppError> {
+    let size = file.metadata().map_err(AppError::operation)?.len();
+    if size > MAX_FORMATTER_DIAGNOSTIC_BYTES as u64 {
+        return Err(AppError::operation(format!(
+            "formatter {stream} exceeded its byte limit"
+        )));
+    }
+    file.seek(SeekFrom::Start(0)).map_err(AppError::operation)?;
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(size).expect("bounded formatter diagnostic size fits usize"),
+    );
+    file.read_to_end(&mut bytes).map_err(AppError::operation)?;
+    Ok(bytes)
+}
+
+fn diagnostic(output: &BoundedCommandOutput) -> String {
+    let bytes = if output.stderr.is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    String::from_utf8_lossy(bytes).trim().to_string()
 }
 
 pub fn preview_patch_resolution(
@@ -4505,6 +5045,142 @@ mod tests {
         conflict_fixture_with_split_targets(false)
     }
 
+    fn formatting_conflict_fixture() -> ConflictFixture {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &["init", "--quiet", "--bare", path(&remote)],
+        );
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        git(
+            &writer,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        configure_git(&writer);
+        git(&writer, &["remote", "add", "origin", path(&remote)]);
+        fs::write(writer.join("Home.md"), "alpha beta gamma\n").expect("base note");
+        commit_all(&writer, "base");
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&writer),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("bootstrap sync");
+        let reader = temporary.path().join("reader");
+        git(
+            temporary.path(),
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "clone",
+                "--quiet",
+                path(&writer),
+                path(&reader),
+            ],
+        );
+        configure_git(&reader);
+        git(&reader, &["remote", "set-url", "origin", path(&remote)]);
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&reader),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("reader baseline");
+        fs::write(writer.join("Home.md"), "alpha\nbeta gamma\n").expect("writer edit");
+        fs::write(reader.join("Home.md"), "alpha  beta gamma\n").expect("reader edit");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&writer),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("writer sync");
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(&reader),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("conflicted sync");
+        let record = report.conflict_record.expect("conflict record");
+        assert!(
+            record.paths[0]
+                .classification
+                .as_ref()
+                .expect("classification")
+                .formatting_candidate
+        );
+        ConflictFixture {
+            _temporary: temporary,
+            store,
+            reader,
+            record,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn formatter_normalizes_all_sides_into_a_review_only_scoped_proposal() {
+        let fixture = formatting_conflict_fixture();
+        let worktree_before = fs::read(fixture.reader.join("Home.md")).expect("worktree");
+        let formatter = fixture
+            .reader
+            .parent()
+            .expect("fixture root")
+            .join("formatter.sh");
+        fs::write(
+            &formatter,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'fixture-fmt 1\\n'; exit 0; fi\ntr '\\n' ' ' < \"$1\" | tr -s ' ' > \"$1.tmp\"\nprintf '\\n' >> \"$1.tmp\"\nmv \"$1.tmp\" \"$1\"\n",
+        )
+        .expect("formatter script");
+        let mut permissions = fs::metadata(&formatter).expect("metadata").permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&formatter, permissions).expect("executable formatter");
+        let proposal_options = ResolutionProposalOptions {
+            permission_profile: "unrestricted".to_string(),
+            focused_context: Vec::new(),
+            allow_broad_context: false,
+            group_ids: vec![fixture.record.paths[0].group_id.clone()],
+        };
+        let approval_options = ApproveResolutionProposalOptions {
+            remote: GitRemote::parse("origin").expect("remote"),
+            live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref"),
+            dry_run: false,
+            automatic: false,
+        };
+        let report = create_formatter_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal_options,
+            &approval_options,
+            &FormatterResolutionOptions {
+                executable: formatter,
+                arguments: Vec::new(),
+                expected_version: "fixture-fmt 1".to_string(),
+                config: None,
+                timeout: Duration::from_secs(5),
+            },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("formatter proposal");
+        let FormatterResolutionReport::Proposed { proposal } = report else {
+            panic!("mutating mode should retain a proposal")
+        };
+        assert_eq!(proposal.provider, "vulcan-formatter");
+        assert!(proposal.selection.is_some());
+        assert_eq!(proposal.paths.len(), 1);
+        assert_eq!(
+            fs::read(fixture.reader.join("Home.md")).expect("unchanged worktree"),
+            worktree_before
+        );
+        assert!(SyncConflictStore::from_state_store(&fixture.store)
+            .get_effective_resolution(&fixture.record.repository_key, &fixture.record.id)
+            .expect("resolution state")
+            .is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn agent_request_reads_conflict_sides_with_bounded_git_processes() {
@@ -4932,6 +5608,8 @@ mod tests {
             &approval_options,
             prepared.paths,
             Some(&selection),
+            None,
+            None,
             &SyncCancellationToken::default(),
             &fixture.store,
         )

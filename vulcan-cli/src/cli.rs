@@ -4091,6 +4091,54 @@ pub enum SyncCommand {
         )]
         auto_accept: bool,
     },
+    #[command(about = "Create a review-only proposal by normalizing preserved conflict sides")]
+    FormatPropose {
+        #[arg(help = "Immutable conflict ID to normalize")]
+        conflict_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[arg(
+            long = "group",
+            action = ArgAction::Append,
+            required = true,
+            help = "Complete formatting-candidate group to normalize; repeat for a bounded batch"
+        )]
+        groups: Vec<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(
+            long,
+            value_name = "ABSOLUTE_PATH",
+            help = "Absolute formatter executable path"
+        )]
+        formatter: PathBuf,
+        #[arg(
+            long = "formatter-arg",
+            action = ArgAction::Append,
+            allow_hyphen_values = true,
+            help = "Formatter argument; {file} and {config} placeholders are supported"
+        )]
+        formatter_args: Vec<String>,
+        #[arg(long, help = "Exact trimmed output expected from formatter --version")]
+        formatter_version: String,
+        #[arg(
+            long,
+            help = "Explicit formatter configuration file copied into isolation"
+        )]
+        formatter_config: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_parser = clap::value_parser!(u64).range(1..=300),
+            help = "Per-process formatter timeout in seconds"
+        )]
+        timeout_seconds: u64,
+        #[arg(
+            long,
+            help = "Run normalization and validation without retaining a proposal"
+        )]
+        dry_run: bool,
+    },
     #[command(about = "Explicitly reject a retained conflict proposal")]
     Reject {
         #[arg(help = "Immutable conflict ID containing the proposal")]

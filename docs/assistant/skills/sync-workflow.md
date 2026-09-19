@@ -152,6 +152,13 @@ they commit.
   or page the conflict before selecting groups when the preview is incomplete.
 - Treat `classification.formatting_candidate` only as a review-order hint. It never authorizes a
   side or automatic merge, and sensitive Markdown shapes deliberately remain unclassified.
+- When the user explicitly selects a formatter for candidate groups, use
+  `vulcan sync format-propose <id> --group <group-id> --formatter <absolute-path> --formatter-version '<exact --version output>' --dry-run`.
+  Add repeatable `--formatter-arg` values, using `{file}` and `{config}` placeholders when needed,
+  and `--formatter-config <file>` only for an explicit config. Vulcan formats private copies of all
+  three preserved sides, requires their normalized merge to be clean, and creates a pinned proposal
+  only after `--dry-run` is removed. Review and approve that proposal separately; never infer
+  formatter choice, discover ambient config, or auto-accept formatter output.
 - Never choose a winner implicitly. Preview one explicit side with
   `vulcan sync resolve <id> --side base|local|remote --dry-run`.
   For a large path conflict, inspect each path's `group_id`, then repeat

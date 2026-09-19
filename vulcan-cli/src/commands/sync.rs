@@ -35,18 +35,20 @@ use vulcan_app::sync_notifications::{
     SyncNotificationStatusOptions, SyncNotificationStatusReport,
 };
 use vulcan_app::sync_proposals::{
-    approve_resolution_proposal, create_resolution_proposal_for_target,
-    create_supplied_resolution_proposal, create_supplied_resolution_proposal_with_selection,
-    prepare_editor_resolution, prepare_patch_resolution, preview_patch_resolution,
-    preview_supplied_resolution, reject_resolution_proposal, ApproveResolutionProposalOptions,
-    ApproveResolutionProposalReport, EditorResolutionPlan, PatchResolutionPreviewReport,
-    RejectResolutionProposalReport, ResolutionAgentPathOutput, ResolutionProposalOptions,
-    ResolutionProposalSelection, SuppliedResolutionPreviewReport,
+    approve_resolution_proposal, create_formatter_resolution_proposal,
+    create_resolution_proposal_for_target, create_supplied_resolution_proposal,
+    create_supplied_resolution_proposal_with_selection, prepare_editor_resolution,
+    prepare_patch_resolution, preview_patch_resolution, preview_supplied_resolution,
+    reject_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
+    EditorResolutionPlan, FormatterResolutionOptions, FormatterResolutionReport,
+    PatchResolutionPreviewReport, RejectResolutionProposalReport, ResolutionAgentPathOutput,
+    ResolutionProposal, ResolutionProposalOptions, ResolutionProposalSelection,
+    SuppliedResolutionPreviewReport,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_proposals::{
     create_and_auto_accept_resolution_proposal, AutoAcceptResolutionProposalReport,
-    OpenAiCompatibleResolutionProvider, ResolutionProposal,
+    OpenAiCompatibleResolutionProvider,
 };
 use vulcan_app::sync_retention::{
     apply_sync_retention, plan_sync_retention, SyncRetentionApplyReport, SyncRetentionPlanOptions,
@@ -463,6 +465,31 @@ fn handle_non_cycle_sync_command(
             *allow_broad_context,
             *auto_accept,
             target,
+        ),
+        SyncCommand::FormatPropose {
+            conflict_id,
+            wiki,
+            groups,
+            target,
+            formatter,
+            formatter_args,
+            formatter_version,
+            formatter_config,
+            timeout_seconds,
+            dry_run,
+        } => run_sync_format_propose(
+            cli,
+            paths,
+            wiki.as_deref(),
+            conflict_id,
+            groups,
+            target,
+            formatter,
+            formatter_args,
+            formatter_version,
+            formatter_config.as_deref(),
+            *timeout_seconds,
+            *dry_run,
         ),
         SyncCommand::Reject {
             conflict_id,
@@ -1037,6 +1064,51 @@ fn run_sync_propose(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_sync_format_propose(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    conflict_id: &str,
+    groups: &[String],
+    target: &crate::SyncTargetArgs,
+    formatter: &std::path::Path,
+    formatter_args: &[String],
+    formatter_version: &str,
+    formatter_config: Option<&std::path::Path>,
+    timeout_seconds: u64,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let (mut proposal_options, approval_options) =
+        manual_resolution_options(cli, registration_profile.as_deref(), target, dry_run)?;
+    proposal_options.group_ids = groups.to_vec();
+    let report = create_formatter_resolution_proposal(
+        &paths,
+        conflict_id,
+        &proposal_options,
+        &approval_options,
+        &FormatterResolutionOptions {
+            executable: formatter.to_path_buf(),
+            arguments: formatter_args.to_vec(),
+            expected_version: formatter_version.to_string(),
+            config: formatter_config.map(std::path::Path::to_path_buf),
+            timeout: Duration::from_secs(timeout_seconds),
+        },
+        &vulcan_app::sync::SyncCancellationToken::default(),
+    )
+    .map_err(CliError::operation)?;
+    match report {
+        FormatterResolutionReport::Preview { report } => {
+            print_supplied_resolution_preview(cli.output, &report)
+        }
+        FormatterResolutionReport::Proposed { proposal } => {
+            print_resolution_proposal(cli.output, &proposal)
+        }
+    }
+}
+
 #[cfg(not(feature = "web"))]
 #[allow(clippy::too_many_arguments)]
 fn run_sync_propose(
@@ -1072,7 +1144,6 @@ fn print_auto_accept_resolution_proposal(
     Ok(())
 }
 
-#[cfg(feature = "web")]
 fn print_resolution_proposal(
     output: OutputFormat,
     proposal: &ResolutionProposal,

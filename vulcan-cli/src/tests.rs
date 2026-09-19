@@ -2809,6 +2809,43 @@ fn parses_sync_propose_command() {
 }
 
 #[test]
+fn parses_sync_format_propose_command() {
+    let command = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "format-propose",
+        "0123456789abcdef0123456789abcdef",
+        "--group",
+        "fedcba9876543210fedcba9876543210",
+        "--formatter",
+        "/usr/bin/prettier",
+        "--formatter-version",
+        "prettier 4.0.0",
+        "--formatter-arg=--write",
+        "--formatter-arg={file}",
+        "--timeout-seconds",
+        "15",
+        "--dry-run",
+    ])
+    .expect("formatter proposal should parse");
+    assert!(matches!(
+        command.command,
+        Command::Sync {
+            command: SyncCommand::FormatPropose {
+                groups,
+                formatter_args,
+                formatter_version,
+                timeout_seconds: 15,
+                dry_run: true,
+                ..
+            }
+        } if groups == ["fedcba9876543210fedcba9876543210"]
+            && formatter_args == ["--write", "{file}"]
+            && formatter_version == "prettier 4.0.0"
+    ));
+}
+
+#[test]
 fn parses_sync_reject_command() {
     let command = Cli::try_parse_from([
         "vulcan",
