@@ -1,10 +1,10 @@
 //! Complete direct-mode vault synchronization workflows.
 
-use crate::sync_conflicts::{SyncConflictRecord, SyncConflictStore};
+use crate::sync_conflicts::{conflict_groups, SyncConflictRecord, SyncConflictStore};
 use crate::sync_state::{SyncApplyMarker, SyncJournal, SyncJournalPhase, SyncStateStore};
 use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::path::Path;
@@ -13,6 +13,9 @@ use vulcan_core::{
     ResolverLink, ScanSummary, VaultConfig, VaultPaths,
 };
 use vulcan_sync::{GitAutomaticMergeValidation, GitEngine};
+
+const MAX_SYNC_REPORT_CONFLICT_RECORD_PATHS: usize = 16;
+const MAX_SYNC_REPORT_CONFLICT_RECORD_DIAGNOSTIC_CHARS: usize = 4096;
 
 pub use vulcan_sync::{
     GitBranchSync, GitBranchSyncAction, GitCloneRequest, GitDetachedRecoveryReport,
@@ -62,8 +65,82 @@ pub struct VaultSyncReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_refresh_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "serialize_sync_report_conflict_record")]
     pub conflict_record: Option<SyncConflictRecord>,
     pub state: VaultSyncStateReport,
+}
+
+#[derive(Serialize)]
+struct SyncConflictRecordReportSummary<'a> {
+    version: u32,
+    id: &'a str,
+    repository_key: &'a str,
+    scope: vulcan_sync::GitConflictScope,
+    base_revision: Option<&'a str>,
+    local_revision: &'a str,
+    remote_revision: &'a str,
+    paths: Vec<&'a str>,
+    paths_returned: usize,
+    paths_complete: bool,
+    path_count: usize,
+    group_count: usize,
+    policy_version: u32,
+    policy_hash: &'a str,
+    preserved_record_ref: Option<&'a str>,
+    provenance_revision: Option<&'a str>,
+    projection: Option<&'a crate::sync_conflicts::SyncConflictProjectionRecord>,
+    diagnostics: String,
+    diagnostics_complete: bool,
+    detail_conflict_id: &'a str,
+}
+
+#[allow(clippy::ref_option)] // serde's field serializer receives a reference to the field type.
+fn serialize_sync_report_conflict_record<S>(
+    record: &Option<SyncConflictRecord>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let summary = record.as_ref().map(|record| {
+        let paths_returned = record
+            .paths
+            .len()
+            .min(MAX_SYNC_REPORT_CONFLICT_RECORD_PATHS);
+        let paths = record.paths[..paths_returned]
+            .iter()
+            .map(|path| path.path.as_str())
+            .collect();
+        let mut diagnostic_chars = record.diagnostics.chars();
+        let diagnostics = diagnostic_chars
+            .by_ref()
+            .take(MAX_SYNC_REPORT_CONFLICT_RECORD_DIAGNOSTIC_CHARS)
+            .collect::<String>();
+        let diagnostics_complete = diagnostic_chars.next().is_none();
+        SyncConflictRecordReportSummary {
+            version: record.version,
+            id: &record.id,
+            repository_key: &record.repository_key,
+            scope: record.scope,
+            base_revision: record.base_revision.as_deref(),
+            local_revision: &record.local_revision,
+            remote_revision: &record.remote_revision,
+            paths,
+            paths_returned,
+            paths_complete: paths_returned == record.paths.len(),
+            path_count: record.paths.len(),
+            group_count: conflict_groups(record).len(),
+            policy_version: record.policy_version,
+            policy_hash: &record.policy_hash,
+            preserved_record_ref: record.preserved_record_ref.as_deref(),
+            provenance_revision: record.provenance_revision.as_deref(),
+            projection: record.projection.as_ref(),
+            diagnostics,
+            diagnostics_complete,
+            detail_conflict_id: &record.id,
+        }
+    });
+    summary.serialize(serializer)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1749,6 +1826,78 @@ mod tests {
         SyncJournalPhase::Verifying,
         SyncJournalPhase::Error,
     ];
+
+    #[test]
+    fn serialized_vault_sync_conflict_records_are_bounded_summaries() {
+        #[derive(Serialize)]
+        struct Wrapper {
+            #[serde(serialize_with = "serialize_sync_report_conflict_record")]
+            conflict_record: Option<SyncConflictRecord>,
+        }
+
+        let absent_side = || crate::sync_conflicts::SyncConflictSideRecord {
+            revision: "revision".to_string(),
+            object_id: None,
+            mode: None,
+            kind: None,
+            artifact: None,
+            content_hash: None,
+            bytes: None,
+        };
+        let paths = (0..10_000)
+            .map(|index| crate::sync_conflicts::SyncConflictPathRecord {
+                path: format!("notes/{index:05}.md"),
+                group_id: format!("group-{index:05}"),
+                group_kind: crate::sync_conflicts::SyncConflictGroupKind::Path,
+                classification: None,
+                base: absent_side(),
+                local: absent_side(),
+                remote: absent_side(),
+            })
+            .collect();
+        let record = SyncConflictRecord {
+            version: crate::sync_conflicts::SYNC_CONFLICT_RECORD_VERSION,
+            id: "conflict-1".to_string(),
+            repository_key: "repository".to_string(),
+            work_tree: Path::new("/vault").to_path_buf(),
+            base_revision: Some("base".to_string()),
+            local_revision: "local".to_string(),
+            remote_revision: "remote".to_string(),
+            scope: GitConflictScope::Paths,
+            policy_version: 1,
+            policy_hash: "policy".to_string(),
+            preserved_base_ref: None,
+            preserved_local_ref: "refs/local".to_string(),
+            preserved_remote_ref: "refs/remote".to_string(),
+            preserved_record_ref: Some("refs/record".to_string()),
+            provenance_revision: Some("provenance".to_string()),
+            projection: None,
+            paths,
+            diagnostics: "d".repeat(10_000),
+        };
+
+        let encoded = serde_json::to_vec(&Wrapper {
+            conflict_record: Some(record),
+        })
+        .expect("serialize summary");
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
+        let summary = &value["conflict_record"];
+        assert_eq!(summary["path_count"], 10_000);
+        assert_eq!(summary["group_count"], 10_000);
+        assert_eq!(summary["paths"].as_array().expect("paths").len(), 16);
+        assert_eq!(summary["paths_complete"], false);
+        assert_eq!(
+            summary["diagnostics"].as_str().expect("diagnostics").len(),
+            4096
+        );
+        assert_eq!(summary["diagnostics_complete"], false);
+        assert_eq!(summary["detail_conflict_id"], "conflict-1");
+        assert!(
+            encoded.len() < 16 * 1024,
+            "summary was {} bytes",
+            encoded.len()
+        );
+    }
 
     fn git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")

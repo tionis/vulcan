@@ -138,7 +138,10 @@ they commit.
 
 - List actionable records with `vulcan sync conflicts`; inspect one immutable record with
   `vulcan sync conflicts <conflict-id>`. The human output prints the exact next commands. A
-  superseded record is history, not something the user can or should resolve; choose its listed
+  JSON `sync run` conflict is intentionally a bounded preview: use `path_count`, completeness
+  flags, and `detail_conflict_id`, then fetch paged detail instead of treating the preview as the
+  complete path set. A superseded record is history, not something the user can or should resolve;
+  choose its listed
   replacement or run sync again to obtain a current conflict. Keep base/local/remote refs and
   device-local artifacts.
   A fully applied resolution prunes its artifact copies automatically (newest 32 retained); the

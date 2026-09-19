@@ -11,7 +11,7 @@ use crate::{
     SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF,
     GIT_PLATFORM_PREFLIGHT_VERSION, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
@@ -29,6 +29,8 @@ const MAX_PLATFORM_PREFLIGHT_CACHE_BYTES: u64 = 256 * 1024;
 /// `merge-tree --write-tree` (used for conflict-free divergence merging)
 /// requires Git 2.38.
 const MINIMUM_GIT_VERSION: (u32, u32, u32) = (2, 38, 0);
+const MAX_SYNC_REPORT_CONFLICT_PATHS: usize = 16;
+const MAX_SYNC_REPORT_CONFLICT_DIAGNOSTIC_CHARS: usize = 4096;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PlatformPreflightCache {
@@ -508,6 +510,7 @@ pub struct GitSyncReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automatic_resolutions: Vec<GitAutomaticResolution>,
     pub retries: usize,
+    #[serde(serialize_with = "serialize_sync_report_conflict")]
     pub conflict: Option<GitSyncConflict>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pause: Option<GitSyncPause>,
@@ -517,6 +520,78 @@ pub struct GitSyncReport {
     pub branch: Option<GitBranchSync>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<GitSyncPreview>,
+}
+
+#[derive(Serialize)]
+struct GitSyncConflictReportSummary<'a> {
+    id: &'a str,
+    scope: GitConflictScope,
+    base: Option<&'a GitOid>,
+    remote: &'a GitOid,
+    local: &'a GitOid,
+    paths: &'a [String],
+    paths_returned: usize,
+    paths_complete: bool,
+    path_count: usize,
+    classifications: &'a [GitConflictClassification],
+    classifications_returned: usize,
+    classifications_complete: bool,
+    policy_version: u32,
+    policy_hash: &'a str,
+    preserved_refs: &'a GitConflictRefs,
+    provenance_revision: &'a GitOid,
+    projection: Option<&'a GitConflictProjection>,
+    merge_tree: Option<&'a GitOid>,
+    diagnostics: String,
+    diagnostics_complete: bool,
+    detail_conflict_id: &'a str,
+}
+
+#[allow(clippy::ref_option)] // serde's field serializer receives a reference to the field type.
+fn serialize_sync_report_conflict<S>(
+    conflict: &Option<GitSyncConflict>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let summary = conflict.as_ref().map(|conflict| {
+        let paths_returned = conflict.paths.len().min(MAX_SYNC_REPORT_CONFLICT_PATHS);
+        let classifications_returned = conflict
+            .classifications
+            .len()
+            .min(MAX_SYNC_REPORT_CONFLICT_PATHS);
+        let mut diagnostic_chars = conflict.diagnostics.chars();
+        let diagnostics = diagnostic_chars
+            .by_ref()
+            .take(MAX_SYNC_REPORT_CONFLICT_DIAGNOSTIC_CHARS)
+            .collect::<String>();
+        let diagnostics_complete = diagnostic_chars.next().is_none();
+        GitSyncConflictReportSummary {
+            id: &conflict.id,
+            scope: conflict.scope,
+            base: conflict.base.as_ref(),
+            remote: &conflict.remote,
+            local: &conflict.local,
+            paths: &conflict.paths[..paths_returned],
+            paths_returned,
+            paths_complete: paths_returned == conflict.paths.len(),
+            path_count: conflict.paths.len(),
+            classifications: &conflict.classifications[..classifications_returned],
+            classifications_returned,
+            classifications_complete: classifications_returned == conflict.classifications.len(),
+            policy_version: conflict.policy_version,
+            policy_hash: &conflict.policy_hash,
+            preserved_refs: &conflict.preserved_refs,
+            provenance_revision: &conflict.provenance_revision,
+            projection: conflict.projection.as_ref(),
+            merge_tree: conflict.merge_tree.as_ref(),
+            diagnostics_complete,
+            diagnostics,
+            detail_conflict_id: &conflict.id,
+        }
+    });
+    summary.serialize(serializer)
 }
 
 impl GitSyncReport {
@@ -3659,6 +3734,84 @@ mod tests {
             oid: GitOid::parse("1111111111111111111111111111111111111111").expect("object ID"),
             data: Some(data.to_vec()),
         }
+    }
+
+    #[test]
+    fn serialized_sync_conflicts_are_bounded_summaries() {
+        #[derive(Serialize)]
+        struct Wrapper {
+            #[serde(serialize_with = "serialize_sync_report_conflict")]
+            conflict: Option<GitSyncConflict>,
+        }
+
+        let paths = (0..10_000)
+            .map(|index| format!("notes/{index:05}.md"))
+            .collect::<Vec<_>>();
+        let classifications = paths
+            .iter()
+            .map(|path| GitConflictClassification {
+                path: path.clone(),
+                class: GitConflictClass::OverlappingText,
+                file_kind: MergeFileKind::Markdown,
+                rule_id: "default".to_string(),
+                configured_resolution: MergeResolution::RequireReview,
+                effective_resolution: MergeResolution::RequireReview,
+                diagnostic_code: "content".to_string(),
+                formatting_candidate: false,
+            })
+            .collect();
+        let oid = GitOid::parse("1111111111111111111111111111111111111111").expect("object ID");
+        let git_ref = |name: &str| GitRefName::parse(name).expect("Git ref");
+        let conflict = GitSyncConflict {
+            id: "conflict-1".to_string(),
+            scope: GitConflictScope::Paths,
+            base: Some(oid.clone()),
+            remote: oid.clone(),
+            local: oid.clone(),
+            paths,
+            classifications,
+            policy_version: 1,
+            policy_hash: "policy".to_string(),
+            preserved_refs: GitConflictRefs {
+                base: Some(git_ref("refs/vulcan/sync/conflicts/conflict-1/base")),
+                local: git_ref("refs/vulcan/sync/conflicts/conflict-1/local"),
+                remote: git_ref("refs/vulcan/sync/conflicts/conflict-1/remote"),
+                record: git_ref("refs/vulcan/sync/conflicts/conflict-1/record"),
+            },
+            provenance_revision: oid,
+            projection: None,
+            merge_tree: None,
+            diagnostics: "d".repeat(10_000),
+        };
+
+        let encoded = serde_json::to_vec(&Wrapper {
+            conflict: Some(conflict),
+        })
+        .expect("serialize summary");
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
+        let summary = &value["conflict"];
+        assert_eq!(summary["path_count"], 10_000);
+        assert_eq!(summary["paths"].as_array().expect("paths").len(), 16);
+        assert_eq!(
+            summary["classifications"]
+                .as_array()
+                .expect("classes")
+                .len(),
+            16
+        );
+        assert_eq!(summary["paths_complete"], false);
+        assert_eq!(summary["classifications_complete"], false);
+        assert_eq!(
+            summary["diagnostics"].as_str().expect("diagnostics").len(),
+            4096
+        );
+        assert_eq!(summary["diagnostics_complete"], false);
+        assert_eq!(summary["detail_conflict_id"], "conflict-1");
+        assert!(
+            encoded.len() < 128 * 1024,
+            "summary was {} bytes",
+            encoded.len()
+        );
     }
 
     #[test]
