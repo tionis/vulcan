@@ -222,8 +222,13 @@ and installed Linux/macOS services can read them from `$XDG_CONFIG_HOME/vulcan/d
 (normally `~/.config/vulcan/daemon.env`). Keep that file mode `0600` on Unix and use literal
 `NAME=value` records; inherited environment variables take precedence.
 
-To dedicate this daemon to unattended high-confidence conflict resolution, configure its resolution
-provider, opt in locally in each selected vault, and add an explicit worker allowlist:
+## Unattended conflict resolution
+
+A designated daemon can resolve conservative high-confidence conflicts and publish the accepted
+tree for other devices without an operator in the loop. Pairing it with the semantic worker keeps
+the byte-exact sync history separate from a readable commit history on `main`. The following is a
+complete setup for an already registered `personal` wiki; replace the paths, provider details, and
+environment-variable names, and make both named secrets available to the daemon process:
 
 ```sh
 vulcan daemon config set-agent resolution \
@@ -236,8 +241,37 @@ vulcan daemon config set-conflict-worker \
   --max-groups-per-run 128 \
   --poll-seconds 30 \
   --dry-run
-# Review the non-secret preview, rerun without --dry-run, then restart the daemon.
+
+# Review the non-secret preview, then apply the same allowlist.
+vulcan daemon config set-conflict-worker \
+  --wiki personal \
+  --max-groups-per-run 128 \
+  --poll-seconds 30
+
+vulcan daemon config set-agent semantic \
+  --base-url <openai-compatible-url> \
+  --model <model> \
+  --api-key-env VULCAN_SEMANTIC_KEY
+vulcan daemon config set-semantic-worker \
+  --wiki personal \
+  --semantic-ref refs/heads/main \
+  --quiet-seconds 900 \
+  --maximum-wait-seconds 21600 \
+  --poll-seconds 30 \
+  --dry-run
+
+# Review the preview, apply it without --dry-run, and reload daemon configuration.
+vulcan daemon config set-semantic-worker \
+  --wiki personal \
+  --semantic-ref refs/heads/main \
+  --quiet-seconds 900 \
+  --maximum-wait-seconds 21600 \
+  --poll-seconds 30
+vulcan daemon stop
+vulcan daemon start --detach
+vulcan daemon status
 vulcan daemon conflict-status
+vulcan daemon semantic-status
 ```
 
 The worker skips paused or actively syncing wikis and only sends pending singleton Markdown or text
@@ -254,3 +288,61 @@ token-spend coordination—across devices.
 Accepted resolutions immediately advance the canonical sync history consumed by other devices. To
 also maintain readable commits on `main`, configure the semantic worker above; it can organize and
 message the accepted bytes but cannot modify them.
+
+For automation and detailed diagnosis, request JSON status:
+
+```sh
+vulcan --output json daemon conflict-status
+```
+
+After a successful pass it has this shape (optional outcome fields are omitted when absent):
+
+```json
+{
+  "version": 1,
+  "checked_unix_ms": 1789900000000,
+  "entries": [
+    {
+      "wiki_id": "personal",
+      "unresolved_conflicts": 3,
+      "eligible_groups": 2,
+      "conflict_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proposal_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "resolution_commit": "0123456789abcdef0123456789abcdef01234567"
+    }
+  ]
+}
+```
+
+`checked_unix_ms` is the durable pass time. Each entry reports the wiki, unresolved-conflict count,
+and number of eligible groups selected in that pass. `conflict_id`, `proposal_id`, and
+`resolution_commit` identify an accepted result. A non-action outcome instead uses `skipped`; a
+failure uses `error` plus `retry_after_unix_ms`, the earliest epoch-millisecond retry time.
+
+### Troubleshooting the conflict worker
+
+- If status says that the worker has not completed a pass, confirm `vulcan daemon status`, inspect
+  `vulcan daemon config show`, verify the named provider key exists in the daemon environment, and
+  restart after configuration changes. An older installed `vulcan` binary may not contain these
+  commands; rebuild or update it before diagnosing daemon state.
+- `waiting for provider error backoff` means the preceding provider or approval attempt failed.
+  Read `error` and `retry_after_unix_ms` from JSON status, repair credentials, connectivity, or the
+  reported safety failure, and wait until that time. The five-minute backoff is durable across
+  restarts, so restarting is not a bypass.
+- `no pending conflict groups met the high-confidence policy` is an expected safe outcome for
+  binary, structural, missing-side, device-state, oversized, non-text, or otherwise ineligible
+  groups. Inspect them with `vulcan sync conflicts` and resolve them through the ordinary reviewed
+  workflow.
+- If proposal creation succeeded but automatic approval failed, the error retains the proposal ID.
+  Inspect the conflict, then preview explicit approval with
+  `vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run`, or preview rejection
+  with `vulcan sync reject <conflict-id> <proposal-id> --dry-run`. Do not edit proposal refs or state
+  files manually.
+- If local auto-accept is disabled, enable it only in device-local config with
+  `vulcan --vault <path> config set sync.agent_auto_accept true --target local`; do not put this
+  trust decision in shared vault config.
+- A backlog drains deliberately: each wiki processes at most one conflict per poll, with no more
+  than `max_groups_per_run` complete groups from that conflict. Monitor successive status passes
+  instead of raising the bound past 128.
+- Operate one resolver daemon per vault. Remote leases prevent unsafe publication races across
+  devices, but they do not prevent duplicate provider requests and token spend.

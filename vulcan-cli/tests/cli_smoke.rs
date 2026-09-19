@@ -15289,6 +15289,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("Never run `self-update` for an APT"));
     assert!(diagnostics_skill.contains("falls back to startup/periodic polling"));
     assert!(diagnostics_skill.contains("origin and fingerprint"));
+    assert!(diagnostics_skill.contains("vulcan --output json daemon conflict-status"));
+    assert!(diagnostics_skill.contains("retry_after_unix_ms"));
+    assert!(diagnostics_skill.contains("no pending conflict groups met the"));
+    assert!(diagnostics_skill.contains("sync reject <conflict-id> <proposal-id> --dry-run"));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("`--tool-pack sync`"));

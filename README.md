@@ -45,9 +45,9 @@ Read the [automation overview](docs/guide/automation-surfaces.md), [scripting gu
 
 Export selected notes as documents, datasets, books, or archives; build static sites; or publish to Outline. Outline integration includes explicit pull and publication workflows, exact note/document bindings, and named subtree routes with conflict handling.
 
-Git-backed synchronization replicates vault files across devices. An optional multi-vault daemon schedules synchronization, and the Obsidian companion exposes status and sync controls. Device synchronization and external wiki publication have separate responsibilities: external documents pass through an inspectable local vault.
+Git-backed synchronization replicates vault files across devices. An optional multi-vault daemon schedules synchronization, and the Obsidian companion exposes status and sync controls. A designated daemon can also ask a configured LLM to resolve only conservative, high-confidence text conflicts, publish accepted resolutions automatically, and feed a separate semantic worker that maintains readable commits on `main`. Every other conflict remains preserved for review. Device synchronization and external wiki publication have separate responsibilities: external documents pass through an inspectable local vault.
 
-Follow the guides for [static sites](docs/guide/static-sites.md), [Outline publishing](docs/guide/outline-publishing.md), [Git synchronization](docs/guide/git-sync.md), and the [Obsidian companion](integrations/obsidian-vulcan/README.md).
+Follow the guides for [static sites](docs/guide/static-sites.md), [Outline publishing](docs/guide/outline-publishing.md), [Git synchronization](docs/guide/git-sync.md), [unattended conflict resolution](docs/guide/git-sync.md#unattended-conflict-resolution), and the [Obsidian companion](integrations/obsidian-vulcan/README.md).
 
 ## Quick start
 

@@ -27,6 +27,30 @@ Typical first run against a vault:
 
 For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). `vulcan sync run` is a finite direct workflow and does not require the daemon.
 
+### Daemon conflict automation
+
+A designated daemon can automatically accept only high-confidence singleton Markdown or text
+conflict groups. This is opt-in at both levels: the daemon has an explicit wiki allowlist and each
+vault must enable `sync.agent_auto_accept` in device-local config. The principal commands are:
+
+```sh
+vulcan daemon config set-agent resolution --base-url <url> --model <model> --api-key-env <name>
+vulcan --vault <path> config set sync.agent_auto_accept true --target local
+vulcan daemon config set-conflict-worker --wiki <id> --dry-run
+vulcan daemon config set-conflict-worker --wiki <id>
+vulcan daemon conflict-status
+vulcan --output json daemon conflict-status
+vulcan daemon config clear-conflict-worker
+```
+
+The configuration is loaded at daemon startup, so restart the daemon after changing the worker.
+Provider secrets are read from the named environment variable, never stored in daemon config. The
+worker skips paused or actively syncing wikis, applies at most one conflict per wiki per pass, and
+retains binary, structural, incomplete, oversized, or otherwise uncertain conflicts for manual
+review. Pair it with `set-semantic-worker` when the accepted sync history should also become a
+human-readable semantic history on `main`. See the
+[complete setup, status schema, and troubleshooting guide](guide/git-sync.md#unattended-conflict-resolution).
+
 For a manually installed portable binary, `vulcan self-update check` inspects the binary's update
 channel and `vulcan self-update apply --dry-run` downloads and verifies an update without replacing
 the executable. Package-managed installations must update through their package manager. See the
