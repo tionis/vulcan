@@ -30,6 +30,8 @@ const MAX_CONFLICT_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CONFLICT_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_CONFLICT_PATH_PAGE_BYTES: u64 = 1024 * 1024;
 const MAX_CONFLICT_PATHS_PER_PAGE: usize = 128;
+const MAX_CONFLICT_PATH_COUNT: usize = 1_000_000;
+const MAX_CONFLICT_DIAGNOSTICS_BYTES: usize = 1024 * 1024;
 const MAX_CONFLICT_RESOLUTION_BYTES: u64 = 1024 * 1024;
 const MAX_CONFLICT_GROUPS_PER_BATCH: usize = 128;
 /// Fully resolved conflicts keep their records and resolution metadata
@@ -2818,32 +2820,45 @@ fn write_paged_record_noclobber(
     directory: &Path,
     record: &SyncConflictRecord,
 ) -> Result<(), AppError> {
+    if record.paths.len() > MAX_CONFLICT_PATH_COUNT {
+        return Err(AppError::operation(format!(
+            "sync conflict contains more than {MAX_CONFLICT_PATH_COUNT} paths"
+        )));
+    }
+    if record.diagnostics.len() > MAX_CONFLICT_DIAGNOSTICS_BYTES {
+        return Err(AppError::operation(format!(
+            "sync conflict diagnostics exceed the {MAX_CONFLICT_DIAGNOSTICS_BYTES} byte limit"
+        )));
+    }
     let pages_directory = directory.join("path-pages");
     fs::create_dir_all(&pages_directory).map_err(AppError::operation)?;
     let mut page_refs = Vec::new();
-    for (index, paths) in record.paths.chunks(MAX_CONFLICT_PATHS_PER_PAGE).enumerate() {
-        let page = SyncConflictPathPage {
-            version: SYNC_CONFLICT_RECORD_VERSION,
-            index,
-            paths: paths.to_vec(),
-        };
-        let mut bytes = serde_json::to_vec_pretty(&page).map_err(AppError::operation)?;
-        bytes.push(b'\n');
-        if bytes.len() as u64 > MAX_CONFLICT_PATH_PAGE_BYTES {
-            return Err(AppError::operation(format!(
-                "sync conflict path page {index} exceeds the {MAX_CONFLICT_PATH_PAGE_BYTES} byte limit"
-            )));
+    let mut paths = Vec::new();
+    for path in &record.paths {
+        paths.push(path.clone());
+        if paths.len() == MAX_CONFLICT_PATHS_PER_PAGE
+            || serialized_path_page_len(page_refs.len(), &paths)? > MAX_CONFLICT_PATH_PAGE_BYTES
+        {
+            let overflow = (serialized_path_page_len(page_refs.len(), &paths)?
+                > MAX_CONFLICT_PATH_PAGE_BYTES)
+                .then(|| paths.pop())
+                .flatten();
+            if paths.is_empty() {
+                return Err(AppError::operation(format!(
+                    "one sync conflict path exceeds the {MAX_CONFLICT_PATH_PAGE_BYTES} byte page limit"
+                )));
+            }
+            write_conflict_path_page(&pages_directory, page_refs.len(), &paths, &mut page_refs)?;
+            paths.clear();
+            if let Some(path) = overflow {
+                paths.push(path);
+            }
         }
-        let file = format!("paths-{index:06}.json");
-        write_bytes_noclobber(&pages_directory.join(&file), &bytes)?;
-        page_refs.push(SyncConflictPathPageRef {
-            file,
-            count: paths.len(),
-            digest: blake3::hash(&bytes).to_hex().to_string(),
-        });
+    }
+    if !paths.is_empty() {
+        write_conflict_path_page(&pages_directory, page_refs.len(), &paths, &mut page_refs)?;
     }
 
-    let paths_bytes = serde_json::to_vec(&record.paths).map_err(AppError::operation)?;
     let mut manifest = serde_json::to_value(record).map_err(AppError::operation)?;
     let object = manifest
         .as_object_mut()
@@ -2859,7 +2874,7 @@ fn write_paged_record_noclobber(
     );
     object.insert(
         "paths_digest".to_string(),
-        serde_json::json!(blake3::hash(&paths_bytes).to_hex().to_string()),
+        serde_json::json!(conflict_paths_digest(&record.paths)?),
     );
     object.insert(
         "path_pages".to_string(),
@@ -2881,12 +2896,69 @@ fn write_paged_record_noclobber(
     }
 }
 
+fn serialized_path_page_len(
+    index: usize,
+    paths: &[SyncConflictPathRecord],
+) -> Result<u64, AppError> {
+    let page = SyncConflictPathPage {
+        version: SYNC_CONFLICT_RECORD_VERSION,
+        index,
+        paths: paths.to_vec(),
+    };
+    Ok(serde_json::to_vec_pretty(&page)
+        .map_err(AppError::operation)?
+        .len() as u64
+        + 1)
+}
+
+fn write_conflict_path_page(
+    pages_directory: &Path,
+    index: usize,
+    paths: &[SyncConflictPathRecord],
+    page_refs: &mut Vec<SyncConflictPathPageRef>,
+) -> Result<(), AppError> {
+    let page = SyncConflictPathPage {
+        version: SYNC_CONFLICT_RECORD_VERSION,
+        index,
+        paths: paths.to_vec(),
+    };
+    let mut bytes = serde_json::to_vec_pretty(&page).map_err(AppError::operation)?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > MAX_CONFLICT_PATH_PAGE_BYTES {
+        return Err(AppError::operation(format!(
+            "sync conflict path page {index} exceeds the {MAX_CONFLICT_PATH_PAGE_BYTES} byte limit"
+        )));
+    }
+    let file = format!("paths-{index:06}.json");
+    write_bytes_noclobber(&pages_directory.join(&file), &bytes)?;
+    page_refs.push(SyncConflictPathPageRef {
+        file,
+        count: paths.len(),
+        digest: blake3::hash(&bytes).to_hex().to_string(),
+    });
+    Ok(())
+}
+
+fn conflict_paths_digest(paths: &[SyncConflictPathRecord]) -> Result<String, AppError> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"[");
+    for (index, path) in paths.iter().enumerate() {
+        if index > 0 {
+            hasher.update(b",");
+        }
+        hasher.update(&serde_json::to_vec(path).map_err(AppError::operation)?);
+    }
+    hasher.update(b"]");
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn load_paged_record(
     manifest_path: &Path,
     mut value: serde_json::Value,
 ) -> Result<SyncConflictRecord, AppError> {
     let manifest: SyncConflictPathManifest =
         serde_json::from_value(value.clone()).map_err(AppError::operation)?;
+    validate_path_manifest_limits(&manifest)?;
     let directory = manifest_path
         .parent()
         .ok_or_else(|| AppError::operation("sync conflict manifest has no parent directory"))?;
@@ -2933,8 +3005,7 @@ fn load_paged_record(
             "sync conflict path pages do not match the manifest count",
         ));
     }
-    let paths_bytes = serde_json::to_vec(&paths).map_err(AppError::operation)?;
-    if blake3::hash(&paths_bytes).to_hex().as_str() != manifest.paths_digest {
+    if conflict_paths_digest(&paths)? != manifest.paths_digest {
         return Err(AppError::operation(
             "sync conflict path pages do not match the manifest digest",
         ));
@@ -2963,6 +3034,7 @@ fn load_paged_record_slice(
 ) -> Result<(SyncConflictRecord, usize, SyncConflictProgress), AppError> {
     let manifest: SyncConflictPathManifest =
         serde_json::from_value(value.clone()).map_err(AppError::operation)?;
+    validate_path_manifest_limits(&manifest)?;
     if !(3..=SYNC_CONFLICT_RECORD_VERSION).contains(&manifest.version) {
         return Err(AppError::operation(
             "sync conflict path manifest has an unsupported version",
@@ -3105,6 +3177,21 @@ fn load_paged_record_slice(
     );
     let record = serde_json::from_value(value).map_err(AppError::operation)?;
     Ok((record, manifest.path_count, progress))
+}
+
+fn validate_path_manifest_limits(manifest: &SyncConflictPathManifest) -> Result<(), AppError> {
+    if manifest.path_count > MAX_CONFLICT_PATH_COUNT {
+        return Err(AppError::operation(format!(
+            "sync conflict manifest exceeds the {MAX_CONFLICT_PATH_COUNT} path limit"
+        )));
+    }
+    let maximum_pages = manifest.path_count;
+    if manifest.path_pages.len() > maximum_pages {
+        return Err(AppError::operation(format!(
+            "sync conflict manifest exceeds the {maximum_pages} page limit"
+        )));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3404,6 +3491,13 @@ fn validate_record(
     {
         return Err(AppError::operation(
             "sync conflict record version or identity mismatch",
+        ));
+    }
+    if record.paths.len() > MAX_CONFLICT_PATH_COUNT
+        || record.diagnostics.len() > MAX_CONFLICT_DIAGNOSTICS_BYTES
+    {
+        return Err(AppError::operation(
+            "sync conflict record exceeds its path or diagnostics limit",
         ));
     }
     Ok(())
@@ -4007,6 +4101,74 @@ mod tests {
         );
         let loaded = store.get(&key, &id).expect("paged record loads");
         assert_eq!(loaded, record);
+    }
+
+    #[test]
+    fn paged_conflict_storage_splits_by_bytes_and_rejects_unbounded_metadata() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let mut record = unresolved_record(&id, &key, temporary.path());
+        let prototype = record.paths[0].clone();
+        record.paths = (0..129)
+            .map(|index| SyncConflictPathRecord {
+                path: format!("Notes/{index:03}-{}.md", "x".repeat(20_000)),
+                ..prototype.clone()
+            })
+            .collect();
+        assign_conflict_groups(record.scope, &mut record.paths);
+        write_paged_record_noclobber(&directory, &record).expect("byte-aware pages");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("record.json")).expect("manifest"))
+                .expect("manifest JSON");
+        assert!(
+            manifest["path_pages"]
+                .as_array()
+                .expect("page references")
+                .len()
+                > 2
+        );
+        assert_eq!(store.get(&key, &id).expect("round trip"), record);
+
+        let oversized_id = "c".repeat(32);
+        let oversized_directory = store
+            .conflict_directory(&key, &oversized_id)
+            .expect("oversized directory");
+        fs::create_dir_all(&oversized_directory).expect("oversized directory");
+        let mut oversized = unresolved_record(&oversized_id, &key, temporary.path());
+        oversized.diagnostics = "x".repeat(MAX_CONFLICT_DIAGNOSTICS_BYTES + 1);
+        let error = write_paged_record_noclobber(&oversized_directory, &oversized)
+            .expect_err("oversized diagnostics");
+        assert!(error.to_string().contains("diagnostics exceed"));
+        assert!(!oversized_directory.join("record.json").exists());
+    }
+
+    #[test]
+    fn paged_conflict_reader_rejects_impossible_counts_before_loading_pages() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        let directory = store.conflict_directory(&key, &id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        let record = unresolved_record(&id, &key, temporary.path());
+        write_paged_record_noclobber(&directory, &record).expect("record");
+        let manifest_path = directory.join("record.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("manifest"))
+                .expect("manifest JSON");
+        manifest["path_count"] = serde_json::json!(MAX_CONFLICT_PATH_COUNT + 1);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest bytes"),
+        )
+        .expect("tampered manifest");
+
+        let error = store.get(&key, &id).expect_err("impossible count");
+        assert!(error.to_string().contains("path limit"));
     }
 
     #[test]
