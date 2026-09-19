@@ -7570,6 +7570,7 @@ fn sync_resolve_cli_resumes_a_published_unapplied_resolution() {
     let mut resolution: Value =
         serde_json::from_slice(&fs::read(&resolution_path).expect("resolution state should exist"))
             .expect("resolution state should be JSON");
+    resolution["version"] = Value::from(1);
     resolution["applied"] = Value::Bool(false);
     fs::write(
         &resolution_path,
@@ -7588,6 +7589,10 @@ fn sync_resolve_cli_resumes_a_published_unapplied_resolution() {
         fs::read_to_string(reader.join("Writer.md")).expect("clean merge restored"),
         "clean remote addition\n"
     );
+    let migrated: Value =
+        serde_json::from_slice(&fs::read(&resolution_path).expect("migrated resolution state"))
+            .expect("migrated resolution JSON");
+    assert_eq!(migrated["version"], 2);
 }
 
 #[test]

@@ -1245,7 +1245,7 @@ impl SyncConflictStore {
                 MAX_CONFLICT_RECORD_BYTES
             )));
         }
-        let resolution: SyncConflictResolutionRecord =
+        let mut resolution: SyncConflictResolutionRecord =
             serde_json::from_slice(&source).map_err(AppError::operation)?;
         if !(1..=SYNC_CONFLICT_RESOLUTION_VERSION).contains(&resolution.version)
             || resolution.conflict_id != conflict_id
@@ -1254,6 +1254,11 @@ impl SyncConflictStore {
                 "sync conflict resolution version or identity mismatch",
             ));
         }
+        // Resolution records are mutable crash-recovery state. Normalize a
+        // supported legacy record in memory so a resumed publish/application
+        // rewrites it with the current schema instead of failing the
+        // current-version-only save guard.
+        resolution.version = SYNC_CONFLICT_RESOLUTION_VERSION;
         Ok(Some(resolution))
     }
 
@@ -1889,7 +1894,7 @@ mod tests {
     }
 
     #[test]
-    fn version_one_resolution_records_remain_readable() {
+    fn version_one_resolution_records_migrate_and_remain_writable() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let key = "a".repeat(32);
         let id = "b".repeat(32);
@@ -1920,10 +1925,27 @@ mod tests {
             .get_resolution(&key, &id)
             .expect("legacy resolution loads")
             .expect("resolution present");
-        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.version, SYNC_CONFLICT_RESOLUTION_VERSION);
         assert_eq!(
             store.resolution_state(&key, &id).expect("state"),
             SyncConflictResolutionState::Resolved
+        );
+        store
+            .save_resolution(&key, &loaded)
+            .expect("migrated resolution remains writable");
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                store
+                    .conflict_directory(&key, &id)
+                    .expect("directory")
+                    .join("resolution.json"),
+            )
+            .expect("migrated resolution source"),
+        )
+        .expect("migrated resolution JSON");
+        assert_eq!(
+            persisted["version"],
+            serde_json::json!(SYNC_CONFLICT_RESOLUTION_VERSION)
         );
     }
 
@@ -1945,6 +1967,40 @@ mod tests {
         .expect("tampered record");
 
         let error = store.get(&key, &id).expect_err("future version must fail");
+        assert!(error.to_string().contains("version or identity mismatch"));
+    }
+
+    #[test]
+    fn unsupported_future_resolution_versions_still_fail_closed() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let id = "b".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        write_version_one_record(&store, &key, &id, temporary.path());
+        let resolution = serde_json::json!({
+            "version": SYNC_CONFLICT_RESOLUTION_VERSION + 1,
+            "conflict_id": id,
+            "base_revision": "base",
+            "local_revision": "local",
+            "remote_revision": "remote",
+            "recovery_revision": "recovery",
+            "resolved_tree": "tree",
+            "resolution_commit": "commit",
+            "published": true,
+            "applied": false
+        });
+        fs::write(
+            store
+                .conflict_directory(&key, &id)
+                .expect("directory")
+                .join("resolution.json"),
+            serde_json::to_vec_pretty(&resolution).expect("resolution"),
+        )
+        .expect("resolution file");
+
+        let error = store
+            .get_resolution(&key, &id)
+            .expect_err("future resolution version must fail");
         assert!(error.to_string().contains("version or identity mismatch"));
     }
 }
