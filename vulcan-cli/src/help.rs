@@ -406,9 +406,9 @@ pub(crate) fn builtin_help_topics() -> Vec<HelpTopicReport> {
         static_help_topic(
             "scripting",
             HelpTopicKind::Concept,
-            "Current scripting-oriented surfaces and the path to the standalone JS runtime.",
+            "JavaScript runtime surfaces, reusable automation patterns, and capability boundaries.",
             include_str!("../../docs/guide/scripting.md"),
-            &["sandbox", "js", "describe"],
+            &["sandbox", "js", "js.plugins", "describe"],
         ),
         static_help_topic(
             "skill-commands",
@@ -584,4 +584,54 @@ pub(crate) fn builtin_help_topic(name: &str) -> Option<HelpTopicReport> {
     builtin_help_topics()
         .into_iter()
         .find(|topic| topic.name.eq_ignore_ascii_case(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::builtin_help_topic;
+    use vulcan_core::QueryAst;
+
+    #[test]
+    fn query_help_topics_track_the_native_grammar() {
+        let filters = builtin_help_topic("filters").expect("filters topic");
+        assert!(filters.body.starts_with("# Typed Filters"));
+        assert!(filters.body.contains("`matches_i`"));
+        assert!(filters.body.contains("`field = null`"));
+        assert!(filters.body.contains("There is no `!=`"));
+
+        let dsl = builtin_help_topic("query-dsl").expect("query-dsl topic");
+        assert!(dsl.body.starts_with("# Native Query DSL"));
+        assert!(dsl.body.contains("from notes"));
+        assert!(dsl.body.contains("order by"));
+        assert!(dsl
+            .body
+            .contains("`notes` is currently the only native source"));
+        assert!(dsl.body.contains("`from #project`"));
+
+        for example in [
+            "from notes where status = active and due <= 2026-04-01",
+            "from notes where status = active select file.path, owner, due",
+            "from notes order by file.path asc limit 25 offset 50",
+        ] {
+            QueryAst::from_dsl(example)
+                .unwrap_or_else(|error| panic!("documented query {example:?} failed: {error}"));
+        }
+    }
+
+    #[test]
+    fn runtime_help_topics_document_capability_intersections() {
+        let sandbox = builtin_help_topic("sandbox").expect("sandbox topic");
+        assert!(sandbox
+            .body
+            .starts_with("# JavaScript Sandbox and Permissions"));
+        assert!(sandbox.body.contains("requires `--sandbox none`"));
+        assert!(sandbox.body.contains("explicit `execute` permission"));
+        assert!(sandbox.body.contains("Projected skill command tools"));
+
+        let scripting = builtin_help_topic("scripting").expect("scripting topic");
+        assert!(scripting.body.starts_with("# JavaScript Scripting"));
+        assert!(scripting.body.contains("JavaScript plugins"));
+        assert!(scripting.body.contains("`host.exec()`"));
+        assert!(scripting.body.contains("`js_runtime`"));
+    }
 }

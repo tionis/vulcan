@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, query, filters, and structured note listing.
-version: 3
+version: 4
 tools:
   - search
   - query
@@ -28,6 +28,8 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - Prefer explicit `file.*` fields for filesystem metadata and `properties.<key>` for frontmatter/inline properties. Unprefixed property keys remain compatible but are less self-documenting.
 - Use `ls --where` for quick path-oriented listings without the full query pipeline.
 - Reach for `help filters` and `help query-dsl` when the predicate grammar is unclear.
+- Native query DSL starts with `from notes`, combines predicates with `and`, and uses `order by`;
+  tag and folder selection are predicates, not alternate native sources.
 
 ## Guardrails
 
@@ -37,6 +39,8 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - DQL accepts only `query`, `engine`, `limit`, and `offset`; use structural query mode for path, filename, field projection, or property inclusion controls.
 - Default rows use a compact allowlist and omit properties, frontmatter, links, tasks, and inline-expression payloads unless explicitly projected.
 - Regex predicates live in the query/filter world as `matches` and `matches_i`; they are not the same as FTS search syntax.
+- A single `--where` value is one predicate. Repeat `--where` for `AND`; it does not accept `OR`,
+  parentheses, `!=`, `in`, or `is null` (`field = null` is supported).
 - If the result set is surprising, inspect the filter first before adding more conditions.
 
 ## Example Moves

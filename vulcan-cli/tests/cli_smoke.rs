@@ -15195,9 +15195,15 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("Never replay a stale whole-note replacement blindly"));
     let js_api = fs::read_to_string(vault_root.join(".agents/skills/js-api-guide/SKILL.md"))
         .expect("JS API skill should be readable");
+    assert!(js_api.contains("Use `--sandbox none` only for a trusted local script"));
+    assert!(js_api.contains("projected skill commands cannot declare"));
     assert!(js_api.contains("standalone write is an implicit validated commit"));
     assert!(js_api.contains("complete proposed change set through one journal batch"));
     assert!(js_api.contains("validation failure restores every original"));
+    let vault_query = fs::read_to_string(vault_root.join(".agents/skills/vault-query/SKILL.md"))
+        .expect("vault query skill should be readable");
+    assert!(vault_query.contains("Native query DSL starts with `from notes`"));
+    assert!(vault_query.contains("A single `--where` value is one predicate"));
     let properties =
         fs::read_to_string(vault_root.join(".agents/skills/properties-and-tags/SKILL.md"))
             .expect("properties skill should be readable");
@@ -24177,7 +24183,11 @@ fn help_json_output_returns_structured_topic_docs() {
     assert!(scripting_json["body"]
         .as_str()
         .expect("body should be present")
-        .contains("DataviewJS evaluation"));
+        .contains("# JavaScript Scripting"));
+    assert!(scripting_json["body"]
+        .as_str()
+        .expect("body should be present")
+        .contains("DataviewJS"));
 
     let js_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

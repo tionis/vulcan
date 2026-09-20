@@ -58,10 +58,12 @@ fn render_help_search_markdown(keyword: &str, report: &HelpSearchReport) -> Stri
 }
 
 fn render_help_topic_markdown(report: &HelpTopicReport) -> String {
-    let mut markdown = format!("# {}\n\n{}\n", report.name, report.summary);
-    if !report.body.is_empty() {
+    let (heading, body) = split_leading_markdown_heading(&report.body)
+        .unwrap_or_else(|| (format!("# {}", report.name), report.body.as_str()));
+    let mut markdown = format!("{heading}\n\n{}\n", report.summary);
+    if !body.is_empty() {
         markdown.push('\n');
-        markdown.push_str(&report.body);
+        markdown.push_str(body);
         markdown.push('\n');
     }
     if !report.options.is_empty() {
@@ -76,6 +78,18 @@ fn render_help_topic_markdown(report: &HelpTopicReport) -> String {
         }
     }
     markdown
+}
+
+fn split_leading_markdown_heading(body: &str) -> Option<(String, &str)> {
+    let (first_line, remainder) = body.split_once('\n').unwrap_or((body, ""));
+    if !first_line.starts_with("# ") {
+        return None;
+    }
+
+    Some((
+        first_line.to_string(),
+        remainder.trim_start_matches(['\r', '\n']),
+    ))
 }
 
 pub(crate) fn print_describe_report(
@@ -988,5 +1002,41 @@ fn describe_argument(argument: &clap::Arg) -> CliArgDescribe {
             .into_iter()
             .map(|value| value.get_name().to_string())
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_help_topic_markdown;
+    use crate::help::{HelpTopicKind, HelpTopicReport};
+
+    fn report(body: &str) -> HelpTopicReport {
+        HelpTopicReport {
+            name: "sample-topic".to_string(),
+            kind: HelpTopicKind::Guide,
+            summary: "A summary.".to_string(),
+            body: body.to_string(),
+            options: Vec::new(),
+            subcommands: Vec::new(),
+            related: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn standalone_guide_heading_replaces_generated_topic_heading() {
+        let markdown = render_help_topic_markdown(&report("# Standalone Guide\n\nGuide body."));
+
+        assert!(markdown.starts_with("# Standalone Guide\n\nA summary."));
+        assert_eq!(markdown.matches("# Standalone Guide").count(), 1);
+        assert!(!markdown.contains("# sample-topic"));
+        assert!(markdown.contains("Guide body."));
+    }
+
+    #[test]
+    fn headingless_help_body_keeps_generated_topic_heading() {
+        let markdown = render_help_topic_markdown(&report("Help body."));
+
+        assert!(markdown.starts_with("# sample-topic\n\nA summary."));
+        assert!(markdown.contains("Help body."));
     }
 }

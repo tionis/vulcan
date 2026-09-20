@@ -1,23 +1,127 @@
-The query DSL is Vulcan's structured language for selecting notes, tasks, and Dataview-like results.
+# Native Query DSL
 
-Shape:
+Vulcan's native query DSL is the structured language accepted by `vulcan query` and other
+query-aware workflows. It selects indexed notes, applies typed predicates, projects fields, orders
+results, and bounds the result window.
 
-1. Start with a source such as `from notes`, `from #tag`, or a saved source.
-2. Add `where` clauses for typed filters.
-3. Add `sort by`, `limit`, or output formatting when needed.
+It is distinct from Dataview Query Language (DQL). Use `--language vulcan` to force this grammar,
+or leave `--language auto` in place when the input is unambiguous.
 
-Examples:
+## Grammar
 
-- `from notes where status = active sort by updated desc`
-- `from #project/alpha where owner = "eric"`
-- `from notes where file.path starts_with "Daily/" limit 10`
+```text
+from notes
+  [where <field> <operator> <value> [and <field> <operator> <value>...]]
+  [select <field>[, <field>...]]
+  [order by <field> [asc|desc]]
+  [limit <count>]
+  [offset <count>]
+```
 
-Use `query` when you care about fields, tags, links, or file metadata. Use `search` when you care about note text and ranking.
+`notes` is currently the only native source. Select tags or folders with predicates rather than
+inventing another source:
 
-Related command patterns:
+```text
+from notes where tags contains project
+from notes where file.path starts_with "Projects/"
+```
 
-- `vulcan query --format table '<dsl>'`
-- `vulcan ls --where 'status = active'`
-- `vulcan search release --where 'team = platform'`
+`from #project`, saved-source names, and `sort by` are not native DSL syntax. Dataview DQL does
+support tag sources, but it is a separate language.
 
-See also: `help filters`, `help examples`, `help query`.
+## Predicates
+
+The DSL accepts the same typed fields, values, and operators as [`--where` filters](filters.md):
+
+```text
+=  >  >=  <  <=  starts_with  contains  matches  matches_i
+```
+
+Join predicates with `and`:
+
+```text
+from notes where status = active and due <= 2026-04-01
+```
+
+The native DSL does not currently support `OR`, parentheses, or negation. Write `null` directly
+for a null value, and write dates directly rather than using `date(...)`.
+
+## Projection, ordering, and paging
+
+Use `select` to return particular fields:
+
+```text
+from notes where status = active select file.path, owner, due
+```
+
+Use `order by`, not `sort by`, for ordering:
+
+```text
+from notes order by file.mtime desc
+```
+
+`limit` bounds the number of results, while `offset` skips an initial result window:
+
+```text
+from notes order by file.path asc limit 25 offset 50
+```
+
+## CLI examples
+
+```bash
+# Bare query defaults to `from notes`.
+vulcan query
+
+vulcan query 'from notes where status = done order by file.mtime desc limit 10'
+vulcan query 'from notes where tags contains sprint and reviewed = true'
+vulcan query --format paths 'from notes where file.name matches "^2026-"'
+vulcan query --glob 'Projects/**' 'from notes'
+vulcan query --explain 'from notes where status = backlog'
+```
+
+The shortcut form builds the same kind of note query without writing the DSL:
+
+```bash
+vulcan query --where 'status = done' --sort due
+```
+
+Repeat `--where` in shortcut form. Do not put `and` inside one shortcut filter.
+
+## DQL and language selection
+
+Automatic language selection recognizes inputs beginning with `TABLE`, `LIST`, `TASK`, or
+`CALENDAR` as Dataview DQL. Force the intended parser when input comes from an external system:
+
+```bash
+vulcan query --language vulcan 'from notes where status = active'
+vulcan query --language dql 'TABLE status FROM #project'
+```
+
+Native DSL sources and DQL sources are not interchangeable.
+
+## JSON form
+
+Automations may pass the canonical query AST as JSON:
+
+```json
+{
+  "source": "notes",
+  "predicates": [
+    {"field": "status", "operator": "eq", "value": "done"}
+  ],
+  "sort": {"field": "file.mtime", "descending": true},
+  "limit": 10,
+  "offset": 0
+}
+```
+
+```bash
+vulcan query --json \
+  '{"source":"notes","predicates":[{"field":"status","operator":"eq","value":"done"}]}'
+```
+
+Use `vulcan describe` when a caller needs the runtime machine-readable schema. Use
+`vulcan --output json query ...` to obtain structured results; this output choice is independent of
+the query input language.
+
+See also `vulcan help filters`, `vulcan help query`, and the [CLI guide](../cli.md).
