@@ -5391,6 +5391,147 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] Test defaults/overrides and registry migration, mixed knowledge/files-only registrations, daemon/direct equivalence, no-index/no-Markdown operation, lifecycle/cancellation isolation, unchanged knowledge workflows, normal-index preservation, and unsupported-operation diagnostics. Add CLI JSON and daemon contract tests; verify no implicit network, scripts, or index initialization.
 - [ ] Update README shipped/planned claims, `docs/guide/git-sync.md`, `docs/reference/config.md`, CLI/API/help/discovery/completions, and installation/companion guidance where affected. Extend existing `sync-workflow` and `git-workflow` skills when commands ship; review `docs/assistant/AGENTS.template.md`. Validate installed skill payloads and meaningful command availability. Include these updates and tests in each implementation slice, not a final cleanup commit.
 
+### 10.10 Named remote MCP instances and consent grants
+
+**Goal:** Preserve `vulcan mcp` as a complete local stdio/loopback integration while making
+remote MCP access through ChatGPT and similar hosted clients a safe, low-configuration workflow.
+A named remote instance defines only a deployment ceiling. The human selects the authority for one
+client connection during OAuth authorization, and Vulcan issues a revocable attenuated grant rather
+than forcing every agent's permissions and tool packs into process-start flags.
+
+**Depends on:** The completed Phase 9 MCP registry, tool-pack, OAuth/IndieAuth, and static permission
+profile work. Foreground single-vault delivery may begin on the current HTTP transport. Resident and
+multi-vault hosting converges with 10.7.1–10.7.6 and must not introduce a second MCP dispatcher or
+authorization model. Phase 17 may later resolve consent to canonical delegable grants, but is not a
+prerequisite: the initial implementation resolves the same `PermissionGrant` and
+`PermissionFilter` contracts from bounded device-local connection grants.
+
+**Operating modes and compatibility**
+
+- `vulcan mcp` remains the local, client-owned stdio default. Existing transport, pack, permission,
+  and advanced OAuth flags remain compatible; no daemon, account, browser login, or initialized
+  remote is required.
+- Loopback HTTP remains available for local harnesses. A temporary invocation does not persist a
+  remote registration or silently start the resident daemon.
+- Remote access uses named instances, for example `vulcan mcp remote init personal-chatgpt` followed
+  by `vulcan mcp remote run personal-chatgpt`. Multiple instances may run concurrently when their
+  listeners do not conflict, may route through distinct hosts or paths, and may expose the same or
+  different registered vaults under different ceilings.
+- A reverse proxy or private-network ingress remains transport only. It does not authenticate the
+  human, choose Vulcan permissions, or become a trusted authorization boundary merely because the
+  listener is private.
+
+**Configuration and state ownership**
+
+- Named remote definitions are device-global deployment configuration under Vulcan's user config
+  directory, alongside daemon configuration. They do not live in synced `.vulcan/config.toml`.
+  Public URL, bind address, endpoint path, authentication mode, allowed vault registrations, and
+  ceiling references are properties of the host device, not canonical vault content.
+- Vault `.vulcan/config.toml` continues to define reusable permission profiles and other portable
+  vault policy. A remote definition references those profiles; it never copies a wider authority
+  into a transport-specific policy model. Neither shared nor local vault configuration activates a
+  named remote; copying or synchronizing a vault must never expose it from another device.
+- OAuth signing material, client secrets, refresh-token secrets, and similar credentials use the
+  device-local `SecretStore`. Connection grants, refresh-token families, revocations, and audit
+  state are durable device state outside `cache.db` and outside TOML. Authorization codes, PKCE
+  verifiers, challenges, and MCP sessions are bounded ephemeral state.
+- Every remote, grant, token, and session has a stable instance identity. Tokens are audience-bound
+  to the exact remote resource; a credential for one host/path cannot authorize another remote even
+  when they share an IndieAuth identity, vault, process, or signing-key infrastructure.
+
+**Authorization model**
+
+```text
+named remote instance
+        |
+        v
+server ceiling (maximum PermissionGrant + eligible vaults/packs)
+        |
+        v  authenticate human, then explicitly consent
+connection grant (client + subject + vault + profile + packs + expiry)
+        |
+        v  intersect and revalidate for every request
+session authority -> PermissionGuard -> PermissionFilter
+```
+
+- IndieAuth authenticates the human identity. Vulcan remains the MCP-facing OAuth authorization
+  server, renders consent, records the approved connection grant, and issues the audience-bound
+  access token. Authentication alone never selects or implies vault authority.
+- Initial consent offers reviewed named permission profiles, with `readonly` recommended, plus an
+  advanced configured-profile choice, initial static tool packs, and an expiry. Tool packs remain
+  discovery/exposure controls rather than authorization and are always filtered through the
+  effective permission grant.
+- Effective request authority is the monotonic intersection of the remote ceiling, the approved
+  connection grant, and current fail-closed policy restrictions. Existing grants retain an approved
+  permission snapshot or equivalent attenuation boundary: changing a named profile may narrow them
+  immediately but cannot silently broaden them. Any expansion requires fresh consent.
+- Bind each MCP session to its instance, grant, OAuth client, subject, vault authority, and audience.
+  A different otherwise-valid bearer token cannot attach to an existing session ID. Session-local
+  pack changes, stored large-result resources, notifications, and cancellation remain inside that
+  authority boundary.
+- Access tokens are short lived. Use rotating refresh tokens with replay detection and grant-family
+  revocation, or require explicit reauthorization when refresh is unavailable. Revoking a connection
+  invalidates its future access and refresh attempts without restarting unrelated MCP instances.
+- Carry requested and granted scopes through authorization codes and token responses, advertise
+  supported scopes in protected-resource and authorization-server metadata, reject unsupported or
+  widened requests, and return standards-compatible `WWW-Authenticate`/`insufficient_scope`
+  responses. Scopes provide interoperable coarse claims; Vulcan permission grants remain the
+  authoritative fine-grained policy.
+- Retain dynamic client registration compatibility and add Client ID Metadata Document support for
+  clients that use it. Validate redirect URIs and client metadata fail closed; support public-client
+  PKCE and only the token-endpoint authentication methods Vulcan actually verifies.
+
+**CLI and management surface**
+
+- [ ] Add `vulcan mcp remote init <name>` with `--dry-run` and JSON output. Require or discover the
+  public HTTPS resource URL and IndieAuth identity, choose a non-conflicting loopback listener,
+  establish a safe ceiling/default grant, generate secret references, and print the one MCP URL the
+  user supplies to the hosted client. Never default a remote ceiling to `unrestricted`.
+- [ ] Add `remote list`, `remote show`, `remote set`, `remote run`, and `remote remove` over the
+  device-global registry. Destructive removal revokes or explicitly preserves grants by policy and
+  never deletes vault content. Foreground `run` and resident hosting consume the same validated
+  definition.
+- [ ] Add `mcp connections list|show|revoke` scoped by remote instance, with stable IDs, client and
+  subject metadata, vault/profile/pack summary, creation/expiry/last-use/revocation state, JSON
+  output, and secret-free diagnostics. Consent and management surfaces must make the exact vault and
+  effective authority visible.
+- [ ] Keep advanced direct `--oauth-*`, `--auth-token`, bind, and pack flags available for debugging,
+  external OIDC, and compatibility. The normal remote path derives them from the named definition
+  instead of requiring users to assemble a long flag sequence.
+
+**Implementation slices**
+
+- [ ] Define versioned remote-instance, connection-grant, token-family, and redacted report types in
+  reusable non-CLI modules. Add atomic/locked device config and durable-state stores with strict file
+  permissions, schema validation, stable ULIDs, collision checks, and migrations. Neither daemon nor
+  app code may import CLI types.
+- [ ] Bind the existing HTTP session lifecycle to an authenticated authority record and add
+  regression tests with two subjects, two grants, two remotes, and attempted cross-session/token
+  reuse. Preserve stdio behavior and static/adaptive pack semantics.
+- [ ] Replace the approval-token-only browser page for the opinionated local issuer with an
+  IndieAuth-backed login-and-consent transaction. Preserve OAuth state/PKCE across the upstream
+  round trip, display client/resource/vault/authority clearly, require an explicit approval action,
+  and issue a code bound to the resulting grant.
+- [ ] Implement scope-correct authorization codes, short-lived access tokens, rotating refresh
+  tokens, revocation, and restart-safe grant lookup. Test audience, issuer, expiry, narrowing,
+  refresh replay, client binding, redirect validation, CSRF/state handling, and redaction.
+- [ ] Add the named remote CLI and a single-vault foreground adapter first, then host the same
+  definitions through 10.7 without changing OAuth, MCP schema, or consent behavior. Coordinate
+  writers through the shared per-vault runtime when resident; standalone overlap must acquire the
+  applicable ownership lock or fail with an actionable conflict.
+- [ ] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
+  Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
+- [ ] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,
+  integrated help, configuration reference, and migration examples in every user-facing slice.
+  Document proxy examples without treating NetBird, Tailscale, tunnels, or TLS termination as the
+  authorization layer.
+
+**Acceptance:** Several named remote MCP instances can run concurrently with isolated audiences,
+grants, sessions, packs, and vault ceilings; the ordinary remote setup path requires only durable
+instance configuration plus browser consent; local stdio remains daemon-independent and behaviorally
+compatible; changing or compromising one connection cannot broaden or reuse another connection's
+authority.
+
 ## Phase 11: Git Auto-Versioning (Daemon-Level)
 
 **Goal:** Automatic version history for vault content managed by the daemon. Extends the per-vault auto-commit from Phase 9.3 to daemon-managed vaults with richer history APIs.
