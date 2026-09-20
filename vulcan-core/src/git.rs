@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug)]
@@ -138,6 +138,8 @@ pub fn auto_commit(
             sha: None,
         });
     }
+
+    let _repository_lock = acquire_repository_mutation_lock(vault_root)?;
 
     let candidate_paths = resolve_commit_paths(vault_root, config, changed_files)?;
     if candidate_paths.is_empty() {
@@ -299,6 +301,7 @@ pub fn git_diff(vault_root: &Path, path: Option<&str>) -> Result<String, GitErro
 
 pub fn git_commit(vault_root: &Path, message: &str) -> Result<GitCommitReport, GitError> {
     ensure_git_repo(vault_root)?;
+    let _repository_lock = acquire_repository_mutation_lock(vault_root)?;
     let commit_paths = git_status(vault_root)?
         .changed_paths()
         .into_iter()
@@ -468,6 +471,20 @@ fn staged_paths(vault_root: &Path) -> Result<Vec<String>, GitError> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect())
+}
+
+fn acquire_repository_mutation_lock(
+    vault_root: &Path,
+) -> Result<vulcan_sync::RepositoryLock, GitError> {
+    let git_dir = run_git_capture(vault_root, |command| {
+        command.args(["rev-parse", "--absolute-git-dir"]);
+    })?;
+    let git_dir = PathBuf::from(git_dir.trim());
+    vulcan_sync::RepositoryLock::acquire(&git_dir).map_err(|error| {
+        GitError::CommandFailed(format!(
+            "cannot acquire the Vulcan repository mutation lock: {error}"
+        ))
+    })
 }
 
 fn collect_git_log(
@@ -803,6 +820,32 @@ mod tests {
 
         let status = git_status(temp_dir.path()).expect("status should succeed");
         assert_eq!(status.unstaged, vec!["Other.md".to_string()]);
+    }
+
+    #[test]
+    fn explicit_commit_respects_the_shared_repository_mutation_lock() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        fs::write(temp_dir.path().join("Home.md"), "home\n").expect("home note");
+        commit_all(temp_dir.path(), "Initial");
+        fs::write(temp_dir.path().join("Home.md"), "changed\n").expect("home update");
+        let git_dir = PathBuf::from(
+            run_git_capture(temp_dir.path(), |command| {
+                command.args(["rev-parse", "--absolute-git-dir"]);
+            })
+            .expect("git dir")
+            .trim(),
+        );
+        let _held = vulcan_sync::RepositoryLock::acquire(&git_dir).expect("repository lock");
+
+        let error = git_commit(temp_dir.path(), "blocked").expect_err("lock contention");
+        assert!(error
+            .to_string()
+            .contains("another Vulcan mutation holds the repository lock"));
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("Home.md")).expect("home contents"),
+            "changed\n"
+        );
     }
 
     #[test]

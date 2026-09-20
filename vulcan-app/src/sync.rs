@@ -1083,13 +1083,14 @@ pub fn sync_git_vault_with_observer_and_engine(
         tree_validator: VaultTreeValidator::new(validation_config),
     };
     let backend_started = Instant::now();
-    let sync = match vulcan_sync::sync_git_once_with_control(
+    let sync_result = run_sync_backend_with_vault_lock(
         engine,
-        paths.vault_root(),
+        paths,
         &effective_options,
         cancellation,
         &mut observer,
-    ) {
+    )?;
+    let sync = match sync_result {
         Ok(sync) => sync,
         Err(error) => {
             let classified = vulcan_sync::classify_git_sync_error(&error);
@@ -1149,6 +1150,31 @@ pub fn sync_git_vault_with_observer_and_engine(
             retained,
         },
     })
+}
+
+fn run_sync_backend_with_vault_lock(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    cancellation: &SyncCancellationToken,
+    observer: &mut dyn GitSyncObserver,
+) -> Result<Result<vulcan_sync::GitSyncReport, vulcan_sync::GitSyncError>, AppError> {
+    // The backend acquires the repository lock inside this guard, preserving
+    // vault-before-repository ordering. Uninitialized plain Git vaults have no
+    // application lock yet and remain supported.
+    let vault_lock = (!options.dry_run && paths.vulcan_dir().is_dir())
+        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
+        .transpose()
+        .map_err(AppError::operation)?;
+    let result = vulcan_sync::sync_git_once_with_control(
+        engine,
+        paths.vault_root(),
+        options,
+        cancellation,
+        observer,
+    );
+    drop(vault_lock);
+    Ok(result)
 }
 
 fn refresh_cache_after_sync_with_timing(
@@ -2191,6 +2217,26 @@ mod tests {
             reader,
             store,
         }
+    }
+
+    #[test]
+    fn direct_sync_waits_for_the_shared_vault_write_lock() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        let paths = VaultPaths::new(&fixture.writer);
+        initialize_vulcan_dir(&paths).expect("initialize vault coordination directory");
+        let held = vulcan_core::write_lock::acquire_write_lock(&paths).expect("vault lock");
+        let store = fixture.store.clone();
+        let worker_paths = paths.clone();
+        let worker = std::thread::spawn(move || {
+            sync_git_vault_with_state_store(&worker_paths, &GitSyncOptions::default(), &store)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !worker.is_finished(),
+            "sync must wait for a direct vault writer"
+        );
+        drop(held);
+        worker.join().expect("sync thread").expect("sync result");
     }
 
     #[test]

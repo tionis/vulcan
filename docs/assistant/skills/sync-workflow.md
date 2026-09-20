@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 31
+version: 32
 metadata:
   vulcan:
     managed: true
@@ -26,6 +26,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   Direct commands never start a daemon implicitly.
 - For registered wikis, select one ID, `--group <name>`, or `--all`. Aggregate results are independent
   per-wiki transactions, not a cross-repository atomic commit.
+- Direct and daemon sync of an initialized vault use the same vault-write and repository locks as
+  ordinary Vulcan mutations and Git/auto-commit commands. A competing writer may therefore wait or
+  report bounded repository contention; do not bypass the lock with raw Git while sync is active.
 - Use `vulcan daemon status` before diagnosing automatic work. It reports each registered wiki's
   reconstructed daemon state, latest daemon-supervised attempt, path, and locally cached
   notification-advertisement discovery. It also lists hosted sync, trigger, notification, alert,
