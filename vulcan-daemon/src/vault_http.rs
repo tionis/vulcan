@@ -22,7 +22,8 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use vulcan_app::serve::{
-    route_request, ServeHealthState, ServeRequest, ServeResponse, ServeRouteOptions,
+    route_request, serve_route_paths, ServeHealthState, ServeRequest, ServeResponse,
+    ServeRouteOptions,
 };
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
@@ -128,7 +129,11 @@ impl std::fmt::Display for VaultHttpConfigurationError {
 impl std::error::Error for VaultHttpConfigurationError {}
 
 pub fn vault_router(state: VaultHttpState) -> Router {
-    Router::new()
+    let mut router = Router::new();
+    for path in serve_route_paths() {
+        router = router.route(path, any(dispatch));
+    }
+    router
         .fallback(any(dispatch))
         .layer(DefaultBodyLimit::max(VAULT_HTTP_MAX_REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), authorize))
@@ -404,6 +409,31 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(body(response).await["ok"], true);
         }
+    }
+
+    #[tokio::test]
+    async fn router_publishes_exactly_the_routes_it_installs() {
+        let (_vault, state) = fixture();
+        let response = vault_router(state)
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/")
+                    .header(HOST, "127.0.0.1:3210")
+                    .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body(response).await;
+        let published = value["routes"]
+            .as_array()
+            .expect("routes")
+            .iter()
+            .map(|route| route["path"].as_str().expect("path"))
+            .collect::<Vec<_>>();
+        assert_eq!(published, serve_route_paths().collect::<Vec<_>>());
     }
 
     #[tokio::test]

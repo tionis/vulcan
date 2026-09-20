@@ -40,6 +40,223 @@ pub struct ServeResponse {
     pub body: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServeRouteId {
+    Root,
+    Health,
+    Search,
+    Notes,
+    GraphStats,
+    Related,
+    DataviewInline,
+    DataviewQuery,
+    DataviewQueryJs,
+    DataviewEval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ServeRouteDefinition {
+    id: ServeRouteId,
+    path: &'static str,
+}
+
+const SERVE_ROUTES: &[ServeRouteDefinition] = &[
+    ServeRouteDefinition {
+        id: ServeRouteId::Root,
+        path: "/",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::Health,
+        path: "/health",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::Search,
+        path: "/search",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::Notes,
+        path: "/notes",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::GraphStats,
+        path: "/graph/stats",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::Related,
+        path: "/related",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::DataviewInline,
+        path: "/dataview/inline",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::DataviewQuery,
+        path: "/dataview/query",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::DataviewQueryJs,
+        path: "/dataview/query-js",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::DataviewEval,
+        path: "/dataview/eval",
+    },
+];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServeRouteCapability {
+    pub path: &'static str,
+    pub methods: &'static [&'static str],
+    pub installed: bool,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "slice_is_empty")]
+    pub optional_features: &'static [&'static str],
+    pub query_schema: Value,
+    pub response_schema: Value,
+}
+
+fn slice_is_empty<T>(slice: &[T]) -> bool {
+    slice.is_empty()
+}
+
+pub fn serve_route_paths() -> impl Iterator<Item = &'static str> {
+    SERVE_ROUTES.iter().map(|route| route.path)
+}
+
+#[must_use]
+pub fn serve_route_capabilities() -> Vec<ServeRouteCapability> {
+    SERVE_ROUTES
+        .iter()
+        .map(|definition| route_capability(*definition))
+        .collect()
+}
+
+fn route_capability(definition: ServeRouteDefinition) -> ServeRouteCapability {
+    let (available, unavailable_reason, optional_features) = match definition.id {
+        ServeRouteId::Related => (
+            cfg!(feature = "vectors"),
+            (!cfg!(feature = "vectors")).then_some("requires the `vectors` feature"),
+            &["vectors"][..],
+        ),
+        ServeRouteId::Search => (true, None, &["vectors"][..]),
+        ServeRouteId::DataviewQueryJs => (
+            cfg!(feature = "js_runtime"),
+            (!cfg!(feature = "js_runtime")).then_some("requires the `js_runtime` feature"),
+            &["js_runtime"][..],
+        ),
+        ServeRouteId::DataviewEval => (true, None, &["js_runtime"][..]),
+        _ => (true, None, &[][..]),
+    };
+    ServeRouteCapability {
+        path: definition.path,
+        methods: &["GET"],
+        installed: true,
+        available,
+        unavailable_reason,
+        optional_features,
+        query_schema: route_query_schema(definition.id),
+        response_schema: common_response_schema(),
+    }
+}
+
+fn route_query_schema(route: ServeRouteId) -> Value {
+    let (properties, required) = match route {
+        ServeRouteId::Search => (
+            json!({
+                "q": { "type": "string", "minLength": 1 },
+                "tag": { "type": "string" },
+                "path_prefix": { "type": "string" },
+                "has_property": { "type": "string" },
+                "where": { "type": "array", "items": { "type": "string" } },
+                "provider": { "type": "string" },
+                "mode": { "enum": ["keyword", "hybrid"] },
+                "sort": { "type": "string" },
+                "limit": nonnegative_integer_query_schema(),
+                "context_size": nonnegative_integer_query_schema(),
+                "match_case": boolean_query_schema(),
+                "raw_query": boolean_query_schema(),
+                "fuzzy": boolean_query_schema(),
+                "explain": boolean_query_schema()
+            }),
+            json!(["q"]),
+        ),
+        ServeRouteId::Notes => (
+            json!({
+                "where": { "type": "array", "items": { "type": "string" } },
+                "sort": { "type": "string" },
+                "desc": boolean_query_schema(),
+                "offset": nonnegative_integer_query_schema(),
+                "limit": nonnegative_integer_query_schema()
+            }),
+            json!([]),
+        ),
+        ServeRouteId::Related => (
+            json!({
+                "note": { "type": "string", "minLength": 1 },
+                "provider": { "type": "string" },
+                "limit": nonnegative_integer_query_schema()
+            }),
+            json!(["note"]),
+        ),
+        ServeRouteId::DataviewInline => (
+            json!({ "file": { "type": "string", "minLength": 1 } }),
+            json!(["file"]),
+        ),
+        ServeRouteId::DataviewQuery => (
+            json!({ "dql": { "type": "string", "minLength": 1 } }),
+            json!(["dql"]),
+        ),
+        ServeRouteId::DataviewQueryJs => (
+            json!({
+                "js": { "type": "string", "minLength": 1 },
+                "file": { "type": "string" }
+            }),
+            json!(["js"]),
+        ),
+        ServeRouteId::DataviewEval => (
+            json!({
+                "file": { "type": "string", "minLength": 1 },
+                "block": nonnegative_integer_query_schema()
+            }),
+            json!(["file"]),
+        ),
+        ServeRouteId::Root | ServeRouteId::Health | ServeRouteId::GraphStats => {
+            (json!({}), json!([]))
+        }
+    };
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": true
+    })
+}
+
+fn boolean_query_schema() -> Value {
+    json!({ "type": "string", "enum": ["1", "true", "yes", "0", "false", "no"] })
+}
+
+fn nonnegative_integer_query_schema() -> Value {
+    json!({ "type": "string", "pattern": "^[0-9]+$" })
+}
+
+fn common_response_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+            "ok": { "type": "boolean" },
+            "result": {},
+            "error": { "type": "string" }
+        },
+        "additionalProperties": true
+    })
+}
+
 impl ServeResponse {
     fn ok(body: Value) -> Self {
         Self { status: 200, body }
@@ -75,29 +292,28 @@ pub fn route_request(
         Err(error) => return ServeResponse::error(500, error),
     };
 
-    match request.path.as_str() {
-        "/" => ServeResponse::ok(json!({
+    let Some(route) = SERVE_ROUTES
+        .iter()
+        .find(|route| route.path == request.path)
+        .map(|route| route.id)
+    else {
+        return ServeResponse::error(404, "unknown endpoint");
+    };
+
+    match route {
+        ServeRouteId::Root => ServeResponse::ok(json!({
             "ok": true,
             "service": "vulcan",
-            "endpoints": [
-                "/health",
-                "/search",
-                "/notes",
-                "/graph/stats",
-                "/related",
-                "/dataview/inline",
-                "/dataview/query",
-                "/dataview/query-js",
-                "/dataview/eval"
-            ],
+            "endpoints": serve_route_paths().filter(|path| *path != "/").collect::<Vec<_>>(),
+            "routes": serve_route_capabilities(),
         })),
-        "/health" => ServeResponse::ok(json!({
+        ServeRouteId::Health => ServeResponse::ok(json!({
             "ok": true,
             "watch_enabled": options.watch_enabled,
             "watch_error": state.watch_error,
             "last_watch_report": state.last_watch_report,
         })),
-        "/search" => {
+        ServeRouteId::Search => {
             let Some(query) = first_param(&request.query, "q") else {
                 return ServeResponse::error(400, "missing required query parameter: q");
             };
@@ -129,7 +345,7 @@ pub fn route_request(
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
-        "/notes" => {
+        ServeRouteId::Notes => {
             let filters = request.query.get("where").cloned().unwrap_or_default();
             let query = NoteQuery {
                 filters,
@@ -150,12 +366,14 @@ pub fn route_request(
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
-        "/graph/stats" => match query_graph_analytics_with_filter(paths, read_filter.as_ref()) {
-            Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
-            Err(error) => ServeResponse::error(500, error.to_string()),
-        },
+        ServeRouteId::GraphStats => {
+            match query_graph_analytics_with_filter(paths, read_filter.as_ref()) {
+                Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
         #[cfg(feature = "vectors")]
-        "/related" => {
+        ServeRouteId::Related => {
             let Some(note) = first_param(&request.query, "note") else {
                 return ServeResponse::error(400, "missing required query parameter: note");
             };
@@ -170,10 +388,10 @@ pub fn route_request(
             }
         }
         #[cfg(not(feature = "vectors"))]
-        "/related" => {
+        ServeRouteId::Related => {
             ServeResponse::error(501, "related-note endpoint requires the `vectors` feature")
         }
-        "/dataview/inline" => {
+        ServeRouteId::DataviewInline => {
             let Some(file) = first_param(&request.query, "file") else {
                 return ServeResponse::error(400, "missing required query parameter: file");
             };
@@ -182,7 +400,7 @@ pub fn route_request(
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
-        "/dataview/query" => {
+        ServeRouteId::DataviewQuery => {
             let Some(dql) = first_param(&request.query, "dql") else {
                 return ServeResponse::error(400, "missing required query parameter: dql");
             };
@@ -191,7 +409,7 @@ pub fn route_request(
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
-        "/dataview/query-js" => {
+        ServeRouteId::DataviewQueryJs => {
             let Some(js) = first_param(&request.query, "js") else {
                 return ServeResponse::error(400, "missing required query parameter: js");
             };
@@ -205,7 +423,7 @@ pub fn route_request(
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
-        "/dataview/eval" => {
+        ServeRouteId::DataviewEval => {
             let Some(file) = first_param(&request.query, "file") else {
                 return ServeResponse::error(400, "missing required query parameter: file");
             };
@@ -220,7 +438,6 @@ pub fn route_request(
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
-        _ => ServeResponse::error(404, "unknown endpoint"),
     }
 }
 
@@ -288,7 +505,10 @@ fn parse_optional_search_sort(
 
 #[cfg(test)]
 mod tests {
-    use super::{route_request, ServeHealthState, ServeRequest, ServeRouteOptions};
+    use super::{
+        route_request, serve_route_capabilities, serve_route_paths, ServeHealthState, ServeRequest,
+        ServeRouteOptions,
+    };
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
@@ -348,6 +568,75 @@ mod tests {
             response.body["result"]["hits"][0]["document_path"],
             "Home.md"
         );
+    }
+
+    #[test]
+    fn root_capabilities_derive_from_the_closed_route_catalog() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vault root");
+        let response = route_request(
+            &VaultPaths::new(&vault_root),
+            &ServeRouteOptions {
+                permissions: None,
+                watch_enabled: false,
+            },
+            &ServeHealthState::default(),
+            &ServeRequest {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                query: HashMap::new(),
+            },
+        );
+
+        let paths = serve_route_paths().collect::<Vec<_>>();
+        let capabilities = serve_route_capabilities();
+        assert_eq!(capabilities.len(), paths.len());
+        assert!(capabilities.iter().all(|route| route.installed));
+        assert_eq!(
+            response.body["endpoints"],
+            serde_json::json!([
+                "/health",
+                "/search",
+                "/notes",
+                "/graph/stats",
+                "/related",
+                "/dataview/inline",
+                "/dataview/query",
+                "/dataview/query-js",
+                "/dataview/eval"
+            ])
+        );
+        assert_eq!(
+            response.body["routes"]
+                .as_array()
+                .expect("route capabilities")
+                .iter()
+                .map(|route| route["path"].as_str().expect("route path"))
+                .collect::<Vec<_>>(),
+            paths
+        );
+        let search = response.body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|route| route["path"] == "/search")
+            .unwrap();
+        assert_eq!(search["query_schema"]["required"], serde_json::json!(["q"]));
+        let related = response.body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|route| route["path"] == "/related")
+            .unwrap();
+        assert_eq!(related["available"], cfg!(feature = "vectors"));
+        let query_js = response.body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|route| route["path"] == "/dataview/query-js")
+            .unwrap();
+        assert_eq!(query_js["available"], cfg!(feature = "js_runtime"));
     }
 
     fn copy_fixture_vault(name: &str, destination: &std::path::Path) {

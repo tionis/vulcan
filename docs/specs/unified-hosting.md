@@ -256,6 +256,13 @@ bearer cannot authorize a vault request, and a vault token cannot authorize comp
 Browser preflight for the single-vault API validates Host and Origin without treating preflight as
 an authenticated operation; the subsequent request still requires its vault token.
 
+The single-vault adapter installs routes from the transport-neutral `vulcan_app::serve` catalog.
+The root document retains its original ordered `endpoints` array and adds a `routes` capability
+array generated from that same catalog. Each entry names the installed path and method, publishes
+its JSON query/response schemas, and reports feature-dependent availability. Thus a build without
+vectors or the JavaScript runtime still reports `/related` or `/dataview/query-js` explicitly as an
+installed but unavailable compatibility route instead of silently advertising working behavior.
+
 ### Compatibility test inventory
 
 Migration extends these existing suites instead of replacing them with host-only tests:

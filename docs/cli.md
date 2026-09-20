@@ -203,7 +203,7 @@ Behavior:
 - `vulcan index rebuild [--dry-run]`: rebuild the cache from disk.
 - `vulcan index repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.
 - `vulcan index watch [--debounce-ms <MS>] [--no-commit]`: keep the cache fresh from filesystem events.
-- `vulcan index serve [--bind <ADDR>] [--no-watch] [--debounce-ms <MS>] [--auth-token <TOKEN>]`: start the local HTTP API server backed by the cache.
+- `vulcan index serve [--bind <ADDR>] [--no-watch] [--debounce-ms <MS>] [--auth-token <TOKEN>]`: start the local HTTP API server backed by the cache. Its authenticated root document lists the legacy endpoint paths plus route-derived query/response schemas and explicit feature availability.
 - `vulcan cache inspect`: show cache sizes and row counts.
 - `vulcan cache verify [--fail-on-errors]`: verify cache invariants.
 - `vulcan cache vacuum [--dry-run]`: run SQLite `VACUUM` on the cache.
