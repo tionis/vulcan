@@ -14,6 +14,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 
+use crate::hosted_executor::HostedExecutor;
+use crate::hosted_jobs::HostedJobLedger;
 use crate::mutation_scheduler::{MutationScheduler, MutationSchedulerConfig};
 use crate::shutdown::ShutdownSignal;
 
@@ -585,6 +587,7 @@ pub struct HostSupervisor {
     status: HostStatusHandle,
     host_stop: Arc<ShutdownSignal>,
     scheduler: Arc<MutationScheduler>,
+    hosted_executor: Option<Arc<HostedExecutor>>,
     services: Vec<RunningService>,
 }
 
@@ -643,6 +646,10 @@ impl HostSupervisor {
         }
         let catalog = ServiceCatalog::new(definitions)?;
         let startup_order = catalog.startup_order().to_vec();
+        let hosted_job_root = status_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|parent| parent.join("hosted-jobs"));
         let status = HostStatusHandle {
             catalog: Arc::new(SharedCatalog {
                 catalog: Mutex::new(catalog),
@@ -651,13 +658,27 @@ impl HostSupervisor {
             }),
         };
         persist_shared(&status.catalog)?;
+        let scheduler = Arc::new(
+            MutationScheduler::new(MutationSchedulerConfig::default())
+                .expect("default mutation scheduler limits are valid"),
+        );
+        let hosted_executor = if let Some(root) = hosted_job_root {
+            let ledger = Arc::new(HostedJobLedger::at(root));
+            ledger
+                .recover_interrupted(unix_time_ms()?)
+                .map_err(|error| HostRuntimeError::HostedJobs(error.to_string()))?;
+            Some(Arc::new(HostedExecutor::new(
+                Arc::clone(&scheduler),
+                ledger,
+            )))
+        } else {
+            None
+        };
         let mut supervisor = Self {
             status,
             host_stop,
-            scheduler: Arc::new(
-                MutationScheduler::new(MutationSchedulerConfig::default())
-                    .expect("default mutation scheduler limits are valid"),
-            ),
+            scheduler,
+            hosted_executor,
             services: Vec::new(),
         };
 
@@ -725,6 +746,14 @@ impl HostSupervisor {
     #[must_use]
     pub fn mutation_scheduler(&self) -> Arc<MutationScheduler> {
         Arc::clone(&self.scheduler)
+    }
+
+    /// Returns the durable executor used by real daemon hosts. Ephemeral test
+    /// hosts intentionally expose only the scheduler because they have no
+    /// configured state location.
+    #[must_use]
+    pub fn hosted_executor(&self) -> Option<Arc<HostedExecutor>> {
+        self.hosted_executor.as_ref().map(Arc::clone)
     }
 
     pub fn shutdown(mut self) -> Result<Vec<ServiceStatus>, HostRuntimeError> {
@@ -813,6 +842,7 @@ pub enum HostRuntimeError {
     Io(String),
     Json(String),
     InvalidStatus(String),
+    HostedJobs(String),
     Poisoned,
 }
 
@@ -852,6 +882,7 @@ impl Display for HostRuntimeError {
             Self::Io(detail) => write!(formatter, "host status I/O error: {detail}"),
             Self::Json(detail) => write!(formatter, "host status JSON error: {detail}"),
             Self::InvalidStatus(detail) => write!(formatter, "invalid host status: {detail}"),
+            Self::HostedJobs(detail) => write!(formatter, "hosted job state error: {detail}"),
             Self::Poisoned => formatter.write_str("host service state lock is poisoned"),
         }
     }
@@ -1240,6 +1271,7 @@ mod tests {
             registration_with_events("worker.second", &["worker.first"], sender),
         ];
         let supervisor = HostSupervisor::start(registrations, Duration::from_secs(1)).unwrap();
+        assert!(supervisor.hosted_executor().is_none());
         assert!(Arc::ptr_eq(
             &supervisor.mutation_scheduler(),
             &supervisor.mutation_scheduler()
@@ -1425,6 +1457,7 @@ mod tests {
             &path,
         )
         .unwrap();
+        assert!(supervisor.hosted_executor().is_some());
         let live = load_host_status(&path).unwrap().unwrap();
         assert_eq!(live.version, HOST_STATUS_VERSION);
         assert_eq!(live.services.len(), 2);

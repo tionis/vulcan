@@ -16,6 +16,8 @@ pub mod daemon_host;
 pub mod environment;
 pub mod final_sync;
 pub mod host;
+pub mod hosted_executor;
+pub mod hosted_jobs;
 pub mod http;
 pub mod mcp_remote;
 pub mod mcp_session;

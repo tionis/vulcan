@@ -94,3 +94,34 @@ workflow must still acquire the filesystem locks listed above in the same order.
 - No in-memory queue provides exactly-once execution. Recoverable operations use durable identities
   and journals outside `cache.db`; other mutations use stale-input/idempotency checks where their
   contract provides them.
+
+## Hosted execution and durable job projections
+
+Real daemon hosts own one `HostedExecutor` backed by the process-wide scheduler and a job ledger at
+`<state-root>/daemon/hosted-jobs/`. This is device-global operational state, not per-vault
+configuration and not rebuildable cache data. Ephemeral supervisor instances used by unit tests do
+not invent a persistence location. File-tree synchronization continues to use `SyncSupervisor` and
+its journals; the generic ledger does not replace sync coalescing, aggregate status, or replay.
+
+Every hosted operation receives its durable ULID before queue admission. Its record progresses from
+`queued` to `running` and then to `succeeded` or `failed`; a response deadline or cancellation after
+dispatch temporarily records `indeterminate` while a detached monitor continues waiting for the
+blocking operation. Status and cancellation use the same operation identity. Records include the
+request/service identities, canonical vault and repository identities, dispatch and commit
+knowledge, retry class, and a bounded diagnostic. They are atomically persisted in owner-only files
+and surviving non-terminal records become `interrupted` during restart recovery. Startup never
+replays them.
+
+The retry projection is deliberately conservative:
+
+- work rejected while still queued has `dispatched = false` and can be status-checked before a new
+  request;
+- read-only/idempotent work can be status-checked and retried only under that operation contract;
+- workflows with their own durable journal resume through that recovery mechanism;
+- a non-idempotent operation dispatched without a conclusive commit result is never retried
+  directly.
+
+`spawn_blocking` owns the in-process permit for the whole synchronous operation. Dropping the caller
+future, reaching its deadline, or setting its cancellation token does not abort that thread. The
+workflow observes cancellation at explicit checkpoints; meanwhile the monitor persists its eventual
+result even after the original response has returned an unknown-outcome error.
