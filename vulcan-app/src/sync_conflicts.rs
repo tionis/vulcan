@@ -4205,6 +4205,38 @@ mod tests {
     }
 
     #[test]
+    fn conflict_application_rejects_while_sync_holds_the_repository_lock() {
+        let fixture = GroupProposalFixture::new();
+        let outputs = vec![proposal_output("A.md", "reviewed A\n")];
+        let tree = fixture.tree(&outputs);
+        let options = fixture.options(&tree, &outputs, false);
+        let _sync_lock = vulcan_sync::RepositoryLock::acquire(&fixture.repository.git_dir)
+            .expect("simulated sync lock");
+
+        let error = resolve_proposal_conflict_groups_with_state_store(
+            &fixture.paths,
+            &fixture.record.id,
+            &options,
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("conflict apply must not overlap sync");
+
+        assert!(
+            error.to_string().contains("holds the repository lock"),
+            "unexpected conflict application error: {error}"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.paths.vault_root().join("A.md")).expect("unchanged A"),
+            "remote A.md\n"
+        );
+        assert!(SyncConflictStore::from_state_store(&fixture.store)
+            .list_batches(&fixture.record.repository_key, &fixture.record.id)
+            .expect("batches")
+            .is_empty());
+    }
+
+    #[test]
     fn proposal_groups_never_replan_new_or_prepared_output_after_frontier_movement() {
         let fixture = GroupProposalFixture::new();
         let outputs = vec![proposal_output("A.md", "reviewed A\n")];

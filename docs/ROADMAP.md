@@ -5305,7 +5305,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [x] Serialize conflicting mutations per vault/repository while permitting bounded independent reads and work on different vaults. Resolve shared Git metadata/worktree coordination explicitly. Keep agent calls and preparatory network work outside filesystem mutation locks where possible; revalidate hashes/frontiers/permissions before apply. Do not casually narrow existing sync transaction locks.
 - [x] Bound blocking execution, queues, per-vault concurrency, and operation deadlines at daemon adapters. Cancellation is cooperative inside synchronous workflows; dropping an async task or timing out a response does not prove its write stopped.
 - [x] Share job identity/status/cancellation projections without replacing `SyncSupervisor`'s coalescing, aggregate, replay, and journal semantics. Classify each operation's interruption/retry policy; retain non-rebuildable identities and recovery state outside `cache.db`. Never claim exactly-once execution from an in-memory queue.
-- [ ] Test direct CLI versus daemon write contention, sync versus auto-commit/conflict application, stale plan rejection, permission changes while queued, cross-vault progress, timeout after a committed write, and restart recovery without duplicate application.
+- [x] Test direct CLI versus daemon write contention, sync versus auto-commit/conflict application, stale plan rejection, permission changes while queued, cross-vault progress, timeout after a committed write, and restart recovery without duplicate application.
 
 **Acceptance:** Hosting mode does not change authorization or mutation safety, and unknown write outcomes cannot trigger silent direct retries.
 

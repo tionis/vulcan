@@ -849,6 +849,42 @@ mod tests {
     }
 
     #[test]
+    fn auto_commit_rejects_while_sync_holds_the_repository_lock() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        fs::write(temp_dir.path().join("Home.md"), "home\n").expect("home note");
+        commit_all(temp_dir.path(), "Initial");
+        fs::write(temp_dir.path().join("Home.md"), "changed\n").expect("home update");
+        let git_dir = PathBuf::from(
+            run_git_capture(temp_dir.path(), |command| {
+                command.args(["rev-parse", "--absolute-git-dir"]);
+            })
+            .expect("git dir")
+            .trim(),
+        );
+        let _sync_lock =
+            vulcan_sync::RepositoryLock::acquire(&git_dir).expect("simulated sync lock");
+
+        let error = auto_commit(
+            temp_dir.path(),
+            &GitConfig {
+                auto_commit: true,
+                ..GitConfig::default()
+            },
+            "edit",
+            &["Home.md".to_string()],
+        )
+        .expect_err("auto-commit must not overlap sync");
+        assert!(error
+            .to_string()
+            .contains("another Vulcan mutation holds the repository lock"));
+        assert_eq!(
+            git_status(temp_dir.path()).expect("status").unstaged,
+            ["Home.md"]
+        );
+    }
+
+    #[test]
     fn auto_commit_excludes_internal_and_configured_paths() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         init_git_repo(temp_dir.path());

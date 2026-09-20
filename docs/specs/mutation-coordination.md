@@ -125,3 +125,10 @@ The retry projection is deliberately conservative:
 future, reaching its deadline, or setting its cancellation token does not abort that thread. The
 workflow observes cancellation at explicit checkpoints; meanwhile the monitor persists its eventual
 result even after the original response has returned an unknown-outcome error.
+
+The acceptance suite exercises the boundaries rather than only the scheduler in isolation: a
+hosted mutation waits behind a direct CLI vault lock, sync's repository lock excludes auto-commit
+and reviewed conflict application, stale conflict plans remain rejected, queued permission changes
+fail revalidation, independent vaults progress concurrently, a timed-out committed write is applied
+once and later reports success, and restart recovery classifies unfinished identities without
+replaying them.

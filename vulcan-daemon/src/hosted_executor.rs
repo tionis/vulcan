@@ -364,6 +364,7 @@ mod tests {
         ExecutionAuthority, ExecutionCancellationToken, ExecutionDeadline, ExecutionIdentity,
         ExecutionRetryClass, ExecutionVaultIdentity,
     };
+    use vulcan_core::{initialize_vulcan_dir, VaultPaths};
     use vulcan_core::{PathPermission, PermissionGrant, ResourceLimits, ResourceSpecifier};
 
     fn grant() -> PermissionGrant {
@@ -494,6 +495,53 @@ mod tests {
         assert_eq!(record.state, HostedJobState::Succeeded);
         assert_eq!(record.committed, Some(true));
         assert_eq!(applications.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn daemon_mutation_respects_a_direct_cli_vault_lock() {
+        let state = tempfile::tempdir().expect("state");
+        let vault = tempfile::tempdir().expect("vault");
+        let paths = VaultPaths::new(vault.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let direct_cli_lock =
+            vulcan_core::write_lock::acquire_write_lock(&paths).expect("direct CLI vault lock");
+        let executor = executor(state.path(), MutationSchedulerConfig::default());
+        let context = context(
+            vault.path(),
+            Some(ExecutionDeadline::after(Duration::from_millis(40))),
+        );
+        let operation_id = context.identity.operation_id.clone();
+        let worker_paths = paths.clone();
+
+        let error = executor
+            .execute(
+                context,
+                ScheduledOperation::Mutation,
+                |_| Ok(()),
+                move |_| {
+                    let _lock = vulcan_core::write_lock::acquire_write_lock(&worker_paths)
+                        .map_err(|error| {
+                            HostedOperationFailure::before_commit(error.to_string())
+                        })?;
+                    std::fs::write(worker_paths.vault_root().join("Hosted.md"), "once\n").map_err(
+                        |error| HostedOperationFailure::before_commit(error.to_string()),
+                    )?;
+                    Ok(HostedOperationCompletion::mutation(()))
+                },
+            )
+            .await
+            .expect_err("response expires while direct CLI owns the lock");
+        assert!(matches!(error, HostedExecutionError::AfterDispatch { .. }));
+        assert!(!vault.path().join("Hosted.md").exists());
+
+        drop(direct_cli_lock);
+        let record = wait_for_terminal(&executor, &operation_id).await;
+        assert_eq!(record.state, HostedJobState::Succeeded);
+        assert_eq!(record.committed, Some(true));
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join("Hosted.md")).expect("hosted note"),
+            "once\n"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
