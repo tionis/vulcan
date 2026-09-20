@@ -60,9 +60,13 @@ publication after abrupt power loss, a forced kill, or unavailable networking.
 
 For a manually installed portable binary, `vulcan self-update check` inspects the binary's update
 channel and `vulcan self-update apply --dry-run` downloads and verifies an update without replacing
-the executable. Package-managed installations must update through their package manager. See the
-[installation guide](installation.md) and [update-channel specification](specs/update-channels.md)
-for channel selection, current signing status, and trust/downgrade controls.
+the executable. Portable installations can also project a trusted unattended update into the native
+user scheduler with `vulcan self-update schedule install --dry-run`; package-managed installations
+must update through their package manager. See the
+[portable update guide](installation.md#update-channels-and-portable-self-update), including its
+[unattended setup](installation.md#unattended-portable-updates), and the
+[update-channel specification](specs/update-channels.md) for channel selection, platform timing,
+daemon coordination, current signing status, and trust/downgrade controls.
 
 ## Self-discovery
 

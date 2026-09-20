@@ -142,6 +142,107 @@ gh release download rolling-main --repo tionis/vulcan \
 Select the corresponding target/architecture pattern on macOS, Windows, or arm64 Linux, then verify
 the downloaded entry in `SHA256SUMS` before installing it.
 
+#### Unattended portable updates
+
+Manually installed portable binaries can install a user-scoped job that checks for and applies a
+trusted update without requiring a vault or a running daemon. Do not use this scheduler for an APT,
+Homebrew, WinGet, or other package-managed installation; the package manager must remain the only
+owner of those files.
+
+Preview the complete scheduler definition first, then install it. Desktop schedules use local time:
+
+```sh
+vulcan self-update schedule install \
+  --at 03:00 \
+  --notify-on-failure \
+  --dry-run
+
+vulcan self-update schedule install \
+  --at 03:00 \
+  --notify-on-failure
+```
+
+The default channel is the channel selected by the installed binary, normally `stable`. Select the
+rolling development stream explicitly when that is intended:
+
+```sh
+vulcan self-update schedule install --channel main --at 04:30 --dry-run
+vulcan self-update schedule install --channel main --at 04:30
+```
+
+An HTTPS descriptor override can be retained with `--channel-url`, but it does not weaken channel
+identity or signature verification. Unattended installation rejects `--allow-unsigned`, and it has
+no downgrade override. Resolve signing or version-policy failures instead of weakening the job.
+
+The native projection depends on the host:
+
+| Platform | Scheduler | Timing behavior |
+| --- | --- | --- |
+| Linux | Paired `systemd --user` oneshot and timer units | Daily at `--at`, with persistence after a missed run and up to 15 minutes of randomized delay |
+| macOS | Per-user calendar-triggered LaunchAgent | Daily at `--at` in the logged-in user's local time |
+| Windows | SID-scoped, least-privilege Task Scheduler task | Daily at `--at`; starts when next available after a missed run |
+| Android/Termux | Persisted `termux-job-scheduler` job | Approximate periodic interval from `--android-period-hours`; Android does not guarantee an exact wall-clock time |
+
+For Android, configure the interval instead of relying on `--at`:
+
+```sh
+vulcan self-update schedule install \
+  --android-period-hours 24 \
+  --notify-on-failure \
+  --dry-run
+vulcan self-update schedule install \
+  --android-period-hours 24 \
+  --notify-on-failure
+```
+
+Android accepts intervals from 1 through 168 hours, while the operating system may defer or
+coalesce execution for battery and background-policy reasons. The job requires the same Termux:API
+integration as other Termux scheduled work and requests battery-not-low, storage-not-low, and
+reboot-persistent behavior.
+
+Inspect the retained schedule at any time. JSON output includes the platform, selected channel,
+timing, notification preference, managed definition paths, and exact argument-vector plan:
+
+```sh
+vulcan self-update schedule show
+vulcan --output json self-update schedule show
+```
+
+Each scheduled invocation performs a normal signed update check. If no newer version exists, it
+leaves the daemon untouched. When an update is available, Vulcan downloads and verifies the entire
+archive before inspecting daemon state. A responsive running daemon receives the ordinary graceful
+shutdown, including its bounded final-sync work, immediately before replacement. After a successful
+replacement Vulcan repairs and starts an installed native daemon service, or restarts the detached
+daemon when no service was installed. It also attempts that restoration if binary replacement
+fails. A daemon that was already stopped remains stopped, and an unresponsive runtime record blocks
+replacement rather than risking two overlapping daemon lifecycles.
+
+`--notify-on-failure` makes a best-effort call to the native user notification helper after a failed
+cycle (`notify-send`, `osascript`, `msg.exe`, or `termux-notification`, depending on the platform).
+Notification-delivery failure does not hide or replace the updater error. No credentials or expanded
+secrets are written into scheduler definitions; Linux and macOS definitions preserve the non-secret
+XDG config and state roots active during installation.
+
+To diagnose a failure, run one cycle interactively and inspect the original error:
+
+```sh
+vulcan self-update run
+vulcan --output json self-update run
+```
+
+On Linux, logs are available through
+`journalctl --user -u vulcan-update.service`. macOS writes `update.log` and `update.error.log` below
+the Vulcan user-state directory. Windows exposes task status and history through Task Scheduler, and
+Termux exposes the registered job through its JobScheduler integration.
+
+Preview removal before deleting only the scheduler projection. This does not remove the Vulcan
+binary, daemon service, registrations, credentials, vaults, or synchronization state:
+
+```sh
+vulcan self-update schedule uninstall --dry-run
+vulcan self-update schedule uninstall
+```
+
 Do not use `self-update` for an APT, Homebrew, WinGet, or other package-managed installation. Use the
 package manager so its ownership database, auxiliary files, updates, and removal remain coherent.
 The complete protocol and future registry mapping are specified in
