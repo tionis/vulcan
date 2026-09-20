@@ -163,6 +163,7 @@ pub enum SyncJobTrigger {
     RemoteNotification,
     Resume,
     Recovery,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -216,6 +216,16 @@ daemon through its detached background path. On the supported Windows 11 24H2 or
 the executable's console-allocation manifest prevents even a transient terminal window from being
 created. Git subprocesses launched by background synchronization also use Windows' no-window
 process creation mode, including helpers they spawn. No second launcher executable is installed.
+
+`vulcan daemon stop`, foreground Ctrl-C, and graceful service-manager termination enqueue one last
+sync for every active Git-backed wiki before workers exit. The daemon waits up to 30 seconds and
+then cooperatively cancels unfinished final jobs; Linux and macOS service definitions allow a
+40-second stop window for cleanup. Re-run `vulcan daemon install` after upgrading so an older native
+service definition receives these stop settings. Paused and non-Git registrations remain excluded.
+After a suspend that does not offer a usable pre-sleep event, the daemon detects the clock gap and
+syncs immediately after resume. Abrupt power loss, forced process termination, unavailable network,
+and an OS that kills user processes without a grace period cannot guarantee remote publication.
+
 To remove only the service projection:
 
 ```sh

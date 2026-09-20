@@ -9,7 +9,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_sync::SyncJobTrigger;
 
@@ -19,6 +19,7 @@ const RUNTIME_STOP_POLL: Duration = Duration::from_millis(50);
 pub struct SyncTriggerRuntimeOptions {
     pub registry_refresh_ms: u64,
     pub remote_poll_ms: u64,
+    pub resume_gap_ms: u64,
     pub watch: DaemonWatchOptions,
 }
 
@@ -27,6 +28,7 @@ impl Default for SyncTriggerRuntimeOptions {
         Self {
             registry_refresh_ms: 1_000,
             remote_poll_ms: 5 * 60 * 1_000,
+            resume_gap_ms: 2_000,
             watch: DaemonWatchOptions::default(),
         }
     }
@@ -134,6 +136,8 @@ where
     let mut watchers = BTreeMap::<String, WatcherTask>::new();
     let mut next_registry_refresh = Instant::now();
     let mut next_remote_poll = Instant::now() + remote_poll;
+    let mut last_wall = SystemTime::now();
+    let mut last_monotonic = Instant::now();
 
     loop {
         if should_stop() {
@@ -141,6 +145,19 @@ where
             return Ok(());
         }
         let now = Instant::now();
+        let wall = SystemTime::now();
+        if suspend_gap_detected(
+            wall.duration_since(last_wall).unwrap_or_default(),
+            now.duration_since(last_monotonic),
+            Duration::from_millis(options.resume_gap_ms),
+        ) {
+            if let Err(error) = enqueue_resume_reconciliation(registry, supervisor) {
+                stop_all_watchers(&mut watchers);
+                return Err(error);
+            }
+        }
+        last_wall = wall;
+        last_monotonic = now;
         if now >= next_registry_refresh {
             if let Err(error) = reconcile_watchers(
                 registry,
@@ -184,6 +201,11 @@ fn validate_options(options: &SyncTriggerRuntimeOptions) -> Result<(), SyncTrigg
     if options.remote_poll_ms == 0 {
         return Err(SyncTriggerRuntimeError::InvalidOptions(
             "sync remote poll interval must be greater than zero".to_string(),
+        ));
+    }
+    if options.resume_gap_ms == 0 {
+        return Err(SyncTriggerRuntimeError::InvalidOptions(
+            "sync resume gap must be greater than zero".to_string(),
         ));
     }
     if options.watch.debounce_ms == 0 || options.watch.max_dirty_ms < options.watch.debounce_ms {
@@ -318,6 +340,28 @@ fn enqueue_periodic_reconciliation(
     Ok(())
 }
 
+fn enqueue_resume_reconciliation(
+    registry: &WikiRegistry,
+    supervisor: &SyncSupervisor,
+) -> Result<(), SyncTriggerRuntimeError> {
+    for registration in desired_watchers(registry.load()?.vaults).into_values() {
+        supervisor.enqueue(
+            registration.id.as_str(),
+            &registration.path,
+            SyncJobTrigger::Resume,
+        )?;
+    }
+    Ok(())
+}
+
+fn suspend_gap_detected(
+    wall_elapsed: Duration,
+    monotonic_elapsed: Duration,
+    threshold: Duration,
+) -> bool {
+    wall_elapsed.saturating_sub(monotonic_elapsed) >= threshold
+}
+
 fn stop_all_watchers(watchers: &mut BTreeMap<String, WatcherTask>) {
     for (_, task) in std::mem::take(watchers) {
         stop_watcher(task);
@@ -432,6 +476,7 @@ mod tests {
             &SyncTriggerRuntimeOptions {
                 registry_refresh_ms: 10,
                 remote_poll_ms: 20,
+                resume_gap_ms: 2_000,
                 watch: DaemonWatchOptions {
                     debounce_ms: 5,
                     max_dirty_ms: 20,
@@ -445,6 +490,26 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert!(jobs[0].triggers.contains(&SyncJobTrigger::Resume));
         assert!(jobs[0].triggers.contains(&SyncJobTrigger::Poll));
+    }
+
+    #[test]
+    fn suspend_gap_detection_ignores_scheduler_delay_and_detects_wall_clock_jump() {
+        let threshold = Duration::from_secs(2);
+        assert!(!suspend_gap_detected(
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            threshold
+        ));
+        assert!(!suspend_gap_detected(
+            Duration::from_secs(31),
+            Duration::from_secs(30),
+            threshold
+        ));
+        assert!(suspend_gap_detected(
+            Duration::from_secs(90),
+            Duration::from_secs(30),
+            threshold
+        ));
     }
 
     #[test]

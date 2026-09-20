@@ -15261,6 +15261,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("no separate launcher binary is needed"));
     assert!(sync_skill.contains("vulcan daemon config set-conflict-worker"));
     assert!(sync_skill.contains("vulcan daemon conflict-status"));
+    assert!(sync_skill.contains("final syncing shutdown"));
+    assert!(sync_skill.contains("retained `shutdown` job"));
+    assert!(sync_skill.contains("queues a `resume` sync after wake"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
     assert!(sync_skill.contains("vulcan sync schedule show <wiki>"));
@@ -15289,6 +15292,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("Never run `self-update` for an APT"));
     assert!(diagnostics_skill.contains("falls back to startup/periodic polling"));
     assert!(diagnostics_skill.contains("origin and fingerprint"));
+    assert!(diagnostics_skill.contains("final retained `shutdown` sync"));
+    assert!(diagnostics_skill.contains("detected suspend gap"));
     assert!(diagnostics_skill.contains("vulcan --output json daemon conflict-status"));
     assert!(diagnostics_skill.contains("retry_after_unix_ms"));
     assert!(diagnostics_skill.contains("no pending conflict groups met the"));

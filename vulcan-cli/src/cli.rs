@@ -4544,7 +4544,7 @@ pub enum DaemonCommand {
     ConflictStatus,
     #[command(about = "Show configured notification sinks and pending deliveries")]
     AlertStatus,
-    #[command(about = "Request graceful daemon shutdown")]
+    #[command(about = "Run final syncs and request graceful daemon shutdown")]
     Stop,
     #[command(about = "Show local companion connection details")]
     Companion {

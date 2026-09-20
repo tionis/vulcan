@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 27
+version: 28
 metadata:
   vulcan:
     managed: true
@@ -38,6 +38,11 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   or start a duplicate process.
 - Use `vulcan sync pause [<wiki>] --dry-run` and then the same command without `--dry-run` only when
   the user wants to stop future automatic triggers. Manual direct operations remain available.
+- Treat `vulcan daemon stop` as a final syncing shutdown. It queues one retained `shutdown` job per
+  active Git-backed wiki, waits up to 30 seconds, and cooperatively cancels unfinished work before
+  exiting. Ctrl-C and graceful service-manager termination use the same path; a detected suspend
+  gap queues a `resume` sync after wake. Paused and non-Git registrations stay excluded. Never claim
+  this guarantees publication through abrupt power loss, forced termination, or an offline remote.
 
 ## Inspect before mutation
 

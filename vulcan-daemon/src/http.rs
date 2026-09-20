@@ -7,6 +7,7 @@ use crate::companion::{
     ConflictResolveRequest, SemanticPlanRequest, SyncSelectionRequest, COMPANION_PROTOCOL_VERSION,
 };
 use crate::credentials::CompanionCredential;
+use crate::final_sync::run_final_sync_and_cancel;
 use crate::registry::{WikiId, WikiRegistry};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
@@ -338,10 +339,18 @@ async fn shutdown(State(state): State<CompanionHttpState>) -> Result<Json<Value>
             "daemon shutdown is not available on this companion service",
         ))
     })?;
-    shutdown.cancel();
+    if shutdown.begin_shutdown() {
+        let registry = Arc::clone(&state.registry);
+        let supervisor = Arc::clone(&state.supervisor);
+        let shutdown = Arc::clone(&shutdown);
+        tokio::spawn(async move {
+            run_final_sync_and_cancel(&registry, &supervisor, &shutdown).await;
+        });
+    }
     Ok(Json(serde_json::json!({
         "version": COMPANION_PROTOCOL_VERSION,
-        "stopping": true
+        "stopping": true,
+        "final_sync": true
     })))
 }
 

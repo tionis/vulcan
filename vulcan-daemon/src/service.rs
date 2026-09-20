@@ -457,6 +457,8 @@ fn render_launchd_plist(
   <integer>5</integer>
   <key>ProcessType</key>
   <string>Background</string>
+  <key>ExitTimeOut</key>
+  <integer>40</integer>
   <key>StandardOutPath</key>
   <string>{standard_out}</string>
   <key>StandardErrorPath</key>
@@ -496,7 +498,7 @@ fn plan_systemd_service(
     let definition_path = xdg_config.join("systemd/user").join(SYSTEMD_UNIT);
     let environment_path = config_directory.join("daemon.env");
     let definition = format!(
-        "[Unit]\nDescription=Vulcan multi-wiki synchronization daemon\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={} daemon start\nRestart=on-failure\nRestartSec=5s\nEnvironmentFile=-{}\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Vulcan multi-wiki synchronization daemon\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={} daemon start\nKillSignal=SIGTERM\nTimeoutStopSec=40s\nRestart=on-failure\nRestartSec=5s\nEnvironmentFile=-{}\n\n[Install]\nWantedBy=default.target\n",
         systemd_quote(executable),
         systemd_quote(&environment_path)
     );
@@ -795,6 +797,8 @@ mod tests {
         assert!(definition.contains("ExecStart=\""));
         assert!(definition.contains(" daemon start"));
         assert!(definition.contains("Restart=on-failure"));
+        assert!(definition.contains("KillSignal=SIGTERM"));
+        assert!(definition.contains("TimeoutStopSec=40s"));
         assert!(definition.contains("EnvironmentFile=-"));
         assert!(!definition.contains("API_KEY="));
         assert_eq!(
@@ -970,6 +974,7 @@ mod tests {
         assert!(definition.contains("<key>SuccessfulExit</key>\n    <false/>"));
         assert!(definition.contains("<key>ThrottleInterval</key>\n  <integer>5</integer>"));
         assert!(definition.contains("<string>Background</string>"));
+        assert!(definition.contains("<key>ExitTimeOut</key>\n  <integer>40</integer>"));
         assert!(definition.contains("daemon.error.log</string>"));
         assert!(!definition.contains("API_KEY"));
         assert_eq!(plan.commands.len(), 4);

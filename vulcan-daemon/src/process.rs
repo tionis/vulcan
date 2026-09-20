@@ -9,6 +9,7 @@ use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::conflict_worker::spawn_conflict_worker;
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
+use crate::final_sync::run_final_sync_and_cancel;
 use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
 use crate::notifications::{
     run_notification_runtime_until, NotificationRuntimeError, NotificationRuntimeOptions,
@@ -320,16 +321,13 @@ async fn run_daemon(
         shutdown: Some(Arc::clone(&stop)),
     };
     let shutdown_stop = Arc::clone(&stop);
-    let serve = serve_companion_with_shutdown(listener, state, async move {
-        tokio::select! {
-            () = wait_for_stop(Arc::clone(&shutdown_stop)) => {}
-            signal = tokio::signal::ctrl_c() => {
-                if signal.is_ok() {
-                    shutdown_stop.cancel();
-                }
-            }
-        }
-    })
+    let shutdown_registry = Arc::clone(&state.registry);
+    let shutdown_supervisor = Arc::clone(&state.supervisor);
+    let serve = serve_companion_with_shutdown(
+        listener,
+        state,
+        wait_for_daemon_shutdown(shutdown_stop, shutdown_registry, shutdown_supervisor),
+    )
     .await;
     stop.cancel();
     let workers_result = workers.join().await;
@@ -571,6 +569,48 @@ async fn wait_for_stop(stop: Arc<ShutdownSignal>) {
     stop.cancelled().await;
 }
 
+async fn wait_for_daemon_shutdown(
+    stop: Arc<ShutdownSignal>,
+    registry: Arc<WikiRegistry>,
+    supervisor: Arc<SyncSupervisor>,
+) {
+    tokio::select! {
+        () = wait_for_stop(Arc::clone(&stop)) => {}
+        () = wait_for_termination_signal() => {
+            if stop.begin_shutdown() {
+                run_final_sync_and_cancel(&registry, &supervisor, &stop).await;
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_termination_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+    }
+}
+
+#[cfg(windows)]
+async fn wait_for_termination_signal() {
+    let mut shutdown = tokio::signal::windows::ctrl_shutdown().expect("install shutdown handler");
+    let mut close = tokio::signal::windows::ctrl_close().expect("install close handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = shutdown.recv() => {}
+        _ = close.recv() => {}
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn wait_for_termination_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 fn spawn_trigger_runtime(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
@@ -797,7 +837,7 @@ pub fn request_daemon_shutdown(
         DaemonProcessError::Configuration("the Vulcan daemon is not running".to_string())
     })?;
     authenticated_request(context, &record, "POST", "/shutdown")?;
-    for _ in 0..100 {
+    for _ in 0..700 {
         if TcpStream::connect_timeout(&record.bind, Duration::from_millis(50)).is_err() {
             break;
         }
@@ -1231,6 +1271,7 @@ mod tests {
         let registry = WikiRegistry::at(registry_path.clone());
         let config = git_sync_config(&temporary);
         let remote = temporary.path().join("remote.git");
+        let vault = config.vaults[0].path.clone();
         fs::write(
             &registry_path,
             toml::to_string_pretty(&config).expect("serialize config"),
@@ -1291,6 +1332,9 @@ mod tests {
         assert!(synchronized, "startup reconciliation should sync the wiki");
         assert_daemon_sync_attempted(&context);
 
+        fs::write(vault.join("Last-minute.md"), "captured during shutdown\n")
+            .expect("last-minute note");
+
         let stopped = request_daemon_shutdown(&context).expect("request shutdown");
         assert!(!stopped.running);
         daemon.join().expect("daemon thread");
@@ -1299,6 +1343,26 @@ mod tests {
             .expect("daemon result channel")
             .expect("daemon result");
         assert!(!context.runtime_path().exists());
+        assert!(git(
+            temporary.path(),
+            &[
+                "--git-dir",
+                remote.to_str().expect("remote"),
+                "cat-file",
+                "-e",
+                "refs/heads/__vulcan-sync/live:Last-minute.md",
+            ]
+        ));
+        let supervisor = SyncSupervisor::at(
+            SyncStateStore::at(context.state_root.join("sync/repositories"))
+                .root()
+                .join("daemon/jobs.json"),
+        )
+        .expect("supervisor");
+        assert!(supervisor.list().expect("jobs").iter().any(|job| {
+            job.triggers.contains(&SyncJobTrigger::Shutdown)
+                && job.job.state == SyncJobState::Succeeded
+        }));
     }
 
     #[test]

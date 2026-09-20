@@ -51,6 +51,13 @@ review. Pair it with `set-semantic-worker` when the accepted sync history should
 human-readable semantic history on `main`. See the
 [complete setup, status schema, and troubleshooting guide](guide/git-sync.md#unattended-conflict-resolution).
 
+`vulcan daemon stop` is a syncing shutdown, not an immediate kill. It queues a final retained sync
+for each active Git-backed registration, waits up to 30 seconds, and then cooperatively cancels
+unfinished final jobs before completing shutdown. Ctrl-C and supported service-manager termination
+use the same path. After suspend, a detected clock gap queues an immediate resume sync. These paths
+retain normal pause, permission, conflict, lease, and recovery behavior and cannot promise remote
+publication after abrupt power loss, a forced kill, or unavailable networking.
+
 For a manually installed portable binary, `vulcan self-update check` inspects the binary's update
 channel and `vulcan self-update apply --dry-run` downloads and verifies an update without replacing
 the executable. Package-managed installations must update through their package manager. See the

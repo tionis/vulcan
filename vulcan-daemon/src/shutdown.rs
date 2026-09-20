@@ -6,6 +6,7 @@ use std::time::Duration;
 
 #[derive(Debug, Default)]
 struct State {
+    requested: bool,
     cancelled: bool,
     parked: Vec<Thread>,
 }
@@ -28,6 +29,7 @@ impl ShutdownSignal {
     pub fn new(cancelled: bool) -> Self {
         Self {
             state: Mutex::new(State {
+                requested: cancelled,
                 cancelled,
                 parked: Vec::new(),
             }),
@@ -38,12 +40,26 @@ impl ShutdownSignal {
 
     pub fn cancel(&self) {
         let mut state = self.state.lock().expect("shutdown lock");
+        state.requested = true;
         state.cancelled = true;
         for thread in &state.parked {
             thread.unpark();
         }
         self.wake.notify_all();
         self.asynchronous.send_replace(true);
+    }
+
+    /// Claims ownership of the graceful-shutdown sequence. Exactly one caller
+    /// performs final synchronization; later requests wait for cancellation.
+    #[must_use]
+    pub fn begin_shutdown(&self) -> bool {
+        let mut state = self.state.lock().expect("shutdown lock");
+        if state.requested {
+            false
+        } else {
+            state.requested = true;
+            true
+        }
     }
 
     #[must_use]
@@ -123,5 +139,15 @@ mod tests {
         assert!(!signal.wait_timeout(duration));
         assert!(start.elapsed() >= duration);
         assert!(!signal.is_cancelled());
+    }
+
+    #[test]
+    fn graceful_shutdown_can_only_be_claimed_once() {
+        let signal = ShutdownSignal::default();
+        assert!(signal.begin_shutdown());
+        assert!(!signal.begin_shutdown());
+        assert!(!signal.is_cancelled());
+        signal.cancel();
+        assert!(!signal.begin_shutdown());
     }
 }

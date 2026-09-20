@@ -10864,7 +10864,7 @@
             "subcommands": []
           },
           {
-            "about": "Request graceful daemon shutdown",
+            "about": "Run final syncs and request graceful daemon shutdown",
             "name": "stop",
             "options": [],
             "subcommands": []

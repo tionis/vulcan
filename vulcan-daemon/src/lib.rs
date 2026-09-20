@@ -13,6 +13,7 @@ pub mod companion;
 pub mod conflict_worker;
 pub mod credentials;
 pub mod environment;
+pub mod final_sync;
 pub mod http;
 pub mod notifications;
 pub mod process;

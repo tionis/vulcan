@@ -5221,6 +5221,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] Watcher keeps cache fresh automatically — API queries always return current data
 - [ ] Watcher errors are surfaced via `/health` and `/{id}/health` endpoints
 - [x] Graceful shutdown: authenticated daemon stop or foreground Ctrl-C signals the HTTP service, trigger runtime, sync worker, and all watcher threads to terminate before removing the owned runtime record
+- [x] Before graceful stop, enqueue one retained final sync for every active Git-backed wiki, bound the drain to 30 seconds with cooperative cancellation, handle service-manager termination signals, and reconcile immediately after detecting resume from suspend
 
 ### 10.5 CLI daemon integration
 
