@@ -24,6 +24,7 @@ use crate::registry::{RegistryError, WikiRegistrationStatus, WikiRegistry};
 use crate::runtime::{
     run_sync_trigger_runtime_with_stop, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
 };
+use crate::scan_runtime::{load_scan_completion, scan_status_path, ScanCompletion};
 use crate::semantic_worker::run_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
 use crate::shutdown::ShutdownSignal;
@@ -110,6 +111,7 @@ pub struct DaemonWikiOperationalStatus {
     pub sync: Option<DaemonWikiSyncStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_error: Option<String>,
+    pub cache: ScanCompletion,
     pub notification: DaemonNotificationDiscoveryStatus,
 }
 
@@ -890,11 +892,19 @@ pub fn daemon_status(
                 Ok(status) => (Some(status), None),
                 Err(error) => (None, Some(error.to_string())),
             };
+            let cache = load_scan_completion(&scan_status_path(
+                state_store.root(),
+                wiki.registration.registration_id,
+            ))
+            .map_or_else(ScanCompletion::inspection_error, |status| {
+                status.unwrap_or_else(ScanCompletion::unknown)
+            });
             DaemonWikiOperationalStatus {
                 wiki_id: wiki.registration.id.as_str().to_string(),
                 path: wiki.registration.path.clone(),
                 sync,
                 sync_error,
+                cache,
                 notification: cached_notification_status(wiki),
             }
         })
@@ -1470,6 +1480,20 @@ mod tests {
         });
         assert!(synchronized, "startup reconciliation should sync the wiki");
         assert_daemon_sync_attempted(&context);
+        let cache_became_fresh = (0..100).any(|_| {
+            let fresh = daemon_status(&context).is_ok_and(|status| {
+                status.wiki_statuses.iter().any(|wiki| {
+                    wiki.wiki_id == "notes"
+                        && wiki.cache.state == crate::scan_runtime::CacheFreshnessState::Fresh
+                        && wiki.cache.generation > 0
+                })
+            });
+            if !fresh {
+                thread::sleep(Duration::from_millis(25));
+            }
+            fresh
+        });
+        assert!(cache_became_fresh, "hosted cache scan should complete");
 
         fs::write(vault.join("Last-minute.md"), "captured during shutdown\n")
             .expect("last-minute note");

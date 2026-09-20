@@ -15438,6 +15438,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("final retained `shutdown` sync"));
     assert!(diagnostics_skill.contains("detected suspend gap"));
     assert!(diagnostics_skill.contains("every hosted service"));
+    assert!(diagnostics_skill.contains("durable cache freshness"));
     assert!(diagnostics_skill.contains("stop new companion ingress"));
     assert!(diagnostics_skill.contains("sanitized last failure"));
     assert!(diagnostics_skill.contains("vulcan --output json daemon conflict-status"));

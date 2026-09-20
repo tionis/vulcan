@@ -849,6 +849,18 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
         };
         println!("  {}", wiki.wiki_id);
         println!("    Path: {}", wiki.path.display());
+        let cache_age = wiki
+            .cache
+            .completed_unix_ms
+            .map_or_else(|| "never completed".to_string(), format_age);
+        println!(
+            "    Cache: {} (generation {}, {cache_age})",
+            cache_freshness_name(wiki.cache.state),
+            wiki.cache.generation
+        );
+        if let Some(error) = &wiki.cache.error {
+            println!("    Cache error: {error}");
+        }
         if let Some(sync) = &wiki.sync {
             println!(
                 "    Sync: {} (source: {})",
@@ -880,6 +892,18 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
         println!("    Notifications: {notification}");
     }
     Ok(())
+}
+
+const fn cache_freshness_name(
+    state: vulcan_daemon::scan_runtime::CacheFreshnessState,
+) -> &'static str {
+    use vulcan_daemon::scan_runtime::CacheFreshnessState::{Dirty, Error, Fresh, Unknown};
+    match state {
+        Unknown => "unknown",
+        Dirty => "dirty",
+        Fresh => "fresh",
+        Error => "error",
+    }
 }
 
 fn print_hosted_services(services: &[vulcan_daemon::host::ServiceStatus]) {

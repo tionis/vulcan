@@ -5291,7 +5291,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] Preserve native-backend failure fallback, content polling, safety rescans, startup/resume reconciliation, ignored transient state handling, and bounded transaction provenance from current watchers. Never suppress a concurrent user edit merely because a Vulcan apply marker exists.
 - [ ] Bound subscriptions and queues. Overflow, lost events, or consumer restart invalidates incremental assumptions and requests reconciliation; a slow consumer must not block unrelated consumers. Distinguish raw filesystem hints from post-scan events with stable fingerprints for app subscriptions.
 - [ ] Make sync pause affect sync consumers only; indexing and previews remain independently controlled. Removal/shutdown releases observers after consumers stop. Disabling one consumer must not terminate another consumer's observation.
-- [ ] Track cache freshness and scan errors, expose a completed-scan barrier for callers that need it, and preserve direct scan/repair behavior. Do not infer file truth from event delivery or cache timestamps alone.
+- [x] Track cache freshness and scan errors, expose a completed-scan barrier for callers that need it, and preserve direct scan/repair behavior. Do not infer file truth from event delivery or cache timestamps alone.
 - [ ] Test two consumers sharing observation, non-Git registration, alias ownership, registry changes, sync pause with indexing active, slow/overflowing consumers, missed events, native failure, and simultaneous external edits during Vulcan writes.
 
 **Acceptance:** Multiple hosted features share observation without changing their filtering/recovery semantics; events remain hints and canonical files remain authoritative.

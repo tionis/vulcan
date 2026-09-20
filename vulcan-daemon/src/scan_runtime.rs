@@ -4,19 +4,24 @@ use crate::observation::{
     ObservationEvent, ObservationSubscription, PostScanEvent, VaultObservationHub,
 };
 use crate::shutdown::ShutdownSignal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::path::Path;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vulcan_core::{initialize_vulcan_dir, VaultPaths};
 
+const SCAN_STATUS_VERSION: u32 = 1;
+const MAX_SCAN_STATUS_BYTES: u64 = 64 * 1024;
+
 const MAX_SCAN_ERROR_BYTES: usize = 512;
 const INDEX_WAIT_POLL: Duration = Duration::from_millis(50);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheFreshnessState {
     Unknown,
@@ -25,7 +30,7 @@ pub enum CacheFreshnessState {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanCompletion {
     pub generation: u64,
     pub state: CacheFreshnessState,
@@ -34,32 +39,82 @@ pub struct ScanCompletion {
     pub error: Option<String>,
 }
 
+impl ScanCompletion {
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            generation: 0,
+            state: CacheFreshnessState::Unknown,
+            completed_unix_ms: None,
+            fingerprint: None,
+            error: None,
+        }
+    }
+
+    #[must_use]
+    pub fn inspection_error(error: impl AsRef<str>) -> Self {
+        Self {
+            generation: 0,
+            state: CacheFreshnessState::Error,
+            completed_unix_ms: None,
+            fingerprint: None,
+            error: Some(bounded_error(error.as_ref())),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct ScanTrackerState {
     requested_generation: u64,
     completion: Option<ScanCompletion>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct VaultScanTracker {
     state: Mutex<ScanTrackerState>,
     changed: Condvar,
+    status_path: Option<PathBuf>,
+}
+
+impl Default for VaultScanTracker {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(ScanTrackerState::default()),
+            changed: Condvar::new(),
+            status_path: None,
+        }
+    }
 }
 
 impl VaultScanTracker {
-    pub fn mark_dirty(&self) -> u64 {
+    pub fn persisted(path: PathBuf) -> Result<Self, String> {
+        let completion = load_scan_completion(&path)?;
+        let requested_generation = completion.as_ref().map_or(0, |status| status.generation);
+        Ok(Self {
+            state: Mutex::new(ScanTrackerState {
+                requested_generation,
+                completion,
+            }),
+            changed: Condvar::new(),
+            status_path: Some(path),
+        })
+    }
+
+    pub fn mark_dirty(&self) -> Result<u64, String> {
         let mut state = self.state.lock().expect("scan tracker lock");
         state.requested_generation = state.requested_generation.saturating_add(1);
         let generation = state.requested_generation;
-        state.completion = Some(ScanCompletion {
+        let completion = ScanCompletion {
             generation,
             state: CacheFreshnessState::Dirty,
             completed_unix_ms: None,
             fingerprint: None,
             error: None,
-        });
+        };
+        self.persist(&completion)?;
+        state.completion = Some(completion.clone());
         self.changed.notify_all();
-        generation
+        Ok(generation)
     }
 
     #[must_use]
@@ -69,13 +124,7 @@ impl VaultScanTracker {
             .expect("scan tracker lock")
             .completion
             .clone()
-            .unwrap_or(ScanCompletion {
-                generation: 0,
-                state: CacheFreshnessState::Unknown,
-                completed_unix_ms: None,
-                fingerprint: None,
-                error: None,
-            })
+            .unwrap_or_else(ScanCompletion::unknown)
     }
 
     pub fn wait_for_generation(
@@ -102,13 +151,104 @@ impl VaultScanTracker {
             .ok_or(ScanBarrierError::Timeout { generation })
     }
 
-    fn complete(&self, completion: ScanCompletion) {
+    fn complete(&self, completion: &ScanCompletion) -> Result<(), String> {
         let mut state = self.state.lock().expect("scan tracker lock");
         if completion.generation >= state.requested_generation {
-            state.completion = Some(completion);
+            self.persist(completion)?;
+            state.completion = Some(completion.clone());
             self.changed.notify_all();
         }
+        Ok(())
     }
+
+    fn persist(&self, completion: &ScanCompletion) -> Result<(), String> {
+        self.status_path
+            .as_ref()
+            .map_or(Ok(()), |path| persist_scan_completion(path, completion))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScanStatusFile {
+    version: u32,
+    completion: ScanCompletion,
+}
+
+#[must_use]
+pub fn scan_status_path(root: &Path, registration_id: ulid::Ulid) -> PathBuf {
+    root.join("daemon/scans")
+        .join(format!("{registration_id}.json"))
+}
+
+pub fn load_scan_completion(path: &Path) -> Result<Option<ScanCompletion>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || metadata.len() > MAX_SCAN_STATUS_BYTES =>
+        {
+            return Err(format!(
+                "scan status {} is not a bounded regular file",
+                path.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    }
+    let status: ScanStatusFile =
+        serde_json::from_slice(&fs::read(path).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    if status.version != SCAN_STATUS_VERSION {
+        return Err(format!(
+            "unsupported scan status version {}",
+            status.version
+        ));
+    }
+    Ok(Some(status.completion))
+}
+
+fn persist_scan_completion(path: &Path, completion: &ScanCompletion) -> Result<(), String> {
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(format!("refusing symlinked scan status {}", path.display()));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "scan status path has no parent".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| error.to_string())?;
+    }
+    serde_json::to_writer(
+        temporary.as_file_mut(),
+        &ScanStatusFile {
+            version: SCAN_STATUS_VERSION,
+            completion: completion.clone(),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    temporary
+        .as_file_mut()
+        .write_all(b"\n")
+        .map_err(|error| error.to_string())?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error.to_string())?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,14 +283,14 @@ pub fn consume_index_observations_with_stop(
     stop.register_current_thread();
     let quiet = Duration::from_millis(subscription.policy.quiet_period_ms);
     let maximum = Duration::from_millis(subscription.policy.maximum_dirty_ms);
-    let mut pending = PendingScan::startup(tracker.mark_dirty());
+    let mut pending = PendingScan::startup(tracker.mark_dirty()?);
     let _ = subscription.take_reconciliation_required();
     loop {
         if stop.is_cancelled() {
             return Ok(());
         }
         if subscription.take_reconciliation_required() {
-            pending.merge_reconciliation(tracker.mark_dirty());
+            pending.merge_reconciliation(tracker.mark_dirty()?);
         }
         let now = Instant::now();
         if pending.ready(now, quiet, maximum) {
@@ -163,7 +303,7 @@ pub fn consume_index_observations_with_stop(
             .min(INDEX_WAIT_POLL);
         match subscription.recv_timeout(timeout) {
             Ok(ObservationEvent::FilesystemHint(event)) => {
-                pending.merge_hint(tracker.mark_dirty(), event.paths, event.safety_rescan);
+                pending.merge_hint(tracker.mark_dirty()?, event.paths, event.safety_rescan);
             }
             Ok(ObservationEvent::PostScan(_)) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             }
@@ -277,7 +417,7 @@ fn run_incremental_scan(
         fingerprint: Some(event.fingerprint.clone()),
         error: errors.into_iter().next(),
     };
-    tracker.complete(completion);
+    tracker.complete(&completion)?;
     hub.publish(&ObservationEvent::PostScan(event))
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -335,18 +475,21 @@ mod tests {
     #[test]
     fn index_consumer_scans_and_exposes_a_completed_generation_barrier() {
         let temporary = tempdir().unwrap();
-        fs::write(temporary.path().join("First.md"), "# First\n").unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        fs::write(vault.join("First.md"), "# First\n").unwrap();
         let hub = VaultObservationHub::default();
         let subscription = subscription(&hub);
-        let tracker = Arc::new(VaultScanTracker::default());
+        let status_path = temporary.path().join("state/scan.json");
+        let tracker = Arc::new(VaultScanTracker::persisted(status_path.clone()).unwrap());
         let stop = Arc::new(ShutdownSignal::default());
         let thread_tracker = Arc::clone(&tracker);
         let thread_stop = Arc::clone(&stop);
-        let vault = temporary.path().to_path_buf();
+        let thread_vault = vault.clone();
         let thread_hub = hub.clone();
         let worker = thread::spawn(move || {
             consume_index_observations_with_stop(
-                &vault,
+                &thread_vault,
                 &thread_hub,
                 &subscription,
                 &thread_tracker,
@@ -358,7 +501,7 @@ mod tests {
             .unwrap();
         assert_eq!(initial.state, CacheFreshnessState::Fresh);
 
-        fs::write(temporary.path().join("Second.md"), "# Second\n").unwrap();
+        fs::write(vault.join("Second.md"), "# Second\n").unwrap();
         hub.publish(&ObservationEvent::FilesystemHint(FilesystemHint {
             sequence: 1,
             event_count: 1,
@@ -374,8 +517,17 @@ mod tests {
             .unwrap();
         assert_eq!(second.state, CacheFreshnessState::Fresh);
         assert_ne!(initial.fingerprint, second.fingerprint);
-        let index = load_note_index(&VaultPaths::new(temporary.path())).unwrap();
+        let index = load_note_index(&VaultPaths::new(&vault)).unwrap();
         assert!(index.values().any(|note| note.document_path == "Second.md"));
+        assert_eq!(load_scan_completion(&status_path).unwrap(), Some(second));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&status_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         stop.cancel();
         worker.join().unwrap().unwrap();
     }

@@ -5,7 +5,9 @@ use crate::observation::{
     ObservationFilter, VaultObservationHub,
 };
 use crate::registry::{RegistryError, WikiRegistration, WikiRegistry};
-use crate::scan_runtime::{consume_index_observations_with_stop, VaultScanTracker};
+use crate::scan_runtime::{
+    consume_index_observations_with_stop, scan_status_path, VaultScanTracker,
+};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::{SupervisorError, SyncSupervisor, SyncWatchMetadata};
 use crate::vault_runtime::{VaultRuntimeCatalog, VaultRuntimeError};
@@ -50,6 +52,7 @@ pub enum SyncTriggerRuntimeError {
     Supervisor(SupervisorError),
     Observation(ObservationError),
     VaultRuntime(VaultRuntimeError),
+    Index(String),
 }
 
 impl Display for SyncTriggerRuntimeError {
@@ -60,6 +63,7 @@ impl Display for SyncTriggerRuntimeError {
             Self::Supervisor(error) => Display::fmt(error, formatter),
             Self::Observation(error) => Display::fmt(error, formatter),
             Self::VaultRuntime(error) => Display::fmt(error, formatter),
+            Self::Index(detail) => write!(formatter, "hosted index setup failed: {detail}"),
         }
     }
 }
@@ -71,7 +75,7 @@ impl Error for SyncTriggerRuntimeError {
             Self::Supervisor(error) => Some(error),
             Self::Observation(error) => Some(error),
             Self::VaultRuntime(error) => Some(error),
-            Self::InvalidOptions(_) => None,
+            Self::InvalidOptions(_) | Self::Index(_) => None,
         }
     }
 }
@@ -411,7 +415,7 @@ fn spawn_watcher(
             &thread_stop,
         )
     });
-    let index = spawn_index_consumer(registration.clone(), &hub, options)?;
+    let index = spawn_index_consumer(registration.clone(), &hub, state_store.root(), options)?;
     let sync = sync_consumer_enabled(&registration)
         .then(|| spawn_sync_consumer(registration.clone(), &hub, supervisor, state_store, options))
         .transpose()?;
@@ -428,8 +432,9 @@ fn spawn_watcher(
 fn spawn_index_consumer(
     registration: WikiRegistration,
     hub: &VaultObservationHub,
+    state_root: &std::path::Path,
     options: DaemonWatchOptions,
-) -> Result<IndexConsumerTask, ObservationError> {
+) -> Result<IndexConsumerTask, SyncTriggerRuntimeError> {
     let subscription = hub.subscribe(
         ObservationConsumerId::parse(format!("index-{}", registration.id))?,
         ObservationConsumerPolicy {
@@ -440,7 +445,10 @@ fn spawn_index_consumer(
             filter: ObservationFilter::default(),
         },
     )?;
-    let tracker = Arc::new(VaultScanTracker::default());
+    let tracker = Arc::new(
+        VaultScanTracker::persisted(scan_status_path(state_root, registration.registration_id))
+            .map_err(SyncTriggerRuntimeError::Index)?,
+    );
     let thread_tracker = Arc::clone(&tracker);
     let stop = Arc::new(ShutdownSignal::default());
     let thread_stop = Arc::clone(&stop);
