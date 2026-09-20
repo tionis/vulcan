@@ -185,6 +185,18 @@ revalidates current authority immediately before execution. Each operation class
 it is read-only, idempotently retryable, recoverable from a durable ledger/journal, or potentially
 indeterminate after a timeout. An in-memory queue does not claim exactly-once delivery.
 
+The implemented contract lives in `vulcan_app::execution`. `ExecutionVaultIdentity::resolve`
+canonicalizes aliases before scheduling, and an optional `ExecutionRepositoryIdentity` carries the
+repository layer's stable key and canonical Git directory. `ExecutionAuthority` is deliberately a
+closed choice between a caller principal and a configured background service authority; both own a
+permission ceiling, and construction rejects any broader effective grant. `ExecutionIdentity`
+carries independently generated request and operation ULIDs plus the hosting service-instance ID.
+The cancellation token is a synchronous atomic flag and the deadline is an absolute Unix-epoch
+millisecond value, so ordinary app entrypoints can call `checkpoint()` without depending on Tokio.
+Adapters remain responsible for checking at workflow boundaries and again immediately before an
+apply step. `ExecutionRetryClass` records whether a disconnected or timed-out operation is a read,
+idempotent, durably recoverable, or potentially indeterminate after dispatch.
+
 ## Client routing contract
 
 Routing is explicit and happens before dispatch:

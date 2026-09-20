@@ -37,6 +37,7 @@ pub mod artifact;
 pub mod browse;
 pub mod config;
 pub mod decomposition;
+pub mod execution;
 pub mod export;
 pub mod folder_notes;
 pub mod integrations;
