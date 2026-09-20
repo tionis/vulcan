@@ -406,6 +406,17 @@ SQLite may later serialize the same wiki-package semantic model for offline web,
 
 ### 4.6 Vulcan App data and storage model
 
+Vault-owned scheduled execution is specified in [the scheduling contract](specs/scheduled-execution.md)
+and Roadmap 10.8. Canonical definitions select jobs, enabled state, and target nodes; the daemon
+live-reloads them without a second local schedule switch. Device configuration owns identity,
+credentials, permission ceilings, and optional admin-signature enforcement. One bounded scheduler
+invokes finite workflows; no distributed claims, coordinator, or automatic failover is planned.
+Repository-trust and trusted-commit policies share immutable execution identity and existing sandbox
+checks. Static allowed signers ship first; scoped accepted-registry authority and multiple isolated
+in-vault sigchains extend Phase 12.17 later. Execution trust never comes from merely syncing a key
+file. RSS imports retain portable canonical bindings so node handoff does not lose article identity;
+offline reassignment/revocation is eventual, and overlap remains recoverable rather than exactly once.
+
 The normative Phase 19 implementation target is `docs/specs/vulcan-app/v1/SPEC.md`, with its closed manifest schema, WIT component boundary, identity fixture, and per-example product contracts. The normative companion `docs/specs/vulcan-app/v1/IMPLEMENTATION_CONTRACTS.md` defines signature/migration declarations, API authorization, exact-number transport, document-bound browser channels, canonical SQLite snapshots, and staged delivery; `docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md` defines validation-scope authorization and journaled record writes. This section records the architectural rationale; when prose here is less specific, the versioned specification controls v1 behavior. Changing a frozen v1 requirement requires an explicit specification revision and compatibility review rather than an implementation-local interpretation.
 
 App settings are distinct from instance configuration and application stores. The normative `docs/specs/vulcan-app/v1/SETTINGS.md` contract defines per-app vault-global values in canonical, Git-trackable files and device-local values/overrides outside synchronization. A packaged schema declares each key’s allowed targets; shared values and allowed local overrides resolve over explicit schema defaults with visible provenance. The App API, direct/daemon CLI, and host-rendered configuration TUI share validation and revision-checked mutation workflows. Settings never convey grants or contain secrets.

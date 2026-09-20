@@ -2,7 +2,7 @@
 
 Status: normative implementation target for Roadmap Phase 19. It does not claim that the current binary implements this specification.
 
-Revision: 2026-09-07 layered app settings review (pre-release; no deployed v1 compatibility claim).
+Revision: 2026-09-20 vault-owned scheduling and execution trust review (pre-release; no deployed v1 compatibility claim).
 
 This document defines the version 1 package, lifecycle, capability, bridge, runtime, storage, and conformance contracts. Requirements use MUST, MUST NOT, SHOULD, and MAY in the RFC 2119 sense. Anything not granted or described here is unavailable to an app. Future behavior requires a separately versioned contract rather than permissive interpretation.
 
@@ -310,6 +310,17 @@ The `mdbase` engine identifies collection semantics and canonical Markdown stora
 Canonical SQLite is an artifact, not a private SQL handle by default. A store declaring `adapter: "sqlite-artifact-v1"` may expose SQL through the same guarded host connection, but every committed transaction produces an atomic captured artifact revision. Concurrent file-tree versions require review in v1.
 
 ## 11. Events, jobs, network, and secrets
+
+The [scheduled-execution contract](../../scheduled-execution.md) governs schedule ownership and
+execution trust. Canonical vault definitions own enabled state and target nodes and are live-reloaded
+by the daemon. Separate background approval below means effective service capability authority and
+the configured execution trust policy, not a second local schedule-enable flag or per-update prompt.
+Device-local policy MAY require admin-signed immutable execution definitions; synced configuration
+MUST NOT weaken its trust roots or permission ceilings. Package validation/signatures remain separate
+requirements. Static-key verification precedes the optional Phase 12.17.6 accepted-sigchain adapter.
+This pre-release revision refines schedule placement and authorization without changing the manifest,
+WIT, or capability names. The Feed Reader storage refinement in `EXAMPLE_APPS.md` makes authoritative
+capture bindings portable; no deployed data migration is implied.
 
 Events are delivered only after the originating mutation and incremental scan reach consistent readable state. File events contain event ID, kind, canonical visible path, media type, old/new BLAKE3 where authorized, mutation/transaction ID, and origin instance ID; never file bytes. Filters are compiled from the capability selector. Delivery is at-least-once, so handlers MUST use event IDs/idempotency keys. The host coalesces editor save bursts and suppresses self-trigger loops by origin plus declared policy, without dropping genuine later user changes.
 

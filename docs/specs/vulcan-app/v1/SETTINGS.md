@@ -50,6 +50,15 @@ declaration exposes no keys and permits no persisted values.
 
 ## Canonical and device-local storage
 
+Scheduled execution additionally follows [the execution trust contract](../../scheduled-execution.md).
+Schedule definitions and node assignments are canonical vault configuration, not device overrides.
+In trusted-commit mode, settings that affect executable selection, sources, destinations, or capture
+policy are bound to the verified execution snapshot; local overrides cannot silently replace those
+values. UI-only local settings and separately authorized secret-handle resolution remain available.
+The schedule schema must define this classification before implementation; scope permission alone
+does not authorize unsigned execution settings. This is a pre-release behavioral clarification,
+not a change to the settings manifest schema or existing identity fixtures.
+
 Shared values live at `.vulcan/app-settings/<app-id>.json` in the canonical vault, outside
 the ignored `.vulcan/apps/` private-store tree. The envelope is
 `{"app_id":"org.example.reader","version":1,"values":{}}` with only those fields.

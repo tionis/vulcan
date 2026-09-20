@@ -135,6 +135,15 @@ bytes; retained recovery objects remain inspectable without accepting that devic
 
 ## Registry v1: administrators and linear history
 
+Roadmap 12.17.6 and [scheduled execution](scheduled-execution.md) define a future consumer and
+transport extension: scoped execution authorization, then multiple isolated sigchains embedded in
+an ordinary repository or vault. The dedicated-repository v1 contract below remains supported.
+The extension must preserve exact registry identity, independently pinned checkpoints, linear
+authenticated transitions, and separate accepted state without applying that linearity requirement
+to the outer wiki's commit history. It must explicitly define an execution-signing role; current
+registry-administration keys are not implicitly reusable for signing application execution commits.
+Static allowed-signers execution verification does not depend on this extension.
+
 A registry is a dedicated Git repository of public data with strict versioned schemas:
 
 ```text
