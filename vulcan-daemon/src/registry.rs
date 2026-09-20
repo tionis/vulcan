@@ -10,6 +10,11 @@ use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_app::sync::{GitRefName, GitRemote};
 
+use crate::mcp_remote::{
+    validate_definition as validate_mcp_remote_definition, AddMcpRemoteRequest,
+    McpRemoteDefinition, McpRemoteId,
+};
+
 const DAEMON_CONFIG_FILE: &str = "daemon.toml";
 const DEFAULT_BIND: &str = "127.0.0.1:3210";
 
@@ -86,6 +91,8 @@ pub struct DaemonConfig {
     pub notifications: DaemonNotificationConfig,
     #[serde(default, rename = "vault")]
     pub vaults: Vec<WikiRegistration>,
+    #[serde(default, rename = "mcp_remote")]
+    pub mcp_remotes: Vec<McpRemoteDefinition>,
 }
 
 fn default_bind() -> String {
@@ -103,6 +110,7 @@ impl Default for DaemonConfig {
             conflict_worker: None,
             notifications: DaemonNotificationConfig::default(),
             vaults: Vec::new(),
+            mcp_remotes: Vec::new(),
         }
     }
 }
@@ -295,6 +303,12 @@ pub enum RegistryError {
     DuplicateId(WikiId),
     DuplicatePath { id: WikiId, path: PathBuf },
     DuplicateGitDir { id: WikiId, path: PathBuf },
+    DuplicateMcpRemoteId(McpRemoteId),
+    DuplicateMcpRemoteBind { id: McpRemoteId, bind: String },
+    DuplicateMcpRemoteUrl { id: McpRemoteId, public_url: String },
+    UnknownMcpRemote(McpRemoteId),
+    McpRemoteInUse { remote: McpRemoteId, wiki: WikiId },
+    InvalidMcpRemote(String),
     UnregisteredPath(PathBuf),
     UnknownWiki(WikiId),
     InvalidConfig { path: PathBuf, detail: String },
@@ -332,6 +346,25 @@ impl Display for RegistryError {
                 "Git directory {} is already registered for wiki `{id}`",
                 path.display()
             ),
+            Self::DuplicateMcpRemoteId(id) => {
+                write!(formatter, "remote MCP `{id}` is already configured")
+            }
+            Self::DuplicateMcpRemoteBind { id, bind } => write!(
+                formatter,
+                "remote MCP bind `{bind}` is already used by `{id}`"
+            ),
+            Self::DuplicateMcpRemoteUrl { id, public_url } => write!(
+                formatter,
+                "remote MCP public URL `{public_url}` is already used by `{id}`"
+            ),
+            Self::UnknownMcpRemote(id) => write!(formatter, "unknown remote MCP `{id}`"),
+            Self::McpRemoteInUse { remote, wiki } => write!(
+                formatter,
+                "wiki `{wiki}` is still exposed by remote MCP `{remote}`"
+            ),
+            Self::InvalidMcpRemote(detail) => {
+                write!(formatter, "invalid remote MCP configuration: {detail}")
+            }
             Self::UnregisteredPath(path) => write!(
                 formatter,
                 "vault path {} is not registered on this device",
@@ -506,12 +539,94 @@ impl WikiRegistry {
 
     pub fn remove(&self, id: &WikiId, dry_run: bool) -> Result<WikiRegistration, RegistryError> {
         self.mutate(dry_run, |config| {
+            if let Some(remote) = config
+                .mcp_remotes
+                .iter()
+                .find(|remote| remote.vaults.iter().any(|vault| &vault.wiki_id == id))
+            {
+                return Err(RegistryError::McpRemoteInUse {
+                    remote: remote.id.clone(),
+                    wiki: id.clone(),
+                });
+            }
             let index = config
                 .vaults
                 .iter()
                 .position(|wiki| &wiki.id == id)
                 .ok_or_else(|| RegistryError::UnknownWiki(id.clone()))?;
             Ok(config.vaults.remove(index))
+        })
+    }
+
+    pub fn list_mcp_remotes(&self) -> Result<Vec<McpRemoteDefinition>, RegistryError> {
+        Ok(self.load()?.mcp_remotes)
+    }
+
+    pub fn show_mcp_remote(&self, id: &McpRemoteId) -> Result<McpRemoteDefinition, RegistryError> {
+        self.load()?
+            .mcp_remotes
+            .into_iter()
+            .find(|remote| &remote.id == id)
+            .ok_or_else(|| RegistryError::UnknownMcpRemote(id.clone()))
+    }
+
+    pub fn add_mcp_remote(
+        &self,
+        request: AddMcpRemoteRequest,
+        dry_run: bool,
+    ) -> Result<McpRemoteDefinition, RegistryError> {
+        self.mutate(dry_run, |config| {
+            let definition = request
+                .into_definition()
+                .map_err(|error| RegistryError::InvalidMcpRemote(error.to_string()))?;
+            if config
+                .mcp_remotes
+                .iter()
+                .any(|remote| remote.id == definition.id)
+            {
+                return Err(RegistryError::DuplicateMcpRemoteId(definition.id.clone()));
+            }
+            if let Some(existing) = config
+                .mcp_remotes
+                .iter()
+                .find(|remote| remote.bind == definition.bind)
+            {
+                return Err(RegistryError::DuplicateMcpRemoteBind {
+                    id: existing.id.clone(),
+                    bind: definition.bind,
+                });
+            }
+            if let Some(existing) = config
+                .mcp_remotes
+                .iter()
+                .find(|remote| remote.public_url == definition.public_url)
+            {
+                return Err(RegistryError::DuplicateMcpRemoteUrl {
+                    id: existing.id.clone(),
+                    public_url: definition.public_url,
+                });
+            }
+            ensure_remote_wikis_registered(config, &definition)?;
+            config.mcp_remotes.push(definition.clone());
+            config
+                .mcp_remotes
+                .sort_by(|left, right| left.id.cmp(&right.id));
+            Ok(definition)
+        })
+    }
+
+    pub fn remove_mcp_remote(
+        &self,
+        id: &McpRemoteId,
+        dry_run: bool,
+    ) -> Result<McpRemoteDefinition, RegistryError> {
+        self.mutate(dry_run, |config| {
+            let index = config
+                .mcp_remotes
+                .iter()
+                .position(|remote| &remote.id == id)
+                .ok_or_else(|| RegistryError::UnknownMcpRemote(id.clone()))?;
+            Ok(config.mcp_remotes.remove(index))
         })
     }
 
@@ -684,6 +799,61 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
         validate_conflict_worker_config(worker)?;
     }
     validate_notification_config(&config.notifications)?;
+    validate_mcp_remotes(config)?;
+    Ok(())
+}
+
+fn validate_mcp_remotes(config: &DaemonConfig) -> Result<(), RegistryError> {
+    if config.mcp_remotes.len() > 32 {
+        return Err(RegistryError::InvalidMcpRemote(
+            "at most 32 named remotes may be configured".to_string(),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut instance_ids = BTreeSet::new();
+    let mut binds = BTreeSet::new();
+    let mut public_urls = BTreeSet::new();
+    for remote in &config.mcp_remotes {
+        validate_mcp_remote_definition(remote)
+            .map_err(|error| RegistryError::InvalidMcpRemote(error.to_string()))?;
+        ensure_remote_wikis_registered(config, remote)?;
+        if !ids.insert(&remote.id) {
+            return Err(RegistryError::DuplicateMcpRemoteId(remote.id.clone()));
+        }
+        if !instance_ids.insert(remote.instance_id) {
+            return Err(RegistryError::InvalidMcpRemote(format!(
+                "duplicate instance ID {}",
+                remote.instance_id
+            )));
+        }
+        if !binds.insert(&remote.bind) {
+            return Err(RegistryError::InvalidMcpRemote(format!(
+                "duplicate bind address `{}`",
+                remote.bind
+            )));
+        }
+        if !public_urls.insert(&remote.public_url) {
+            return Err(RegistryError::InvalidMcpRemote(format!(
+                "duplicate public URL `{}`",
+                remote.public_url
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_remote_wikis_registered(
+    config: &DaemonConfig,
+    remote: &McpRemoteDefinition,
+) -> Result<(), RegistryError> {
+    for vault in &remote.vaults {
+        if !config.vaults.iter().any(|wiki| wiki.id == vault.wiki_id) {
+            return Err(RegistryError::InvalidMcpRemote(format!(
+                "remote `{}` references unregistered wiki `{}`",
+                remote.id, vault.wiki_id
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1009,6 +1179,7 @@ impl RegistryLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp_remote::{McpRemoteAuthentication, McpRemoteVault, DEFAULT_MCP_TOOL_PACKS};
     use tempfile::tempdir;
 
     fn absolute_notification_program() -> PathBuf {
@@ -1024,6 +1195,31 @@ mod tests {
             permissions_profile: None,
             sync_backend: Some("git".to_string()),
             platform_profile: None,
+        }
+    }
+
+    fn remote_request(
+        id: &str,
+        wiki_id: &str,
+        bind: &str,
+        public_url: &str,
+    ) -> AddMcpRemoteRequest {
+        AddMcpRemoteRequest {
+            id: McpRemoteId::parse(id).expect("remote ID"),
+            bind: bind.to_string(),
+            public_url: public_url.to_string(),
+            authentication: McpRemoteAuthentication::IndieAuth {
+                identity: "https://identity.example.test/eric".to_string(),
+            },
+            vaults: vec![McpRemoteVault {
+                wiki_id: WikiId::parse(wiki_id).expect("wiki ID"),
+                ceiling_profile: "agent".to_string(),
+                default_profile: "readonly".to_string(),
+                tool_packs: DEFAULT_MCP_TOOL_PACKS
+                    .iter()
+                    .map(|pack| (*pack).to_string())
+                    .collect(),
+            }],
         }
     }
 
@@ -1096,6 +1292,156 @@ mod tests {
         assert_eq!(planned.id.as_str(), "personal");
         assert!(!config.exists());
         assert!(registry.load().expect("load empty").vaults.is_empty());
+    }
+
+    #[test]
+    fn named_mcp_remotes_round_trip_with_stable_isolated_instances() {
+        let temporary = tempdir().expect("temporary directory");
+        let personal = temporary.path().join("personal");
+        let work = temporary.path().join("work");
+        fs::create_dir(&personal).expect("personal wiki");
+        fs::create_dir(&work).expect("work wiki");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        registry
+            .add(&request("personal", &personal), false)
+            .expect("register personal");
+        registry
+            .add(&request("work", &work), false)
+            .expect("register work");
+
+        let work_remote = registry
+            .add_mcp_remote(
+                remote_request(
+                    "work-chatgpt",
+                    "work",
+                    "127.0.0.1:8766",
+                    "https://mcp.example.test/work",
+                ),
+                false,
+            )
+            .expect("add work remote");
+        let personal_remote = registry
+            .add_mcp_remote(
+                remote_request(
+                    "personal-chatgpt",
+                    "personal",
+                    "127.0.0.1:8765",
+                    "https://mcp.example.test/personal",
+                ),
+                false,
+            )
+            .expect("add personal remote");
+
+        let remotes = registry.list_mcp_remotes().expect("list remotes");
+        assert_eq!(remotes[0].id.as_str(), "personal-chatgpt");
+        assert_eq!(remotes[1].id.as_str(), "work-chatgpt");
+        assert_ne!(personal_remote.instance_id, work_remote.instance_id);
+        assert_eq!(
+            registry
+                .show_mcp_remote(&personal_remote.id)
+                .expect("show personal")
+                .public_url,
+            "https://mcp.example.test/personal"
+        );
+
+        let reloaded = WikiRegistry::at(registry.path().to_path_buf());
+        assert_eq!(
+            reloaded
+                .show_mcp_remote(&work_remote.id)
+                .expect("reload work")
+                .instance_id,
+            work_remote.instance_id
+        );
+    }
+
+    #[test]
+    fn named_mcp_remote_dry_run_and_removal_preserve_vaults() {
+        let temporary = tempdir().expect("temporary directory");
+        let wiki = temporary.path().join("wiki");
+        fs::create_dir(&wiki).expect("wiki directory");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        let registration = registry
+            .add(&request("personal", &wiki), false)
+            .expect("register wiki");
+        let remote = remote_request(
+            "personal-chatgpt",
+            "personal",
+            "127.0.0.1:8765",
+            "https://mcp.example.test/personal",
+        );
+
+        let planned = registry
+            .add_mcp_remote(remote.clone(), true)
+            .expect("plan remote");
+        assert!(registry
+            .list_mcp_remotes()
+            .expect("empty remotes")
+            .is_empty());
+        let added = registry.add_mcp_remote(remote, false).expect("add remote");
+        assert!(matches!(
+            registry.remove(&registration.id, false),
+            Err(RegistryError::McpRemoteInUse { .. })
+        ));
+        let removal = registry
+            .remove_mcp_remote(&added.id, true)
+            .expect("plan removal");
+        assert_eq!(removal.instance_id, added.instance_id);
+        assert_eq!(planned.id, added.id);
+        assert_eq!(
+            registry.list_mcp_remotes().expect("remote remains").len(),
+            1
+        );
+
+        registry
+            .remove_mcp_remote(&added.id, false)
+            .expect("remove remote");
+        registry
+            .remove(&registration.id, false)
+            .expect("remove wiki after remote");
+        assert!(wiki.is_dir());
+    }
+
+    #[test]
+    fn named_mcp_remotes_reject_collisions_and_unregistered_wikis() {
+        let temporary = tempdir().expect("temporary directory");
+        let wiki = temporary.path().join("wiki");
+        fs::create_dir(&wiki).expect("wiki directory");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        registry
+            .add(&request("personal", &wiki), false)
+            .expect("register wiki");
+        registry
+            .add_mcp_remote(
+                remote_request(
+                    "personal-chatgpt",
+                    "personal",
+                    "127.0.0.1:8765",
+                    "https://mcp.example.test/personal",
+                ),
+                false,
+            )
+            .expect("add remote");
+
+        let duplicate_bind = remote_request(
+            "second",
+            "personal",
+            "127.0.0.1:8765",
+            "https://mcp.example.test/second",
+        );
+        assert!(matches!(
+            registry.add_mcp_remote(duplicate_bind, false),
+            Err(RegistryError::DuplicateMcpRemoteBind { .. })
+        ));
+        let unknown_wiki = remote_request(
+            "unknown-wiki",
+            "missing",
+            "127.0.0.1:8767",
+            "https://mcp.example.test/missing",
+        );
+        assert!(matches!(
+            registry.add_mcp_remote(unknown_wiki, false),
+            Err(RegistryError::InvalidMcpRemote(_))
+        ));
     }
 
     #[test]

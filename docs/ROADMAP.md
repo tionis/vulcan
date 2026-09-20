@@ -5501,10 +5501,14 @@ session authority -> PermissionGuard -> PermissionFilter
 
 **Implementation slices**
 
-- [ ] Define versioned remote-instance, connection-grant, token-family, and redacted report types in
-  reusable non-CLI modules. Add atomic/locked device config and durable-state stores with strict file
-  permissions, schema validation, stable ULIDs, collision checks, and migrations. Neither daemon nor
-  app code may import CLI types.
+- [x] Define versioned named-remote and per-vault ceiling types in a reusable non-CLI module. Persist
+  them through the atomic, locked device-global daemon registry with stable instance ULIDs,
+  loopback/HTTPS validation, registered-wiki references, deterministic ordering, dry-run-safe
+  mutation, and bind/public-URL collision checks. Prevent unregistering a wiki while a
+  remote still exposes it.
+- [ ] Define versioned connection-grant, token-family, and redacted report types in reusable non-CLI
+  modules. Add atomic/locked durable-state stores with strict file permissions, schema validation,
+  stable ULIDs, collision checks, and migrations. Neither daemon nor app code may import CLI types.
 - [ ] Bind the existing HTTP session lifecycle to an authenticated authority record and add
   regression tests with two subjects, two grants, two remotes, and attempted cross-session/token
   reuse. Preserve stdio behavior and static/adaptive pack semantics.

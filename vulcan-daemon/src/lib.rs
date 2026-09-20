@@ -15,6 +15,7 @@ pub mod credentials;
 pub mod environment;
 pub mod final_sync;
 pub mod http;
+pub mod mcp_remote;
 pub mod notifications;
 pub mod process;
 pub mod registry;
