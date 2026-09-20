@@ -19,6 +19,7 @@ pub mod host;
 pub mod hosted_executor;
 pub mod hosted_jobs;
 pub mod http;
+pub mod http_policy;
 pub mod mcp_remote;
 pub mod mcp_session;
 pub mod mcp_state;

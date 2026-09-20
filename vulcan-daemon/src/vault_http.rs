@@ -4,10 +4,14 @@ use crate::host::{
     HostRuntimeError, RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration,
     ServiceScope,
 };
+use crate::http_policy::{
+    apply_cors_headers, constant_time_secret_header, declared_body_exceeds, exact_origin_allowed,
+    header_text, with_deadline, HeaderText, RequestAudit,
+};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::header::{CONTENT_LENGTH, HOST, ORIGIN};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::header::{HOST, ORIGIN};
+use axum::http::{HeaderName, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -17,7 +21,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use subtle::ConstantTimeEq;
 use vulcan_app::serve::{
     route_request, ServeHealthState, ServeRequest, ServeResponse, ServeRouteOptions,
 };
@@ -232,49 +235,41 @@ pub fn vault_watch_service(
 }
 
 async fn authorize(State(state): State<VaultHttpState>, request: Request, next: Next) -> Response {
-    let oversized = request
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|length| length > VAULT_HTTP_MAX_REQUEST_BYTES);
-    if oversized {
+    let audit = RequestAudit::capture("vault", request.method(), request.uri());
+    let origin = match header_text(request.headers(), &ORIGIN) {
+        HeaderText::Valid(origin) => Some(origin.to_string()),
+        HeaderText::Absent | HeaderText::Invalid => None,
+    };
+    let response = authorize_inner(&state, request, next).await;
+    let response = vault_cors_response(response, origin.as_deref());
+    audit.emit(response.status());
+    response
+}
+
+async fn authorize_inner(state: &VaultHttpState, request: Request, next: Next) -> Response {
+    if declared_body_exceeds(request.headers(), VAULT_HTTP_MAX_REQUEST_BYTES) {
         return json_error(StatusCode::PAYLOAD_TOO_LARGE, "request body exceeds 32 KiB");
     }
-    let host_allowed = request
-        .headers()
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|host| {
-            state
-                .security
-                .allowed_authorities
-                .iter()
-                .any(|allowed| allowed == host)
-        });
+    let host_allowed = matches!(
+        header_text(request.headers(), &HOST),
+        HeaderText::Valid(host)
+            if state.security.allowed_authorities.iter().any(|allowed| allowed == host)
+    );
     if !host_allowed {
         return json_error(StatusCode::FORBIDDEN, "forbidden Host header");
     }
-    let origin_allowed = request
-        .headers()
-        .get(ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .is_none_or(|origin| {
-            state
-                .security
-                .allowed_origins
-                .iter()
-                .any(|allowed| allowed == origin)
-        });
-    if !origin_allowed {
+    if !exact_origin_allowed(request.headers(), &state.security.allowed_origins) {
         return json_error(StatusCode::FORBIDDEN, "forbidden Origin header");
     }
-    let authorized = request
-        .headers()
-        .get(VAULT_HTTP_TOKEN_HEADER)
-        .map(HeaderValue::as_bytes)
-        .is_some_and(|actual| constant_time_equal(actual, state.security.token.as_bytes()));
-    if !authorized {
+    if request.method() == Method::OPTIONS {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let token_header = HeaderName::from_static(VAULT_HTTP_TOKEN_HEADER);
+    if !constant_time_secret_header(
+        request.headers(),
+        &token_header,
+        state.security.token.as_bytes(),
+    ) {
         return json_error(
             StatusCode::UNAUTHORIZED,
             "missing or invalid X-Vulcan-Token header",
@@ -301,7 +296,7 @@ async fn dispatch(State(state): State<VaultHttpState>, request: Request<Body>) -
     let operation = tokio::task::spawn_blocking(move || {
         route_request(paths.as_ref(), &options, &health, &app_request)
     });
-    match tokio::time::timeout(state.request_deadline, operation).await {
+    match with_deadline(state.request_deadline, operation).await {
         Ok(Ok(response)) => app_response(response),
         Ok(Err(error)) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -314,6 +309,16 @@ async fn dispatch(State(state): State<VaultHttpState>, request: Request<Body>) -
     }
 }
 
+fn vault_cors_response(mut response: Response, origin: Option<&str>) -> Response {
+    apply_cors_headers(
+        &mut response,
+        origin,
+        "content-type, x-vulcan-token",
+        "GET, OPTIONS",
+    );
+    response
+}
+
 fn parse_query(query: &str) -> HashMap<String, Vec<String>> {
     let mut parameters = HashMap::<String, Vec<String>>::new();
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
@@ -323,10 +328,6 @@ fn parse_query(query: &str) -> HashMap<String, Vec<String>> {
             .push(value.into_owned());
     }
     parameters
-}
-
-fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
-    left.len() == right.len() && bool::from(left.ct_eq(right))
 }
 
 fn app_response(response: ServeResponse) -> Response {
@@ -348,6 +349,7 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::CONTENT_LENGTH;
     use axum::http::Request as HttpRequest;
     use serde_json::Value;
     use tower::ServiceExt;
@@ -475,5 +477,31 @@ mod tests {
             .expect("response");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(body(response).await["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn router_supports_browser_preflight_without_sharing_token_authority() {
+        let (_vault, state) = fixture();
+        let response = vault_router(state)
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/search")
+                    .header(HOST, "127.0.0.1:3210")
+                    .header(ORIGIN, "http://127.0.0.1:3210")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers()[axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "http://127.0.0.1:3210"
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS],
+            "content-type, x-vulcan-token"
+        );
     }
 }

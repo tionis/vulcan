@@ -7,6 +7,10 @@ use crate::companion::{
     ConflictResolveRequest, SemanticPlanRequest, SyncSelectionRequest, COMPANION_PROTOCOL_VERSION,
 };
 use crate::credentials::CompanionCredential;
+use crate::http_policy::{
+    apply_cors_headers, bearer_token, declared_body_exceeds, header_text, with_deadline,
+    HeaderText, RequestAudit,
+};
 use crate::registry::{WikiId, WikiRegistry};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
@@ -15,10 +19,9 @@ use axum::body::Body;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
-use axum::http::header::{
-    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-    AUTHORIZATION, ORIGIN, SEC_WEBSOCKET_PROTOCOL,
-};
+#[cfg(test)]
+use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION};
+use axum::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -39,6 +42,7 @@ const WEBSOCKET_PROTOCOL: &str = "vulcan.v1";
 const WEBSOCKET_BEARER_PREFIX: &str = "vulcan.bearer.";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 16 * 1024;
+const COMPANION_HTTP_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct CompanionHttpState {
@@ -193,56 +197,75 @@ async fn authorize_request(
     request: Request,
     next: Next,
 ) -> Response {
-    let origin = request
-        .headers()
-        .get(ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .map(ToString::to_string);
-    if !state.credential.allows_origin(origin.as_deref()) {
-        return cors_response(
-            api_error(
-                StatusCode::FORBIDDEN,
-                CompanionErrorKind::PermissionDenied,
-                "request Origin is not allowed",
-            ),
-            None,
+    let audit = RequestAudit::capture("companion", request.method(), request.uri());
+    let (origin, origin_valid) = match header_text(request.headers(), &ORIGIN) {
+        HeaderText::Valid(origin) => (Some(origin.to_string()), true),
+        HeaderText::Absent => (None, true),
+        HeaderText::Invalid => (None, false),
+    };
+    let response =
+        authorize_request_inner(&state, request, next, origin.as_deref(), origin_valid).await;
+    let response = cors_response(response, origin.as_deref());
+    audit.emit(response.status());
+    response
+}
+
+async fn authorize_request_inner(
+    state: &CompanionHttpState,
+    request: Request,
+    next: Next,
+    origin: Option<&str>,
+    origin_valid: bool,
+) -> Response {
+    if declared_body_exceeds(request.headers(), MAX_REQUEST_BYTES) {
+        return api_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            CompanionErrorKind::InvalidRequest,
+            "request body exceeds 1 MiB",
+        );
+    }
+    if !origin_valid || !state.credential.allows_origin(origin) {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            CompanionErrorKind::PermissionDenied,
+            "request Origin is not allowed",
         );
     }
 
     if request.method() == Method::OPTIONS {
-        return cors_response(StatusCode::NO_CONTENT.into_response(), origin.as_deref());
+        return StatusCode::NO_CONTENT.into_response();
     }
 
     let is_capabilities = request.uri().path() == "/capabilities";
     let is_events = request.uri().path() == "/events";
     if !is_capabilities && !is_events && !has_protocol_version(request.headers()) {
-        return cors_response(
-            api_error(
-                StatusCode::UPGRADE_REQUIRED,
-                CompanionErrorKind::InvalidRequest,
-                "missing or unsupported Vulcan protocol version",
-            ),
-            origin.as_deref(),
+        return api_error(
+            StatusCode::UPGRADE_REQUIRED,
+            CompanionErrorKind::InvalidRequest,
+            "missing or unsupported Vulcan protocol version",
         );
     }
 
     if !is_events && !has_authorization(request.headers(), &state.credential) {
-        return cors_response(
-            api_error(
-                StatusCode::UNAUTHORIZED,
-                CompanionErrorKind::PermissionDenied,
-                "missing or invalid companion bearer credential",
-            ),
-            origin.as_deref(),
+        return api_error(
+            StatusCode::UNAUTHORIZED,
+            CompanionErrorKind::PermissionDenied,
+            "missing or invalid companion bearer credential",
         );
     }
 
     let mutation = matches!(*request.method(), Method::POST | Method::DELETE);
-    let response = next.run(request).await;
+    let Ok(response) = with_deadline(COMPANION_HTTP_DEADLINE, next.run(request)).await else {
+        return api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            CompanionErrorKind::Internal,
+            "companion request deadline exceeded; operation outcome may be unknown",
+        );
+    };
     if mutation && response.status().is_success() {
         state.supervisor.notify_change();
     }
-    cors_response(response, origin.as_deref())
+    response
 }
 
 fn cors_response(mut response: Response, origin: Option<&str>) -> Response {
@@ -250,21 +273,12 @@ fn cors_response(mut response: Response, origin: Option<&str>) -> Response {
         HeaderName::from_static(PROTOCOL_VERSION_HEADER),
         HeaderValue::from_static("1"),
     );
-    if let Some(origin) = origin.and_then(|origin| HeaderValue::from_str(origin).ok()) {
-        response
-            .headers_mut()
-            .insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-        response.headers_mut().insert(
-            ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static(
-                "authorization, content-type, idempotency-key, vulcan-protocol-version",
-            ),
-        );
-        response.headers_mut().insert(
-            ACCESS_CONTROL_ALLOW_METHODS,
-            HeaderValue::from_static("GET, POST, DELETE, OPTIONS"),
-        );
-    }
+    apply_cors_headers(
+        &mut response,
+        origin,
+        "authorization, content-type, idempotency-key, vulcan-protocol-version",
+        "GET, POST, DELETE, OPTIONS",
+    );
     response
 }
 
@@ -275,11 +289,7 @@ fn has_protocol_version(headers: &HeaderMap) -> bool {
 }
 
 fn has_authorization(headers: &HeaderMap, credential: &CompanionCredential) -> bool {
-    headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| credential.authorizes(token))
+    bearer_token(headers).is_some_and(|token| credential.authorizes(token))
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -1054,6 +1064,24 @@ mod tests {
             response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN],
             "app://obsidian.md"
         );
+    }
+
+    #[tokio::test]
+    async fn declared_oversized_requests_fail_before_authentication_or_dispatch() {
+        let (_temporary, state) = fixture();
+        let response = companion_router(state)
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::POST)
+                    .uri("/sync")
+                    .header(axum::http::header::CONTENT_LENGTH, MAX_REQUEST_BYTES + 1)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body_json(response).await["kind"], json!("invalid_request"));
     }
 
     #[tokio::test]

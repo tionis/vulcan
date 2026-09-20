@@ -247,6 +247,15 @@ declared body limits, and request deadlines now live in the reusable daemon adap
 for vectors and the JS runtime are forwarded through the daemon crate so moving the transport does
 not silently remove endpoints from the default CLI build.
 
+Shared HTTP policy primitives now enforce declared body limits, bounded async response waits,
+exact Origin parsing, constant-time secret-header checks, bearer extraction, CORS response headers,
+and secret-minimal access records that omit query strings and every request header. The companion
+and single-vault adapters use those primitives but retain different authenticators, error schemas,
+allowed origins, body ceilings, and audiences. Companion transport remains loopback-only; its
+bearer cannot authorize a vault request, and a vault token cannot authorize companion routes.
+Browser preflight for the single-vault API validates Host and Origin without treating preflight as
+an authenticated operation; the subsequent request still requires its vault token.
+
 ### Compatibility test inventory
 
 Migration extends these existing suites instead of replacing them with host-only tests:
