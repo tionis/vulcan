@@ -61,6 +61,77 @@ fn http_parser_rejects_oversized_content_length_before_body_read() {
     assert!(error.message.contains("exceeds maximum size"));
 }
 
+#[test]
+fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let core = McpServerCore::new(
+        &paths,
+        Some("readonly"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let instance = Ulid::new();
+    let grant = Ulid::new();
+    let authority = McpSessionAuthority::granted(
+        vulcan_daemon::mcp_remote::McpRemoteId::parse("personal-chatgpt").expect("remote"),
+        instance,
+        grant,
+        "client-a".to_string(),
+        "https://identity.example.test/alice".to_string(),
+        vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
+        "https://mcp.example.test/personal".to_string(),
+        "readonly".to_string(),
+        vec!["notes-read".to_string()],
+        "alice-token",
+    );
+    let session = McpHttpSession::new(core, authority.clone());
+    assert!(session.authority.matches(&authority));
+
+    let bob_grant = McpSessionAuthority::granted(
+        vulcan_daemon::mcp_remote::McpRemoteId::parse("personal-chatgpt").expect("remote"),
+        instance,
+        Ulid::new(),
+        "client-b".to_string(),
+        "https://identity.example.test/bob".to_string(),
+        vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
+        "https://mcp.example.test/personal".to_string(),
+        "readonly".to_string(),
+        vec!["notes-read".to_string()],
+        "bob-token",
+    );
+    assert!(!session.authority.matches(&bob_grant));
+
+    let other_remote = McpSessionAuthority::granted(
+        vulcan_daemon::mcp_remote::McpRemoteId::parse("work-chatgpt").expect("remote"),
+        Ulid::new(),
+        grant,
+        "client-a".to_string(),
+        "https://identity.example.test/alice".to_string(),
+        vulcan_daemon::registry::WikiId::parse("work").expect("wiki"),
+        "https://mcp.example.test/work".to_string(),
+        "readonly".to_string(),
+        vec!["notes-read".to_string()],
+        "alice-token",
+    );
+    assert!(!session.authority.matches(&other_remote));
+
+    let replacement_token = McpSessionAuthority::granted(
+        vulcan_daemon::mcp_remote::McpRemoteId::parse("personal-chatgpt").expect("remote"),
+        instance,
+        grant,
+        "client-a".to_string(),
+        "https://identity.example.test/alice".to_string(),
+        vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
+        "https://mcp.example.test/personal".to_string(),
+        "readonly".to_string(),
+        vec!["notes-read".to_string()],
+        "replacement-token",
+    );
+    assert!(!session.authority.matches(&replacement_token));
+}
+
 #[cfg(feature = "oauth")]
 fn oauth_options() -> McpHttpOptions {
     McpHttpOptions {

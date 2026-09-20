@@ -16,6 +16,7 @@ pub mod environment;
 pub mod final_sync;
 pub mod http;
 pub mod mcp_remote;
+pub mod mcp_session;
 pub mod mcp_state;
 pub mod notifications;
 pub mod process;

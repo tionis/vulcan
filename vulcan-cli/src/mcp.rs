@@ -84,6 +84,7 @@ use vulcan_core::{
     discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, LocalOAuthIssuer,
     LocalOAuthIssuerConfig, OAuthResourceServer, OAuthResourceServerConfig,
 };
+use vulcan_daemon::mcp_session::McpSessionAuthority;
 
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -186,14 +187,16 @@ struct McpServerCore {
 
 #[derive(Debug)]
 struct McpHttpSession {
+    authority: McpSessionAuthority,
     core: Mutex<McpServerCore>,
     subscribers: Mutex<Vec<mpsc::Sender<Value>>>,
     closed: AtomicBool,
 }
 
 impl McpHttpSession {
-    fn new(core: McpServerCore) -> Self {
+    fn new(core: McpServerCore, authority: McpSessionAuthority) -> Self {
         Self {
+            authority,
             core: Mutex::new(core),
             subscribers: Mutex::new(Vec::new()),
             closed: AtomicBool::new(false),
@@ -322,6 +325,7 @@ struct McpHttpServerContext {
     #[cfg(feature = "oauth")]
     oauth: Option<McpOAuthMode>,
     bind_addr: SocketAddr,
+    instance_id: Ulid,
     sessions: Arc<Mutex<BTreeMap<String, Arc<McpHttpSession>>>>,
     #[cfg(feature = "oauth")]
     oauth_codes: Arc<Mutex<BTreeMap<String, LocalOAuthCode>>>,
@@ -475,6 +479,7 @@ fn run_mcp_http_server(
         #[cfg(feature = "oauth")]
         oauth,
         bind_addr: addr,
+        instance_id: Ulid::new(),
         sessions: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
@@ -574,19 +579,22 @@ fn handle_mcp_http_connection(
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
     }
-    if let Some(response) = validate_mcp_http_security(context, &request) {
-        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        return Ok(());
-    }
+    let authority = match authenticate_mcp_http_request(context, &request) {
+        Ok(authority) => authority,
+        Err(response) => {
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+            return Ok(());
+        }
+    };
 
     match request.method.as_str() {
         "POST" => {
-            let response = handle_mcp_http_post(context, &request);
+            let response = handle_mcp_http_post(context, &request, &authority);
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         }
-        "GET" => handle_mcp_http_sse(context, &request, stream)?,
+        "GET" => handle_mcp_http_sse(context, &request, &authority, stream)?,
         "DELETE" => {
-            let response = handle_mcp_http_delete(context, &request);
+            let response = handle_mcp_http_delete(context, &request, &authority);
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         }
         _ => {
@@ -601,6 +609,7 @@ fn handle_mcp_http_connection(
 fn handle_mcp_http_post(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
 ) -> McpHttpResponse {
     if let Some(response) = validate_mcp_http_post_headers(request) {
         return response;
@@ -613,7 +622,7 @@ fn handle_mcp_http_post(
         return response;
     }
     let (session_id, session, created_session) =
-        match resolve_mcp_http_session(context, request, &payload) {
+        match resolve_mcp_http_session(context, request, &payload, authority) {
             Ok(session) => session,
             Err(response) => return response,
         };
@@ -703,6 +712,7 @@ fn resolve_mcp_http_session(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     payload: &Value,
+    authority: &McpSessionAuthority,
 ) -> Result<(String, Arc<McpHttpSession>, bool), McpHttpResponse> {
     let is_initialize = payload
         .as_object()
@@ -712,11 +722,10 @@ fn resolve_mcp_http_session(
 
     if is_initialize {
         let session_id = Ulid::new().to_string();
-        let bound_profile = request_bound_permission_profile(context, request);
         let requested_profile = context
             .requested_profile
             .as_deref()
-            .or(bound_profile.as_deref());
+            .or(authority.permission_profile.as_deref());
         let core = McpServerCore::new(
             &context.paths,
             requested_profile,
@@ -724,7 +733,7 @@ fn resolve_mcp_http_session(
             context.tool_pack_mode_arg,
         )
         .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
-        let session = Arc::new(McpHttpSession::new(core));
+        let session = Arc::new(McpHttpSession::new(core, authority.clone()));
         context
             .sessions
             .lock()
@@ -753,12 +762,20 @@ fn resolve_mcp_http_session(
             Value::Null,
         ));
     };
+    if !session.authority.matches(authority) {
+        return Err(mcp_http_json_error_response(
+            403,
+            "MCP session authority does not match this request",
+            Value::Null,
+        ));
+    }
     Ok((session_id, session, false))
 }
 
 fn handle_mcp_http_delete(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
 ) -> McpHttpResponse {
     let Some(session_id) = request.headers.get("mcp-session-id") else {
         return mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null);
@@ -767,10 +784,23 @@ fn handle_mcp_http_delete(
         .sessions
         .lock()
         .expect("mcp sessions lock should not be poisoned")
-        .remove(session_id);
+        .get(session_id)
+        .cloned();
     let Some(session) = session else {
         return mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null);
     };
+    if !session.authority.matches(authority) {
+        return mcp_http_json_error_response(
+            403,
+            "MCP session authority does not match this request",
+            Value::Null,
+        );
+    }
+    context
+        .sessions
+        .lock()
+        .expect("mcp sessions lock should not be poisoned")
+        .remove(session_id);
     session.close();
     McpHttpResponse {
         status: 204,
@@ -783,6 +813,7 @@ fn handle_mcp_http_delete(
 fn handle_mcp_http_sse(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
     stream: &mut TcpStream,
 ) -> Result<(), CliError> {
     if !request
@@ -815,6 +846,15 @@ fn handle_mcp_http_sse(
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
     };
+    if !session.authority.matches(authority) {
+        let response = mcp_http_json_error_response(
+            403,
+            "MCP session authority does not match this request",
+            Value::Null,
+        );
+        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        return Ok(());
+    }
 
     write_mcp_http_sse_headers(stream).map_err(CliError::operation)?;
     let receiver = session.register_subscriber();
@@ -853,80 +893,86 @@ fn handle_mcp_http_sse(
     Ok(())
 }
 
-fn validate_mcp_http_security(
+fn authenticate_mcp_http_request(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
-) -> Option<McpHttpResponse> {
+) -> Result<McpSessionAuthority, McpHttpResponse> {
+    let mut credential = "loopback-unauthenticated".to_string();
+    #[allow(unused_mut)]
+    let mut subject = None;
+    #[allow(unused_mut)]
+    let mut permission_profile = context.requested_profile.clone();
     #[cfg(feature = "oauth")]
     if let Some(oauth) = context.oauth.as_ref() {
         let Some(token) = bearer_token(&request.headers) else {
-            return Some(oauth_error_response(
+            return Err(oauth_error_response(
                 oauth,
                 "missing OAuth bearer token",
                 "invalid_token",
             ));
         };
-        if let Err(error) = validate_oauth_bearer_token(oauth, &token) {
-            eprintln!("MCP OAuth bearer token rejected: {error}");
-            return Some(oauth_error_response(
-                oauth,
-                error.to_string(),
-                "invalid_token",
-            ));
+        match oauth {
+            McpOAuthMode::External(external) => match external.validate_bearer_token(&token) {
+                Ok(identity) => subject = Some(identity.subject),
+                Err(error) => {
+                    eprintln!("MCP OAuth bearer token rejected: {error}");
+                    return Err(oauth_error_response(
+                        oauth,
+                        error.to_string(),
+                        "invalid_token",
+                    ));
+                }
+            },
+            McpOAuthMode::Local(local) => match local.validate_bearer_token(&token) {
+                Ok(identity) => {
+                    subject = Some(identity.subject);
+                    if permission_profile.is_none() {
+                        permission_profile = identity.permission_profile;
+                    }
+                }
+                Err(error) => {
+                    eprintln!("MCP OAuth bearer token rejected: {error}");
+                    return Err(oauth_error_response(
+                        oauth,
+                        error.to_string(),
+                        "invalid_token",
+                    ));
+                }
+            },
         }
+        credential = token;
     }
     if let Some(expected_token) = context.auth_token.as_deref() {
         let actual_token = bearer_or_shared_token(&request.headers);
         if actual_token.as_deref() != Some(expected_token) {
-            return Some(mcp_http_json_error_response(
+            return Err(mcp_http_json_error_response(
                 401,
                 "missing or invalid authentication token",
                 Value::Null,
             ));
         }
+        credential = actual_token.expect("validated token should be present");
     }
     if let Some(origin) = request.headers.get("origin") {
         if !origin_allowed(origin, context.bind_addr) {
-            return Some(mcp_http_json_error_response(
+            return Err(mcp_http_json_error_response(
                 403,
                 "invalid Origin header",
                 Value::Null,
             ));
         }
     }
-    None
-}
-
-#[cfg(feature = "oauth")]
-fn validate_oauth_bearer_token(
-    oauth: &McpOAuthMode,
-    token: &str,
-) -> Result<(), vulcan_core::OAuthError> {
-    match oauth {
-        McpOAuthMode::External(external) => external.validate_bearer_token(token),
-        McpOAuthMode::Local(local) => local.validate_bearer_token(token).map(|_| ()),
-    }
-}
-
-fn request_bound_permission_profile(
-    context: &McpHttpServerContext,
-    request: &McpHttpRequest,
-) -> Option<String> {
-    #[cfg(not(feature = "oauth"))]
-    {
-        let _ = (context, request);
-        return None;
-    }
-
-    #[cfg(feature = "oauth")]
-    {
-        let McpOAuthMode::Local(local) = context.oauth.as_ref()? else {
-            return None;
-        };
-        let token = bearer_token(&request.headers)?;
-        let identity = local.validate_bearer_token(&token).ok()?;
-        identity.permission_profile
-    }
+    let packs = pack_name_list(&resolve_selected_tool_packs(
+        &context.tool_pack_args,
+        McpToolPackMode::from(context.tool_pack_mode_arg),
+    ));
+    Ok(McpSessionAuthority::direct(
+        context.instance_id,
+        &credential,
+        subject,
+        permission_profile,
+        packs,
+    ))
 }
 
 impl McpServerCore {

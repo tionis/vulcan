@@ -5511,9 +5511,11 @@ session authority -> PermissionGuard -> PermissionFilter
   validation, stable ULIDs, version dispatch for migrations, audience/client/instance binding,
   hashed refresh secrets, rotation replay detection, family revocation, and dry-run-safe grant
   mutation. Neither daemon nor app code imports CLI types.
-- [ ] Bind the existing HTTP session lifecycle to an authenticated authority record and add
+- [x] Bind the existing HTTP session lifecycle to an authenticated authority record and add
   regression tests with two subjects, two grants, two remotes, and attempted cross-session/token
-  reuse. Preserve stdio behavior and static/adaptive pack semantics.
+  reuse. POST, SSE, and DELETE require the exact instance/grant/client/subject/vault/audience,
+  permission-profile, pack, and credential-fingerprint tuple captured at initialization. Preserve
+  stdio behavior and static/adaptive pack semantics.
 - [ ] Replace the approval-token-only browser page for the opinionated local issuer with an
   IndieAuth-backed login-and-consent transaction. Preserve OAuth state/PKCE across the upstream
   round trip, display client/resource/vault/authority clearly, require an explicit approval action,

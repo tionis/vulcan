@@ -109,7 +109,7 @@ impl OAuthResourceServer {
         })
     }
 
-    pub fn validate_bearer_token(&self, token: &str) -> Result<(), OAuthError> {
+    pub fn validate_bearer_token(&self, token: &str) -> Result<OAuthTokenIdentity, OAuthError> {
         let header = decode_header(token)
             .map_err(|error| OAuthError::Token(format!("invalid JWT header: {error}")))?;
         let algorithm = header.alg;
@@ -140,15 +140,16 @@ impl OAuthResourceServer {
         let token = decode::<OAuthClaims>(token, &decoding_key, &validation)
             .map_err(|error| OAuthError::Token(format!("invalid OAuth bearer token: {error}")))?;
         let claims = token.claims;
-        if self.allowed_subs.contains(&claims.sub) {
-            return Ok(());
-        }
-        if claims
-            .email
-            .as_deref()
-            .is_some_and(|email| self.allowed_emails.contains(email))
+        if self.allowed_subs.contains(&claims.sub)
+            || claims
+                .email
+                .as_deref()
+                .is_some_and(|email| self.allowed_emails.contains(email))
         {
-            return Ok(());
+            return Ok(OAuthTokenIdentity {
+                subject: claims.sub,
+                email: claims.email,
+            });
         }
         Err(OAuthError::Token(
             "OAuth token subject is not allowed".to_string(),
@@ -398,6 +399,12 @@ pub struct LocalOAuthTokenIdentity {
     pub subject: String,
     pub email: Option<String>,
     pub permission_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OAuthTokenIdentity {
+    pub subject: String,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

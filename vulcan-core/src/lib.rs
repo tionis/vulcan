@@ -236,7 +236,7 @@ pub use note::{
 pub use oauth::{
     discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, IndieAuthEndpoints,
     LocalOAuthIssuer, LocalOAuthIssuerConfig, LocalOAuthTokenIdentity, LocalOAuthUserConfig,
-    OAuthError, OAuthResourceServer, OAuthResourceServerConfig,
+    OAuthError, OAuthResourceServer, OAuthResourceServerConfig, OAuthTokenIdentity,
 };
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
