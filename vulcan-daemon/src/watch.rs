@@ -1,5 +1,9 @@
 //! Filesystem watcher scheduling for registered synchronized wikis.
 
+use crate::observation::{
+    FilesystemHint, ObservationError, ObservationEvent, ObservationSubscription,
+    VaultObservationHub,
+};
 use crate::registry::WikiRegistration;
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::{SupervisorError, SyncSupervisor, SyncWatchMetadata};
@@ -48,6 +52,7 @@ pub enum DaemonWatchError {
     Notify(notify::Error),
     ChannelClosed,
     Supervisor(SupervisorError),
+    Observation(ObservationError),
 }
 
 impl Display for DaemonWatchError {
@@ -58,6 +63,7 @@ impl Display for DaemonWatchError {
             Self::Notify(error) => Display::fmt(error, formatter),
             Self::ChannelClosed => formatter.write_str("watch channel closed unexpectedly"),
             Self::Supervisor(error) => Display::fmt(error, formatter),
+            Self::Observation(error) => Display::fmt(error, formatter),
         }
     }
 }
@@ -68,6 +74,7 @@ impl Error for DaemonWatchError {
             Self::Git(error) => Some(error),
             Self::Notify(error) => Some(error),
             Self::Supervisor(error) => Some(error),
+            Self::Observation(error) => Some(error),
             Self::InvalidOptions(_) | Self::ChannelClosed => None,
         }
     }
@@ -88,6 +95,12 @@ impl From<notify::Error> for DaemonWatchError {
 impl From<SupervisorError> for DaemonWatchError {
     fn from(error: SupervisorError) -> Self {
         Self::Supervisor(error)
+    }
+}
+
+impl From<ObservationError> for DaemonWatchError {
+    fn from(error: ObservationError) -> Self {
+        Self::Observation(error)
     }
 }
 
@@ -161,6 +174,7 @@ where
     )
 }
 
+#[cfg(test)]
 pub(crate) fn watch_registered_wiki_with_stop(
     registration: &WikiRegistration,
     supervisor: &SyncSupervisor,
@@ -190,9 +204,38 @@ fn watch_registered_wiki<S>(
 where
     S: Fn() -> bool,
 {
-    validate_options(options)?;
     let repository = GitCliEngine::default().discover_repository(&registration.path)?;
-    match state_store.load_apply_marker(&repository.git_dir) {
+    enqueue_sync_startup(registration, supervisor, state_store, &repository.git_dir)?;
+
+    observe_vault_batches(
+        &registration.path,
+        options,
+        should_stop,
+        wakeable,
+        || {
+            state_store
+                .load_apply_marker(&repository.git_dir)
+                .map(|marker| {
+                    marker.map(|marker| marker.transaction_id.to_string().to_ascii_lowercase())
+                })
+                .map_err(|error| error.to_string())
+        },
+        |metadata| {
+            supervisor
+                .enqueue_watch(registration.id.as_str(), &registration.path, metadata)
+                .map(|_| ())
+                .map_err(DaemonWatchError::from)
+        },
+    )
+}
+
+fn enqueue_sync_startup(
+    registration: &WikiRegistration,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    git_dir: &Path,
+) -> Result<(), DaemonWatchError> {
+    match state_store.load_apply_marker(git_dir) {
         Ok(Some(_)) => {
             supervisor.enqueue(
                 registration.id.as_str(),
@@ -219,12 +262,120 @@ where
             )?;
         }
     }
+    Ok(())
+}
 
+pub(crate) fn consume_sync_observations_with_stop(
+    registration: &WikiRegistration,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    subscription: &ObservationSubscription,
+    stop: &ShutdownSignal,
+) -> Result<(), DaemonWatchError> {
+    stop.register_current_thread();
+    let repository = GitCliEngine::default().discover_repository(&registration.path)?;
+    enqueue_sync_startup(registration, supervisor, state_store, &repository.git_dir)?;
+    let _ = subscription.take_reconciliation_required();
+    while !stop.is_cancelled() {
+        if subscription.take_reconciliation_required() {
+            supervisor.enqueue_watch(
+                registration.id.as_str(),
+                &registration.path,
+                SyncWatchMetadata {
+                    safety_rescan: true,
+                    watcher_errors: vec![
+                        "observation consumer lost events; reconciliation required".to_string(),
+                    ],
+                    ..SyncWatchMetadata::default()
+                },
+            )?;
+        }
+        match subscription.recv_timeout(WATCH_POLL_INTERVAL) {
+            Ok(ObservationEvent::FilesystemHint(event)) => {
+                supervisor.enqueue_watch(
+                    registration.id.as_str(),
+                    &registration.path,
+                    SyncWatchMetadata {
+                        event_count: event.event_count,
+                        untagged_events: event.untagged_events,
+                        paths: event.paths.into_iter().collect(),
+                        self_generated_transactions: event
+                            .self_generated_transactions
+                            .into_iter()
+                            .collect(),
+                        safety_rescan: event.safety_rescan,
+                        watcher_errors: event.watcher_errors,
+                    },
+                )?;
+            }
+            Ok(ObservationEvent::PostScan(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(DaemonWatchError::ChannelClosed);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Runs the shared low-level observer and publishes bounded raw hints. The
+/// caller supplies transaction provenance without coupling observation to a
+/// particular mutation engine.
+pub(crate) fn observe_vault_with_stop<M>(
+    path: &Path,
+    options: &DaemonWatchOptions,
+    hub: &VaultObservationHub,
+    marker_transaction: M,
+    stop: &ShutdownSignal,
+) -> Result<(), DaemonWatchError>
+where
+    M: Fn() -> Result<Option<String>, String>,
+{
+    stop.register_current_thread();
+    let mut sequence = 0_u64;
+    observe_vault_batches(
+        path,
+        options,
+        || stop.is_cancelled(),
+        true,
+        marker_transaction,
+        |metadata| {
+            sequence = sequence.saturating_add(1);
+            hub.publish(&ObservationEvent::FilesystemHint(FilesystemHint {
+                sequence,
+                event_count: metadata.event_count,
+                untagged_events: metadata.untagged_events,
+                paths: metadata.paths.into_iter().collect(),
+                self_generated_transactions: metadata
+                    .self_generated_transactions
+                    .into_iter()
+                    .collect(),
+                safety_rescan: metadata.safety_rescan,
+                watcher_errors: metadata.watcher_errors,
+            }))?;
+            Ok(())
+        },
+    )
+}
+
+fn observe_vault_batches<S, M, B>(
+    path: &Path,
+    options: &DaemonWatchOptions,
+    should_stop: S,
+    wakeable: bool,
+    marker_transaction: M,
+    mut on_batch: B,
+) -> Result<(), DaemonWatchError>
+where
+    S: Fn() -> bool,
+    M: Fn() -> Result<Option<String>, String>,
+    B: FnMut(SyncWatchMetadata) -> Result<(), DaemonWatchError>,
+{
+    validate_options(options)?;
     let (sender, receiver) = mpsc::channel::<(WatchSource, notify::Result<Event>)>();
-    let _watchers = register_watchers(&registration.path, &sender, WATCH_FALLBACK_POLL_INTERVAL)?;
+    let _watchers = register_watchers(path, &sender, WATCH_FALLBACK_POLL_INTERVAL)?;
     drop(sender);
 
-    let paths = VaultPaths::new(&registration.path);
+    let paths = VaultPaths::new(path);
     let debounce = Duration::from_millis(options.debounce_ms);
     let max_dirty = Duration::from_millis(options.max_dirty_ms);
     let mut batch = WatchBatch::default();
@@ -254,16 +405,7 @@ where
         match message {
             Ok((_, Ok(event))) => {
                 let now = Instant::now();
-                batch.push_event(&paths, &event, now, || {
-                    state_store
-                        .load_apply_marker(&repository.git_dir)
-                        .map(|marker| {
-                            marker.map(|marker| {
-                                marker.transaction_id.to_string().to_ascii_lowercase()
-                            })
-                        })
-                        .map_err(|error| error.to_string())
-                });
+                batch.push_event(&paths, &event, now, &marker_transaction);
             }
             Ok((_, Err(error))) if notify_error_is_internal(&paths, &error) => {}
             Ok((_, Err(error))) if error_paths_are_symlinks(&error) => {}
@@ -281,7 +423,7 @@ where
             if suppress_unchanged_error_batch(&metadata, &mut last_error_only, Instant::now()) {
                 continue;
             }
-            supervisor.enqueue_watch(registration.id.as_str(), &registration.path, metadata)?;
+            on_batch(metadata)?;
         }
     }
 }

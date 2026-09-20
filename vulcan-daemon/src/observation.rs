@@ -116,7 +116,10 @@ impl ObservationConsumerPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilesystemHint {
     pub sequence: u64,
+    pub event_count: usize,
+    pub untagged_events: usize,
     pub paths: BTreeSet<String>,
+    pub self_generated_transactions: BTreeSet<String>,
     pub safety_rescan: bool,
     pub watcher_errors: Vec<String>,
 }
@@ -308,6 +311,13 @@ impl ObservationSubscription {
         self.receiver.try_recv()
     }
 
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<ObservationEvent, mpsc::RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
+    }
+
     #[must_use]
     pub fn take_reconciliation_required(&self) -> bool {
         self.reconciliation_required.swap(false, Ordering::AcqRel)
@@ -417,7 +427,10 @@ mod tests {
     fn hint(sequence: u64, path: &str) -> ObservationEvent {
         ObservationEvent::FilesystemHint(FilesystemHint {
             sequence,
+            event_count: 1,
+            untagged_events: 1,
             paths: BTreeSet::from([path.to_string()]),
+            self_generated_transactions: BTreeSet::new(),
             safety_rescan: false,
             watcher_errors: vec![],
         })
