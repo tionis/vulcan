@@ -10,6 +10,7 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 The numbered phases describe dependency order, not a requirement to implement every documented idea before advancing. A later capability may be designed early and implemented opportunistically when its prerequisites are already available.
 
 - **Committed delivery path:** Phase 9's pre-daemon gate ends at 9.29 and is complete. Phase 10 is therefore the next architectural milestone; unfinished candidate integrations do not block it.
+- **Daemon consolidation:** Phase 10.7 stages the existing daemon, standalone HTTP/MCP servers, watchers, and automation into one supervised host with per-vault runtimes. Its first milestone reuses existing workers and the single-vault HTTP surface; later app integrations do not block that milestone or require completion of Phase 19.
 - **Completed optional additions:** 9.30 (Outline publishing) and 9.31 (folder-note normalization) landed as independently useful work after the Phase 9 gate. Their numbering records implementation history rather than extending the daemon prerequisite chain.
 - **Active optional addition:** 9.35 materializes large hierarchical Markdown documents as link-safe wiki trees. It builds on completed parser, refactor, attachment, and folder-note foundations without extending the Phase 10 gate.
 - **Committed hub direction:** Phase 12 owns device/file-tree synchronization and Phase 15 owns external document bindings, content routes, and knowledge-system connectors. SilverBullet, Outline, HedgeDoc, and Git wiki work should extend those shared layers rather than become parallel product architectures.
@@ -5217,8 +5218,8 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 ### 10.4 Per-vault watcher
 
-- [ ] Each registered vault gets its own file watcher thread (reuse `watch_vault_until`)
-- [ ] Watcher keeps cache fresh automatically — API queries always return current data
+- [ ] Each registered vault gets shared filesystem observation through the per-vault runtime in 10.7.3; adapt `watch_vault_until` and the existing sync watcher without giving each consumer a separate recursive watcher
+- [ ] Watcher refreshes the cache automatically; expose freshness and reconciliation failures, and provide an explicit freshness barrier for requests requiring a completed scan rather than promising instantaneous freshness after external edits
 - [ ] Watcher errors are surfaced via `/health` and `/{id}/health` endpoints
 - [x] Graceful shutdown: authenticated daemon stop or foreground Ctrl-C signals the HTTP service, trigger runtime, sync worker, and all watcher threads to terminate before removing the owned runtime record
 - [x] Before graceful stop, enqueue one retained final sync for every active Git-backed wiki, bound the drain to 30 seconds with cooperative cancellation, handle service-manager termination signals, and reconcile immediately after detecting resume from suspend
@@ -5229,7 +5230,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [x] `vulcan daemon stop` — send an authenticated loopback shutdown request and wait for the listener to close without relying on Unix-only signals
 - [x] `vulcan daemon status` — authenticate a live capability probe and show the bound address, PID, uptime, and current registered-wiki reports; a stale runtime file never counts as running
 - [ ] `vulcan --daemon` flag or `VULCAN_DAEMON_URL` env var on any CLI command: route the command through the daemon's REST API instead of direct SQLite access. Same UX, daemon does the work.
-- [ ] Transparent fallback: if daemon is not running, fall back to direct mode with a warning
+- [ ] Define explicit direct/daemon/automatic routing modes in 10.7.1. Automatic fallback is permitted only before dispatch when absence or incompatibility is established; never replay a write directly after timeout, disconnect, or an ambiguous daemon result. Explicit daemon mode reports failure without fallback.
 
 ### 10.6 Implementation notes
 
@@ -5241,6 +5242,111 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - Rate limiting and request logging via tower middleware
 - CORS headers configurable for WebUI integration (Phase 13)
 
+### 10.7 Unified hosting, supervised services, and per-vault runtimes
+
+**Goal:** Make the daemon the reusable host for long-lived Vulcan functionality: transport endpoints, filesystem observation, automation workers, and app hosting. Keep finite operations usable through direct CLI access without a daemon, registration, Git repository, or account.
+
+**Baseline:** `vulcan-daemon/src/process.rs` already owns a process lock, loopback companion listener, sync triggers/jobs, notifications, optional conflict/semantic workers, and graceful final sync. `runtime.rs`, `watch.rs`, and `supervisor.rs` already implement registry-driven sync observation and durable sync supervision. The CLI still owns standalone servers in `serve.rs`, `mcp.rs`, `site_server.rs`, and `bundle_server.rs`. These are migration inputs, not features to rebuild or declarations that the broader Phase 10 API is complete.
+
+**Boundaries:** `vulcan-daemon` owns host lifecycle, transports, async boundaries, scheduling, and bounded runtime state. `vulcan-app` owns finite synchronous workflows; `vulcan-core` and `vulcan-sync` retain their existing semantics. CLI adapters own argument parsing, terminal/browser interaction, and presentation. Do not introduce a dependency from daemon/app back to CLI. An **endpoint** accepts requests, a **worker** reacts to triggers, and a **job** records a finite operation; these have different lifetimes and must not be conflated.
+
+**Scope limits:** Start with built-in Rust service registration and explicit dependencies. Dynamic service plugins, a universal durable job queue, an actor framework, a second executable, and a rewrite of core into async code are not prerequisites. Preserve domain-specific job ledgers and recovery rules. Hosting several listeners in one process is allowed; one port or origin is not an acceptance requirement. Third-party app execution retains its sandbox and resource limits.
+
+#### 10.7.1 Hosting contract and migration inventory
+
+**Depends on:** completed 9.29 boundaries and the existing daemon implementation.
+
+- [ ] Inventory all listeners, watcher owners, periodic loops, child processes, credentials, durable state, and shutdown paths, including MCP stdio/HTTP, `serve`, site/bundle previews, conflict/semantic workers, notifications, auto-commit, and implemented app endpoints. Record current command, module, configuration, intended owner, migration slice, and compatibility tests in a checked-in design record. Distinguish implemented functionality from planned Phase 11/19 capabilities.
+- [ ] Define resident hosting from device configuration and temporary foreground hosting from invocation-local configuration. Temporary `serve`/preview hosts must not persist registration, install services, or enable unrelated automation. Preserve existing single-vault routes and flags through adapters or an explicit migration contract.
+- [ ] Define service IDs, global/vault/instance scope, dependency order, readiness, health, cancellation, restart policy, and configuration validation. Device config owns enabled services/listeners/schedules; vault config retains portable semantics. Specify restart-required versus live-reconciled settings and reject invalid changes before replacing a working configuration.
+- [ ] Specify direct, explicit daemon, and automatic client routing before adding flags. Keep ordinary direct operations daemon-independent. Automatic fallback requires a known pre-dispatch failure; ambiguous writes require operation-status lookup or an explicit indeterminate result. Do not silently start a resident daemon.
+- [ ] Define ownership when temporary hosts overlap a resident host: daemon-attached sessions reuse its runtime; standalone hosts acquire the applicable ownership locks or report an actionable conflict. No competing automatic mutation workers for the same canonical vault/repository.
+- [ ] Reconcile overlapping Phase 10 checkboxes against code and tests without marking new consolidation work complete merely because a sync-specific equivalent exists. Document preserved JSON/protocol contracts and any versioned migration.
+
+**Acceptance:** Every existing long-running surface has an explicit destination, lifecycle, authority boundary, and compatibility plan; proposed commands are clearly distinguished from shipped commands.
+
+#### 10.7.2 Reusable host and service supervision
+
+**Depends on:** 10.7.1.
+
+- [ ] Extract host construction, listener setup, service startup, and shutdown from `process.rs`. Adapt existing sync, notification, conflict, and semantic workers to the host first, preserving their domain behavior and durable state locations.
+- [ ] Start services in dependency order and unwind partially started hosts on failure. Publish readiness only after required services/listeners are ready; retain the existing process-lock and authenticated runtime-probe behavior.
+- [ ] Observe worker exits and panics while the host is running. Define required-service failure versus optional-service degradation, bounded restart/backoff, exhausted-retry status, and recovery. Restarting a worker must not imply blindly retrying its last mutation.
+- [ ] Expose bounded, sanitized service status through daemon status/health and JSON: identity, scope, lifecycle state, readiness, last failure, and restart information. Preserve existing per-wiki sync status as a separate projection. Include disabled and degraded services without exposing credentials or private event payloads.
+- [ ] Define shutdown ordering: stop ordinary ingress and trigger producers, quiesce mutation producers, permit the existing internal final-sync enqueue/drain, cooperatively cancel remaining work at the deadline, join services/listeners/watchers, then remove the owned runtime record. Preserve the current bounded final-sync policy and safe recovery evidence.
+- [ ] Test partial startup rollback, unexpected worker exit/panic, restart exhaustion, dependency failure, cancellation races, final-sync ordering, and cleanup of ports/runtime records. A failed optional service must not silently disappear from health.
+
+**Acceptance:** Existing daemon workers run under one reusable lifecycle, with observable failure and deterministic teardown. No new application workflow is required to validate this slice.
+
+#### 10.7.3 Shared per-vault runtime and filesystem observation
+
+**Depends on:** 10.7.2; integrate mutation scheduling with 10.7.4.
+
+- [ ] Reconcile registry entries and temporary host registrations into per-vault runtimes with canonical path identity and bounded resources. Support plain Markdown/non-Git vaults. Handle add/remove/path changes and define aliases so duplicate registrations cannot create duplicate automatic owners.
+- [ ] Separate low-level filesystem observation from consumers. Share one observation owner per vault within a host; retain consumer-specific filters, quiet-period debounce, maximum dirty age, and policies for indexing, sync, auto-commit, and preview builds.
+- [ ] Preserve native-backend failure fallback, content polling, safety rescans, startup/resume reconciliation, ignored transient state handling, and bounded transaction provenance from current watchers. Never suppress a concurrent user edit merely because a Vulcan apply marker exists.
+- [ ] Bound subscriptions and queues. Overflow, lost events, or consumer restart invalidates incremental assumptions and requests reconciliation; a slow consumer must not block unrelated consumers. Distinguish raw filesystem hints from post-scan events with stable fingerprints for app subscriptions.
+- [ ] Make sync pause affect sync consumers only; indexing and previews remain independently controlled. Removal/shutdown releases observers after consumers stop. Disabling one consumer must not terminate another consumer's observation.
+- [ ] Track cache freshness and scan errors, expose a completed-scan barrier for callers that need it, and preserve direct scan/repair behavior. Do not infer file truth from event delivery or cache timestamps alone.
+- [ ] Test two consumers sharing observation, non-Git registration, alias ownership, registry changes, sync pause with indexing active, slow/overflowing consumers, missed events, native failure, and simultaneous external edits during Vulcan writes.
+
+**Acceptance:** Multiple hosted features share observation without changing their filtering/recovery semantics; events remain hints and canonical files remain authoritative.
+
+#### 10.7.4 Execution context, mutation coordination, and recovery
+
+**Depends on:** 10.7.1–10.7.2; deliver before enabling newly hosted mutating endpoints/workers.
+
+- [ ] Establish transport-neutral execution context carrying canonical vault identity, caller/effective permission ceiling, request/operation identity, cancellation, and deadline. Keep synchronous app entrypoints usable without a runtime. Background execution requires an explicit configured service authority, never a borrowed ambient browser/session credential.
+- [ ] Audit application write locks and repository locks across direct CLI, HTTP/MCP, sync, auto-commit, and conflict application. Document one lock ordering, canonical lock identity, scope, and contention behavior. In-process scheduling supplements the same cross-process locks used by standalone commands.
+- [ ] Serialize conflicting mutations per vault/repository while permitting bounded independent reads and work on different vaults. Resolve shared Git metadata/worktree coordination explicitly. Keep agent calls and preparatory network work outside filesystem mutation locks where possible; revalidate hashes/frontiers/permissions before apply. Do not casually narrow existing sync transaction locks.
+- [ ] Bound blocking execution, queues, per-vault concurrency, and operation deadlines at daemon adapters. Cancellation is cooperative inside synchronous workflows; dropping an async task or timing out a response does not prove its write stopped.
+- [ ] Share job identity/status/cancellation projections without replacing `SyncSupervisor`'s coalescing, aggregate, replay, and journal semantics. Classify each operation's interruption/retry policy; retain non-rebuildable identities and recovery state outside `cache.db`. Never claim exactly-once execution from an in-memory queue.
+- [ ] Test direct CLI versus daemon write contention, sync versus auto-commit/conflict application, stale plan rejection, permission changes while queued, cross-vault progress, timeout after a committed write, and restart recovery without duplicate application.
+
+**Acceptance:** Hosting mode does not change authorization or mutation safety, and unknown write outcomes cannot trigger silent direct retries.
+
+#### 10.7.5 Shared HTTP adapters and single-vault foreground hosting
+
+**Depends on:** 10.7.2 and 10.7.4; 10.7.3 before claiming shared-watcher completion. Can begin with an adapter around the existing watcher.
+
+- [ ] Move `vulcan-cli/src/serve.rs` transport handling to reusable daemon axum routers over existing app workflows. Compose companion and available vault APIs; keep adding the remaining 10.3 endpoints as separate feature items rather than requiring the entire REST backlog for this migration.
+- [ ] Make `vulcan serve` a temporary single-vault host using those routers, with an explicit compatibility mapping for existing paths, options, output, and shutdown. Keep resident registry/service installation unchanged by temporary invocations.
+- [ ] Centralize request limits, logging/redaction, deadlines, CORS/origin policy, and authentication plumbing while retaining endpoint-specific credentials, audiences, vault scope, and permissions. A companion credential must not automatically gain MCP/admin/app authority. Do not broaden the current loopback companion exposure during consolidation.
+- [ ] Publish supported capabilities and schemas from the actual installed routes. Preserve CLI JSON report parity and existing companion contracts; unsupported features remain explicit.
+- [ ] Test resident/temporary response parity, authorization/filtering, malformed and oversized requests, bind conflicts, partial startup cleanup, and both modes with the daemon otherwise stopped. Complete the watcher adapter migration when 10.7.3 lands.
+
+**First useful milestone:** 10.7.1, 10.7.2, the execution safeguards needed from 10.7.4, and 10.7.5 host existing workers plus the single-vault HTTP surface under shared lifecycle and health. Shared observation and MCP/app migrations may follow; do not report the full 10.7 track complete at this milestone.
+
+#### 10.7.6 MCP transport extraction and automation integration
+
+**Depends on:** 10.7.4–10.7.5; background consumers also require 10.7.3.
+
+- [ ] Extract remaining MCP command dispatch dependencies on CLI handlers/options into shared app workflows and transport-neutral protocol types. Choose a shared protocol module/crate in the 10.7.1 record if needed; neither daemon nor app may import CLI. Preserve tool names, schemas, report/error shapes, resources, prompts, pagination, and permission filtering.
+- [ ] Host MCP HTTP through the daemon transport layer. Preserve authentication/OAuth behavior and capability negotiation; scope sessions, tool-pack selection, notifications, and cancellation to their original client/vault authority rather than global daemon state.
+- [ ] Keep MCP stdio client-owned and usable without a resident daemon. Use the same dispatcher locally; any optional daemon bridge needs explicit routing, version negotiation, disconnect handling, and unknown-write handling. Never emit logs into the stdio protocol stream.
+- [ ] Adapt conflict/semantic workers and existing automation to shared observation/scheduling while retaining finite app workflows, durable proposal/journal evidence, configured approval policy, and execution-time permission checks. This refactor does not authorize automatic acceptance of proposals.
+- [ ] Implement Phase 11 auto-commit as a supervised consumer using the same coordination primitives. Keep opt-in and `--no-commit` behavior, preserve manual Git state, and enforce the existing single-owner capture handoff to hidden-ref sync; do not create both live snapshots and unintended semantic-branch commits for the same automatic capture policy.
+- [ ] Test MCP stdio/foreground HTTP/resident HTTP conformance, two sessions with different packs/permissions, resource cleanup on disconnect, timeout/cancellation, and existing OAuth feature combinations. Test disabled/manual/batched auto-commit and its interaction with sync/conflict recovery.
+
+**Acceptance:** MCP and automation share workflows and host infrastructure while retaining protocol/session isolation and daemon-independent operation.
+
+#### 10.7.7 App endpoints, previews, and migration completion
+
+**Depends on:** 10.7.3–10.7.6 for final consolidation. Each app surface additionally depends only on its applicable Phase 19 gate; unimplemented app capabilities are not prerequisites for the first host milestone.
+
+- [ ] Move site/bundle preview listeners and rebuild lifecycles onto reusable hosted modules, preserving live reload, output/build semantics, and foreground convenience. Reuse finite builders in `vulcan-app`; avoid rebuilding every preview for irrelevant events.
+- [ ] Mount implemented Vulcan App APIs/assets and runtime workers through the host. Preserve package/instance lifecycle, effective grants, sandbox tiers, resource ceilings, and supervised child-process/runtime boundaries. Implement missing app semantics under Phase 19, not as incidental server migration.
+- [ ] Preserve separate/opaque browser origins, restrictive CSP, validated assets, scoped bridges, and session authority. URL path prefixes alone do not isolate apps. Permit separate listeners/origins under one daemon when required by the app threat model.
+- [ ] Define temporary preview/app session ownership, lifetime, disconnect/expiry cleanup, and reuse versus standalone hosting. Stopping a preview must not stop the resident daemon or another session; daemon restart must not silently resurrect a temporary session with stale authority.
+- [ ] Migrate existing configuration with deterministic precedence, actionable diagnostics, and dry-run previews for persistent changes. Keep existing commands as compatible adapters where possible; document any explicit deprecation/version boundary. Remove replaced listener/watcher loops only after parity tests pass.
+- [ ] Update design documentation, CLI help/describe, daemon administration docs, and affected bundled skills (`mcp-setup`, `sync-workflow`, `git-workflow`, `index-maintenance`, `publishing-and-export`, `configuration-and-permissions`, and diagnostics as applicable) in each behavior-changing slice. Validate installed skill payloads; review `docs/assistant/AGENTS.template.md` if the execution contract changes. Do not teach unimplemented commands in shipped skills.
+- [ ] Add end-to-end coverage for resident versus foreground operation, standalone CLI with no daemon, multiple vaults, app permission/origin separation, temporary-session cleanup, concurrent workers, restart recovery, and shutdown with pending jobs. Test supported feature-disabled builds for affected adapters.
+- [ ] Complete each discrete implementation item in a self-contained commit with regression tests and updated task status. Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` before committing; retain the existing feature-matrix checks where affected.
+
+**Completion gate:** All inventoried implemented surfaces use the shared host or have an explicitly documented transport-specific exception (such as client-owned stdio). No duplicated automatic ownership, silent worker failure, weakened authorization, or loss of direct CLI operation remains. Unimplemented Phase 19 features stay unchecked in their own phase.
+
+**Delivery order:** 10.7.1 → 10.7.2 → first HTTP milestone (10.7.4 safeguards + 10.7.5); then finish 10.7.3/10.7.4, migrate MCP and automation in 10.7.6, and complete preview/app integrations in 10.7.7. Shared observation and protocol extraction can be developed independently after their contracts exist. Each slice carries its own tests, documentation, and skill-impact review.
+
 ---
 
 ## Phase 11: Git Auto-Versioning (Daemon-Level)
@@ -5248,6 +5354,8 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 **Goal:** Automatic version history for vault content managed by the daemon. Extends the per-vault auto-commit from Phase 9.3 to daemon-managed vaults with richer history APIs.
 
 **Depends on:** Phase 9.3 (git module in vulcan-core), Phase 10 (daemon).
+
+**Hosting:** Implement daemon auto-versioning through 10.7.3–10.7.4 and 10.7.6: shared per-vault observation, supervised scheduling, and common mutation locks. Do not add an independent watcher/server or competing automatic capture owner.
 
 ### 11.1 Daemon-level git integration
 
@@ -5269,7 +5377,7 @@ semantic checkpoints continue to use the normal branch.
   message = "vault: {files}"
   ```
 - [ ] `per-write`: commit immediately after each mutation (same as Phase 9.3)
-- [ ] `batched`: accumulate changes, commit every N seconds (daemon timer thread)
+- [ ] `batched`: accumulate changes, commit every N seconds through the supervised auto-commit worker (10.7.6)
 - [ ] `manual`: no auto-commit, but history endpoints still work if vault has git
 - [ ] Define the handoff to Phase 12 explicitly: one configured component owns automatic capture, enabling hidden-ref sync disables overlapping per-write/batched commits on the semantic branch, and manual ordinary Git commits remain supported and preserved
 
@@ -5489,6 +5597,8 @@ All commands in this section support `--output json`; mutating commands support 
   - [x] Add `vulcan sync semantic-reject <plan-id>` with a mutation-free preview, repository serialization, exact-tip lease validation, a crash-resumable `rejecting` state, and idempotent completion. Rejection deletes only the plan's proposal ref, retains the bounded version-2 device-local plan as an audit record, and never changes the accepted live refs or semantic branch; version-1 ready/applied plans remain readable and migrate on their next persisted transition. Successful application likewise releases the now-redundant proposal ref after the semantic branch and durable plan state retain the exact history, and repeated apply completes idempotently without it. The typed Git engine exposes the same exact-object ref-deletion primitive for future implementations.
 
 ### 12.8 Daemon supervisor and local companion protocol
+
+**Consolidation follow-on:** 10.7 adapts this implemented sync runtime to the shared host and filesystem observation. Preserve its ledger, journal, coalescing, aggregate, cancellation, final-sync, and recovery contracts; completed items below do not imply generic service supervision or cache-watch integration is complete.
 
 - [x] Add an explicit per-repository daemon state machine covering clean, dirty, capture-pending, capturing, captured-unpushed, fetching, fetched, merging, pushing, applying, conflicted, paused, offline, and error states. Persist only the minimum interruption/recovery state outside `cache.db` and rebuild derived status on restart. Status reconstruction prioritizes active jobs, durable application/journal evidence, unresolved conflict records, registration pause state, and retained terminal outcomes without consulting the rebuildable cache.
 - [x] Watch registered worktrees, debounce editor save sequences, impose a maximum dirty age, perform safety rescans after watcher overflow, and reconcile remotes on startup/resume and periodically. The future notification/WebSocket layer only adds another idempotent trigger.
@@ -6021,6 +6131,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Keep archives and exports as first-class push targets: filesystem directory/ZIP, static site, Git worktree, and remote API connectors should reuse selection and transformation semantics even when their delivery mechanics differ.
 
 ### 15.7 Direct CLI, daemon scheduling, and loop prevention
+
+**Hosting dependency:** Daemon route scheduling uses 10.7's supervised workers and execution/mutation contract. Direct finite route operations remain independent; do not introduce a connector-specific resident server or watcher.
 
 - [x] Compose Outline pull/push directly without a daemon through authority-aware named route runs, route-level concurrency locks, durable status, all-route execution, and an interval-due `integration run --scheduled` entrypoint suitable for cron/systemd timers.
 - [ ] Make plan/run/reconcile operations usable without the daemon through direct vault access. The daemon exposes the same request/report contracts, adds schedules, cancellation, status/history endpoints, and event-triggered runs, and serializes filesystem mutation through the same cross-process lock.
@@ -6767,6 +6879,8 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ### 19.10 Events, jobs, and background execution
 
+**Hosting dependency:** Reuse 10.7.2–10.7.4 for supervision, post-scan event delivery, authority, cancellation, and mutation coordination; integrate implemented app surfaces through 10.7.7. Domain-specific app job state may remain separate from sync ledgers. App runtime implementation does not block the initial 10.7 HTTP hosting milestone.
+
 - [ ] Define explicit manifest entrypoints for user-invoked functions, retained jobs, scheduled work, and lifecycle events; importing a module must not register hidden side effects
 - [ ] Extend the shared plugin/app event registry with filtered post-scan file events for create/change/delete, covering Markdown, attachments, Canvas, Bases, app data, and other classified artifacts rather than only note-specific hooks
 - [ ] Let subscriptions declare bounded path, file-kind, extension, and media-type filters that load without executing app code; reject invalid or overly broad subscriptions according to installation policy
@@ -7049,6 +7163,7 @@ Phase 9.20 (Static site builder) is intentionally scheduled after Phase 9 and be
 Phase 9.29 (Pre-daemon maintainability and feature-boundary cleanup) is the hard cleanup gate before Phase 10. Phase 10 should not start until 9.29's feature matrix, crate boundaries, MCP split, and verification matrix are complete.
 Phases 9 and 10 can proceed in parallel after Phase 7 only for design exploration. Implementation work for the daemon should wait for 9.29; 9.20 remains the recommended rendering/publication bridge before WebUI/wiki work.
 Phase 11 requires 9.3 (git module) and 10 (daemon). Phase 12 requires 10 and 11.
+Phase 10.7 is the staged consolidation path over the daemon/sync functionality already implemented opportunistically: contract → supervised host → initial HTTP milestone → shared observation and execution coordination → MCP/automation → available preview/app surfaces. It does not wait for all of Phases 11, 12, or 19; those phases reuse its infrastructure for subsequent hosted features. Existing Phase 12 recovery semantics are inputs to preserve, not a prerequisite to reimplement. See 10.7's per-slice dependencies and completion gates.
 Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (canonical authorization objects, reserved mutation/ingress controls, rooted/delegable grants, capability resolution, and permission-filtered queries) must complete before Phase 13.
 Phase 13 requires 10, 9.20, and 17.1–17.3. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
 Phase 15 requires 10. Phase 16 requires 13, 14, 9.20, and 17.4–17.5 (document secrets, share links). Phase 16 also uses the Automerge foundation from Phase 14.
