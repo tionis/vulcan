@@ -5,12 +5,16 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::net::{SocketAddr, TcpListener};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
+use std::time::Duration;
 use vulcan_app::serve::ServeRouteOptions;
-use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
+use vulcan_core::{VaultPaths, WatchOptions};
+use vulcan_daemon::host::{HostSupervisor, ServiceLifecycleState};
 use vulcan_daemon::shutdown::ShutdownSignal;
-use vulcan_daemon::vault_http::{serve_vault_with_shutdown, VaultHttpSecurity, VaultHttpState};
+use vulcan_daemon::vault_http::{
+    vault_listener_service, vault_watch_service, VaultHttpSecurity, VaultHttpState,
+};
 
 #[derive(Debug, Clone)]
 pub struct ServeOptions {
@@ -27,6 +31,15 @@ pub struct ServeHandle {
     addr: SocketAddr,
     shutdown: Arc<ShutdownSignal>,
     join_handle: Option<thread::JoinHandle<Result<(), CliError>>>,
+}
+
+struct TemporaryHostStart {
+    listener: TcpListener,
+    paths: VaultPaths,
+    options: ServeOptions,
+    http_state: VaultHttpState,
+    shutdown: Arc<ShutdownSignal>,
+    startup: mpsc::SyncSender<Result<(), String>>,
 }
 
 #[cfg(test)]
@@ -95,69 +108,139 @@ pub fn spawn_server(paths: VaultPaths, mut options: ServeOptions) -> Result<Serv
         ),
     )
     .map_err(CliError::operation)?;
-    let state = http_state.health_handle();
     let join_shutdown = Arc::clone(&shutdown);
-    let join_state = Arc::clone(&state);
+    let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+    let start = TemporaryHostStart {
+        listener,
+        paths,
+        options,
+        http_state,
+        shutdown: join_shutdown,
+        startup: startup_sender,
+    };
+    let join_handle = thread::spawn(move || start.run());
 
-    let join_handle = thread::spawn(move || {
-        let watch_handle = if options.watch {
-            let watch_paths = paths.clone();
-            let watch_shutdown = Arc::clone(&join_shutdown);
-            let watch_state = Arc::clone(&join_state);
-            let watch_options = WatchOptions {
-                debounce_ms: options.debounce_ms,
-            };
-            Some(thread::spawn(move || {
-                let result = watch_vault_until(
-                    &watch_paths,
-                    &watch_options,
-                    || watch_shutdown.is_cancelled(),
-                    |report| {
-                        if let Ok(mut state) = watch_state.lock() {
-                            state.last_watch_report = Some(report);
-                            state.watch_error = None;
-                        }
-                        Ok::<_, std::convert::Infallible>(())
-                    },
-                );
-                if let Err(error) = result {
-                    if let Ok(mut state) = watch_state.lock() {
-                        state.watch_error = Some(error.to_string());
-                    }
-                }
-            }))
-        } else {
-            None
-        };
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(CliError::operation)?;
-        let server_shutdown = Arc::clone(&join_shutdown);
-        let result = runtime.block_on(async move {
-            let listener =
-                tokio::net::TcpListener::from_std(listener).map_err(CliError::operation)?;
-            serve_vault_with_shutdown(listener, http_state, async move {
-                server_shutdown.cancelled().await;
-            })
-            .await
-            .map_err(CliError::operation)
-        });
-        join_shutdown.cancel();
-        if let Some(watch_handle) = watch_handle {
-            watch_handle
-                .join()
-                .map_err(|_| CliError::operation("watch thread panicked"))?;
+    match startup_receiver.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            shutdown.cancel();
+            let _ = join_handle.join();
+            return Err(CliError::operation(error));
         }
-        result
-    });
+        Err(error) => {
+            shutdown.cancel();
+            let _ = join_handle.join();
+            return Err(CliError::operation(format!(
+                "temporary HTTP host did not become ready: {error}"
+            )));
+        }
+    }
 
     Ok(ServeHandle {
         addr,
         shutdown,
         join_handle: Some(join_handle),
     })
+}
+
+impl TemporaryHostStart {
+    fn run(self) -> Result<(), CliError> {
+        let Self {
+            listener,
+            paths,
+            options,
+            http_state,
+            shutdown,
+            startup,
+        } = self;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(CliError::operation);
+        let runtime = match runtime {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let _ = startup.send(Err(error.to_string()));
+                return Err(error);
+            }
+        };
+        let listener = {
+            let _runtime = runtime.enter();
+            tokio::net::TcpListener::from_std(listener).map_err(CliError::operation)
+        };
+        let listener = match listener {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _ = startup.send(Err(error.to_string()));
+                return Err(error);
+            }
+        };
+        let state = http_state.health_handle();
+        let registrations = (|| {
+            let mut registrations = Vec::new();
+            let mut dependencies = Vec::new();
+            if options.watch {
+                let watch = vault_watch_service(
+                    paths,
+                    state,
+                    WatchOptions {
+                        debounce_ms: options.debounce_ms,
+                    },
+                )
+                .map_err(CliError::operation)?;
+                dependencies.push(watch.definition.id.clone());
+                registrations.push(watch);
+            }
+            registrations.push(
+                vault_listener_service(
+                    listener,
+                    http_state,
+                    runtime.handle().clone(),
+                    dependencies,
+                )
+                .map_err(CliError::operation)?,
+            );
+            Ok::<_, CliError>(registrations)
+        })();
+        let registrations = match registrations {
+            Ok(registrations) => registrations,
+            Err(error) => {
+                let _ = startup.send(Err(error.to_string()));
+                return Err(error);
+            }
+        };
+        let host = HostSupervisor::start_with_signal(
+            registrations,
+            Duration::from_secs(10),
+            Arc::clone(&shutdown),
+        );
+        let host = match host {
+            Ok(host) => host,
+            Err(error) => {
+                let _ = startup.send(Err(error.to_string()));
+                return Err(CliError::operation(error));
+            }
+        };
+        let _ = startup.send(Ok(()));
+        while !shutdown.wait_timeout(Duration::from_secs(1)) {}
+        let failed = host
+            .status_handle()
+            .statuses()
+            .map_err(CliError::operation)?
+            .into_iter()
+            .find(|status| status.state == ServiceLifecycleState::Failed);
+        host.shutdown().map_err(CliError::operation)?;
+        if let Some(failed) = failed {
+            return Err(CliError::operation(format!(
+                "temporary service `{}` failed: {}",
+                failed.id,
+                failed
+                    .last_failure
+                    .map_or_else(|| "unknown failure".to_string(), |failure| failure.detail)
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn parse_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr, CliError> {
@@ -188,6 +271,33 @@ mod tests {
             error.to_string(),
             "non-loopback serve binds require --auth-token"
         );
+    }
+
+    #[test]
+    fn temporary_host_reports_bind_conflicts_without_leaking_listener_state() {
+        let vault = TempDir::new().expect("vault");
+        fs::create_dir(vault.path().join(".vulcan")).expect("config directory");
+        fs::write(vault.path().join("Home.md"), "# Home\n").expect("note");
+        let paths = VaultPaths::new(vault.path());
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        let occupied = TcpListener::bind("127.0.0.1:0").expect("occupied listener");
+        let address = occupied.local_addr().expect("address");
+        let options = ServeOptions {
+            bind: address.to_string(),
+            watch: false,
+            debounce_ms: 50,
+            auth_token: Some("secret".to_string()),
+            permissions: None,
+        };
+
+        assert!(spawn_server(paths.clone(), options.clone()).is_err());
+        drop(occupied);
+        let handle = spawn_server(paths, options).expect("port is reusable after conflict");
+        assert_eq!(
+            get_json(handle.addr(), "/health", Some("secret"))["ok"],
+            true
+        );
+        handle.shutdown().expect("temporary host shutdown");
     }
 
     #[test]

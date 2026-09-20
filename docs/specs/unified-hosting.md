@@ -238,9 +238,11 @@ not advertise unimplemented Phase 10 REST, Phase 11 automation, or Phase 19 app 
 
 The migrated single-vault router preserves `/`, `/health`, `/search`, `/notes`, `/graph/stats`,
 `/related`, and the four `/dataview/*` paths and delegates their JSON reports to
-`vulcan_app::serve`. `vulcan serve` still owns only its temporary listener, generated or supplied
-token, selected permission profile, and optional watcher; it does not read or mutate the resident
-registry or service installation. Host and Origin validation, constant-time token comparison,
+`vulcan_app::serve`. `vulcan serve` starts that listener and its optional watcher as invocation-scoped
+services in an ephemeral `HostSupervisor`, with dependency-ordered readiness and reverse shutdown.
+It still owns only its temporary listener, generated or supplied token, selected permission profile,
+and optional watcher; it does not read or mutate the resident registry, persisted host status, or
+service installation. Host and Origin validation, constant-time token comparison,
 declared body limits, and request deadlines now live in the reusable daemon adapter. Feature flags
 for vectors and the JS runtime are forwarded through the daemon crate so moving the transport does
 not silently remove endpoints from the default CLI build.

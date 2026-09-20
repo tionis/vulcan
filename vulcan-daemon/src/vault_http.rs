@@ -1,5 +1,9 @@
 //! Reusable axum adapter for the single-vault cache-backed HTTP API.
 
+use crate::host::{
+    HostRuntimeError, RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration,
+    ServiceScope,
+};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::header::{CONTENT_LENGTH, HOST, ORIGIN};
@@ -17,7 +21,7 @@ use subtle::ConstantTimeEq;
 use vulcan_app::serve::{
     route_request, ServeHealthState, ServeRequest, ServeResponse, ServeRouteOptions,
 };
-use vulcan_core::VaultPaths;
+use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
 pub const VAULT_HTTP_MAX_REQUEST_BYTES: usize = 32 * 1024;
 pub const VAULT_HTTP_TOKEN_HEADER: &str = "x-vulcan-token";
@@ -139,6 +143,92 @@ where
     axum::serve(listener, vault_router(state))
         .with_graceful_shutdown(shutdown)
         .await
+}
+
+/// Adapts an already-bound listener to the shared host lifecycle. The
+/// listener is single-use and therefore intentionally non-restarting.
+pub fn vault_listener_service(
+    listener: tokio::net::TcpListener,
+    state: VaultHttpState,
+    runtime: tokio::runtime::Handle,
+    dependencies: Vec<ServiceId>,
+) -> Result<ServiceRegistration, HostRuntimeError> {
+    let id = ServiceId::parse("listener.vault-http")?;
+    let listener = Arc::new(Mutex::new(Some(listener)));
+    Ok(ServiceRegistration::new(
+        ServiceDefinition {
+            id,
+            service_kind: "listener".to_string(),
+            scope: ServiceScope::Instance {
+                instance_id: "temporary-vault-http".to_string(),
+            },
+            enabled: true,
+            required: true,
+            dependencies,
+            restart: RestartPolicy::Never,
+        },
+        move |service| {
+            let listener = listener
+                .lock()
+                .map_err(|_| "vault HTTP listener state is unavailable".to_string())?
+                .take()
+                .ok_or_else(|| "vault HTTP listener was already consumed".to_string())?;
+            service.ready()?;
+            let stop = Arc::clone(service.stop());
+            runtime
+                .block_on(serve_vault_with_shutdown(
+                    listener,
+                    state.clone(),
+                    async move { stop.cancelled().await },
+                ))
+                .map_err(|error| format!("vault HTTP listener failed: {error}"))
+        },
+    ))
+}
+
+/// Wraps the legacy single-vault watcher in the shared service lifecycle until
+/// the temporary host consumes the common observation fanout directly.
+pub fn vault_watch_service(
+    paths: VaultPaths,
+    health: Arc<Mutex<ServeHealthState>>,
+    options: WatchOptions,
+) -> Result<ServiceRegistration, HostRuntimeError> {
+    let id = ServiceId::parse("observation.vault/temporary-http")?;
+    Ok(ServiceRegistration::new(
+        ServiceDefinition {
+            id,
+            service_kind: "observation".to_string(),
+            scope: ServiceScope::Instance {
+                instance_id: "temporary-vault-http".to_string(),
+            },
+            enabled: true,
+            required: true,
+            dependencies: Vec::new(),
+            restart: RestartPolicy::Never,
+        },
+        move |service| {
+            service.ready()?;
+            let result = watch_vault_until(
+                &paths,
+                &options,
+                || service.stop().is_cancelled(),
+                |report| {
+                    let mut state = health
+                        .lock()
+                        .map_err(|_| "vault HTTP health state is unavailable".to_string())?;
+                    state.last_watch_report = Some(report);
+                    state.watch_error = None;
+                    Ok::<_, String>(())
+                },
+            );
+            if let Err(error) = &result {
+                if let Ok(mut state) = health.lock() {
+                    state.watch_error = Some(error.to_string());
+                }
+            }
+            result.map_err(|error| format!("vault observation failed: {error}"))
+        },
+    ))
 }
 
 async fn authorize(State(state): State<VaultHttpState>, request: Request, next: Next) -> Response {
