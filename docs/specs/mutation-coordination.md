@@ -1,0 +1,78 @@
+# Mutation coordination and lock audit
+
+This document records the Phase 10.7.4 lock audit. It is both the migration baseline and the
+contract for hosted execution. An in-process scheduler may reduce contention, but filesystem locks
+remain authoritative because direct CLI commands and multiple processes must remain safe.
+
+## Canonical identities
+
+- A vault lock is identified by the canonical materialized vault root and stored at
+  `<vault>/.vulcan/write.lock`. Callers must canonicalize before constructing `VaultPaths`; two path
+  aliases must not produce two lock identities.
+- A repository lock is identified by the canonical Git directory returned by repository discovery
+  and stored at `<git-dir>/vulcan-sync/sync.lock`. Linked worktrees that share Git metadata therefore
+  share the repository mutation boundary even when their materialized roots differ.
+- A durable registration ID is routing metadata, not a substitute for either filesystem identity.
+  Re-registering or aliasing a path must not create a second lock domain.
+
+`vulcan_app::execution::ExecutionVaultIdentity` and `ExecutionRepositoryIdentity` carry these
+resolved identities into hosted dispatch.
+
+## Required ordering
+
+Every operation that needs more than one lock uses this order:
+
+1. resolve canonical vault and repository identity without holding a mutation lock;
+2. enter the bounded in-process vault/repository scheduler;
+3. acquire the vault application-write lock;
+4. acquire the repository mutation lock if Git metadata or the worktree is involved;
+5. open short-lived SQLite/cache write transactions only while needed;
+6. release in reverse order.
+
+Preparation that may block on a network, credential helper, model, or human review occurs before
+step 2 where possible. The apply phase reacquires the scheduler/filesystem locks and revalidates the
+current permission grant, configuration revision, source hashes or Git frontier, and durable
+operation identity. Existing sync transaction scope is not narrowed merely to increase throughput.
+
+## Inventory
+
+| Surface | Current cross-process boundary | Scope and contention | Hosted requirement |
+| --- | --- | --- | --- |
+| Core/app note, property, Bases, refactor, import, maintenance, vector, and scan writes | `vulcan_core::write_lock` | Exclusive/shared advisory lock at `.vulcan/write.lock`; acquisition currently waits in the OS | Use canonical vault identity and enter the scheduler first; retain the same file lock |
+| mdbase managed writes | Vault write lock plus durable mdbase journal | Plan/apply revalidates revisions while holding the vault lock; cooperative reads use the shared side | Preserve journal and stale-plan checks; do not treat queue admission as authorization |
+| Finite sync | `vulcan_sync::RepositoryLock` | Exclusive bounded wait (about two seconds) across capture, fetch, merge, publish, apply, and verification | Add the canonical vault lock outside the repository lock; retain the full repository transaction scope |
+| Conflict apply, proposal approval, semantic apply/publish, checkpoints, retention, devices, advertisements | Repository lock | Serializes Vulcan Git refs, shared metadata, and applicable worktree mutations | Worktree-changing paths also take the vault lock first; metadata-only paths still share the repository scheduler/lock |
+| CLI/MCP auto-commit and explicit Git commit | Git's own index/ref locks only | Runs after the originating vault mutation lock has normally been released; can race finite sync or another Vulcan Git writer | Route through the repository scheduler/lock and revalidate the candidate path set after acquisition |
+| Daemon sync, conflict, and semantic workers | Existing `SyncSupervisor` coalescing plus the same app/repository locks | Supervisor serializes its own sync jobs but is not a general mutation lock | Keep supervisor semantics; all hosted writers additionally use the shared scheduler |
+| HTTP, MCP, companion, and future REST adapters | Workflow-dependent app locks | Transport does not itself establish a new lock identity | Construct one execution context and dispatch through the same scheduler/workflow as direct mode |
+| SQLite/cache transactions | SQLite locking and, for rebuild/update workflows, vault write lock | Cache is rebuildable and transactions should be short | Always innermost; never wait for network, repository, or scheduler work while a transaction is open |
+| Outline publication/pull and integration state | Connector-specific state lock; pull also uses the vault lock | Remote preparation is bounded; local apply is journaled and stale checked | Keep remote preparation outside mutation locks and revalidate the local/remote plan at apply |
+
+## Audit findings carried into implementation
+
+The pre-scheduler code has three coordination gaps that subsequent 10.7.4 slices close:
+
+1. ordinary vault writes and finite sync use different cross-process locks, so a direct write can
+   overlap a sync worktree transaction;
+2. auto-commit and explicit Git commit rely on Git's low-level locks but do not participate in the
+   Vulcan repository mutation lock;
+3. `VaultPaths::new` does not canonicalize by itself, so adapters must resolve identity before lock
+   acquisition rather than assuming spelling-equivalent paths coordinate.
+
+These are not reasons to weaken existing locks. The shared mutation guard and hosted scheduler must
+bridge the lock domains in the required order, and direct entrypoints must retain equivalent
+cross-process protection.
+
+## Contention and failure semantics
+
+- Scheduler queue admission is bounded and deadline-aware. Rejection before dispatch is known not
+  to have mutated state.
+- A filesystem-lock contention error is retryable only when the operation has not begun mutation.
+- Cancellation is cooperative. Once synchronous apply has started, response timeout, caller
+  disconnect, or dropped async task does not prove the write stopped.
+- A write whose completion cannot be established is reported as indeterminate. Clients query the
+  durable operation/job status or use the workflow's journal recovery; they never silently retry it
+  through direct mode.
+- No in-memory queue provides exactly-once execution. Recoverable operations use durable identities
+  and journals outside `cache.db`; other mutations use stale-input/idempotency checks where their
+  contract provides them.

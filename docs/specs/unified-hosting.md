@@ -197,6 +197,9 @@ Adapters remain responsible for checking at workflow boundaries and again immedi
 apply step. `ExecutionRetryClass` records whether a disconnected or timed-out operation is a read,
 idempotent, durably recoverable, or potentially indeterminate after dispatch.
 
+The concrete lock inventory, known migration gaps, canonical identities, ordering, and contention
+semantics are maintained in [mutation coordination and lock audit](mutation-coordination.md).
+
 ## Client routing contract
 
 Routing is explicit and happens before dispatch:
