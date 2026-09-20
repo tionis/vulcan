@@ -12435,6 +12435,196 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Install, inspect, or remove an unattended update schedule",
+            "name": "schedule",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Install or replace the native per-user update job",
+                "name": "install",
+                "options": [
+                  {
+                    "help": "Update channel; defaults to the binary's build channel",
+                    "id": "channel",
+                    "long": "channel",
+                    "possible_values": [
+                      "stable",
+                      "main"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CHANNEL"
+                    ]
+                  },
+                  {
+                    "help": "Override the HTTPS update-channel metadata URL",
+                    "id": "channel_url",
+                    "long": "channel-url",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CHANNEL_URL"
+                    ]
+                  },
+                  {
+                    "help": "Explicitly permit checksum-only metadata when no trusted signature is available",
+                    "id": "allow_unsigned",
+                    "long": "allow-unsigned",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ALLOW_UNSIGNED"
+                    ]
+                  },
+                  {
+                    "help": "Local daily run time on Linux, macOS, and Windows (HH:MM)",
+                    "id": "at",
+                    "long": "at",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "AT"
+                    ]
+                  },
+                  {
+                    "help": "Approximate Android/Termux interval in hours (1-168)",
+                    "id": "android_period_hours",
+                    "long": "android-period-hours",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ANDROID_PERIOD_HOURS"
+                    ]
+                  },
+                  {
+                    "help": "Send a native notification when an unattended update fails",
+                    "id": "notify_on_failure",
+                    "long": "notify-on-failure",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NOTIFY_ON_FAILURE"
+                    ]
+                  },
+                  {
+                    "help": "Report the native scheduler plan without changing the system",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show the installed unattended update schedule",
+                "name": "show",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Remove the native per-user update job",
+                "name": "uninstall",
+                "options": [
+                  {
+                    "help": "Report the native removal plan without changing the system",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
+            "about": "Run one unattended update cycle with daemon coordination",
+            "name": "run",
+            "options": [
+              {
+                "help": "Update channel; defaults to the binary's build channel",
+                "id": "channel",
+                "long": "channel",
+                "possible_values": [
+                  "stable",
+                  "main"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHANNEL"
+                ]
+              },
+              {
+                "help": "Override the HTTPS update-channel metadata URL",
+                "id": "channel_url",
+                "long": "channel-url",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHANNEL_URL"
+                ]
+              },
+              {
+                "help": "Explicitly permit checksum-only metadata when no trusted signature is available",
+                "id": "allow_unsigned",
+                "long": "allow-unsigned",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALLOW_UNSIGNED"
+                ]
+              },
+              {
+                "help": "Send a native desktop or Termux notification when the cycle fails",
+                "id": "notify_on_failure",
+                "long": "notify-on-failure",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NOTIFY_ON_FAILURE"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },

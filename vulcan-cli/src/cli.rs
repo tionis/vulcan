@@ -7627,6 +7627,62 @@ pub enum UpdateCommand {
         )]
         allow_downgrade: bool,
     },
+    #[command(about = "Install, inspect, or remove an unattended update schedule")]
+    Schedule {
+        #[command(subcommand)]
+        command: UpdateScheduleCommand,
+    },
+    #[command(about = "Run one unattended update cycle with daemon coordination")]
+    Run {
+        #[command(flatten)]
+        channel: UpdateChannelArgs,
+        #[arg(
+            long,
+            help = "Send a native desktop or Termux notification when the cycle fails"
+        )]
+        notify_on_failure: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum UpdateScheduleCommand {
+    #[command(about = "Install or replace the native per-user update job")]
+    Install {
+        #[command(flatten)]
+        channel: UpdateChannelArgs,
+        #[arg(
+            long,
+            default_value = "03:00",
+            help = "Local daily run time on Linux, macOS, and Windows (HH:MM)"
+        )]
+        at: String,
+        #[arg(
+            long,
+            default_value_t = 24,
+            help = "Approximate Android/Termux interval in hours (1-168)"
+        )]
+        android_period_hours: u32,
+        #[arg(
+            long,
+            help = "Send a native notification when an unattended update fails"
+        )]
+        notify_on_failure: bool,
+        #[arg(
+            long,
+            help = "Report the native scheduler plan without changing the system"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Show the installed unattended update schedule")]
+    Show,
+    #[command(about = "Remove the native per-user update job")]
+    Uninstall {
+        #[arg(
+            long,
+            help = "Report the native removal plan without changing the system"
+        )]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Parser)]

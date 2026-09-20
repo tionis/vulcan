@@ -41,6 +41,41 @@ fn self_update_help_exposes_channel_and_mutation_safety_controls_without_a_vault
         .stdout(predicate::str::contains("--dry-run"));
 }
 
+#[test]
+fn self_update_schedule_is_vault_independent_and_mutation_free_in_dry_run() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let config = temporary.path().join("config");
+    let state = temporary.path().join("state");
+    let home = temporary.path().join("home");
+    fs::create_dir_all(&home).expect("home directory");
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_STATE_HOME", &state)
+        .env("HOME", &home)
+        .args([
+            "--output",
+            "json",
+            "self-update",
+            "schedule",
+            "install",
+            "--at",
+            "04:30",
+            "--notify-on-failure",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["action"], "install");
+    assert_eq!(json["options"]["daily_at"], "04:30");
+    assert_eq!(json["options"]["notify_on_failure"], true);
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["changed"], false);
+    assert!(!state.join("vulcan/update-schedule.json").exists());
+    assert!(!config.join("systemd/user/vulcan-update.timer").exists());
+}
+
 fn mdaf_wiki_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -15289,6 +15324,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("`possibly_lost_hidden_ref_namespaces`"));
     assert!(diagnostics_skill.contains("unpushed candidates, old epochs, conflicts"));
     assert!(diagnostics_skill.contains("vulcan self-update apply --dry-run"));
+    assert!(diagnostics_skill.contains("vulcan self-update schedule install --at 03:00"));
+    assert!(diagnostics_skill.contains("vulcan self-update schedule show"));
+    assert!(diagnostics_skill.contains("unattended schedules reject `--allow-unsigned`"));
     assert!(diagnostics_skill.contains("Never run `self-update` for an APT"));
     assert!(diagnostics_skill.contains("falls back to startup/periodic polling"));
     assert!(diagnostics_skill.contains("origin and fingerprint"));

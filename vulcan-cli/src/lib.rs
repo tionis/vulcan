@@ -442,8 +442,8 @@ pub use cli::{
     TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
     TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
     TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
-    TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand, VaultCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateScheduleCommand,
+    VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 #[must_use]

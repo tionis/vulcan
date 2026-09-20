@@ -221,6 +221,49 @@ fn parses_self_update_channel_and_safety_overrides() {
 }
 
 #[test]
+fn parses_self_update_schedule_and_unattended_run() {
+    let install = Cli::try_parse_from([
+        "vulcan",
+        "self-update",
+        "schedule",
+        "install",
+        "--channel",
+        "main",
+        "--at",
+        "04:30",
+        "--notify-on-failure",
+        "--dry-run",
+    ])
+    .expect("self-update schedule should parse");
+    assert!(matches!(
+        install.command,
+        Command::SelfUpdate {
+            command: Some(UpdateCommand::Schedule {
+                command: UpdateScheduleCommand::Install {
+                    channel: UpdateChannelArgs { channel: Some(UpdateChannelArg::Main), .. },
+                    at,
+                    notify_on_failure: true,
+                    dry_run: true,
+                    ..
+                }
+            })
+        } if at == "04:30"
+    ));
+
+    let run = Cli::try_parse_from(["vulcan", "self-update", "run", "--notify-on-failure"])
+        .expect("unattended update cycle should parse");
+    assert!(matches!(
+        run.command,
+        Command::SelfUpdate {
+            command: Some(UpdateCommand::Run {
+                notify_on_failure: true,
+                ..
+            })
+        }
+    ));
+}
+
+#[test]
 fn parses_dataview_inline_command() {
     let cli = Cli::try_parse_from(["vulcan", "dataview", "inline", "Dashboard"])
         .expect("cli should parse");
