@@ -40,7 +40,7 @@ the first 10.7 slice that changes ownership; it does not claim that slice is imp
 | Alert delivery | `alert_delivery.rs` via `process.rs` | Bounded worker; drains or cancels during daemon shutdown | Device notification config; durable delivery ledger and named environment credentials under user state/environment | Optional supervised global worker | 10.7.2 |
 | Conflict proposal worker | `conflict_worker.rs` via `process.rs` | Optional thread; polls retained conflicts; joins on stop | Device agent endpoint/model and named environment credential; proposal/claim state under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
 | Semantic-plan worker | `semantic_worker.rs` via `process.rs` | Optional thread; polls eligible work; joins on stop | Device agent endpoint/model and named environment credential; durable plans under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
-| Single-vault HTTP API | `vulcan serve`; `vulcan-cli/src/serve.rs` | Blocking loopback listener, connection threads, optional index-watch thread; process signal ends invocation | Invocation-local bind/vault/profile; vault cache and config; no device service registration | Reusable daemon router mounted by a temporary or resident host | 10.7.4, 10.7.5 |
+| Single-vault HTTP API | `vulcan serve`; `vulcan-daemon/src/vault_http.rs` with the CLI lifecycle shim in `vulcan-cli/src/serve.rs` | Reusable axum router on an invocation-owned Tokio listener, optional index-watch thread, graceful foreground shutdown | Invocation-local bind/vault/profile; vault cache and config; no device service registration | Reusable daemon router mounted by a temporary or resident host | 10.7.4, 10.7.5 |
 | MCP stdio | `vulcan mcp`; `vulcan-cli/src/mcp.rs` | Client-owned stdin/stdout loop; ends on EOF/process exit | Invocation-local permission profile and packs; session state in memory; vault config/cache | Permanent transport-specific exception in CLI using the shared dispatcher; never resident-owned | 10.7.6 |
 | Direct MCP HTTP | `vulcan mcp --transport http`; `vulcan-cli/src/mcp.rs` | Blocking listener and connection threads; invocation-owned watcher; ends on signal/process exit | Invocation flags, optional static token or OAuth settings; OAuth/session state in memory; selected durable local-issuer material under user state | Reusable MCP router mounted by a temporary host | 10.7.4, 10.7.6 |
 | Named remote MCP HTTP | `vulcan mcp remote run`; `mcp.rs`, `commands/mcp_remote.rs` | Same foreground HTTP adapter plus a per-instance ownership lock; distinct instances may run concurrently | Named definition in device registry; per-instance OAuth clients/secrets and connection grants under user state; exact audience and vault/profile/pack ceilings | Same MCP router mounted by temporary or resident host from the same named definition | 10.7.4, 10.7.6, Roadmap 10.10 |
@@ -235,6 +235,15 @@ Migration must retain these shipped contracts until an explicit version boundary
 
 Capability documents and schemas are generated from actually mounted routes. Consolidation does
 not advertise unimplemented Phase 10 REST, Phase 11 automation, or Phase 19 app capabilities.
+
+The migrated single-vault router preserves `/`, `/health`, `/search`, `/notes`, `/graph/stats`,
+`/related`, and the four `/dataview/*` paths and delegates their JSON reports to
+`vulcan_app::serve`. `vulcan serve` still owns only its temporary listener, generated or supplied
+token, selected permission profile, and optional watcher; it does not read or mutate the resident
+registry or service installation. Host and Origin validation, constant-time token comparison,
+declared body limits, and request deadlines now live in the reusable daemon adapter. Feature flags
+for vectors and the JS runtime are forwarded through the daemon crate so moving the transport does
+not silently remove endpoints from the default CLI build.
 
 ### Compatibility test inventory
 
