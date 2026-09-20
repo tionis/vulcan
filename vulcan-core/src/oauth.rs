@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
+use std::net::ToSocketAddrs;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct OAuthResourceServerConfig {
@@ -39,6 +41,121 @@ pub struct LocalOAuthUserConfig {
     pub subject: String,
     pub email: Option<String>,
     pub permission_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClientIdMetadataDocument {
+    pub client_id: String,
+    pub redirect_uris: Vec<String>,
+    #[serde(default = "default_public_client_auth_method")]
+    pub token_endpoint_auth_method: String,
+}
+
+fn default_public_client_auth_method() -> String {
+    "none".to_string()
+}
+
+pub fn fetch_client_id_metadata(client_id: &str) -> Result<ClientIdMetadataDocument, OAuthError> {
+    const MAX_METADATA_BYTES: u64 = 64 * 1024;
+    let url = reqwest::Url::parse(client_id)
+        .map_err(|error| OAuthError::Config(format!("invalid client ID URL: {error}")))?;
+    let lowercase_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || lowercase_host == "localhost"
+        || lowercase_host.ends_with(".localhost")
+        || lowercase_host
+            .rsplit_once('.')
+            .is_some_and(|(_, suffix)| suffix == "local")
+        || url
+            .host_str()
+            .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+            .is_some_and(ip_is_non_public)
+    {
+        return Err(OAuthError::Config(
+            "Client ID Metadata Document URL must be public HTTPS without credentials, query, or fragment"
+                .to_string(),
+        ));
+    }
+    let host = url.host_str().expect("validated URL has a host");
+    let pinned_address = if host.parse::<std::net::IpAddr>().is_ok() {
+        None
+    } else {
+        let addresses = (host, url.port_or_known_default().unwrap_or(443))
+            .to_socket_addrs()
+            .map_err(|error| OAuthError::Network(error.to_string()))?
+            .collect::<Vec<_>>();
+        if addresses.is_empty()
+            || addresses
+                .iter()
+                .any(|address| ip_is_non_public(address.ip()))
+        {
+            return Err(OAuthError::Config(
+                "Client ID Metadata Document host did not resolve exclusively to public addresses"
+                    .to_string(),
+            ));
+        }
+        addresses.into_iter().next()
+    };
+    let mut client_builder = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(address) = pinned_address {
+        client_builder = client_builder.resolve(host, address);
+    }
+    let response = client_builder
+        .build()
+        .map_err(|error| OAuthError::Network(error.to_string()))?
+        .get(url)
+        .send()
+        .map_err(|error| OAuthError::Network(error.to_string()))?;
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|length| length > MAX_METADATA_BYTES)
+    {
+        return Err(OAuthError::Network(
+            "Client ID Metadata Document request failed or was too large".to_string(),
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|error| OAuthError::Network(error.to_string()))?;
+    if bytes.len() as u64 > MAX_METADATA_BYTES {
+        return Err(OAuthError::Network(
+            "Client ID Metadata Document exceeded 64 KiB".to_string(),
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| OAuthError::Network(format!("invalid client metadata JSON: {error}")))
+}
+
+fn ip_is_non_public(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(address) => {
+            let octets = address.octets();
+            address.is_private()
+                || address.is_loopback()
+                || address.is_link_local()
+                || address.is_unspecified()
+                || address.is_multicast()
+                || address.is_broadcast()
+                || address.is_documentation()
+                || octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        }
+        std::net::IpAddr::V6(address) => {
+            address.is_loopback()
+                || address.is_unspecified()
+                || address.is_multicast()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1163,5 +1280,25 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn client_id_metadata_rejects_non_public_urls_before_fetching() {
+        for client_id in [
+            "http://client.example.test/metadata.json",
+            "https://localhost/metadata.json",
+            "https://127.0.0.1/metadata.json",
+            "https://[::1]/metadata.json",
+            "https://client.local/metadata.json",
+            "https://user@client.example.test/metadata.json",
+        ] {
+            assert!(fetch_client_id_metadata(client_id).is_err(), "{client_id}");
+        }
+        let metadata: ClientIdMetadataDocument = serde_json::from_value(serde_json::json!({
+            "client_id": "https://client.example.test/metadata.json",
+            "redirect_uris": ["https://client.example.test/callback"]
+        }))
+        .expect("metadata");
+        assert_eq!(metadata.token_endpoint_auth_method, "none");
     }
 }

@@ -162,6 +162,8 @@ fn oauth_options() -> McpHttpOptions {
         oauth_indieauth_redirect_uri: None,
         oauth_indieauth_me: None,
         oauth_local_user: Vec::new(),
+        instance_id: None,
+        oauth_storage_dir: None,
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     }
 }
@@ -191,6 +193,109 @@ fn static_local_oauth_requires_registered_safe_redirects() {
         "https://client.example/callback\r\nX-Injected: yes"
     ));
     assert!(!valid_oauth_redirect_uri("http://client.example/callback"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn client_id_metadata_documents_require_exact_public_client_metadata() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "secret".to_string(),
+            signing_key: "signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let context = consent_test_context(&paths, issuer);
+    let client_id = "https://client.example.test/oauth/client.json";
+    let metadata = ClientIdMetadataDocument {
+        client_id: client_id.to_string(),
+        redirect_uris: vec!["https://client.example.test/callback".to_string()],
+        token_endpoint_auth_method: "none".to_string(),
+    };
+    assert!(validate_client_id_metadata(
+        &context,
+        client_id,
+        Some("https://client.example.test/callback"),
+        &metadata,
+    ));
+    let mismatched = ClientIdMetadataDocument {
+        client_id: "https://attacker.example.test/client.json".to_string(),
+        ..metadata.clone()
+    };
+    assert!(!validate_client_id_metadata(
+        &context,
+        client_id,
+        Some("https://client.example.test/callback"),
+        &mismatched,
+    ));
+    let confidential = ClientIdMetadataDocument {
+        token_endpoint_auth_method: "client_secret_post".to_string(),
+        ..metadata
+    };
+    assert!(!validate_client_id_metadata(
+        &context,
+        client_id,
+        Some("https://client.example.test/callback"),
+        &confidential,
+    ));
+}
+
+#[cfg(all(feature = "oauth", unix))]
+#[test]
+fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "secret".to_string(),
+            signing_key: "signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let mut context = consent_test_context(&paths, issuer);
+    let registry = temporary.path().join("state/oauth-clients.json");
+    context.oauth_clients_path = Some(registry.clone());
+    context.oauth_clients.lock().expect("clients").insert(
+        "client".to_string(),
+        LocalOAuthRegisteredClient {
+            client_id: "client".to_string(),
+            client_secret: "secret-value".to_string(),
+            redirect_uris: vec!["https://client.example.test/callback".to_string()],
+            client_name: None,
+            token_endpoint_auth_method: "client_secret_post".to_string(),
+            client_id_issued_at: 1,
+        },
+    );
+    save_oauth_registered_clients(&context).expect("save registry");
+    assert_eq!(
+        fs::metadata(&registry)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert!(load_oauth_registered_clients(&registry).is_ok());
+    fs::set_permissions(&registry, fs::Permissions::from_mode(0o644)).expect("loosen mode");
+    assert!(load_oauth_registered_clients(&registry).is_err());
 }
 
 #[cfg(feature = "oauth")]
@@ -327,9 +432,9 @@ fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
             .expect("DCR local issuer should initialize")
             .is_some()
     );
-    let secret_path = oauth_issuer_secret_path(&paths);
+    let secret_path = oauth_issuer_secret_path(&paths, &options);
     let first_secret = fs::read_to_string(&secret_path).expect("issuer secret should be persisted");
-    let signing_key_path = oauth_signing_key_path(&paths);
+    let signing_key_path = oauth_signing_key_path(&paths, &options);
     let first_signing_key =
         fs::read_to_string(&signing_key_path).expect("signing key should be persisted");
     assert!(!first_secret.trim().is_empty());
@@ -493,6 +598,7 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         oauth_local_redirect_uris: Vec::new(),
         oauth_indieauth: None,
         oauth_clients_path: None,
+        named_runtime: None,
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     }
 }
@@ -640,6 +746,175 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
     assert!(denied_location.contains("error=access_denied"));
     assert!(denied_location.ends_with("&state=denied-state"));
     assert_eq!(context.oauth_codes.lock().expect("codes lock").len(), 1);
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn named_consent_persists_and_enforces_a_revocable_grant() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let mut context = consent_test_context(&paths, Arc::clone(&issuer));
+    let store = McpAuthorizationStore::at(temporary.path().join("state"));
+    context.named_runtime = Some(NamedMcpRuntime {
+        remote_id: vulcan_daemon::mcp_remote::McpRemoteId::parse("personal-chatgpt")
+            .expect("remote"),
+        wiki_id: vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
+        ceiling_profile: "readonly".to_string(),
+        default_profile: "readonly".to_string(),
+        eligible_tool_packs: vec!["notes-read".to_string(), "search".to_string()],
+        authorization_store: store.clone(),
+    });
+    let verifier = "named-consent-pkce-verifier";
+    context
+        .oauth_pending_consent
+        .lock()
+        .expect("consent lock")
+        .insert(
+            "named-transaction".to_string(),
+            LocalOAuthPendingConsent {
+                client_id: "static-client".to_string(),
+                redirect_uri: "https://client.example.test/callback".to_string(),
+                code_challenge: pkce_s256_challenge(verifier),
+                subject: "https://identity.example.test/alice".to_string(),
+                scopes: vec!["mcp:tools".to_string()],
+                resource: "https://mcp.example.test/personal".to_string(),
+                state: Some("client-state".to_string()),
+                csrf_token: "csrf-secret".to_string(),
+                expires_at: std::time::Instant::now() + Duration::from_secs(60),
+            },
+        );
+    let approval = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/oauth/consent".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: b"transaction=named-transaction&csrf_token=csrf-secret&decision=approve&permission_profile=readonly&pack_notes-read=on&expiry_days=7".to_vec(),
+    };
+    assert_eq!(
+        handle_local_oauth_consent(&context, &issuer, &approval).status,
+        302
+    );
+    let grants = store.list_grants(None).expect("durable grants");
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].tool_packs, ["notes-read"]);
+    let code = context
+        .oauth_codes
+        .lock()
+        .expect("codes")
+        .keys()
+        .next()
+        .expect("code")
+        .clone();
+    let token_request = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/oauth/token".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: format!(
+            "grant_type=authorization_code&client_id=static-client&client_secret=client-secret&code={code}&code_verifier={verifier}&redirect_uri=https%3A%2F%2Fclient.example.test%2Fcallback"
+        )
+        .into_bytes(),
+    };
+    let token_response = handle_local_oauth_token(&context, &issuer, &token_request);
+    assert_eq!(token_response.status, 200);
+    let tokens: Value = serde_json::from_slice(&token_response.body).expect("token JSON");
+    let refresh_token = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+    let access_token = tokens["access_token"].as_str().expect("access token");
+    let request = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query: String::new(),
+        headers: BTreeMap::from([(
+            "authorization".to_string(),
+            format!("Bearer {access_token}"),
+        )]),
+        body: Vec::new(),
+    };
+    let authority = authenticate_mcp_http_request(&context, &request).expect("grant authority");
+    assert_eq!(authority.grant_id, Some(grants[0].id));
+    assert_eq!(authority.tool_packs, ["notes-read"]);
+
+    let refresh = |token: &str| {
+        McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/oauth/token".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: format!(
+            "grant_type=refresh_token&client_id=static-client&client_secret=client-secret&refresh_token={token}&resource=https%3A%2F%2Fmcp.example.test%2Fpersonal&scope=mcp%3Atools"
+        )
+        .into_bytes(),
+    }
+    };
+    let rotated = handle_local_oauth_token(&context, &issuer, &refresh(&refresh_token));
+    assert_eq!(rotated.status, 200);
+    let rotated: Value = serde_json::from_slice(&rotated.body).expect("rotated token JSON");
+    let replacement = rotated["refresh_token"]
+        .as_str()
+        .expect("replacement refresh token")
+        .to_string();
+    assert_ne!(replacement, refresh_token);
+    assert_eq!(
+        handle_local_oauth_token(&context, &issuer, &refresh(&refresh_token)).status,
+        400,
+        "refresh replay must be rejected and revoke the family"
+    );
+    assert_eq!(
+        handle_local_oauth_token(&context, &issuer, &refresh(&replacement)).status,
+        400,
+        "the replacement must be invalid after replay revocation"
+    );
+
+    store
+        .revoke_grant(grants[0].id, current_unix_timestamp(), false)
+        .expect("revoke grant");
+    assert!(authenticate_mcp_http_request(&context, &request).is_err());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn named_runtime_locks_conflict_per_remote_but_not_across_remotes() {
+    let temporary = tempfile::tempdir().expect("temporary state");
+    let definition = |name: &str, instance_id: Ulid| McpRemoteDefinition {
+        version: vulcan_daemon::mcp_remote::MCP_REMOTE_DEFINITION_VERSION,
+        id: vulcan_daemon::mcp_remote::McpRemoteId::parse(name).expect("remote"),
+        instance_id,
+        bind: "127.0.0.1:8765".to_string(),
+        public_url: format!("https://mcp.example.test/{name}"),
+        authentication: McpRemoteAuthentication::IndieAuth {
+            identity: "https://identity.example.test/alice".to_string(),
+        },
+        vaults: vec![vulcan_daemon::mcp_remote::McpRemoteVault {
+            wiki_id: vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
+            ceiling_profile: "readonly".to_string(),
+            default_profile: "readonly".to_string(),
+            tool_packs: vec!["notes-read".to_string()],
+        }],
+    };
+    let first = definition("first", Ulid::new());
+    let second = definition("second", Ulid::new());
+    let first_dir = temporary.path().join("first");
+    let _first_lock = acquire_named_remote_runtime_lock(&first_dir, &first).expect("first lock");
+    assert!(acquire_named_remote_runtime_lock(&first_dir, &first).is_err());
+    assert!(acquire_named_remote_runtime_lock(&temporary.path().join("second"), &second).is_ok());
 }
 
 #[test]

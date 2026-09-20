@@ -656,6 +656,69 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
         lines.push("## Generated Config Reference".to_string());
         lines.push(String::new());
     }
+    lines.push("### Device-global named MCP configuration".to_string());
+    lines.push(String::new());
+    lines.push(
+        "Named remote MCP definitions are intentionally outside the vault config described below. Manage"
+            .to_string(),
+    );
+    lines.push(
+        "them with `vulcan mcp remote init/list/show/set/run/remove`; Vulcan stores them alongside daemon"
+            .to_string(),
+    );
+    lines.push(
+        "configuration in the user config directory. Each definition contains a stable instance ID, a"
+            .to_string(),
+    );
+    lines.push(
+        "loopback bind, exact public HTTPS resource URL, IndieAuth identity, registered wiki reference,"
+            .to_string(),
+    );
+    lines.push(
+        "permission ceiling/default profile names, and eligible tool packs. It contains no token secret and"
+            .to_string(),
+    );
+    lines.push("is not copied when the vault is synchronized.".to_string());
+    lines.push(String::new());
+    lines.push(
+        "Connection grants and refresh-token-family records live in the user state directory outside the"
+            .to_string(),
+    );
+    lines.push(
+        "rebuildable cache. Per-remote OAuth signing/client material is also device-local and owner-only."
+            .to_string(),
+    );
+    lines.push(
+        "Use `vulcan mcp connections list/show/revoke`, not manual JSON edits, to manage that state. Vault"
+            .to_string(),
+    );
+    lines.push(
+        "permission profiles remain normal shared/local `.vulcan` configuration and are revalidated against"
+            .to_string(),
+    );
+    lines.push(
+        "both the approved snapshot and current remote ceiling on every authenticated request."
+            .to_string(),
+    );
+    lines.push(String::new());
+    lines.push(
+        "Migration from a long-form remote invocation is explicit: register its vault, translate the old"
+            .to_string(),
+    );
+    lines.push(
+        "`--permissions` value into the remote ceiling/default, translate its startup `--tool-pack` values"
+            .to_string(),
+    );
+    lines.push(
+        "into eligible packs, initialize the remote with the old exact `--public-url` and IndieAuth identity,"
+            .to_string(),
+    );
+    lines.push(
+        "then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing"
+            .to_string(),
+    );
+    lines.push("direct flags remain supported and are not imported automatically.".to_string());
+    lines.push(String::new());
     lines.push(
         "Derived from Vulcan's config descriptor registry. `config set`, `config unset`, `config list`, the settings TUI, and this help surface share the same supported key metadata.".to_string(),
     );

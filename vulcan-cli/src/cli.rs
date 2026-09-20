@@ -1177,8 +1177,11 @@ Notes:
   `--tool-pack <name>` may be repeated or comma-separated to compose the exposed tool surface.
   `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.
+  `mcp remote init|list|show|set|run|remove` manages device-global hosted-client instances.
+  `mcp connections list|show|revoke` manages their durable consent grants.
   Non-loopback HTTP binds require `--auth-token` or OAuth.
-  Local OAuth mode makes Vulcan the ChatGPT-facing issuer for authorization-code + PKCE, DCR, IndieAuth-backed login, and bearer-token validation.
+  Named remotes use IndieAuth login plus explicit Vulcan consent, audience-bound short access tokens, rotating refresh tokens, CIMD/DCR client validation, and revocable grants.
+  Advanced direct local OAuth mode remains available through the long-form flags.
   External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.
   Available packs include `notes-read`, `search`, `status`, `graph`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, `index`, and `sync`.
   `graph` contains the less-common community and link-suggestion tools; it is not part of the default navigation surface.
@@ -1195,6 +1198,9 @@ Examples:
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --vault ~/notes --request-timeout 30s
   vulcan mcp --transport http --bind 127.0.0.1:8765
+  vulcan mcp remote init personal-chatgpt --public-url https://wiki.example.com/mcp --identity https://example.com/ --dry-run
+  vulcan mcp remote run personal-chatgpt
+  vulcan mcp connections list --remote personal-chatgpt
   vulcan --permissions daily-wiki-agent mcp --transport http --public-url https://wiki.example.com/mcp --oauth-dcr --oauth-indieauth-me https://example.com/
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
   vulcan mcp | jq .";
@@ -5010,6 +5016,126 @@ pub enum McpTransportArg {
     Http,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum McpCommand {
+    #[command(about = "Manage named remotely reachable MCP instances")]
+    Remote {
+        #[command(subcommand)]
+        command: McpRemoteCommand,
+    },
+    #[command(about = "Inspect and revoke approved remote MCP connections")]
+    Connections {
+        #[command(subcommand)]
+        command: McpConnectionsCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum McpRemoteCommand {
+    #[command(about = "Initialize a device-global named MCP remote")]
+    Init {
+        #[arg(help = "Stable device-local name for this remote instance")]
+        name: String,
+        #[arg(long, help = "Public HTTPS MCP resource URL")]
+        public_url: String,
+        #[arg(long, help = "IndieAuth identity URL allowed to approve connections")]
+        identity: String,
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, help = "Loopback listener; defaults to the first available port")]
+        bind: Option<String>,
+        #[arg(long, default_value = "readonly", help = "Maximum permission profile")]
+        ceiling_profile: String,
+        #[arg(long, default_value = "readonly", help = "Recommended consent profile")]
+        default_profile: String,
+        #[arg(
+            long,
+            value_enum,
+            value_delimiter = ',',
+            default_value = "notes-read,search,status",
+            help = "Tool packs eligible for consent"
+        )]
+        tool_pack: Vec<McpToolPackArg>,
+        #[arg(
+            long,
+            help = "Validate and report without writing device configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "List named MCP remotes")]
+    List,
+    #[command(about = "Show one named MCP remote")]
+    Show {
+        #[arg(help = "Named remote to inspect")]
+        name: String,
+    },
+    #[command(about = "Update one named MCP remote")]
+    Set {
+        #[arg(help = "Named remote to update")]
+        name: String,
+        #[arg(long, help = "Replacement loopback listener")]
+        bind: Option<String>,
+        #[arg(long, help = "Replacement exact public HTTPS MCP resource URL")]
+        public_url: Option<String>,
+        #[arg(long, help = "Replacement IndieAuth identity URL")]
+        identity: Option<String>,
+        #[arg(long, help = "Replacement maximum permission profile")]
+        ceiling_profile: Option<String>,
+        #[arg(long, help = "Replacement recommended consent profile")]
+        default_profile: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            value_delimiter = ',',
+            help = "Replace the tool packs eligible for consent"
+        )]
+        tool_pack: Vec<McpToolPackArg>,
+        #[arg(long, help = "Validate and report without changing configuration")]
+        dry_run: bool,
+    },
+    #[command(about = "Run one named MCP remote in the foreground")]
+    Run {
+        #[arg(help = "Named remote to run")]
+        name: String,
+    },
+    #[command(about = "Remove a named MCP remote and revoke its connections")]
+    Remove {
+        #[arg(help = "Named remote to remove")]
+        name: String,
+        #[arg(
+            long,
+            help = "Keep existing grants (they remain unusable without the instance)"
+        )]
+        preserve_grants: bool,
+        #[arg(
+            long,
+            help = "Validate and report without changing configuration or grants"
+        )]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum McpConnectionsCommand {
+    #[command(about = "List approved MCP connections")]
+    List {
+        #[arg(long, help = "Limit results to one named remote")]
+        remote: Option<String>,
+    },
+    #[command(about = "Show one approved MCP connection")]
+    Show {
+        #[arg(help = "Stable connection grant ID")]
+        id: String,
+    },
+    #[command(about = "Revoke one approved MCP connection and its refresh-token families")]
+    Revoke {
+        #[arg(help = "Stable connection grant ID")]
+        id: String,
+        #[arg(long, help = "Validate and report without revoking the connection")]
+        dry_run: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum QueryEngineArg {
     /// Auto-detect: DQL when input starts with TABLE/LIST/TASK/CALENDAR, native DSL otherwise
@@ -7408,6 +7534,8 @@ Examples:
         after_help = MCP_COMMAND_AFTER_HELP
     )]
     Mcp {
+        #[command(subcommand)]
+        command: Option<McpCommand>,
         #[arg(
             long,
             value_enum,

@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 22
+version: 23
 tools:
   - config_show
   - config_get
@@ -53,6 +53,10 @@ permission profiles, or diagnoses permission and trust failures.
     `set-notification-command <name> --program <path> [--arg <literal>]... --dry-run`. Restart after
     applying configuration and inspect the secret-minimal queue with `daemon alert-status`. Remove
     either kind with `daemon config remove-notification-sink <name> --dry-run`.
+18. Manage hosted-client MCP exposure with `vulcan mcp remote init/list/show/set/run/remove`.
+    Definitions live in device-global daemon configuration and reference registered wikis plus
+    vault-defined permission profiles; they never live in synced `.vulcan/config.toml`. Inspect and
+    revoke the separate durable approval state with `vulcan mcp connections list/show/revoke`.
 
 ## Guardrails
 
@@ -78,6 +82,7 @@ permission profiles, or diagnoses permission and trust failures.
 - Importing folder-note settings configures the convention; it does not auto-detect or move existing folder notes. Use `vulcan refactor folder-notes --dry-run` for a layout conversion.
 - `vulcan sync status` and `vulcan sync run` both inspect repository and remote state and therefore require the selected profile's Git permission; `--dry-run` prevents mutation but does not bypass that permission boundary.
 - MCP's read-only `sync` tool pack additionally requires full-vault read access. Repository-wide status, doctor, plans, and conflict records can contain paths outside a partial read allowlist, so Vulcan hides the whole pack instead of returning a misleading or leaky partially filtered safety report.
+- Named MCP remote ceilings cannot use `unrestricted`. Tool packs control discovery rather than authority, and every approved connection remains bounded by both its permission snapshot and the remote's current ceiling.
 - Preview clone and registration mutations with `vulcan vault clone ... --dry-run`, `vault add ... --dry-run`, `vault set ... --dry-run`, or `vault remove ... --dry-run`. Clone dry-run does not contact the remote or create destinations. Removing a registration must never be treated as permission to delete its worktree or Git directory.
 - Preview automatic-sync changes with `vulcan sync pause/resume ... --dry-run`. This state is device-local and does not alter repository policy or prevent an explicit manual sync.
 

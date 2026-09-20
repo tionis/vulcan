@@ -6206,6 +6206,7 @@ fn parses_help_and_describe_format_commands() {
     assert_eq!(
         mcp.command,
         Command::Mcp {
+            command: None,
             tool_pack: vec![
                 McpToolPackArg::NotesRead,
                 McpToolPackArg::NotesManage,
@@ -6240,6 +6241,58 @@ fn parses_help_and_describe_format_commands() {
         }
     );
     assert_eq!(mcp.permissions.as_deref(), Some("readonly"));
+}
+
+#[test]
+fn named_mcp_remote_and_connection_commands_parse() {
+    let init = Cli::try_parse_from([
+        "vulcan",
+        "mcp",
+        "remote",
+        "init",
+        "personal-chatgpt",
+        "--public-url",
+        "https://mcp.example.test/personal",
+        "--identity",
+        "https://identity.example.test/alice",
+        "--wiki",
+        "personal",
+        "--dry-run",
+    ])
+    .expect("remote init should parse");
+    assert!(matches!(
+        init.command,
+        Command::Mcp {
+            command: Some(McpCommand::Remote {
+                command: McpRemoteCommand::Init {
+                    ref name,
+                    ref wiki,
+                    dry_run: true,
+                    ..
+                }
+            }),
+            ..
+        } if name == "personal-chatgpt" && wiki.as_deref() == Some("personal")
+    ));
+
+    let revoke = Cli::try_parse_from([
+        "vulcan",
+        "mcp",
+        "connections",
+        "revoke",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "--dry-run",
+    ])
+    .expect("connection revoke should parse");
+    assert!(matches!(
+        revoke.command,
+        Command::Mcp {
+            command: Some(McpCommand::Connections {
+                command: McpConnectionsCommand::Revoke { dry_run: true, .. }
+            }),
+            ..
+        }
+    ));
 }
 
 #[test]

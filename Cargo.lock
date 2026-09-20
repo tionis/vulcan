@@ -4587,6 +4587,7 @@ dependencies = [
  "clap_complete",
  "crossterm 0.28.1",
  "csv",
+ "fs2",
  "globset",
  "predicates",
  "pulldown-cmark",

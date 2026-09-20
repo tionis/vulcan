@@ -350,6 +350,67 @@ impl McpAuthorizationStore {
         })
     }
 
+    pub fn mark_grant_used(
+        &self,
+        id: Ulid,
+        now: u64,
+    ) -> Result<ConnectionGrantReport, McpStateError> {
+        let _lock = StateLock::acquire(&self.path)?;
+        let mut state = self.load()?;
+        let grant = state
+            .grants
+            .iter_mut()
+            .find(|grant| grant.id == id)
+            .ok_or(McpStateError::UnknownGrant(id))?;
+        if !grant.is_active_at(now) {
+            return Err(McpStateError::InactiveGrant(id));
+        }
+        let should_persist = grant
+            .last_used_at
+            .is_none_or(|last_used| now.saturating_sub(last_used) >= 60);
+        if should_persist {
+            grant.last_used_at = Some(now);
+            let report = grant.report();
+            validate_state(&state)?;
+            save_state(&self.path, &state)?;
+            Ok(report)
+        } else {
+            Ok(grant.report())
+        }
+    }
+
+    pub fn revoke_remote_grants(
+        &self,
+        remote: &McpRemoteId,
+        revoked_at: u64,
+        dry_run: bool,
+    ) -> Result<Vec<ConnectionGrantReport>, McpStateError> {
+        self.mutate(dry_run, |state| {
+            let ids = state
+                .grants
+                .iter_mut()
+                .filter(|grant| &grant.remote_id == remote)
+                .map(|grant| {
+                    grant.revoked_at.get_or_insert(revoked_at);
+                    grant.id
+                })
+                .collect::<BTreeSet<_>>();
+            for family in state
+                .token_families
+                .iter_mut()
+                .filter(|family| ids.contains(&family.grant_id))
+            {
+                family.revoked_at.get_or_insert(revoked_at);
+            }
+            Ok(state
+                .grants
+                .iter()
+                .filter(|grant| ids.contains(&grant.id))
+                .map(ConnectionGrant::report)
+                .collect())
+        })
+    }
+
     pub fn issue_refresh_token(
         &self,
         grant_id: Ulid,
@@ -525,6 +586,10 @@ fn validate_state(state: &AuthorizationState) -> Result<(), McpStateError> {
                 "connection grants contain an unsupported version or duplicate ID".to_string(),
             ));
         }
+        McpRemoteId::parse(grant.remote_id.as_str())
+            .map_err(|error| McpStateError::Invalid(error.to_string()))?;
+        WikiId::parse(grant.wiki_id.as_str())
+            .map_err(|error| McpStateError::Invalid(error.to_string()))?;
         validate_create_grant(&CreateConnectionGrant {
             remote_id: grant.remote_id.clone(),
             remote_instance_id: grant.remote_instance_id,
@@ -542,9 +607,16 @@ fn validate_state(state: &AuthorizationState) -> Result<(), McpStateError> {
     }
     let mut family_ids = BTreeSet::new();
     for family in &state.token_families {
+        let bound_grant = state
+            .grants
+            .iter()
+            .find(|grant| grant.id == family.grant_id);
         if family.version != MCP_TOKEN_FAMILY_VERSION
             || !family_ids.insert(family.id)
             || !grant_ids.contains(&family.grant_id)
+            || bound_grant.is_none_or(|grant| {
+                family.client_id != grant.client_id || family.audience != grant.audience
+            })
             || family.expires_at <= family.created_at
             || family.current_refresh_token_hash.len() != 43
             || family.used_refresh_token_hashes.len() > MAX_USED_REFRESH_TOKENS
@@ -917,6 +989,10 @@ mod tests {
                 false,
             )
             .expect("grant");
+        let used = store
+            .mark_grant_used(grant.id, 1_500)
+            .expect("mark grant used");
+        assert_eq!(used.last_used_at, Some(1_500));
         store.revoke_grant(grant.id, 2_000, false).expect("revoke");
         assert!(matches!(
             store.resolve_active_grant(
@@ -960,6 +1036,43 @@ mod tests {
             store.rotate_refresh_token(first.family_id, second.secret.expose(), 2_002),
             Err(McpStateError::InactiveTokenFamily(_))
         ));
+    }
+
+    #[test]
+    fn revoking_a_remote_revokes_only_its_grants_and_token_families() {
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let first = store
+            .create_grant(
+                grant_request("personal-chatgpt", "client-a", "https://id.test/alice"),
+                false,
+            )
+            .expect("first grant");
+        let second = store
+            .create_grant(
+                grant_request("work-chatgpt", "client-b", "https://id.test/bob"),
+                false,
+            )
+            .expect("second grant");
+        let first_token = store
+            .issue_refresh_token(first.id, 9_000, 1_001)
+            .expect("first refresh token");
+        let second_token = store
+            .issue_refresh_token(second.id, 9_000, 1_001)
+            .expect("second refresh token");
+
+        let revoked = store
+            .revoke_remote_grants(&first.remote_id, 2_000, false)
+            .expect("revoke remote");
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked[0].id, first.id);
+        assert!(matches!(
+            store.rotate_refresh_token(first_token.family_id, first_token.secret.expose(), 2_001),
+            Err(McpStateError::InactiveTokenFamily(_))
+        ));
+        assert!(store
+            .rotate_refresh_token(second_token.family_id, second_token.secret.expose(), 2_001)
+            .is_ok());
     }
 
     #[cfg(unix)]

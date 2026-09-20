@@ -7909,6 +7909,102 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 }
 
 #[test]
+fn named_mcp_remote_cli_lifecycle_is_device_global_and_dry_run_safe() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vault = temporary.path().join("personal");
+    fs::create_dir_all(&vault).expect("vault directory");
+    let binary = assert_cmd::cargo::cargo_bin("vulcan");
+    let run = |arguments: &[&str]| {
+        ProcessCommand::new(&binary)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(arguments)
+            .output()
+            .expect("Vulcan command should run")
+    };
+
+    assert!(run(&[
+        "vault",
+        "add",
+        "personal",
+        vault.to_str().expect("vault path"),
+    ])
+    .status
+    .success());
+    let preview = successful_process_json(&run(&[
+        "--vault",
+        vault.to_str().expect("vault path"),
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "init",
+        "personal-chatgpt",
+        "--public-url",
+        "https://mcp.example.test/personal",
+        "--identity",
+        "https://identity.example.test/alice",
+        "--dry-run",
+    ]));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(
+        successful_process_json(&run(&["--output", "json", "mcp", "remote", "list"])),
+        serde_json::json!([])
+    );
+
+    let created = successful_process_json(&run(&[
+        "--vault",
+        vault.to_str().expect("vault path"),
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "init",
+        "personal-chatgpt",
+        "--public-url",
+        "https://mcp.example.test/personal",
+        "--identity",
+        "https://identity.example.test/alice",
+    ]));
+    let instance_id = created["remote"]["instance_id"]
+        .as_str()
+        .expect("instance ID")
+        .to_string();
+    let updated = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "set",
+        "personal-chatgpt",
+        "--public-url",
+        "https://mcp.example.test/renamed",
+    ]));
+    assert_eq!(updated["remote"]["instance_id"], instance_id);
+    assert_eq!(
+        updated["remote"]["public_url"],
+        "https://mcp.example.test/renamed"
+    );
+
+    let removed = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "remove",
+        "personal-chatgpt",
+    ]));
+    assert_eq!(removed["remote"]["instance_id"], instance_id);
+    assert!(vault.is_dir(), "removing a remote must preserve the vault");
+    assert_eq!(
+        successful_process_json(&run(&["--output", "json", "mcp", "remote", "list"])),
+        serde_json::json!([])
+    );
+}
+
+#[test]
 fn daemon_companion_install_places_embedded_assets_and_preserves_configuration() {
     let temporary = TempDir::new().expect("temporary directory");
     let config_home = temporary.path().join("config");
@@ -15346,12 +15442,15 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
+    assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
+    assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
     .expect("permission skill should be readable");
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
+    assert!(permission_skill.contains("mcp remote init/list/show/set/run/remove"));
     assert!(permission_skill.contains("vulcan daemon config show"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
@@ -15713,7 +15812,7 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(get_mcp_json["body"].as_str().is_some_and(|body| {
         body.contains("OAuth/IndieAuth")
             && body.contains("ChatGPT remote connector")
-            && body.contains("explicitly approve Vulcan's consent page")
+            && body.contains("explicitly approve Vulcan's separate consent page")
             && body.contains("IndieAuth login authenticates the person")
             && body.contains("advertised OAuth scopes")
     }));

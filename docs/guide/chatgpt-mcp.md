@@ -4,35 +4,57 @@ Use this setup for a private ChatGPT Developer Mode plugin connection to a perso
 
 ## Recommended Server Shape
 
-Do not expose `vulcan mcp --auth-token` directly to the public internet. For ChatGPT, use Vulcan's built-in MCP OAuth issuer over HTTPS, keep Vulcan bound to loopback or private networking, and put only the HTTPS reverse proxy on the public internet. Human login can be delegated to IndieAuth with `--oauth-indieauth-me`.
+Do not expose `vulcan mcp --auth-token` directly to the public internet. For ChatGPT, initialize a
+named remote. It keeps Vulcan on loopback, authenticates the approving person with IndieAuth, and
+records the authority selected on Vulcan's consent page as a revocable device-local connection.
+The HTTPS reverse proxy is transport, not the authorization boundary.
 
-Preferred direct HTTPS shape:
+Recommended setup:
 
-1. Run Vulcan on a private bind:
+1. Register the vault once, then preview and initialize the named remote:
 
    ```sh
-   vulcan --permissions daily-wiki-agent mcp \
-     --transport http \
-     --bind 127.0.0.1:8765 \
-     --endpoint /mcp \
-     --request-timeout 120s \
+   vulcan vault add personal /path/to/vault
+   vulcan --vault /path/to/vault mcp remote init personal-chatgpt \
      --public-url https://wiki.example.com/mcp \
-     --oauth-dcr \
-     --oauth-indieauth-me https://example.com/ \
+     --identity https://example.com/ \
+     --ceiling-profile daily-wiki-agent \
+     --default-profile daily-wiki-agent \
+     --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index \
+     --dry-run
+   vulcan --vault /path/to/vault mcp remote init personal-chatgpt \
+     --public-url https://wiki.example.com/mcp \
+     --identity https://example.com/ \
+     --ceiling-profile daily-wiki-agent \
+     --default-profile daily-wiki-agent \
      --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index
+   vulcan mcp remote run personal-chatgpt
    ```
 
 2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. In ChatGPT, open **Settings → Security and login**, enable **Developer mode**, then open **ChatGPT Plugins**, add a connection, and enter the public MCP URL including `/mcp`.
-4. Keep shell, host execution, git mutation, unrestricted network, broad refactor, and config writes out of the selected permission profile.
+4. Sign in through IndieAuth. On Vulcan's consent page, verify the client, identity, exact MCP URL,
+   vault, permission profile, tool packs, scopes, and expiry before approving.
+5. Inspect or revoke access later with `vulcan mcp connections list`, `show <id>`, or
+   `revoke <id>`. Removing a remote revokes its grants unless `--preserve-grants` is explicit.
 
 `daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and explicit index maintenance, with no shell, host execution, git mutation, refactor, or network access.
 
-The recommended Vulcan path is its built-in MCP OAuth issuer. Vulcan owns ChatGPT-facing authorization-code + PKCE, dynamic client registration, short-lived MCP access tokens, and bearer-token validation. Current OpenAI guidance prefers Client ID Metadata Documents when an authorization server supports them, while dynamic client registration remains supported; Vulcan currently uses the latter. Human login can be delegated to an upstream IndieAuth server by setting `--oauth-indieauth-me` to your identity URL; Vulcan discovers `indieauth-metadata` from that profile URL and falls back to legacy `authorization_endpoint` / `token_endpoint` links. The upstream IndieAuth hop also uses PKCE.
+Vulcan owns ChatGPT-facing authorization-code + PKCE, Client ID Metadata Document and dynamic
+client registration validation, 15-minute access tokens, rotating refresh tokens, replay-driven
+token-family revocation, and bearer-token validation. The upstream IndieAuth hop also uses PKCE.
+IndieAuth authenticates the human; it does not itself grant vault access.
 
-For the common single-user setup, `--oauth-indieauth-me <identity>` together with `--permissions <profile>` is sufficient: Vulcan automatically allows that identity under the process-wide profile. For multi-user or per-user permissions, omit the process-level `--permissions` flag and bind each allowed subject with `--oauth-local-user <subject>=<profile>[,<email>]`. Explicit user bindings disable the single-user default. URL subjects are matched canonically, so `https://example.com` and `https://example.com/` are equivalent. If the IndieAuth provider returns an unexpected subject, the callback error reports that value and gives the exact configuration forms needed to authorize it.
+Named definitions are device-global in Vulcan's user configuration, not in synced
+`.vulcan/config.toml`. They reference registered wikis and vault-defined permission profiles. Grant,
+refresh-family, last-use, and revocation state is device-local under Vulcan's user state directory;
+OAuth secrets are stored per named remote there as owner-only files. `remote set` preserves the
+instance identity, and different remotes can run concurrently when their loopback binds and public
+URLs do not conflict.
 
-When `--oauth-dcr` is enabled, ChatGPT can register dynamically instead of being configured with static client credentials. Vulcan generates and stores the local issuer signing secret in `.vulcan/mcp-oauth-issuer-secret` unless `--oauth-local-client-secret` is provided as an explicit override. `--oauth-local-approval-token` remains available as a simple fallback when IndieAuth is not configured.
+The long-form direct flags remain available for debugging, generic local HTTP clients, external
+OIDC, and compatibility. `vulcan mcp` without a management subcommand remains the daemon-independent
+stdio default and does not require a named remote or browser login.
 
 For external OIDC resource-server mode, use `--oauth-issuer`, `--oauth-audience`, and an allowed subject or email. This keeps Authentik as the token issuer, but ChatGPT compatibility can vary by provider metadata and token-exchange behavior.
 

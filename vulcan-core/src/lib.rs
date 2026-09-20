@@ -234,9 +234,10 @@ pub use note::{
 };
 #[cfg(feature = "oauth")]
 pub use oauth::{
-    discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, IndieAuthEndpoints,
-    LocalOAuthIssuer, LocalOAuthIssuerConfig, LocalOAuthTokenIdentity, LocalOAuthUserConfig,
-    OAuthError, OAuthResourceServer, OAuthResourceServerConfig, OAuthTokenIdentity,
+    discover_indieauth_endpoints, exchange_indieauth_code, fetch_client_id_metadata,
+    pkce_s256_challenge, ClientIdMetadataDocument, IndieAuthEndpoints, LocalOAuthIssuer,
+    LocalOAuthIssuerConfig, LocalOAuthTokenIdentity, LocalOAuthUserConfig, OAuthError,
+    OAuthResourceServer, OAuthResourceServerConfig, OAuthTokenIdentity,
 };
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,

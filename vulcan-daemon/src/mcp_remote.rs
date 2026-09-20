@@ -114,6 +114,14 @@ pub struct AddMcpRemoteRequest {
     pub vaults: Vec<McpRemoteVault>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateMcpRemoteRequest {
+    pub bind: Option<String>,
+    pub public_url: Option<String>,
+    pub authentication: Option<McpRemoteAuthentication>,
+    pub vaults: Option<Vec<McpRemoteVault>>,
+}
+
 impl AddMcpRemoteRequest {
     pub(crate) fn into_definition(self) -> Result<McpRemoteDefinition, McpRemoteValidationError> {
         let mut definition = McpRemoteDefinition {
@@ -125,6 +133,28 @@ impl AddMcpRemoteRequest {
             authentication: self.authentication,
             vaults: self.vaults,
         };
+        normalize_definition(&mut definition)?;
+        Ok(definition)
+    }
+}
+
+impl UpdateMcpRemoteRequest {
+    pub(crate) fn apply(
+        self,
+        mut definition: McpRemoteDefinition,
+    ) -> Result<McpRemoteDefinition, McpRemoteValidationError> {
+        if let Some(bind) = self.bind {
+            definition.bind = bind;
+        }
+        if let Some(public_url) = self.public_url {
+            definition.public_url = public_url;
+        }
+        if let Some(authentication) = self.authentication {
+            definition.authentication = authentication;
+        }
+        if let Some(vaults) = self.vaults {
+            definition.vaults = vaults;
+        }
         normalize_definition(&mut definition)?;
         Ok(definition)
     }

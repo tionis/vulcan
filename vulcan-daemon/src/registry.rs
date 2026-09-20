@@ -12,7 +12,7 @@ use vulcan_app::sync::{GitRefName, GitRemote};
 
 use crate::mcp_remote::{
     validate_definition as validate_mcp_remote_definition, AddMcpRemoteRequest,
-    McpRemoteDefinition, McpRemoteId,
+    McpRemoteDefinition, McpRemoteId, UpdateMcpRemoteRequest,
 };
 
 const DAEMON_CONFIG_FILE: &str = "daemon.toml";
@@ -627,6 +627,51 @@ impl WikiRegistry {
                 .position(|remote| &remote.id == id)
                 .ok_or_else(|| RegistryError::UnknownMcpRemote(id.clone()))?;
             Ok(config.mcp_remotes.remove(index))
+        })
+    }
+
+    pub fn update_mcp_remote(
+        &self,
+        id: &McpRemoteId,
+        request: UpdateMcpRemoteRequest,
+        dry_run: bool,
+    ) -> Result<McpRemoteDefinition, RegistryError> {
+        self.mutate(dry_run, |config| {
+            let index = config
+                .mcp_remotes
+                .iter()
+                .position(|remote| &remote.id == id)
+                .ok_or_else(|| RegistryError::UnknownMcpRemote(id.clone()))?;
+            let existing = config.mcp_remotes.remove(index);
+            let updated = request
+                .apply(existing)
+                .map_err(|error| RegistryError::InvalidMcpRemote(error.to_string()))?;
+            if let Some(remote) = config
+                .mcp_remotes
+                .iter()
+                .find(|remote| remote.bind == updated.bind)
+            {
+                return Err(RegistryError::DuplicateMcpRemoteBind {
+                    id: remote.id.clone(),
+                    bind: updated.bind,
+                });
+            }
+            if let Some(remote) = config
+                .mcp_remotes
+                .iter()
+                .find(|remote| remote.public_url == updated.public_url)
+            {
+                return Err(RegistryError::DuplicateMcpRemoteUrl {
+                    id: remote.id.clone(),
+                    public_url: updated.public_url,
+                });
+            }
+            ensure_remote_wikis_registered(config, &updated)?;
+            config.mcp_remotes.push(updated.clone());
+            config
+                .mcp_remotes
+                .sort_by(|left, right| left.id.cmp(&right.id));
+            Ok(updated)
         })
     }
 
@@ -1442,6 +1487,62 @@ mod tests {
             registry.add_mcp_remote(unknown_wiki, false),
             Err(RegistryError::InvalidMcpRemote(_))
         ));
+    }
+
+    #[test]
+    fn named_mcp_remote_updates_preserve_identity_and_are_dry_run_safe() {
+        let temporary = tempdir().expect("temporary directory");
+        let wiki = temporary.path().join("wiki");
+        fs::create_dir(&wiki).expect("wiki directory");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        registry
+            .add(&request("personal", &wiki), false)
+            .expect("register wiki");
+        let added = registry
+            .add_mcp_remote(
+                remote_request(
+                    "personal-chatgpt",
+                    "personal",
+                    "127.0.0.1:8765",
+                    "https://mcp.example.test/personal",
+                ),
+                false,
+            )
+            .expect("add remote");
+
+        let preview = registry
+            .update_mcp_remote(
+                &added.id,
+                UpdateMcpRemoteRequest {
+                    bind: Some("127.0.0.1:8770".to_string()),
+                    public_url: Some("https://mcp.example.test/new".to_string()),
+                    ..UpdateMcpRemoteRequest::default()
+                },
+                true,
+            )
+            .expect("preview update");
+        assert_eq!(preview.instance_id, added.instance_id);
+        assert_eq!(preview.bind, "127.0.0.1:8770");
+        assert_eq!(
+            registry
+                .show_mcp_remote(&added.id)
+                .expect("unchanged remote")
+                .bind,
+            "127.0.0.1:8765"
+        );
+
+        let updated = registry
+            .update_mcp_remote(
+                &added.id,
+                UpdateMcpRemoteRequest {
+                    bind: Some("127.0.0.1:8770".to_string()),
+                    ..UpdateMcpRemoteRequest::default()
+                },
+                false,
+            )
+            .expect("update remote");
+        assert_eq!(updated.instance_id, added.instance_id);
+        assert_eq!(updated.bind, "127.0.0.1:8770");
     }
 
     #[test]

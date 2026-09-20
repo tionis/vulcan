@@ -33,6 +33,8 @@ use catalog::{
     tool_visible, visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack,
     McpToolPackMode, McpVisibilityRequirement, ALL_MCP_TOOL_PACKS,
 };
+#[cfg(feature = "oauth")]
+use fs2::FileExt;
 use globset::Glob;
 use protocol::{
     McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs,
@@ -51,13 +53,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
-#[cfg(feature = "oauth")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::sync::{
@@ -81,10 +81,17 @@ use vulcan_core::{
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
-    discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, LocalOAuthIssuer,
-    LocalOAuthIssuerConfig, OAuthResourceServer, OAuthResourceServerConfig,
+    discover_indieauth_endpoints, exchange_indieauth_code, fetch_client_id_metadata,
+    pkce_s256_challenge, ClientIdMetadataDocument, LocalOAuthIssuer, LocalOAuthIssuerConfig,
+    OAuthResourceServer, OAuthResourceServerConfig,
 };
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
+use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 use vulcan_daemon::mcp_session::McpSessionAuthority;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
+use vulcan_daemon::process::DaemonProcessContext;
 
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -165,6 +172,8 @@ pub(crate) struct McpHttpOptions {
     pub oauth_indieauth_redirect_uri: Option<String>,
     pub oauth_indieauth_me: Option<String>,
     pub oauth_local_user: Vec<String>,
+    pub instance_id: Option<Ulid>,
+    pub oauth_storage_dir: Option<PathBuf>,
     pub request_timeout: Duration,
 }
 
@@ -276,6 +285,16 @@ enum McpOAuthMode {
 }
 
 #[cfg(feature = "oauth")]
+impl McpOAuthMode {
+    fn public_url(&self) -> &str {
+        match self {
+            Self::External(server) => server.public_url(),
+            Self::Local(issuer) => issuer.public_url(),
+        }
+    }
+}
+
+#[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 struct LocalOAuthCode {
     client_id: String,
@@ -336,6 +355,17 @@ struct LocalOAuthIndieAuthConfig {
     me: Option<String>,
 }
 
+#[cfg(feature = "oauth")]
+#[derive(Debug, Clone)]
+struct NamedMcpRuntime {
+    remote_id: vulcan_daemon::mcp_remote::McpRemoteId,
+    wiki_id: vulcan_daemon::registry::WikiId,
+    ceiling_profile: String,
+    default_profile: String,
+    eligible_tool_packs: Vec<String>,
+    authorization_store: McpAuthorizationStore,
+}
+
 #[derive(Debug)]
 struct McpHttpProcessResult {
     response: Option<Value>,
@@ -374,6 +404,8 @@ struct McpHttpServerContext {
     oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
     #[cfg(feature = "oauth")]
     oauth_clients_path: Option<std::path::PathBuf>,
+    #[cfg(feature = "oauth")]
+    named_runtime: Option<NamedMcpRuntime>,
     request_timeout: Duration,
 }
 
@@ -440,6 +472,153 @@ pub(crate) fn run_mcp(
     }
 }
 
+#[cfg(feature = "oauth")]
+pub(crate) fn run_named_mcp_remote(
+    process: &DaemonProcessContext,
+    remote: &McpRemoteDefinition,
+) -> Result<(), CliError> {
+    let [vault] = remote.vaults.as_slice() else {
+        return Err(CliError::operation(
+            "foreground named MCP execution currently requires exactly one vault",
+        ));
+    };
+    let registration = process
+        .registry
+        .show(&vault.wiki_id)
+        .map_err(CliError::operation)?
+        .registration;
+    let tool_packs = mcp_tool_pack_args_from_names(&vault.tool_packs)?;
+    let McpRemoteAuthentication::IndieAuth { identity } = &remote.authentication;
+    let endpoint = public_url_path(&remote.public_url)?;
+    let storage_dir = process
+        .state_root
+        .join("mcp-remotes")
+        .join(remote.id.as_str());
+    let _runtime_lock = acquire_named_remote_runtime_lock(&storage_dir, remote)?;
+    let options = McpHttpOptions {
+        bind: remote.bind.clone(),
+        endpoint,
+        auth_token: None,
+        public_url: Some(remote.public_url.clone()),
+        oauth_issuer: None,
+        oauth_audience: Vec::new(),
+        oauth_jwks_url: None,
+        oauth_allowed_sub: Vec::new(),
+        oauth_allowed_email: Vec::new(),
+        oauth_local_client_id: None,
+        oauth_local_redirect_uri: Vec::new(),
+        oauth_local_client_secret: None,
+        oauth_local_approval_token: None,
+        oauth_local_subject: None,
+        oauth_local_email: None,
+        oauth_dcr: true,
+        oauth_dcr_allowed_redirect_host: vec!["chatgpt.com".to_string()],
+        oauth_indieauth_authorization_endpoint: None,
+        oauth_indieauth_token_endpoint: None,
+        oauth_indieauth_client_id: None,
+        oauth_indieauth_redirect_uri: None,
+        oauth_indieauth_me: Some(identity.clone()),
+        oauth_local_user: Vec::new(),
+        instance_id: Some(remote.instance_id),
+        oauth_storage_dir: Some(storage_dir),
+        request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
+    };
+    run_mcp_http_server_with_named_runtime(
+        &VaultPaths::new(registration.path),
+        Some(&vault.default_profile),
+        &tool_packs,
+        McpToolPackModeArg::Static,
+        &options,
+        NamedMcpRuntime {
+            remote_id: remote.id.clone(),
+            wiki_id: vault.wiki_id.clone(),
+            ceiling_profile: vault.ceiling_profile.clone(),
+            default_profile: vault.default_profile.clone(),
+            eligible_tool_packs: vault.tool_packs.clone(),
+            authorization_store: McpAuthorizationStore::at(&process.state_root),
+        },
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn acquire_named_remote_runtime_lock(
+    storage_dir: &Path,
+    remote: &McpRemoteDefinition,
+) -> Result<fs::File, CliError> {
+    fs::create_dir_all(storage_dir).map_err(CliError::operation)?;
+    let path = storage_dir.join("runtime.lock");
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&path).map_err(CliError::operation)?;
+    file.try_lock_exclusive().map_err(|error| {
+        CliError::operation(format!(
+            "named MCP remote `{}` is already running or its runtime lock at {} is unavailable: {error}",
+            remote.id,
+            path.display()
+        ))
+    })?;
+    Ok(file)
+}
+
+fn mcp_tool_pack_args_from_names(names: &[String]) -> Result<Vec<McpToolPackArg>, CliError> {
+    names
+        .iter()
+        .map(|name| match name.as_str() {
+            "notes-read" => Ok(McpToolPackArg::NotesRead),
+            "search" => Ok(McpToolPackArg::Search),
+            "status" => Ok(McpToolPackArg::Status),
+            "graph" => Ok(McpToolPackArg::Graph),
+            "custom" => Ok(McpToolPackArg::Custom),
+            "daily" => Ok(McpToolPackArg::Daily),
+            "tasks" => Ok(McpToolPackArg::Tasks),
+            "notes-write" => Ok(McpToolPackArg::NotesWrite),
+            "notes-manage" => Ok(McpToolPackArg::NotesManage),
+            "web" => Ok(McpToolPackArg::Web),
+            "config" => Ok(McpToolPackArg::Config),
+            "index" => Ok(McpToolPackArg::Index),
+            "sync" => Ok(McpToolPackArg::Sync),
+            _ => Err(CliError::operation(format!(
+                "named MCP remote contains unknown tool pack `{name}`"
+            ))),
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "oauth"))]
+pub(crate) fn run_named_mcp_remote(
+    _process: &DaemonProcessContext,
+    _remote: &McpRemoteDefinition,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "named MCP remotes require a build with the `oauth` feature enabled",
+    ))
+}
+
+fn public_url_path(public_url: &str) -> Result<String, CliError> {
+    let (_, rest) = public_url
+        .split_once("://")
+        .ok_or_else(|| CliError::operation("named MCP public URL must be absolute"))?;
+    let path = rest.find('/').map_or("/mcp", |index| &rest[index..]);
+    if path.contains(['?', '#']) {
+        return Err(CliError::operation(
+            "named MCP public URL must not contain a query or fragment",
+        ));
+    }
+    Ok(normalize_mcp_http_endpoint(path))
+}
+
+fn unix_timestamp_for_mcp() -> Result<u64, CliError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(CliError::operation)
+}
+
 fn run_mcp_stdio_server(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
@@ -483,6 +662,44 @@ fn run_mcp_http_server(
     tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
 ) -> Result<(), CliError> {
+    run_mcp_http_server_inner(
+        paths,
+        requested_profile,
+        tool_pack_args,
+        tool_pack_mode_arg,
+        options,
+        #[cfg(feature = "oauth")]
+        None,
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn run_mcp_http_server_with_named_runtime(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode_arg: McpToolPackModeArg,
+    options: &McpHttpOptions,
+    named_runtime: NamedMcpRuntime,
+) -> Result<(), CliError> {
+    run_mcp_http_server_inner(
+        paths,
+        requested_profile,
+        tool_pack_args,
+        tool_pack_mode_arg,
+        options,
+        Some(named_runtime),
+    )
+}
+
+fn run_mcp_http_server_inner(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode_arg: McpToolPackModeArg,
+    options: &McpHttpOptions,
+    #[cfg(feature = "oauth")] named_runtime: Option<NamedMcpRuntime>,
+) -> Result<(), CliError> {
     #[cfg(feature = "oauth")]
     let oauth = build_mcp_oauth_validator(paths, requested_profile, options)?;
     #[cfg(not(feature = "oauth"))]
@@ -510,12 +727,17 @@ fn run_mcp_http_server(
         #[cfg(feature = "oauth")]
         oauth,
         bind_addr: addr,
-        instance_id: Ulid::new(),
+        instance_id: match options.instance_id {
+            Some(instance_id) => instance_id,
+            None => Ulid::new(),
+        },
         sessions: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
-        oauth_clients: Arc::new(Mutex::new(load_oauth_registered_clients(paths)?)),
+        oauth_clients: Arc::new(Mutex::new(load_oauth_registered_clients(
+            &oauth_clients_path(paths, options),
+        )?)),
         #[cfg(feature = "oauth")]
         oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
@@ -533,7 +755,9 @@ fn run_mcp_http_server(
         #[cfg(feature = "oauth")]
         oauth_indieauth: build_indieauth_config(options)?,
         #[cfg(feature = "oauth")]
-        oauth_clients_path: Some(oauth_clients_path(paths)),
+        oauth_clients_path: Some(oauth_clients_path(paths, options)),
+        #[cfg(feature = "oauth")]
+        named_runtime,
         request_timeout: options.request_timeout,
     };
 
@@ -795,14 +1019,25 @@ fn resolve_mcp_http_session(
 
     if is_initialize {
         let session_id = Ulid::new().to_string();
-        let requested_profile = context
-            .requested_profile
+        let requested_profile = authority
+            .permission_profile
             .as_deref()
-            .or(authority.permission_profile.as_deref());
+            .or(context.requested_profile.as_deref());
+        let authority_tool_packs = if authority.grant_id.is_some() {
+            Some(
+                mcp_tool_pack_args_from_names(&authority.tool_packs).map_err(|error| {
+                    mcp_http_json_error_response(500, error.to_string(), Value::Null)
+                })?,
+            )
+        } else {
+            None
+        };
         let core = McpServerCore::new(
             &context.paths,
             requested_profile,
-            &context.tool_pack_args,
+            authority_tool_packs
+                .as_deref()
+                .unwrap_or(&context.tool_pack_args),
             context.tool_pack_mode_arg,
         )
         .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
@@ -966,6 +1201,7 @@ fn handle_mcp_http_sse(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn authenticate_mcp_http_request(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
@@ -977,6 +1213,9 @@ fn authenticate_mcp_http_request(
     let mut subject = None;
     #[allow(unused_mut)]
     let mut permission_profile = context.requested_profile.clone();
+    #[cfg(feature = "oauth")]
+    let mut oauth_grant_id = None;
+    #[allow(unused_mut)]
     let mut scopes = DEFAULT_MCP_OAUTH_SCOPES
         .iter()
         .map(|scope| (*scope).to_string())
@@ -1010,6 +1249,7 @@ fn authenticate_mcp_http_request(
                     subject = Some(identity.subject);
                     client_id = identity.client_id;
                     scopes = identity.scopes;
+                    oauth_grant_id = identity.grant_id;
                     if permission_profile.is_none() {
                         permission_profile = identity.permission_profile;
                     }
@@ -1045,6 +1285,115 @@ fn authenticate_mcp_http_request(
                 Value::Null,
             ));
         }
+    }
+    #[cfg(feature = "oauth")]
+    if let Some(named) = context.named_runtime.as_ref() {
+        let grant_id = oauth_grant_id
+            .as_deref()
+            .and_then(|value| value.parse::<Ulid>().ok())
+            .ok_or_else(|| {
+                oauth_error_response(
+                    context.oauth.as_ref().expect("named runtime has OAuth"),
+                    "access token is not bound to a connection grant",
+                    "invalid_token",
+                )
+            })?;
+        let client_id = client_id.clone().ok_or_else(|| {
+            oauth_error_response(
+                context.oauth.as_ref().expect("named runtime has OAuth"),
+                "access token has no OAuth client binding",
+                "invalid_token",
+            )
+        })?;
+        let now = unix_timestamp_for_mcp()
+            .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
+        let grant = named
+            .authorization_store
+            .resolve_active_grant(
+                grant_id,
+                context.instance_id,
+                &client_id,
+                context
+                    .oauth
+                    .as_ref()
+                    .map(McpOAuthMode::public_url)
+                    .unwrap_or_default(),
+                now,
+            )
+            .map_err(|error| {
+                oauth_error_response(
+                    context.oauth.as_ref().expect("named runtime has OAuth"),
+                    error.to_string(),
+                    "invalid_token",
+                )
+            })?;
+        if grant.remote_id != named.remote_id
+            || grant.wiki_id != named.wiki_id
+            || subject.as_deref() != Some(grant.subject.as_str())
+            || !scopes.iter().all(|scope| grant.scopes.contains(scope))
+            || !grant
+                .tool_packs
+                .iter()
+                .all(|pack| named.eligible_tool_packs.contains(pack))
+        {
+            return Err(oauth_error_response(
+                context.oauth.as_ref().expect("named runtime has OAuth"),
+                "connection grant does not match this token authority",
+                "invalid_token",
+            ));
+        }
+        let current_profile =
+            resolve_permission_profile(&context.paths, Some(&grant.permission_profile)).map_err(
+                |error| {
+                    oauth_error_response(
+                        context.oauth.as_ref().expect("named runtime has OAuth"),
+                        error.to_string(),
+                        "invalid_token",
+                    )
+                },
+            )?;
+        let ceiling = resolve_permission_profile(&context.paths, Some(&named.ceiling_profile))
+            .map_err(|error| {
+                oauth_error_response(
+                    context.oauth.as_ref().expect("named runtime has OAuth"),
+                    error.to_string(),
+                    "invalid_token",
+                )
+            })?;
+        if !current_profile
+            .grant
+            .is_subset_of(&grant.approved_permissions)
+            || !current_profile.grant.is_subset_of(&ceiling.grant)
+        {
+            return Err(oauth_error_response(
+                context.oauth.as_ref().expect("named runtime has OAuth"),
+                "current permission policy is not a safe attenuation of the approved grant",
+                "invalid_token",
+            ));
+        }
+        named
+            .authorization_store
+            .mark_grant_used(grant.id, now)
+            .map_err(|error| {
+                oauth_error_response(
+                    context.oauth.as_ref().expect("named runtime has OAuth"),
+                    error.to_string(),
+                    "invalid_token",
+                )
+            })?;
+        return Ok(McpSessionAuthority::granted(
+            named.remote_id.clone(),
+            context.instance_id,
+            grant.id,
+            client_id,
+            grant.subject,
+            grant.wiki_id,
+            grant.audience,
+            current_profile.name,
+            grant.tool_packs,
+            scopes,
+            &credential,
+        ));
     }
     let packs = pack_name_list(&resolve_selected_tool_packs(
         &context.tool_pack_args,
@@ -3508,7 +3857,7 @@ fn build_mcp_oauth_validator(
         }
         let client_secret = match options.oauth_local_client_secret.as_deref() {
             Some(secret) => secret.to_string(),
-            None if options.oauth_dcr => load_or_create_local_oauth_issuer_secret(paths)?,
+            None if options.oauth_dcr => load_or_create_local_oauth_issuer_secret(paths, options)?,
             None => {
                 return Err(CliError::operation(
                     "--oauth-local-client-secret is required unless --oauth-dcr is enabled",
@@ -3551,7 +3900,7 @@ fn build_mcp_oauth_validator(
             public_url: public_url.to_string(),
             client_id: client_id.to_string(),
             client_secret,
-            signing_key: load_or_create_local_oauth_signing_key(paths)?,
+            signing_key: load_or_create_local_oauth_signing_key(paths, options)?,
             approval_token: approval_token.to_string(),
             subject: subject.to_string(),
             email: options.oauth_local_email.clone(),
@@ -3852,7 +4201,10 @@ fn handle_local_oauth_register(
         .get("token_endpoint_auth_method")
         .and_then(Value::as_str)
         .unwrap_or("client_secret_basic");
-    if !matches!(auth_method, "client_secret_basic" | "client_secret_post") {
+    if !matches!(
+        auth_method,
+        "none" | "client_secret_basic" | "client_secret_post"
+    ) {
         return oauth_json_error_response(
             400,
             "invalid_client_metadata",
@@ -3861,7 +4213,11 @@ fn handle_local_oauth_register(
     }
     let client = LocalOAuthRegisteredClient {
         client_id: format!("vulcan-dcr-{}", Ulid::new()),
-        client_secret: Ulid::new().to_string(),
+        client_secret: if auth_method == "none" {
+            String::new()
+        } else {
+            Ulid::new().to_string()
+        },
         redirect_uris,
         client_name: payload
             .get("client_name")
@@ -3878,16 +4234,23 @@ fn handle_local_oauth_register(
     if let Err(error) = save_oauth_registered_clients(context) {
         return oauth_json_error_response(500, "server_error", error.to_string());
     }
-    let body = serde_json::json!({
+    let grant_types = if context.named_runtime.is_some() {
+        vec!["authorization_code", "refresh_token"]
+    } else {
+        vec!["authorization_code"]
+    };
+    let mut body = serde_json::json!({
         "client_id": client.client_id,
-        "client_secret": client.client_secret,
         "client_id_issued_at": client.client_id_issued_at,
-        "client_secret_expires_at": 0,
         "redirect_uris": client.redirect_uris,
-        "grant_types": ["authorization_code"],
+        "grant_types": grant_types,
         "response_types": ["code"],
         "token_endpoint_auth_method": client.token_endpoint_auth_method,
     });
+    if !client.client_secret.is_empty() {
+        body["client_secret"] = Value::String(client.client_secret);
+        body["client_secret_expires_at"] = Value::from(0);
+    }
     McpHttpResponse {
         status: 201,
         content_type: Some("application/json"),
@@ -3897,6 +4260,7 @@ fn handle_local_oauth_register(
 }
 
 #[cfg(feature = "oauth")]
+#[allow(clippy::too_many_lines)]
 fn handle_local_oauth_token(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
@@ -3915,12 +4279,16 @@ fn handle_local_oauth_token(
     };
     if !issuer.verify_client(&client_id, &client_secret)
         && !local_oauth_registered_client_valid(context, &client_id, &client_secret)
+        && !client_id_metadata_valid(context, &client_id, None)
     {
         return oauth_json_error_response(
             401,
             "invalid_client",
             "invalid OAuth client credentials",
         );
+    }
+    if params.get("grant_type").map(String::as_str) == Some("refresh_token") {
+        return handle_local_oauth_refresh(context, issuer, &client_id, &params);
     }
     if params.get("grant_type").map(String::as_str) != Some("authorization_code") {
         return oauth_json_error_response(400, "unsupported_grant_type", "unsupported grant type");
@@ -3966,12 +4334,163 @@ fn handle_local_oauth_token(
         code_record.grant_id.clone(),
     ) {
         Ok(access_token) => {
-            let body = serde_json::json!({
+            let refresh_token = match (&context.named_runtime, &code_record.grant_id) {
+                (Some(named), Some(grant_id)) => {
+                    let Ok(grant_id) = grant_id.parse::<Ulid>() else {
+                        return oauth_json_error_response(
+                            500,
+                            "server_error",
+                            "invalid stored connection grant ID",
+                        );
+                    };
+                    let grant = match named.authorization_store.show_grant(grant_id) {
+                        Ok(grant) => grant,
+                        Err(error) => {
+                            return oauth_json_error_response(
+                                400,
+                                "invalid_grant",
+                                error.to_string(),
+                            )
+                        }
+                    };
+                    let now = current_unix_timestamp();
+                    match named.authorization_store.issue_refresh_token(
+                        grant_id,
+                        grant.expires_at,
+                        now,
+                    ) {
+                        Ok(token) => Some(format!("{}.{}", token.family_id, token.secret.expose())),
+                        Err(error) => {
+                            return oauth_json_error_response(
+                                400,
+                                "invalid_grant",
+                                error.to_string(),
+                            )
+                        }
+                    }
+                }
+                _ => None,
+            };
+            let mut body = serde_json::json!({
                 "access_token": access_token,
                 "token_type": "Bearer",
                 "expires_in": 900,
                 "scope": code_record.scopes.join(" "),
                 "resource": code_record.resource,
+            });
+            if let Some(refresh_token) = refresh_token {
+                body["refresh_token"] = Value::String(refresh_token);
+            }
+            McpHttpResponse {
+                status: 200,
+                content_type: Some("application/json"),
+                body: serde_json::to_vec(&body).expect("json should serialize"),
+                extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
+            }
+        }
+        Err(error) => oauth_json_error_response(500, "server_error", error.to_string()),
+    }
+}
+
+#[cfg(feature = "oauth")]
+#[allow(clippy::too_many_lines)]
+fn handle_local_oauth_refresh(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    client_id: &str,
+    params: &BTreeMap<String, String>,
+) -> McpHttpResponse {
+    let Some(named) = context.named_runtime.as_ref() else {
+        return oauth_json_error_response(
+            400,
+            "unsupported_grant_type",
+            "refresh tokens are only available for named remotes",
+        );
+    };
+    let Some((family, secret)) = params
+        .get("refresh_token")
+        .and_then(|token| token.split_once('.'))
+    else {
+        return oauth_json_error_response(400, "invalid_grant", "invalid refresh token");
+    };
+    let Ok(family_id) = family.parse::<Ulid>() else {
+        return oauth_json_error_response(400, "invalid_grant", "invalid refresh token");
+    };
+    let family = match named
+        .authorization_store
+        .list_token_families(None)
+        .and_then(|families| {
+            families
+                .into_iter()
+                .find(|family| family.id == family_id)
+                .ok_or(vulcan_daemon::mcp_state::McpStateError::UnknownTokenFamily(
+                    family_id,
+                ))
+        }) {
+        Ok(family) => family,
+        Err(error) => return oauth_json_error_response(400, "invalid_grant", error.to_string()),
+    };
+    if family.client_id != client_id || family.audience != issuer.public_url() {
+        return oauth_json_error_response(
+            400,
+            "invalid_grant",
+            "refresh token client or resource mismatch",
+        );
+    }
+    let now = current_unix_timestamp();
+    let grant = match named.authorization_store.resolve_active_grant(
+        family.grant_id,
+        context.instance_id,
+        client_id,
+        issuer.public_url(),
+        now,
+    ) {
+        Ok(grant) => grant,
+        Err(error) => return oauth_json_error_response(400, "invalid_grant", error.to_string()),
+    };
+    if params
+        .get("resource")
+        .is_some_and(|resource| resource != &grant.audience)
+    {
+        return oauth_json_error_response(400, "invalid_target", "resource does not match grant");
+    }
+    let scopes = match params.get("scope") {
+        Some(scope) => match parse_mcp_oauth_scopes(Some(scope)) {
+            Ok(scopes) if scopes.iter().all(|scope| grant.scopes.contains(scope)) => scopes,
+            Ok(_) => {
+                return oauth_json_error_response(
+                    400,
+                    "invalid_scope",
+                    "refresh request widens the granted scopes",
+                )
+            }
+            Err(response) => return response,
+        },
+        None => grant.scopes.clone(),
+    };
+    let replacement = match named
+        .authorization_store
+        .rotate_refresh_token(family_id, secret, now)
+    {
+        Ok(token) => token,
+        Err(error) => {
+            return oauth_json_error_response(400, "invalid_grant", error.to_string());
+        }
+    };
+    match issuer.issue_access_token_for_authorization(
+        &grant.subject,
+        &grant.client_id,
+        &scopes,
+        Some(grant.id.to_string()),
+    ) {
+        Ok(access_token) => {
+            let body = serde_json::json!({
+                "access_token": access_token,
+                "refresh_token": format!("{}.{}", replacement.family_id, replacement.secret.expose()),
+                "token_type": "Bearer",
+                "expires_in": 900,
+                "scope": scopes.join(" "),
+                "resource": grant.audience,
             });
             McpHttpResponse {
                 status: 200,
@@ -4112,6 +4631,10 @@ fn handle_local_oauth_consent(
     let Some(user) = issuer.user_for_subject(&pending.subject) else {
         return oauth_plain_response(403, "consent subject is no longer authorized");
     };
+    let grant_id = match create_named_connection_grant(context, &pending, &params) {
+        Ok(grant_id) => grant_id,
+        Err(response) => return response,
+    };
     let code = Ulid::new().to_string();
     context
         .oauth_codes
@@ -4126,7 +4649,7 @@ fn handle_local_oauth_consent(
                 subject: user.subject,
                 scopes: pending.scopes,
                 resource: pending.resource,
-                grant_id: None,
+                grant_id,
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
@@ -4135,6 +4658,70 @@ fn handle_local_oauth_consent(
         &format!("code={}", percent_encode(&code)),
         pending.state.as_deref(),
     )
+}
+
+#[cfg(feature = "oauth")]
+fn create_named_connection_grant(
+    context: &McpHttpServerContext,
+    pending: &LocalOAuthPendingConsent,
+    params: &BTreeMap<String, String>,
+) -> Result<Option<String>, McpHttpResponse> {
+    let Some(named) = context.named_runtime.as_ref() else {
+        return Ok(None);
+    };
+    let profile_name = params
+        .get("permission_profile")
+        .map_or(named.default_profile.as_str(), String::as_str);
+    let selected = resolve_permission_profile(&context.paths, Some(profile_name))
+        .map_err(|error| oauth_plain_response(400, &error.to_string()))?;
+    let ceiling = resolve_permission_profile(&context.paths, Some(&named.ceiling_profile))
+        .map_err(|error| oauth_plain_response(500, &error.to_string()))?;
+    if !selected.grant.is_subset_of(&ceiling.grant) {
+        return Err(oauth_plain_response(
+            400,
+            "selected permission profile exceeds this remote's ceiling",
+        ));
+    }
+    let tool_packs = named
+        .eligible_tool_packs
+        .iter()
+        .filter(|pack| params.contains_key(&format!("pack_{pack}")))
+        .cloned()
+        .collect::<Vec<_>>();
+    if tool_packs.is_empty() {
+        return Err(oauth_plain_response(
+            400,
+            "select at least one eligible tool pack",
+        ));
+    }
+    let lifetime_days = params
+        .get("expiry_days")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|days| matches!(days, 1 | 7 | 30))
+        .ok_or_else(|| oauth_plain_response(400, "expiry must be 1, 7, or 30 days"))?;
+    let now =
+        unix_timestamp_for_mcp().map_err(|error| oauth_plain_response(500, &error.to_string()))?;
+    let report = named
+        .authorization_store
+        .create_grant(
+            CreateConnectionGrant {
+                remote_id: named.remote_id.clone(),
+                remote_instance_id: context.instance_id,
+                client_id: pending.client_id.clone(),
+                subject: pending.subject.clone(),
+                wiki_id: named.wiki_id.clone(),
+                permission_profile: selected.name,
+                approved_permissions: selected.grant,
+                tool_packs,
+                scopes: pending.scopes.clone(),
+                audience: pending.resource.clone(),
+                created_at: now,
+                expires_at: now + lifetime_days * 24 * 60 * 60,
+            },
+            false,
+        )
+        .map_err(|error| oauth_plain_response(500, &error.to_string()))?;
+    Ok(Some(report.id.to_string()))
 }
 
 #[cfg(feature = "oauth")]
@@ -4165,29 +4752,52 @@ fn local_oauth_consent_form(
         .and_then(|client| client.client_name.as_deref())
         .unwrap_or(&pending.client_id)
         .to_string();
+    let (profile_control, pack_controls, expiry_control) = context.named_runtime.as_ref().map_or_else(
+        || (html_escape(&profile), html_escape(&packs.join(", ")), String::new()),
+        |named| {
+            let profile_control = format!(
+                "<input name=\"permission_profile\" value=\"{}\" list=\"profiles\" required><datalist id=\"profiles\"><option value=\"{}\"><option value=\"{}\"></datalist>",
+                html_escape(&named.default_profile),
+                html_escape(&named.default_profile),
+                html_escape(&named.ceiling_profile),
+            );
+            let pack_controls = named
+                .eligible_tool_packs
+                .iter()
+                .map(|pack| format!(
+                    "<label><input type=\"checkbox\" name=\"pack_{}\" value=\"on\" checked> {}</label>",
+                    html_escape(pack), html_escape(pack)
+                ))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let expiry = "<label>Expiry <select name=\"expiry_days\"><option value=\"1\">1 day</option><option value=\"7\">7 days</option><option value=\"30\" selected>30 days</option></select></label>".to_string();
+            (profile_control, pack_controls, expiry)
+        },
+    );
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
          <body><main><h1>Authorize this MCP connection?</h1>\
+         <form method=\"post\" action=\"/oauth/consent\">\
          <dl><dt>Client</dt><dd>{}</dd><dt>Identity</dt><dd>{}</dd>\
          <dt>Resource</dt><dd>{}</dd><dt>Vault</dt><dd>{}</dd>\
          <dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd>{}</dd>\
          <dt>OAuth scopes</dt><dd>{}</dd></dl>\
          <p>Tool packs control discovery. The permission profile remains the authority ceiling.</p>\
-         <form method=\"post\" action=\"/oauth/consent\">\
          <input type=\"hidden\" name=\"transaction\" value=\"{}\">\
          <input type=\"hidden\" name=\"csrf_token\" value=\"{}\">\
-         <button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>\
+         {}<button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>\
          <button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button>\
          </form></main></body></html>",
         html_escape(&client_name),
         html_escape(&pending.subject),
         html_escape(&pending.resource),
         html_escape(&context.paths.vault_root().display().to_string()),
-        html_escape(&profile),
-        html_escape(&packs.join(", ")),
+        profile_control,
+        pack_controls,
         html_escape(&pending.scopes.join(" ")),
         html_escape(transaction_id),
         html_escape(&pending.csrf_token),
+        expiry_control,
     );
     McpHttpResponse {
         status: 200,
@@ -4319,6 +4929,7 @@ fn local_oauth_client_redirect_allowed(
         .expect("oauth clients lock should not be poisoned")
         .get(client_id)
         .is_some_and(|client| client.redirect_uris.iter().any(|uri| uri == redirect_uri))
+        || client_id_metadata_valid(context, client_id, Some(redirect_uri))
 }
 
 #[cfg(feature = "oauth")]
@@ -4332,7 +4943,42 @@ fn local_oauth_registered_client_valid(
         .lock()
         .expect("oauth clients lock should not be poisoned")
         .get(client_id)
-        .is_some_and(|client| client.client_secret == client_secret)
+        .is_some_and(|client| {
+            if client.token_endpoint_auth_method == "none" {
+                client_secret.is_empty()
+            } else {
+                !client_secret.is_empty() && client.client_secret == client_secret
+            }
+        })
+}
+
+#[cfg(feature = "oauth")]
+fn client_id_metadata_valid(
+    context: &McpHttpServerContext,
+    client_id: &str,
+    redirect_uri: Option<&str>,
+) -> bool {
+    fetch_client_id_metadata(client_id).is_ok_and(|metadata| {
+        validate_client_id_metadata(context, client_id, redirect_uri, &metadata)
+    })
+}
+
+#[cfg(feature = "oauth")]
+fn validate_client_id_metadata(
+    context: &McpHttpServerContext,
+    client_id: &str,
+    redirect_uri: Option<&str>,
+    metadata: &ClientIdMetadataDocument,
+) -> bool {
+    metadata.client_id == client_id
+        && metadata.token_endpoint_auth_method == "none"
+        && !metadata.redirect_uris.is_empty()
+        && metadata
+            .redirect_uris
+            .iter()
+            .all(|uri| local_oauth_redirect_host_allowed(context, uri))
+        && redirect_uri
+            .is_none_or(|redirect| metadata.redirect_uris.iter().any(|uri| uri == redirect))
 }
 
 #[cfg(feature = "oauth")]
@@ -4372,18 +5018,27 @@ fn oauth_redirect_host(redirect_uri: &str) -> Option<&str> {
 }
 
 #[cfg(feature = "oauth")]
-fn oauth_clients_path(paths: &VaultPaths) -> std::path::PathBuf {
-    paths.vulcan_dir().join("mcp-oauth-clients.json")
+fn oauth_clients_path(paths: &VaultPaths, options: &McpHttpOptions) -> PathBuf {
+    options.oauth_storage_dir.as_ref().map_or_else(
+        || paths.vulcan_dir().join("mcp-oauth-clients.json"),
+        |directory| directory.join("oauth-clients.json"),
+    )
 }
 
 #[cfg(feature = "oauth")]
-fn oauth_issuer_secret_path(paths: &VaultPaths) -> PathBuf {
-    paths.vulcan_dir().join("mcp-oauth-issuer-secret")
+fn oauth_issuer_secret_path(paths: &VaultPaths, options: &McpHttpOptions) -> PathBuf {
+    options.oauth_storage_dir.as_ref().map_or_else(
+        || paths.vulcan_dir().join("mcp-oauth-issuer-secret"),
+        |directory| directory.join("oauth-issuer-secret"),
+    )
 }
 
 #[cfg(feature = "oauth")]
-fn oauth_signing_key_path(paths: &VaultPaths) -> PathBuf {
-    paths.vulcan_dir().join("mcp-oauth-signing-key")
+fn oauth_signing_key_path(paths: &VaultPaths, options: &McpHttpOptions) -> PathBuf {
+    options.oauth_storage_dir.as_ref().map_or_else(
+        || paths.vulcan_dir().join("mcp-oauth-signing-key"),
+        |directory| directory.join("oauth-signing-key"),
+    )
 }
 
 #[cfg(feature = "oauth")]
@@ -4398,8 +5053,11 @@ fn generate_pkce_verifier() -> String {
 }
 
 #[cfg(feature = "oauth")]
-fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String, CliError> {
-    let path = oauth_issuer_secret_path(paths);
+fn load_or_create_local_oauth_issuer_secret(
+    paths: &VaultPaths,
+    options: &McpHttpOptions,
+) -> Result<String, CliError> {
+    let path = oauth_issuer_secret_path(paths, options);
     if path.exists() {
         let secret = fs::read_to_string(&path).map_err(CliError::operation)?;
         let secret = secret.trim().to_string();
@@ -4420,8 +5078,11 @@ fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String
 }
 
 #[cfg(feature = "oauth")]
-fn load_or_create_local_oauth_signing_key(paths: &VaultPaths) -> Result<String, CliError> {
-    load_or_create_secret_file(&oauth_signing_key_path(paths), "OAuth signing key")
+fn load_or_create_local_oauth_signing_key(
+    paths: &VaultPaths,
+    options: &McpHttpOptions,
+) -> Result<String, CliError> {
+    load_or_create_secret_file(&oauth_signing_key_path(paths, options), "OAuth signing key")
 }
 
 #[cfg(feature = "oauth")]
@@ -4468,11 +5129,27 @@ fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
 
 #[cfg(feature = "oauth")]
 fn load_oauth_registered_clients(
-    paths: &VaultPaths,
+    path: &Path,
 ) -> Result<BTreeMap<String, LocalOAuthRegisteredClient>, CliError> {
-    let path = oauth_clients_path(paths);
     if !path.exists() {
         return Ok(BTreeMap::new());
+    }
+    let metadata = fs::symlink_metadata(path).map_err(CliError::operation)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 1024 * 1024 {
+        return Err(CliError::operation(format!(
+            "OAuth client registry at {} must be a regular file no larger than 1 MiB",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(CliError::operation(format!(
+                "OAuth client registry at {} must be owner-only (mode 0600)",
+                path.display()
+            )));
+        }
     }
     let content = fs::read_to_string(path).map_err(CliError::operation)?;
     let clients = serde_json::from_str::<Vec<LocalOAuthRegisteredClient>>(&content)
@@ -4498,8 +5175,31 @@ fn save_oauth_registered_clients(context: &McpHttpServerContext) -> Result<(), C
         .values()
         .cloned()
         .collect::<Vec<_>>();
-    let serialized = serde_json::to_string_pretty(&clients).map_err(CliError::operation)?;
-    fs::write(path, serialized).map_err(CliError::operation)
+    let serialized = serde_json::to_vec_pretty(&clients).map_err(CliError::operation)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(
+        path.parent()
+            .ok_or_else(|| CliError::operation("OAuth client registry path has no parent"))?,
+    )
+    .map_err(CliError::operation)?;
+    temporary
+        .write_all(&serialized)
+        .map_err(CliError::operation)?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(CliError::operation)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(CliError::operation)?;
+    }
+    temporary
+        .persist(path)
+        .map_err(|error| CliError::operation(error.error))?;
+    Ok(())
 }
 
 #[cfg(feature = "oauth")]
@@ -4618,7 +5318,7 @@ fn oauth_client_credentials(
         return Some(credentials);
     }
     let client_id = params.get("client_id")?.clone();
-    let client_secret = params.get("client_secret")?.clone();
+    let client_secret = params.get("client_secret").cloned().unwrap_or_default();
     Some((client_id, client_secret))
 }
 

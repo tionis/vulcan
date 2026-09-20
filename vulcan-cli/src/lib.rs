@@ -429,21 +429,22 @@ pub use cli::{
     ExportCommand, ExportFormat, ExportProfileCommand, ExportProfileFormatArg,
     ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, FolderNotePlacementArg,
     GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, IntegrationCommand,
-    KanbanCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, MdbaseCommand,
-    NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
-    OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg, OutlineCollectionsCommand,
-    OutlineCommand, OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
-    PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
-    PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
-    RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SemanticGroupingArg, SiteCommand, SkillCommand,
-    SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg,
-    SyncDeviceCommand, SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs, TagSortArg,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
-    TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateScheduleCommand,
-    VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    KanbanCommand, McpCommand, McpConnectionsCommand, McpRemoteCommand, McpToolPackArg,
+    McpToolPackModeArg, McpTransportArg, MdbaseCommand, NoteAppendPeriodicArg, NoteCheckboxState,
+    NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg,
+    OutlineCollectionsCommand, OutlineCommand, OutlineExcludedTargetPolicyArg,
+    OutlinePullConflictOperationArg, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
+    PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand,
+    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode,
+    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
+    SemanticGroupingArg, SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg,
+    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncDeviceCommand,
+    SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg,
+    TextBundleCommand, ToolCommand, ToolInitTemplateArg, TrustCommand, UpdateChannelArg,
+    UpdateChannelArgs, UpdateCommand, UpdateScheduleCommand, VaultCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 #[must_use]
@@ -5043,6 +5044,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             commands::mdbase::handle_mdbase_command(cli, &paths, command)
         }
         Command::Mcp {
+            ref command,
             ref tool_pack,
             tool_pack_mode,
             transport,
@@ -5071,6 +5073,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref oauth_indieauth_me,
             ref oauth_local_user,
         } => {
+            if let Some(command) = command {
+                return commands::mcp_remote::handle_mcp_command(cli, command);
+            }
             let request_timeout =
                 commands::runtime::parse_run_timeout(Some(request_timeout.as_str()))?
                     .unwrap_or(mcp::DEFAULT_MCP_REQUEST_TIMEOUT);
@@ -5105,6 +5110,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     oauth_indieauth_redirect_uri: oauth_indieauth_redirect_uri.clone(),
                     oauth_indieauth_me: oauth_indieauth_me.clone(),
                     oauth_local_user: oauth_local_user.clone(),
+                    instance_id: None,
+                    oauth_storage_dir: None,
                     request_timeout,
                 },
             )

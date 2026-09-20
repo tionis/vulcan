@@ -77,6 +77,27 @@ Examples:
 
 ## Generated Config Reference
 
+### Device-global named MCP configuration
+
+Named remote MCP definitions are intentionally outside the vault config described below. Manage
+them with `vulcan mcp remote init/list/show/set/run/remove`; Vulcan stores them alongside daemon
+configuration in the user config directory. Each definition contains a stable instance ID, a
+loopback bind, exact public HTTPS resource URL, IndieAuth identity, registered wiki reference,
+permission ceiling/default profile names, and eligible tool packs. It contains no token secret and
+is not copied when the vault is synchronized.
+
+Connection grants and refresh-token-family records live in the user state directory outside the
+rebuildable cache. Per-remote OAuth signing/client material is also device-local and owner-only.
+Use `vulcan mcp connections list/show/revoke`, not manual JSON edits, to manage that state. Vault
+permission profiles remain normal shared/local `.vulcan` configuration and are revalidated against
+both the approved snapshot and current remote ceiling on every authenticated request.
+
+Migration from a long-form remote invocation is explicit: register its vault, translate the old
+`--permissions` value into the remote ceiling/default, translate its startup `--tool-pack` values
+into eligible packs, initialize the remote with the old exact `--public-url` and IndieAuth identity,
+then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing
+direct flags remain supported and are not imported automatically.
+
 Derived from Vulcan's config descriptor registry. `config set`, `config unset`, `config list`, the settings TUI, and this help surface share the same supported key metadata.
 
 Precedence: `.vulcan/config.local.toml` > `.vulcan/config.toml` > `.obsidian/*` imports > built-in defaults.

@@ -5483,19 +5483,19 @@ session authority -> PermissionGuard -> PermissionFilter
 
 **CLI and management surface**
 
-- [ ] Add `vulcan mcp remote init <name>` with `--dry-run` and JSON output. Require or discover the
+- [x] Add `vulcan mcp remote init <name>` with `--dry-run` and JSON output. Require or discover the
   public HTTPS resource URL and IndieAuth identity, choose a non-conflicting loopback listener,
   establish a safe ceiling/default grant, generate secret references, and print the one MCP URL the
   user supplies to the hosted client. Never default a remote ceiling to `unrestricted`.
-- [ ] Add `remote list`, `remote show`, `remote set`, `remote run`, and `remote remove` over the
+- [x] Add `remote list`, `remote show`, `remote set`, `remote run`, and `remote remove` over the
   device-global registry. Destructive removal revokes or explicitly preserves grants by policy and
   never deletes vault content. Foreground `run` and resident hosting consume the same validated
   definition.
-- [ ] Add `mcp connections list|show|revoke` scoped by remote instance, with stable IDs, client and
+- [x] Add `mcp connections list|show|revoke` scoped by remote instance, with stable IDs, client and
   subject metadata, vault/profile/pack summary, creation/expiry/last-use/revocation state, JSON
   output, and secret-free diagnostics. Consent and management surfaces must make the exact vault and
   effective authority visible.
-- [ ] Keep advanced direct `--oauth-*`, `--auth-token`, bind, and pack flags available for debugging,
+- [x] Keep advanced direct `--oauth-*`, `--auth-token`, bind, and pack flags available for debugging,
   external OIDC, and compatibility. The normal remote path derives them from the named definition
   instead of requiring users to assemble a long flag sequence.
 
@@ -5522,21 +5522,23 @@ session authority -> PermissionGuard -> PermissionFilter
   and issue a code only after the resulting consent. The bounded direct-mode transaction is
   CSRF-protected, expires, supports explicit denial, and uses no-cache, frame-denial, and restrictive
   content-security response headers.
-- [ ] In named-remote mode, persist approved consent as a connection grant and bind the
+- [x] In named-remote mode, persist approved consent as a connection grant and bind the
   authorization code to that grant before issuing it.
 - [x] Carry validated resource indicators and requested/granted scopes through login, consent,
   authorization codes, 15-minute access-token claims, token responses, metadata, and session
   authority. Reject unsupported scopes and resource mismatches before login.
-- [ ] Add rotating refresh tokens, revocation, and restart-safe grant lookup. Test audience, issuer,
+- [x] Add rotating refresh tokens, revocation, and restart-safe grant lookup. Test audience, issuer,
   expiry, narrowing, refresh replay, client binding, redirect validation, CSRF/state handling, and
   redaction as one end-to-end authorization lifecycle.
-- [ ] Add the named remote CLI and a single-vault foreground adapter first, then host the same
-  definitions through 10.7 without changing OAuth, MCP schema, or consent behavior. Coordinate
-  writers through the shared per-vault runtime when resident; standalone overlap must acquire the
-  applicable ownership lock or fail with an actionable conflict.
-- [ ] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
+- [x] Add the named remote CLI and a single-vault foreground adapter. Standalone execution uses a
+  per-instance ownership lock with actionable conflicts while different named instances remain
+  independently runnable.
+- [ ] Host the same definitions through 10.7 without changing OAuth, MCP schema, or consent
+  behavior. Coordinate writers through the shared per-vault runtime when resident. This remains
+  gated on 10.7.1–10.7.6 rather than introducing a second daemon dispatcher here.
+- [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
-- [ ] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,
+- [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,
   integrated help, configuration reference, and migration examples in every user-facing slice.
   Document proxy examples without treating NetBird, Tailscale, tunnels, or TLS termination as the
   authorization layer.
