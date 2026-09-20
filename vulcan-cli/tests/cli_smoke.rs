@@ -15378,6 +15378,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
     assert!(sync_skill.contains("lifecycle state and restart counts"));
     assert!(sync_skill.contains("companion-listener services"));
+    assert!(sync_skill.contains("disables only its sync observation consumer"));
     assert!(sync_skill.contains("read-only check completed, not that synchronization succeeded"));
     assert!(sync_skill.contains("does not fetch, merge, apply, or"));
     assert!(sync_skill.contains("detect whether differing trees conflict"));

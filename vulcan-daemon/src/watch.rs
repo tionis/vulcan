@@ -53,6 +53,7 @@ pub enum DaemonWatchError {
     ChannelClosed,
     Supervisor(SupervisorError),
     Observation(ObservationError),
+    Index(String),
 }
 
 impl Display for DaemonWatchError {
@@ -64,6 +65,7 @@ impl Display for DaemonWatchError {
             Self::ChannelClosed => formatter.write_str("watch channel closed unexpectedly"),
             Self::Supervisor(error) => Display::fmt(error, formatter),
             Self::Observation(error) => Display::fmt(error, formatter),
+            Self::Index(detail) => write!(formatter, "index consumer failed: {detail}"),
         }
     }
 }
@@ -75,7 +77,7 @@ impl Error for DaemonWatchError {
             Self::Notify(error) => Some(error),
             Self::Supervisor(error) => Some(error),
             Self::Observation(error) => Some(error),
-            Self::InvalidOptions(_) | Self::ChannelClosed => None,
+            Self::InvalidOptions(_) | Self::ChannelClosed | Self::Index(_) => None,
         }
     }
 }

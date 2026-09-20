@@ -5,6 +5,7 @@ use crate::observation::{
     ObservationFilter, VaultObservationHub,
 };
 use crate::registry::{RegistryError, WikiRegistration, WikiRegistry};
+use crate::scan_runtime::{consume_index_observations_with_stop, VaultScanTracker};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::{SupervisorError, SyncSupervisor, SyncWatchMetadata};
 use crate::vault_runtime::{VaultRuntimeCatalog, VaultRuntimeError};
@@ -104,7 +105,16 @@ struct WatcherTask {
     hub: VaultObservationHub,
     observer_stop: Arc<ShutdownSignal>,
     observer: JoinHandle<Result<(), DaemonWatchError>>,
+    index: IndexConsumerTask,
     sync: Option<SyncConsumerTask>,
+}
+
+struct IndexConsumerTask {
+    stop: Arc<ShutdownSignal>,
+    handle: JoinHandle<Result<(), DaemonWatchError>>,
+    #[allow(dead_code)]
+    // Exposed through hosted runtime status in the next status projection slice.
+    tracker: Arc<VaultScanTracker>,
 }
 
 struct SyncConsumerTask {
@@ -401,6 +411,7 @@ fn spawn_watcher(
             &thread_stop,
         )
     });
+    let index = spawn_index_consumer(registration.clone(), &hub, options)?;
     let sync = sync_consumer_enabled(&registration)
         .then(|| spawn_sync_consumer(registration.clone(), &hub, supervisor, state_store, options))
         .transpose()?;
@@ -409,7 +420,45 @@ fn spawn_watcher(
         hub,
         observer_stop,
         observer,
+        index,
         sync,
+    })
+}
+
+fn spawn_index_consumer(
+    registration: WikiRegistration,
+    hub: &VaultObservationHub,
+    options: DaemonWatchOptions,
+) -> Result<IndexConsumerTask, ObservationError> {
+    let subscription = hub.subscribe(
+        ObservationConsumerId::parse(format!("index-{}", registration.id))?,
+        ObservationConsumerPolicy {
+            kind: ObservationConsumerKind::Index,
+            queue_capacity: 64,
+            quiet_period_ms: options.debounce_ms,
+            maximum_dirty_ms: options.max_dirty_ms,
+            filter: ObservationFilter::default(),
+        },
+    )?;
+    let tracker = Arc::new(VaultScanTracker::default());
+    let thread_tracker = Arc::clone(&tracker);
+    let stop = Arc::new(ShutdownSignal::default());
+    let thread_stop = Arc::clone(&stop);
+    let thread_hub = hub.clone();
+    let handle = thread::spawn(move || {
+        consume_index_observations_with_stop(
+            &registration.path,
+            &thread_hub,
+            &subscription,
+            &thread_tracker,
+            &thread_stop,
+        )
+        .map_err(DaemonWatchError::Index)
+    });
+    Ok(IndexConsumerTask {
+        stop,
+        handle,
+        tracker,
     })
 }
 
@@ -500,6 +549,7 @@ fn stop_watcher(task: WatcherTask) {
     if let Some(sync) = task.sync {
         stop_sync_consumer(sync);
     }
+    stop_index_consumer(task.index);
     task.observer_stop.cancel();
     let _ = task.observer.join();
 }
@@ -510,6 +560,8 @@ fn join_watcher(task: WatcherTask) -> String {
         sync.stop.cancel();
         details.push(join_task("sync observation consumer", sync.handle));
     }
+    task.index.stop.cancel();
+    details.push(join_task("index observation consumer", task.index.handle));
     task.observer_stop.cancel();
     details.push(join_task("vault observer", task.observer));
     details.join("; ")
@@ -520,8 +572,14 @@ fn stop_sync_consumer(task: SyncConsumerTask) {
     let _ = task.handle.join();
 }
 
+fn stop_index_consumer(task: IndexConsumerTask) {
+    task.stop.cancel();
+    let _ = task.handle.join();
+}
+
 fn watcher_finished(task: &WatcherTask) -> bool {
     task.observer.is_finished()
+        || task.index.handle.is_finished()
         || task
             .sync
             .as_ref()
@@ -603,6 +661,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One lifecycle fixture proves pause, indexing, and observer identity together.
     fn sync_pause_toggles_only_the_consumer_and_keeps_plain_observers() {
         let temporary = tempdir().expect("temporary directory");
         let git_vault = temporary.path().join("git-vault");
@@ -673,6 +732,48 @@ mod tests {
         assert_eq!(watchers.len(), 2);
         assert!(watchers["git-notes"].sync.is_none());
         assert!(watchers["plain"].sync.is_none());
+        let initial = watchers["git-notes"]
+            .index
+            .tracker
+            .wait_for_generation(1, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            initial.state,
+            crate::scan_runtime::CacheFreshnessState::Fresh
+        );
+        std::fs::write(
+            watchers["git-notes"].registration.path.join("Paused.md"),
+            "# Still indexed\n",
+        )
+        .unwrap();
+        watchers["git-notes"]
+            .hub
+            .publish(&crate::observation::ObservationEvent::FilesystemHint(
+                crate::observation::FilesystemHint {
+                    sequence: 1,
+                    event_count: 1,
+                    untagged_events: 1,
+                    paths: BTreeSet::from(["Paused.md".to_string()]),
+                    self_generated_transactions: BTreeSet::new(),
+                    safety_rescan: false,
+                    watcher_errors: vec![],
+                },
+            ))
+            .unwrap();
+        let indexed = watchers["git-notes"]
+            .index
+            .tracker
+            .wait_for_generation(2, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            indexed.state,
+            crate::scan_runtime::CacheFreshnessState::Fresh
+        );
+        let notes = vulcan_core::properties::load_note_index(&vulcan_core::VaultPaths::new(
+            &watchers["git-notes"].registration.path,
+        ))
+        .unwrap();
+        assert!(notes.values().any(|note| note.document_path == "Paused.md"));
         let observer_id = watchers["git-notes"].observer.thread().id();
 
         registry

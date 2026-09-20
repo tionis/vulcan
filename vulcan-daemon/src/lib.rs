@@ -25,6 +25,7 @@ pub mod observation;
 pub mod process;
 pub mod registry;
 pub mod runtime;
+pub mod scan_runtime;
 pub mod semantic_worker;
 pub mod service;
 pub mod shutdown;
