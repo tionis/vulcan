@@ -7,7 +7,6 @@ use crate::companion::{
     ConflictResolveRequest, SemanticPlanRequest, SyncSelectionRequest, COMPANION_PROTOCOL_VERSION,
 };
 use crate::credentials::CompanionCredential;
-use crate::final_sync::run_final_sync_and_cancel;
 use crate::registry::{WikiId, WikiRegistry};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
@@ -50,6 +49,8 @@ pub struct CompanionHttpState {
     pub resolution_agent: Option<Arc<CompanionResolutionAgent>>,
     pub semantic_agent: Option<Arc<CompanionSemanticAgent>>,
     pub shutdown: Option<Arc<ShutdownSignal>>,
+    /// Stops accepting new requests before final synchronization begins.
+    pub ingress_shutdown: Option<Arc<ShutdownSignal>>,
 }
 
 impl CompanionHttpState {
@@ -340,12 +341,9 @@ async fn shutdown(State(state): State<CompanionHttpState>) -> Result<Json<Value>
         ))
     })?;
     if shutdown.begin_shutdown() {
-        let registry = Arc::clone(&state.registry);
-        let supervisor = Arc::clone(&state.supervisor);
-        let shutdown = Arc::clone(&shutdown);
-        tokio::spawn(async move {
-            run_final_sync_and_cancel(&registry, &supervisor, &shutdown).await;
-        });
+        if let Some(ingress) = state.ingress_shutdown {
+            ingress.cancel();
+        }
     }
     Ok(Json(serde_json::json!({
         "version": COMPANION_PROTOCOL_VERSION,
@@ -785,6 +783,7 @@ mod tests {
             resolution_agent: None,
             semantic_agent: None,
             shutdown: None,
+            ingress_shutdown: None,
         };
         (temporary, state)
     }
@@ -924,6 +923,27 @@ mod tests {
             .as_array()
             .expect("operations")
             .contains(&json!("event_subscribe")));
+    }
+
+    #[tokio::test]
+    async fn shutdown_quiesces_ingress_before_final_sync_finishes() {
+        let (_temporary, mut state) = fixture();
+        let shutdown = Arc::new(ShutdownSignal::default());
+        let ingress = Arc::new(ShutdownSignal::default());
+        state.shutdown = Some(Arc::clone(&shutdown));
+        state.ingress_shutdown = Some(Arc::clone(&ingress));
+
+        let response = companion_router(state.clone())
+            .oneshot(request(&state, Method::POST, "/shutdown"))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(ingress.is_cancelled());
+        assert!(
+            !shutdown.begin_shutdown(),
+            "final sync already owns shutdown"
+        );
     }
 
     #[tokio::test]

@@ -120,8 +120,10 @@ registered permission profiles as direct CLI workflows. Request bodies and WebSo
 bounded, and the server never exposes arbitrary Git execution.
 
 `daemon_shutdown` appears in capabilities only for a process-owned service. `POST /shutdown`
-requires the same bearer, version, and Origin checks as other mutating companion requests and sets
-the cooperative process stop flag; embedded routers may omit the operation entirely.
+requires the same bearer, version, and Origin checks as other mutating companion requests. The
+daemon first stops accepting new companion requests, then runs its bounded final-sync policy,
+stops and joins hosted services in reverse dependency order, and finally removes its owned runtime
+record. Embedded routers may omit the operation entirely.
 
 ## Reference Obsidian companion
 

@@ -15377,6 +15377,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("managed: true"));
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
     assert!(sync_skill.contains("lifecycle state and restart counts"));
+    assert!(sync_skill.contains("companion-listener services"));
     assert!(sync_skill.contains("read-only check completed, not that synchronization succeeded"));
     assert!(sync_skill.contains("does not fetch, merge, apply, or"));
     assert!(sync_skill.contains("detect whether differing trees conflict"));
@@ -15436,6 +15437,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("final retained `shutdown` sync"));
     assert!(diagnostics_skill.contains("detected suspend gap"));
     assert!(diagnostics_skill.contains("every hosted service"));
+    assert!(diagnostics_skill.contains("stop new companion ingress"));
     assert!(diagnostics_skill.contains("sanitized last failure"));
     assert!(diagnostics_skill.contains("vulcan --output json daemon conflict-status"));
     assert!(diagnostics_skill.contains("retry_after_unix_ms"));

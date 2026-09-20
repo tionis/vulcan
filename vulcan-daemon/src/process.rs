@@ -7,13 +7,14 @@ use crate::alerts::SyncAlertTracker;
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::conflict_worker::run_conflict_worker;
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
+use crate::daemon_host::{bind_companion_listener, companion_listener_service, start_daemon_host};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
 use crate::final_sync::run_final_sync_and_cancel;
 use crate::host::{
-    load_host_status, HostRuntimeError, HostSupervisor, RestartPolicy, ServiceDefinition,
-    ServiceId, ServiceRegistration, ServiceScope, ServiceStatus,
+    load_host_status, HostRuntimeError, RestartPolicy, ServiceDefinition, ServiceId,
+    ServiceRegistration, ServiceScope, ServiceStatus,
 };
-use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
+use crate::http::CompanionHttpState;
 use crate::notifications::{
     run_notification_runtime_until, NotificationRuntimeError, NotificationRuntimeOptions,
 };
@@ -34,7 +35,7 @@ use crate::sync::{
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
@@ -45,7 +46,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
-use tokio::net::TcpListener;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_sync::{cached_notification_advertisement, GitCliEngine, GitEngine};
@@ -275,19 +275,14 @@ async fn run_daemon(
 
     let (resolution_agent, semantic_agent) = agents;
     validate_worker_agents(&config, resolution_agent.as_ref(), semantic_agent.as_ref())?;
-    let requested_bind = config.bind.parse::<SocketAddr>().map_err(|error| {
-        DaemonProcessError::Configuration(format!(
-            "invalid daemon bind address `{}`: {error}",
-            config.bind
-        ))
-    })?;
-    if !requested_bind.ip().is_loopback() {
-        return Err(DaemonProcessError::Configuration(format!(
-            "daemon bind address must be loopback, got {requested_bind}"
-        )));
-    }
-    let listener = TcpListener::bind(requested_bind).await?;
-    let bind = listener.local_addr()?;
+    let requested_bind = configured_daemon_bind(&config.bind)?;
+    let (listener, bind) = bind_companion_listener(requested_bind)
+        .await
+        .map_err(|error| {
+            DaemonProcessError::Configuration(format!(
+                "failed to bind daemon companion listener at {requested_bind}: {error}"
+            ))
+        })?;
     let credential = CompanionCredentialStore::at(&context.state_root).load_or_create(vec![
         "app://obsidian.md".to_string(),
         "capacitor://localhost".to_string(),
@@ -307,23 +302,38 @@ async fn run_daemon(
     )?);
     log_daemon_started(context, bind, config.vaults.len());
     let stop = Arc::new(ShutdownSignal::new(false));
-    let host = HostSupervisor::start_persisted_with_signal(
-        daemon_worker_registrations(
-            context,
-            &config,
-            &supervisor,
-            &state_store,
-            resolution_agent.as_ref(),
-            semantic_agent.as_ref(),
-            &tokio::runtime::Handle::current(),
-        )?,
-        Duration::from_secs(10),
-        Arc::clone(&stop),
-        context.host_status_path(),
-    )?;
+    let ingress_stop = Arc::new(ShutdownSignal::new(false));
     // Publishing the runtime record is the daemon's readiness boundary. Keep
     // it behind required-service startup so every successful authenticated
     // probe observes the corresponding service-health snapshot.
+    let state = CompanionHttpState {
+        registry: Arc::new(context.registry.clone()),
+        supervisor: Arc::clone(&supervisor),
+        state_store: Arc::clone(&state_store),
+        credential: Arc::new(credential),
+        resolution_agent,
+        semantic_agent,
+        shutdown: Some(Arc::clone(&stop)),
+        ingress_shutdown: Some(Arc::clone(&ingress_stop)),
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let mut registrations = daemon_worker_registrations(
+        context,
+        &config,
+        &supervisor,
+        &state_store,
+        state.resolution_agent.as_ref(),
+        state.semantic_agent.as_ref(),
+        &runtime,
+    )?;
+    registrations.push(companion_listener_service(
+        listener,
+        state.clone(),
+        runtime,
+        Arc::clone(&ingress_stop),
+        vec![service_id("worker.remote-notifications")?],
+    )?);
+    let mut host = start_daemon_host(registrations, Arc::clone(&stop), context.host_status_path())?;
     if let Err(error) = write_runtime_record(&context.runtime_path(), &record) {
         let _ = host.shutdown();
         return Err(error);
@@ -332,27 +342,14 @@ async fn run_daemon(
         path: context.runtime_path(),
         pid: record.pid,
     };
-    let state = CompanionHttpState {
-        registry: Arc::new(context.registry.clone()),
-        supervisor,
-        state_store,
-        credential: Arc::new(credential),
-        resolution_agent,
-        semantic_agent,
-        shutdown: Some(Arc::clone(&stop)),
-    };
     let shutdown_stop = Arc::clone(&stop);
-    let shutdown_registry = Arc::clone(&state.registry);
-    let shutdown_supervisor = Arc::clone(&state.supervisor);
-    let serve_result = serve_companion_with_shutdown(
-        listener,
-        state,
-        wait_for_daemon_shutdown(shutdown_stop, shutdown_registry, shutdown_supervisor),
-    )
-    .await;
+    let graceful = wait_for_daemon_shutdown(shutdown_stop, Arc::clone(&ingress_stop)).await;
+    if graceful {
+        host.stop_services(&graceful_shutdown_services()?)?;
+        run_final_sync_and_cancel(&state.registry, &state.supervisor, &stop).await;
+    }
     let host_result = host.shutdown();
     drop(runtime_guard);
-    serve_result?;
     host_result?;
     Ok(())
 }
@@ -361,6 +358,18 @@ fn log_daemon_started(context: &DaemonProcessContext, bind: SocketAddr, wiki_cou
     if context.verbose {
         eprintln!("daemon started on {bind} with {wiki_count} registered wiki(s)");
     }
+}
+
+fn configured_daemon_bind(value: &str) -> Result<SocketAddr, DaemonProcessError> {
+    let bind = value.parse::<SocketAddr>().map_err(|error| {
+        DaemonProcessError::Configuration(format!("invalid daemon bind address `{value}`: {error}"))
+    })?;
+    if !bind.ip().is_loopback() {
+        return Err(DaemonProcessError::Configuration(format!(
+            "daemon bind address must be loopback, got {bind}"
+        )));
+    }
+    Ok(bind)
 }
 
 #[allow(clippy::too_many_lines)] // Declaratively assembles the complete built-in service graph.
@@ -699,23 +708,34 @@ fn configured_api_key(agent: &DaemonAgentConfig) -> Result<Option<String>, Daemo
         .transpose()
 }
 
-async fn wait_for_stop(stop: Arc<ShutdownSignal>) {
-    stop.cancelled().await;
-}
-
 async fn wait_for_daemon_shutdown(
     stop: Arc<ShutdownSignal>,
-    registry: Arc<WikiRegistry>,
-    supervisor: Arc<SyncSupervisor>,
-) {
+    ingress_stop: Arc<ShutdownSignal>,
+) -> bool {
     tokio::select! {
-        () = wait_for_stop(Arc::clone(&stop)) => {}
+        () = stop.requested() => {
+            ingress_stop.cancel();
+            !stop.is_cancelled()
+        }
         () = wait_for_termination_signal() => {
-            if stop.begin_shutdown() {
-                run_final_sync_and_cancel(&registry, &supervisor, &stop).await;
-            }
+            let graceful = stop.begin_shutdown();
+            ingress_stop.cancel();
+            graceful
         }
     }
+}
+
+fn graceful_shutdown_services() -> Result<BTreeSet<ServiceId>, DaemonProcessError> {
+    [
+        "listener.companion",
+        "worker.sync-trigger",
+        "worker.remote-notifications",
+        "worker.conflict",
+        "worker.semantic",
+    ]
+    .into_iter()
+    .map(service_id)
+    .collect()
 }
 
 #[cfg(unix)]
@@ -1415,7 +1435,11 @@ mod tests {
             .expect("daemon becomes ready");
         assert_eq!(status.registered_wikis.len(), 1);
         assert_eq!(status.wiki_statuses.len(), 1);
-        assert_eq!(status.services.len(), 6);
+        assert_eq!(status.services.len(), 7);
+        assert!(status.services.iter().any(|service| {
+            service.id.as_str() == "listener.companion"
+                && service.state == crate::host::ServiceLifecycleState::Ready
+        }));
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "worker.sync-executor"
                 && service.state == crate::host::ServiceLifecycleState::Ready
@@ -1425,12 +1449,8 @@ mod tests {
                 && service.state == crate::host::ServiceLifecycleState::Disabled
         }));
         assert!(status.uptime_ms.is_some());
-        assert!(status
-            .runtime
-            .expect("runtime record")
-            .bind
-            .ip()
-            .is_loopback());
+        let daemon_bind = status.runtime.as_ref().expect("runtime record").bind;
+        assert!(daemon_bind.ip().is_loopback());
         let synchronized = (0..100).any(|_| {
             if git(
                 temporary.path(),
@@ -1467,6 +1487,8 @@ mod tests {
             .expect("daemon result channel")
             .expect("daemon result");
         assert!(!context.runtime_path().exists());
+        let rebound = std::net::TcpListener::bind(daemon_bind).expect("companion port released");
+        drop(rebound);
         assert!(git(
             temporary.path(),
             &[

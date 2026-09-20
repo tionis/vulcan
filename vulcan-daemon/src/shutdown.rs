@@ -15,6 +15,7 @@ struct State {
 pub struct ShutdownSignal {
     state: Mutex<State>,
     wake: Condvar,
+    requested: tokio::sync::watch::Sender<bool>,
     asynchronous: tokio::sync::watch::Sender<bool>,
 }
 
@@ -34,6 +35,7 @@ impl ShutdownSignal {
                 parked: Vec::new(),
             }),
             wake: Condvar::new(),
+            requested: tokio::sync::watch::channel(cancelled).0,
             asynchronous: tokio::sync::watch::channel(cancelled).0,
         }
     }
@@ -46,6 +48,7 @@ impl ShutdownSignal {
             thread.unpark();
         }
         self.wake.notify_all();
+        self.requested.send_replace(true);
         self.asynchronous.send_replace(true);
     }
 
@@ -58,6 +61,7 @@ impl ShutdownSignal {
             false
         } else {
             state.requested = true;
+            self.requested.send_replace(true);
             true
         }
     }
@@ -80,6 +84,13 @@ impl ShutdownSignal {
     pub async fn cancelled(&self) {
         let mut receiver = self.asynchronous.subscribe();
         let _ = receiver.wait_for(|cancelled| *cancelled).await;
+    }
+
+    /// Resolves when graceful shutdown has been requested or hard
+    /// cancellation has already occurred.
+    pub async fn requested(&self) {
+        let mut receiver = self.requested.subscribe();
+        let _ = receiver.wait_for(|requested| *requested).await;
     }
 
     /// A watcher owns its signal for the lifetime of this registered thread.
@@ -129,6 +140,16 @@ mod tests {
         blocking.join().unwrap();
         assert!(signal.wait_timeout(Duration::from_secs(60)));
         signal.cancel();
+    }
+
+    #[tokio::test]
+    async fn graceful_request_wakes_request_waiters_without_cancelling_work() {
+        let signal = ShutdownSignal::default();
+        assert!(signal.begin_shutdown());
+        tokio::time::timeout(Duration::from_secs(1), signal.requested())
+            .await
+            .unwrap();
+        assert!(!signal.is_cancelled());
     }
 
     #[test]

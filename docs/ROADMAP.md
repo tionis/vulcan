@@ -5273,12 +5273,12 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 **Depends on:** 10.7.1.
 
-- [ ] Extract host construction, listener setup, service startup, and shutdown from `process.rs`. Adapt existing sync, notification, conflict, and semantic workers to the host first, preserving their domain behavior and durable state locations.
-- [ ] Start services in dependency order and unwind partially started hosts on failure. Publish readiness only after required services/listeners are ready; retain the existing process-lock and authenticated runtime-probe behavior.
-- [ ] Observe worker exits and panics while the host is running. Define required-service failure versus optional-service degradation, bounded restart/backoff, exhausted-retry status, and recovery. Restarting a worker must not imply blindly retrying its last mutation.
-- [ ] Expose bounded, sanitized service status through daemon status/health and JSON: identity, scope, lifecycle state, readiness, last failure, and restart information. Preserve existing per-wiki sync status as a separate projection. Include disabled and degraded services without exposing credentials or private event payloads.
-- [ ] Define shutdown ordering: stop ordinary ingress and trigger producers, quiesce mutation producers, permit the existing internal final-sync enqueue/drain, cooperatively cancel remaining work at the deadline, join services/listeners/watchers, then remove the owned runtime record. Preserve the current bounded final-sync policy and safe recovery evidence.
-- [ ] Test partial startup rollback, unexpected worker exit/panic, restart exhaustion, dependency failure, cancellation races, final-sync ordering, and cleanup of ports/runtime records. A failed optional service must not silently disappear from health.
+- [x] Extract host construction, listener setup, service startup, and shutdown from `process.rs`. Adapt existing sync, notification, conflict, and semantic workers to the host first, preserving their domain behavior and durable state locations.
+- [x] Start services in dependency order and unwind partially started hosts on failure. Publish readiness only after required services/listeners are ready; retain the existing process-lock and authenticated runtime-probe behavior.
+- [x] Observe worker exits and panics while the host is running. Define required-service failure versus optional-service degradation, bounded restart/backoff, exhausted-retry status, and recovery. Restarting a worker must not imply blindly retrying its last mutation.
+- [x] Expose bounded, sanitized service status through daemon status/health and JSON: identity, scope, lifecycle state, readiness, last failure, and restart information. Preserve existing per-wiki sync status as a separate projection. Include disabled and degraded services without exposing credentials or private event payloads.
+- [x] Define shutdown ordering: stop ordinary ingress and trigger producers, quiesce mutation producers, permit the existing internal final-sync enqueue/drain, cooperatively cancel remaining work at the deadline, join services/listeners/watchers, then remove the owned runtime record. Preserve the current bounded final-sync policy and safe recovery evidence.
+- [x] Test partial startup rollback, unexpected worker exit/panic, restart exhaustion, dependency failure, cancellation races, final-sync ordering, and cleanup of ports/runtime records. A failed optional service must not silently disappear from health.
 
 **Acceptance:** Existing daemon workers run under one reusable lifecycle, with observable failure and deterministic teardown. No new application workflow is required to validate this slice.
 

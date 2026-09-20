@@ -719,6 +719,27 @@ impl HostSupervisor {
         self.status.statuses()
     }
 
+    /// Stops a selected service set in reverse startup order while leaving
+    /// the rest of the host available for a bounded drain phase.
+    pub fn stop_services(&mut self, ids: &BTreeSet<ServiceId>) -> Result<(), HostRuntimeError> {
+        let mut retained = Vec::with_capacity(self.services.len());
+        let mut first_error = None;
+        while let Some(service) = self.services.pop() {
+            if ids.contains(&service.id) {
+                if let Err(error) = stop_running_service(&self.status, service) {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            } else {
+                retained.push(service);
+            }
+        }
+        retained.reverse();
+        self.services = retained;
+        first_error.map_or(Ok(()), Err)
+    }
+
     fn rollback(&mut self) {
         self.host_stop.cancel();
         let _ = self.stop_and_join();
@@ -728,25 +749,35 @@ impl HostSupervisor {
         self.host_stop.cancel();
         let mut first_error = None;
         while let Some(service) = self.services.pop() {
-            let _ = transition_shared(
-                &self.status.catalog,
-                &service.id,
-                ServiceLifecycleState::Stopping,
-                None,
-            );
-            service.stop.cancel();
-            if service.handle.join().is_err() && first_error.is_none() {
-                first_error = Some(HostRuntimeError::ControllerPanicked(service.id.clone()));
+            if let Err(error) = stop_running_service(&self.status, service) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
             }
-            let _ = transition_shared(
-                &self.status.catalog,
-                &service.id,
-                ServiceLifecycleState::Stopped,
-                None,
-            );
         }
         first_error.map_or(Ok(()), Err)
     }
+}
+
+fn stop_running_service(
+    status: &HostStatusHandle,
+    service: RunningService,
+) -> Result<(), HostRuntimeError> {
+    let _ = transition_shared(
+        &status.catalog,
+        &service.id,
+        ServiceLifecycleState::Stopping,
+        None,
+    );
+    service.stop.cancel();
+    let join_result = service.handle.join();
+    let _ = transition_shared(
+        &status.catalog,
+        &service.id,
+        ServiceLifecycleState::Stopped,
+        None,
+    );
+    join_result.map_err(|_| HostRuntimeError::ControllerPanicked(service.id))
 }
 
 #[derive(Debug)]
@@ -1217,6 +1248,41 @@ mod tests {
     }
 
     #[test]
+    fn selected_services_quiesce_before_the_remaining_host() {
+        let (sender, receiver) = test_mpsc::channel();
+        let registrations = vec![
+            registration_with_events("worker.executor", &[], sender.clone()),
+            registration_with_events("worker.trigger", &["worker.executor"], sender.clone()),
+            registration_with_events("listener.http", &["worker.trigger"], sender),
+        ];
+        let mut supervisor = HostSupervisor::start(registrations, Duration::from_secs(1)).unwrap();
+        supervisor
+            .stop_services(&BTreeSet::from([id("worker.trigger"), id("listener.http")]))
+            .unwrap();
+        let statuses = supervisor.status_handle().statuses().unwrap();
+        assert_eq!(
+            statuses
+                .iter()
+                .find(|status| status.id == id("worker.executor"))
+                .unwrap()
+                .state,
+            ServiceLifecycleState::Ready
+        );
+        supervisor.shutdown().unwrap();
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            [
+                "start:worker.executor",
+                "start:worker.trigger",
+                "start:listener.http",
+                "stop:listener.http",
+                "stop:worker.trigger",
+                "stop:worker.executor",
+            ]
+        );
+    }
+
+    #[test]
     fn required_startup_failure_rolls_back_started_services() {
         let (sender, receiver) = test_mpsc::channel();
         let first = registration_with_events("worker.first", &[], sender);
@@ -1293,6 +1359,35 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
         assert!(host_stop.is_cancelled());
+        supervisor.shutdown().unwrap();
+    }
+
+    #[test]
+    fn required_service_panic_is_sanitized_and_requests_shutdown() {
+        let registration = ServiceRegistration::new(service("worker.required", &[]), |context| {
+            context.ready()?;
+            panic!("private event payload");
+        });
+        let supervisor = HostSupervisor::start(vec![registration], Duration::from_secs(1)).unwrap();
+        let host_stop = supervisor.shutdown_signal();
+        for _ in 0..100 {
+            if host_stop.is_cancelled() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(host_stop.is_cancelled());
+        let report = supervisor
+            .status_handle()
+            .statuses()
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(report.state, ServiceLifecycleState::Failed);
+        assert_eq!(
+            report.last_failure.unwrap().detail,
+            "service runner panicked"
+        );
         supervisor.shutdown().unwrap();
     }
 
