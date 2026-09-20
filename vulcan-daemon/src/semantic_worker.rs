@@ -74,20 +74,42 @@ pub fn spawn_semantic_worker(
     agent: Arc<CompanionSemanticAgent>,
     stop: Arc<ShutdownSignal>,
 ) -> JoinHandle<Result<(), String>> {
-    thread::spawn(move || loop {
-        let report = execute_semantic_worker_pass(
+    thread::spawn(move || {
+        run_semantic_worker(
             &config,
             &registry,
             &supervisor,
             &state_store,
+            &daemon_state_root,
             &agent,
+            &stop,
+        )
+    })
+}
+
+pub fn run_semantic_worker(
+    config: &DaemonSemanticWorkerConfig,
+    registry: &WikiRegistry,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    daemon_state_root: &Path,
+    agent: &CompanionSemanticAgent,
+    stop: &ShutdownSignal,
+) -> Result<(), String> {
+    loop {
+        let report = execute_semantic_worker_pass(
+            config,
+            registry,
+            supervisor,
+            state_store,
+            agent,
             unix_time_ms()?,
         );
-        save_status(&semantic_worker_status_path(&daemon_state_root), &report)?;
-        if wait_until_next_poll(&stop, Duration::from_secs(config.poll_seconds)) {
+        save_status(&semantic_worker_status_path(daemon_state_root), &report)?;
+        if wait_until_next_poll(stop, Duration::from_secs(config.poll_seconds)) {
             return Ok(());
         }
-    })
+    }
 }
 
 pub fn execute_semantic_worker_pass(

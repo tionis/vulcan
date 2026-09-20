@@ -826,6 +826,7 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
             );
         }
     }
+    print_hosted_services(&status.services);
     if status.wiki_statuses.is_empty() {
         println!("Registered wikis: none");
         return Ok(());
@@ -879,6 +880,47 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
         println!("    Notifications: {notification}");
     }
     Ok(())
+}
+
+fn print_hosted_services(services: &[vulcan_daemon::host::ServiceStatus]) {
+    if services.is_empty() {
+        return;
+    }
+    println!("Hosted services:");
+    for service in services {
+        println!(
+            "  {}: {}{} (starts {}, restarts {})",
+            service.id,
+            hosted_service_state_name(service.state),
+            if service.required { ", required" } else { "" },
+            service.start_count,
+            service.restart_count
+        );
+        if let Some(failure) = &service.last_failure {
+            println!(
+                "    Last failure [{}]: {}",
+                failure.category, failure.detail
+            );
+        }
+    }
+}
+
+const fn hosted_service_state_name(
+    state: vulcan_daemon::host::ServiceLifecycleState,
+) -> &'static str {
+    use vulcan_daemon::host::ServiceLifecycleState::{
+        Degraded, Disabled, Failed, Ready, Restarting, Starting, Stopped, Stopping,
+    };
+    match state {
+        Disabled => "disabled",
+        Starting => "starting",
+        Ready => "ready",
+        Degraded => "degraded",
+        Restarting => "restarting",
+        Failed => "failed",
+        Stopping => "stopping",
+        Stopped => "stopped",
+    }
 }
 
 fn sync_state_name(state: SyncState) -> &'static str {

@@ -95,24 +95,44 @@ pub fn spawn_conflict_worker(
     stop: Arc<ShutdownSignal>,
 ) -> JoinHandle<Result<(), String>> {
     thread::spawn(move || {
-        let mut previous = load_conflict_worker_status(&daemon_state_root)?;
-        loop {
-            let report = execute_conflict_worker_pass(
-                &config,
-                &registry,
-                &supervisor,
-                &state_store,
-                &agent,
-                previous.as_ref(),
-                unix_time_ms()?,
-            );
-            save_status(&conflict_worker_status_path(&daemon_state_root), &report)?;
-            previous = Some(report);
-            if stop.wait_timeout(Duration::from_secs(config.poll_seconds)) {
-                return Ok(());
-            }
-        }
+        run_conflict_worker(
+            &config,
+            &registry,
+            &supervisor,
+            &state_store,
+            &daemon_state_root,
+            &agent,
+            &stop,
+        )
     })
+}
+
+pub fn run_conflict_worker(
+    config: &DaemonConflictWorkerConfig,
+    registry: &WikiRegistry,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    daemon_state_root: &Path,
+    agent: &CompanionResolutionAgent,
+    stop: &ShutdownSignal,
+) -> Result<(), String> {
+    let mut previous = load_conflict_worker_status(daemon_state_root)?;
+    loop {
+        let report = execute_conflict_worker_pass(
+            config,
+            registry,
+            supervisor,
+            state_store,
+            agent,
+            previous.as_ref(),
+            unix_time_ms()?,
+        );
+        save_status(&conflict_worker_status_path(daemon_state_root), &report)?;
+        previous = Some(report);
+        if stop.wait_timeout(Duration::from_secs(config.poll_seconds)) {
+            return Ok(());
+        }
+    }
 }
 
 pub fn execute_conflict_worker_pass(

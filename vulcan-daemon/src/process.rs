@@ -2,14 +2,17 @@
 
 use crate::alert_delivery::{
     spawn_alert_delivery, spawn_best_effort_desktop_delivery, AlertDeliverySender,
-    AlertDeliveryWorker,
 };
 use crate::alerts::SyncAlertTracker;
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
-use crate::conflict_worker::spawn_conflict_worker;
+use crate::conflict_worker::run_conflict_worker;
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
 use crate::final_sync::run_final_sync_and_cancel;
+use crate::host::{
+    load_host_status, HostRuntimeError, HostSupervisor, RestartPolicy, ServiceDefinition,
+    ServiceId, ServiceRegistration, ServiceScope, ServiceStatus,
+};
 use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
 use crate::notifications::{
     run_notification_runtime_until, NotificationRuntimeError, NotificationRuntimeOptions,
@@ -20,7 +23,7 @@ use crate::registry::{RegistryError, WikiRegistrationStatus, WikiRegistry};
 use crate::runtime::{
     run_sync_trigger_runtime_with_stop, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
 };
-use crate::semantic_worker::spawn_semantic_worker;
+use crate::semantic_worker::run_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
 use crate::shutdown::ShutdownSignal;
 use crate::status::{wiki_sync_status, DaemonWikiSyncStatus};
@@ -38,7 +41,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
@@ -74,6 +77,7 @@ pub struct DaemonStatusReport {
     pub uptime_ms: Option<u64>,
     pub registered_wikis: Vec<WikiRegistrationStatus>,
     pub wiki_statuses: Vec<DaemonWikiOperationalStatus>,
+    pub services: Vec<ServiceStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<DaemonServiceDiagnostic>,
 }
@@ -141,6 +145,10 @@ impl DaemonProcessContext {
     fn lock_path(&self) -> PathBuf {
         self.state_root.join("daemon").join(LOCK_FILE)
     }
+
+    fn host_status_path(&self) -> PathBuf {
+        self.state_root.join("daemon").join("services.json")
+    }
 }
 
 #[derive(Debug)]
@@ -155,6 +163,7 @@ pub enum DaemonProcessError {
     Notifications(NotificationRuntimeError),
     Io(std::io::Error),
     Json(serde_json::Error),
+    Host(HostRuntimeError),
     Worker(String),
 }
 
@@ -171,6 +180,7 @@ impl Display for DaemonProcessError {
             Self::Notifications(error) => Display::fmt(error, formatter),
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Json(error) => Display::fmt(error, formatter),
+            Self::Host(error) => Display::fmt(error, formatter),
         }
     }
 }
@@ -210,6 +220,12 @@ impl From<std::io::Error> for DaemonProcessError {
 impl From<serde_json::Error> for DaemonProcessError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
+    }
+}
+
+impl From<HostRuntimeError> for DaemonProcessError {
+    fn from(error: HostRuntimeError) -> Self {
+        Self::Host(error)
     }
 }
 
@@ -283,34 +299,39 @@ async fn run_daemon(
         started_unix_ms: unix_time_ms()?,
         credential_id: credential.id.clone(),
     };
-    write_runtime_record(&context.runtime_path(), &record)?;
-    let runtime_guard = RuntimeRecordGuard {
-        path: context.runtime_path(),
-        pid: record.pid,
-    };
-
     let state_store = Arc::new(SyncStateStore::at(
         context.state_root.join("sync/repositories"),
     ));
     let supervisor = Arc::new(SyncSupervisor::at(
         state_store.root().join("daemon/jobs.json"),
     )?);
-    if context.verbose {
-        eprintln!(
-            "daemon started on {bind} with {} registered wiki(s)",
-            config.vaults.len(),
-        );
-    }
+    log_daemon_started(context, bind, config.vaults.len());
     let stop = Arc::new(ShutdownSignal::new(false));
-    let workers = DaemonWorkers::spawn(
-        context,
-        &config,
-        &supervisor,
-        &state_store,
-        resolution_agent.as_ref(),
-        semantic_agent.as_ref(),
-        &stop,
-    );
+    let host = HostSupervisor::start_persisted_with_signal(
+        daemon_worker_registrations(
+            context,
+            &config,
+            &supervisor,
+            &state_store,
+            resolution_agent.as_ref(),
+            semantic_agent.as_ref(),
+            &tokio::runtime::Handle::current(),
+        )?,
+        Duration::from_secs(10),
+        Arc::clone(&stop),
+        context.host_status_path(),
+    )?;
+    // Publishing the runtime record is the daemon's readiness boundary. Keep
+    // it behind required-service startup so every successful authenticated
+    // probe observes the corresponding service-health snapshot.
+    if let Err(error) = write_runtime_record(&context.runtime_path(), &record) {
+        let _ = host.shutdown();
+        return Err(error);
+    }
+    let runtime_guard = RuntimeRecordGuard {
+        path: context.runtime_path(),
+        pid: record.pid,
+    };
     let state = CompanionHttpState {
         registry: Arc::new(context.registry.clone()),
         supervisor,
@@ -323,18 +344,278 @@ async fn run_daemon(
     let shutdown_stop = Arc::clone(&stop);
     let shutdown_registry = Arc::clone(&state.registry);
     let shutdown_supervisor = Arc::clone(&state.supervisor);
-    let serve = serve_companion_with_shutdown(
+    let serve_result = serve_companion_with_shutdown(
         listener,
         state,
         wait_for_daemon_shutdown(shutdown_stop, shutdown_registry, shutdown_supervisor),
     )
     .await;
-    stop.cancel();
-    let workers_result = workers.join().await;
+    let host_result = host.shutdown();
     drop(runtime_guard);
-    serve?;
-    workers_result?;
+    serve_result?;
+    host_result?;
     Ok(())
+}
+
+fn log_daemon_started(context: &DaemonProcessContext, bind: SocketAddr, wiki_count: usize) {
+    if context.verbose {
+        eprintln!("daemon started on {bind} with {wiki_count} registered wiki(s)");
+    }
+}
+
+#[allow(clippy::too_many_lines)] // Declaratively assembles the complete built-in service graph.
+fn daemon_worker_registrations(
+    context: &DaemonProcessContext,
+    config: &crate::registry::DaemonConfig,
+    supervisor: &Arc<SyncSupervisor>,
+    state_store: &Arc<SyncStateStore>,
+    resolution_agent: Option<&Arc<CompanionResolutionAgent>>,
+    semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
+    runtime: &tokio::runtime::Handle,
+) -> Result<Vec<ServiceRegistration>, DaemonProcessError> {
+    validate_worker_agents(config, resolution_agent, semantic_agent)?;
+    let alert_enabled = config.notifications.desktop
+        || !config.notifications.webhooks.is_empty()
+        || !config.notifications.commands.is_empty();
+    let alert_sender = Arc::new(Mutex::new(None::<AlertDeliverySender>));
+    let mut registrations = Vec::new();
+
+    let alert_definition = worker_definition(
+        "worker.alert-delivery",
+        alert_enabled,
+        false,
+        &[],
+        optional_worker_restart(),
+    )?;
+    let alert_config = config.notifications.clone();
+    let alert_state_root = context.state_root.clone();
+    let alert_registry = context.registry.clone();
+    let alert_supervisor = Arc::clone(supervisor);
+    let alert_slot = Arc::clone(&alert_sender);
+    registrations.push(ServiceRegistration::new(
+        alert_definition,
+        move |service| {
+            let (sender, worker) = match spawn_alert_delivery(
+                &alert_config,
+                &alert_state_root,
+                alert_registry.clone(),
+                &alert_supervisor,
+                Arc::clone(service.stop()),
+            ) {
+                Ok(Some(delivery)) => delivery,
+                Ok(None) => {
+                    service.ready()?;
+                    while !service.stop().wait_timeout(Duration::from_millis(50)) {}
+                    return Ok(());
+                }
+                Err(error) if alert_config.desktop => {
+                    eprintln!(
+                        "level=warning event=notification_delivery_failed sink=ledger reason=startup_error; {error}"
+                    );
+                    spawn_best_effort_desktop_delivery()
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            *alert_slot
+                .lock()
+                .map_err(|_| "alert delivery sender lock is poisoned".to_string())? = Some(sender);
+            service.ready()?;
+            while !service.stop().wait_timeout(Duration::from_millis(50)) {}
+            *alert_slot
+                .lock()
+                .map_err(|_| "alert delivery sender lock is poisoned".to_string())? = None;
+            worker
+                .join()
+                .map_err(|_| "alert delivery worker panicked".to_string())
+        },
+    ));
+
+    let sync_dependencies = if alert_enabled {
+        vec![service_id("worker.alert-delivery")?]
+    } else {
+        Vec::new()
+    };
+    let sync_definition = worker_definition(
+        "worker.sync-executor",
+        true,
+        true,
+        &sync_dependencies,
+        RestartPolicy::Never,
+    )?;
+    let sync_registry = context.registry.clone();
+    let sync_supervisor = Arc::clone(supervisor);
+    let sync_state_store = Arc::clone(state_store);
+    let sync_alert_sender = Arc::clone(&alert_sender);
+    let verbose = context.verbose;
+    registrations.push(ServiceRegistration::new(sync_definition, move |service| {
+        service.ready()?;
+        run_job_worker(
+            &sync_registry,
+            &sync_supervisor,
+            &sync_state_store,
+            service.stop(),
+            verbose,
+            &sync_alert_sender,
+        )
+        .map_err(|error| error.to_string())
+    }));
+
+    let trigger_definition = worker_definition(
+        "worker.sync-trigger",
+        true,
+        true,
+        &[service_id("worker.sync-executor")?],
+        RestartPolicy::Never,
+    )?;
+    let trigger_registry = context.registry.clone();
+    let trigger_supervisor = Arc::clone(supervisor);
+    let trigger_state_store = Arc::clone(state_store);
+    registrations.push(ServiceRegistration::new(
+        trigger_definition,
+        move |service| {
+            service.ready()?;
+            run_sync_trigger_runtime_with_stop(
+                &trigger_registry,
+                &trigger_supervisor,
+                &trigger_state_store,
+                &SyncTriggerRuntimeOptions::default(),
+                service.stop(),
+            )
+            .map_err(|error| error.to_string())
+        },
+    ));
+
+    let notification_definition = worker_definition(
+        "worker.remote-notifications",
+        true,
+        true,
+        &[service_id("worker.sync-trigger")?],
+        RestartPolicy::Never,
+    )?;
+    let notification_registry = context.registry.clone();
+    let notification_supervisor = Arc::clone(supervisor);
+    let notification_runtime = runtime.clone();
+    registrations.push(ServiceRegistration::new(
+        notification_definition,
+        move |service| {
+            service.ready()?;
+            notification_runtime
+                .block_on(run_notification_runtime_until(
+                    notification_registry.clone(),
+                    Arc::clone(&notification_supervisor),
+                    NotificationRuntimeOptions {
+                        verbose,
+                        ..NotificationRuntimeOptions::default()
+                    },
+                    Arc::clone(service.stop()),
+                ))
+                .map_err(|error| error.to_string())
+        },
+    ));
+
+    let conflict_definition = worker_definition(
+        "worker.conflict",
+        config.conflict_worker.is_some(),
+        false,
+        &[service_id("worker.sync-executor")?],
+        optional_worker_restart(),
+    )?;
+    let conflict_config = config.conflict_worker.clone();
+    let conflict_registry = context.registry.clone();
+    let conflict_supervisor = Arc::clone(supervisor);
+    let conflict_state_store = Arc::clone(state_store);
+    let conflict_state_root = context.state_root.clone();
+    let resolution_agent = resolution_agent.cloned();
+    registrations.push(ServiceRegistration::new(
+        conflict_definition,
+        move |service| {
+            let config = conflict_config
+                .as_ref()
+                .ok_or_else(|| "conflict worker is not configured".to_string())?;
+            let agent = resolution_agent
+                .as_deref()
+                .ok_or_else(|| "conflict worker agent is unavailable".to_string())?;
+            service.ready()?;
+            run_conflict_worker(
+                config,
+                &conflict_registry,
+                &conflict_supervisor,
+                &conflict_state_store,
+                &conflict_state_root,
+                agent,
+                service.stop(),
+            )
+        },
+    ));
+
+    let semantic_definition = worker_definition(
+        "worker.semantic",
+        config.semantic_worker.is_some(),
+        false,
+        &[service_id("worker.sync-executor")?],
+        optional_worker_restart(),
+    )?;
+    let semantic_config = config.semantic_worker.clone();
+    let semantic_registry = context.registry.clone();
+    let semantic_supervisor = Arc::clone(supervisor);
+    let semantic_state_store = Arc::clone(state_store);
+    let semantic_state_root = context.state_root.clone();
+    let semantic_agent = semantic_agent.cloned();
+    registrations.push(ServiceRegistration::new(
+        semantic_definition,
+        move |service| {
+            let config = semantic_config
+                .as_ref()
+                .ok_or_else(|| "semantic worker is not configured".to_string())?;
+            let agent = semantic_agent
+                .as_deref()
+                .ok_or_else(|| "semantic worker agent is unavailable".to_string())?;
+            service.ready()?;
+            run_semantic_worker(
+                config,
+                &semantic_registry,
+                &semantic_supervisor,
+                &semantic_state_store,
+                &semantic_state_root,
+                agent,
+                service.stop(),
+            )
+        },
+    ));
+
+    Ok(registrations)
+}
+
+fn service_id(value: &str) -> Result<ServiceId, DaemonProcessError> {
+    ServiceId::parse(value)
+        .map_err(HostRuntimeError::from)
+        .map_err(DaemonProcessError::from)
+}
+
+fn worker_definition(
+    id: &str,
+    enabled: bool,
+    required: bool,
+    dependencies: &[ServiceId],
+    restart: RestartPolicy,
+) -> Result<ServiceDefinition, DaemonProcessError> {
+    Ok(ServiceDefinition {
+        id: service_id(id)?,
+        service_kind: "worker".to_string(),
+        scope: ServiceScope::Global,
+        enabled,
+        required,
+        dependencies: dependencies.to_vec(),
+        restart,
+    })
+}
+
+const fn optional_worker_restart() -> RestartPolicy {
+    RestartPolicy::BoundedOnFailure {
+        max_restarts: 3,
+        initial_backoff_ms: 1_000,
+        max_backoff_ms: 30_000,
+    }
 }
 
 fn validate_worker_agents(
@@ -353,153 +634,6 @@ fn validate_worker_agents(
         ));
     }
     Ok(())
-}
-
-struct DaemonWorkers {
-    trigger: thread::JoinHandle<Result<(), DaemonProcessError>>,
-    sync: thread::JoinHandle<Result<(), DaemonProcessError>>,
-    notifications: tokio::task::JoinHandle<Result<(), DaemonProcessError>>,
-    alert_delivery: Option<AlertDeliveryWorker>,
-    semantic: Option<thread::JoinHandle<Result<(), String>>>,
-    conflict: Option<thread::JoinHandle<Result<(), String>>>,
-}
-
-impl DaemonWorkers {
-    fn spawn(
-        context: &DaemonProcessContext,
-        config: &crate::registry::DaemonConfig,
-        supervisor: &Arc<SyncSupervisor>,
-        state_store: &Arc<SyncStateStore>,
-        resolution_agent: Option<&Arc<CompanionResolutionAgent>>,
-        semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
-        stop: &Arc<ShutdownSignal>,
-    ) -> Self {
-        let (alert_sender, alert_delivery) = match spawn_alert_delivery(
-            &config.notifications,
-            &context.state_root,
-            context.registry.clone(),
-            supervisor,
-            Arc::clone(stop),
-        ) {
-            Ok(Some((sender, worker))) => (Some(sender), Some(worker)),
-            Ok(None) => (None, None),
-            Err(error) => {
-                eprintln!(
-                    "level=warning event=notification_delivery_failed sink=ledger reason=startup_error; {error}"
-                );
-                if config.notifications.desktop {
-                    let (sender, worker) = spawn_best_effort_desktop_delivery();
-                    (Some(sender), Some(worker))
-                } else {
-                    (None, None)
-                }
-            }
-        };
-        Self {
-            trigger: spawn_trigger_runtime(
-                context.registry.clone(),
-                Arc::clone(supervisor),
-                Arc::clone(state_store),
-                Arc::clone(stop),
-            ),
-            sync: spawn_job_worker(
-                context.registry.clone(),
-                Arc::clone(supervisor),
-                Arc::clone(state_store),
-                Arc::clone(stop),
-                context.verbose,
-                alert_sender,
-            ),
-            notifications: spawn_notification_runtime(
-                context.registry.clone(),
-                Arc::clone(supervisor),
-                Arc::clone(stop),
-                context.verbose,
-            ),
-            alert_delivery,
-            conflict: config.conflict_worker.clone().map(|worker_config| {
-                spawn_conflict_worker(
-                    worker_config,
-                    context.registry.clone(),
-                    Arc::clone(supervisor),
-                    Arc::clone(state_store),
-                    context.state_root.clone(),
-                    Arc::clone(resolution_agent.expect("conflict worker agent was validated")),
-                    Arc::clone(stop),
-                )
-            }),
-            semantic: config.semantic_worker.clone().map(|worker_config| {
-                spawn_semantic_worker(
-                    worker_config,
-                    context.registry.clone(),
-                    Arc::clone(supervisor),
-                    Arc::clone(state_store),
-                    context.state_root.clone(),
-                    Arc::clone(semantic_agent.expect("semantic worker agent was validated")),
-                    Arc::clone(stop),
-                )
-            }),
-        }
-    }
-
-    async fn join(self) -> Result<(), DaemonProcessError> {
-        self.trigger.join().map_err(|_| {
-            DaemonProcessError::Worker("daemon trigger runtime panicked".to_string())
-        })??;
-        self.sync
-            .join()
-            .map_err(|_| DaemonProcessError::Worker("daemon sync worker panicked".to_string()))??;
-        self.notifications.await.map_err(|error| {
-            DaemonProcessError::Worker(format!("daemon notification runtime panicked: {error}"))
-        })??;
-        if let Some(worker) = self.alert_delivery {
-            worker.join().map_err(|_| {
-                DaemonProcessError::Worker("alert delivery worker panicked".to_string())
-            })?;
-        }
-        if let Some(worker) = self.semantic {
-            worker
-                .join()
-                .map_err(|_| {
-                    DaemonProcessError::Worker("daemon semantic worker panicked".to_string())
-                })?
-                .map_err(DaemonProcessError::Worker)?;
-        }
-        if let Some(worker) = self.conflict {
-            worker
-                .join()
-                .map_err(|_| {
-                    DaemonProcessError::Worker("daemon conflict worker panicked".to_string())
-                })?
-                .map_err(DaemonProcessError::Worker)?;
-        }
-        Ok(())
-    }
-}
-
-fn spawn_notification_runtime(
-    registry: WikiRegistry,
-    supervisor: Arc<SyncSupervisor>,
-    stop: Arc<ShutdownSignal>,
-    verbose: bool,
-) -> tokio::task::JoinHandle<Result<(), DaemonProcessError>> {
-    tokio::spawn(async move {
-        let result = run_notification_runtime_until(
-            registry,
-            supervisor,
-            NotificationRuntimeOptions {
-                verbose,
-                ..NotificationRuntimeOptions::default()
-            },
-            Arc::clone(&stop),
-        )
-        .await
-        .map_err(DaemonProcessError::Notifications);
-        if result.is_err() {
-            stop.cancel();
-        }
-        result
-    })
 }
 
 fn configured_agents(
@@ -611,88 +745,59 @@ async fn wait_for_termination_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-fn spawn_trigger_runtime(
-    registry: WikiRegistry,
-    supervisor: Arc<SyncSupervisor>,
-    state_store: Arc<SyncStateStore>,
-    stop: Arc<ShutdownSignal>,
-) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
-    thread::spawn(move || {
-        let result = run_sync_trigger_runtime_with_stop(
-            &registry,
-            &supervisor,
-            &state_store,
-            &SyncTriggerRuntimeOptions::default(),
-            &stop,
-        )
-        .map_err(DaemonProcessError::Runtime);
-        if result.is_err() {
-            stop.cancel();
-        }
-        result
-    })
-}
-
-fn spawn_job_worker(
-    registry: WikiRegistry,
-    supervisor: Arc<SyncSupervisor>,
-    state_store: Arc<SyncStateStore>,
-    stop: Arc<ShutdownSignal>,
+fn run_job_worker(
+    registry: &WikiRegistry,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    stop: &ShutdownSignal,
     verbose: bool,
-    alert_sender: Option<AlertDeliverySender>,
-) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
-    thread::spawn(move || {
-        let result = (|| {
-            let engine = vulcan_sync::GitCliEngine::default();
-            let mut last_branch_diagnostics = BTreeMap::<String, String>::new();
-            let retained = supervisor.list()?;
-            let mut alerts = SyncAlertTracker::from_retained_jobs(&retained);
-            while !stop.is_cancelled() {
-                match execute_next_sync_job_with_state_store_and_engine(
-                    &supervisor,
-                    &registry,
-                    &GitSyncOptions::default(),
-                    &state_store,
-                    &engine,
-                )? {
-                    Some(execution) => {
-                        if verbose {
-                            eprintln!("{}", format_sync_execution(&execution));
-                        }
-                        if enqueue_busy_recovery(&supervisor, &execution)? {
-                            continue;
-                        }
-                        if let Some(alert) = alerts.observe(&execution) {
-                            eprintln!("{}", alert.log_line());
-                            if let Some(sender) = alert_sender.as_ref() {
-                                if let Err(error) = sender.enqueue(alert) {
-                                    eprintln!(
-                                        "level=warning event=notification_delivery_failed sink=dispatcher reason=enqueue_error; {error}",
-                                    );
-                                }
-                            }
-                        }
-                        if let Some(line) = next_branch_diagnostic(
-                            execution.job.job.wiki_id.as_deref(),
-                            execution
-                                .report
-                                .as_ref()
-                                .and_then(|report| report.sync.branch.as_ref()),
-                            &mut last_branch_diagnostics,
-                        ) {
-                            eprintln!("{line}");
+    alert_sender: &Mutex<Option<AlertDeliverySender>>,
+) -> Result<(), DaemonProcessError> {
+    let engine = vulcan_sync::GitCliEngine::default();
+    let mut last_branch_diagnostics = BTreeMap::<String, String>::new();
+    let retained = supervisor.list()?;
+    let mut alerts = SyncAlertTracker::from_retained_jobs(&retained);
+    while !stop.is_cancelled() {
+        match execute_next_sync_job_with_state_store_and_engine(
+            supervisor,
+            registry,
+            &GitSyncOptions::default(),
+            state_store,
+            &engine,
+        )? {
+            Some(execution) => {
+                if verbose {
+                    eprintln!("{}", format_sync_execution(&execution));
+                }
+                if enqueue_busy_recovery(supervisor, &execution)? {
+                    continue;
+                }
+                if let Some(alert) = alerts.observe(&execution) {
+                    eprintln!("{}", alert.log_line());
+                    let sender = alert_sender.lock().ok().and_then(|sender| sender.clone());
+                    if let Some(sender) = sender {
+                        if let Err(error) = sender.enqueue(alert) {
+                            eprintln!(
+                                "level=warning event=notification_delivery_failed sink=dispatcher reason=enqueue_error; {error}",
+                            );
                         }
                     }
-                    None => supervisor.wait_for_work(&stop)?,
+                }
+                if let Some(line) = next_branch_diagnostic(
+                    execution.job.job.wiki_id.as_deref(),
+                    execution
+                        .report
+                        .as_ref()
+                        .and_then(|report| report.sync.branch.as_ref()),
+                    &mut last_branch_diagnostics,
+                ) {
+                    eprintln!("{line}");
                 }
             }
-            Ok(())
-        })();
-        if result.is_err() {
-            stop.cancel();
+            None => supervisor.wait_for_work(stop)?,
         }
-        result
-    })
+    }
+    Ok(())
 }
 
 /// Gives one transient repository-lock failure an immediate supervised
@@ -748,6 +853,9 @@ pub fn daemon_status(
     let runtime = read_runtime_record(&context.runtime_path())?;
     let registered_wikis = context.registry.list(None)?;
     let state_store = SyncStateStore::at(context.state_root.join("sync/repositories"));
+    let services = load_host_status(&context.host_status_path())?
+        .map(|report| report.services)
+        .unwrap_or_default();
     let supervisor = SyncSupervisor::inspect_at(state_store.root().join("daemon/jobs.json"))?;
     let wiki_statuses = registered_wikis
         .iter()
@@ -794,6 +902,7 @@ pub fn daemon_status(
         runtime,
         registered_wikis,
         wiki_statuses,
+        services,
         service: None,
     })
 }
@@ -838,7 +947,7 @@ pub fn request_daemon_shutdown(
     })?;
     authenticated_request(context, &record, "POST", "/shutdown")?;
     for _ in 0..700 {
-        if TcpStream::connect_timeout(&record.bind, Duration::from_millis(50)).is_err() {
+        if read_runtime_record(&context.runtime_path())?.is_none() {
             break;
         }
         thread::sleep(Duration::from_millis(50));
@@ -1265,6 +1374,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // End-to-end lifecycle assertions share one daemon fixture.
     fn foreground_process_reports_status_and_stops_over_authenticated_http() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let registry_path = temporary.path().join("daemon.toml");
@@ -1305,6 +1415,15 @@ mod tests {
             .expect("daemon becomes ready");
         assert_eq!(status.registered_wikis.len(), 1);
         assert_eq!(status.wiki_statuses.len(), 1);
+        assert_eq!(status.services.len(), 6);
+        assert!(status.services.iter().any(|service| {
+            service.id.as_str() == "worker.sync-executor"
+                && service.state == crate::host::ServiceLifecycleState::Ready
+        }));
+        assert!(status.services.iter().any(|service| {
+            service.id.as_str() == "worker.semantic"
+                && service.state == crate::host::ServiceLifecycleState::Disabled
+        }));
         assert!(status.uptime_ms.is_some());
         assert!(status
             .runtime
@@ -1337,6 +1456,11 @@ mod tests {
 
         let stopped = request_daemon_shutdown(&context).expect("request shutdown");
         assert!(!stopped.running);
+        assert!(stopped.services.iter().all(|service| matches!(
+            service.state,
+            crate::host::ServiceLifecycleState::Stopped
+                | crate::host::ServiceLifecycleState::Disabled
+        )));
         daemon.join().expect("daemon thread");
         result_receiver
             .recv()

@@ -4,16 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::fs;
+use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tempfile::NamedTempFile;
 
 use crate::shutdown::ShutdownSignal;
 
 const MAX_SERVICE_ID_BYTES: usize = 160;
 const MAX_FAILURE_DETAIL_BYTES: usize = 512;
+const MAX_HOST_STATUS_BYTES: u64 = 1024 * 1024;
+pub const HOST_STATUS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -141,6 +147,12 @@ pub struct ServiceStatus {
     pub last_transition_unix_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<ServiceFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostStatusReport {
+    pub version: u32,
+    pub services: Vec<ServiceStatus>,
 }
 
 #[derive(Debug)]
@@ -513,7 +525,7 @@ impl ServiceRunContext {
 struct ServiceReadiness {
     id: ServiceId,
     ready: Arc<AtomicBool>,
-    catalog: Arc<Mutex<ServiceCatalog>>,
+    catalog: Arc<SharedCatalog>,
     startup: mpsc::Sender<StartupEvent>,
 }
 
@@ -530,12 +542,13 @@ impl ServiceReadiness {
 
 #[derive(Debug, Clone)]
 pub struct HostStatusHandle {
-    catalog: Arc<Mutex<ServiceCatalog>>,
+    catalog: Arc<SharedCatalog>,
 }
 
 impl HostStatusHandle {
     pub fn statuses(&self) -> Result<Vec<ServiceStatus>, HostRuntimeError> {
         Ok(self
+            .catalog
             .catalog
             .lock()
             .map_err(|_| HostRuntimeError::Poisoned)?
@@ -545,10 +558,18 @@ impl HostStatusHandle {
     pub fn required_services_ready(&self) -> Result<bool, HostRuntimeError> {
         Ok(self
             .catalog
+            .catalog
             .lock()
             .map_err(|_| HostRuntimeError::Poisoned)?
             .required_services_ready())
     }
+}
+
+#[derive(Debug)]
+struct SharedCatalog {
+    catalog: Mutex<ServiceCatalog>,
+    status_path: Option<PathBuf>,
+    persist_lock: Mutex<()>,
 }
 
 #[derive(Debug)]
@@ -570,6 +591,42 @@ impl HostSupervisor {
         registrations: Vec<ServiceRegistration>,
         startup_timeout: Duration,
     ) -> Result<Self, HostRuntimeError> {
+        Self::start_inner(
+            registrations,
+            startup_timeout,
+            Arc::new(ShutdownSignal::default()),
+            None,
+        )
+    }
+
+    pub fn start_with_signal(
+        registrations: Vec<ServiceRegistration>,
+        startup_timeout: Duration,
+        host_stop: Arc<ShutdownSignal>,
+    ) -> Result<Self, HostRuntimeError> {
+        Self::start_inner(registrations, startup_timeout, host_stop, None)
+    }
+
+    pub fn start_persisted_with_signal(
+        registrations: Vec<ServiceRegistration>,
+        startup_timeout: Duration,
+        host_stop: Arc<ShutdownSignal>,
+        status_path: impl Into<PathBuf>,
+    ) -> Result<Self, HostRuntimeError> {
+        Self::start_inner(
+            registrations,
+            startup_timeout,
+            host_stop,
+            Some(status_path.into()),
+        )
+    }
+
+    fn start_inner(
+        registrations: Vec<ServiceRegistration>,
+        startup_timeout: Duration,
+        host_stop: Arc<ShutdownSignal>,
+        status_path: Option<PathBuf>,
+    ) -> Result<Self, HostRuntimeError> {
         if startup_timeout.is_zero() {
             return Err(HostRuntimeError::InvalidStartupTimeout);
         }
@@ -585,9 +642,13 @@ impl HostSupervisor {
         let catalog = ServiceCatalog::new(definitions)?;
         let startup_order = catalog.startup_order().to_vec();
         let status = HostStatusHandle {
-            catalog: Arc::new(Mutex::new(catalog)),
+            catalog: Arc::new(SharedCatalog {
+                catalog: Mutex::new(catalog),
+                status_path,
+                persist_lock: Mutex::new(()),
+            }),
         };
-        let host_stop = Arc::new(ShutdownSignal::default());
+        persist_shared(&status.catalog)?;
         let mut supervisor = Self {
             status,
             host_stop,
@@ -597,6 +658,7 @@ impl HostSupervisor {
         for id in startup_order {
             let definition = supervisor
                 .status
+                .catalog
                 .catalog
                 .lock()
                 .map_err(|_| HostRuntimeError::Poisoned)?
@@ -704,6 +766,9 @@ pub enum HostRuntimeError {
     RequiredStartupFailed { id: ServiceId, detail: String },
     ControllerPanicked(ServiceId),
     Clock(String),
+    Io(String),
+    Json(String),
+    InvalidStatus(String),
     Poisoned,
 }
 
@@ -740,6 +805,9 @@ impl Display for HostRuntimeError {
                 write!(formatter, "host service controller `{id}` panicked")
             }
             Self::Clock(detail) => write!(formatter, "host clock error: {detail}"),
+            Self::Io(detail) => write!(formatter, "host status I/O error: {detail}"),
+            Self::Json(detail) => write!(formatter, "host status JSON error: {detail}"),
+            Self::InvalidStatus(detail) => write!(formatter, "invalid host status: {detail}"),
             Self::Poisoned => formatter.write_str("host service state lock is poisoned"),
         }
     }
@@ -756,7 +824,7 @@ impl From<HostDefinitionError> for HostRuntimeError {
 fn spawn_service_controller(
     definition: ServiceDefinition,
     runner: Arc<ServiceRunner>,
-    catalog: Arc<Mutex<ServiceCatalog>>,
+    catalog: Arc<SharedCatalog>,
     host_stop: Arc<ShutdownSignal>,
     service_stop: Arc<ShutdownSignal>,
     startup: mpsc::Sender<StartupEvent>,
@@ -865,15 +933,108 @@ fn exponential_backoff(initial_ms: u64, maximum_ms: u64, exponent: u32) -> Durat
 }
 
 fn transition_shared(
-    catalog: &Mutex<ServiceCatalog>,
+    catalog: &SharedCatalog,
     id: &ServiceId,
     state: ServiceLifecycleState,
     failure: Option<ServiceFailure>,
 ) -> Result<(), HostRuntimeError> {
-    catalog
+    {
+        catalog
+            .catalog
+            .lock()
+            .map_err(|_| HostRuntimeError::Poisoned)?
+            .transition(id, state, unix_time_ms()?, failure)?;
+    }
+    persist_shared(catalog)
+}
+
+fn persist_shared(catalog: &SharedCatalog) -> Result<(), HostRuntimeError> {
+    let Some(path) = catalog.status_path.as_deref() else {
+        return Ok(());
+    };
+    let _persist = catalog
+        .persist_lock
         .lock()
-        .map_err(|_| HostRuntimeError::Poisoned)?
-        .transition(id, state, unix_time_ms()?, failure)?;
+        .map_err(|_| HostRuntimeError::Poisoned)?;
+    let report = HostStatusReport {
+        version: HOST_STATUS_VERSION,
+        services: catalog
+            .catalog
+            .lock()
+            .map_err(|_| HostRuntimeError::Poisoned)?
+            .statuses(),
+    };
+    persist_host_status(path, &report)
+}
+
+pub fn load_host_status(path: &Path) -> Result<Option<HostStatusReport>, HostRuntimeError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(HostRuntimeError::Io(error.to_string())),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(HostRuntimeError::InvalidStatus(format!(
+            "{} must be a regular file",
+            path.display()
+        )));
+    }
+    if metadata.len() > MAX_HOST_STATUS_BYTES {
+        return Err(HostRuntimeError::InvalidStatus(format!(
+            "{} exceeds the {} byte limit",
+            path.display(),
+            MAX_HOST_STATUS_BYTES
+        )));
+    }
+    let bytes = fs::read(path).map_err(|error| HostRuntimeError::Io(error.to_string()))?;
+    let report: HostStatusReport = serde_json::from_slice(&bytes)
+        .map_err(|error| HostRuntimeError::Json(error.to_string()))?;
+    if report.version != HOST_STATUS_VERSION {
+        return Err(HostRuntimeError::InvalidStatus(format!(
+            "unsupported version {}",
+            report.version
+        )));
+    }
+    Ok(Some(report))
+}
+
+fn persist_host_status(path: &Path, report: &HostStatusReport) -> Result<(), HostRuntimeError> {
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(HostRuntimeError::InvalidStatus(format!(
+            "refusing symlinked host status {}",
+            path.display()
+        )));
+    }
+    let parent = path.parent().ok_or_else(|| {
+        HostRuntimeError::InvalidStatus("host status path has no parent".to_string())
+    })?;
+    fs::create_dir_all(parent).map_err(|error| HostRuntimeError::Io(error.to_string()))?;
+    let mut temporary =
+        NamedTempFile::new_in(parent).map_err(|error| HostRuntimeError::Io(error.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| HostRuntimeError::Io(error.to_string()))?;
+    }
+    serde_json::to_writer(temporary.as_file_mut(), report)
+        .map_err(|error| HostRuntimeError::Json(error.to_string()))?;
+    temporary
+        .as_file_mut()
+        .write_all(b"\n")
+        .map_err(|error| HostRuntimeError::Io(error.to_string()))?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .map_err(|error| HostRuntimeError::Io(error.to_string()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| HostRuntimeError::Io(error.error.to_string()))?;
     Ok(())
 }
 
@@ -890,6 +1051,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
     use std::sync::mpsc as test_mpsc;
+    use tempfile::tempdir;
 
     fn id(value: &str) -> ServiceId {
         ServiceId::parse(value).expect("service id")
@@ -1134,6 +1296,84 @@ mod tests {
         supervisor.shutdown().unwrap();
     }
 
+    #[test]
+    fn persisted_health_includes_disabled_ready_failed_and_stopped_services() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("daemon/services.json");
+        let mut disabled = service("worker.disabled", &[]);
+        disabled.enabled = false;
+        disabled.required = false;
+        let running = quiet_registration("worker.running");
+        let disabled =
+            ServiceRegistration::new(disabled, |_| panic!("disabled service must not run"));
+        let supervisor = HostSupervisor::start_persisted_with_signal(
+            vec![disabled, running],
+            Duration::from_secs(1),
+            Arc::new(ShutdownSignal::default()),
+            &path,
+        )
+        .unwrap();
+        let live = load_host_status(&path).unwrap().unwrap();
+        assert_eq!(live.version, HOST_STATUS_VERSION);
+        assert_eq!(live.services.len(), 2);
+        assert_eq!(
+            live.services
+                .iter()
+                .find(|status| status.id == id("worker.disabled"))
+                .unwrap()
+                .state,
+            ServiceLifecycleState::Disabled
+        );
+        assert_eq!(
+            live.services
+                .iter()
+                .find(|status| status.id == id("worker.running"))
+                .unwrap()
+                .state,
+            ServiceLifecycleState::Ready
+        );
+        supervisor.shutdown().unwrap();
+        let stopped = load_host_status(&path).unwrap().unwrap();
+        assert_eq!(
+            stopped
+                .services
+                .iter()
+                .find(|status| status.id == id("worker.running"))
+                .unwrap()
+                .state,
+            ServiceLifecycleState::Stopped
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_health_rejects_symlinked_state() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempdir().unwrap();
+        let target = temporary.path().join("target.json");
+        fs::write(&target, "{}\n").unwrap();
+        let path = temporary.path().join("services.json");
+        symlink(&target, &path).unwrap();
+        let error = HostSupervisor::start_persisted_with_signal(
+            vec![quiet_registration("worker.running")],
+            Duration::from_secs(1),
+            Arc::new(ShutdownSignal::default()),
+            &path,
+        )
+        .expect_err("symlinked status must fail");
+        assert!(matches!(error, HostRuntimeError::InvalidStatus(_)));
+        assert_eq!(fs::read_to_string(target).unwrap(), "{}\n");
+    }
+
     fn registration_with_events(
         id_value: &str,
         dependencies: &[&str],
@@ -1146,6 +1386,14 @@ mod tests {
             context.ready()?;
             while !context.stop().wait_timeout(Duration::from_millis(5)) {}
             sender.send(format!("stop:{service_id}")).unwrap();
+            Ok(())
+        })
+    }
+
+    fn quiet_registration(id_value: &str) -> ServiceRegistration {
+        ServiceRegistration::new(service(id_value, &[]), |context| {
+            context.ready()?;
+            while !context.stop().wait_timeout(Duration::from_millis(5)) {}
             Ok(())
         })
     }

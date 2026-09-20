@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 28
+version: 29
 metadata:
   vulcan:
     managed: true
@@ -28,7 +28,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   per-wiki transactions, not a cross-repository atomic commit.
 - Use `vulcan daemon status` before diagnosing automatic work. It reports each registered wiki's
   reconstructed daemon state, latest daemon-supervised attempt, path, and locally cached
-  notification-advertisement discovery. It is an offline inspection: it does not fetch merely to
+  notification-advertisement discovery. It also lists hosted sync, trigger, notification, alert,
+  conflict, and semantic services with lifecycle state and restart counts; disabled services remain
+  visible, and a sanitized last failure explains degraded or exhausted workers. It is an offline inspection: it does not fetch merely to
   refresh notification discovery, and `not_discovered` means no advertisement has been cached on
   this device yet rather than proving none exists remotely. A stopped daemon does not prevent
   direct `sync status`, `sync doctor`, or `sync run`; direct runs do not enter the daemon job
