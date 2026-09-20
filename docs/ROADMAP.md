@@ -5524,9 +5524,12 @@ session authority -> PermissionGuard -> PermissionFilter
   content-security response headers.
 - [ ] In named-remote mode, persist approved consent as a connection grant and bind the
   authorization code to that grant before issuing it.
-- [ ] Implement scope-correct authorization codes, short-lived access tokens, rotating refresh
-  tokens, revocation, and restart-safe grant lookup. Test audience, issuer, expiry, narrowing,
-  refresh replay, client binding, redirect validation, CSRF/state handling, and redaction.
+- [x] Carry validated resource indicators and requested/granted scopes through login, consent,
+  authorization codes, 15-minute access-token claims, token responses, metadata, and session
+  authority. Reject unsupported scopes and resource mismatches before login.
+- [ ] Add rotating refresh tokens, revocation, and restart-safe grant lookup. Test audience, issuer,
+  expiry, narrowing, refresh replay, client binding, redirect validation, CSRF/state handling, and
+  redaction as one end-to-end authorization lifecycle.
 - [ ] Add the named remote CLI and a single-vault foreground adapter first, then host the same
   definitions through 10.7 without changing OAuth, MCP schema, or consent behavior. Coordinate
   writers through the shared per-vault runtime when resident; standalone overlap must acquire the

@@ -90,6 +90,16 @@ const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+const DEFAULT_MCP_OAUTH_SCOPES: &[&str] = &["mcp:prompts", "mcp:resources", "mcp:tools"];
+#[cfg(feature = "oauth")]
+const SUPPORTED_MCP_OAUTH_SCOPES: &[&str] = &[
+    "openid",
+    "email",
+    "profile",
+    "mcp:tools",
+    "mcp:resources",
+    "mcp:prompts",
+];
 
 fn mcp_git_sync_options(args: &McpSyncTargetArgs) -> Result<GitSyncOptions, McpMethodError> {
     let mut options = GitSyncOptions::default();
@@ -272,6 +282,9 @@ struct LocalOAuthCode {
     redirect_uri: String,
     code_challenge: String,
     subject: String,
+    scopes: Vec<String>,
+    resource: String,
+    grant_id: Option<String>,
     expires_at: std::time::Instant,
 }
 
@@ -292,6 +305,8 @@ struct LocalOAuthPendingIndieAuth {
     client_id: String,
     redirect_uri: String,
     code_challenge: String,
+    scopes: Vec<String>,
+    resource: String,
     indieauth_code_verifier: String,
     state: Option<String>,
     expires_at: std::time::Instant,
@@ -304,6 +319,8 @@ struct LocalOAuthPendingConsent {
     redirect_uri: String,
     code_challenge: String,
     subject: String,
+    scopes: Vec<String>,
+    resource: String,
     state: Option<String>,
     csrf_token: String,
     expires_at: std::time::Instant,
@@ -634,6 +651,11 @@ fn handle_mcp_http_post(
         Ok(payload) => payload,
         Err(response) => return response,
     };
+    if let Some(required) = required_mcp_scope(&payload) {
+        if !authority.allows_scope(required) {
+            return insufficient_scope_response(context, required);
+        }
+    }
     if let Some(response) = validate_mcp_protocol_version(request) {
         return response;
     }
@@ -692,6 +714,41 @@ fn handle_mcp_http_post(
         body: serde_json::to_vec(&response_body).expect("json should serialize"),
         extra_headers,
     }
+}
+
+fn required_mcp_scope(payload: &Value) -> Option<&'static str> {
+    let method = payload.get("method")?.as_str()?;
+    if method.starts_with("tools/") {
+        Some("mcp:tools")
+    } else if method.starts_with("resources/") {
+        Some("mcp:resources")
+    } else if method.starts_with("prompts/") {
+        Some("mcp:prompts")
+    } else {
+        None
+    }
+}
+
+fn insufficient_scope_response(context: &McpHttpServerContext, required: &str) -> McpHttpResponse {
+    let message = format!("OAuth token does not grant required scope `{required}`");
+    #[cfg(feature = "oauth")]
+    if let Some(oauth) = context.oauth.as_ref() {
+        let mut response = oauth_error_response(oauth, &message, "insufficient_scope");
+        response.status = 403;
+        if let Some((_, challenge)) = response
+            .extra_headers
+            .iter_mut()
+            .find(|(name, _)| name == "WWW-Authenticate")
+        {
+            challenge.push_str(", scope=\"");
+            challenge.push_str(required);
+            challenge.push('"');
+        }
+        return response;
+    }
+    #[cfg(not(feature = "oauth"))]
+    let _ = context;
+    mcp_http_json_error_response(403, message, Value::Null)
 }
 
 fn validate_mcp_http_post_headers(request: &McpHttpRequest) -> Option<McpHttpResponse> {
@@ -915,9 +972,15 @@ fn authenticate_mcp_http_request(
 ) -> Result<McpSessionAuthority, McpHttpResponse> {
     let mut credential = "loopback-unauthenticated".to_string();
     #[allow(unused_mut)]
+    let mut client_id = None;
+    #[allow(unused_mut)]
     let mut subject = None;
     #[allow(unused_mut)]
     let mut permission_profile = context.requested_profile.clone();
+    let mut scopes = DEFAULT_MCP_OAUTH_SCOPES
+        .iter()
+        .map(|scope| (*scope).to_string())
+        .collect::<Vec<_>>();
     #[cfg(feature = "oauth")]
     if let Some(oauth) = context.oauth.as_ref() {
         let Some(token) = bearer_token(&request.headers) else {
@@ -929,7 +992,10 @@ fn authenticate_mcp_http_request(
         };
         match oauth {
             McpOAuthMode::External(external) => match external.validate_bearer_token(&token) {
-                Ok(identity) => subject = Some(identity.subject),
+                Ok(identity) => {
+                    subject = Some(identity.subject);
+                    scopes = identity.scopes;
+                }
                 Err(error) => {
                     eprintln!("MCP OAuth bearer token rejected: {error}");
                     return Err(oauth_error_response(
@@ -942,6 +1008,8 @@ fn authenticate_mcp_http_request(
             McpOAuthMode::Local(local) => match local.validate_bearer_token(&token) {
                 Ok(identity) => {
                     subject = Some(identity.subject);
+                    client_id = identity.client_id;
+                    scopes = identity.scopes;
                     if permission_profile.is_none() {
                         permission_profile = identity.permission_profile;
                     }
@@ -985,9 +1053,11 @@ fn authenticate_mcp_http_request(
     Ok(McpSessionAuthority::direct(
         context.instance_id,
         &credential,
+        client_id,
         subject,
         permission_profile,
         packs,
+        scopes,
     ))
 }
 
@@ -3632,11 +3702,13 @@ fn oauth_protected_resource_response(oauth: &McpOAuthMode) -> McpHttpResponse {
             "resource": external.public_url(),
             "authorization_servers": [external.authorization_server_issuer()],
             "bearer_methods_supported": ["header"],
+            "scopes_supported": SUPPORTED_MCP_OAUTH_SCOPES,
         }),
         McpOAuthMode::Local(local) => serde_json::json!({
             "resource": local.public_url(),
             "authorization_servers": [local.public_url()],
             "bearer_methods_supported": ["header"],
+            "scopes_supported": SUPPORTED_MCP_OAUTH_SCOPES,
         }),
     };
     McpHttpResponse {
@@ -3665,10 +3737,19 @@ fn handle_local_oauth_authorize(
         .get("code_challenge_method")
         .cloned()
         .unwrap_or_default();
+    let resource = params
+        .get("resource")
+        .cloned()
+        .unwrap_or_else(|| issuer.public_url().to_string());
+    let scopes = match parse_mcp_oauth_scopes(params.get("scope").map(String::as_str)) {
+        Ok(scopes) => scopes,
+        Err(response) => return response,
+    };
     if !local_oauth_client_redirect_allowed(context, issuer, &client_id, &redirect_uri)
         || response_type != "code"
         || code_challenge.is_empty()
         || code_challenge_method != "S256"
+        || resource != issuer.public_url()
     {
         return oauth_plain_response(400, "invalid OAuth authorization request");
     }
@@ -3686,6 +3767,8 @@ fn handle_local_oauth_authorize(
                     client_id,
                     redirect_uri,
                     code_challenge,
+                    scopes,
+                    resource,
                     indieauth_code_verifier,
                     state: params.get("state").cloned(),
                     expires_at: std::time::Instant::now() + Duration::from_secs(600),
@@ -3710,6 +3793,9 @@ fn handle_local_oauth_authorize(
                 redirect_uri: redirect_uri.clone(),
                 code_challenge,
                 subject: user.subject,
+                scopes,
+                resource,
+                grant_id: None,
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
@@ -3873,13 +3959,19 @@ fn handle_local_oauth_token(
     if !issuer.verify_pkce_s256(code_verifier, &code_record.code_challenge) {
         return oauth_json_error_response(400, "invalid_grant", "invalid PKCE verifier");
     }
-    match issuer.issue_access_token_for(&code_record.subject) {
+    match issuer.issue_access_token_for_authorization(
+        &code_record.subject,
+        &code_record.client_id,
+        &code_record.scopes,
+        code_record.grant_id.clone(),
+    ) {
         Ok(access_token) => {
             let body = serde_json::json!({
                 "access_token": access_token,
                 "token_type": "Bearer",
-                "expires_in": 3600,
-                "scope": "openid email profile",
+                "expires_in": 900,
+                "scope": code_record.scopes.join(" "),
+                "resource": code_record.resource,
             });
             McpHttpResponse {
                 status: 200,
@@ -3955,6 +4047,8 @@ fn begin_local_oauth_consent(
         redirect_uri: pending.redirect_uri,
         code_challenge: pending.code_challenge,
         subject,
+        scopes: pending.scopes,
+        resource: pending.resource,
         state: pending.state,
         csrf_token,
         expires_at: std::time::Instant::now() + Duration::from_secs(600),
@@ -4030,6 +4124,9 @@ fn handle_local_oauth_consent(
                 redirect_uri: pending.redirect_uri.clone(),
                 code_challenge: pending.code_challenge,
                 subject: user.subject,
+                scopes: pending.scopes,
+                resource: pending.resource,
+                grant_id: None,
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
@@ -4073,7 +4170,8 @@ fn local_oauth_consent_form(
          <body><main><h1>Authorize this MCP connection?</h1>\
          <dl><dt>Client</dt><dd>{}</dd><dt>Identity</dt><dd>{}</dd>\
          <dt>Resource</dt><dd>{}</dd><dt>Vault</dt><dd>{}</dd>\
-         <dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd>{}</dd></dl>\
+         <dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd>{}</dd>\
+         <dt>OAuth scopes</dt><dd>{}</dd></dl>\
          <p>Tool packs control discovery. The permission profile remains the authority ceiling.</p>\
          <form method=\"post\" action=\"/oauth/consent\">\
          <input type=\"hidden\" name=\"transaction\" value=\"{}\">\
@@ -4083,10 +4181,11 @@ fn local_oauth_consent_form(
          </form></main></body></html>",
         html_escape(&client_name),
         html_escape(&pending.subject),
-        html_escape(issuer.public_url()),
+        html_escape(&pending.resource),
         html_escape(&context.paths.vault_root().display().to_string()),
         html_escape(&profile),
         html_escape(&packs.join(", ")),
+        html_escape(&pending.scopes.join(" ")),
         html_escape(transaction_id),
         html_escape(&pending.csrf_token),
     );
@@ -4869,6 +4968,41 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+#[cfg(feature = "oauth")]
+fn parse_mcp_oauth_scopes(scope: Option<&str>) -> Result<Vec<String>, McpHttpResponse> {
+    let values = scope.map_or_else(
+        || {
+            DEFAULT_MCP_OAUTH_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>()
+        },
+        |scope| {
+            scope
+                .split_ascii_whitespace()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        },
+    );
+    if values.is_empty()
+        || values.len() > 16
+        || values
+            .iter()
+            .any(|scope| !SUPPORTED_MCP_OAUTH_SCOPES.contains(&scope.as_str()))
+    {
+        return Err(oauth_json_error_response(
+            400,
+            "invalid_scope",
+            "requested OAuth scope is empty, unsupported, or too large",
+        ));
+    }
+    Ok(values
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
 }
 
 #[cfg(feature = "oauth")]

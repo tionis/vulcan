@@ -15715,6 +15715,7 @@ fn skill_list_and_get_surface_bundled_skills() {
             && body.contains("ChatGPT remote connector")
             && body.contains("explicitly approve Vulcan's consent page")
             && body.contains("IndieAuth login authenticates the person")
+            && body.contains("advertised OAuth scopes")
     }));
 
     let installed_skills = vault_root.join(".agents/skills");

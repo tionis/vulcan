@@ -149,6 +149,7 @@ impl OAuthResourceServer {
             return Ok(OAuthTokenIdentity {
                 subject: claims.sub,
                 email: claims.email,
+                scopes: claims.scope.into_scopes(),
             });
         }
         Err(OAuthError::Token(
@@ -211,10 +212,10 @@ impl LocalOAuthIssuer {
             "authorization_endpoint": format!("{origin}/oauth/authorize"),
             "token_endpoint": format!("{origin}/oauth/token"),
             "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
             "code_challenge_methods_supported": ["S256"],
-            "scopes_supported": ["openid", "email", "profile"],
+            "scopes_supported": ["openid", "email", "profile", "mcp:tools", "mcp:resources", "mcp:prompts"],
         });
         if config.dcr_enabled {
             authorization_server_metadata["registration_endpoint"] =
@@ -253,6 +254,9 @@ impl LocalOAuthIssuer {
                 subject: token.claims.sub,
                 email: user.email,
                 permission_profile: user.permission_profile,
+                client_id: token.claims.client_id,
+                scopes: token.claims.scope,
+                grant_id: token.claims.grant_id,
             })
         } else {
             Err(OAuthError::Token(
@@ -266,6 +270,25 @@ impl LocalOAuthIssuer {
     }
 
     pub fn issue_access_token_for(&self, subject: &str) -> Result<String, OAuthError> {
+        self.issue_access_token_for_authorization(
+            subject,
+            &self.client_id,
+            &[
+                "openid".to_string(),
+                "email".to_string(),
+                "profile".to_string(),
+            ],
+            None,
+        )
+    }
+
+    pub fn issue_access_token_for_authorization(
+        &self,
+        subject: &str,
+        client_id: &str,
+        scopes: &[String],
+        grant_id: Option<String>,
+    ) -> Result<String, OAuthError> {
         let Some(user) = self.user_for_subject(subject) else {
             return Err(OAuthError::Token(
                 "local OAuth token subject is not allowed".to_string(),
@@ -276,10 +299,13 @@ impl LocalOAuthIssuer {
             iss: self.public_url.clone(),
             sub: subject.to_string(),
             aud: vec![self.public_url.clone()],
-            exp: now + 3600,
+            exp: now + 900,
             iat: now,
             email: user.email,
             permission_profile: user.permission_profile,
+            client_id: Some(client_id.to_string()),
+            scope: scopes.to_vec(),
+            grant_id,
         };
         encode(
             &Header::new(Algorithm::HS256),
@@ -379,6 +405,30 @@ struct OidcDiscoveryDocument {
 struct OAuthClaims {
     sub: String,
     email: Option<String>,
+    #[serde(default)]
+    scope: OAuthScopeClaim,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(untagged)]
+enum OAuthScopeClaim {
+    #[default]
+    Missing,
+    Text(String),
+    List(Vec<String>),
+}
+
+impl OAuthScopeClaim {
+    fn into_scopes(self) -> Vec<String> {
+        match self {
+            Self::Missing => Vec::new(),
+            Self::Text(value) => value
+                .split_ascii_whitespace()
+                .map(ToOwned::to_owned)
+                .collect(),
+            Self::List(values) => values,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -392,6 +442,12 @@ struct LocalOAuthClaims {
     email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     permission_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scope: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,12 +455,16 @@ pub struct LocalOAuthTokenIdentity {
     pub subject: String,
     pub email: Option<String>,
     pub permission_profile: Option<String>,
+    pub client_id: Option<String>,
+    pub scopes: Vec<String>,
+    pub grant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OAuthTokenIdentity {
     pub subject: String,
     pub email: Option<String>,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -922,6 +982,22 @@ mod tests {
             identity.permission_profile.as_deref(),
             Some("daily-wiki-agent")
         );
+        assert_eq!(identity.client_id.as_deref(), Some("vulcan-mcp"));
+        assert_eq!(identity.scopes, ["openid", "email", "profile"]);
+        assert_eq!(identity.grant_id, None);
+
+        let token = issuer
+            .issue_access_token_for_authorization(
+                &user.subject,
+                "dynamic-client",
+                &["mcp:resources".to_string(), "mcp:tools".to_string()],
+                Some("01GRANT".to_string()),
+            )
+            .unwrap();
+        let identity = issuer.validate_bearer_token(&token).unwrap();
+        assert_eq!(identity.client_id.as_deref(), Some("dynamic-client"));
+        assert_eq!(identity.scopes, ["mcp:resources", "mcp:tools"]);
+        assert_eq!(identity.grant_id.as_deref(), Some("01GRANT"));
     }
 
     #[test]
@@ -949,6 +1025,9 @@ mod tests {
                 iat: now,
                 email: None,
                 permission_profile: Some("admin".to_string()),
+                client_id: None,
+                scope: Vec::new(),
+                grant_id: None,
             },
             &EncodingKey::from_secret(b"client-secret"),
         )
@@ -986,6 +1065,9 @@ mod tests {
                 iat: now,
                 email: Some("attacker@example.test".to_string()),
                 permission_profile: Some("admin".to_string()),
+                client_id: None,
+                scope: Vec::new(),
+                grant_id: None,
             },
             &EncodingKey::from_secret(b"server-signing-key"),
         )

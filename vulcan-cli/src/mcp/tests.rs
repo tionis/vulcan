@@ -84,6 +84,7 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         "https://mcp.example.test/personal".to_string(),
         "readonly".to_string(),
         vec!["notes-read".to_string()],
+        vec!["mcp:tools".to_string()],
         "alice-token",
     );
     let session = McpHttpSession::new(core, authority.clone());
@@ -99,6 +100,7 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         "https://mcp.example.test/personal".to_string(),
         "readonly".to_string(),
         vec!["notes-read".to_string()],
+        vec!["mcp:tools".to_string()],
         "bob-token",
     );
     assert!(!session.authority.matches(&bob_grant));
@@ -113,6 +115,7 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         "https://mcp.example.test/work".to_string(),
         "readonly".to_string(),
         vec!["notes-read".to_string()],
+        vec!["mcp:tools".to_string()],
         "alice-token",
     );
     assert!(!session.authority.matches(&other_remote));
@@ -127,6 +130,7 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         "https://mcp.example.test/personal".to_string(),
         "readonly".to_string(),
         vec!["notes-read".to_string()],
+        vec!["mcp:tools".to_string()],
         "replacement-token",
     );
     assert!(!session.authority.matches(&replacement_token));
@@ -225,6 +229,26 @@ fn authorization_server_metadata_path_accepts_root_endpoint_and_oidc_forms() {
         "/.well-known/openid-configuration/mcp",
         "/mcp"
     ));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn oauth_scope_parser_defaults_deduplicates_and_rejects_widening() {
+    assert_eq!(
+        parse_mcp_oauth_scopes(None).expect("default scopes"),
+        ["mcp:prompts", "mcp:resources", "mcp:tools"]
+    );
+    assert_eq!(
+        parse_mcp_oauth_scopes(Some("mcp:tools mcp:resources mcp:tools"))
+            .expect("supported scopes"),
+        ["mcp:resources", "mcp:tools"]
+    );
+    let error = parse_mcp_oauth_scopes(Some("mcp:tools vault:admin"))
+        .expect_err("unsupported scope must fail");
+    assert_eq!(error.status, 400);
+    assert!(String::from_utf8(error.body)
+        .expect("JSON")
+        .contains("invalid_scope"));
 }
 
 #[cfg(feature = "oauth")]
@@ -506,6 +530,8 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
                 redirect_uri: "https://client.example.test/callback".to_string(),
                 code_challenge: "original-pkce-challenge".to_string(),
                 subject: "https://identity.example.test/alice".to_string(),
+                scopes: vec!["mcp:tools".to_string()],
+                resource: "https://mcp.example.test/personal".to_string(),
                 state: Some("original-client-state".to_string()),
                 csrf_token: "csrf-secret".to_string(),
                 expires_at: std::time::Instant::now() + Duration::from_secs(60),
@@ -591,6 +617,8 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
                 redirect_uri: "https://client.example.test/callback".to_string(),
                 code_challenge: "unused-challenge".to_string(),
                 subject: "https://identity.example.test/alice".to_string(),
+                scopes: vec!["mcp:tools".to_string()],
+                resource: "https://mcp.example.test/personal".to_string(),
                 state: Some("denied-state".to_string()),
                 csrf_token: "deny-csrf".to_string(),
                 expires_at: std::time::Instant::now() + Duration::from_secs(60),

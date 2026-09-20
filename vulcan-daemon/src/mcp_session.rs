@@ -21,6 +21,7 @@ pub struct McpSessionAuthority {
     pub audience: Option<String>,
     pub permission_profile: Option<String>,
     pub tool_packs: Vec<String>,
+    pub scopes: Vec<String>,
     #[serde(skip)]
     credential_fingerprint: String,
 }
@@ -38,6 +39,7 @@ impl std::fmt::Debug for McpSessionAuthority {
             .field("audience", &self.audience)
             .field("permission_profile", &self.permission_profile)
             .field("tool_packs", &self.tool_packs)
+            .field("scopes", &self.scopes)
             .field("credential_fingerprint", &"[REDACTED]")
             .finish()
     }
@@ -54,6 +56,7 @@ impl PartialEq for McpSessionAuthority {
             && self.audience == other.audience
             && self.permission_profile == other.permission_profile
             && self.tool_packs == other.tool_packs
+            && self.scopes == other.scopes
             && bool::from(
                 self.credential_fingerprint
                     .as_bytes()
@@ -67,20 +70,23 @@ impl McpSessionAuthority {
     pub fn direct(
         remote_instance_id: Ulid,
         credential: &str,
+        client_id: Option<String>,
         subject: Option<String>,
         permission_profile: Option<String>,
         tool_packs: Vec<String>,
+        scopes: Vec<String>,
     ) -> Self {
         Self {
             remote_id: None,
             remote_instance_id,
             grant_id: None,
-            client_id: None,
+            client_id,
             subject,
             wiki_id: None,
             audience: None,
             permission_profile,
             tool_packs,
+            scopes,
             credential_fingerprint: fingerprint(credential),
         }
     }
@@ -97,6 +103,7 @@ impl McpSessionAuthority {
         audience: String,
         permission_profile: String,
         tool_packs: Vec<String>,
+        scopes: Vec<String>,
         credential: &str,
     ) -> Self {
         Self {
@@ -109,6 +116,7 @@ impl McpSessionAuthority {
             audience: Some(audience),
             permission_profile: Some(permission_profile),
             tool_packs,
+            scopes,
             credential_fingerprint: fingerprint(credential),
         }
     }
@@ -116,6 +124,11 @@ impl McpSessionAuthority {
     #[must_use]
     pub fn matches(&self, request: &Self) -> bool {
         self == request
+    }
+
+    #[must_use]
+    pub fn allows_scope(&self, required: &str) -> bool {
+        self.scopes.iter().any(|scope| scope == required)
     }
 }
 
@@ -143,6 +156,7 @@ mod tests {
             "https://mcp.example.test/personal".to_string(),
             "readonly".to_string(),
             vec!["notes-read".to_string()],
+            vec!["mcp:tools".to_string()],
             credential,
         )
     }

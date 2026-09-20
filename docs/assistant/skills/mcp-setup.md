@@ -43,6 +43,7 @@ debugging, tool pack selection, and permission-profile questions.
 - The `sync` pack requires Git permission and full-vault read permission because its safety reports may name paths anywhere in the repository. A path-filtered read profile intentionally sees no sync tools; use scoped note/search tools or a separately reviewed full-read Git profile.
 - The optional `graph` pack contains `graph_communities` and `suggest_links`; keep it out of compact retrieval-only deployments.
 - If ChatGPT cannot start auth, check issuer metadata, redirect URI, PKCE, allowed principals, and public URL consistency before changing tool permissions.
+- Vulcan accepts only its advertised OAuth scopes and requires the authorization `resource` to match the exact public MCP URL. A scope or resource error is an authentication configuration problem, not a reason to widen the permission profile.
 - If IndieAuth returns an unauthorized subject, use the subject shown in Vulcan's callback error to correct `--oauth-indieauth-me` or an explicit `--oauth-local-user` binding.
 - Reject the consent page if its client, identity, resource, vault, permission profile, or tool packs are unexpected. IndieAuth login authenticates the person; the separate Vulcan consent action authorizes the MCP connection.
 
