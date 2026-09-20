@@ -5506,9 +5506,11 @@ session authority -> PermissionGuard -> PermissionFilter
   loopback/HTTPS validation, registered-wiki references, deterministic ordering, dry-run-safe
   mutation, and bind/public-URL collision checks. Prevent unregistering a wiki while a
   remote still exposes it.
-- [ ] Define versioned connection-grant, token-family, and redacted report types in reusable non-CLI
-  modules. Add atomic/locked durable-state stores with strict file permissions, schema validation,
-  stable ULIDs, collision checks, and migrations. Neither daemon nor app code may import CLI types.
+- [x] Define versioned connection-grant, token-family, and redacted report types in reusable non-CLI
+  modules. Add an atomic/locked durable-state store with owner-only permissions, bounded schema
+  validation, stable ULIDs, version dispatch for migrations, audience/client/instance binding,
+  hashed refresh secrets, rotation replay detection, family revocation, and dry-run-safe grant
+  mutation. Neither daemon nor app code imports CLI types.
 - [ ] Bind the existing HTTP session lifecycle to an authenticated authority record and add
   regression tests with two subjects, two grants, two remotes, and attempted cross-session/token
   reuse. Preserve stdio behavior and static/adaptive pack semantics.
