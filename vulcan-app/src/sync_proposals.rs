@@ -1,7 +1,7 @@
 //! Isolated, review-first agent resolution proposals for preserved Git conflicts.
 
 use crate::durable_file::{self, DurableCreate};
-use crate::scan::refresh_cache_incrementally;
+use crate::scan::refresh_cache_incrementally_unlocked;
 use crate::sync::{load_validated_sync_config, validate_git_merge_tree};
 use crate::sync_conflicts::{
     conflict_group_selection_digest, conflict_groups, conflict_live_input,
@@ -2113,6 +2113,7 @@ struct ManualResolutionScope {
     engine: vulcan_sync::GitCliEngine,
     repository: vulcan_sync::GitRepository,
     selection: Option<ResolvedProposalSelection>,
+    _vault_lock: Option<vulcan_core::write_lock::WriteLockGuard>,
     _lock: vulcan_sync::RepositoryLock,
 }
 
@@ -2139,7 +2140,7 @@ fn prepare_manual_resolution_scope(
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
-    let lock = acquire_proposal_lock(&repository)?;
+    let (vault_lock, lock) = acquire_proposal_apply_locks(paths, &repository)?;
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     if conflict_store
         .get_effective_resolution(&repository_key, conflict_id)?
@@ -2209,6 +2210,7 @@ fn prepare_manual_resolution_scope(
         engine,
         repository,
         selection,
+        _vault_lock: vault_lock,
         _lock: lock,
     })
 }
@@ -2394,7 +2396,7 @@ pub fn create_resolution_proposal_with_provider_for_target(
         provider,
         cancellation,
     )?;
-    let _lock = acquire_proposal_lock(&repository)?;
+    let _locks = acquire_proposal_apply_locks(paths, &repository)?;
     cancellation_check(cancellation)?;
     ensure_no_existing_proposal(state_store, &repository_key, conflict_id)?;
     persist_generated_proposal(
@@ -2429,6 +2431,26 @@ fn acquire_proposal_lock(
             AppError::from(error)
         }
     })
+}
+
+fn acquire_proposal_apply_locks(
+    paths: &VaultPaths,
+    repository: &vulcan_sync::GitRepository,
+) -> Result<
+    (
+        Option<vulcan_core::write_lock::WriteLockGuard>,
+        vulcan_sync::RepositoryLock,
+    ),
+    AppError,
+> {
+    let vault = paths
+        .vulcan_dir()
+        .is_dir()
+        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
+        .transpose()
+        .map_err(AppError::operation)?;
+    let repository = acquire_proposal_lock(repository)?;
+    Ok((vault, repository))
 }
 
 struct GenerationInputs {
@@ -2577,7 +2599,7 @@ fn locked_generation_inputs(
     repository_key: &str,
     target: Option<(&GitRemote, &GitRefName)>,
 ) -> Result<GenerationInputs, AppError> {
-    let _pre_lock = acquire_proposal_lock(repository)?;
+    let _pre_locks = acquire_proposal_apply_locks(paths, repository)?;
     ensure_no_existing_proposal(state_store, repository_key, conflict_id)?;
     verify_preserved_conflict_refs(engine, repository, record)?;
     let refs_before = preserved_ref_snapshot(engine, repository, record)?;
@@ -3212,7 +3234,7 @@ fn apply_approved_proposal(
     repository: &vulcan_sync::GitRepository,
     cancellation: &SyncCancellationToken,
 ) -> Result<ApproveResolutionProposalReport, AppError> {
-    let _lock = acquire_proposal_lock(repository)?;
+    let _locks = acquire_proposal_apply_locks(context.paths, repository)?;
     cancellation_check(cancellation)?;
     ensure_proposal_not_rejected(context.state_store, context.proposal)?;
     verify_preserved_conflict_refs(engine, repository, context.record)?;
@@ -3290,7 +3312,7 @@ fn apply_approved_proposal(
     }
     update_sync_refs(engine, repository, context.options, &resolution)?;
     let cache_refresh = if context.paths.cache_db().is_file() {
-        Some(refresh_cache_incrementally(context.paths)?)
+        Some(refresh_cache_incrementally_unlocked(context.paths)?)
     } else {
         None
     };

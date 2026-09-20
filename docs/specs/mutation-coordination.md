@@ -8,7 +8,9 @@ remain authoritative because direct CLI commands and multiple processes must rem
 
 - A vault lock is identified by the canonical materialized vault root and stored at
   `<vault>/.vulcan/write.lock`. Callers must canonicalize before constructing `VaultPaths`; two path
-  aliases must not produce two lock identities.
+  aliases must not produce two lock identities. The lock file is device-local coordination state,
+  excluded from sync snapshots and worktree-equivalence checks, and acquiring it does not scaffold
+  unrelated `.vulcan` files that could invalidate a prepared frontier.
 - A repository lock is identified by the canonical Git directory returned by repository discovery
   and stored at `<git-dir>/vulcan-sync/sync.lock`. Linked worktrees that share Git metadata therefore
   share the repository mutation boundary even when their materialized roots differ.
@@ -41,7 +43,8 @@ operation identity. Existing sync transaction scope is not narrowed merely to in
 | Core/app note, property, Bases, refactor, import, maintenance, vector, and scan writes | `vulcan_core::write_lock` | Exclusive/shared advisory lock at `.vulcan/write.lock`; acquisition currently waits in the OS | Use canonical vault identity and enter the scheduler first; retain the same file lock |
 | mdbase managed writes | Vault write lock plus durable mdbase journal | Plan/apply revalidates revisions while holding the vault lock; cooperative reads use the shared side | Preserve journal and stale-plan checks; do not treat queue admission as authorization |
 | Finite sync | Vault write lock outside `vulcan_sync::RepositoryLock` for initialized vaults | Exclusive vault coordination plus bounded repository wait across capture, fetch, merge, publish, apply, and verification; uninitialized plain Git vaults have no `.vulcan` application lock yet | Retain the full repository transaction scope and the vault-before-repository order |
-| Conflict apply, proposal approval, semantic apply/publish, checkpoints, retention, devices, advertisements | Repository lock | Serializes Vulcan Git refs, shared metadata, and applicable worktree mutations | Worktree-changing paths also take the vault lock first; metadata-only paths still share the repository scheduler/lock |
+| Conflict apply and proposal approval | Vault write lock outside the repository lock when `.vulcan/` exists | Serializes recovery capture, frontier validation, publication, worktree apply, and the innermost cache refresh | Retain stale frontier/tree validation and the full transaction scope |
+| Semantic apply/publish, checkpoints, retention, devices, advertisements | Repository lock | Serializes metadata/ref changes that do not apply a new tree to the materialized vault | Share the repository scheduler/lock across worktrees using the same Git directory |
 | CLI/MCP auto-commit and explicit Git commit | Vulcan repository lock outside Git's index/ref locks | Runs after the originating vault mutation lock has normally been released; serializes with finite sync and other Vulcan Git writers | Enter the repository scheduler and revalidate the candidate path set after acquisition |
 | Daemon sync, conflict, and semantic workers | Existing `SyncSupervisor` coalescing plus the same app/repository locks | Supervisor serializes its own sync jobs but is not a general mutation lock | Keep supervisor semantics; all hosted writers additionally use the shared scheduler |
 | HTTP, MCP, companion, and future REST adapters | Workflow-dependent app locks | Transport does not itself establish a new lock identity | Construct one execution context and dispatch through the same scheduler/workflow as direct mode |
@@ -50,15 +53,15 @@ operation identity. Existing sync transaction scope is not narrowed merely to in
 
 ## Audit findings carried into implementation
 
-The audit identified three coordination gaps. The first two are now closed for finite sync and
-core Git/auto-commit entrypoints; the remaining worktree-changing conflict paths are tracked with
-the third 10.7.4 implementation slice:
+The audit identified three coordination gaps. Finite sync, conflict application, and core
+Git/auto-commit entrypoints now use the ordered cross-process locks; hosted adapters resolve
+canonical identity before entering the scheduler:
 
 1. ordinary vault writes and finite sync formerly used different cross-process locks, allowing a
    direct write to overlap a sync worktree transaction;
 2. auto-commit and explicit Git commit formerly relied only on Git's low-level locks and did not
    participate in the Vulcan repository mutation lock;
-3. `VaultPaths::new` does not canonicalize by itself, so adapters must resolve identity before lock
+3. `VaultPaths::new` does not canonicalize by itself, so adapters resolve identity before lock
    acquisition rather than assuming spelling-equivalent paths coordinate.
 
 These are not reasons to weaken existing locks. The shared mutation guard and hosted scheduler must

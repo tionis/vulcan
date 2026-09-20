@@ -27,18 +27,20 @@ const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 const WINDOWS_GIT_CREATION_FLAGS: u32 = 0x0800_0000; // CREATE_NO_WINDOW
 const REQUIREMENTS_CACHE_VERSION: u32 = 1;
-const DEVICE_LOCAL_VULCAN_PATHS: [&str; 4] = [
+const DEVICE_LOCAL_VULCAN_PATHS: [&str; 5] = [
     ".vulcan/config.local.toml",
     ".vulcan/cache.db",
     ".vulcan/cache.db-wal",
     ".vulcan/cache.db-shm",
+    ".vulcan/write.lock",
 ];
-const WORKTREE_CAPTURE_PATHS: [&str; 5] = [
+const WORKTREE_CAPTURE_PATHS: [&str; 6] = [
     ".",
     ":(exclude).vulcan/config.local.toml",
     ":(exclude).vulcan/cache.db",
     ":(exclude).vulcan/cache.db-wal",
     ":(exclude).vulcan/cache.db-shm",
+    ":(exclude).vulcan/write.lock",
 ];
 const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
     "GIT_DIR",
@@ -6988,6 +6990,7 @@ mod tests {
             ("cache.db", b"derived cache".as_slice()),
             ("cache.db-wal", b"derived WAL".as_slice()),
             ("cache.db-shm", b"derived shared memory".as_slice()),
+            ("write.lock", b"coordination lock".as_slice()),
         ] {
             fs::write(temporary.path().join(".vulcan").join(path), contents)
                 .expect("device-local file");
@@ -7012,6 +7015,7 @@ mod tests {
             ".vulcan/cache.db",
             ".vulcan/cache.db-wal",
             ".vulcan/cache.db-shm",
+            ".vulcan/write.lock",
         ] {
             assert!(engine
                 .path_object(&repository, &snapshot, path)
@@ -7028,6 +7032,7 @@ mod tests {
                 ".vulcan/cache.db",
                 ".vulcan/cache.db-wal",
                 ".vulcan/cache.db-shm",
+                ".vulcan/write.lock",
             ],
         );
         let tracked_internal = commit_all(temporary.path(), "track internal state");

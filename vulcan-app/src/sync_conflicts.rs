@@ -1,7 +1,7 @@
 //! Durable device-local conflict records and preserved file artifacts.
 
 use crate::durable_file::{self, DurableCreate};
-use crate::scan::refresh_cache_incrementally;
+use crate::scan::refresh_cache_incrementally_unlocked;
 use crate::sync::{load_validated_sync_config, validate_git_merge_tree};
 use crate::sync_state::{same_work_tree, SyncStateStore};
 use crate::AppError;
@@ -1117,7 +1117,13 @@ fn resolve_conflict_groups_with_state_store(
         });
     }
 
-    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
+    let _vault_lock = paths
+        .vulcan_dir()
+        .is_dir()
+        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
+        .transpose()
+        .map_err(AppError::operation)?;
+    let _repository_lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     resolve_sync_conflict_group_batch(
         paths,
         options,
@@ -1307,7 +1313,7 @@ fn resolve_sync_conflict_group_batch(
                 }
                 update_resolution_sync_refs(engine, repository, options, current)?;
                 let cache_refresh = if paths.cache_db().is_file() {
-                    Some(refresh_cache_incrementally(paths)?)
+                    Some(refresh_cache_incrementally_unlocked(paths)?)
                 } else {
                     None
                 };
@@ -1530,7 +1536,7 @@ fn publish_and_apply_conflict_group_batch(
     }
     update_resolution_sync_refs(engine, repository, options, commit)?;
     let cache_refresh = if paths.cache_db().is_file() {
-        Some(refresh_cache_incrementally(paths)?)
+        Some(refresh_cache_incrementally_unlocked(paths)?)
     } else {
         None
     };
@@ -1557,7 +1563,13 @@ fn resolve_sync_conflict_locked(
     repository: &GitRepository,
     context: &ResolutionContext,
 ) -> Result<ResolveSyncConflictReport, AppError> {
-    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
+    let _vault_lock = paths
+        .vulcan_dir()
+        .is_dir()
+        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
+        .transpose()
+        .map_err(AppError::operation)?;
+    let _repository_lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     let engine = vulcan_sync::GitCliEngine::default();
     let device_id = state_store
         .load_or_create_device_id(true)?
@@ -1681,7 +1693,7 @@ fn publish_and_apply_resolution(
         )
         .map_err(AppError::operation)?;
     let cache_refresh = if paths.cache_db().is_file() {
-        Some(refresh_cache_incrementally(paths)?)
+        Some(refresh_cache_incrementally_unlocked(paths)?)
     } else {
         None
     };

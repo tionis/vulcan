@@ -634,7 +634,11 @@ mod tests {
         );
         let entry = status.entries.first().expect("status entry");
         assert_eq!(entry.eligible_groups, 1);
-        assert!(entry.proposal_id.is_some());
+        assert!(
+            entry.proposal_id.is_some(),
+            "proposal failed: {:?}",
+            entry.error
+        );
         assert!(entry.resolution_commit.is_some());
         assert_eq!(
             fs::read_to_string(reader.join("Home.md")).unwrap(),
