@@ -63,6 +63,19 @@ These are not reasons to weaken existing locks. The shared mutation guard and ho
 bridge the lock domains in the required order, and direct entrypoints must retain equivalent
 cross-process protection.
 
+## Hosted scheduler
+
+`vulcan_daemon::mutation_scheduler::MutationScheduler` is the process-wide admission layer owned by
+`HostSupervisor`. It has fixed bounds for queued operations, total in-flight operations, and reads
+per vault. A vault `RwLock` permits bounded concurrent reads but excludes mutations; canonical
+repository keys add a shared mutation lane across distinct worktrees/vault registrations that use
+the same Git metadata. Different vaults without a shared repository lane continue independently.
+
+Admission checks cancellation/deadline while waiting. Once the vault and optional repository lanes
+are held, the adapter-provided revalidation callback runs before dispatch, so queued permission or
+configuration changes fail closed. A returned permit represents only in-process admission; the
+workflow must still acquire the filesystem locks listed above in the same order.
+
 ## Contention and failure semantics
 
 - Scheduler queue admission is bounded and deadline-aware. Rejection before dispatch is known not

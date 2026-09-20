@@ -14,6 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 
+use crate::mutation_scheduler::{MutationScheduler, MutationSchedulerConfig};
 use crate::shutdown::ShutdownSignal;
 
 const MAX_SERVICE_ID_BYTES: usize = 160;
@@ -583,6 +584,7 @@ struct RunningService {
 pub struct HostSupervisor {
     status: HostStatusHandle,
     host_stop: Arc<ShutdownSignal>,
+    scheduler: Arc<MutationScheduler>,
     services: Vec<RunningService>,
 }
 
@@ -652,6 +654,10 @@ impl HostSupervisor {
         let mut supervisor = Self {
             status,
             host_stop,
+            scheduler: Arc::new(
+                MutationScheduler::new(MutationSchedulerConfig::default())
+                    .expect("default mutation scheduler limits are valid"),
+            ),
             services: Vec::new(),
         };
 
@@ -712,6 +718,13 @@ impl HostSupervisor {
     #[must_use]
     pub fn shutdown_signal(&self) -> Arc<ShutdownSignal> {
         Arc::clone(&self.host_stop)
+    }
+
+    /// Returns the one process-wide scheduler shared by hosted adapters and
+    /// background services. Cross-process filesystem locks remain mandatory.
+    #[must_use]
+    pub fn mutation_scheduler(&self) -> Arc<MutationScheduler> {
+        Arc::clone(&self.scheduler)
     }
 
     pub fn shutdown(mut self) -> Result<Vec<ServiceStatus>, HostRuntimeError> {
@@ -1227,6 +1240,10 @@ mod tests {
             registration_with_events("worker.second", &["worker.first"], sender),
         ];
         let supervisor = HostSupervisor::start(registrations, Duration::from_secs(1)).unwrap();
+        assert!(Arc::ptr_eq(
+            &supervisor.mutation_scheduler(),
+            &supervisor.mutation_scheduler()
+        ));
         assert!(supervisor
             .status_handle()
             .required_services_ready()

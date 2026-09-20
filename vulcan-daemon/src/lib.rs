@@ -20,6 +20,7 @@ pub mod http;
 pub mod mcp_remote;
 pub mod mcp_session;
 pub mod mcp_state;
+pub mod mutation_scheduler;
 pub mod notifications;
 pub mod observation;
 pub mod process;
