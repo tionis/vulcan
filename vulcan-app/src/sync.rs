@@ -2178,6 +2178,7 @@ mod tests {
                 remote.to_str().expect("remote path"),
             ],
         );
+        git(&reader, &["config", "core.autocrlf", "false"]);
         sync_git_vault_with_state_store(
             &VaultPaths::new(&reader),
             &GitSyncOptions::default(),

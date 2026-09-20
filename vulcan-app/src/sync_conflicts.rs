@@ -4017,6 +4017,7 @@ mod tests {
                     remote_path.to_str().expect("remote path"),
                 ],
             );
+            group_git(&reader, &["config", "core.autocrlf", "false"]);
             group_git(&reader, &["config", "user.name", "Vulcan Test"]);
             group_git(&reader, &["config", "user.email", "vulcan@example.invalid"]);
             let paths = VaultPaths::new(&reader);
