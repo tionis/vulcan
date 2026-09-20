@@ -840,6 +840,35 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_external_edit_is_not_hidden_by_an_apply_marker() {
+        let temporary = tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let now = Instant::now();
+        let mut batch = WatchBatch::default();
+        assert!(batch.push_event(
+            &paths,
+            &change(temporary.path().join("Applied.md")),
+            now,
+            || Ok(Some("transaction-a".to_string()))
+        ));
+        assert!(batch.push_event(
+            &paths,
+            &change(temporary.path().join("External.md")),
+            now,
+            || Ok(None)
+        ));
+
+        let metadata = batch.take_metadata();
+        assert_eq!(metadata.event_count, 2);
+        assert_eq!(metadata.untagged_events, 1);
+        assert_eq!(
+            metadata.paths,
+            ["Applied.md".to_string(), "External.md".to_string()]
+        );
+        assert_eq!(metadata.self_generated_transactions, ["transaction-a"]);
+    }
+
+    #[test]
     fn maximum_dirty_age_caps_continuous_save_sequences() {
         let temporary = tempdir().expect("temporary directory");
         let paths = VaultPaths::new(temporary.path());
