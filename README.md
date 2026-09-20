@@ -4,6 +4,8 @@
 
 Vulcan turns an Obsidian vault or plain Markdown directory into a knowledge base you can work with from the terminal, scripts, and agent tools. Search your notes, query structured records, follow links, manage tasks, make precise edits, and publish selected content—all while keeping ordinary files as the source of truth. Obsidian does not need to be installed or running.
 
+Knowledge bases remain Vulcan's focus. The planned vault-management extension brings the same daemon and synchronization workflows to supporting document collections, media libraries, and other local directories or Git repositories, with Markdown indexing optional. Device-specific file selection and downloads will let large collections span devices without requiring every device to store everything.
+
 > **Pre-alpha:** Vulcan is moving fast and contains a large amount of LLM-written code. Treat it as experimental, keep backups, and use Git or another versioning system before pointing it at important vaults.
 
 [Getting started](docs/guide/getting-started.md) · [Installation](docs/installation.md) · [CLI reference](docs/cli.md) · [Architecture](docs/design_document.md) · [Roadmap](docs/ROADMAP.md)
@@ -130,6 +132,8 @@ The cache is disposable; remote identities and recovery state are not. Keep dura
 ## Where the project is going
 
 The [roadmap](docs/ROADMAP.md) tracks implementation separately from design targets. Major directions include a web wiki, broader external knowledge connectors, and **Vulcan Apps**: installable applications with browser views, typed commands, and explicitly granted access to vault data.
+
+Broader vault management is planned in [10.9](docs/ROADMAP.md#109-managed-directory-capabilities-and-knowledge-profiles) and [12.20](docs/ROADMAP.md#1220-selective-materialization-and-large-repository-synchronization): files-only management, sparse checkouts, selective Git LFS downloads, partial clones, and separately scoped shallow-history handling. These are not yet advertised sync capabilities. The design separates a vault's logical file tree from the subset available on each device; excluded files must never become accidental deletions. Managing a development checkout or retaining a complete backup requires an explicit policy beyond synchronizing its working files.
 
 For wiki-native structured data, the accepted direction is **one portable mdbase model with one Vulcan execution and mutation engine**. Markdown and mdbase definitions remain canonical; SQLite supplies rebuildable, indexed query projections. Equivalent mdbase and collection-bound native queries should share optimized execution, while managed writes should share schema validation, lifecycle rules, and Markdown persistence.
 

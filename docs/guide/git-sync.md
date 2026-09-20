@@ -2,6 +2,8 @@
 
 Vulcan can synchronize the complete canonical vault through a dedicated Git live branch. Each `vulcan sync run` is a finite, direct transaction: it captures the current worktree without touching the normal Git index, reconciles the configured live ref, applies an accepted tree only after preserving local bytes, and refreshes an existing cache. The daemon schedules the same workflow but is not required.
 
+Broader files-only vault management and selective materialization are planned in [Roadmap 10.9](../ROADMAP.md#109-managed-directory-capabilities-and-knowledge-profiles) and [12.20](../ROADMAP.md#1220-selective-materialization-and-large-repository-synchronization). Sparse checkout, partial clone, shallow-history reconciliation, and selective LFS hydration are not currently advertised as supported sync combinations. Existing Git/LFS filter checks do not establish those guarantees. The planned model preserves excluded paths and reports metadata synchronization separately from local payload availability; this guide will gain tested setup and recovery recipes as those slices ship.
+
 This is device/file-tree synchronization. It replicates the whole vault rather than selecting or translating notes for an external wiki.
 
 On graceful daemon shutdown, Vulcan queues a final retained sync for every active Git-backed wiki

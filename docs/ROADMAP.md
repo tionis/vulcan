@@ -3,6 +3,8 @@
 Tracking document for the phased implementation of Vulcan, a local-first Markdown information hub for Obsidian vaults and plain Markdown directories.
 Derived from `docs/design_document.md`. Update task status as work progresses.
 
+Knowledge bases remain the product focus. The accepted managed-directory extension in 10.9 and 12.20 reuses the daemon and sync engine for supporting document/media collections and other directories or Git repositories, with optional knowledge services and device-specific materialization.
+
 **Status legend:** `[ ]` not started | `[~]` in progress | `[x]` complete | `[-]` cut/deferred
 
 ## Delivery horizons and phase gates
@@ -14,6 +16,7 @@ The numbered phases describe dependency order, not a requirement to implement ev
 - **Completed optional additions:** 9.30 (Outline publishing) and 9.31 (folder-note normalization) landed as independently useful work after the Phase 9 gate. Their numbering records implementation history rather than extending the daemon prerequisite chain.
 - **Active optional addition:** 9.35 materializes large hierarchical Markdown documents as link-safe wiki trees. It builds on completed parser, refactor, attachment, and folder-note foundations without extending the Phase 10 gate.
 - **Committed hub direction:** Phase 12 owns device/file-tree synchronization and Phase 15 owns external document bindings, content routes, and knowledge-system connectors. SilverBullet, Outline, HedgeDoc, and Git wiki work should extend those shared layers rather than become parallel product architectures.
+- **Managed-directory extension:** 10.9 adds explicit files-only/knowledge capabilities; 12.20 adds sparse materialization, selective LFS transfer, partial clones, and separately gated shallow-history handling. These are unchecked follow-ons to the existing sync baseline, not retroactive completion claims or blockers for daemon consolidation. Keep implementation in Vulcan; reconsider product extraction only after concrete independent reuse.
 - **Committed application-platform direction:** Phase 19 owns immutable `.vapp` packages, installation/instance lifecycle, sandboxed browser applications, typed app CLI commands, QuickJS host functions, server/browser WebAssembly components, and explicit canonical app data. It builds on the daemon, WebUI, and capability model without extending the Phase 10 gate.
 - **Candidate capability tracks:** mdbase expansion and additional native vault workflows with compatibility adapters are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
 - **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, a capability-oriented domain and public surface, an identified dependency/ownership boundary, a sustainable adapter compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful native slice; importing one plugin's settings is not by itself a product boundary.
@@ -5135,10 +5138,11 @@ The daemon extends the existing architecture rather than replacing it:
 
 ### 10.2 Vault registry
 
-The daemon registry is also the user-facing wiki registry. A **registered vault** is called a
-**wiki** in sync and companion-application UI, but it remains the same canonical materialized
-vault used by every existing command. Registration is optional: pointing ordinary CLI commands at
-an unregistered local directory must continue to work without a daemon, account, or Git repository.
+The daemon registry is also the user-facing wiki registry. Existing sync and companion UI calls a
+registered knowledge vault a **wiki**. The planned 10.9 capability model extends registration to
+files-only directories while preserving existing IDs, aliases, and knowledge defaults. Registration
+is optional: pointing ordinary CLI commands at an unregistered local directory must continue to
+work without a daemon, account, or Git repository.
 
 ```toml
 # ~/.config/vulcan/daemon.toml
@@ -5371,6 +5375,22 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 **Delivery:** Freeze contracts → shared scheduler/authorizer with repository-trust and static-key modes → App/RSS integration (19.10/19.18.5) → independently gated registry and embedded-sigchain adapters (12.17.6). The scheduler has no dependency on the later trust-distribution transport.
 
+### 10.9 Managed-directory capabilities and knowledge profiles
+
+**Goal:** Reuse Vulcan's daemon for local directories and Git repositories supporting knowledge workflows, including large document/media collections. Keep knowledge bases central and Markdown services optional; ship within the existing binary and workspace before considering a separate product.
+
+**Depends on:** Existing registry/direct-sync workflows and 12.1's synchronous boundary. Integrate with 10.7's shared runtime as it lands without requiring the full App platform. Full-materialization files-only management can ship before 12.20; selective profiles require its conformance gates. Design contract: `docs/design_document.md` section 4.7.
+
+- [x] Record the accepted scope, layering, implementation order, and current-versus-planned distinction in the design document, README, and sync guide. Review existing bundled sync/Git skills and the AGENTS template; retain current command guidance until implementations ship.
+- [ ] Define versioned capability/config/report contracts for managed directories. Provide files-only and knowledge presets over shared machinery; keep Git optional and preserve old knowledge defaults, registry IDs, `wiki` aliases, selectors, and existing JSON consumers. Specify migration and rollback for existing registrations; reject incompatible combinations before mutation.
+- [ ] Separate directory observation/scheduling from index and content services. Files-only registration, direct sync, daemon restart, status, conflicts, and recovery must work without Markdown files, `.obsidian/`, or `cache.db`; never create an index implicitly. Keep reusable finite workflows in `vulcan-app`, file mechanics in dependency-light `vulcan-sync`, and content semantics in `vulcan-core`.
+- [ ] Gate knowledge endpoints and workers by explicit capabilities with actionable diagnostics; files-only must not enable note scans, link validation, scripts, semantic history, or agent resolution by file extension. Preserve deterministic shared merge policy across different local profiles; local capability choices may reduce automation, never silently select different accepted bytes.
+- [ ] Keep materialization policy device-local and independent of content profile. Extend registration/clone/status/doctor and direct-path operation coherently with 12.20; registration alone must not initialize Git, contact a remote, enable sync, or trust repository execution.
+- [ ] Define an explicit active-development-repository support contract before enabling unattended file synchronization there: branch switches, staged/unstaged differences, multiple worktrees sharing Git state, detached HEAD, in-progress Git operations, nested repositories/submodules, and external Git concurrency. Begin with conservative inspection and diagnostics for unsupported cases; registration is not blanket permission to auto-commit, switch branches, rebase, or push semantic refs. Preserve existing knowledge-vault behavior.
+- [ ] Distinguish file replication from repository backup. Do not label metadata convergence or a partial checkout a complete backup; any later backup profile needs explicit ref/history/LFS coverage, retention, and restore tests. Defer general Git hosting/IDE management and standalone product extraction.
+- [ ] Test defaults/overrides and registry migration, mixed knowledge/files-only registrations, daemon/direct equivalence, no-index/no-Markdown operation, lifecycle/cancellation isolation, unchanged knowledge workflows, normal-index preservation, and unsupported-operation diagnostics. Add CLI JSON and daemon contract tests; verify no implicit network, scripts, or index initialization.
+- [ ] Update README shipped/planned claims, `docs/guide/git-sync.md`, `docs/reference/config.md`, CLI/API/help/discovery/completions, and installation/companion guidance where affected. Extend existing `sync-workflow` and `git-workflow` skills when commands ship; review `docs/assistant/AGENTS.template.md`. Validate installed skill payloads and meaningful command availability. Include these updates and tests in each implementation slice, not a final cleanup commit.
+
 ## Phase 11: Git Auto-Versioning (Daemon-Level)
 
 **Goal:** Automatic version history for vault content managed by the daemon. Extends the per-vault auto-commit from Phase 9.3 to daemon-managed vaults with richer history APIs.
@@ -5421,13 +5441,13 @@ semantic checkpoints continue to use the normal branch.
 
 ## Phase 12: Device and file-tree synchronization
 
-**Goal:** Keep canonical materialized wikis current across Linux, Windows, Android, and other devices through an opt-in synchronization subsystem that remains usable as a direct one-shot CLI workflow without the daemon. Git is the first active backend and provides hidden, lossless working-tree snapshots; the daemon adds multi-wiki scheduling, watching, status, and a local companion protocol over the same reusable engine.
+**Goal:** Keep canonical vault files current across Linux, Windows, Android, and other devices through an opt-in synchronization subsystem that remains usable as a direct one-shot CLI workflow without the daemon. Git is the first active backend and provides hidden, lossless working-tree snapshots; the daemon adds multi-vault scheduling, watching, status, and a local companion protocol over the same reusable engine. The completed baseline uses complete materialized knowledge vaults; 10.9 and 12.20 extend it to files-only directories and explicitly selected local subsets of large repositories.
 
 **Depends on:** Phase 10 (daemon), Phase 11 (git versioning for conflict-aware sync).
 
 **Design references:** `references/Near-Realtime Git Working-Tree Synchronization with Forgejo.md`, especially its alternate-index capture, hidden-ref, capture-before-apply, compare-and-swap, semantic-history, retention, and failure-recovery requirements; and `docs/specs/realtime-sync-notifications.md`. Realtime notification is not a prerequisite for finite synchronization: manual triggers and polling use the same engine.
 
-**Boundary:** A sync backend answers "how does this vault directory reach another device or storage service?" It may replicate Markdown, attachments, intentional shared configuration, and explicitly managed sync artifacts, but it does not translate documents, select a publication subset, bind one note to an external object, or relay one remote wiki into another. Those are connector/route responsibilities in Phase 15. Every backend must materialize a coherent local working tree before Vulcan scans it, and `.vulcan/cache.db` remains disposable local state.
+**Boundary:** A sync backend answers "how does this vault directory reach another device or storage service?" It may replicate Markdown, media, other canonical files, intentional shared configuration, and explicitly managed sync artifacts, but it does not translate documents, select a publication subset, bind one note to an external object, or relay one remote wiki into another. Those are connector/route responsibilities in Phase 15. Every backend must materialize and verify a coherent local working tree before Vulcan scans it; under 12.20 this is the selected projection of a complete logical tree, with explicit coverage and availability. An excluded path is never inferred deleted. `.vulcan/cache.db` remains disposable local state, and files-only profiles need no cache.
 
 ### 12.1 Layering, direct mode, and backend contract
 
@@ -5460,6 +5480,8 @@ trait SyncBackend: Send + Sync {
 - [x] Define versioned serializable `SyncPlan`, `SyncReport`, `SyncStatus`, `SyncConflict`, `SyncJob`, progress, and error-category contracts shared by direct CLI, daemon REST, companion clients, tests, and `--output json`. The Git adapter declares only its currently implemented capabilities, translates finite-cycle progress and reports into the shared schema, and leaves daemon job retention outside the backend.
 
 ### 12.2 Repository layout and cross-platform storage
+
+The checked items below describe the full-materialization baseline. Selective clone/checkout and large-file transfer guarantees are added by 12.20, with independent Git/LFS/version and layout conformance gates.
 
 - [x] Support one independent Git repository per wiki. Clone always creates a new colocated or detached repository, and the device-local registry rejects reuse of a detached Git directory by another wiki. Do not combine unrelated wiki histories into one bare repository or introduce cross-repository alternates whose garbage collection can invalidate another wiki.
 - [x] Support both colocated `.git` repositories (default for ordinary Linux/Windows/local use) and detached Git directories with a materialized worktree. Record the latter only in device-local registry/state.
@@ -5509,6 +5531,8 @@ All commands in this section support `--output json`; mutating commands support 
 - [x] Extend `vulcan describe`, shell completions, permission profiles, MCP/tool projections, and JSON schemas for the `vault` and `sync` surfaces. Generated command/schema/completion output covers clone/recovery and every sync subcommand. The explicit read-only MCP `sync` pack exposes bounded status, dry-run planning, doctor, and immutable conflict inspection only; it requires both Git permission and full-vault read permission so path-bearing reports cannot bypass a partial read filter, and it exposes neither resolution nor a generic Git shell.
 
 ### 12.4 Hidden working-tree snapshot engine
+
+12.20.2 extends these completed capture/apply invariants to selected worktrees; a private index must preserve excluded logical entries rather than interpret their filesystem absence as deletion.
 
 - [ ] Reserve and version a Vulcan-owned ref namespace for the canonical remote live tip, fetched remote tip, local per-device candidate, archives/epochs, conflicts, and semantic proposals. Spike Forgejo custom-ref fetch/push, permission, webhook, maintenance, and Actions behavior; retain a hidden-looking branch fallback when custom refs cannot satisfy fast-forward safety.
   - [x] Centralize the version-1 ref contract and expose its version in typed sync reports and commit trailers. All current local candidate, fetched, pending, epoch, conflict, checkpoint, proposal, and detached-recovery refs use validated builders; detached Git-loss diagnostics enumerate both every current local root and legacy development roots.
@@ -5692,6 +5716,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 ### 12.11 Storage virtualization decision gate
 
 - [x] Keep `Path`-backed local files as the default and initial daemon contract. The installed Git backend, direct application workflow, daemon registration/supervisor, watcher, cache refresh, and companion all operate on a complete materialized `Path` worktree; no sync implementation made `vulcan-core` remote-aware.
+- [ ] Integrate 12.20's coherent selected `Path` projection without requiring `VaultStorage` or remote reads in core. Index only available content and expose coverage; sparse worktrees are a materialization policy, not a reason to replace local filesystem semantics.
 - [ ] Before introducing a `VaultStorage` trait, document at least one concrete embedded use case that cannot use a materialized temporary/persistent workspace and measure the affected `vulcan-core`/`vulcan-app` boundaries.
 - [ ] Require any storage abstraction to provide safe path normalization, deterministic enumeration, coherent read snapshots, atomic create/replace/rename, locking or compare-and-swap, metadata/identity, change notifications, crash recovery, and streaming attachment access.
 - [ ] Keep cache placement and lifecycle separate from canonical storage: SQLite and search indexes remain local derived artifacts that can be discarded and rebuilt from one coherent storage snapshot.
@@ -5699,6 +5724,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.12 Test strategy and acceptance criteria
 
+- [ ] Extend the completed full-worktree baseline with 12.20's sparse/LFS/partial/shallow matrix before advertising those capabilities. Existing filter readiness and missing-object tests do not establish selective-materialization support; record actual Git/LFS/server versions, platforms, transfer evidence, and exclusions in `docs/investigations/git-sync-acceptance.md`.
 - [x] Add unit tests for ref-name validation, policy ordering, conflict IDs/names, report/state transitions, capability negotiation, retention planning, semantic grouping validation, and every path/platform normalization rule. The evidence index is recorded in `docs/investigations/git-sync-acceptance.md`.
 - [x] Add deterministic transport/process fixtures for single writer, two concurrent writers, rejected push/retry, offline divergence, delete/modify, rename, binary, structured-document, case-folding, and mass-deletion conflicts. The installed-CLI backend uses disposable local bare repositories as its real Git transport boundary instead of a second fake Git implementation; agent/companion/process edges remain mocked where deterministic fault injection is required.
 - [x] Test capture/apply interruption at every recoverable journal boundary, advisory lock contention and stale lock files, daemon process death/requeue, watcher overflow recovery, pause/resume, normal-index staging, merge/rebase/cherry-pick/revert/bisect state, manual semantic branch movement, missing objects, detached Git-directory loss, and cache refresh/rebuild. The exact evidence families and external platform limits are indexed in `docs/investigations/git-sync-acceptance.md`.
@@ -5977,6 +6003,65 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Add dry-run-capable `vulcan sync merge-driver install|status|remove` repository setup. Configure a narrowly named `merge.vulcan-<format>.driver`, plan explicit tracked `.gitattributes` entries separately, preserve unrelated config/attributes, avoid global wildcard ownership, quote the resolved executable cross-platform without invoking a shell beyond Git's required driver command, and make repeated install/remove idempotent. `sync doctor` verifies tracked Vulcan attributes, executable identity/version, format availability, and config drift before capture or remote access.
 - [ ] Optionally expose the same attempt through a Git mergetool adapter before opening an editor. Document that Git content drivers do not receive every structural conflict: physical delete/modify, rename/rename, directory/file, mode, and path-portability conflicts still use Vulcan's outer sync policy or ordinary Git review even when the bytes encode a CRDT.
 - [ ] Add unit, CLI JSON, installed-Git, and sync integration tests for registry selection, unsupported versions, resource ceilings, no-write-on-failure, exit codes, path quoting, spaces/non-UTF-8 diagnostics where supported, attributes/config preservation, internal-versus-driver output parity, role and arrival-order permutations, crash/retry idempotence, and exact preservation of every rejected input. Review `sync-workflow` and `diagnostics-and-repair` bundled skills when the commands ship; do not advertise planned formats before their conformance gates pass.
+
+### 12.20 Selective materialization and large-repository synchronization
+
+**Goal:** Synchronize large knowledge/document/media repositories while each device stores an explicit subset. Preserve one complete logical file tree, local edit authority, lossless reconciliation, direct CLI operation, and bounded offline behavior. This is planned work; installed Git support alone does not establish Vulcan compatibility.
+
+**Depends on:** Existing 12.1–12.5 capture/reconciliation/recovery contracts, 12.8 supervision, and 12.12 conformance. Use 10.9 for files-only profiles; sparse knowledge-vault work need not wait for every generic-repository capability. Retain Git CLI as the initial engine and gate any later engine independently. Design contract: `docs/design_document.md` section 4.7.
+
+**Implementation order:** 12.20.1 contract/preflight, 12.20.2 sparse correctness, 12.20.3 selective LFS, then 12.20.4 blob-filtered partial clone. Scope shallow ancestry separately in 12.20.5. Implement the relevant 12.20.6 reporting/knowledge integration and 12.20.7 tests/docs alongside every slice; the final matrix is a release gate, not permission to postpone tests. Do not add invented command examples to shipped guidance before the CLI exists.
+
+#### 12.20.1 Policy, state, and capability preflight
+
+- [ ] Define independent typed controls for working-tree selection, Git object filtering, history depth/ref scope, and LFS payload selection. Persist effective device-local policy and its generation outside the rebuildable cache; shared config may offer suggestions but cannot change another device's selection, network/storage limits, or offline pins silently. Test defaults, overrides, migration, invalid combinations, and restart reconstruction.
+- [ ] Define per-path/revision evidence distinguishing materialized content, intentionally excluded paths, promised-but-unavailable Git objects, unhydrated LFS pointers, verified local deletions, and corruption. Keep logical inventory in canonical Git trees and recoverable local changes; never reconstruct the full vault by enumerating a partial filesystem or trusting SQLite rows.
+- [ ] Detect sparse checkout/index modes, promisor/filter configuration, shallow boundaries, LFS configuration, and remote filter support before clone/capture/apply. Publish a versioned supported-combination matrix. Reject unsafe or unsupported mutation with an actionable diagnostic until its implementation passes tests; never silently clear sparse settings, deepen history, or fall back to a full download.
+- [ ] Enforce offline/read-only and bounded-network policy at the shared Git/helper spawn boundary, including lazy object fetch, filters, LFS smudge, credential helpers, and custom merge drivers. Status/doctor and dry-run must not hydrate objects or mutate refs/worktrees/config; plans describe required transfers and unknown sizes. Test unexpected helper access with poisoned transports and network-denying fixtures.
+
+#### 12.20.2 Sparse capture, reconciliation, and worktree application
+
+- [ ] Audit alternate-index capture, `skip-worktree`/sparse-index handling, deletion guards, equivalence checks, platform preflight, conflict projection, and crash recovery. Seed candidates from the accepted logical tree, overlay verified local changes, and preserve excluded entries by identity without reading their blobs. Start with an explicitly tested selection mode (prefer cone mode); diagnose unsupported modes rather than approximating them.
+- [ ] Apply and verify the exact selected projection under the repository lock and immutable policy generation. Preserve ordinary staged entries and normal-index state; do not overwrite user sparse configuration as scratch state. Serialize selection changes with sync and detect external Git/selection/worktree drift before mutation or publication.
+- [ ] Add previewable, non-interactive selection expansion/contraction. Expansion checks untracked/dirty collisions before fetching or writing; contraction preserves dirty, unpublished, conflicted, or recovery-required bytes. Journal transitions and recover idempotently after interruption. Selection changes and local eviction produce no canonical deletion commits.
+- [ ] Handle rename/delete/modify and structural conflicts crossing selected/unselected boundaries without ignoring remote changes or discarding unmaterialized entries. Preserve immutable sides; fetch only required conflict evidence within policy, otherwise leave a durable blocked operation. Validate metadata-wide invariants separately from selected-path filesystem representability; never weaken shared merge policy or publish unchecked content merely because it is excluded locally.
+- [ ] Test two sparse devices with different and overlapping selections, local edits/deletions, remote-only additions, cross-boundary renames, selection drift, normal-index staging, dirty/untracked collisions, interrupted transitions, and repeated convergence. Assert complete logical tree equality, exact selected worktrees, and zero false deletions; repeat with knowledge indexing disabled.
+
+#### 12.20.3 Selective LFS transfer, offline pins, and safe eviction
+
+- [ ] Integrate explicit LFS include/exclude and hydration policy with selected paths while keeping sparse selection and LFS payload selection independent. Preserve canonical pointer identity and verify payload OID/size; do not treat a pointer as hydrated media or upload pointer text as file content. Probe actual Git LFS readiness and supported versions.
+- [ ] Make referenced payload publication part of synchronization completion: upload required new LFS objects before claiming a remotely usable revision, retain pending bytes through failures, and distinguish Git-ref publication from payload availability. Test authentication failure, missing remote payloads, pointer corruption, unavailable local objects, and retry after interrupted transfer.
+- [ ] Add explicit materialize/pin/unpin/evict workflows with dry-run or plan/apply, streaming I/O, bounded transfer concurrency/time/bytes, cancellation, disk-space handling, and metered/offline policies. Define unknown-size behavior without silently lifting budgets. A pin identifies current-revision or explicit historical coverage; a moving current-content pin becomes pending when new required payloads arrive.
+- [ ] Separate removal of a local working copy from Git/LFS object pruning and from logical file deletion. Prove recoverability before eviction; retain unpublished, dirty, pinned, conflict, and recovery-referenced content. Do not promise that sparse contraction immediately reclaims Git object storage or that an ordinary sync is a complete historical backup.
+- [ ] Use real Git LFS with a controlled local test endpoint for transfer tests, alongside deterministic fault injection. Assert byte-exact round trips, object request/upload counts, no downloads outside policy, bounded memory, and recovery across restart. Record missing LFS test prerequisites explicitly; never count mock-only filter checks as release evidence.
+
+#### 12.20.4 Partial clone and bounded object acquisition
+
+- [ ] Begin with a blob-filtered clone that retains the commit/tree metadata needed for complete logical inventory and reconciliation. Configure filters before initial checkout and LFS smudge so creation never downloads the entire repository first. Verify server capability; unsupported servers produce an explicit choice/error, not an automatic unfiltered clone. Treat tree-filtered and other modes as independently gated capabilities.
+- [ ] Carry promisor semantics through exact-ref fetch, hidden live refs, merge-base discovery, merge-tree/attribute processing, validation, conflict evidence, semantic history, retention, and recovery. Distinguish expected missing objects from corruption. Acquire required objects in bounded batches; if Git or a driver cannot honor the policy, stop recoverably instead of triggering an unbounded implicit fetch.
+- [ ] Ensure status, doctor, filesystem watches, cache refresh, previews, and background workers do not hydrate unrelated history/content. Restrict blob-consuming work to required paths/revisions; preserve all safety validation by blocking operations that cannot complete within available evidence and policy.
+- [ ] Test a filter-capable remote with instrumented object requests, an unsupported remote, offline promised-object misses, unavailable/corrupt promised objects, out-of-selection conflicts, cancellation, restart, and repeated sync. Assert no unrelated blob retrieval and no full-clone fallback; test composition with sparse checkout and LFS separately and together.
+
+#### 12.20.5 Shallow ancestry and repository-operation boundaries
+
+- [ ] Define minimum ancestry for live reconciliation, conflict bases, epoch recovery, provenance verification, semantic history, and retention. Detect shallow boundaries independently of partial clone; refuse conclusions based on incomplete ancestry. Offer explicit bounded deepening when authorized and necessary, otherwise preserve local state with a needs-history diagnostic. Do not weaken key/registry verification rules that reject incomplete chains.
+- [ ] Test absent merge bases, disconnected/expired epochs, offline deepening, unavailable ancestors, bounded-depth exhaustion, and server refusal. Keep unsupported shallow combinations blocked until these tests pass; metadata inspection may remain available.
+- [ ] Cross-check 10.9's development-repository policy against sparse checkouts, multiple worktrees, branch switches, nested repositories/submodules, staging, external locks, and in-progress rebases/merges. Advertise only tested operations and combinations; Git capability does not authorize autonomous branch management or establish backup completeness.
+
+#### 12.20.6 Availability, knowledge services, and operational surfaces
+
+- [ ] Expose logical revision/metadata convergence, selection generation, selected-content availability, pending uploads/downloads, offline-pin readiness, and blocked reasons separately in direct CLI JSON, daemon reports/jobs, and companion/UI views. Version schema changes and preserve existing full-materialization clients; never reduce all states to a misleading synced boolean.
+- [ ] Index only a coherent, verified available subset and report coverage. Search, link diagnostics, attachment checks, refactors, export, publication, and cache repair must distinguish excluded/unavailable content from missing/deleted content. Operations requiring omitted bytes request explicit materialization or fail with an actionable diagnostic; no implicit full-vault download or false global orphan/deletion claim. Test cache deletion/rebuild and selection changes.
+- [ ] Keep required shared config, attributes, authorization/control metadata, and merge policy available to transactions through verified Git metadata or bounded explicit acquisition even when outside the visible selection. Never run a job with a partially available execution definition or silently substitute defaults because a control file is sparse-excluded; integrate 10.8/12.17 trust checks and report blocked prerequisites.
+- [ ] Support daemon fairness across small and large vaults, bounded progress reporting, cancellation/shutdown, retry/backoff, and disk/network budgets using the existing scheduler. Missing optional payloads must not starve unrelated vaults or hide incomplete content behind a successful metadata report. Direct mode uses the same limits and recovery workflow.
+
+#### 12.20.7 Conformance, scale, and documentation gate
+
+- [ ] Add a reproducible two-device acceptance scenario: desktop and laptop select different media subtrees, independently edit files, exchange remote additions/renames/deletions, change selections, and converge on the same complete logical tree without false deletions or unrelated payload downloads. Run against files-only and knowledge profiles; verify local changes survive offline operation and crash recovery.
+- [ ] Extend installed-Git conformance for colocated/detached layouts, normal/sparse indexes, sparse/LFS/partial combinations, and separately supported shallow modes on Linux, Windows, and Android/Termux where advertised. Preserve full-materialization regression fixtures and deterministic conflict/lease/recovery guarantees. List unsupported combinations explicitly.
+- [ ] Add deterministic transfer-count and byte-budget assertions plus a reproducible media/path-scale benchmark recording file counts, sizes, versions, cold/warm conditions, subprocesses, memory, transfer bytes, and elapsed time. Separate ordinary bounded CI fixtures from larger scheduled tests; choose and record measured acceptance budgets before claiming large-repository readiness.
+- [ ] Update README capability claims, design/config references, CLI/API schemas/help/completions, `docs/guide/git-sync.md` setup/offline/pin/evict/recovery recipes, platform/companion docs, and `docs/investigations/git-sync-acceptance.md` with each shipped slice. Include full-copy desktop, selected laptop, and explicitly scoped server-retention examples; document local edit authority versus incomplete inventory and sync versus backup guarantees.
+- [ ] Review and extend bundled `sync-workflow`/`git-workflow` and affected search/publication skills, plus `docs/assistant/AGENTS.template.md`, as behavior ships. Validate installed payload discovery, command availability, managed refresh, and guardrails for offline reads, excluded files, and destructive selection changes. Complete required workspace checks and commit each independently usable implementation item with its tests and docs.
 
 ---
 
