@@ -21,6 +21,7 @@ pub mod mcp_remote;
 pub mod mcp_session;
 pub mod mcp_state;
 pub mod notifications;
+pub mod observation;
 pub mod process;
 pub mod registry;
 pub mod runtime;
