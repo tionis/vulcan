@@ -5516,10 +5516,14 @@ session authority -> PermissionGuard -> PermissionFilter
   reuse. POST, SSE, and DELETE require the exact instance/grant/client/subject/vault/audience,
   permission-profile, pack, and credential-fingerprint tuple captured at initialization. Preserve
   stdio behavior and static/adaptive pack semantics.
-- [ ] Replace the approval-token-only browser page for the opinionated local issuer with an
+- [x] Replace the approval-token-only browser page for the opinionated local issuer with an
   IndieAuth-backed login-and-consent transaction. Preserve OAuth state/PKCE across the upstream
   round trip, display client/resource/vault/authority clearly, require an explicit approval action,
-  and issue a code bound to the resulting grant.
+  and issue a code only after the resulting consent. The bounded direct-mode transaction is
+  CSRF-protected, expires, supports explicit denial, and uses no-cache, frame-denial, and restrictive
+  content-security response headers.
+- [ ] In named-remote mode, persist approved consent as a connection grant and bind the
+  authorization code to that grant before issuing it.
 - [ ] Implement scope-correct authorization codes, short-lived access tokens, rotating refresh
   tokens, revocation, and restart-safe grant lookup. Test audience, issuer, expiry, narrowing,
   refresh replay, client binding, redirect validation, CSRF/state handling, and redaction.

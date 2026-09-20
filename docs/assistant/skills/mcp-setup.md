@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, tool packs, remote HTTPS setup, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 4
+version: 5
 tools:
   - mcp
   - describe
@@ -23,7 +23,7 @@ debugging, tool pack selection, and permission-profile questions.
 ## Recommended Flow
 
 1. Start local first: `vulcan mcp --transport stdio` or `--transport http`.
-2. For single-user ChatGPT access, use HTTPS, `--public-url`, `--oauth-dcr`, `--oauth-indieauth-me <identity>`, and a narrow `--permissions <profile>`. The configured identity is allowed automatically. OpenAI currently prefers Client ID Metadata Documents where supported but continues to support dynamic client registration; Vulcan uses the latter.
+2. For single-user ChatGPT access, use HTTPS, `--public-url`, `--oauth-dcr`, `--oauth-indieauth-me <identity>`, and a narrow `--permissions <profile>`. Sign in with the configured identity, then review and explicitly approve Vulcan's consent page. It shows the client, identity, resource, vault, permission profile, and tool packs before issuing a code. OpenAI currently prefers Client ID Metadata Documents where supported but continues to support dynamic client registration; Vulcan uses the latter.
 3. For multi-user access, omit process-level `--permissions` and bind each identity with `--oauth-local-user <subject>=<profile>`.
 4. Choose tool packs explicitly with repeated `--tool-pack` or comma-separated pack names.
 5. Use `vulcan describe --format mcp --tool-pack ...` to inspect the exposed static registry.
@@ -44,6 +44,7 @@ debugging, tool pack selection, and permission-profile questions.
 - The optional `graph` pack contains `graph_communities` and `suggest_links`; keep it out of compact retrieval-only deployments.
 - If ChatGPT cannot start auth, check issuer metadata, redirect URI, PKCE, allowed principals, and public URL consistency before changing tool permissions.
 - If IndieAuth returns an unauthorized subject, use the subject shown in Vulcan's callback error to correct `--oauth-indieauth-me` or an explicit `--oauth-local-user` binding.
+- Reject the consent page if its client, identity, resource, vault, permission profile, or tool packs are unexpected. IndieAuth login authenticates the person; the separate Vulcan consent action authorizes the MCP connection.
 
 ## Example Moves
 

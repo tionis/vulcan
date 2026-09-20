@@ -299,6 +299,18 @@ struct LocalOAuthPendingIndieAuth {
 
 #[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
+struct LocalOAuthPendingConsent {
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    subject: String,
+    state: Option<String>,
+    csrf_token: String,
+    expires_at: std::time::Instant,
+}
+
+#[cfg(feature = "oauth")]
+#[derive(Debug, Clone)]
 struct LocalOAuthIndieAuthConfig {
     authorization_endpoint: String,
     token_endpoint: String,
@@ -333,6 +345,8 @@ struct McpHttpServerContext {
     oauth_clients: Arc<Mutex<BTreeMap<String, LocalOAuthRegisteredClient>>>,
     #[cfg(feature = "oauth")]
     oauth_pending_indieauth: Arc<Mutex<BTreeMap<String, LocalOAuthPendingIndieAuth>>>,
+    #[cfg(feature = "oauth")]
+    oauth_pending_consent: Arc<Mutex<BTreeMap<String, LocalOAuthPendingConsent>>>,
     #[cfg(feature = "oauth")]
     oauth_dcr_enabled: bool,
     #[cfg(feature = "oauth")]
@@ -487,6 +501,8 @@ fn run_mcp_http_server(
         oauth_clients: Arc::new(Mutex::new(load_oauth_registered_clients(paths)?)),
         #[cfg(feature = "oauth")]
         oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
+        #[cfg(feature = "oauth")]
+        oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
         oauth_dcr_enabled: options.oauth_dcr,
         #[cfg(feature = "oauth")]
@@ -3579,6 +3595,9 @@ fn handle_mcp_oauth_metadata(
                 context, local, request,
             ));
         }
+        if request.path == "/oauth/consent" {
+            return Some(handle_local_oauth_consent(context, local, request));
+        }
     }
     if request.method != "GET" {
         return None;
@@ -3919,6 +3938,86 @@ fn handle_local_oauth_indieauth_callback(
     let Some(user) = issuer.user_for_subject(&subject) else {
         return indieauth_subject_not_allowed_response(&subject);
     };
+    begin_local_oauth_consent(context, issuer, pending, user.subject)
+}
+
+#[cfg(feature = "oauth")]
+fn begin_local_oauth_consent(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    pending: LocalOAuthPendingIndieAuth,
+    subject: String,
+) -> McpHttpResponse {
+    let transaction_id = Ulid::new().to_string();
+    let csrf_token = generate_pkce_verifier();
+    let consent = LocalOAuthPendingConsent {
+        client_id: pending.client_id,
+        redirect_uri: pending.redirect_uri,
+        code_challenge: pending.code_challenge,
+        subject,
+        state: pending.state,
+        csrf_token,
+        expires_at: std::time::Instant::now() + Duration::from_secs(600),
+    };
+    context
+        .oauth_pending_consent
+        .lock()
+        .expect("oauth pending consent lock should not be poisoned")
+        .insert(transaction_id.clone(), consent.clone());
+    local_oauth_consent_form(context, issuer, &transaction_id, &consent)
+}
+
+#[cfg(feature = "oauth")]
+fn handle_local_oauth_consent(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    if request.method != "POST" {
+        return oauth_plain_response(405, "consent requires POST");
+    }
+    let params = parse_form_params(&request.body);
+    let transaction_id = params.get("transaction").cloned().unwrap_or_default();
+    let csrf_token = params.get("csrf_token").cloned().unwrap_or_default();
+    let decision = params.get("decision").map_or("", String::as_str);
+    let pending = context
+        .oauth_pending_consent
+        .lock()
+        .expect("oauth pending consent lock should not be poisoned")
+        .get(&transaction_id)
+        .cloned();
+    let Some(pending) = pending else {
+        return oauth_plain_response(400, "unknown consent transaction");
+    };
+    if pending.expires_at < std::time::Instant::now() {
+        context
+            .oauth_pending_consent
+            .lock()
+            .expect("oauth pending consent lock should not be poisoned")
+            .remove(&transaction_id);
+        return oauth_plain_response(400, "expired consent transaction");
+    }
+    if csrf_token != pending.csrf_token {
+        return oauth_plain_response(403, "invalid consent CSRF token");
+    }
+    if !matches!(decision, "approve" | "deny") {
+        return oauth_plain_response(400, "consent decision must be approve or deny");
+    }
+    context
+        .oauth_pending_consent
+        .lock()
+        .expect("oauth pending consent lock should not be poisoned")
+        .remove(&transaction_id);
+    if decision == "deny" {
+        return local_oauth_client_redirect(
+            &pending.redirect_uri,
+            "error=access_denied",
+            pending.state.as_deref(),
+        );
+    }
+    let Some(user) = issuer.user_for_subject(&pending.subject) else {
+        return oauth_plain_response(403, "consent subject is no longer authorized");
+    };
     let code = Ulid::new().to_string();
     context
         .oauth_codes
@@ -3934,16 +4033,99 @@ fn handle_local_oauth_indieauth_callback(
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
-    let mut location = format!("{}?code={}", pending.redirect_uri, percent_encode(&code));
-    if let Some(state) = pending.state {
+    local_oauth_client_redirect(
+        &pending.redirect_uri,
+        &format!("code={}", percent_encode(&code)),
+        pending.state.as_deref(),
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn local_oauth_consent_form(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    transaction_id: &str,
+    pending: &LocalOAuthPendingConsent,
+) -> McpHttpResponse {
+    let profile = context
+        .requested_profile
+        .clone()
+        .or_else(|| {
+            issuer
+                .user_for_subject(&pending.subject)
+                .and_then(|user| user.permission_profile)
+        })
+        .unwrap_or_else(|| "unrestricted".to_string());
+    let packs = pack_name_list(&resolve_selected_tool_packs(
+        &context.tool_pack_args,
+        McpToolPackMode::from(context.tool_pack_mode_arg),
+    ));
+    let client_name = context
+        .oauth_clients
+        .lock()
+        .expect("oauth clients lock should not be poisoned")
+        .get(&pending.client_id)
+        .and_then(|client| client.client_name.as_deref())
+        .unwrap_or(&pending.client_id)
+        .to_string();
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
+         <body><main><h1>Authorize this MCP connection?</h1>\
+         <dl><dt>Client</dt><dd>{}</dd><dt>Identity</dt><dd>{}</dd>\
+         <dt>Resource</dt><dd>{}</dd><dt>Vault</dt><dd>{}</dd>\
+         <dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd>{}</dd></dl>\
+         <p>Tool packs control discovery. The permission profile remains the authority ceiling.</p>\
+         <form method=\"post\" action=\"/oauth/consent\">\
+         <input type=\"hidden\" name=\"transaction\" value=\"{}\">\
+         <input type=\"hidden\" name=\"csrf_token\" value=\"{}\">\
+         <button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>\
+         <button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button>\
+         </form></main></body></html>",
+        html_escape(&client_name),
+        html_escape(&pending.subject),
+        html_escape(issuer.public_url()),
+        html_escape(&context.paths.vault_root().display().to_string()),
+        html_escape(&profile),
+        html_escape(&packs.join(", ")),
+        html_escape(transaction_id),
+        html_escape(&pending.csrf_token),
+    );
+    McpHttpResponse {
+        status: 200,
+        content_type: Some("text/html; charset=utf-8"),
+        body: body.into_bytes(),
+        extra_headers: vec![
+            ("Cache-Control".to_string(), "no-store".to_string()),
+            ("X-Frame-Options".to_string(), "DENY".to_string()),
+            (
+                "Content-Security-Policy".to_string(),
+                "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+                    .to_string(),
+            ),
+        ],
+    }
+}
+
+#[cfg(feature = "oauth")]
+fn local_oauth_client_redirect(
+    redirect_uri: &str,
+    result_query: &str,
+    state: Option<&str>,
+) -> McpHttpResponse {
+    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
+    let mut location = format!("{redirect_uri}{separator}{result_query}");
+    if let Some(state) = state {
         location.push_str("&state=");
-        location.push_str(&percent_encode(&state));
+        location.push_str(&percent_encode(state));
     }
     McpHttpResponse {
         status: 302,
         content_type: None,
         body: Vec::new(),
-        extra_headers: vec![("Location".to_string(), location)],
+        extra_headers: vec![
+            ("Location".to_string(), location),
+            ("Cache-Control".to_string(), "no-store".to_string()),
+        ],
     }
 }
 

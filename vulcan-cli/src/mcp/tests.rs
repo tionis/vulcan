@@ -447,6 +447,173 @@ fn indieauth_redirect_includes_pkce_challenge() {
     assert!(location.contains("code_challenge_method=S256"));
 }
 
+#[cfg(feature = "oauth")]
+fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> McpHttpServerContext {
+    McpHttpServerContext {
+        paths: paths.clone(),
+        requested_profile: Some("readonly".to_string()),
+        tool_pack_args: vec![McpToolPackArg::NotesRead, McpToolPackArg::Search],
+        tool_pack_mode_arg: McpToolPackModeArg::Static,
+        endpoint: "/mcp".to_string(),
+        auth_token: None,
+        oauth: Some(McpOAuthMode::Local(issuer)),
+        bind_addr: "127.0.0.1:8765".parse().expect("bind"),
+        instance_id: Ulid::new(),
+        sessions: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_clients: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_dcr_enabled: true,
+        oauth_dcr_allowed_redirect_hosts: vec!["client.example.test".to_string()],
+        oauth_local_redirect_uris: Vec::new(),
+        oauth_indieauth: None,
+        oauth_clients_path: None,
+        request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
+    }
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let context = consent_test_context(&paths, Arc::clone(&issuer));
+    let transaction = "consent-transaction";
+    context
+        .oauth_pending_consent
+        .lock()
+        .expect("consent lock")
+        .insert(
+            transaction.to_string(),
+            LocalOAuthPendingConsent {
+                client_id: "client-a".to_string(),
+                redirect_uri: "https://client.example.test/callback".to_string(),
+                code_challenge: "original-pkce-challenge".to_string(),
+                subject: "https://identity.example.test/alice".to_string(),
+                state: Some("original-client-state".to_string()),
+                csrf_token: "csrf-secret".to_string(),
+                expires_at: std::time::Instant::now() + Duration::from_secs(60),
+            },
+        );
+
+    let form = local_oauth_consent_form(
+        &context,
+        &issuer,
+        transaction,
+        &context
+            .oauth_pending_consent
+            .lock()
+            .expect("consent lock")
+            .get(transaction)
+            .expect("pending")
+            .clone(),
+    );
+    let html = String::from_utf8(form.body).expect("HTML");
+    assert!(html.contains("client-a"));
+    assert!(html.contains("https://identity.example.test/alice"));
+    assert!(html.contains("readonly"));
+    assert!(html.contains("notes-read, search"));
+    assert!(form
+        .extra_headers
+        .iter()
+        .any(|(name, value)| name == "Content-Security-Policy" && value.contains("form-action")));
+
+    let invalid = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/oauth/consent".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: b"transaction=consent-transaction&csrf_token=wrong&decision=approve".to_vec(),
+    };
+    assert_eq!(
+        handle_local_oauth_consent(&context, &issuer, &invalid).status,
+        403
+    );
+    assert!(context
+        .oauth_pending_consent
+        .lock()
+        .expect("consent lock")
+        .contains_key(transaction));
+
+    let approve = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/oauth/consent".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: b"transaction=consent-transaction&csrf_token=csrf-secret&decision=approve".to_vec(),
+    };
+    let response = handle_local_oauth_consent(&context, &issuer, &approve);
+    assert_eq!(response.status, 302);
+    let location = response
+        .extra_headers
+        .iter()
+        .find_map(|(name, value)| (name == "Location").then_some(value))
+        .expect("redirect");
+    assert!(location.starts_with("https://client.example.test/callback?code="));
+    assert!(location.ends_with("&state=original-client-state"));
+    let codes = context.oauth_codes.lock().expect("codes lock");
+    assert_eq!(codes.len(), 1);
+    assert_eq!(
+        codes.values().next().expect("code").code_challenge,
+        "original-pkce-challenge"
+    );
+    drop(codes);
+    assert!(context
+        .oauth_pending_consent
+        .lock()
+        .expect("consent lock")
+        .is_empty());
+
+    context
+        .oauth_pending_consent
+        .lock()
+        .expect("consent lock")
+        .insert(
+            "denied-transaction".to_string(),
+            LocalOAuthPendingConsent {
+                client_id: "client-a".to_string(),
+                redirect_uri: "https://client.example.test/callback".to_string(),
+                code_challenge: "unused-challenge".to_string(),
+                subject: "https://identity.example.test/alice".to_string(),
+                state: Some("denied-state".to_string()),
+                csrf_token: "deny-csrf".to_string(),
+                expires_at: std::time::Instant::now() + Duration::from_secs(60),
+            },
+        );
+    let deny = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/oauth/consent".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: b"transaction=denied-transaction&csrf_token=deny-csrf&decision=deny".to_vec(),
+    };
+    let denied = handle_local_oauth_consent(&context, &issuer, &deny);
+    let denied_location = denied
+        .extra_headers
+        .iter()
+        .find_map(|(name, value)| (name == "Location").then_some(value))
+        .expect("denial redirect");
+    assert!(denied_location.contains("error=access_denied"));
+    assert!(denied_location.ends_with("&state=denied-state"));
+    assert_eq!(context.oauth_codes.lock().expect("codes lock").len(), 1);
+}
+
 #[test]
 fn mcp_tool_calls_return_structured_timeout_errors() {
     let tmp = tempfile::tempdir().expect("tempdir should be created");

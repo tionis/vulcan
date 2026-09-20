@@ -15711,7 +15711,10 @@ fn skill_list_and_get_surface_bundled_skills() {
     let get_mcp_json = parse_stdout_json(&get_mcp_assert);
     assert_eq!(get_mcp_json["name"].as_str(), Some("mcp-setup"));
     assert!(get_mcp_json["body"].as_str().is_some_and(|body| {
-        body.contains("OAuth/IndieAuth") && body.contains("ChatGPT remote connector")
+        body.contains("OAuth/IndieAuth")
+            && body.contains("ChatGPT remote connector")
+            && body.contains("explicitly approve Vulcan's consent page")
+            && body.contains("IndieAuth login authenticates the person")
     }));
 
     let installed_skills = vault_root.join(".agents/skills");
