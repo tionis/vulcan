@@ -13,7 +13,7 @@ use vulcan_core::config::{
     IntegrationMissingPolicyConfig, IntegrationRouteConfig, IntegrationRouteDirectionConfig,
     OutlinePublishProfileConfig, VaultConfig,
 };
-use vulcan_core::VaultPaths;
+use vulcan_core::{validate_selection_plan, QueryAst, VaultPaths};
 
 const ROUTE_STATE_VERSION: u32 = 1;
 
@@ -515,6 +515,33 @@ fn validate_profile(
                 "profile.selection",
                 "push routes require exactly one of `query`, `query_json`, or `selection`",
             );
+        } else if let Some(query) = profile.query.as_deref() {
+            if let Err(message) = QueryAst::from_dsl(query) {
+                error(
+                    diagnostics,
+                    route_name,
+                    "profile.query",
+                    format!("invalid note query: {message}"),
+                );
+            }
+        } else if let Some(query_json) = profile.query_json.as_deref() {
+            if let Err(message) = QueryAst::from_json(query_json) {
+                error(
+                    diagnostics,
+                    route_name,
+                    "profile.query_json",
+                    format!("invalid note query JSON: {message}"),
+                );
+            }
+        } else if let Some(selection) = profile.selection.as_ref() {
+            if let Err(message) = validate_selection_plan(selection) {
+                error(
+                    diagnostics,
+                    route_name,
+                    "profile.selection",
+                    format!("invalid selection plan: {message}"),
+                );
+            }
         }
     }
 }
@@ -703,7 +730,7 @@ mod tests {
             base_url: Some("https://outline.example".into()),
             collection_id: Some("collection".into()),
             token_env: Some("OUTLINE_TOKEN".into()),
-            query: Some("path:Players".into()),
+            query: Some("from notes where file.path starts_with \"Players/\"".into()),
             ..OutlinePublishProfileConfig::default()
         }
     }
@@ -775,6 +802,39 @@ mod tests {
         config.integrations.routes.insert("pull".into(), route);
 
         assert!(validate_routes(&config).valid);
+    }
+
+    #[test]
+    fn rejects_invalid_publish_selectors_before_route_execution() {
+        let mut config = VaultConfig::default();
+        let mut invalid_query = profile();
+        invalid_query.query = Some("from \"Players\"".into());
+        config
+            .publish
+            .outline
+            .profiles
+            .insert("players".into(), invalid_query);
+        config
+            .integrations
+            .routes
+            .insert("campaign".into(), route("Players/Campaign"));
+
+        let report = validate_routes(&config);
+        assert!(!report.valid);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.field == "profile.query" && diagnostic.message.contains("unknown source")
+        }));
+
+        let profile = config.publish.outline.profiles.get_mut("players").unwrap();
+        profile.query = None;
+        profile.query_json = Some(r#"{"source":"not-notes"}"#.into());
+
+        let report = validate_routes(&config);
+        assert!(!report.valid);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.field == "profile.query_json"));
     }
 
     #[test]

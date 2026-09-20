@@ -126,6 +126,24 @@ fn validate_query_pair(
     Ok(())
 }
 
+fn validate_optional_query(
+    query: Option<&str>,
+    query_json: Option<&str>,
+    label: &str,
+) -> Result<(), SelectionError> {
+    validate_query_pair(query, query_json, label)?;
+    match (query, query_json) {
+        (Some(query), None) => QueryAst::from_dsl(query)
+            .map(|_| ())
+            .map_err(|error| selection_error(format!("{label} is invalid: {error}"))),
+        (None, Some(query_json)) => QueryAst::from_json(query_json)
+            .map(|_| ())
+            .map_err(|error| selection_error(format!("{label} is invalid: {error}"))),
+        (None, None) => Ok(()),
+        (Some(_), Some(_)) => unreachable!("query pair was validated above"),
+    }
+}
+
 pub fn validate_selection_plan(plan: &SelectionPlan) -> Result<(), SelectionError> {
     if plan.clauses.is_empty() {
         return Err(selection_error(
@@ -137,7 +155,7 @@ pub fn validate_selection_plan(plan: &SelectionPlan) -> Result<(), SelectionErro
             "selection max_nodes must be greater than zero",
         ));
     }
-    validate_query_pair(
+    validate_optional_query(
         plan.exclusions.query.as_deref(),
         plan.exclusions.query_json.as_deref(),
         "selection exclusions",
@@ -145,7 +163,7 @@ pub fn validate_selection_plan(plan: &SelectionPlan) -> Result<(), SelectionErro
     for (index, clause) in plan.clauses.iter().enumerate() {
         match clause {
             SelectionClause::Query { query, query_json } => {
-                validate_query_pair(
+                validate_optional_query(
                     query.as_deref(),
                     query_json.as_deref(),
                     &format!("selection clause {index}"),
@@ -169,12 +187,12 @@ pub fn validate_selection_plan(plan: &SelectionPlan) -> Result<(), SelectionErro
                         "graph selection clause {index} must contain at least one non-empty seed"
                     )));
                 }
-                validate_query_pair(
+                validate_optional_query(
                     result_query.as_deref(),
                     result_query_json.as_deref(),
                     &format!("selection clause {index} result query"),
                 )?;
-                validate_query_pair(
+                validate_optional_query(
                     traverse_query.as_deref(),
                     traverse_query_json.as_deref(),
                     &format!("selection clause {index} traverse query"),
@@ -735,5 +753,36 @@ mod tests {
             r#"{"clauses":[{"type":"graph","seeds":["Home"],"direktion":"both"}]}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn selection_validation_rejects_invalid_embedded_queries() {
+        let plan = SelectionPlan {
+            clauses: vec![SelectionClause::Query {
+                query: Some("from \"Projects\"".to_string()),
+                query_json: None,
+            }],
+            ..SelectionPlan::default()
+        };
+
+        let error = validate_selection_plan(&plan).expect_err("invalid embedded query");
+        assert!(error.to_string().contains("unknown source"));
+
+        let plan = SelectionPlan {
+            clauses: vec![SelectionClause::Graph {
+                seeds: vec!["Home".to_string()],
+                direction: GraphSelectionDirection::Both,
+                depth: Some(1),
+                include_seeds: true,
+                result_query: None,
+                result_query_json: Some(r#"{"source":"not-notes"}"#.to_string()),
+                traverse_query: None,
+                traverse_query_json: None,
+            }],
+            ..SelectionPlan::default()
+        };
+
+        let error = validate_selection_plan(&plan).expect_err("invalid embedded query JSON");
+        assert!(error.to_string().contains("result query is invalid"));
     }
 }

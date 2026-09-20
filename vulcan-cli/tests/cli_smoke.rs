@@ -26268,7 +26268,7 @@ fn integration_routes_list_validate_and_report_status_without_network() {
 base_url = "https://outline.example"
 collection_id = "collection"
 token_env = "OUTLINE_TOKEN"
-query = 'from "Players/Campaign"'
+query = 'from notes where file.path starts_with "Players/Campaign/"'
 
 [integrations.routes.campaign]
 profile = "players"
@@ -26321,6 +26321,52 @@ schedule = "every 15m"
     let status = parse_stdout_json(&status);
     assert_eq!(status["binding_count"], 0);
     assert!(status["runtime"].is_null());
+}
+
+#[test]
+fn integration_validate_rejects_an_invalid_profile_query() {
+    let temp = TempDir::new().unwrap();
+    let vault_root = temp.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[publish.outline.profiles.players]
+base_url = "https://outline.example"
+collection_id = "collection"
+token_env = "OUTLINE_TOKEN"
+query = 'from "Players"'
+
+[integrations.routes.campaign]
+profile = "players"
+direction = "push"
+"#,
+    )
+    .unwrap();
+    let root = vault_root.to_str().unwrap();
+
+    let validated = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root,
+            "--output",
+            "json",
+            "integration",
+            "validate",
+            "campaign",
+        ])
+        .assert()
+        .failure();
+    let reports = parse_stdout_json_lines(&validated);
+    assert_eq!(reports.len(), 2);
+    let report = &reports[0];
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["diagnostics"][0]["field"], "profile.query");
+    assert!(report["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unknown source"));
 }
 
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {

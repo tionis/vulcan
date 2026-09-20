@@ -11,7 +11,7 @@ A route makes a collaboration wiki repeatable by persisting its local root, remo
 base_url = "https://outline.example.com"
 collection_id = "00000000-0000-0000-0000-000000000000"
 collection_title = "Players Wiki"
-query = 'from "Players/Campaign"'
+query = 'from notes where file.path starts_with "Players/Campaign/"'
 token_env = "OUTLINE_API_TOKEN"
 
 [integrations.routes.players]
@@ -175,7 +175,7 @@ For a new wiki, omit `collection_id` and opt in to provisioning:
 base_url = "https://outline.example.com"
 collection_title = "Players Wiki"
 auto_create_collection = true
-query = 'from "Players"'
+query = 'from notes where file.path starts_with "Players/"'
 token_env = "OUTLINE_API_TOKEN"
 ```
 

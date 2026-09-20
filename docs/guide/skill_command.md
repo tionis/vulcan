@@ -4,7 +4,7 @@ Skill commands are executable entrypoints declared by Agent Skills-compatible sk
 
 A skill lives under `.agents/skills/<name>/` and contains a required `SKILL.md`. The skill may include scripts, references, assets, schemas, and examples. Vulcan-specific command metadata lives under `metadata.vulcan.commands` in the `SKILL.md` frontmatter.
 
-Use a skill command when an action should be directly callable with typed input and output from CLI, MCP, `describe`, internal JS, schedulers, or future assistant runtimes.
+Use a skill command when an action should be directly callable with typed input and output from CLI, MCP, `describe`, internal JS, an external scheduler invoking the CLI, or future assistant runtimes.
 
 Use a plugin instead when code should run automatically because a Vulcan event happened.
 
@@ -19,6 +19,8 @@ vulcan skill commands daily-review
 vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05"}'
 vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
 jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-
+vulcan tool show conversation-export
+vulcan tool help conversation-export
 ```
 
 `--arg key=value` adds a string field to the input object. `--arg-json key=json`
@@ -31,6 +33,8 @@ against the skill command input schema.
 Projected skill commands may also appear as normal tools in `vulcan describe --format mcp` and in the MCP server.
 
 Projected tool names are normalized as `skill_<skill_name>_<command_id>`, for example `skill_daily_review_prepare_day`.
+
+Skill commands contain executable vault-owned code. Running one requires a trusted vault (`vulcan trust add`). The caller's active permission profile and the command's declared profile are intersected, so a command cannot widen its caller's authority. Projected commands may use `strict`, `fs`, or `net`; `sandbox = none` is rejected. Use a trusted local `vulcan run --sandbox none` script instead when host execution is truly required and explicitly permitted.
 
 Skill commands may declare `metadata.vulcan.commands[].cli` aliases and flags for a
 more natural shell interface:
@@ -70,6 +74,10 @@ repairs such as shebang normalization and executable-bit fixes.
 Use `vulcan tool compat <tool-or-alias> --surface cli,mcp,openai-tools,js` before
 sharing a tool across harnesses. It reports surface-specific schema, CLI, sandbox,
 and callability issues that may not show up when only running a local example.
+
+Use `vulcan tool types <tool-or-alias>` (or `--all`) to generate TypeScript declarations. Use `vulcan tool ci --profile <permission-profile>` to combine strict linting, declared examples, and compatibility checks for the visible tool set.
+
+Mutation-capable commands should accept a boolean `dry_run` or `dryRun`, include a dry-run example, and return reviewable structured proposals when an effect needs a diff, checkpoint, or explicit approval before application. `vulcan tool lint --strict` diagnoses missing dry-run coverage.
 
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 

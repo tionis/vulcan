@@ -15,7 +15,9 @@ after wake. Abrupt power loss, hard process kills, and offline shutdown cannot g
 reach the remote, so the normal watcher remains the primary path and final sync is a last-chance
 safety net.
 
-## Ordinary Linux and Windows setup
+For installation, service management, and upgrade behavior on each supported platform, see [Installation](../installation.md). The daemon is optional: install its native per-user service with `vulcan daemon install --dry-run` followed by `vulcan daemon install` only when background synchronization is wanted.
+
+## Ordinary Linux, macOS, and Windows setup
 
 Preview a clone and device-local registration first:
 

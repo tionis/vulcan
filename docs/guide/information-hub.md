@@ -15,7 +15,8 @@ This document describes both the implemented baseline and the planned architectu
 | One-way local-vault-to-Outline API publication with durable mappings and conflict detection | Implemented |
 | Scoped Outline collection/subtree pull with durable three-way state, attachments, reviewed moves, and missing-document policies | Implemented |
 | mdbase v0.3 discovery, configuration validation, bundled schemas, and secure schema-reference validation | Partially implemented; later conformance profiles remain a candidate track |
-| Multi-vault daemon and device/file-tree sync backends | Planned in Phases 10–12 |
+| Multi-vault daemon lifecycle, registry, Git sync supervisor, direct Git sync, and companion protocol | Implemented |
+| General daemon REST API/client mode and non-Git sync backends | Planned follow-on work in Phases 10 and 12 |
 | Named, authority-aware Outline routes, exact document bindings, route validation/status/history, and interval-driven direct CLI execution | Implemented |
 | Connector-neutral frontmatter bindings, HedgeDoc routes, Git-wiki routes, and selective SilverBullet routes | Planned first connector wave |
 | Full-Space SilverBullet protocol peer, SilverBullet plug, and optional runtime adapter | Planned optional capabilities after their daemon/sync boundaries exist |
@@ -30,7 +31,7 @@ These terms solve different problems and should not be used interchangeably.
 
 A sync backend replicates the canonical working tree across devices or storage systems. Examples include Git remote sync, a supervised Obsidian or Seafile client, and passive Syncthing-style operation.
 
-It moves files; it does not select documents, translate hierarchy, or bind one note to a remote wiki object. Device synchronization is Phase 12 work.
+It moves files; it does not select documents, translate hierarchy, or bind one note to a remote wiki object. Git-backed direct synchronization and daemon supervision are implemented. Additional backend types and some daemon API surfaces remain Phase 10/12 follow-on work.
 
 ### External document binding
 
@@ -114,7 +115,7 @@ Outline routes reuse a publication profile for endpoint/credentials, outgoing se
 base_url = "https://outline.example.com"
 collection_id = "collection-id"
 token_env = "OUTLINE_API_TOKEN"
-query = 'from "Players/Campaign"'
+query = 'from notes where file.path starts_with "Players/Campaign/"'
 
 [integrations.routes.players]
 connector = "outline"

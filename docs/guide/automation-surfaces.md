@@ -2,6 +2,8 @@
 
 Vulcan has several related but different automation surfaces. They are documented together so users can choose the right abstraction without inferring architecture from implementation details.
 
+This guide compares vault-owned JavaScript and agent workflow extensions. Scheduled self-updates, Git synchronization jobs, and external-content routes are operational automation configured through their own command groups rather than additional script-extension types.
+
 ## Short version
 
 - Use a **skill** to package workflow instructions, examples, references, assets, and optional commands.
@@ -51,13 +53,15 @@ Use a skill command when:
 - the command needs scoped permissions, sandboxing, or secret bindings
 - the command belongs with skill instructions and examples rather than as an unrelated standalone script
 
-Examples:
+Illustrative examples (only `daily-review` is representative of the bundled workflow style; these names are not promised built-ins):
 
 - `daily-review.prepare-day`: read calendar/tasks/recent notes and propose a daily briefing
 - `gmail.triage`: read recent email and propose inbox items or tasks
 - `forgejo.project-status`: read issues/PRs and update a project status note
 
 Projected command names are normalized for tool surfaces, for example `skill_daily_review_prepare_day`.
+
+Skill command execution requires a trusted vault. The active permission profile and declared command profile intersect, and neither can grant authority the caller lacks. Exposed commands may use `strict`, `fs`, or `net`, but not the unrestricted `none` sandbox.
 
 ## Plugins
 
@@ -84,6 +88,8 @@ Examples:
 ## `vulcan run` scripts
 
 `vulcan run` is the general JS execution path for ad hoc or local scripts.
+
+Unlike projected skill commands, a trusted local `vulcan run` script may explicitly use `--sandbox none` when host execution is genuinely required and the active permission profile allows it.
 
 Use it when:
 
