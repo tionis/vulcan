@@ -464,11 +464,16 @@ mod tests {
         let executor = executor(state.path(), MutationSchedulerConfig::default());
         let context = context(
             vault.path(),
-            Some(ExecutionDeadline::after(Duration::from_millis(40))),
+            Some(ExecutionDeadline::after(Duration::from_secs(1))),
         );
         let operation_id = context.identity.operation_id.clone();
         let applications = Arc::new(AtomicUsize::new(0));
         let operation_applications = Arc::clone(&applications);
+        // Hold the operation open past the response deadline instead of
+        // sleeping for a fixed window, so a slow scheduler dispatch cannot
+        // turn the expected after-dispatch timeout into a before-dispatch one.
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
 
         let error = executor
             .execute(
@@ -477,7 +482,8 @@ mod tests {
                 |_| Ok(()),
                 move |_| {
                     operation_applications.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(120));
+                    started_sender.send(()).expect("operation started");
+                    release_receiver.recv().expect("release operation");
                     Ok(HostedOperationCompletion::mutation(()))
                 },
             )
@@ -491,6 +497,10 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("operation started before the deadline");
+        release_sender.send(()).expect("release operation");
         let record = wait_for_terminal(&executor, &operation_id).await;
         assert_eq!(record.state, HostedJobState::Succeeded);
         assert_eq!(record.committed, Some(true));
@@ -506,9 +516,12 @@ mod tests {
         let direct_cli_lock =
             vulcan_core::write_lock::acquire_write_lock(&paths).expect("direct CLI vault lock");
         let executor = executor(state.path(), MutationSchedulerConfig::default());
+        // The worker blocks on the vault lock until this test releases it, so a
+        // generous deadline only guarantees dispatch happened before the
+        // response expires; it cannot shorten the lock wait.
         let context = context(
             vault.path(),
-            Some(ExecutionDeadline::after(Duration::from_millis(40))),
+            Some(ExecutionDeadline::after(Duration::from_secs(2))),
         );
         let operation_id = context.identity.operation_id.clone();
         let worker_paths = paths.clone();
@@ -531,7 +544,10 @@ mod tests {
             )
             .await
             .expect_err("response expires while direct CLI owns the lock");
-        assert!(matches!(error, HostedExecutionError::AfterDispatch { .. }));
+        assert!(
+            matches!(error, HostedExecutionError::AfterDispatch { .. }),
+            "expected an after-dispatch timeout, got {error:?}"
+        );
         assert!(!vault.path().join("Hosted.md").exists());
 
         drop(direct_cli_lock);
