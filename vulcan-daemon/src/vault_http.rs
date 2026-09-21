@@ -153,6 +153,32 @@ where
         .await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultHttpServiceIdentity {
+    id: ServiceId,
+    scope: ServiceScope,
+}
+
+impl VaultHttpServiceIdentity {
+    pub fn temporary() -> Result<Self, HostRuntimeError> {
+        Ok(Self {
+            id: ServiceId::parse("listener.vault-http")?,
+            scope: ServiceScope::Instance {
+                instance_id: "temporary-vault-http".to_string(),
+            },
+        })
+    }
+
+    pub fn resident(registration_id: &str) -> Result<Self, HostRuntimeError> {
+        Ok(Self {
+            id: ServiceId::parse(format!("listener.vault-http/{registration_id}"))?,
+            scope: ServiceScope::Vault {
+                registration_id: registration_id.to_string(),
+            },
+        })
+    }
+}
+
 /// Adapts an already-bound listener to the shared host lifecycle. The
 /// listener is single-use and therefore intentionally non-restarting.
 pub fn vault_listener_service(
@@ -161,15 +187,28 @@ pub fn vault_listener_service(
     runtime: tokio::runtime::Handle,
     dependencies: Vec<ServiceId>,
 ) -> Result<ServiceRegistration, HostRuntimeError> {
-    let id = ServiceId::parse("listener.vault-http")?;
+    vault_listener_service_for(
+        listener,
+        state,
+        runtime,
+        dependencies,
+        VaultHttpServiceIdentity::temporary()?,
+    )
+}
+
+pub fn vault_listener_service_for(
+    listener: tokio::net::TcpListener,
+    state: VaultHttpState,
+    runtime: tokio::runtime::Handle,
+    dependencies: Vec<ServiceId>,
+    identity: VaultHttpServiceIdentity,
+) -> Result<ServiceRegistration, HostRuntimeError> {
     let listener = Arc::new(Mutex::new(Some(listener)));
     Ok(ServiceRegistration::new(
         ServiceDefinition {
-            id,
+            id: identity.id,
             service_kind: "listener".to_string(),
-            scope: ServiceScope::Instance {
-                instance_id: "temporary-vault-http".to_string(),
-            },
+            scope: identity.scope,
             enabled: true,
             required: true,
             dependencies,
@@ -215,12 +254,16 @@ pub fn vault_watch_service(
             restart: RestartPolicy::Never,
         },
         move |service| {
-            service.ready()?;
+            let mut ready = false;
             let result = watch_vault_until(
                 &paths,
                 &options,
                 || service.stop().is_cancelled(),
                 |report| {
+                    if !ready {
+                        service.ready()?;
+                        ready = true;
+                    }
                     let mut state = health
                         .lock()
                         .map_err(|_| "vault HTTP health state is unavailable".to_string())?;
@@ -387,6 +430,127 @@ mod tests {
             .await
             .expect("body");
         serde_json::from_slice(&bytes).expect("json")
+    }
+
+    async fn body_bytes(response: Response) -> axum::body::Bytes {
+        axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body")
+    }
+
+    #[test]
+    fn listener_identity_distinguishes_temporary_and_resident_ownership() {
+        let temporary = VaultHttpServiceIdentity::temporary().expect("temporary identity");
+        assert_eq!(temporary.id.as_str(), "listener.vault-http");
+        assert_eq!(
+            temporary.scope,
+            ServiceScope::Instance {
+                instance_id: "temporary-vault-http".to_string()
+            }
+        );
+
+        let resident = VaultHttpServiceIdentity::resident("notes").expect("resident identity");
+        assert_eq!(resident.id.as_str(), "listener.vault-http/notes");
+        assert_eq!(
+            resident.scope,
+            ServiceScope::Vault {
+                registration_id: "notes".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_and_resident_mounts_have_byte_equivalent_responses() {
+        let (_vault, state) = fixture();
+        let request = || {
+            HttpRequest::builder()
+                .uri("/search?q=needle")
+                .header(HOST, "127.0.0.1:3210")
+                .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                .body(Body::empty())
+                .expect("request")
+        };
+        let temporary = vault_router(state.clone())
+            .oneshot(request())
+            .await
+            .expect("temporary response");
+        let resident = vault_router(state)
+            .oneshot(request())
+            .await
+            .expect("resident response");
+        assert_eq!(temporary.status(), resident.status());
+        assert_eq!(body_bytes(temporary).await, body_bytes(resident).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn temporary_and_resident_services_run_without_a_daemon_process() {
+        use crate::host::HostSupervisor;
+        use crate::shutdown::ShutdownSignal;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        async fn hosted_response(paths: VaultPaths, identity: VaultHttpServiceIdentity) -> Vec<u8> {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener");
+            let address = listener.local_addr().expect("address");
+            let state = VaultHttpState::new(
+                paths,
+                ServeRouteOptions {
+                    permissions: None,
+                    watch_enabled: false,
+                },
+                VaultHttpSecurity::new(
+                    "secret",
+                    vec![address.to_string()],
+                    vec![format!("http://{address}")],
+                ),
+            )
+            .expect("state");
+            let registration = vault_listener_service_for(
+                listener,
+                state,
+                tokio::runtime::Handle::current(),
+                Vec::new(),
+                identity,
+            )
+            .expect("registration");
+            let stop = Arc::new(ShutdownSignal::default());
+            let host = HostSupervisor::start_with_signal(
+                vec![registration],
+                Duration::from_secs(2),
+                Arc::clone(&stop),
+            )
+            .expect("host");
+            let mut stream = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("connection");
+            stream
+                .write_all(
+                    format!(
+                        "GET /search?q=needle HTTP/1.1\r\nHost: {address}\r\nX-Vulcan-Token: secret\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("request");
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.expect("response");
+            host.shutdown().expect("shutdown");
+            response
+        }
+
+        let (vault, _state) = fixture();
+        let temporary = hosted_response(
+            VaultPaths::new(vault.path()),
+            VaultHttpServiceIdentity::temporary().unwrap(),
+        )
+        .await;
+        let resident = hosted_response(
+            VaultPaths::new(vault.path()),
+            VaultHttpServiceIdentity::resident("notes").unwrap(),
+        )
+        .await;
+        assert_eq!(temporary, resident);
     }
 
     #[tokio::test]

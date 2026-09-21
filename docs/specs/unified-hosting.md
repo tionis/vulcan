@@ -263,6 +263,14 @@ its JSON query/response schemas, and reports feature-dependent availability. Thu
 vectors or the JavaScript runtime still reports `/related` or `/dataview/query-js` explicitly as an
 installed but unavailable compatibility route instead of silently advertising working behavior.
 
+The listener registration accepts either invocation-instance or registered-vault ownership while
+using the identical router. Acceptance tests run both ownership modes without a daemon process and
+compare complete HTTP responses. The temporary watcher now reports service readiness only after
+its startup observation and scan succeed; a pre-readiness watcher failure rolls back the dependent
+listener and releases its port. Coverage also exercises permission filtering, independent token,
+Host, and Origin rejection, malformed connections, declared oversized bodies, bind conflicts,
+watch-backed refresh, and clean shutdown.
+
 ### Compatibility test inventory
 
 Migration extends these existing suites instead of replacing them with host-only tests:

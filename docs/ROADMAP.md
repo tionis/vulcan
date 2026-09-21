@@ -5317,7 +5317,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [x] Make `vulcan serve` a temporary single-vault host using those routers, with an explicit compatibility mapping for existing paths, options, output, and shutdown. Keep resident registry/service installation unchanged by temporary invocations.
 - [x] Centralize request limits, logging/redaction, deadlines, CORS/origin policy, and authentication plumbing while retaining endpoint-specific credentials, audiences, vault scope, and permissions. A companion credential must not automatically gain MCP/admin/app authority. Do not broaden the current loopback companion exposure during consolidation.
 - [x] Publish supported capabilities and schemas from the actual installed routes. Preserve CLI JSON report parity and existing companion contracts; unsupported features remain explicit.
-- [ ] Test resident/temporary response parity, authorization/filtering, malformed and oversized requests, bind conflicts, partial startup cleanup, and both modes with the daemon otherwise stopped. Complete the watcher adapter migration when 10.7.3 lands.
+- [x] Test resident/temporary response parity, authorization/filtering, malformed and oversized requests, bind conflicts, partial startup cleanup, and both modes with the daemon otherwise stopped. Complete the watcher adapter migration when 10.7.3 lands.
 
 **First useful milestone:** 10.7.1, 10.7.2, the execution safeguards needed from 10.7.4, and 10.7.5 host existing workers plus the single-vault HTTP surface under shared lifecycle and health. Shared observation and MCP/app migrations may follow; do not report the full 10.7 track complete at this milestone.
 

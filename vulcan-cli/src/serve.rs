@@ -301,6 +301,29 @@ mod tests {
     }
 
     #[test]
+    fn partial_watcher_startup_failure_rolls_back_the_listener() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let missing_vault = temporary.path().join("missing-vault");
+        let probe = TcpListener::bind("127.0.0.1:0").expect("port probe");
+        let address = probe.local_addr().expect("address");
+        drop(probe);
+        let error = spawn_server(
+            VaultPaths::new(&missing_vault),
+            ServeOptions {
+                bind: address.to_string(),
+                watch: true,
+                debounce_ms: 50,
+                auth_token: Some("secret".to_string()),
+                permissions: None,
+            },
+        )
+        .expect_err("missing watched vault must fail startup");
+        assert!(error.to_string().contains("service"));
+        let rebound = TcpListener::bind(address).expect("failed startup releases listener");
+        drop(rebound);
+    }
+
+    #[test]
     fn serve_handles_repeated_queries_without_restarting() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -606,6 +629,28 @@ mod tests {
         );
         assert_eq!(bad_host["error"], "forbidden Host header");
         assert_eq!(bad_origin["error"], "forbidden Origin header");
+
+        let mut malformed = TcpStream::connect(handle.addr()).expect("connection");
+        malformed
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        malformed
+            .write_all(b"GET /health HTTP/1.1\r\nHost: bad host value\r\nConnection: close\r\n\r\n")
+            .expect("malformed request write");
+        let mut malformed_response = String::new();
+        malformed
+            .read_to_string(&mut malformed_response)
+            .expect("malformed response read");
+        assert!(
+            malformed_response.starts_with("HTTP/1.1 400")
+                || malformed_response.starts_with("HTTP/1.1 403"),
+            "invalid authority must fail closed: {malformed_response}"
+        );
+        assert_eq!(
+            get_json(handle.addr(), "/health", Some("secret"))["ok"],
+            true,
+            "malformed connections must not poison the listener"
+        );
 
         handle.shutdown().expect("server should shut down");
     }
