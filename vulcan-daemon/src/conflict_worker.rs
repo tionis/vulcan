@@ -525,6 +525,7 @@ mod tests {
             directory,
             &["config", "user.email", "vulcan@example.invalid"],
         );
+        git(directory, &["config", "core.autocrlf", "false"]);
     }
 
     #[test]
@@ -556,6 +557,8 @@ mod tests {
         git(
             temporary.path(),
             &[
+                "-c",
+                "core.autocrlf=false",
                 "clone",
                 "--quiet",
                 remote.to_str().expect("remote path"),
