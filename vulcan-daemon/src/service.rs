@@ -386,12 +386,14 @@ fn plan_launchd_service(
             DaemonServiceCommand::new("launchctl", &["bootout", &service]).tolerant(),
             // A reinstall can race launchd: the previous job may still be
             // registered when bootstrap runs, which fails with a misleading
-            // I/O error. Treat bootstrap as best-effort and rely on the strict
-            // kickstart/print pair below to prove the service is loaded and
-            // running, including the already-loaded case.
+            // I/O error. Treat bootstrap as best-effort; it also starts a
+            // freshly-loaded job via RunAtLoad, so a subsequent kickstart can
+            // itself fail with EALREADY (37) while that start is in flight.
+            // Both are best-effort and the strict print below is the one
+            // verification that the job is loaded.
             DaemonServiceCommand::new("launchctl", &["bootstrap", &domain, &definition_argument])
                 .tolerant(),
-            DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service]),
+            DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service]).tolerant(),
             DaemonServiceCommand::new("launchctl", &["print", &service]),
         ],
         DaemonServiceAction::Uninstall => {
@@ -1003,11 +1005,12 @@ mod tests {
             plan.commands[3].arguments,
             ["print", "gui/501/dev.tionis.vulcan.daemon"]
         );
-        // Reinstalls tolerate a still-registered job for bootout/bootstrap but
-        // must prove the service is loaded and running via kickstart/print.
+        // Reinstalls tolerate the transient launchd states around
+        // bootout/bootstrap/kickstart but must prove the service is loaded
+        // with the strict final print.
         assert!(plan.commands[0].tolerate_failure);
         assert!(plan.commands[1].tolerate_failure);
-        assert!(!plan.commands[2].tolerate_failure);
+        assert!(plan.commands[2].tolerate_failure);
         assert!(!plan.commands[3].tolerate_failure);
     }
 
