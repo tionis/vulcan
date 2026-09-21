@@ -12,10 +12,11 @@ use std::thread;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 
-/// launchd can reject a start while an earlier transition is still in flight.
-/// Retry long enough to cover `KeepAlive` throttling before treating it as fatal.
-const LAUNCHD_START_RETRIES: u32 = 30;
-const LAUNCHD_START_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// launchd removes a booted-out job asynchronously, so bootstrap can fail
+/// while the previous instance is still registered. Retry briefly until the
+/// job can be loaded before treating the failure as fatal.
+const LAUNCHD_BOOTSTRAP_RETRIES: u32 = 20;
+const LAUNCHD_BOOTSTRAP_RETRY_DELAY: Duration = Duration::from_millis(300);
 
 pub const DAEMON_SERVICE_PLAN_VERSION: u32 = 1;
 const SYSTEMD_UNIT: &str = "vulcan-daemon.service";
@@ -403,17 +404,17 @@ fn plan_launchd_service(
     let commands = match action {
         DaemonServiceAction::Install => vec![
             DaemonServiceCommand::new("launchctl", &["bootout", &service]).tolerant(),
-            // A reinstall can race launchd: the previous job may still be
-            // registered when bootstrap runs, which fails with a misleading
-            // I/O error. Treat bootstrap as best-effort, re-enable the service
-            // so a booted-out job is not left disabled, and then prove the
-            // service is running with a retried kickstart. EALREADY (37) means
-            // a start is still in flight, so retry until it settles.
+            // A reinstall races launchd's asynchronous bootout: the previous
+            // job may still be registered when bootstrap runs, which fails and
+            // would leave nothing loaded. Re-enable the service so a
+            // booted-out job is not left disabled, and retry bootstrap until
+            // the job loads; RunAtLoad then starts the new binary.
             DaemonServiceCommand::new("launchctl", &["enable", &service]),
             DaemonServiceCommand::new("launchctl", &["bootstrap", &domain, &definition_argument])
-                .tolerant(),
-            DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service])
-                .retrying(LAUNCHD_START_RETRIES, LAUNCHD_START_RETRY_DELAY),
+                .retrying(LAUNCHD_BOOTSTRAP_RETRIES, LAUNCHD_BOOTSTRAP_RETRY_DELAY),
+            // Kickstart is only needed to move an already-loaded job onto the
+            // new definition and races the load, so it stays best-effort.
+            DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service]).tolerant(),
             DaemonServiceCommand::new("launchctl", &["print", &service]),
         ],
         DaemonServiceAction::Uninstall => {
@@ -1037,14 +1038,15 @@ mod tests {
             plan.commands[4].arguments,
             ["print", "gui/501/dev.tionis.vulcan.daemon"]
         );
-        // bootout/bootstrap are best-effort against launchd races, but the
-        // service must actually be enabled and started.
+        // bootout tolerates a missing job and kickstart races the load, but
+        // the service must actually be enabled and loaded: bootstrap is strict
+        // and retried, and print is the final verification.
         assert!(plan.commands[0].tolerate_failure);
         assert!(!plan.commands[1].tolerate_failure);
-        assert!(plan.commands[2].tolerate_failure);
-        assert!(!plan.commands[3].tolerate_failure);
-        assert_eq!(plan.commands[3].retries, LAUNCHD_START_RETRIES);
-        assert_eq!(plan.commands[3].retry_delay, LAUNCHD_START_RETRY_DELAY);
+        assert!(!plan.commands[2].tolerate_failure);
+        assert_eq!(plan.commands[2].retries, LAUNCHD_BOOTSTRAP_RETRIES);
+        assert_eq!(plan.commands[2].retry_delay, LAUNCHD_BOOTSTRAP_RETRY_DELAY);
+        assert!(plan.commands[3].tolerate_failure);
         assert!(!plan.commands[4].tolerate_failure);
     }
 
