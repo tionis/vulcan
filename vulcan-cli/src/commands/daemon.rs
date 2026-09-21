@@ -5,11 +5,11 @@ use crate::{
 };
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vulcan_app::obsidian_companion::{
     install_obsidian_companion, ObsidianCompanionInstallReport, ObsidianCompanionInstallRequest,
 };
@@ -31,6 +31,13 @@ use vulcan_daemon::service::{
     DaemonServicePlan, DaemonServicePlatform, DaemonServiceReport, DaemonServiceUser,
 };
 use vulcan_daemon::status::{DaemonSyncStatusSource, SyncState};
+
+/// The daemon host grants each required service up to ten seconds to start, so
+/// the CLI readiness wait must outlast that budget instead of giving up first
+/// and reporting a spurious detachment failure on loaded runners.
+const DAEMON_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+const DAEMON_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const DAEMON_LOG_TAIL_BYTES: u64 = 8 * 1024;
 
 #[derive(Debug, Serialize)]
 struct DaemonStartReport<'a> {
@@ -707,7 +714,7 @@ fn start_detached(cli: &Cli, context: &DaemonProcessContext) -> Result<(), CliEr
         command.creation_flags(0x0000_0008 | 0x0000_0200);
     }
     let mut child = command.spawn().map_err(CliError::operation)?;
-    let status = wait_until_ready_child(context, &mut child)?;
+    let status = wait_until_ready_child(context, &mut child, &log_path)?;
     print_start(cli.output, true, Some(child.id()), Some(&log_path), &status)
 }
 
@@ -715,7 +722,8 @@ fn wait_until_ready(
     context: &DaemonProcessContext,
     result: &mpsc::Receiver<Result<(), vulcan_daemon::process::DaemonProcessError>>,
 ) -> Result<DaemonStatusReport, CliError> {
-    for _ in 0..100 {
+    let deadline = Instant::now() + DAEMON_READINESS_TIMEOUT;
+    while Instant::now() < deadline {
         if let Ok(result) = result.try_recv() {
             return result
                 .map(|()| unreachable!("daemon stopped before readiness"))
@@ -726,21 +734,30 @@ fn wait_until_ready(
                 return Ok(status);
             }
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(DAEMON_READINESS_POLL_INTERVAL);
     }
-    Err(CliError::operation(
-        "daemon did not become ready within five seconds",
-    ))
+    Err(CliError::operation(format!(
+        "daemon did not become ready within {} seconds",
+        DAEMON_READINESS_TIMEOUT.as_secs()
+    )))
 }
 
 fn wait_until_ready_child(
     context: &DaemonProcessContext,
     child: &mut std::process::Child,
+    log_path: &Path,
 ) -> Result<DaemonStatusReport, CliError> {
-    for _ in 0..100 {
+    let deadline = Instant::now() + DAEMON_READINESS_TIMEOUT;
+    while Instant::now() < deadline {
         if let Some(status) = child.try_wait().map_err(CliError::operation)? {
+            let log = read_log_tail(log_path);
+            let detail = if log.is_empty() {
+                String::new()
+            } else {
+                format!("\ndaemon log:\n{log}")
+            };
             return Err(CliError::operation(format!(
-                "detached daemon exited before readiness with {status}"
+                "detached daemon exited before readiness with {status}{detail}"
             )));
         }
         if let Ok(status) = daemon_status(context) {
@@ -748,11 +765,34 @@ fn wait_until_ready_child(
                 return Ok(status);
             }
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(DAEMON_READINESS_POLL_INTERVAL);
     }
-    Err(CliError::operation(
-        "detached daemon did not become ready within five seconds",
-    ))
+    Err(CliError::operation(format!(
+        "detached daemon did not become ready within {} seconds",
+        DAEMON_READINESS_TIMEOUT.as_secs()
+    )))
+}
+
+/// Reads the tail of the detached daemon log so a premature child exit reports
+/// the daemon's own startup error instead of only the exit status.
+fn read_log_tail(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(metadata) = fs::metadata(path) else {
+        return String::new();
+    };
+    let start = metadata.len().saturating_sub(DAEMON_LOG_TAIL_BYTES);
+    let Ok(mut file) = fs::File::open(path) else {
+        return String::new();
+    };
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buffer = String::new();
+    if file.read_to_string(&mut buffer).is_err() {
+        return String::new();
+    }
+    buffer.trim_end().to_string()
 }
 
 fn print_start(
@@ -1029,6 +1069,22 @@ mod tests {
             sync_status_source_name(DaemonSyncStatusSource::ApplyMarker),
             "apply marker"
         );
+    }
+
+    #[test]
+    fn reads_the_tail_of_a_daemon_log_and_tolerates_missing_files() {
+        let temporary = tempfile::tempdir().expect("temp dir");
+        let log = temporary.path().join("daemon.log");
+        assert_eq!(read_log_tail(&log), "");
+        std::fs::write(&log, "first line\nlast line\n").expect("log write");
+        assert_eq!(read_log_tail(&log), "first line\nlast line");
+
+        let tail_bytes = usize::try_from(DAEMON_LOG_TAIL_BYTES).expect("tail byte length");
+        let oversized = format!("{}\nlast", "x".repeat(tail_bytes * 2));
+        std::fs::write(&log, oversized).expect("oversized log write");
+        let tail = read_log_tail(&log);
+        assert!(tail.len() <= tail_bytes);
+        assert!(tail.ends_with("last"));
     }
 
     #[test]
