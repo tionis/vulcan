@@ -384,7 +384,13 @@ fn plan_launchd_service(
     let commands = match action {
         DaemonServiceAction::Install => vec![
             DaemonServiceCommand::new("launchctl", &["bootout", &service]).tolerant(),
-            DaemonServiceCommand::new("launchctl", &["bootstrap", &domain, &definition_argument]),
+            // A reinstall can race launchd: the previous job may still be
+            // registered when bootstrap runs, which fails with a misleading
+            // I/O error. Treat bootstrap as best-effort and rely on the strict
+            // kickstart/print pair below to prove the service is loaded and
+            // running, including the already-loaded case.
+            DaemonServiceCommand::new("launchctl", &["bootstrap", &domain, &definition_argument])
+                .tolerant(),
             DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service]),
             DaemonServiceCommand::new("launchctl", &["print", &service]),
         ],
@@ -997,6 +1003,12 @@ mod tests {
             plan.commands[3].arguments,
             ["print", "gui/501/dev.tionis.vulcan.daemon"]
         );
+        // Reinstalls tolerate a still-registered job for bootout/bootstrap but
+        // must prove the service is loaded and running via kickstart/print.
+        assert!(plan.commands[0].tolerate_failure);
+        assert!(plan.commands[1].tolerate_failure);
+        assert!(!plan.commands[2].tolerate_failure);
+        assert!(!plan.commands[3].tolerate_failure);
     }
 
     #[test]

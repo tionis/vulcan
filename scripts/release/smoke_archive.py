@@ -35,14 +35,20 @@ def extract(archive: pathlib.Path, destination: pathlib.Path) -> None:
 
 
 def run(binary: pathlib.Path, *arguments: str, environment: dict[str, str] | None = None) -> str:
-    return subprocess.run(
-        [str(binary), *arguments],
-        check=True,
+    command = [str(binary), *arguments]
+    completed = subprocess.run(
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         env=environment,
-    ).stdout
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"command {command!r} failed with exit code {completed.returncode}\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+    return completed.stdout
 
 
 def daemon_status(binary: pathlib.Path, environment: dict[str, str]) -> dict:
