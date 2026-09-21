@@ -73,6 +73,19 @@ def wait_for_daemon(
     raise ValueError(f"timed out waiting for daemon {detail}: {latest}")
 
 
+def daemon_logs(environment: dict[str, str]) -> str:
+    state_home = environment.get("XDG_STATE_HOME")
+    if not state_home:
+        return ""
+    directory = pathlib.Path(state_home) / "vulcan/daemon"
+    sections = []
+    for name in ("daemon.log", "daemon.error.log"):
+        path = directory / name
+        if path.is_file():
+            sections.append(f"{name}:\n{path.read_text(errors='replace')}")
+    return "\n".join(sections)
+
+
 def smoke_macos_service(
     binary: pathlib.Path,
     environment: dict[str, str],
@@ -115,6 +128,11 @@ def smoke_macos_service(
         wait_for_daemon(
             binary, environment, lambda status: not status["running"], "clean stop"
         )
+    except Exception as error:
+        logs = daemon_logs(environment)
+        if logs:
+            raise RuntimeError(f"{error}\n\ndaemon logs:\n{logs}") from error
+        raise
     finally:
         run(
             binary,

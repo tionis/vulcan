@@ -8,7 +8,14 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 use tempfile::NamedTempFile;
+
+/// launchd can reject a start while an earlier transition is still in flight.
+/// Retry long enough to cover `KeepAlive` throttling before treating it as fatal.
+const LAUNCHD_START_RETRIES: u32 = 30;
+const LAUNCHD_START_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 pub const DAEMON_SERVICE_PLAN_VERSION: u32 = 1;
 const SYSTEMD_UNIT: &str = "vulcan-daemon.service";
@@ -84,6 +91,10 @@ pub struct DaemonServiceCommand {
     pub arguments: Vec<String>,
     #[serde(skip)]
     tolerate_failure: bool,
+    #[serde(skip)]
+    retries: u32,
+    #[serde(skip)]
+    retry_delay: Duration,
 }
 
 impl DaemonServiceCommand {
@@ -92,11 +103,19 @@ impl DaemonServiceCommand {
             program: program.to_string(),
             arguments: arguments.iter().map(|value| (*value).to_string()).collect(),
             tolerate_failure: false,
+            retries: 0,
+            retry_delay: Duration::ZERO,
         }
     }
 
     fn tolerant(mut self) -> Self {
         self.tolerate_failure = true;
+        self
+    }
+
+    fn retrying(mut self, retries: u32, retry_delay: Duration) -> Self {
+        self.retries = retries;
+        self.retry_delay = retry_delay;
         self
     }
 }
@@ -386,14 +405,15 @@ fn plan_launchd_service(
             DaemonServiceCommand::new("launchctl", &["bootout", &service]).tolerant(),
             // A reinstall can race launchd: the previous job may still be
             // registered when bootstrap runs, which fails with a misleading
-            // I/O error. Treat bootstrap as best-effort; it also starts a
-            // freshly-loaded job via RunAtLoad, so a subsequent kickstart can
-            // itself fail with EALREADY (37) while that start is in flight.
-            // Both are best-effort and the strict print below is the one
-            // verification that the job is loaded.
+            // I/O error. Treat bootstrap as best-effort, re-enable the service
+            // so a booted-out job is not left disabled, and then prove the
+            // service is running with a retried kickstart. EALREADY (37) means
+            // a start is still in flight, so retry until it settles.
+            DaemonServiceCommand::new("launchctl", &["enable", &service]),
             DaemonServiceCommand::new("launchctl", &["bootstrap", &domain, &definition_argument])
                 .tolerant(),
-            DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service]).tolerant(),
+            DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service])
+                .retrying(LAUNCHD_START_RETRIES, LAUNCHD_START_RETRY_DELAY),
             DaemonServiceCommand::new("launchctl", &["print", &service]),
         ],
         DaemonServiceAction::Uninstall => {
@@ -731,22 +751,30 @@ fn remove_definition(path: &Path) -> Result<bool, DaemonServiceError> {
 }
 
 fn run_commands(commands: &[DaemonServiceCommand]) -> Result<(), DaemonServiceError> {
+    const MAX_STDERR: usize = 16 * 1024;
     for command in commands {
-        let output = Command::new(&command.program)
-            .args(command.arguments.iter().map(OsString::from))
-            .output()?;
-        if !output.status.success() && !command.tolerate_failure {
-            const MAX_STDERR: usize = 16 * 1024;
-            let stderr =
-                String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(MAX_STDERR)])
-                    .trim()
-                    .to_string();
-            return Err(DaemonServiceError::CommandFailed {
-                program: command.program.clone(),
-                arguments: command.arguments.clone(),
-                exit_code: output.status.code(),
-                stderr,
-            });
+        let mut attempt = 0;
+        loop {
+            let output = Command::new(&command.program)
+                .args(command.arguments.iter().map(OsString::from))
+                .output()?;
+            if output.status.success() || command.tolerate_failure {
+                break;
+            }
+            if attempt >= command.retries {
+                let stderr =
+                    String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(MAX_STDERR)])
+                        .trim()
+                        .to_string();
+                return Err(DaemonServiceError::CommandFailed {
+                    program: command.program.clone(),
+                    arguments: command.arguments.clone(),
+                    exit_code: output.status.code(),
+                    stderr,
+                });
+            }
+            attempt += 1;
+            thread::sleep(command.retry_delay);
         }
     }
     Ok(())
@@ -985,7 +1013,7 @@ mod tests {
         assert!(definition.contains("<key>ExitTimeOut</key>\n  <integer>40</integer>"));
         assert!(definition.contains("daemon.error.log</string>"));
         assert!(!definition.contains("API_KEY"));
-        assert_eq!(plan.commands.len(), 4);
+        assert_eq!(plan.commands.len(), 5);
         assert_eq!(plan.directories, [state.join("daemon")]);
         assert!(plan
             .commands
@@ -995,23 +1023,29 @@ mod tests {
             plan.commands[0].arguments,
             ["bootout", "gui/501/dev.tionis.vulcan.daemon"]
         );
-        assert_eq!(plan.commands[1].arguments[0..2], ["bootstrap", "gui/501"]);
-        assert!(plan.commands[1].arguments[2].ends_with(LAUNCHD_PLIST));
         assert_eq!(
-            plan.commands[2].arguments,
+            plan.commands[1].arguments,
+            ["enable", "gui/501/dev.tionis.vulcan.daemon"]
+        );
+        assert_eq!(plan.commands[2].arguments[0..2], ["bootstrap", "gui/501"]);
+        assert!(plan.commands[2].arguments[2].ends_with(LAUNCHD_PLIST));
+        assert_eq!(
+            plan.commands[3].arguments,
             ["kickstart", "-k", "gui/501/dev.tionis.vulcan.daemon"]
         );
         assert_eq!(
-            plan.commands[3].arguments,
+            plan.commands[4].arguments,
             ["print", "gui/501/dev.tionis.vulcan.daemon"]
         );
-        // Reinstalls tolerate the transient launchd states around
-        // bootout/bootstrap/kickstart but must prove the service is loaded
-        // with the strict final print.
+        // bootout/bootstrap are best-effort against launchd races, but the
+        // service must actually be enabled and started.
         assert!(plan.commands[0].tolerate_failure);
-        assert!(plan.commands[1].tolerate_failure);
+        assert!(!plan.commands[1].tolerate_failure);
         assert!(plan.commands[2].tolerate_failure);
         assert!(!plan.commands[3].tolerate_failure);
+        assert_eq!(plan.commands[3].retries, LAUNCHD_START_RETRIES);
+        assert_eq!(plan.commands[3].retry_delay, LAUNCHD_START_RETRY_DELAY);
+        assert!(!plan.commands[4].tolerate_failure);
     }
 
     #[test]
