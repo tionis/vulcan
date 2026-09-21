@@ -176,7 +176,7 @@ where
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn watch_registered_wiki_with_stop(
     registration: &WikiRegistration,
     supervisor: &SyncSupervisor,

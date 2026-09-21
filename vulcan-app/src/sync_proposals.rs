@@ -5096,6 +5096,7 @@ mod tests {
         conflict_fixture_with_split_targets(false)
     }
 
+    #[cfg(unix)]
     fn formatting_conflict_fixture() -> ConflictFixture {
         let temporary = tempdir().expect("temporary directory");
         let remote = temporary.path().join("remote.git");

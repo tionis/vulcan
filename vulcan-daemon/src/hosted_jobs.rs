@@ -459,6 +459,7 @@ fn set_owner_only_directory(path: &Path) -> Result<(), HostedJobError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_owner_only_directory(_path: &Path) -> Result<(), HostedJobError> {
     Ok(())
 }
@@ -471,6 +472,7 @@ fn set_owner_only_file(file: &File) -> Result<(), HostedJobError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_owner_only_file(_file: &File) -> Result<(), HostedJobError> {
     Ok(())
 }
