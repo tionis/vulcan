@@ -267,9 +267,8 @@ def validate_artifact_record(record: object, version: str) -> tuple[str, str]:
 def validate_downloaded_release(
     directory: pathlib.Path,
     release: dict,
-    tag_commit: str,
+    source_commit: str,
     repo: str,
-    expected_commit: str | None = None,
     *,
     tag: str = ROLLING_TAG,
     channel: str = "main",
@@ -278,7 +277,7 @@ def validate_downloaded_release(
 ) -> ValidatedRelease:
     inventory = validate_release_snapshot(
         release,
-        tag_commit,
+        source_commit,
         tag=tag,
         prerelease=prerelease,
         release_kind=release_kind,
@@ -309,8 +308,8 @@ def validate_downloaded_release(
         raise ValueError("release manifest filename and version do not match")
     if channel == "main":
         version_match = ROLLING_VERSION.fullmatch(version)
-        if version_match is None or version_match.group(1) != tag_commit[:8]:
-            raise ValueError("release version does not identify the rolling tag commit")
+        if version_match is None or version_match.group(1) != source_commit[:8]:
+            raise ValueError("release version does not identify the rolling source commit")
     elif channel == "stable":
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) or tag != f"v{version}":
             raise ValueError("stable release version and version tag do not match")
@@ -366,16 +365,16 @@ def validate_downloaded_release(
         raise ValueError("update-channel envelope contains an invalid payload") from error
     if not isinstance(payload, dict) or payload_bytes != update_channel.canonical_payload(payload):
         raise ValueError("update-channel payload is not canonical JSON")
-    source_commit = payload.get("source_commit")
-    if source_commit != tag_commit or (expected_commit and source_commit != expected_commit):
-        raise ValueError("update-channel source commit does not match the rolling tag")
+    payload_source_commit = payload.get("source_commit")
+    if payload_source_commit != source_commit:
+        raise ValueError("update-channel source commit does not match the release source")
     base_url = f"https://github.com/{repo}/releases/download/{tag}"
     expected_payload = {
         "schema_version": 1,
         "product": "vulcan",
         "channel": channel,
         "version": version,
-        "source_commit": tag_commit,
+        "source_commit": source_commit,
         "published_at": payload.get("published_at"),
         "prerelease": prerelease,
         "artifacts": [
@@ -403,7 +402,7 @@ def validate_downloaded_release(
         raise ValueError("update-channel payload does not match the validated release")
     return ValidatedRelease(
         version=version,
-        source_commit=source_commit,
+        source_commit=payload_source_commit,
         published_at=published_at,
         payload=payload_bytes,
         descriptor=descriptor,
@@ -428,7 +427,7 @@ def signed_envelope(payload: bytes, signing_key: pathlib.Path, key_id: str) -> b
 
 def already_signed_descriptor(
     descriptor: pathlib.Path,
-    tag_commit: str,
+    source_commit: str,
     signing_key: pathlib.Path,
     key_id: str,
     *,
@@ -456,7 +455,7 @@ def already_signed_descriptor(
         or payload.get("product") != "vulcan"
         or payload.get("channel") != channel
         or payload.get("prerelease") is not prerelease
-        or payload.get("source_commit") != tag_commit
+        or payload.get("source_commit") != source_commit
         or not isinstance(payload.get("version"), str)
         or not isinstance(payload.get("published_at"), str)
     ):
@@ -467,7 +466,7 @@ def already_signed_descriptor(
         raise ValueError("refusing an update descriptor with unexpected signatures")
     return ValidatedRelease(
         version=payload["version"],
-        source_commit=tag_commit,
+        source_commit=payload["source_commit"],
         published_at=payload["published_at"],
         payload=payload_bytes,
         descriptor=descriptor,
@@ -563,6 +562,7 @@ def sign_published_release(
     expected_public_key: str,
     required_runs: list[tuple[str, str, str | None, str]],
     fast_already_signed: bool,
+    tag_is_source: bool,
 ) -> dict:
     if key_id != expected_key_id:
         raise ValueError(f"{release_kind} release signer requires key ID {expected_key_id}")
@@ -577,12 +577,20 @@ def sign_published_release(
         prerelease=prerelease,
         release_kind=release_kind,
     )
-    if expected_commit and tag_commit != expected_commit:
-        raise ValueError(f"{release_kind} tag does not match --expected-commit")
+    if tag_is_source:
+        if expected_commit and tag_commit != expected_commit:
+            raise ValueError(f"{release_kind} tag does not match --expected-commit")
+        source_commit = tag_commit
+    else:
+        if not expected_commit or not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+            raise ValueError(
+                f"{release_kind} signing requires an explicit full --expected-commit"
+            )
+        source_commit = expected_commit
     for workflow_file, workflow_label, required_event, expected_branch in required_runs:
         validate_successful_runs(
-            fetch_runs(repo, workflow_file, tag_commit),
-            tag_commit,
+            fetch_runs(repo, workflow_file, source_commit),
+            source_commit,
             workflow=workflow_label,
             required_event=required_event,
             expected_head_branch=expected_branch,
@@ -611,7 +619,7 @@ def sign_published_release(
         )
         existing = already_signed_descriptor(
             pathlib.Path(probe, "vulcan-update-channel.json"),
-            tag_commit,
+            source_commit,
             signing_key,
             key_id,
             channel=channel,
@@ -634,9 +642,8 @@ def sign_published_release(
         validated = validate_downloaded_release(
             directory,
             release,
-            tag_commit,
+            source_commit,
             repo,
-            expected_commit,
             tag=tag,
             channel=channel,
             prerelease=prerelease,
@@ -723,9 +730,13 @@ def sign_rolling_release(
     repo: str,
     signing_key: pathlib.Path,
     key_id: str,
-    expected_commit: str | None,
+    expected_commit: str,
     dry_run: bool,
 ) -> dict:
+    if not expected_commit or not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+        raise ValueError(
+            "rolling release signing requires an explicit full --expected-commit"
+        )
     return sign_published_release(
         repo,
         signing_key,
@@ -743,6 +754,7 @@ def sign_rolling_release(
             ("rolling-release.yml", "rolling release", None, "main"),
         ],
         fast_already_signed=True,
+        tag_is_source=False,
     )
 
 
@@ -751,7 +763,7 @@ def main() -> None:
     parser.add_argument("--repo", default="tionis/vulcan")
     parser.add_argument("--signing-key", required=True, type=pathlib.Path)
     parser.add_argument("--key-id", default=MAIN_KEY_ID)
-    parser.add_argument("--expected-commit")
+    parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args()
     try:

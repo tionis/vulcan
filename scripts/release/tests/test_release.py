@@ -534,7 +534,6 @@ class ReleasePackagingTests(unittest.TestCase):
             release,
             source_commit,
             "tionis/vulcan",
-            source_commit,
         )
         self.assertEqual(validated.version, version)
         self.assertEqual(validated.source_commit, source_commit)
@@ -547,8 +546,28 @@ class ReleasePackagingTests(unittest.TestCase):
                 release,
                 source_commit,
                 "tionis/vulcan",
-                source_commit,
             )
+
+    def test_rolling_signer_anchors_on_the_source_commit_not_the_tag(self) -> None:
+        release, source_commit, _ = self.rolling_release_fixture()
+        with self.assertRaisesRegex(ValueError, "version does not identify"):
+            rolling_signer_script.validate_downloaded_release(
+                self.output,
+                release,
+                "e" * 40,
+                "tionis/vulcan",
+            )
+
+    def test_rolling_signer_requires_an_explicit_source_commit(self) -> None:
+        for expected_commit in (None, "", "abc123", "A" * 40):
+            with self.assertRaisesRegex(ValueError, "full --expected-commit"):
+                rolling_signer_script.sign_rolling_release(
+                    "tionis/vulcan",
+                    self.root / "unused.pem",
+                    rolling_signer_script.MAIN_KEY_ID,
+                    expected_commit,
+                    True,
+                )
 
     def test_rolling_signer_requires_success_for_the_exact_commit(self) -> None:
         source_commit = "b" * 40
@@ -582,7 +601,6 @@ class ReleasePackagingTests(unittest.TestCase):
             release,
             source_commit,
             "tionis/vulcan",
-            source_commit,
             tag=tag,
             channel="stable",
             prerelease=False,
@@ -597,7 +615,6 @@ class ReleasePackagingTests(unittest.TestCase):
                 {**release, "tag_name": "v1.2.4"},
                 source_commit,
                 "tionis/vulcan",
-                source_commit,
                 tag="v1.2.4",
                 channel="stable",
                 prerelease=False,
@@ -667,15 +684,20 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn('cron: "17 3 * * *"', rolling)
         self.assertIn("workflow_dispatch:", rolling)
         self.assertIn("--workflow CI", rolling)
+        self.assertIn("ref: ${{ github.sha }}", rolling)
         self.assertIn('if [[ "$previous_commit" == "$source_commit"', rolling)
         self.assertIn("-dev.", rolling)
         self.assertIn("VULCAN_UPDATE_CHANNEL: main", rolling)
         self.assertIn("--channel main", rolling)
         self.assertIn("refs/tags/rolling-main", rolling)
         self.assertIn("tag_name: rolling-main", rolling)
+        self.assertIn("target_commitish: ${{ needs.gate.outputs.source_commit }}", rolling)
+        self.assertIn("Ensure the fixed rolling channel tag exists", rolling)
         self.assertIn("releases/download/rolling-main", rolling)
         self.assertIn("git push origin :refs/tags/main", rolling)
         self.assertNotIn("git tag --force main", rolling)
+        self.assertNotIn("git tag --force rolling-main", rolling)
+        self.assertNotIn("refs/tags/rolling-main --force", rolling)
         self.assertNotIn("git push origin refs/tags/main --force", rolling)
         self.assertNotIn("tag_name: main", rolling)
         self.assertIn("retention-days: 1", rolling)
@@ -690,6 +712,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("environment: rolling-release-signing", signer)
         self.assertIn("VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM", signer)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", signer)
+        self.assertIn("github.event.workflow_run.head_sha", signer)
         self.assertIn('test "$WORKFLOW_BRANCH" = "main"', signer)
         self.assertIn("ref: ${{ steps.source.outputs.source_commit }}", signer)
         self.assertIn("$RUNNER_TEMP/vulcan-main-update-signing-key.pem", signer)

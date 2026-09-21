@@ -115,11 +115,14 @@ release title derive from that one version.
 The scheduled rolling workflow runs at most once per day, does nothing when `main` has not advanced,
 and publishes only a commit whose required push CI succeeded. It reuses the canonical builders and
 one fixed `rolling-main` prerelease/tag, uploads the replacement before pruning superseded assets,
-and does not repeat the complete test suite. The release tag deliberately differs from the `main`
-branch name so ordinary Git fetches do not create an ambiguous local ref or reject later forced tag
-updates as clobbering an existing tag. Once the replacement release is published successfully, the
-workflow removes the historical `refs/tags/main` ref if it still exists; it never removes that ref
-before the replacement is available.
+and does not repeat the complete test suite. The `rolling-main` tag is created once and then left
+immutable: the workflow only replaces that release's assets in place, so ordinary Git fetches never
+need a forced tag update and mirrors never observe a moved ref. The tag name deliberately differs
+from the `main` branch name so it cannot collide with the source branch. Because the fixed tag no
+longer names a build commit, the signing workflow anchors the release to the exact source commit
+instead. Once the replacement release is published successfully, the workflow removes the historical
+`refs/tags/main` ref if it still exists; it never removes that ref before the replacement is
+available.
 
 Future Homebrew, WinGet, APT, or other registries should map their stable/default stream to `stable`
 and expose `main` only through an explicit development opt-in. Registries consume the same artifact
@@ -156,11 +159,14 @@ materializes the environment secret into a mode-restricted ephemeral runner file
 step exits. A manual dispatch with an explicit full commit ID provides an idempotent repair path.
 
 The signer fails closed unless both CI and the rolling workflow succeeded for the exact commit
-named by the `rolling-main` tag. It downloads the complete published release and independently checks the
-release inventory, canonical manifest, exact six-archive/two-Debian artifact set, sizes, SHA-256
-hashes, `SHA256SUMS`, rolling version, source commit, channel, timestamp, URLs, layouts, and
-canonical unsigned payload. It then rechecks the release for races, replaces only
-`vulcan-update-channel.json`, and reads the uploaded bytes back. An already-valid signature is an
+supplied as `--expected-commit` (the triggering rolling workflow's `head_sha`, which equals the
+published `source_commit`). Because `rolling-main` is a fixed channel pointer rather than a
+per-build tag, the signer no longer requires the tag to name that commit; it ties the descriptor to
+the expected commit and the successful workflow runs instead. It downloads the complete published
+release and independently checks the release inventory, canonical manifest, exact
+six-archive/two-Debian artifact set, sizes, SHA-256 hashes, `SHA256SUMS`, rolling version, source
+commit, channel, timestamp, URLs, layouts, and canonical unsigned payload. It then rechecks the
+release for races, replaces only `vulcan-update-channel.json`, and reads the uploaded bytes back. An already-valid signature is an
 inexpensive idempotent no-op; any other existing signature fails closed. No developer workstation,
 resident process, or systemd timer participates in the normal rolling release path.
 

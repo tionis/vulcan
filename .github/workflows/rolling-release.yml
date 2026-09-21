@@ -34,7 +34,10 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: main
+          # Pin the exact triggering commit so source_commit always equals the
+          # workflow_run head_sha the signing workflow checks against, even if
+          # main advances while this run is in flight.
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Require a successful main CI run and a changed commit
@@ -344,16 +347,21 @@ jobs:
       - name: Remove internal per-artifact records
         run: rm artifacts/*.artifact.json artifacts/*.sha256
 
-      - name: Move the rolling tag
+      - name: Ensure the fixed rolling channel tag exists
         shell: bash
         run: |
-          git tag --force rolling-main '${{ needs.gate.outputs.source_commit }}'
-          git push origin refs/tags/rolling-main --force
+          if git ls-remote --exit-code --tags origin refs/tags/rolling-main >/dev/null 2>&1; then
+            echo 'rolling-main already exists; leaving the channel tag in place.'
+            exit 0
+          fi
+          git tag rolling-main '${{ needs.gate.outputs.source_commit }}'
+          git push origin refs/tags/rolling-main
 
       - name: Publish rolling prerelease
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: rolling-main
+          target_commitish: ${{ needs.gate.outputs.source_commit }}
           name: Rolling main build
           prerelease: true
           make_latest: false

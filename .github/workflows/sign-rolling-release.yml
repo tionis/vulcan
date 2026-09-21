@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_commit:
-        description: Full commit ID currently named by the rolling main release
+        description: Full commit ID of the rolling main build to validate and sign
         required: true
         type: string
 

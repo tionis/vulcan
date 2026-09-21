@@ -41,6 +41,7 @@ def sign_stable_release(
         expected_public_key=STABLE_PUBLIC_KEY,
         required_runs=[("release.yml", "stable release", "push", tag)],
         fast_already_signed=False,
+        tag_is_source=True,
     )
 
 

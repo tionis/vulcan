@@ -126,9 +126,10 @@ descriptor is still in its short unsigned handoff window, wait for the hosted si
 instead of normalizing `--allow-unsigned` as the ongoing update path.
 
 The fixed rolling release page and direct assets are at
-`https://github.com/tionis/vulcan/releases/tag/rolling-main`. It is checked at most daily, publishes
-only a new `main` commit whose push CI passed, and keeps one prerelease instead of accumulating
-nightly releases.
+`https://github.com/tionis/vulcan/releases/tag/rolling-main`. The `rolling-main` tag is created once
+and never moved; each build replaces the release assets in place. The channel is checked at most
+daily, publishes only a new `main` commit whose push CI passed, and keeps one prerelease instead of
+accumulating nightly releases.
 
 The browser can download any archive or Debian package from that page. With GitHub CLI, for example:
 
