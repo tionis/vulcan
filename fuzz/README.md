@@ -3,8 +3,8 @@
 Use [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) from the repository root:
 
 ```bash
-cargo install cargo-fuzz
 rustup toolchain install nightly
+cargo +nightly install cargo-fuzz --locked --version 0.13.2
 cargo +nightly fuzz run parser
 cargo +nightly fuzz run frontmatter
 cargo +nightly fuzz run links

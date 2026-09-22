@@ -65,8 +65,8 @@ The rest of the hardening coverage already lives in the normal test suite:
 Install `cargo-fuzz` once:
 
 ```bash
-cargo install cargo-fuzz
 rustup toolchain install nightly
+cargo +nightly install cargo-fuzz --locked --version 0.13.2
 ```
 
 Run any target for a bounded local pass from the repository root with nightly enabled:
@@ -96,6 +96,26 @@ Covered parser and text-ingestion surfaces:
 
 Other structured imports such as Obsidian plugin JSON settings are not fuzzed separately today because they feed through deterministic serde-based config import paths that already have dedicated fixture tests.
 
+## Persistent Overnight Fuzzing
+
+The manual CI hardening workflow uses short fuzz passes to verify that every harness still builds
+and runs. Sustained bug discovery belongs on a development machine or dedicated runner where the
+corpora in `fuzz/corpus/` and failures in `fuzz/artifacts/` persist between runs.
+
+The following sequential pass gives each target one hour, for an approximately eight-hour run:
+
+```bash
+set -e
+for target in parser frontmatter links chunker dql expression tasks config; do
+  cargo +nightly fuzz run "$target" -- -max_total_time=3600
+done
+```
+
+Run this through the host's scheduler, preserve the `fuzz/` directory between executions, and
+report a non-zero exit so crashes are noticed. Do not treat a retained corpus as a regression
+suite: minimize each failure and promote it into a deterministic test or fixture as described
+below.
+
 ## Promoting Fuzz Findings
 
 Fuzz artifacts are only useful if they become permanent regressions.
@@ -114,4 +134,4 @@ If a new parser or user-authored text surface is added, either:
 ## CI Layout
 
 - `.github/workflows/ci.yml`: required on push and pull request. Runs fmt, clippy, and the full workspace test suite.
-- `.github/workflows/hardening.yml`: scheduled nightly and manual (`workflow_dispatch`). Runs the heavier integration hardening cases, ignored synthetic regression tests, and bounded fuzz passes.
+- `.github/workflows/hardening.yml`: manual (`workflow_dispatch`). Runs the heavier integration hardening cases, ignored synthetic regression tests, and short fuzz harness smoke passes. Use it before releases or after risky parser, permission, refactoring, vector, or sync changes; use a persistent external runner for scheduled fuzzing.

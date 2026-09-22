@@ -2,8 +2,6 @@ name: Hardening
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * *"
 
 permissions:
   contents: read
@@ -55,28 +53,28 @@ jobs:
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked --version 0.13.2
 
       - name: Fuzz parser
-        run: cargo fuzz run parser -- -max_total_time=20
+        run: cargo +nightly fuzz run parser -- -max_total_time=20
 
       - name: Fuzz frontmatter
-        run: cargo fuzz run frontmatter -- -max_total_time=20
+        run: cargo +nightly fuzz run frontmatter -- -max_total_time=20
 
       - name: Fuzz links
-        run: cargo fuzz run links -- -max_total_time=20
+        run: cargo +nightly fuzz run links -- -max_total_time=20
 
       - name: Fuzz chunker
-        run: cargo fuzz run chunker -- -max_total_time=20
+        run: cargo +nightly fuzz run chunker -- -max_total_time=20
 
       - name: Fuzz DQL
-        run: cargo fuzz run dql -- -max_total_time=20
+        run: cargo +nightly fuzz run dql -- -max_total_time=20
 
       - name: Fuzz expression parser
-        run: cargo fuzz run expression -- -max_total_time=20
+        run: cargo +nightly fuzz run expression -- -max_total_time=20
 
       - name: Fuzz Tasks parser
-        run: cargo fuzz run tasks -- -max_total_time=20
+        run: cargo +nightly fuzz run tasks -- -max_total_time=20
 
       - name: Fuzz config ingestion
-        run: cargo fuzz run config -- -max_total_time=20
+        run: cargo +nightly fuzz run config -- -max_total_time=20
