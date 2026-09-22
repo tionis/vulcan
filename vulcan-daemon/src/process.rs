@@ -7,7 +7,10 @@ use crate::alerts::SyncAlertTracker;
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::conflict_worker::run_conflict_worker;
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
-use crate::daemon_host::{bind_companion_listener, companion_listener_service, start_daemon_host};
+use crate::daemon_host::{
+    bind_companion_listener, companion_listener_service, start_daemon_host,
+    DAEMON_SERVICE_REGISTRATION_LIMIT,
+};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
 use crate::final_sync::run_final_sync_and_cancel;
 use crate::host::{
@@ -335,6 +338,7 @@ async fn run_daemon(
         Arc::clone(&ingress_stop),
         vec![service_id("worker.remote-notifications")?],
     )?);
+    ensure_daemon_service_budget(registrations.len())?;
     let mut host = start_daemon_host(registrations, Arc::clone(&stop), context.host_status_path())?;
     if let Err(error) = write_runtime_record(&context.runtime_path(), &record) {
         let _ = host.shutdown();
@@ -353,6 +357,15 @@ async fn run_daemon(
     let host_result = host.shutdown();
     drop(runtime_guard);
     host_result?;
+    Ok(())
+}
+
+fn ensure_daemon_service_budget(service_count: usize) -> Result<(), DaemonProcessError> {
+    if service_count > DAEMON_SERVICE_REGISTRATION_LIMIT {
+        return Err(DaemonProcessError::Configuration(format!(
+            "daemon service graph has {service_count} registrations, exceeding the readiness budget limit of {DAEMON_SERVICE_REGISTRATION_LIMIT}"
+        )));
+    }
     Ok(())
 }
 
@@ -1191,6 +1204,15 @@ mod tests {
         assert!(error
             .to_string()
             .contains("conflict worker requires a configured resolution agent"));
+    }
+
+    #[test]
+    fn daemon_service_graph_cannot_outgrow_the_cli_readiness_budget() {
+        ensure_daemon_service_budget(DAEMON_SERVICE_REGISTRATION_LIMIT)
+            .expect("configured service limit fits the readiness budget");
+        let error = ensure_daemon_service_budget(DAEMON_SERVICE_REGISTRATION_LIMIT + 1)
+            .expect_err("oversized service graph must fail closed");
+        assert!(error.to_string().contains("exceeding the readiness budget"));
     }
 
     fn assert_daemon_sync_attempted(context: &DaemonProcessContext) {

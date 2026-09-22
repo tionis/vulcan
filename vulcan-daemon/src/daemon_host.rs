@@ -15,6 +15,17 @@ use tokio::net::TcpListener;
 use tokio::runtime::Handle;
 
 const SERVICE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DAEMON_SERVICE_REGISTRATION_LIMIT: usize = 7;
+
+/// Outlasts the sequential per-service startup budget for the complete daemon
+/// graph, with an additional ten seconds for process setup and readiness
+/// polling outside the host supervisor.
+pub const DAEMON_READINESS_TIMEOUT: Duration = Duration::from_secs(80);
+
+const _: () = assert!(
+    DAEMON_READINESS_TIMEOUT.as_secs()
+        > SERVICE_STARTUP_TIMEOUT.as_secs() * DAEMON_SERVICE_REGISTRATION_LIMIT as u64
+);
 
 /// Binds the companion endpoint before service startup so its stable address
 /// can be included in the eventual runtime readiness record.

@@ -16,6 +16,7 @@ use vulcan_app::obsidian_companion::{
 use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
 use vulcan_daemon::conflict_worker::{load_conflict_worker_status, ConflictWorkerStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
+use vulcan_daemon::daemon_host::DAEMON_READINESS_TIMEOUT;
 use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground,
     DaemonNotificationDiscoveryState, DaemonProcessContext, DaemonStatusReport,
@@ -32,10 +33,6 @@ use vulcan_daemon::service::{
 };
 use vulcan_daemon::status::{DaemonSyncStatusSource, SyncState};
 
-/// The daemon host grants each required service up to ten seconds to start, so
-/// the CLI readiness wait must outlast that budget instead of giving up first
-/// and reporting a spurious detachment failure on loaded runners.
-const DAEMON_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 const DAEMON_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DAEMON_LOG_TAIL_BYTES: u64 = 8 * 1024;
 
@@ -788,11 +785,20 @@ fn read_log_tail(path: &Path) -> String {
     if file.seek(SeekFrom::Start(start)).is_err() {
         return String::new();
     }
-    let mut buffer = String::new();
-    if file.read_to_string(&mut buffer).is_err() {
+    let mut buffer = Vec::new();
+    if file.read_to_end(&mut buffer).is_err() {
         return String::new();
     }
-    buffer.trim_end().to_string()
+    // The bounded seek can land inside a multibyte UTF-8 character. Drop only
+    // leading continuation bytes, then preserve any other malformed log bytes
+    // lossily so diagnostics are never discarded wholesale.
+    let valid_start = buffer
+        .iter()
+        .position(|byte| byte & 0b1100_0000 != 0b1000_0000)
+        .unwrap_or(buffer.len());
+    String::from_utf8_lossy(&buffer[valid_start..])
+        .trim_end()
+        .to_string()
 }
 
 fn print_start(
@@ -1085,6 +1091,13 @@ mod tests {
         let tail = read_log_tail(&log);
         assert!(tail.len() <= tail_bytes);
         assert!(tail.ends_with("last"));
+
+        // Make the bounded seek land on the continuation byte of `é`.
+        let split_unicode = format!("é{}", "x".repeat(tail_bytes - 1));
+        std::fs::write(&log, split_unicode).expect("split Unicode log write");
+        let tail = read_log_tail(&log);
+        assert_eq!(tail.len(), tail_bytes - 1);
+        assert!(tail.bytes().all(|byte| byte == b'x'));
     }
 
     #[test]
