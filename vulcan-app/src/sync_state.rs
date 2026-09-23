@@ -212,7 +212,7 @@ impl SyncStateStore {
         }
         let source = fs::read(&path).map_err(AppError::operation)?;
         let journal: SyncJournal = serde_json::from_slice(&source).map_err(AppError::operation)?;
-        if journal.version != SYNC_JOURNAL_VERSION {
+        if journal.version != 1 && journal.version != SYNC_JOURNAL_VERSION {
             return Err(AppError::operation(format!(
                 "unsupported sync journal version {} at {}",
                 journal.version,
@@ -231,7 +231,12 @@ impl SyncStateStore {
                 path.display()
             )));
         }
-        Ok(Some(journal))
+        // Version 2 adds phases and an apply marker, but retains every version 1
+        // journal field. Keep the old recovery witness when upgrading a device.
+        Ok(Some(SyncJournal {
+            version: SYNC_JOURNAL_VERSION,
+            ..journal
+        }))
     }
 
     pub fn save(&self, journal: &SyncJournal) -> Result<(), AppError> {
@@ -276,10 +281,11 @@ impl SyncStateStore {
                 MAX_SYNC_JOURNAL_BYTES
             )));
         }
-        let marker: SyncApplyMarker =
+        let mut marker: SyncApplyMarker =
             serde_json::from_slice(&fs::read(&path).map_err(AppError::operation)?)
                 .map_err(AppError::operation)?;
         validate_apply_marker(&path, &marker)?;
+        marker.version = SYNC_APPLY_MARKER_VERSION;
         Ok(Some(marker))
     }
 
@@ -288,6 +294,12 @@ impl SyncStateStore {
         git_dir: &Path,
         marker: &SyncApplyMarker,
     ) -> Result<(), AppError> {
+        if marker.version != SYNC_APPLY_MARKER_VERSION {
+            return Err(AppError::operation(format!(
+                "cannot write unsupported sync apply marker version {}",
+                marker.version
+            )));
+        }
         validate_apply_marker(Path::new("sync apply marker"), marker)?;
         let path = apply_marker_path(git_dir, true)?;
         let mut bytes = serde_json::to_vec_pretty(marker).map_err(AppError::operation)?;
@@ -319,7 +331,7 @@ fn apply_marker_path(git_dir: &Path, create: bool) -> Result<PathBuf, AppError> 
 }
 
 fn validate_apply_marker(path: &Path, marker: &SyncApplyMarker) -> Result<(), AppError> {
-    if marker.version != SYNC_APPLY_MARKER_VERSION {
+    if marker.version != 1 && marker.version != SYNC_APPLY_MARKER_VERSION {
         return Err(AppError::operation(format!(
             "unsupported sync apply marker version {} at {}",
             marker.version,
@@ -434,6 +446,60 @@ mod tests {
         value["repository_key"] = serde_json::Value::String("b".repeat(32));
         fs::write(&path, serde_json::to_vec(&value).expect("JSON")).expect("tamper journal");
         assert!(store.load(&journal.repository_key).is_err());
+    }
+
+    #[test]
+    fn version_one_journal_remains_recoverable_after_upgrade() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let mut old = SyncJournal::preparing(&vault, "origin", "refs/heads/live")
+            .expect("journal should be created");
+        old.phase = SyncJournalPhase::Applying;
+        old.local_snapshot = Some("a".repeat(40));
+        old.accepted = Some("b".repeat(40));
+        let path = store.journal_path(&old.repository_key).expect("path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("state directory");
+        old.version = 1;
+        fs::write(&path, serde_json::to_vec(&old).expect("JSON")).expect("old journal");
+
+        let loaded = store
+            .load(&old.repository_key)
+            .expect("load")
+            .expect("journal");
+        assert_eq!(loaded.version, SYNC_JOURNAL_VERSION);
+        assert_eq!(loaded.transaction_id, old.transaction_id);
+        assert_eq!(loaded.phase, SyncJournalPhase::Applying);
+        assert_eq!(loaded.local_snapshot, old.local_snapshot);
+        assert_eq!(loaded.accepted, old.accepted);
+        store.save(&loaded).expect("save upgraded journal");
+        assert_eq!(
+            store.load(&old.repository_key).expect("reload"),
+            Some(loaded)
+        );
+    }
+
+    #[test]
+    fn version_one_apply_marker_remains_an_interruption_witness() {
+        let temporary = tempdir().expect("temporary directory");
+        let git_dir = temporary.path().join("private.git");
+        fs::create_dir(&git_dir).expect("Git directory");
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let mut marker = SyncApplyMarker {
+            version: 1,
+            transaction_id: Ulid::new(),
+            repository_key: "a".repeat(32),
+            expected_revision: "b".repeat(40),
+            accepted: "c".repeat(40),
+        };
+        let path = apply_marker_path(&git_dir, true).expect("marker path");
+        fs::write(&path, serde_json::to_vec(&marker).expect("JSON")).expect("old marker");
+        marker.version = SYNC_APPLY_MARKER_VERSION;
+        assert_eq!(
+            store.load_apply_marker(&git_dir).expect("load"),
+            Some(marker)
+        );
     }
 
     #[test]

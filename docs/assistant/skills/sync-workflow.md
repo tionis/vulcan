@@ -29,6 +29,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
 - Direct and daemon sync of an initialized vault use the same vault-write and repository locks as
   ordinary Vulcan mutations and Git/auto-commit commands. A competing writer may therefore wait or
   report bounded repository contention; do not bypass the lock with raw Git while sync is active.
+  On Android, Vulcan keeps its vault-write lock in private device state because Android shared
+  storage does not support the required file locking. The detached Git directory and sync journal
+  must also remain in private storage.
 - Use `vulcan daemon status` before diagnosing automatic work. It reports each registered wiki's
   reconstructed daemon state, latest daemon-supervised attempt, path, and locally cached
   notification-advertisement discovery. It also lists hosted sync, trigger, notification, alert,
@@ -98,6 +101,8 @@ inside diagnostics as an operation that is still running. Daemon jobs preserve t
 typed failure category and retryability through the application layer: network/authentication
 failures can project offline, while repository/configuration/invariant failures remain errors with
 different repair guidance rather than being flattened into retryable `unknown` failures.
+Version 1 sync journals and apply markers from older installations are read as recovery witnesses
+by current Vulcan; rerun sync to recover them rather than deleting the files.
 
 ## Recover another device's work
 
