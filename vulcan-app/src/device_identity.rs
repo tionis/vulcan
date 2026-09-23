@@ -191,12 +191,12 @@ impl DeviceIdentityStore {
                             Some("stored public key does not match identity manifest".into()),
                         ));
                     }
-                    return Ok(identity_report(
+                    Ok(identity_report(
                         &identity,
                         DeviceIdentityStatus::Degraded,
                         false,
                         Some("private file ACL cannot be verified on this platform; initialization is disabled".into()),
-                    ));
+                    ))
                 }
                 #[cfg(not(windows))]
                 match self.verify_keypair_files(&identity) {
@@ -446,10 +446,14 @@ impl DeviceIdentityStore {
         let canonical = canonical_public_key(&public)?;
         let identity = build_identity(&canonical)?;
         #[cfg(windows)]
-        return Ok(Some(identity));
+        {
+            Ok(Some(identity))
+        }
         #[cfg(not(windows))]
-        self.verify_keypair_files(&identity)?;
-        Ok(Some(identity))
+        {
+            self.verify_keypair_files(&identity)?;
+            Ok(Some(identity))
+        }
     }
 
     fn load_manifest(&self) -> Result<ValidatedPublicIdentity, AppError> {
@@ -784,17 +788,22 @@ fn validate_private_directory(metadata: &fs::Metadata) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn validate_private_file(metadata: &fs::Metadata) -> Result<(), AppError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(AppError::operation(
-                "device private key is accessible by group or other users",
-            ));
-        }
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(AppError::operation(
+            "device private key is accessible by group or other users",
+        ));
     }
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_private_file(_metadata: &fs::Metadata) -> Result<(), AppError> {
+    Err(AppError::operation(
+        "private key ACL verification is unavailable on this platform",
+    ))
 }
 
 fn create_private_directory(path: &Path) -> Result<(), AppError> {
@@ -895,7 +904,9 @@ fn sync_directory(path: &Path) -> Result<(), AppError> {
 
 #[cfg(not(unix))]
 fn sync_directory(_path: &Path) -> Result<(), AppError> {
-    Ok(())
+    Err(AppError::operation(
+        "durable identity directory writes are unavailable on this platform",
+    ))
 }
 
 fn is_legacy_device_id(id: &str) -> bool {

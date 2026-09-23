@@ -1184,7 +1184,10 @@ fn copy_legacy_state_tree(
             fs::copy(entry.path(), &target).map_err(|error| {
                 MdbaseWriteTransactionError::io("failed to copy legacy mdbase state", error)
             })?;
-            File::open(&target)
+            // FlushFileBuffers on Windows needs a handle opened for writing.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&target)
                 .and_then(|file| file.sync_all())
                 .map_err(|error| {
                     MdbaseWriteTransactionError::io("failed to sync private mdbase state", error)

@@ -195,10 +195,9 @@ fn run_bounded(program: &str, args: &[&str]) -> Option<Vec<u8>> {
 #[cfg(target_os = "macos")]
 fn probe_macos_power() -> (Option<bool>, Option<bool>) {
     let output = run_bounded("pmset", &["-g", "batt"]);
-    output
-        .as_deref()
-        .map(|output| parse_pmset_battery(&String::from_utf8_lossy(output)))
-        .unwrap_or((None, None))
+    output.as_deref().map_or((None, None), |output| {
+        parse_pmset_battery(&String::from_utf8_lossy(output))
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -245,10 +244,9 @@ fn probe_windows_power() -> (Option<bool>, Option<bool>) {
         "powershell.exe",
         &["-NoProfile", "-NonInteractive", "-Command", SCRIPT],
     );
-    output
-        .as_deref()
-        .map(|output| parse_windows_battery_csv(&String::from_utf8_lossy(output)))
-        .unwrap_or((None, None))
+    output.as_deref().map_or((None, None), |output| {
+        parse_windows_battery_csv(&String::from_utf8_lossy(output))
+    })
 }
 
 #[cfg(target_os = "windows")]
