@@ -519,6 +519,8 @@ pub struct RegisteredSyncItemReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<SyncErrorCategory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub retained_conflicts: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retained_conflicts_error: Option<String>,
@@ -683,11 +685,11 @@ fn sync_registration(
 ) -> RegisteredSyncItemReport {
     let paths = VaultPaths::new(&wiki.path);
     let result = resolve_permission_profile(&paths, permission_profile)
-        .map_err(|error| error.to_string())
+        .map_err(vulcan_app::AppError::operation)
         .and_then(|selection| {
             ProfilePermissionGuard::new(&paths, selection)
                 .check_git()
-                .map_err(|error| error.to_string())
+                .map_err(vulcan_app::AppError::operation)
         })
         .and_then(|()| {
             if wiki
@@ -695,15 +697,15 @@ fn sync_registration(
                 .as_deref()
                 .is_none_or(|backend| backend == "git")
             {
-                let effective =
-                    options_for_registration(options, wiki).map_err(|error| error.to_string())?;
-                sync_git_vault(&paths, &effective).map_err(|error| error.to_string())
+                let effective = options_for_registration(options, wiki)
+                    .map_err(vulcan_app::AppError::operation)?;
+                sync_git_vault(&paths, &effective)
             } else {
-                Err(format!(
+                Err(vulcan_app::AppError::operation(format!(
                     "wiki `{}` uses unsupported sync backend `{}`",
                     wiki.id,
                     wiki.sync_backend.as_deref().unwrap_or_default()
-                ))
+                )))
             }
         });
     match result {
@@ -717,18 +719,27 @@ fn sync_registration(
                 path: wiki.path.clone(),
                 report: Some(report),
                 error: None,
+                error_category: None,
                 retained_conflicts,
                 retained_conflicts_error,
             }
         }
-        Err(error) => RegisteredSyncItemReport {
-            wiki_id: wiki.id.clone(),
-            path: wiki.path.clone(),
-            report: None,
-            error: Some(error),
-            retained_conflicts: None,
-            retained_conflicts_error: None,
-        },
+        Err(error) => failed_registered_sync_item(wiki, &error),
+    }
+}
+
+fn failed_registered_sync_item(
+    wiki: &WikiRegistration,
+    error: &vulcan_app::AppError,
+) -> RegisteredSyncItemReport {
+    RegisteredSyncItemReport {
+        wiki_id: wiki.id.clone(),
+        path: wiki.path.clone(),
+        report: None,
+        error_category: error.sync_error().map(|sync| sync.category),
+        error: Some(error.to_string()),
+        retained_conflicts: None,
+        retained_conflicts_error: None,
     }
 }
 
@@ -1013,6 +1024,37 @@ mod tests {
         let cancelled = daemon_sync_error(&typed, true);
         assert_eq!(cancelled.category, SyncErrorCategory::Cancelled);
         assert!(!cancelled.retryable);
+    }
+
+    #[test]
+    fn registered_failure_json_keeps_typed_network_category() {
+        let temporary = tempdir().expect("temporary directory");
+        let path = temporary.path().join("wiki");
+        fs::create_dir(&path).expect("wiki directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let wiki = registry
+            .add(
+                &AddWikiRequest {
+                    id: WikiId::parse("mobile").expect("wiki ID"),
+                    path,
+                    groups: Vec::new(),
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("git".to_string()),
+                    platform_profile: Some("android_shared".to_string()),
+                },
+                false,
+            )
+            .expect("registration");
+        let error = vulcan_app::AppError::sync(SyncError::new(
+            SyncErrorCategory::Network,
+            "remote unavailable",
+            true,
+        ));
+        let item = failed_registered_sync_item(&wiki, &error);
+        let json = serde_json::to_value(&item).expect("item JSON");
+        assert_eq!(json["error_category"], "network");
+        assert_eq!(json["error"], "remote unavailable");
     }
 
     #[test]

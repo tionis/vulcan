@@ -1,3 +1,4 @@
+use crate::cli::NetworkNotificationModeArg;
 use crate::editor::open_paths_in_editor;
 use crate::output::print_json;
 use crate::{
@@ -70,7 +71,9 @@ use vulcan_core::{
     VaultPaths,
 };
 use vulcan_daemon::process::{daemon_status, DaemonProcessContext};
-use vulcan_daemon::registry::{UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry};
+use vulcan_daemon::registry::{
+    NetworkNotificationMode, UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry,
+};
 use vulcan_daemon::sync::{sync_registered_wikis, RegisteredSyncReport, RegisteredSyncSelection};
 use vulcan_daemon::termux_scheduler::{
     apply_termux_sync, load_termux_sync_plan, plan_termux_sync, TermuxNetwork, TermuxSyncAction,
@@ -593,6 +596,9 @@ fn handle_termux_sync_command(cli: &Cli, command: &SyncCommand) -> Option<Result
             allow_low_battery,
             no_persist,
             job_id,
+            network_notification_mode,
+            network_failure_count,
+            network_failure_minutes,
             dry_run,
         } => Some(install_termux_sync(
             cli,
@@ -609,6 +615,9 @@ fn handle_termux_sync_command(cli: &Cli, command: &SyncCommand) -> Option<Result
                 charging: *charging,
                 persisted: !*no_persist,
                 job_id: *job_id,
+                network_notification_mode: map_network_mode(*network_notification_mode),
+                network_failure_count: *network_failure_count,
+                network_failure_minutes: *network_failure_minutes,
             },
             *dry_run,
         )),
@@ -643,6 +652,12 @@ fn handle_sync_schedule(cli: &Cli, command: &SyncScheduleCommand) -> Result<(), 
             println!("Battery not low: {}", installed.battery_not_low);
             println!("Charging required: {}", installed.charging);
             println!("Persist across reboots: {}", installed.persisted);
+            println!(
+                "Network failure notices: {:?} ({} failures or {} minutes)",
+                installed.network_notification_mode,
+                installed.network_failure_count,
+                installed.network_failure_minutes
+            );
             println!("These are saved settings; inspect Android jobs with `termux-job-scheduler --pending`.");
             Ok(())
         }
@@ -652,6 +667,9 @@ fn handle_sync_schedule(cli: &Cli, command: &SyncScheduleCommand) -> Result<(), 
             charging,
             battery_not_low,
             persisted,
+            network_notification_mode,
+            network_failure_count,
+            network_failure_minutes,
             dry_run,
             ..
         } => {
@@ -666,6 +684,9 @@ fn handle_sync_schedule(cli: &Cli, command: &SyncScheduleCommand) -> Result<(), 
                 charging: *charging,
                 battery_not_low: *battery_not_low,
                 persisted: *persisted,
+                network_notification_mode: network_notification_mode.map(map_network_mode),
+                network_failure_count: *network_failure_count,
+                network_failure_minutes: *network_failure_minutes,
             };
             install_termux_sync(cli, wiki, &update.apply_to(&installed), *dry_run)
         }
@@ -731,6 +752,9 @@ fn uninstall_termux_sync(output: OutputFormat, wiki: &str, dry_run: bool) -> Res
         charging: installed.charging,
         persisted: installed.persisted,
         job_id: Some(installed.job_id),
+        network_notification_mode: installed.network_notification_mode,
+        network_failure_count: installed.network_failure_count,
+        network_failure_minutes: installed.network_failure_minutes,
     };
     let plan = plan_termux_sync(
         TermuxSyncAction::Uninstall,
@@ -3510,5 +3534,14 @@ mod sync_report_tests {
             .expect_err("public secret file must fail")
             .to_string()
             .contains("group or other users"));
+    }
+}
+
+fn map_network_mode(mode: NetworkNotificationModeArg) -> NetworkNotificationMode {
+    match mode {
+        NetworkNotificationModeArg::Immediate => NetworkNotificationMode::Immediate,
+        NetworkNotificationModeArg::Ignore => NetworkNotificationMode::Ignore,
+        NetworkNotificationModeArg::Count => NetworkNotificationMode::Count,
+        NetworkNotificationModeArg::Duration => NetworkNotificationMode::Duration,
     }
 }

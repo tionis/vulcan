@@ -8657,6 +8657,10 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
             "--network",
             "unmetered",
             "--charging",
+            "--network-notification-mode",
+            "count",
+            "--network-failure-count",
+            "4",
             "--dry-run",
         ])
         .assert()
@@ -8670,6 +8674,9 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
     assert_eq!(termux_json["battery_not_low"], true);
     assert_eq!(termux_json["charging"], true);
     assert_eq!(termux_json["persisted"], true);
+    assert_eq!(termux_json["network_notification_mode"], "count");
+    assert_eq!(termux_json["network_failure_count"], 4);
+    assert_eq!(termux_json["network_failure_minutes"], 15);
     assert_eq!(termux_json["dry_run"], true);
     assert_eq!(termux_json["changed"], false);
     assert!(termux_json["script"]
@@ -8706,6 +8713,10 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
             "45",
             "--charging",
             "false",
+            "--network-notification-mode",
+            "duration",
+            "--network-failure-minutes",
+            "25",
             "--dry-run",
         ])
         .assert()
@@ -8716,6 +8727,9 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
     assert_eq!(changed["network"], "unmetered");
     assert_eq!(changed["battery_not_low"], true);
     assert_eq!(changed["persisted"], true);
+    assert_eq!(changed["network_notification_mode"], "duration");
+    assert_eq!(changed["network_failure_count"], 4);
+    assert_eq!(changed["network_failure_minutes"], 25);
     assert_eq!(changed["job_id"], termux_json["job_id"]);
     assert_eq!(changed["dry_run"], true);
     assert_eq!(fs::read(&manifest_path).expect("unchanged plan"), manifest);
@@ -15466,6 +15480,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan sync unadvertise"));
     assert!(sync_skill.contains("vulcan sync notifications"));
     assert!(sync_skill.contains("termux-notification"));
+    assert!(sync_skill.contains("--network-notification-mode"));
+    assert!(sync_skill.contains("--network-failure-count 3"));
     assert!(sync_skill.contains("vulcan sync devices list"));
     assert!(sync_skill.contains("vulcan sync devices fetch <device-id>"));
     assert!(sync_skill.contains("vulcan sync devices remove <device-id> --dry-run"));

@@ -2421,6 +2421,9 @@ fn parses_termux_sync_scheduler_commands() {
                 allow_low_battery: false,
                 no_persist: false,
                 job_id: Some(42),
+                network_notification_mode: crate::cli::NetworkNotificationModeArg::Immediate,
+                network_failure_count: 3,
+                network_failure_minutes: 15,
                 dry_run: true,
             },
         }

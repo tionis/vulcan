@@ -76,13 +76,20 @@ vulcan --output json sync termux-install personal \
 
 Apply it by omitting `--dry-run`. The default job survives reboot and runs only with a usable
 network, non-low battery, and non-low storage; add `--network unmetered` or `--charging` for a more
-restrictive policy. Android periodic jobs are approximate and have a 15-minute minimum, so this is
+restrictive policy. Network sync failures can be ignored with
+`--network-notification-mode ignore`, or reported once after consecutive failures with
+`--network-notification-mode count --network-failure-count 3`, or after an observed duration with
+`--network-notification-mode duration --network-failure-minutes 15`. Non-network errors still
+notify immediately. Change the saved policy later with `vulcan sync schedule set personal`; the
+private failure counter resets on recovery or a non-network error. Duration is checked on each
+scheduled run, so Android may deliver the alert after the configured time. Android periodic jobs
+are approximate and have a 15-minute minimum, so this is
 a safety net rather than realtime delivery. A Termux shortcut or future Obsidian/native wake bridge
 can call `vulcan sync run personal` after save or resume for lower latency; overlapping invocations
 still enter Vulcan's ordinary per-repository transaction serialization.
 
 Preview removal before cancelling the Android job and deleting only its managed private wrapper and
-manifest:
+manifest and network failure state:
 
 ```sh
 vulcan sync termux-uninstall personal --dry-run

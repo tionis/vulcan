@@ -390,17 +390,21 @@ they commit.
   --period-minutes 60 --dry-run`, then apply only after checking the job ID, wrapper path, and
   network/battery policy. It requires Termux:API plus `pkg install termux-api`, defaults to
   battery-not-low and storage-not-low, and never starts the daemon. Use `--network unmetered` or
-  `--charging` when requested. Preview `sync termux-uninstall <wiki> --dry-run` before removal.
+  `--charging` when requested. Set `--network-notification-mode ignore`, or use
+  `count --network-failure-count 3` or `duration --network-failure-minutes 15` to delay
+  network-only notices. Preview `sync termux-uninstall <wiki> --dry-run` before removal.
 - Inspect saved settings with `vulcan sync schedule show <wiki>`. Change only the interval with
   `vulcan sync schedule set <wiki> --period-minutes 30 --dry-run`, then apply without `--dry-run`.
   Updates retain the same Android job ID and all unspecified settings. Use `--network unmetered`,
-  `--charging true|false`, `--battery-not-low true|false`, or `--persisted true|false` for explicit
-  changes. The minimum interval is 15 minutes. These commands manage an existing job; create it
+  `--charging true|false`, `--battery-not-low true|false`, `--persisted true|false`, or
+  `--network-notification-mode` and its threshold flags for explicit changes. The minimum
+  interval is 15 minutes. These commands manage an existing job; create it
   with `sync termux-install` first. Saved settings do not prove Android still has the job queued;
   use `termux-job-scheduler --pending` to inspect Android's actual queue.
 - Prefer scheduled, finite sync runs over a long-running daemon on Termux. When a daemon is
-  installed through `sync termux-install`, a run that reports an issue posts or replaces one
-  high-priority `termux-notification`; a later successful run removes it. When a daemon is
+  installed through `sync termux-install`, a non-network error posts a high-priority
+  `termux-notification` immediately. Network errors follow the wrapper policy and a later
+  successful run removes the notice and resets the private failure counter. When a daemon is
   deliberately kept running, `vulcan daemon config set-notifications --desktop true` also uses
   `termux-notification` for sync-attention alerts and requires the Termux:API companion app plus
   the `termux-api` package. Notification failure does not change retained sync state.

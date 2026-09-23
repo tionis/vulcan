@@ -8870,6 +8870,44 @@
                     ]
                   },
                   {
+                    "help": "Network failure notices: immediate, ignore, count, or duration",
+                    "id": "network_notification_mode",
+                    "long": "network-notification-mode",
+                    "possible_values": [
+                      "immediate",
+                      "ignore",
+                      "count",
+                      "duration"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK_NOTIFICATION_MODE"
+                    ]
+                  },
+                  {
+                    "help": "Notify after this many consecutive network failures",
+                    "id": "network_failure_count",
+                    "long": "network-failure-count",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK_FAILURE_COUNT"
+                    ]
+                  },
+                  {
+                    "help": "Notify after this many minutes of observed network failures",
+                    "id": "network_failure_minutes",
+                    "long": "network-failure-minutes",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK_FAILURE_MINUTES"
+                    ]
+                  },
+                  {
                     "help": "Preview the updated settings without rescheduling",
                     "id": "dry_run",
                     "long": "dry-run",
@@ -9238,6 +9276,44 @@
                 "short": null,
                 "value_names": [
                   "NO_PERSIST"
+                ]
+              },
+              {
+                "help": "Network failure notices: immediate, ignore, count, or duration",
+                "id": "network_notification_mode",
+                "long": "network-notification-mode",
+                "possible_values": [
+                  "immediate",
+                  "ignore",
+                  "count",
+                  "duration"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NETWORK_NOTIFICATION_MODE"
+                ]
+              },
+              {
+                "help": "Notify after this many consecutive network failures",
+                "id": "network_failure_count",
+                "long": "network-failure-count",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NETWORK_FAILURE_COUNT"
+                ]
+              },
+              {
+                "help": "Notify after this many minutes of observed network failures",
+                "id": "network_failure_minutes",
+                "long": "network-failure-minutes",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NETWORK_FAILURE_MINUTES"
                 ]
               },
               {

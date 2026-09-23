@@ -3895,6 +3895,19 @@ pub enum SyncScheduleCommand {
         battery_not_low: Option<bool>,
         #[arg(long, help = "Retain the Android job across reboots: true or false")]
         persisted: Option<bool>,
+        #[arg(
+            long,
+            value_enum,
+            help = "Network failure notices: immediate, ignore, count, or duration"
+        )]
+        network_notification_mode: Option<NetworkNotificationModeArg>,
+        #[arg(long, help = "Notify after this many consecutive network failures")]
+        network_failure_count: Option<u32>,
+        #[arg(
+            long,
+            help = "Notify after this many minutes of observed network failures"
+        )]
+        network_failure_minutes: Option<u32>,
         #[arg(long, help = "Preview the updated settings without rescheduling")]
         dry_run: bool,
     },
@@ -4030,6 +4043,25 @@ pub enum SyncCommand {
         allow_low_battery: bool,
         #[arg(long, help = "Do not retain the Android job across reboots")]
         no_persist: bool,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "immediate",
+            help = "Network failure notices: immediate, ignore, count, or duration"
+        )]
+        network_notification_mode: NetworkNotificationModeArg,
+        #[arg(
+            long,
+            default_value_t = 3,
+            help = "Notify after this many consecutive network failures"
+        )]
+        network_failure_count: u32,
+        #[arg(
+            long,
+            default_value_t = 15,
+            help = "Notify after this many minutes of observed network failures"
+        )]
+        network_failure_minutes: u32,
         #[arg(long, help = "Override the stable positive Android JobScheduler ID")]
         job_id: Option<u32>,
         #[arg(
