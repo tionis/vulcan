@@ -1,3 +1,4 @@
+use crate::cli::ManagedDirectoryProfileArg;
 use crate::output::print_json;
 use crate::{Cli, CliError, ClonePlatformArg, OutputFormat, VaultCommand};
 use serde::Serialize;
@@ -8,8 +9,8 @@ use vulcan_daemon::clone::{
     RecoverWikiGitReport, RecoverWikiGitRequest,
 };
 use vulcan_daemon::registry::{
-    AddWikiRequest, UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistrationStatus,
-    WikiRegistry,
+    AddWikiRequest, ManagedDirectoryProfile, UpdateWikiRequest, WikiId, WikiRegistration,
+    WikiRegistrationStatus, WikiRegistry,
 };
 
 #[derive(Debug, Serialize)]
@@ -18,6 +19,8 @@ struct VaultMutationReport<'a> {
     dry_run: bool,
     registry_path: &'a Path,
     wiki: &'a WikiRegistration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<vulcan_daemon::registry::ManagedDirectoryCapabilities>,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,6 +53,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
         VaultCommand::Add {
             id,
             path,
+            profile,
             group,
             git_dir,
             permissions_profile,
@@ -59,6 +63,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             let request = AddWikiRequest {
                 id: parse_id(id)?,
                 path: path.clone(),
+                profile: Some(managed_profile(*profile)),
                 groups: group.clone(),
                 git_dir: git_dir.clone(),
                 permissions_profile: permissions_profile.clone(),
@@ -82,13 +87,14 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
         }
         VaultCommand::Set {
             id,
+            profile,
             group,
             remove_group,
             permissions_profile,
             clear_permissions_profile,
             dry_run,
         } => {
-            let profile = if *clear_permissions_profile {
+            let permissions = if *clear_permissions_profile {
                 Some(None)
             } else {
                 permissions_profile.clone().map(Some)
@@ -99,8 +105,9 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                     &UpdateWikiRequest {
                         groups_to_add: group.clone(),
                         groups_to_remove: remove_group.clone(),
-                        permissions_profile: profile,
+                        permissions_profile: permissions,
                         sync_paused: None,
+                        profile: profile.map(managed_profile),
                     },
                     *dry_run,
                 )
@@ -259,8 +266,12 @@ fn print_list(
             } else {
                 "missing"
             };
+            let profile = match wiki.registration.profile {
+                ManagedDirectoryProfile::Knowledge => "",
+                ManagedDirectoryProfile::FilesOnly => "\tfiles-only",
+            };
             println!(
-                "{}\t{}\t{state}",
+                "{}\t{}{profile}\t{state}",
                 wiki.registration.id,
                 wiki.registration.path.display()
             );
@@ -278,6 +289,9 @@ fn print_show(output: OutputFormat, wiki: &WikiRegistrationStatus) -> Result<(),
     println!("Available: {}", wiki.available);
     println!("Indexed: {}", wiki.indexed);
     println!("Git repository: {}", wiki.git_repository);
+    if wiki.registration.profile == ManagedDirectoryProfile::FilesOnly {
+        println!("Profile: files-only");
+    }
     if !wiki.registration.groups.is_empty() {
         println!("Groups: {}", wiki.registration.groups.join(", "));
     }
@@ -286,6 +300,13 @@ fn print_show(output: OutputFormat, wiki: &WikiRegistrationStatus) -> Result<(),
 
 fn parse_id(id: &str) -> Result<WikiId, CliError> {
     WikiId::parse(id).map_err(CliError::operation)
+}
+
+fn managed_profile(profile: ManagedDirectoryProfileArg) -> ManagedDirectoryProfile {
+    match profile {
+        ManagedDirectoryProfileArg::Knowledge => ManagedDirectoryProfile::Knowledge,
+        ManagedDirectoryProfileArg::FilesOnly => ManagedDirectoryProfile::FilesOnly,
+    }
 }
 
 fn print_mutation(
@@ -301,6 +322,8 @@ fn print_mutation(
             dry_run,
             registry_path: registry.path(),
             wiki,
+            capabilities: (wiki.profile == ManagedDirectoryProfile::FilesOnly)
+                .then(|| wiki.capabilities()),
         }),
         OutputFormat::Human | OutputFormat::Markdown => {
             let qualifier = if dry_run { "Would update" } else { "Updated" };

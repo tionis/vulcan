@@ -965,8 +965,11 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
 const fn cache_freshness_name(
     state: vulcan_daemon::scan_runtime::CacheFreshnessState,
 ) -> &'static str {
-    use vulcan_daemon::scan_runtime::CacheFreshnessState::{Dirty, Error, Fresh, Unknown};
+    use vulcan_daemon::scan_runtime::CacheFreshnessState::{
+        Dirty, Disabled, Error, Fresh, Unknown,
+    };
     match state {
+        Disabled => "disabled",
         Unknown => "unknown",
         Dirty => "dirty",
         Fresh => "fresh",

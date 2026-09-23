@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 60
+version: 61
 tools:
   - git_status
   - git_diff
@@ -21,6 +21,8 @@ require_confirmation: false
 Use this skill when you need repository state rather than note content.
 
 Use `vulcan sync` when the user wants device/file-tree synchronization. This is separate from `git commit`: live sync snapshots are non-semantic and use Vulcan-owned refs without advancing the user's current branch.
+
+Registered directories default to the `knowledge` profile. Use `vulcan vault add <id> <path> --profile files-only` or `vulcan vault set <id> --profile files-only` when sync should handle arbitrary files without Markdown indexing or knowledge-specific validation, scripts, semantic history, and agent conflict resolution. Files-only devices retain concurrent automatic merges for review to preserve the shared accepted bytes. This profile choice is device-local and does not turn an active development checkout into an unattended Git-management target or promise a complete backup.
 
 ## Recommended Flow
 

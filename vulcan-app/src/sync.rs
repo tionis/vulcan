@@ -28,6 +28,15 @@ pub use vulcan_sync::{
     GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport, SyncCancellationToken,
 };
 
+/// Controls whether a finite file synchronization cycle composes Markdown
+/// knowledge services. The default preserves legacy vault behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SyncContentProfile {
+    #[default]
+    Knowledge,
+    FilesOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitCloneReport {
     pub installation: GitInstallation,
@@ -970,8 +979,25 @@ pub fn sync_git_vault(
     paths: &VaultPaths,
     options: &GitSyncOptions,
 ) -> Result<VaultSyncReport, AppError> {
+    sync_git_vault_with_profile(paths, options, SyncContentProfile::Knowledge)
+}
+
+pub fn sync_git_vault_with_profile(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    profile: SyncContentProfile,
+) -> Result<VaultSyncReport, AppError> {
     let state_store = SyncStateStore::user_default()?;
-    sync_git_vault_with_state_store(paths, options, &state_store)
+    let mut observer = vulcan_sync::IgnoreGitSyncProgress;
+    sync_git_vault_with_profile_and_observer_and_engine(
+        &vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout),
+        paths,
+        options,
+        &state_store,
+        &SyncCancellationToken::default(),
+        &mut observer,
+        profile,
+    )
 }
 
 /// Runs one direct finite cycle while forwarding durable progress to a caller.
@@ -980,13 +1006,30 @@ pub fn sync_git_vault_with_progress(
     options: &GitSyncOptions,
     observer: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
+    sync_git_vault_with_profile_and_progress(
+        paths,
+        options,
+        observer,
+        SyncContentProfile::Knowledge,
+    )
+}
+
+pub fn sync_git_vault_with_profile_and_progress(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    observer: &mut dyn GitSyncObserver,
+    profile: SyncContentProfile,
+) -> Result<VaultSyncReport, AppError> {
     let state_store = SyncStateStore::user_default()?;
-    sync_git_vault_with_observer(
+    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
+    sync_git_vault_with_profile_and_observer_and_engine(
+        &engine,
         paths,
         options,
         &state_store,
         &SyncCancellationToken::default(),
         observer,
+        profile,
     )
 }
 
@@ -1049,13 +1092,37 @@ pub fn sync_git_vault_with_observer_and_engine(
     cancellation: &SyncCancellationToken,
     delegate: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
+    sync_git_vault_with_profile_and_observer_and_engine(
+        engine,
+        paths,
+        options,
+        state_store,
+        cancellation,
+        delegate,
+        SyncContentProfile::Knowledge,
+    )
+}
+
+/// Runs one finite Git synchronization cycle with an explicit managed
+/// directory profile. Files-only mode skips Markdown tree validation and
+/// cache refresh while retaining the same file reconciliation engine.
+#[allow(clippy::too_many_lines)] // Keep journal, backend, conflict, and cache stages visibly ordered.
+pub fn sync_git_vault_with_profile_and_observer_and_engine(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    cancellation: &SyncCancellationToken,
+    delegate: &mut dyn GitSyncObserver,
+    profile: SyncContentProfile,
+) -> Result<VaultSyncReport, AppError> {
     let started = Instant::now();
     let subprocesses_before = engine.subprocess_count();
     check_sync_start(cancellation)?;
     // Key durable state on the discovered root, while retaining failed invocation paths.
     let resolved_paths = resolved_repository_paths(engine, paths);
     let paths = &resolved_paths;
-    let options = configured_git_sync_options(paths, options)?;
+    let options = configured_git_sync_options_for_profile(paths, options, profile)?;
     let mut journal = SyncJournal::preparing(
         paths.vault_root(),
         options.remote.to_string(),
@@ -1074,13 +1141,16 @@ pub fn sync_git_vault_with_observer_and_engine(
     if !options.dry_run {
         state_store.save(&journal)?;
     }
-    let validation_config = load_validated_sync_config(paths)?;
+    let validation_config = (profile == SyncContentProfile::Knowledge)
+        .then(|| load_validated_sync_config(paths))
+        .transpose()?;
     let mut observer = JournalSyncObserver {
         state_store,
         journal: &mut journal,
         persist: !options.dry_run,
         delegate,
-        tree_validator: VaultTreeValidator::new(validation_config),
+        profile,
+        tree_validator: validation_config.map(VaultTreeValidator::new),
     };
     let backend_started = Instant::now();
     let sync_result = run_sync_backend_with_vault_lock(
@@ -1122,7 +1192,11 @@ pub fn sync_git_vault_with_observer_and_engine(
         state_store.save(&journal)?;
     }
     let (cache_refresh, cache_refresh_error, cache_refresh_duration) =
-        refresh_cache_after_sync_with_timing(paths, &sync, &options);
+        if profile == SyncContentProfile::Knowledge {
+            refresh_cache_after_sync_with_timing(paths, &sync, &options)
+        } else {
+            (None, None, Duration::ZERO)
+        };
     let (repository_key, retained) = retain_sync_journal(
         state_store,
         options.dry_run,
@@ -1403,7 +1477,15 @@ pub fn configured_git_sync_options(
     paths: &VaultPaths,
     options: &GitSyncOptions,
 ) -> Result<GitSyncOptions, AppError> {
-    let config = load_validated_sync_config(paths)?;
+    configured_git_sync_options_for_profile(paths, options, SyncContentProfile::Knowledge)
+}
+
+pub fn configured_git_sync_options_for_profile(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    profile: SyncContentProfile,
+) -> Result<GitSyncOptions, AppError> {
+    let config = load_sync_config(paths, profile == SyncContentProfile::Knowledge)?;
     let mut effective = options.clone();
     if let Some(policy) = config.sync.merge_policy {
         effective.merge_policy = policy;
@@ -1421,6 +1503,13 @@ pub fn configured_git_sync_options(
 }
 
 pub(crate) fn load_validated_sync_config(paths: &VaultPaths) -> Result<VaultConfig, AppError> {
+    load_sync_config(paths, true)
+}
+
+fn load_sync_config(
+    paths: &VaultPaths,
+    validate_tree_policy: bool,
+) -> Result<VaultConfig, AppError> {
     let loaded = load_vault_config(paths);
     if let Some(diagnostic) = loaded
         .diagnostics
@@ -1433,12 +1522,14 @@ pub(crate) fn load_validated_sync_config(paths: &VaultPaths) -> Result<VaultConf
             diagnostic.message
         )));
     }
-    loaded
-        .config
-        .sync
-        .tree_validation
-        .validate()
-        .map_err(AppError::operation)?;
+    if validate_tree_policy {
+        loaded
+            .config
+            .sync
+            .tree_validation
+            .validate()
+            .map_err(AppError::operation)?;
+    }
     if let Some(policy) = &loaded.config.sync.merge_policy {
         policy.validate().map_err(AppError::operation)?;
     }
@@ -1491,7 +1582,8 @@ struct JournalSyncObserver<'a> {
     journal: &'a mut SyncJournal,
     persist: bool,
     delegate: &'a mut dyn GitSyncObserver,
-    tree_validator: VaultTreeValidator,
+    profile: SyncContentProfile,
+    tree_validator: Option<VaultTreeValidator>,
 }
 
 impl GitSyncObserver for JournalSyncObserver<'_> {
@@ -1539,7 +1631,29 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
         engine: &dyn GitEngine,
         request: &GitAutomaticMergeValidation<'_>,
     ) -> Result<Vec<vulcan_sync::GitAutomaticValidationCheck>, GitSyncObserverError> {
-        self.tree_validator.validate(engine, request)?;
+        if self.profile == SyncContentProfile::FilesOnly {
+            let base = engine
+                .tree_oid(request.repository, request.base)
+                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            let local = engine
+                .tree_oid(request.repository, request.local_candidate)
+                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            let remote = engine
+                .tree_oid(request.repository, request.accepted_remote)
+                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            if (local == base && request.merged_tree == &remote)
+                || (remote == base && request.merged_tree == &local)
+            {
+                return self.delegate.validate_automatic_merge(engine, request);
+            }
+            return Err(GitSyncObserverError::new(
+                "files-only profile requires review of concurrent merges to preserve shared accepted bytes across knowledge and files-only devices",
+            ));
+        }
+        let Some(validator) = &self.tree_validator else {
+            return Ok(Vec::new());
+        };
+        validator.validate(engine, request)?;
         let mut checks = vec![
             vulcan_sync::GitAutomaticValidationCheck::WholeTreeLinksValid,
             vulcan_sync::GitAutomaticValidationCheck::MassDeletionPolicy,
@@ -2923,6 +3037,88 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn files_only_profile_applies_remote_files_without_refreshing_or_creating_an_index() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote"),
+            ],
+        );
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        git(
+            &writer,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&writer, &["config", "user.name", "Vulcan Test"]);
+        git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &writer,
+            &["remote", "add", "origin", remote.to_str().expect("remote")],
+        );
+        fs::write(writer.join("Home.md"), "initial\n").expect("initial note");
+        git(&writer, &["add", "Home.md"]);
+        git(&writer, &["commit", "--quiet", "-m", "initial"]);
+        let state_store = SyncStateStore::at(temporary.path().join("state"));
+        let writer_paths = VaultPaths::new(&writer);
+        sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
+            .expect("bootstrap sync");
+
+        let reader = temporary.path().join("reader");
+        git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                writer.to_str().expect("writer"),
+                reader.to_str().expect("reader"),
+            ],
+        );
+        git(
+            &reader,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                remote.to_str().expect("remote"),
+            ],
+        );
+        let reader_paths = VaultPaths::new(&reader);
+        assert!(!reader_paths.cache_db().exists());
+        sync_git_vault_with_profile(
+            &reader_paths,
+            &GitSyncOptions::default(),
+            SyncContentProfile::FilesOnly,
+        )
+        .expect("establish reader sync baseline");
+
+        fs::write(writer.join("Remote.md"), "remote note\n").expect("remote note");
+        sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
+            .expect("writer push");
+        let report = sync_git_vault_with_profile(
+            &reader_paths,
+            &GitSyncOptions::default(),
+            SyncContentProfile::FilesOnly,
+        )
+        .expect("files-only reader sync");
+
+        assert!(
+            reader.join("Remote.md").is_file(),
+            "outcome {:?}, conflict {:?}",
+            report.sync.outcome,
+            report.sync.conflict
+        );
+        assert!(report.cache_refresh.is_none());
+        assert!(report.cache_refresh_error.is_none());
+        assert!(!reader_paths.cache_db().exists());
+    }
+
+    #[test]
     fn clean_merge_with_new_link_ambiguity_is_preserved_as_a_conflict() {
         // Disjoint same-name additions merge cleanly in Git but leave
         // [[Widget]] newly ambiguous: the base and both candidates only
@@ -2976,6 +3172,44 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         );
         assert!(fixture.reader.join("Reader/Widget.md").exists());
         assert!(!fixture.reader.join("Writer/Widget.md").exists());
+    }
+
+    #[test]
+    fn files_only_profile_keeps_concurrent_merge_for_review_without_markdown_validation() {
+        let fixture = structured_sync_fixture(&[("Home.md", "[[Widget]]\n")]);
+        let reader_paths = VaultPaths::new(&fixture.reader);
+        assert!(!reader_paths.cache_db().exists());
+        fs::create_dir(fixture.writer.join("Writer")).expect("writer folder");
+        fs::write(fixture.writer.join("Writer/Widget.md"), "writer widget\n")
+            .expect("writer widget");
+        fs::create_dir(fixture.reader.join("Reader")).expect("reader folder");
+        fs::write(fixture.reader.join("Reader/Widget.md"), "reader widget\n")
+            .expect("reader widget");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer push");
+
+        let report = sync_git_vault_with_profile(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            SyncContentProfile::FilesOnly,
+        )
+        .expect("files-only synchronization");
+
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
+        assert!(report
+            .sync
+            .conflict
+            .as_ref()
+            .expect("review conflict")
+            .diagnostics
+            .contains("files-only profile requires review"));
+        assert!(!fixture.reader.join("Writer/Widget.md").exists());
+        assert!(fixture.reader.join("Reader/Widget.md").is_file());
+        assert!(!reader_paths.cache_db().exists());
     }
 
     #[test]

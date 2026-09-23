@@ -55,6 +55,9 @@ pub struct WikiRegistration {
     pub id: WikiId,
     pub registration_id: Ulid,
     pub path: PathBuf,
+    /// Local knowledge-service profile. Missing values retain historical behavior.
+    #[serde(default, skip_serializing_if = "ManagedDirectoryProfile::is_knowledge")]
+    pub profile: ManagedDirectoryProfile,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +70,50 @@ pub struct WikiRegistration {
     pub platform_profile: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub sync_paused: bool,
+}
+
+/// Versioned local capability preset for a managed directory.
+pub const MANAGED_DIRECTORY_PROFILE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedDirectoryProfile {
+    #[default]
+    Knowledge,
+    FilesOnly,
+}
+
+impl ManagedDirectoryProfile {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    const fn is_knowledge(&self) -> bool {
+        matches!(self, Self::Knowledge)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // Public capability report exposes each independently gated service.
+pub struct ManagedDirectoryCapabilities {
+    pub profile_version: u32,
+    pub markdown_index: bool,
+    pub knowledge_services: bool,
+    pub scripts: bool,
+    pub semantic_history: bool,
+    pub agent_resolution: bool,
+}
+
+impl WikiRegistration {
+    #[must_use]
+    pub const fn capabilities(&self) -> ManagedDirectoryCapabilities {
+        let knowledge = matches!(self.profile, ManagedDirectoryProfile::Knowledge);
+        ManagedDirectoryCapabilities {
+            profile_version: MANAGED_DIRECTORY_PROFILE_VERSION,
+            markdown_index: knowledge,
+            knowledge_services: knowledge,
+            scripts: knowledge,
+            semantic_history: knowledge,
+            agent_resolution: knowledge,
+        }
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -312,6 +359,7 @@ pub enum DaemonAgentKind {
 pub struct AddWikiRequest {
     pub id: WikiId,
     pub path: PathBuf,
+    pub profile: Option<ManagedDirectoryProfile>,
     pub groups: Vec<String>,
     pub git_dir: Option<PathBuf>,
     pub permissions_profile: Option<String>,
@@ -325,12 +373,15 @@ pub struct UpdateWikiRequest {
     pub groups_to_remove: Vec<String>,
     pub permissions_profile: Option<Option<String>>,
     pub sync_paused: Option<bool>,
+    pub profile: Option<ManagedDirectoryProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WikiRegistrationStatus {
     #[serde(flatten)]
     pub registration: WikiRegistration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ManagedDirectoryCapabilities>,
     pub available: bool,
     pub indexed: bool,
     pub git_repository: bool,
@@ -347,6 +398,8 @@ impl WikiRegistrationStatus {
             .is_some_and(|path| path.is_dir())
             || registration.path.join(".git").exists();
         Self {
+            capabilities: (registration.profile == ManagedDirectoryProfile::FilesOnly)
+                .then(|| registration.capabilities()),
             registration: registration.clone(),
             available,
             indexed,
@@ -556,6 +609,7 @@ impl WikiRegistry {
                 id: request.id.clone(),
                 registration_id: Ulid::new(),
                 path,
+                profile: request.profile.unwrap_or_default(),
                 groups,
                 git_dir,
                 permissions_profile: request.permissions_profile.clone(),
@@ -594,6 +648,9 @@ impl WikiRegistry {
             }
             if let Some(paused) = request.sync_paused {
                 wiki.sync_paused = paused;
+            }
+            if let Some(profile) = request.profile {
+                wiki.profile = profile;
             }
             Ok(wiki.clone())
         })
@@ -907,6 +964,7 @@ impl WikiRegistry {
         let _lock = RegistryLock::acquire(&self.path)?;
         let mut config = self.load()?;
         let result = operation(&mut config)?;
+        validate_daemon_config(&config)?;
         if !dry_run {
             save_config(&self.path, &config)?;
         }
@@ -928,8 +986,36 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     if let Some(worker) = &config.conflict_worker {
         validate_conflict_worker_config(worker)?;
     }
+    validate_worker_profiles(config)?;
     validate_notification_config(&config.notifications)?;
     validate_mcp_remotes(config)?;
+    Ok(())
+}
+
+fn validate_worker_profiles(config: &DaemonConfig) -> Result<(), RegistryError> {
+    for (worker, wikis) in config
+        .semantic_worker
+        .iter()
+        .map(|worker| ("semantic", worker.wikis.as_slice()))
+        .chain(
+            config
+                .conflict_worker
+                .iter()
+                .map(|worker| ("conflict", worker.wikis.as_slice())),
+        )
+    {
+        for id in wikis {
+            if config
+                .vaults
+                .iter()
+                .any(|wiki| &wiki.id == id && wiki.profile == ManagedDirectoryProfile::FilesOnly)
+            {
+                return Err(RegistryError::InvalidDaemonSetting(format!(
+                    "{worker} worker cannot include files-only wiki `{id}`; switch it to the knowledge profile or remove it from the worker"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1330,6 +1416,7 @@ mod tests {
         AddWikiRequest {
             id: WikiId::parse(id).expect("valid ID"),
             path: path.to_path_buf(),
+            profile: None,
             groups: vec!["zeta".to_string(), "daily".to_string(), "daily".to_string()],
             git_dir: None,
             permissions_profile: None,
@@ -1401,6 +1488,7 @@ mod tests {
                     groups_to_remove: vec!["zeta".to_string()],
                     permissions_profile: Some(Some("readonly".to_string())),
                     sync_paused: Some(true),
+                    profile: None,
                 },
                 false,
             )
@@ -1415,6 +1503,101 @@ mod tests {
         assert_eq!(removed.registration_id, personal.registration_id);
         assert_eq!(registry.load().expect("reload").vaults.len(), 1);
         assert!(first.is_dir(), "unregistering must preserve the worktree");
+    }
+
+    #[test]
+    fn legacy_registration_defaults_to_knowledge_and_files_only_is_explicit() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        let added = registry
+            .add(&request("vault", &vault), false)
+            .expect("add legacy knowledge registration");
+        assert_eq!(added.profile, ManagedDirectoryProfile::Knowledge);
+        assert!(added.capabilities().markdown_index);
+        let json = serde_json::to_value(&added).expect("registration JSON");
+        assert!(
+            json.get("profile").is_none(),
+            "legacy JSON remains unchanged"
+        );
+
+        let updated = registry
+            .update(
+                &added.id,
+                &UpdateWikiRequest {
+                    groups_to_add: Vec::new(),
+                    groups_to_remove: Vec::new(),
+                    permissions_profile: None,
+                    sync_paused: None,
+                    profile: Some(ManagedDirectoryProfile::FilesOnly),
+                },
+                false,
+            )
+            .expect("select files-only profile");
+        let capabilities = updated.capabilities();
+        assert_eq!(
+            capabilities.profile_version,
+            MANAGED_DIRECTORY_PROFILE_VERSION
+        );
+        assert!(!capabilities.markdown_index);
+        assert!(!capabilities.knowledge_services);
+        assert!(!capabilities.scripts);
+        assert!(!capabilities.semantic_history);
+        assert!(!capabilities.agent_resolution);
+        assert_eq!(
+            serde_json::to_value(&updated).expect("files-only registration JSON")["profile"],
+            "files_only"
+        );
+    }
+
+    #[test]
+    fn files_only_profile_cannot_be_enabled_for_configured_knowledge_workers() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        let registration = registry
+            .add(&request("vault", &vault), false)
+            .expect("add knowledge registration");
+        registry
+            .set_semantic_worker(
+                DaemonSemanticWorkerConfig {
+                    wikis: vec![registration.id.clone()],
+                    semantic_ref: "refs/heads/semantic".to_string(),
+                    remote: "origin".to_string(),
+                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                    publish: true,
+                    quiet_seconds: 120,
+                    maximum_wait_seconds: 3_600,
+                    poll_seconds: 30,
+                },
+                false,
+            )
+            .expect("configure semantic worker");
+
+        let error = registry
+            .update(
+                &registration.id,
+                &UpdateWikiRequest {
+                    groups_to_add: Vec::new(),
+                    groups_to_remove: Vec::new(),
+                    permissions_profile: None,
+                    sync_paused: None,
+                    profile: Some(ManagedDirectoryProfile::FilesOnly),
+                },
+                false,
+            )
+            .expect_err("worker incompatibility must be rejected");
+        assert!(error.to_string().contains("semantic worker"));
+        assert_eq!(
+            registry
+                .show(&registration.id)
+                .expect("show")
+                .registration
+                .profile,
+            ManagedDirectoryProfile::Knowledge
+        );
     }
 
     #[test]

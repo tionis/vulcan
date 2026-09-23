@@ -24,6 +24,7 @@ const INDEX_WAIT_POLL: Duration = Duration::from_millis(50);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheFreshnessState {
+    Disabled,
     Unknown,
     Dirty,
     Fresh,
@@ -40,6 +41,17 @@ pub struct ScanCompletion {
 }
 
 impl ScanCompletion {
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self {
+            generation: 0,
+            state: CacheFreshnessState::Disabled,
+            completed_unix_ms: None,
+            fingerprint: None,
+            error: None,
+        }
+    }
+
     #[must_use]
     pub const fn unknown() -> Self {
         Self {
@@ -448,6 +460,14 @@ fn unix_time_ms() -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_cache_status_is_explicit_and_has_no_scan_generation() {
+        let status = ScanCompletion::disabled();
+        assert_eq!(status.generation, 0);
+        assert_eq!(status.state, CacheFreshnessState::Disabled);
+        assert_eq!(serde_json::to_value(status).unwrap()["state"], "disabled");
+    }
     use crate::observation::{
         FilesystemHint, ObservationConsumerId, ObservationConsumerKind, ObservationConsumerPolicy,
         ObservationFilter,

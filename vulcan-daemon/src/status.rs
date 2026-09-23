@@ -387,6 +387,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: id.clone(),
                     path: vault,
                     groups: Vec::new(),

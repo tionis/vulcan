@@ -8051,6 +8051,47 @@ fn vault_registry_cli_round_trips_without_touching_wiki_files() {
 }
 
 #[test]
+fn files_only_registration_json_reports_capabilities_without_initializing_index() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let config_home = temporary.path().join("config");
+    let directory = temporary.path().join("media");
+    fs::create_dir_all(&config_home).expect("config home");
+    fs::create_dir(&directory).expect("managed directory");
+    fs::write(directory.join("clip.bin"), b"plain bytes").expect("media file");
+    let config_home = config_home.to_str().expect("config path");
+    let directory_path = directory.to_str().expect("directory path");
+    let add = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output",
+            "json",
+            "vault",
+            "add",
+            "media",
+            directory_path,
+            "--profile",
+            "files-only",
+            "--sync-backend",
+            "none",
+        ])
+        .assert()
+        .success();
+    let added = parse_stdout_json(&add);
+    assert_eq!(added["wiki"]["profile"], "files_only");
+    assert_eq!(added["capabilities"]["profile_version"], 1);
+    assert_eq!(added["capabilities"]["markdown_index"], false);
+    assert!(!directory.join(".vulcan").exists());
+
+    let show = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "vault", "show", "media"])
+        .assert()
+        .success();
+    let shown = parse_stdout_json(&show);
+    assert_eq!(shown["profile"], "files_only");
+    assert_eq!(shown["capabilities"]["knowledge_services"], false);
+    assert!(!directory.join(".vulcan").exists());
+}
+
+#[test]
 fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");

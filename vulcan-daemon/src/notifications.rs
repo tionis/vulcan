@@ -559,6 +559,7 @@ mod tests {
     #[test]
     fn desired_listener_set_and_restart_identity_follow_effective_registration() {
         let registration = |id: &str, paused: bool, backend: Option<&str>| WikiRegistration {
+            profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             id: WikiId::parse(id).expect("wiki id"),
             registration_id: ulid::Ulid::new(),
             path: Path::new("/").join(id),
@@ -668,6 +669,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: WikiId::parse("alpha").expect("wiki id"),
                     path: vault.clone(),
                     groups: Vec::new(),
@@ -761,6 +763,7 @@ mod tests {
             registry
                 .add(
                     &AddWikiRequest {
+                        profile: None,
                         id: WikiId::parse(id).expect("wiki id"),
                         path: vault,
                         groups: Vec::new(),
@@ -870,6 +873,7 @@ mod tests {
             "https://patch.example/private?pubsub=true",
         );
         let registration = WikiRegistration {
+            profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             id: WikiId::parse("alpha").expect("wiki id"),
             registration_id: ulid::Ulid::new(),
             path: vault,

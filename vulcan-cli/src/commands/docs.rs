@@ -729,6 +729,10 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
     lines.push(String::new());
     lines.push("Manual editing is still supported. Use `.vulcan/config.toml` for shared defaults you want to sync, and `.vulcan/config.local.toml` for machine-local overrides such as developer-specific paths, API env-var names, or temporary experiments.".to_string());
     lines.push(String::new());
+    lines.push("### Managed-directory profile".to_string());
+    lines.push(String::new());
+    lines.push("The `knowledge` or `files-only` profile belongs to the device-local daemon registration, not the vault configuration documented below. Set it when registering or updating a directory with `vulcan vault add <id> <path> --profile files-only` or `vulcan vault set <id> --profile files-only`; omit the option or choose `knowledge` to retain the established knowledge-vault behavior. The CLI spelling `files-only` is stored as `files_only` in the device registry's TOML/JSON. Files-only status and mutation JSON includes a `capabilities` object with `profile_version` and the `markdown_index`, `knowledge_services`, `scripts`, `semantic_history`, and `agent_resolution` booleans; the object is omitted for knowledge registrations to preserve existing JSON shapes. See the [Git sync guide](../guide/git-sync.md#managed-directory-profiles) for its current boundaries.".to_string());
+    lines.push(String::new());
     lines.push("Typical TOML blocks:".to_string());
     lines.push(String::new());
     lines.push("```toml".to_string());

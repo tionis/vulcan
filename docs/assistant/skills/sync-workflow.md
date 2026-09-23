@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 34
+version: 35
 metadata:
   vulcan:
     managed: true
@@ -46,8 +46,23 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
 
 ## Select the execution mode
 
+- A registered directory uses the device-local `knowledge` profile by default. Choose
+  `--profile files-only` on `vulcan vault add <id> <path>` or `vulcan vault set <id>` for a
+  directory whose sync should not initialize or refresh a Markdown index. This profile also
+  disables knowledge-specific validation, scripts, semantic history, and agent conflict
+  resolution while keeping the same deterministic file reconciliation. Profile state is local
+  registration metadata; it is not synchronized as vault config. Existing registrations retain
+  the `knowledge` default.
+- Use `vulcan vault show <id>` or `vulcan vault list` to inspect registration. Human output calls
+  out a nondefault files-only profile; the JSON shape for existing knowledge registrations remains
+  unchanged.
+
 - For an unregistered path or a daemon-independent operation, use `vulcan --vault <path> sync ...`.
-  Direct commands never start a daemon implicitly.
+  Direct commands never start a daemon implicitly. For an unregistered files-only path, choose
+  `vulcan --vault <path> sync run --profile files-only` (or `sync status --profile files-only`);
+  registered directories use their stored profile.
+- Files-only devices retain concurrent automatic merges for review so they do not accept
+  bytes that a knowledge device would reject. Resolve the retained conflict explicitly.
 - For registered wikis, select one ID, `--group <name>`, or `--all`. Aggregate results are independent
   per-wiki transactions, not a cross-repository atomic commit.
 - Direct and daemon sync of an initialized vault use the same vault-write and repository locks as

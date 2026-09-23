@@ -9,8 +9,8 @@ use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use vulcan_app::sync::{
-    sync_git_vault, sync_git_vault_with_observer_and_engine, GitPlatformProfile,
-    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
+    sync_git_vault_with_profile_and_observer_and_engine, GitPlatformProfile, GitSyncObserverError,
+    GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, SyncContentProfile,
     VaultSyncReport,
 };
 use vulcan_app::sync_conflicts::list_sync_conflicts;
@@ -258,13 +258,14 @@ fn execute_claimed_job(
         job_id: &id,
         vault: &registration.path,
     };
-    match sync_git_vault_with_observer_and_engine(
+    match sync_git_vault_with_profile_and_observer_and_engine(
         &engine,
         &paths,
         &options,
         state_store,
         &claimed.cancellation,
         &mut observer,
+        app_profile(registration.profile),
     ) {
         Ok(report) => {
             let error = if matches!(
@@ -394,6 +395,13 @@ fn options_for_registration(
     let mut effective = options.clone();
     effective.platform = platform;
     Ok(effective)
+}
+
+fn app_profile(profile: crate::registry::ManagedDirectoryProfile) -> SyncContentProfile {
+    match profile {
+        crate::registry::ManagedDirectoryProfile::Knowledge => SyncContentProfile::Knowledge,
+        crate::registry::ManagedDirectoryProfile::FilesOnly => SyncContentProfile::FilesOnly,
+    }
 }
 
 fn complete_execution_error(
@@ -699,7 +707,11 @@ fn sync_registration(
             {
                 let effective = options_for_registration(options, wiki)
                     .map_err(vulcan_app::AppError::operation)?;
-                sync_git_vault(&paths, &effective)
+                vulcan_app::sync::sync_git_vault_with_profile(
+                    &paths,
+                    &effective,
+                    app_profile(wiki.profile),
+                )
             } else {
                 Err(vulcan_app::AppError::operation(format!(
                     "wiki `{}` uses unsupported sync backend `{}`",
@@ -1042,6 +1054,7 @@ mod tests {
                     permissions_profile: None,
                     sync_backend: Some("git".to_string()),
                     platform_profile: Some("android_shared".to_string()),
+                    profile: None,
                 },
                 false,
             )
@@ -1073,6 +1086,7 @@ mod tests {
                     permissions_profile: None,
                     sync_backend: Some("git".to_string()),
                     platform_profile: Some("android_shared".to_string()),
+                    profile: None,
                 },
                 false,
             )
@@ -1106,6 +1120,7 @@ mod tests {
                         permissions_profile: None,
                         sync_backend: Some("git".to_string()),
                         platform_profile: None,
+                        profile: None,
                     },
                     false,
                 )
@@ -1147,6 +1162,7 @@ mod tests {
                         permissions_profile: None,
                         sync_backend: Some("git".to_string()),
                         platform_profile: None,
+                        profile: None,
                     },
                     false,
                 )
@@ -1226,6 +1242,7 @@ mod tests {
                     permissions_profile: None,
                     sync_backend: Some("git".to_string()),
                     platform_profile: None,
+                    profile: None,
                 },
                 false,
             )
@@ -1318,6 +1335,7 @@ mod tests {
                     permissions_profile: None,
                     sync_backend: Some("git".to_string()),
                     platform_profile: None,
+                    profile: None,
                 },
                 false,
             )
@@ -1371,6 +1389,7 @@ mod tests {
                     permissions_profile: None,
                     sync_backend: Some("git".to_string()),
                     platform_profile: None,
+                    profile: None,
                 },
                 false,
             )
@@ -1383,6 +1402,7 @@ mod tests {
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
                     sync_paused: Some(true),
+                    profile: None,
                 },
                 false,
             )

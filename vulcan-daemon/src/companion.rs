@@ -775,6 +775,7 @@ impl<'a> CompanionService<'a> {
             .update(
                 wiki_id,
                 &UpdateWikiRequest {
+                    profile: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
@@ -1104,6 +1105,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: wiki_id.clone(),
                     path: reader,
                     groups: Vec::new(),
@@ -1137,6 +1139,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: wiki_id.clone(),
                     path: vault,
                     groups: vec!["personal".to_string()],
@@ -1432,6 +1435,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: wiki_id.clone(),
                     path: vault,
                     groups: Vec::new(),

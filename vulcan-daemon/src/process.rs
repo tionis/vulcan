@@ -906,13 +906,17 @@ pub fn daemon_status(
                 Ok(status) => (Some(status), None),
                 Err(error) => (None, Some(error.to_string())),
             };
-            let cache = load_scan_completion(&scan_status_path(
-                state_store.root(),
-                wiki.registration.registration_id,
-            ))
-            .map_or_else(ScanCompletion::inspection_error, |status| {
-                status.unwrap_or_else(ScanCompletion::unknown)
-            });
+            let cache = if wiki.registration.capabilities().markdown_index {
+                load_scan_completion(&scan_status_path(
+                    state_store.root(),
+                    wiki.registration.registration_id,
+                ))
+                .map_or_else(ScanCompletion::inspection_error, |status| {
+                    status.unwrap_or_else(ScanCompletion::unknown)
+                })
+            } else {
+                ScanCompletion::disabled()
+            };
             DaemonWikiOperationalStatus {
                 wiki_id: wiki.registration.id.as_str().to_string(),
                 path: wiki.registration.path.clone(),
@@ -1184,6 +1188,7 @@ mod tests {
         DaemonConfig {
             bind: "127.0.0.1:0".to_string(),
             vaults: vec![WikiRegistration {
+                profile: crate::registry::ManagedDirectoryProfile::Knowledge,
                 id: WikiId::parse("notes").expect("wiki ID"),
                 registration_id: Ulid::new(),
                 path: vault,

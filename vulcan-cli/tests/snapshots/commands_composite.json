@@ -9202,6 +9202,20 @@
                 ]
               },
               {
+                "help": "Managed-directory capability profile for direct paths",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [
+                  "knowledge",
+                  "files-only"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
                 "help": "Maximum compare-and-swap reconciliation attempts",
                 "id": "max_retries",
                 "long": "max-retries",
@@ -9300,6 +9314,20 @@
                 "short": null,
                 "value_names": [
                   "LIVE_REF"
+                ]
+              },
+              {
+                "help": "Managed-directory capability profile for direct paths",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [
+                  "knowledge",
+                  "files-only"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
                 ]
               }
             ],
@@ -11964,6 +11992,20 @@
                 ]
               },
               {
+                "help": "Managed-directory capability profile",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [
+                  "knowledge",
+                  "files-only"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
                 "help": "Add the wiki to a local group",
                 "id": "group",
                 "long": "group",
@@ -12073,6 +12115,20 @@
                 "short": null,
                 "value_names": [
                   "ID"
+                ]
+              },
+              {
+                "help": "Managed-directory capability profile",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [
+                  "knowledge",
+                  "files-only"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
                 ]
               },
               {

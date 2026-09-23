@@ -1349,6 +1349,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: WikiId::parse("alpha").expect("wiki ID"),
                     path: vault,
                     groups: Vec::new(),

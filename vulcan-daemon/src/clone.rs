@@ -216,6 +216,7 @@ pub fn clone_registered_wiki(
             &AddWikiRequest {
                 id: request.id.clone(),
                 path: work_tree.clone(),
+                profile: None,
                 groups,
                 git_dir,
                 permissions_profile: request.permissions_profile.clone(),
@@ -513,6 +514,7 @@ mod tests {
                 &AddWikiRequest {
                     id: WikiId::parse("personal").expect("valid ID"),
                     path: other,
+                    profile: None,
                     groups: Vec::new(),
                     git_dir: None,
                     permissions_profile: None,

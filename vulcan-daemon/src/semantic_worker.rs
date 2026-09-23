@@ -147,6 +147,12 @@ pub fn execute_semantic_worker_pass(
             let Some(registration) = registrations.iter().find(|wiki| &wiki.id == wiki_id) else {
                 return status_error(wiki_id.as_str(), "registered wiki no longer exists");
             };
+            if !registration.capabilities().semantic_history {
+                return status_skipped(
+                    wiki_id.as_str(),
+                    "semantic history requires a knowledge profile; set the directory profile to knowledge",
+                );
+            }
             if registration.sync_paused {
                 return status_skipped(wiki_id.as_str(), "automatic synchronization is paused");
             }
@@ -330,6 +336,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: id.clone(),
                     path: vault,
                     groups: Vec::new(),
@@ -345,6 +352,7 @@ mod tests {
             .update(
                 &id,
                 &UpdateWikiRequest {
+                    profile: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
@@ -357,7 +365,7 @@ mod tests {
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
         let store = SyncStateStore::at(temporary.path().join("state"));
         let config = DaemonSemanticWorkerConfig {
-            wikis: vec![id],
+            wikis: vec![id.clone()],
             semantic_ref: "refs/heads/main".to_string(),
             remote: "origin".to_string(),
             live_ref: "refs/heads/__vulcan-sync/live".to_string(),
@@ -379,6 +387,33 @@ mod tests {
             Some("automatic synchronization is paused")
         );
         assert!(status.entries[0].error.is_none());
+
+        registry
+            .update(
+                &id,
+                &UpdateWikiRequest {
+                    profile: Some(crate::registry::ManagedDirectoryProfile::FilesOnly),
+                    groups_to_add: Vec::new(),
+                    groups_to_remove: Vec::new(),
+                    permissions_profile: None,
+                    sync_paused: Some(false),
+                },
+                false,
+            )
+            .expect("select files-only profile");
+        let status = execute_semantic_worker_pass(
+            &config,
+            &registry,
+            &supervisor,
+            &store,
+            &CompanionSemanticAgent::new(PanicProvider),
+            1_001,
+        );
+        assert!(status.entries[0]
+            .skipped
+            .as_deref()
+            .unwrap()
+            .contains("requires a knowledge profile"));
     }
 
     #[test]

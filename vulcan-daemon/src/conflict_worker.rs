@@ -181,6 +181,13 @@ pub fn execute_conflict_worker_pass(
                     now_unix_ms,
                 );
             };
+            if !registration.capabilities().agent_resolution {
+                return status_skipped(
+                    wiki_id,
+                    0,
+                    "agent conflict resolution requires a knowledge profile; set the directory profile to knowledge",
+                );
+            }
             if registration.sync_paused {
                 return status_skipped(wiki_id, 0, "automatic synchronization is paused");
             }
@@ -457,7 +464,10 @@ mod tests {
         CONFLICT_WORKER_STATUS_VERSION,
     };
     use crate::companion::CompanionResolutionAgent;
-    use crate::registry::{AddWikiRequest, DaemonConflictWorkerConfig, WikiId, WikiRegistry};
+    use crate::registry::{
+        AddWikiRequest, DaemonConflictWorkerConfig, ManagedDirectoryProfile, UpdateWikiRequest,
+        WikiId, WikiRegistry,
+    };
     use crate::supervisor::SyncSupervisor;
     use std::fs;
     use std::path::Path;
@@ -605,6 +615,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: wiki.clone(),
                     path: reader.clone(),
                     groups: Vec::new(),
@@ -663,6 +674,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Backoff and profile gating share the same persisted-worker fixture.
     fn provider_failures_observe_persisted_backoff() {
         let temporary = tempdir().expect("temporary directory");
         let vault = temporary.path().join("vault");
@@ -672,6 +684,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: wiki.clone(),
                     path: vault,
                     groups: Vec::new(),
@@ -738,5 +751,33 @@ mod tests {
             Some("waiting for provider error backoff")
         );
         assert_eq!(next_status.entries[0].retry_after_unix_ms, Some(10_000));
+
+        registry
+            .update(
+                &WikiId::parse("notes").unwrap(),
+                &UpdateWikiRequest {
+                    profile: Some(ManagedDirectoryProfile::FilesOnly),
+                    groups_to_add: Vec::new(),
+                    groups_to_remove: Vec::new(),
+                    permissions_profile: None,
+                    sync_paused: None,
+                },
+                false,
+            )
+            .expect("select files-only profile");
+        let files_only = execute_conflict_worker_pass(
+            &config,
+            &registry,
+            &supervisor,
+            &store,
+            &CompanionResolutionAgent::new(ResolvingProvider),
+            Some(&next_status),
+            7_000,
+        );
+        assert!(files_only.entries[0]
+            .skipped
+            .as_deref()
+            .unwrap()
+            .contains("requires a knowledge profile"));
     }
 }

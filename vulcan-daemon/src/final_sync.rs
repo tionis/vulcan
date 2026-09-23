@@ -109,6 +109,7 @@ mod tests {
             registry
                 .add(
                     &AddWikiRequest {
+                        profile: None,
                         id: wiki.clone(),
                         path,
                         groups: Vec::new(),
@@ -125,6 +126,7 @@ mod tests {
                     .update(
                         &wiki,
                         &UpdateWikiRequest {
+                            profile: None,
                             groups_to_add: Vec::new(),
                             groups_to_remove: Vec::new(),
                             permissions_profile: None,

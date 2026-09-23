@@ -4055,6 +4055,12 @@ pub enum SyncCommand {
         target: SyncTargetArgs,
         #[arg(
             long,
+            value_enum,
+            help = "Managed-directory capability profile for direct paths"
+        )]
+        profile: Option<ManagedDirectoryProfileArg>,
+        #[arg(
+            long,
             default_value_t = 4,
             help = "Maximum compare-and-swap reconciliation attempts"
         )]
@@ -4078,6 +4084,12 @@ pub enum SyncCommand {
         selection: SyncSelectionArgs,
         #[command(flatten)]
         target: SyncTargetArgs,
+        #[arg(
+            long,
+            value_enum,
+            help = "Managed-directory capability profile for direct paths"
+        )]
+        profile: Option<ManagedDirectoryProfileArg>,
     },
     #[command(about = "Install an energy-aware Android/Termux periodic sync job")]
     TermuxInstall {
@@ -4895,6 +4907,13 @@ pub enum ClonePlatformArg {
     AndroidShared,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum ManagedDirectoryProfileArg {
+    #[default]
+    Knowledge,
+    FilesOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum VaultCommand {
     #[command(
@@ -4948,6 +4967,8 @@ pub enum VaultCommand {
         id: String,
         #[arg(help = "Existing vault directory to register")]
         path: PathBuf,
+        #[arg(long, value_enum, default_value_t = ManagedDirectoryProfileArg::Knowledge, help = "Managed-directory capability profile")]
+        profile: ManagedDirectoryProfileArg,
         #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
         group: Vec<String>,
         #[arg(long, help = "Optional detached Git directory for this device")]
@@ -4977,6 +4998,8 @@ pub enum VaultCommand {
     Set {
         #[arg(help = "Registered wiki ID")]
         id: String,
+        #[arg(long, value_enum, help = "Managed-directory capability profile")]
+        profile: Option<ManagedDirectoryProfileArg>,
         #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
         group: Vec<String>,
         #[arg(long, action = ArgAction::Append, help = "Remove the wiki from a local group")]

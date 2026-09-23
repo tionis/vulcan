@@ -769,6 +769,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: WikiId::parse("notes").expect("wiki id"),
                     path: vault,
                     groups: vec!["personal".to_string()],
@@ -879,6 +880,7 @@ mod tests {
             .update(
                 &registration.id,
                 &crate::registry::UpdateWikiRequest {
+                    profile: None,
                     sync_paused: Some(true),
                     groups_to_add: vec![],
                     groups_to_remove: vec![],

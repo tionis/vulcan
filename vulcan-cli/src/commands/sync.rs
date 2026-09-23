@@ -1,4 +1,4 @@
-use crate::cli::NetworkNotificationModeArg;
+use crate::cli::{ManagedDirectoryProfileArg, NetworkNotificationModeArg};
 use crate::editor::open_paths_in_editor;
 use crate::output::print_json;
 use crate::{
@@ -10,11 +10,11 @@ use serde::Serialize;
 use std::io::{self, IsTerminal, Read, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
-    doctor_git_vault_for_platform, sync_git_vault_with_progress, GitBranchSync,
+    doctor_git_vault_for_platform, sync_git_vault_with_profile_and_progress, GitBranchSync,
     GitBranchSyncAction, GitDeviceBackupOutcome, GitPlatformProfile, GitRefName, GitRemote,
     GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPhase, GitSyncPreviewFileState, GitSyncProgress, GitSyncReport, SyncDoctorReport,
-    SyncDoctorSeverity, VaultSyncReport,
+    GitSyncPhase, GitSyncPreviewFileState, GitSyncProgress, GitSyncReport, SyncContentProfile,
+    SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -92,10 +92,11 @@ pub(crate) fn handle_sync_command(
     if let Some(result) = handle_non_cycle_sync_command(cli, paths, command) {
         return result;
     }
-    let (options, selection) = match command {
+    let (options, selection, profile) = match command {
         SyncCommand::Run {
             selection,
             target,
+            profile,
             max_retries,
             git_timeout_seconds,
             dry_run,
@@ -109,8 +110,13 @@ pub(crate) fn handle_sync_command(
                 ..GitSyncOptions::default()
             },
             registered_selection(selection)?,
+            *profile,
         ),
-        SyncCommand::Status { selection, target } => (
+        SyncCommand::Status {
+            selection,
+            target,
+            profile,
+        } => (
             GitSyncOptions {
                 remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
                 live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
@@ -118,10 +124,16 @@ pub(crate) fn handle_sync_command(
                 ..GitSyncOptions::default()
             },
             registered_selection(selection)?,
+            *profile,
         ),
         _ => unreachable!(),
     };
     if let Some(selection) = selection {
+        if profile.is_some() {
+            return Err(CliError::operation(
+                "`--profile` applies to direct sync only; registered wikis use their stored profile",
+            ));
+        }
         let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
         let report =
             sync_registered_wikis(&registry, &selection, &options, cli.permissions.as_deref())
@@ -147,7 +159,11 @@ pub(crate) fn handle_sync_command(
             io::stderr().is_terminal(),
         ),
     );
-    let result = sync_git_vault_with_progress(paths, &options, &mut observer);
+    let profile = match profile.unwrap_or(ManagedDirectoryProfileArg::Knowledge) {
+        ManagedDirectoryProfileArg::Knowledge => SyncContentProfile::Knowledge,
+        ManagedDirectoryProfileArg::FilesOnly => SyncContentProfile::FilesOnly,
+    };
+    let result = sync_git_vault_with_profile_and_progress(paths, &options, &mut observer, profile);
     observer.finish();
     let report = result.map_err(CliError::operation)?;
     print_sync_report(cli.output, cli.verbose, &report)
@@ -3193,6 +3209,7 @@ fn set_automatic_sync(
                 groups_to_remove: Vec::new(),
                 permissions_profile: None,
                 sync_paused: Some(paused),
+                profile: None,
             },
             dry_run,
         )

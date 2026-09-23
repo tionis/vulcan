@@ -2300,6 +2300,7 @@ fn parses_sync_commands() {
                     remote: "backup".to_string(),
                     live_ref: "refs/heads/live".to_string(),
                 },
+                profile: None,
                 max_retries: 7,
                 git_timeout_seconds: 42,
                 dry_run: true,
@@ -2322,6 +2323,7 @@ fn parses_sync_commands() {
                     remote: "origin".to_string(),
                     live_ref: "refs/heads/__vulcan-sync/live".to_string(),
                 },
+                profile: None,
             },
         }
     );
@@ -3444,6 +3446,7 @@ fn parses_vault_registry_commands() {
             command: VaultCommand::Add {
                 id: "personal".to_string(),
                 path: PathBuf::from("/vaults/personal"),
+                profile: crate::cli::ManagedDirectoryProfileArg::Knowledge,
                 group: vec!["daily".to_string()],
                 git_dir: Some(PathBuf::from("/data/git/personal")),
                 permissions_profile: None,
@@ -3470,6 +3473,42 @@ fn parses_vault_registry_commands() {
         Command::Vault {
             command: VaultCommand::Set {
                 clear_permissions_profile: true,
+                ..
+            }
+        }
+    ));
+}
+
+#[test]
+fn parses_managed_directory_profile_options() {
+    let files_only = Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "add",
+        "archive",
+        "/vaults/archive",
+        "--profile",
+        "files-only",
+    ])
+    .expect("files-only vault add should parse");
+    assert!(matches!(
+        files_only.command,
+        Command::Vault {
+            command: VaultCommand::Add {
+                profile: crate::cli::ManagedDirectoryProfileArg::FilesOnly,
+                ..
+            }
+        }
+    ));
+
+    let direct_status =
+        Cli::try_parse_from(["vulcan", "sync", "status", "--profile", "files-only"])
+            .expect("direct files-only status should parse");
+    assert!(matches!(
+        direct_status.command,
+        Command::Sync {
+            command: SyncCommand::Status {
+                profile: Some(crate::cli::ManagedDirectoryProfileArg::FilesOnly),
                 ..
             }
         }

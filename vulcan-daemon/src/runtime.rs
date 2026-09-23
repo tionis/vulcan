@@ -109,7 +109,7 @@ struct WatcherTask {
     hub: VaultObservationHub,
     observer_stop: Arc<ShutdownSignal>,
     observer: JoinHandle<Result<(), DaemonWatchError>>,
-    index: IndexConsumerTask,
+    index: Option<IndexConsumerTask>,
     sync: Option<SyncConsumerTask>,
 }
 
@@ -378,6 +378,7 @@ fn watcher_registration_changed(current: &WikiRegistration, desired: &WikiRegist
         || current.path != desired.path
         || current.git_dir != desired.git_dir
         || current.sync_backend != desired.sync_backend
+        || current.profile != desired.profile
 }
 
 fn spawn_watcher(
@@ -415,7 +416,11 @@ fn spawn_watcher(
             &thread_stop,
         )
     });
-    let index = spawn_index_consumer(registration.clone(), &hub, state_store.root(), options)?;
+    let index = registration
+        .capabilities()
+        .markdown_index
+        .then(|| spawn_index_consumer(registration.clone(), &hub, state_store.root(), options))
+        .transpose()?;
     let sync = sync_consumer_enabled(&registration)
         .then(|| spawn_sync_consumer(registration.clone(), &hub, supervisor, state_store, options))
         .transpose()?;
@@ -557,7 +562,9 @@ fn stop_watcher(task: WatcherTask) {
     if let Some(sync) = task.sync {
         stop_sync_consumer(sync);
     }
-    stop_index_consumer(task.index);
+    if let Some(index) = task.index {
+        stop_index_consumer(index);
+    }
     task.observer_stop.cancel();
     let _ = task.observer.join();
 }
@@ -568,8 +575,10 @@ fn join_watcher(task: WatcherTask) -> String {
         sync.stop.cancel();
         details.push(join_task("sync observation consumer", sync.handle));
     }
-    task.index.stop.cancel();
-    details.push(join_task("index observation consumer", task.index.handle));
+    if let Some(index) = task.index {
+        index.stop.cancel();
+        details.push(join_task("index observation consumer", index.handle));
+    }
     task.observer_stop.cancel();
     details.push(join_task("vault observer", task.observer));
     details.join("; ")
@@ -587,7 +596,10 @@ fn stop_index_consumer(task: IndexConsumerTask) {
 
 fn watcher_finished(task: &WatcherTask) -> bool {
     task.observer.is_finished()
-        || task.index.handle.is_finished()
+        || task
+            .index
+            .as_ref()
+            .is_some_and(|index| index.handle.is_finished())
         || task
             .sync
             .as_ref()
@@ -605,7 +617,7 @@ fn join_task(label: &str, handle: JoinHandle<Result<(), DaemonWatchError>>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{AddWikiRequest, UpdateWikiRequest, WikiId};
+    use crate::registry::{AddWikiRequest, ManagedDirectoryProfile, UpdateWikiRequest, WikiId};
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::tempdir;
@@ -615,6 +627,7 @@ mod tests {
             id: WikiId::parse(id).expect("wiki id"),
             registration_id: ulid::Ulid::new(),
             path: PathBuf::from(format!("/{id}")),
+            profile: ManagedDirectoryProfile::Knowledge,
             groups: Vec::new(),
             git_dir: None,
             permissions_profile: None,
@@ -666,6 +679,34 @@ mod tests {
         let mut paused = current.clone();
         paused.sync_paused = true;
         assert!(!watcher_registration_changed(&current, &paused));
+        let mut files_only = current.clone();
+        files_only.profile = ManagedDirectoryProfile::FilesOnly;
+        assert!(watcher_registration_changed(&current, &files_only));
+    }
+
+    #[test]
+    fn files_only_watcher_does_not_start_index_or_create_cache() {
+        let temporary = tempdir().unwrap();
+        let directory = temporary.path().join("media");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("notes.md"), "# ordinary file\n").unwrap();
+        let mut registration = registration("media", false, Some("none"));
+        registration.path = directory.clone();
+        registration.profile = ManagedDirectoryProfile::FilesOnly;
+        let supervisor = Arc::new(SyncSupervisor::at(temporary.path().join("jobs.json")).unwrap());
+        let state_store = SyncStateStore::at(temporary.path().join("state"));
+        let watcher = spawn_watcher(
+            registration,
+            supervisor,
+            state_store.clone(),
+            DaemonWatchOptions::default(),
+        )
+        .unwrap();
+        assert!(watcher.index.is_none());
+        assert!(watcher.sync.is_none());
+        stop_watcher(watcher);
+        assert!(!directory.join(".vulcan/cache.db").exists());
+        assert!(!state_store.root().join("daemon/scans").exists());
     }
 
     #[test]
@@ -687,6 +728,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: git_id.clone(),
                     path: git_vault,
                     groups: vec![],
@@ -702,6 +744,7 @@ mod tests {
             .update(
                 &git_id,
                 &UpdateWikiRequest {
+                    profile: None,
                     groups_to_add: vec![],
                     groups_to_remove: vec![],
                     permissions_profile: None,
@@ -713,6 +756,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: WikiId::parse("plain").unwrap(),
                     path: plain_vault,
                     groups: vec![],
@@ -742,6 +786,8 @@ mod tests {
         assert!(watchers["plain"].sync.is_none());
         let initial = watchers["git-notes"]
             .index
+            .as_ref()
+            .unwrap()
             .tracker
             .wait_for_generation(1, Duration::from_secs(5))
             .unwrap();
@@ -770,6 +816,8 @@ mod tests {
             .unwrap();
         let indexed = watchers["git-notes"]
             .index
+            .as_ref()
+            .unwrap()
             .tracker
             .wait_for_generation(2, Duration::from_secs(5))
             .unwrap();
@@ -788,6 +836,7 @@ mod tests {
             .update(
                 &git_id,
                 &UpdateWikiRequest {
+                    profile: None,
                     groups_to_add: vec![],
                     groups_to_remove: vec![],
                     permissions_profile: None,
@@ -825,6 +874,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: WikiId::parse("alpha").expect("wiki id"),
                     path: vault,
                     groups: Vec::new(),
@@ -899,6 +949,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    profile: None,
                     id: id.clone(),
                     path: vault,
                     groups: Vec::new(),
@@ -914,6 +965,7 @@ mod tests {
             .update(
                 &id,
                 &UpdateWikiRequest {
+                    profile: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
