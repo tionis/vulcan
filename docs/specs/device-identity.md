@@ -156,13 +156,14 @@ must still reach the leased device safety head before conflict-prone canonical r
 work must not weaken capture-before-apply, compare-and-swap, conflict preservation, or recovery-ref
 retention.
 
-The ref contract moves to namespace version 2 because the accepted device-ID grammar changes. Rollout
-is deliberately two-stage:
+Current writers already emit namespace version 2 with legacy ULID device IDs. The key-derived ID
+grammar therefore requires namespace version 3. Rollout is deliberately two-stage:
 
-1. A compatibility release reads legacy ULIDs, key IDs, and namespace versions 1 and 2 while still
-   creating the old identity form. It must tolerate mixed legacy/key device heads.
+1. A compatibility release reads legacy ULIDs, key IDs, and namespace versions 1, 2, and 3 while
+   still creating the old identity form. It must tolerate mixed legacy/key device heads. Current
+   version-2 readers reject a future live-tip namespace version before canonical reconciliation.
 2. Only after that reader is deployed does a later release generate key identities and write namespace
-   version 2 provenance.
+   version 3 provenance.
 
 An existing installation keeps its legacy `_device.json` intact during migration. The first explicit
 initialization or identity-requiring mutation creates a new key identity and therefore a new remote
@@ -172,7 +173,7 @@ different historical device and uses the ordinary fetch, compare, integrate, and
 workflow. Local migration metadata may report the legacy ID, but it is not a predecessor claim and is
 not published as cryptographic continuity.
 
-Old binaries that do not understand namespace version 2 must fail closed and require upgrade. The
+Old binaries that do not understand namespace version 3 must fail closed and require upgrade. The
 two-stage rollout prevents that failure during an intentionally supported rolling upgrade; it does not
 promise indefinite write compatibility with unupgraded clients.
 

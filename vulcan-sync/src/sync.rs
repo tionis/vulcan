@@ -2285,6 +2285,7 @@ fn reconcile(
         );
     };
     let remote = ensure_remote_tip(engine, options, report, fetched_before, &remote_tip)?;
+    require_supported_remote_namespace(engine, &report.repository, &remote)?;
     control.emit(GitSyncPhase::Fetched, report, None)?;
     if capture.commit == remote {
         return Ok(Some((remote, GitSyncOutcome::UpToDate, false)));
@@ -2320,6 +2321,41 @@ fn reconcile(
         return reconcile_epoch_root(engine, options, report, capture, remote, &epoch, control);
     }
     merge_divergence(engine, options, report, capture, &remote, control)
+}
+
+fn require_supported_remote_namespace(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    revision: &GitOid,
+) -> Result<(), GitSyncError> {
+    let message = engine.commit_metadata(repository, revision)?.message;
+    let mut versions = message
+        .lines()
+        .filter_map(|line| line.strip_prefix("Vulcan-Ref-Namespace: "));
+    let Some(raw) = versions.next() else {
+        // Legacy and ordinary commits may not carry a namespace trailer.
+        return Ok(());
+    };
+    let version = raw
+        .parse::<u32>()
+        .map_err(|_| unsupported_remote_namespace())?;
+    if versions.next().is_some() || version == 0 {
+        return Err(unsupported_remote_namespace());
+    }
+    if version > VULCAN_REF_NAMESPACE_VERSION {
+        return Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "remote live declares unsupported Vulcan ref namespace version `{version}`; upgrade Vulcan before reconciling this vault"
+            ),
+        }));
+    }
+    Ok(())
+}
+
+fn unsupported_remote_namespace() -> GitSyncError {
+    GitSyncError::Git(GitEngineError::UnsupportedRepository {
+        detail: "remote live declares a malformed Vulcan ref namespace version; inspect the commit trailer before reconciling this vault".to_string(),
+    })
 }
 
 fn ensure_remote_tip(
@@ -4470,8 +4506,8 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             "the branch lane should ask Git to resolve its upstream: {commands}"
         );
         assert!(
-            lines.len() <= 26,
-            "reused-engine sync exceeded its 26-process budget ({}): {commands}",
+            lines.len() <= 27,
+            "reused-engine sync exceeded its 27-process budget (including the remote namespace check) ({}): {commands}",
             lines.len()
         );
     }
@@ -4526,6 +4562,60 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
         assert!(report.requirements.required_filters.is_empty());
+    }
+
+    #[test]
+    fn future_remote_namespace_blocks_reconciliation_after_safety_backup() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
+        let accepted = bootstrap.accepted.expect("accepted revision");
+        let tree = git_stdout(&writer, &["rev-parse", &format!("{accepted}^{{tree}}")]);
+        let future = git_stdout(
+            &writer,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                accepted.as_str(),
+                "-m",
+                "future writer\n\nVulcan-Ref-Namespace: 3",
+            ],
+        );
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("{future}:{}", bootstrap.refs.live),
+            ],
+        );
+        fs::write(writer.join("Home.md"), "local bytes before upgrade\n").expect("local edit");
+
+        let error = sync_git_once(&engine, &writer, &options)
+            .expect_err("unknown remote namespace must block reconciliation");
+        assert!(error
+            .to_string()
+            .contains("unsupported Vulcan ref namespace version `3`"));
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &options.remote, &bootstrap.refs.live)
+                .expect("remote live")
+                .expect("live revision")
+                .as_str(),
+            future
+        );
+        let backup = engine
+            .remote_ref(&repository, &options.remote, &bootstrap.refs.device)
+            .expect("remote safety head")
+            .expect("published backup");
+        assert_eq!(
+            git_stdout(&writer, &["show", &format!("{backup}:Home.md")]),
+            "local bytes before upgrade"
+        );
     }
 
     #[test]
@@ -4679,8 +4769,8 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 27,
-            "steady sync exceeded its 27-process budget ({}): {commands}",
+            lines.len() <= 28,
+            "steady sync exceeded its 28-process budget (including the remote namespace check) ({}): {commands}",
             lines.len()
         );
         assert_direct_engine_probes(&lines, &commands);
