@@ -436,7 +436,7 @@ fn daemon_worker_registrations(
                     eprintln!(
                         "level=warning event=notification_delivery_failed sink=ledger reason=startup_error; {error}"
                     );
-                    spawn_best_effort_desktop_delivery()
+                    spawn_best_effort_desktop_delivery(alert_config.clone())
                 }
                 Err(error) => return Err(error.to_string()),
             };
@@ -807,15 +807,16 @@ fn run_job_worker(
                 if enqueue_busy_recovery(supervisor, &execution)? {
                     continue;
                 }
-                if let Some(alert) = alerts.observe(&execution) {
+                let reported = alerts.observe(&execution);
+                if let Some(alert) = &reported {
                     eprintln!("{}", alert.log_line());
-                    let sender = alert_sender.lock().ok().and_then(|sender| sender.clone());
-                    if let Some(sender) = sender {
-                        if let Err(error) = sender.enqueue(alert) {
-                            eprintln!(
-                                "level=warning event=notification_delivery_failed sink=dispatcher reason=enqueue_error; {error}",
-                            );
-                        }
+                }
+                let sender = alert_sender.lock().ok().and_then(|sender| sender.clone());
+                if let Some(sender) = sender {
+                    if let Err(error) = sender.observe_job(&execution.job.job, reported.as_ref()) {
+                        eprintln!(
+                            "level=warning event=notification_delivery_failed sink=dispatcher reason=enqueue_error; {error}",
+                        );
                     }
                 }
                 if let Some(line) = next_branch_diagnostic(

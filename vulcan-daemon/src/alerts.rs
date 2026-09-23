@@ -1,15 +1,17 @@
 //! Secret-minimal daemon attention events and local delivery.
 
+use crate::registry::{DaemonNotificationConfig, NetworkNotificationMode};
 use crate::sync::DaemonSyncExecution;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use vulcan_sync::{SyncErrorCategory, SyncJobState};
+use vulcan_sync::{SyncErrorCategory, SyncJob, SyncJobState};
 
 const DESKTOP_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_STREAK_JOB_IDS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -106,9 +108,10 @@ impl SyncAlert {
         let reason = self.category.map_or(String::new(), |category| {
             format!(" ({})", format!("{category:?}").to_ascii_lowercase())
         });
+        let retry = if self.retryable { " Retryable." } else { "" };
         format!(
-            "Wiki `{}` needs attention{}. Run `vulcan sync status {}` for details.",
-            self.wiki_id, reason, self.wiki_id
+            "Wiki `{}` needs attention{}.{retry} Job `{}`. Run `vulcan sync status {}` for details.",
+            self.wiki_id, reason, self.job_id, self.wiki_id
         )
     }
 }
@@ -161,6 +164,157 @@ impl SyncAlertTracker {
         }
         self.last_by_wiki.insert(wiki, fingerprint);
         Some(alert)
+    }
+}
+
+#[derive(Debug)]
+struct NetworkStreak {
+    count: u32,
+    job_ids: BTreeSet<String>,
+    first_observed: Instant,
+    latest: SyncAlert,
+    notified: bool,
+    notified_job_id: Option<String>,
+}
+
+/// Native desktop policy only. Logging and remote sinks retain their own
+/// deduplication and are never suppressed by a local preference.
+#[derive(Debug)]
+pub(crate) struct DesktopNetworkPolicy {
+    config: DaemonNotificationConfig,
+    streaks: BTreeMap<String, NetworkStreak>,
+}
+
+impl DesktopNetworkPolicy {
+    pub(crate) fn new(config: DaemonNotificationConfig) -> Self {
+        Self {
+            config,
+            streaks: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn prime(&mut self, jobs: &[crate::supervisor::SupervisedSyncJob]) {
+        for retained in jobs {
+            if matches!(
+                retained.job.state,
+                SyncJobState::Queued | SyncJobState::Running
+            ) {
+                continue;
+            }
+            let _ = self.observe(&retained.job, None);
+        }
+    }
+
+    pub(crate) fn observe(
+        &mut self,
+        job: &SyncJob,
+        reported: Option<&SyncAlert>,
+    ) -> Option<SyncAlert> {
+        self.observe_at(job, reported, Instant::now())
+    }
+
+    fn observe_at(
+        &mut self,
+        job: &SyncJob,
+        reported: Option<&SyncAlert>,
+        now: Instant,
+    ) -> Option<SyncAlert> {
+        let wiki = job.wiki_id.as_deref().unwrap_or("<unregistered>");
+        if job.state != SyncJobState::Failed
+            || job.error.as_ref().map(|error| error.category) != Some(SyncErrorCategory::Network)
+        {
+            self.streaks.remove(wiki);
+            return reported.cloned();
+        }
+        if self.config.network_mode == NetworkNotificationMode::Immediate {
+            return reported.cloned();
+        }
+        if self.config.network_mode == NetworkNotificationMode::Ignore {
+            return None;
+        }
+        let alert = SyncAlert::from_job(job)?;
+        let streak = self
+            .streaks
+            .entry(wiki.to_string())
+            .or_insert_with(|| NetworkStreak {
+                count: 0,
+                job_ids: BTreeSet::new(),
+                first_observed: now,
+                latest: alert.clone(),
+                notified: false,
+                notified_job_id: None,
+            });
+        if streak.job_ids.insert(alert.job_id.clone()) {
+            if streak.job_ids.len() > MAX_STREAK_JOB_IDS {
+                streak.job_ids.pop_first();
+            }
+            streak.count = streak.count.saturating_add(1);
+            streak.latest = alert;
+        }
+        if self.config.network_mode == NetworkNotificationMode::Count
+            && !streak.notified
+            && streak.count >= self.config.network_failure_count
+        {
+            streak.notified = true;
+            streak.notified_job_id = Some(streak.latest.job_id.clone());
+            return Some(streak.latest.clone());
+        }
+        None
+    }
+
+    pub(crate) fn due(&mut self) -> Vec<SyncAlert> {
+        self.due_at(Instant::now())
+    }
+
+    fn due_at(&mut self, now: Instant) -> Vec<SyncAlert> {
+        if self.config.network_mode != NetworkNotificationMode::Duration {
+            return Vec::new();
+        }
+        let deadline = Duration::from_secs(u64::from(self.config.network_failure_minutes) * 60);
+        self.streaks
+            .values_mut()
+            .filter_map(|streak| {
+                if streak.notified || now.duration_since(streak.first_observed) < deadline {
+                    return None;
+                }
+                streak.notified = true;
+                streak.notified_job_id = Some(streak.latest.job_id.clone());
+                Some(streak.latest.clone())
+            })
+            .collect()
+    }
+
+    pub(crate) fn acknowledge_existing(&mut self, alert: &SyncAlert) {
+        if let Some(streak) = self.streaks.get_mut(&alert.wiki_id) {
+            if streak.job_ids.contains(&alert.job_id) {
+                streak.notified = true;
+                streak.notified_job_id = Some(alert.job_id.clone());
+            }
+        }
+    }
+
+    pub(crate) fn rearm(&mut self, alert: &SyncAlert) {
+        if let Some(streak) = self.streaks.get_mut(&alert.wiki_id) {
+            if streak.latest.job_id == alert.job_id {
+                streak.notified = false;
+                streak.notified_job_id = None;
+            }
+        }
+    }
+
+    pub(crate) fn reconcile_desktop(&self, alert: &SyncAlert) -> bool {
+        if alert.category != Some(SyncErrorCategory::Network) {
+            return true;
+        }
+        match self.config.network_mode {
+            NetworkNotificationMode::Immediate => true,
+            NetworkNotificationMode::Ignore | NetworkNotificationMode::Duration => false,
+            NetworkNotificationMode::Count => {
+                self.streaks.get(&alert.wiki_id).is_some_and(|streak| {
+                    streak.notified_job_id.as_deref() == Some(alert.job_id.as_str())
+                })
+            }
+        }
     }
 }
 
@@ -384,6 +538,130 @@ mod tests {
         );
     }
 
+    fn network_job(id: &str) -> SyncJob {
+        let mut job = execution(
+            SyncJobState::Failed,
+            Some(SyncError::new(SyncErrorCategory::Network, "offline", true)),
+        )
+        .job
+        .job;
+        job.id = id.to_string();
+        job
+    }
+
+    #[test]
+    fn native_network_count_notifies_once_after_distinct_failures_and_recovery_resets() {
+        let config = DaemonNotificationConfig {
+            network_mode: NetworkNotificationMode::Count,
+            network_failure_count: 3,
+            ..DaemonNotificationConfig::default()
+        };
+        let mut policy = DesktopNetworkPolicy::new(config);
+        let now = Instant::now();
+        assert!(policy.observe_at(&network_job("one"), None, now).is_none());
+        assert!(policy.observe_at(&network_job("one"), None, now).is_none());
+        assert!(policy.observe_at(&network_job("two"), None, now).is_none());
+        let third = policy
+            .observe_at(&network_job("three"), None, now)
+            .expect("threshold");
+        assert_eq!(third.job_id, "three");
+        assert!(policy.reconcile_desktop(&third));
+        assert!(policy.observe_at(&network_job("four"), None, now).is_none());
+        let healthy = execution(SyncJobState::Succeeded, None).job.job;
+        assert!(policy.observe_at(&healthy, None, now).is_none());
+        assert!(policy.observe_at(&network_job("five"), None, now).is_none());
+    }
+
+    #[test]
+    fn native_network_duration_fires_while_failure_remains_current() {
+        let config = DaemonNotificationConfig {
+            network_mode: NetworkNotificationMode::Duration,
+            network_failure_minutes: 2,
+            ..DaemonNotificationConfig::default()
+        };
+        let mut policy = DesktopNetworkPolicy::new(config);
+        let now = Instant::now();
+        assert!(policy.observe_at(&network_job("one"), None, now).is_none());
+        assert!(policy.due_at(now + Duration::from_secs(119)).is_empty());
+        assert_eq!(
+            policy.due_at(now + Duration::from_secs(120))[0].job_id,
+            "one"
+        );
+        assert!(policy.due_at(now + Duration::from_secs(121)).is_empty());
+    }
+
+    #[test]
+    fn pending_recovery_jobs_do_not_erase_retained_network_streaks() {
+        let config = DaemonNotificationConfig {
+            network_mode: NetworkNotificationMode::Count,
+            network_failure_count: 2,
+            ..DaemonNotificationConfig::default()
+        };
+        let failed = SupervisedSyncJob {
+            job: network_job("first"),
+            triggers: vec![SyncJobTrigger::Poll],
+            watch: None,
+        };
+        let mut queued = failed.clone();
+        queued.job.id = "recovery".to_string();
+        queued.job.state = SyncJobState::Queued;
+        queued.job.error = None;
+        let mut policy = DesktopNetworkPolicy::new(config);
+        policy.prime(&[failed, queued]);
+        assert_eq!(
+            policy
+                .observe(&network_job("second"), None)
+                .expect("threshold")
+                .job_id,
+            "second"
+        );
+    }
+
+    #[test]
+    fn retained_desktop_delivery_suppresses_restart_replay_for_same_outage() {
+        let config = DaemonNotificationConfig {
+            network_mode: NetworkNotificationMode::Duration,
+            network_failure_minutes: 1,
+            ..DaemonNotificationConfig::default()
+        };
+        let now = Instant::now();
+        let mut restarted = DesktopNetworkPolicy::new(config);
+        let first = network_job("one");
+        let next = network_job("two");
+        restarted.observe_at(&first, None, now);
+        restarted.observe_at(&next, None, now);
+        restarted.acknowledge_existing(&SyncAlert::from_job(&first).expect("delivered alert"));
+        assert!(restarted.due_at(now + Duration::from_secs(120)).is_empty());
+        assert!(restarted
+            .observe_at(&network_job("three"), None, now)
+            .is_none());
+    }
+
+    #[test]
+    fn ignored_network_failures_leave_other_native_alerts_visible() {
+        let config = DaemonNotificationConfig {
+            network_mode: NetworkNotificationMode::Ignore,
+            ..DaemonNotificationConfig::default()
+        };
+        let mut policy = DesktopNetworkPolicy::new(config);
+        let network = network_job("one");
+        let reported = SyncAlert::from_job(&network).expect("network alert");
+        assert!(policy.observe(&network, Some(&reported)).is_none());
+        assert!(!policy.reconcile_desktop(&reported));
+        let repository = execution(
+            SyncJobState::Failed,
+            Some(SyncError::new(
+                SyncErrorCategory::Repository,
+                "bad ref",
+                false,
+            )),
+        )
+        .job
+        .job;
+        let reported = SyncAlert::from_job(&repository).expect("repository alert");
+        assert_eq!(policy.observe(&repository, Some(&reported)), Some(reported));
+    }
+
     #[test]
     fn desktop_plans_pass_untrusted_values_as_arguments() {
         let alert =
@@ -416,7 +694,7 @@ mod tests {
                 "--title",
                 "Vulcan sync failed",
                 "--content",
-                "Wiki `alpha` needs attention (network). Run `vulcan sync status alpha` for details.",
+                "Wiki `alpha` needs attention (network). Retryable. Job `job-1`. Run `vulcan sync status alpha` for details.",
                 "--group",
                 "vulcan-sync",
                 "--priority",

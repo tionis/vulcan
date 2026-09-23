@@ -11311,10 +11311,48 @@
                       "true",
                       "false"
                     ],
-                    "required": true,
+                    "required": false,
                     "short": null,
                     "value_names": [
                       "DESKTOP"
+                    ]
+                  },
+                  {
+                    "help": "Native network notices: immediate, ignore, count, or duration",
+                    "id": "network_mode",
+                    "long": "network-mode",
+                    "possible_values": [
+                      "immediate",
+                      "ignore",
+                      "count",
+                      "duration"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK_MODE"
+                    ]
+                  },
+                  {
+                    "help": "Notify after this many consecutive failed network jobs (2–100)",
+                    "id": "network_count",
+                    "long": "network-count",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK_COUNT"
+                    ]
+                  },
+                  {
+                    "help": "Notify after this many minutes of network failure (1–1440)",
+                    "id": "network_minutes",
+                    "long": "network-minutes",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK_MINUTES"
                     ]
                   },
                   {

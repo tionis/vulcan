@@ -115,21 +115,83 @@ impl Default for DaemonConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonNotificationConfig {
     /// Show native desktop notifications for sync failures and states that
     /// require human attention. Operational warning/error logs are always on.
     #[serde(default, skip_serializing_if = "is_false")]
     pub desktop: bool,
+    #[serde(default, skip_serializing_if = "NetworkNotificationMode::is_immediate")]
+    pub network_mode: NetworkNotificationMode,
+    #[serde(
+        default = "default_network_failure_count",
+        skip_serializing_if = "is_default_network_failure_count"
+    )]
+    pub network_failure_count: u32,
+    #[serde(
+        default = "default_network_failure_minutes",
+        skip_serializing_if = "is_default_network_failure_minutes"
+    )]
+    pub network_failure_minutes: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub webhooks: Vec<DaemonWebhookNotificationConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<DaemonCommandNotificationConfig>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkNotificationMode {
+    #[default]
+    Immediate,
+    Ignore,
+    Count,
+    Duration,
+}
+
+impl NetworkNotificationMode {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires &Self.
+    const fn is_immediate(&self) -> bool {
+        matches!(self, Self::Immediate)
+    }
+}
+
+const fn default_network_failure_count() -> u32 {
+    3
+}
+const fn default_network_failure_minutes() -> u32 {
+    15
+}
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires &u32.
+const fn is_default_network_failure_count(value: &u32) -> bool {
+    *value == 3
+}
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires &u32.
+const fn is_default_network_failure_minutes(value: &u32) -> bool {
+    *value == 15
+}
+
+impl Default for DaemonNotificationConfig {
+    fn default() -> Self {
+        Self {
+            desktop: false,
+            network_mode: NetworkNotificationMode::Immediate,
+            network_failure_count: default_network_failure_count(),
+            network_failure_minutes: default_network_failure_minutes(),
+            webhooks: Vec::new(),
+            commands: Vec::new(),
+        }
+    }
+}
+
 impl DaemonNotificationConfig {
     const fn is_default(&self) -> bool {
-        !self.desktop && self.webhooks.is_empty() && self.commands.is_empty()
+        !self.desktop
+            && self.network_mode.is_immediate()
+            && is_default_network_failure_count(&self.network_failure_count)
+            && is_default_network_failure_minutes(&self.network_failure_minutes)
+            && self.webhooks.is_empty()
+            && self.commands.is_empty()
     }
 }
 
@@ -756,8 +818,31 @@ impl WikiRegistry {
         enabled: bool,
         dry_run: bool,
     ) -> Result<DaemonConfig, RegistryError> {
+        self.set_desktop_notification_policy(Some(enabled), None, None, None, dry_run)
+    }
+
+    pub fn set_desktop_notification_policy(
+        &self,
+        enabled: Option<bool>,
+        mode: Option<NetworkNotificationMode>,
+        count: Option<u32>,
+        minutes: Option<u32>,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
         self.mutate(dry_run, |config| {
-            config.notifications.desktop = enabled;
+            if let Some(enabled) = enabled {
+                config.notifications.desktop = enabled;
+            }
+            if let Some(mode) = mode {
+                config.notifications.network_mode = mode;
+            }
+            if let Some(count) = count {
+                config.notifications.network_failure_count = count;
+            }
+            if let Some(minutes) = minutes {
+                config.notifications.network_failure_minutes = minutes;
+            }
+            validate_notification_config(&config.notifications)?;
             Ok(config.clone())
         })
     }
@@ -903,6 +988,16 @@ fn ensure_remote_wikis_registered(
 }
 
 fn validate_notification_config(config: &DaemonNotificationConfig) -> Result<(), RegistryError> {
+    if !(2..=100).contains(&config.network_failure_count) {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "network notification failure count must be between 2 and 100".to_string(),
+        ));
+    }
+    if !(1..=1440).contains(&config.network_failure_minutes) {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "network notification duration must be between 1 and 1440 minutes".to_string(),
+        ));
+    }
     if config.webhooks.len() + config.commands.len() > 16 {
         return Err(RegistryError::InvalidDaemonSetting(
             "at most 16 notification sinks may be configured".to_string(),
@@ -1708,8 +1803,72 @@ mod tests {
         )
         .expect("legacy daemon config");
         assert_eq!(config.notifications, DaemonNotificationConfig::default());
+        assert_eq!(
+            config.notifications.network_mode,
+            NetworkNotificationMode::Immediate
+        );
+        assert_eq!(config.notifications.network_failure_count, 3);
+        assert_eq!(config.notifications.network_failure_minutes, 15);
         let serialized = toml::to_string(&config).expect("serialize default config");
         assert!(!serialized.contains("notifications"));
+    }
+
+    #[test]
+    fn desktop_network_policy_is_device_local_validated_and_previewable() {
+        let temporary = tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let preview = registry
+            .set_desktop_notification_policy(
+                Some(true),
+                Some(NetworkNotificationMode::Count),
+                Some(4),
+                Some(10),
+                true,
+            )
+            .expect("preview");
+        assert_eq!(
+            preview.notifications.network_mode,
+            NetworkNotificationMode::Count
+        );
+        assert_eq!(preview.notifications.network_failure_count, 4);
+        assert_eq!(
+            registry.load().expect("unchanged").notifications,
+            DaemonNotificationConfig::default()
+        );
+        let applied = registry
+            .set_desktop_notification_policy(
+                Some(true),
+                Some(NetworkNotificationMode::Duration),
+                Some(4),
+                Some(10),
+                false,
+            )
+            .expect("apply");
+        assert_eq!(applied.notifications.network_failure_minutes, 10);
+        let policy_only = registry
+            .set_desktop_notification_policy(
+                None,
+                Some(NetworkNotificationMode::Ignore),
+                None,
+                None,
+                true,
+            )
+            .expect("policy-only preview");
+        assert!(policy_only.notifications.desktop);
+        assert_eq!(
+            registry
+                .load()
+                .expect("persisted")
+                .notifications
+                .network_mode,
+            NetworkNotificationMode::Duration
+        );
+        assert!(registry
+            .set_desktop_notification_policy(Some(true), None, Some(1), None, true)
+            .is_err());
+        assert!(registry
+            .set_desktop_notification_policy(Some(true), None, None, Some(1441), true)
+            .is_err());
     }
 
     #[test]

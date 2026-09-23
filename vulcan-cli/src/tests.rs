@@ -2666,14 +2666,97 @@ fn parses_daemon_desktop_notification_configuration() {
     let Command::Daemon {
         command:
             DaemonCommand::Config {
-                command: DaemonConfigCommand::SetNotifications { desktop, dry_run },
+                command:
+                    DaemonConfigCommand::SetNotifications {
+                        desktop,
+                        network_mode,
+                        network_count,
+                        network_minutes,
+                        dry_run,
+                    },
             },
     } = cli.command
     else {
         panic!("expected daemon notification config command");
     };
-    assert!(desktop);
+    assert_eq!(desktop, Some(true));
+    assert!(network_mode.is_none());
+    assert!(network_count.is_none());
+    assert!(network_minutes.is_none());
     assert!(dry_run);
+}
+
+#[test]
+fn parses_daemon_native_network_notification_policy() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-notifications",
+        "--desktop",
+        "true",
+        "--network-mode",
+        "duration",
+        "--network-count",
+        "4",
+        "--network-minutes",
+        "10",
+        "--dry-run",
+    ])
+    .expect("native notification policy parses");
+    let Command::Daemon {
+        command:
+            DaemonCommand::Config {
+                command:
+                    DaemonConfigCommand::SetNotifications {
+                        desktop,
+                        network_mode,
+                        network_count,
+                        network_minutes,
+                        dry_run,
+                    },
+            },
+    } = cli.command
+    else {
+        panic!("expected notification config");
+    };
+    assert_eq!(desktop, Some(true));
+    assert_eq!(
+        network_mode,
+        Some(crate::cli::NetworkNotificationModeArg::Duration)
+    );
+    assert_eq!(network_count, Some(4));
+    assert_eq!(network_minutes, Some(10));
+    assert!(dry_run);
+    let policy_only = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-notifications",
+        "--network-mode",
+        "ignore",
+        "--dry-run",
+    ])
+    .expect("policy-only update parses");
+    let Command::Daemon {
+        command:
+            DaemonCommand::Config {
+                command:
+                    DaemonConfigCommand::SetNotifications {
+                        desktop,
+                        network_mode,
+                        ..
+                    },
+            },
+    } = policy_only.command
+    else {
+        panic!("expected policy-only command");
+    };
+    assert_eq!(desktop, None);
+    assert_eq!(
+        network_mode,
+        Some(crate::cli::NetworkNotificationModeArg::Ignore)
+    );
 }
 
 #[test]

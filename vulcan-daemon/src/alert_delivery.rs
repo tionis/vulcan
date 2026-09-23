@@ -1,9 +1,9 @@
 //! Durable, best-effort delivery of daemon attention events.
 
-use crate::alerts::{deliver_desktop, SyncAlert};
+use crate::alerts::{deliver_desktop, DesktopNetworkPolicy, SyncAlert};
 use crate::registry::{
     DaemonCommandNotificationConfig, DaemonNotificationConfig, DaemonWebhookFormat,
-    DaemonWebhookNotificationConfig, WikiId, WikiRegistry,
+    DaemonWebhookNotificationConfig, NetworkNotificationMode, WikiId, WikiRegistry,
 };
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
@@ -69,15 +69,65 @@ pub struct AlertDeliverySender {
     sender: mpsc::SyncSender<SyncAlert>,
     ledger: Option<Arc<Mutex<DeliveryLedger>>>,
     sink_ids: Vec<String>,
+    desktop_policy: Arc<Mutex<DesktopNetworkPolicy>>,
 }
 
 impl AlertDeliverySender {
-    /// Persists remote work before waking the delivery worker. Desktop-only
-    /// alerts remain best effort and do not enter the durable ledger.
+    /// Records the alert for the selected durable sinks before waking delivery.
     pub fn enqueue(&self, alert: SyncAlert) -> Result<(), AlertDeliveryError> {
+        self.enqueue_targets(alert, &self.sink_ids)
+    }
+
+    pub fn observe_job(
+        &self,
+        job: &vulcan_sync::SyncJob,
+        reported: Option<&SyncAlert>,
+    ) -> Result<(), AlertDeliveryError> {
+        let remote_ids = self
+            .sink_ids
+            .iter()
+            .filter(|id| id.as_str() != "desktop")
+            .cloned()
+            .collect::<Vec<_>>();
+        let remote_result = reported.map_or(Ok(()), |alert| {
+            self.enqueue_targets(alert.clone(), &remote_ids)
+        });
+        let desktop_result = if self.sink_ids.iter().any(|id| id == "desktop") {
+            let selected = self
+                .desktop_policy
+                .lock()
+                .map_err(|_| {
+                    AlertDeliveryError::InvalidState(
+                        "desktop notification policy lock is poisoned".to_string(),
+                    )
+                })?
+                .observe(job, reported);
+            selected.map_or(Ok(()), |alert| {
+                let result = self.enqueue_targets(alert.clone(), &["desktop".to_string()]);
+                if result.is_err() {
+                    if let Ok(mut policy) = self.desktop_policy.lock() {
+                        policy.rearm(&alert);
+                    }
+                }
+                result
+            })
+        } else {
+            Ok(())
+        };
+        remote_result.and(desktop_result)
+    }
+
+    fn enqueue_targets(
+        &self,
+        alert: SyncAlert,
+        sink_ids: &[String],
+    ) -> Result<(), AlertDeliveryError> {
+        if sink_ids.is_empty() {
+            return Ok(());
+        }
         let ledger_result = if let Some(ledger) = &self.ledger {
             match ledger.lock() {
-                Ok(mut ledger) => ledger.record(alert.clone(), &self.sink_ids),
+                Ok(mut ledger) => ledger.record(alert.clone(), sink_ids),
                 Err(_) => Err(AlertDeliveryError::InvalidState(
                     "alert delivery ledger lock is poisoned".to_string(),
                 )),
@@ -105,6 +155,9 @@ pub struct AlertDeliveryWorker {
 pub struct AlertDeliveryStatus {
     pub version: u32,
     pub desktop: bool,
+    pub network_mode: NetworkNotificationMode,
+    pub network_failure_count: u32,
+    pub network_failure_minutes: u32,
     pub configured_sinks: Vec<AlertSinkStatus>,
     pub retained_events: usize,
     pub pending_deliveries: Vec<PendingAlertDelivery>,
@@ -158,6 +211,9 @@ pub fn alert_delivery_status(
     Ok(AlertDeliveryStatus {
         version: LEDGER_VERSION,
         desktop: config.desktop,
+        network_mode: config.network_mode,
+        network_failure_count: config.network_failure_count,
+        network_failure_minutes: config.network_failure_minutes,
         configured_sinks: sinks
             .iter()
             .filter_map(|sink| match sink {
@@ -190,10 +246,22 @@ impl AlertDeliveryWorker {
 /// The startup error remains visible in logs and status so durable delivery can
 /// be repaired; this fallback deliberately cannot acknowledge retained work.
 #[must_use]
-pub fn spawn_best_effort_desktop_delivery() -> (AlertDeliverySender, AlertDeliveryWorker) {
+pub fn spawn_best_effort_desktop_delivery(
+    config: DaemonNotificationConfig,
+) -> (AlertDeliverySender, AlertDeliveryWorker) {
+    let policy = Arc::new(Mutex::new(DesktopNetworkPolicy::new(config)));
+    let worker_policy = Arc::clone(&policy);
     let (sender, receiver) = mpsc::sync_channel(32);
-    let handle = thread::spawn(move || {
-        while let Ok(alert) = receiver.recv() {
+    let handle = thread::spawn(move || loop {
+        let alert = match receiver.recv_timeout(WORKER_POLL) {
+            Ok(alert) => Some(alert),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let due = worker_policy
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut policy| policy.due());
+        for alert in alert.into_iter().chain(due) {
             if let Err(error) = deliver_desktop(&alert) {
                 log_delivery_failure("desktop", delivery_io_reason(&error), 1);
             }
@@ -203,7 +271,8 @@ pub fn spawn_best_effort_desktop_delivery() -> (AlertDeliverySender, AlertDelive
         AlertDeliverySender {
             sender,
             ledger: None,
-            sink_ids: Vec::new(),
+            sink_ids: vec!["desktop".to_string()],
+            desktop_policy: policy,
         },
         AlertDeliveryWorker { handle },
     )
@@ -224,12 +293,32 @@ pub fn spawn_alert_delivery(
         return Ok(None);
     }
     let sink_ids = sinks.iter().map(DeliverySink::id).collect::<Vec<_>>();
+    let retained = supervisor
+        .list()
+        .map_err(|error| AlertDeliveryError::InvalidState(error.to_string()))?;
+    let mut policy = DesktopNetworkPolicy::new(config.clone());
+    policy.prime(&retained);
     let mut ledger = DeliveryLedger::load(state_root.join("daemon").join(LEDGER_FILE))?;
     ledger.retire_missing_sinks(&sink_ids)?;
-    reconcile_retained_jobs(&mut ledger, supervisor, &sink_ids)?;
+    for record in &ledger.state.records {
+        if record
+            .targets
+            .iter()
+            .any(|target| target.sink_id == "desktop")
+        {
+            policy.acknowledge_existing(&record.alert);
+        }
+    }
+    if config.network_mode == NetworkNotificationMode::Ignore {
+        ledger.retire_ignored_network_desktop()?;
+    }
+    reconcile_retained_jobs(&mut ledger, &retained, &sink_ids, &policy)?;
+    let desktop_policy = Arc::new(Mutex::new(policy));
+    let worker_policy = Arc::clone(&desktop_policy);
     let ledger = Some(Arc::new(Mutex::new(ledger)));
     let (sender, receiver) = mpsc::sync_channel(32);
     let worker_ledger = ledger.clone();
+    let desktop_enabled = config.desktop;
     let handle = thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -244,25 +333,22 @@ pub fn spawn_alert_delivery(
             &stop,
         );
         loop {
-            match receiver.recv_timeout(WORKER_POLL) {
-                Ok(_) => {
-                    process_pending(
-                        worker_ledger.as_ref(),
-                        &sinks,
-                        &registry,
-                        client.as_ref().ok(),
-                        &stop,
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => process_pending(
-                    worker_ledger.as_ref(),
-                    &sinks,
-                    &registry,
-                    client.as_ref().ok(),
-                    &stop,
-                ),
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            if matches!(
+                receiver.recv_timeout(WORKER_POLL),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ) {
+                break;
             }
+            if desktop_enabled {
+                record_due_desktop(worker_ledger.as_ref(), &worker_policy);
+            }
+            process_pending(
+                worker_ledger.as_ref(),
+                &sinks,
+                &registry,
+                client.as_ref().ok(),
+                &stop,
+            );
         }
     });
     Ok(Some((
@@ -270,28 +356,57 @@ pub fn spawn_alert_delivery(
             sender,
             ledger,
             sink_ids,
+            desktop_policy,
         },
         AlertDeliveryWorker { handle },
     )))
 }
 
+fn record_due_desktop(
+    ledger: Option<&Arc<Mutex<DeliveryLedger>>>,
+    policy: &Arc<Mutex<DesktopNetworkPolicy>>,
+) {
+    let due = policy
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut policy| policy.due());
+    for alert in due {
+        if let Some(ledger) = ledger {
+            if ledger.lock().map_or(true, |mut ledger| {
+                ledger
+                    .record(alert.clone(), &["desktop".to_string()])
+                    .is_err()
+            }) {
+                if let Ok(mut policy) = policy.lock() {
+                    policy.rearm(&alert);
+                }
+                log_delivery_failure("desktop", "ledger_write", 1);
+            }
+        }
+    }
+}
+
 fn reconcile_retained_jobs(
     ledger: &mut DeliveryLedger,
-    supervisor: &SyncSupervisor,
+    jobs: &[crate::supervisor::SupervisedSyncJob],
     sink_ids: &[String],
+    policy: &DesktopNetworkPolicy,
 ) -> Result<(), AlertDeliveryError> {
-    let jobs = supervisor
-        .list()
-        .map_err(|error| AlertDeliveryError::InvalidState(error.to_string()))?;
     let mut latest = BTreeMap::new();
     for job in jobs {
         if let Some(wiki) = job.job.wiki_id.clone() {
-            latest.insert(wiki, job.job);
+            latest.insert(wiki, &job.job);
         }
     }
     for job in latest.into_values() {
-        if let Some(alert) = SyncAlert::from_job(&job) {
-            ledger.record(alert, sink_ids)?;
+        if let Some(alert) = SyncAlert::from_job(job) {
+            let selected = sink_ids
+                .iter()
+                .filter(|id| id.as_str() != "desktop" || policy.reconcile_desktop(&alert))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !selected.is_empty() {
+                ledger.record(alert, &selected)?;
+            }
         }
     }
     Ok(())
@@ -738,6 +853,24 @@ impl DeliveryLedger {
         Ok(())
     }
 
+    fn retire_ignored_network_desktop(&mut self) -> Result<(), AlertDeliveryError> {
+        let previous = self.state.clone();
+        let mut changed = false;
+        for record in &mut self.state.records {
+            if record.alert.category == Some(vulcan_sync::SyncErrorCategory::Network) {
+                let before = record.targets.len();
+                record
+                    .targets
+                    .retain(|target| target.sink_id != "desktop" || target.delivered);
+                changed |= record.targets.len() != before;
+            }
+        }
+        if changed {
+            self.save_or_restore(previous)?;
+        }
+        Ok(())
+    }
+
     fn save(&self) -> Result<(), AlertDeliveryError> {
         let parent = self.path.parent().ok_or_else(|| {
             AlertDeliveryError::InvalidState("alert delivery ledger path has no parent".to_string())
@@ -1063,6 +1196,75 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn ignoring_network_alerts_retires_pending_native_delivery_only() {
+        let temporary = tempdir().expect("temporary directory");
+        let path = temporary.path().join("alerts.json");
+        let mut ledger = DeliveryLedger::load(path.clone()).expect("ledger");
+        ledger
+            .record(
+                alert("job-1"),
+                &["desktop".to_string(), "webhook:primary".to_string()],
+            )
+            .expect("record");
+        ledger
+            .retire_ignored_network_desktop()
+            .expect("retire native target");
+        let pending = DeliveryLedger::load(path)
+            .expect("reload")
+            .pending(u64::MAX);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, "webhook:primary");
+    }
+
+    #[test]
+    fn native_network_threshold_does_not_delay_remote_delivery() {
+        use vulcan_sync::{SyncError, SyncJob, SyncJobTrigger, SYNC_CONTRACT_VERSION};
+
+        let temporary = tempdir().expect("temporary directory");
+        let ledger = Arc::new(Mutex::new(
+            DeliveryLedger::load(temporary.path().join("alerts.json")).expect("ledger"),
+        ));
+        let config = DaemonNotificationConfig {
+            desktop: true,
+            network_mode: NetworkNotificationMode::Count,
+            network_failure_count: 2,
+            ..DaemonNotificationConfig::default()
+        };
+        let (queue, _receiver) = mpsc::sync_channel(8);
+        let sender = AlertDeliverySender {
+            sender: queue,
+            ledger: Some(Arc::clone(&ledger)),
+            sink_ids: vec!["desktop".to_string(), "webhook:primary".to_string()],
+            desktop_policy: Arc::new(Mutex::new(DesktopNetworkPolicy::new(config))),
+        };
+        let job = |id: &str| SyncJob {
+            version: SYNC_CONTRACT_VERSION,
+            id: id.to_string(),
+            wiki_id: Some("alpha".to_string()),
+            backend: "git".to_string(),
+            vault: temporary.path().to_path_buf(),
+            trigger: SyncJobTrigger::Poll,
+            state: SyncJobState::Failed,
+            status: None,
+            error: Some(SyncError::new(SyncErrorCategory::Network, "offline", true)),
+        };
+        let first = job("job-1");
+        sender
+            .observe_job(&first, SyncAlert::from_job(&first).as_ref())
+            .expect("first failure");
+        let pending = ledger.lock().expect("ledger").pending(u64::MAX);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, "webhook:primary");
+        let second = job("job-2");
+        sender.observe_job(&second, None).expect("second failure");
+        let pending = ledger.lock().expect("ledger").pending(u64::MAX);
+        assert_eq!(pending.len(), 2);
+        assert!(pending
+            .iter()
+            .any(|entry| entry.0 == "job-2" && entry.1 == "desktop"));
+    }
+
+    #[test]
     fn ledger_failure_does_not_suppress_local_delivery_queue() {
         use std::os::unix::fs::symlink;
 
@@ -1077,6 +1279,9 @@ mod tests {
             sender,
             ledger: Some(Arc::new(Mutex::new(ledger))),
             sink_ids: vec!["webhook:primary".to_string()],
+            desktop_policy: Arc::new(Mutex::new(DesktopNetworkPolicy::new(
+                DaemonNotificationConfig::default(),
+            ))),
         };
         assert!(delivery.enqueue(alert("job-1")).is_err());
         assert_eq!(receiver.try_recv().expect("queued alert"), alert("job-1"));
@@ -1119,8 +1324,14 @@ mod tests {
 
         let mut ledger =
             DeliveryLedger::load(temporary.path().join("alerts.json")).expect("ledger");
-        reconcile_retained_jobs(&mut ledger, &supervisor, &["webhook:primary".to_string()])
-            .expect("reconcile");
+        let jobs = supervisor.list().expect("retained jobs");
+        reconcile_retained_jobs(
+            &mut ledger,
+            &jobs,
+            &["webhook:primary".to_string()],
+            &DesktopNetworkPolicy::new(DaemonNotificationConfig::default()),
+        )
+        .expect("reconcile");
         assert_eq!(ledger.pending(u64::MAX).len(), 1);
         assert_eq!(ledger.state.records[0].alert.job_id, queued.job.job.id);
     }
@@ -1185,6 +1396,7 @@ mod tests {
                 token_env: Some("SECRET_TOKEN".to_string()),
             }],
             commands: Vec::new(),
+            ..DaemonNotificationConfig::default()
         };
         let mut ledger = DeliveryLedger::load(temporary.path().join("daemon").join(LEDGER_FILE))
             .expect("ledger");
@@ -1195,6 +1407,9 @@ mod tests {
         let json = serde_json::to_string(&status).expect("serialize");
         assert!(json.contains("phone"));
         assert!(json.contains("job-1"));
+        assert_eq!(status.network_mode, NetworkNotificationMode::Immediate);
+        assert_eq!(status.network_failure_count, 3);
+        assert_eq!(status.network_failure_minutes, 15);
         assert!(!json.contains("secret-endpoint"));
         assert!(!json.contains("SECRET_TOKEN"));
     }

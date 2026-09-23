@@ -310,8 +310,19 @@ they commit.
   so installed services make persistent trouble visible without flooding their logs. To add native
   desktop delivery, preview and apply
   `vulcan daemon config set-notifications --desktop true --dry-run` and then without `--dry-run`,
-  then restart the daemon. Desktop delivery is best-effort, timeout-bounded, and never changes the
-  retained sync result; helper or desktop-session failures become warning log records. Its durable
+  then restart the daemon. Native desktop/Android daemon notices include the wiki, error category,
+  retryability, job ID, and a status command; the full error remains on authenticated status.
+  To quiet transient network failures, add `--network-mode ignore`, or choose
+  `--network-mode count --network-count 3` or
+  `--network-mode duration --network-minutes 15`. These settings affect only native daemon
+  delivery; logs and remote sinks retain their existing event policy. Count and duration show one
+  native alert per observed network outage and reset after a successful or non-network result.
+  Duration starts when the daemon first observes the failure, so a restart resets its timer;
+  its delivery worker checks deadlines every 30 seconds. `vulcan daemon alert-status` shows the
+  effective policy. The independently installed `sync termux-install` periodic wrapper still
+  posts on any failed direct run; daemon notification settings do not control that wrapper.
+  Desktop delivery is best-effort, timeout-bounded, and never changes the retained sync result;
+  helper or desktop-session failures become warning log records. Its durable
   delivery identity surfaces a failure that already exists when desktop alerts are first enabled,
   but suppresses replay after successful delivery on later restarts.
   For remote delivery, configure a named JSON webhook or ntfy topic with

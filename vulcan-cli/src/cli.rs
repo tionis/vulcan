@@ -3856,6 +3856,14 @@ pub enum TermuxNetworkArg {
     NotRoaming,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum NetworkNotificationModeArg {
+    Immediate,
+    Ignore,
+    Count,
+    Duration,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SemanticGroupingArg {
     #[default]
@@ -4711,7 +4719,23 @@ pub enum DaemonConfigCommand {
             action = clap::ArgAction::Set,
             help = "Enable or disable native desktop notifications (true or false)"
         )]
-        desktop: bool,
+        desktop: Option<bool>,
+        #[arg(
+            long,
+            value_enum,
+            help = "Native network notices: immediate, ignore, count, or duration"
+        )]
+        network_mode: Option<NetworkNotificationModeArg>,
+        #[arg(
+            long,
+            help = "Notify after this many consecutive failed network jobs (2–100)"
+        )]
+        network_count: Option<u32>,
+        #[arg(
+            long,
+            help = "Notify after this many minutes of network failure (1–1440)"
+        )]
+        network_minutes: Option<u32>,
         #[arg(
             long,
             help = "Validate and report without writing daemon configuration"

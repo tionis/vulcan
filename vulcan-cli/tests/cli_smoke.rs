@@ -8168,9 +8168,47 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
     assert!(persisted.contains("VULCAN_PLANNER_KEY"));
     assert!(!persisted.contains("secret-value"));
 
-    let notifications =
-        parse_stdout_json(&daemon(&["set-notifications", "--desktop", "true"]).success());
+    let notification_preview = parse_stdout_json(
+        &daemon(&[
+            "set-notifications",
+            "--desktop",
+            "true",
+            "--network-mode",
+            "count",
+            "--network-count",
+            "4",
+            "--network-minutes",
+            "10",
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(
+        notification_preview["notifications"]["network_mode"],
+        "count"
+    );
+    assert!(
+        !config_home.join("vulcan/daemon.toml").exists()
+            || !fs::read_to_string(config_home.join("vulcan/daemon.toml"))
+                .expect("daemon config")
+                .contains("network_mode")
+    );
+    let notifications = parse_stdout_json(
+        &daemon(&[
+            "set-notifications",
+            "--desktop",
+            "true",
+            "--network-mode",
+            "count",
+            "--network-count",
+            "4",
+            "--network-minutes",
+            "10",
+        ])
+        .success(),
+    );
     assert_eq!(notifications["notifications"]["desktop"], true);
+    assert_eq!(notifications["notifications"]["network_mode"], "count");
     daemon(&[
         "set-notification-webhook",
         "phone",
@@ -8214,9 +8252,22 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
         .success();
     let alert_status = parse_stdout_json(&alert_status);
     assert_eq!(alert_status["desktop"], true);
+    assert_eq!(alert_status["network_mode"], "count");
+    assert_eq!(alert_status["network_failure_count"], 4);
+    assert_eq!(alert_status["network_failure_minutes"], 10);
     assert_eq!(alert_status["configured_sinks"][0]["name"], "phone");
     assert_eq!(alert_status["configured_sinks"][1]["name"], "nats");
     assert_eq!(alert_status["pending_deliveries"], serde_json::json!([]));
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["daemon", "alert-status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Native network alerts: count (count 4, duration 10 min)",
+        ));
     daemon(&["remove-notification-sink", "nats"]).success();
     daemon(&[
         "set-notification-webhook",

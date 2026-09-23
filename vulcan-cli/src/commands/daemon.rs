@@ -1,3 +1,4 @@
+use crate::cli::NetworkNotificationModeArg;
 use crate::output::print_json;
 use crate::{
     Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonCompanionCommand, DaemonConfigCommand,
@@ -24,7 +25,7 @@ use vulcan_daemon::process::{
 use vulcan_daemon::registry::{
     DaemonAgentConfig, DaemonAgentKind, DaemonCommandNotificationConfig, DaemonConfig,
     DaemonConflictWorkerConfig, DaemonSemanticWorkerConfig, DaemonWebhookFormat,
-    DaemonWebhookNotificationConfig, WikiId,
+    DaemonWebhookNotificationConfig, NetworkNotificationMode, WikiId,
 };
 use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
@@ -221,6 +222,12 @@ fn print_alert_delivery_status(
         } else {
             "disabled"
         }
+    );
+    println!(
+        "Native network alerts: {} (count {}, duration {} min)",
+        format!("{:?}", status.network_mode).to_ascii_lowercase(),
+        status.network_failure_count,
+        status.network_failure_minutes,
     );
     if status.configured_sinks.is_empty() {
         println!("Remote/command sinks: none");
@@ -596,9 +603,24 @@ fn handle_notification_config(
     command: &DaemonConfigCommand,
 ) -> Option<Result<DaemonConfig, CliError>> {
     let result = match command {
-        DaemonConfigCommand::SetNotifications { desktop, dry_run } => context
-            .registry
-            .set_desktop_notifications(*desktop, *dry_run),
+        DaemonConfigCommand::SetNotifications {
+            desktop,
+            network_mode,
+            network_count,
+            network_minutes,
+            dry_run,
+        } => context.registry.set_desktop_notification_policy(
+            *desktop,
+            network_mode.map(|mode| match mode {
+                NetworkNotificationModeArg::Immediate => NetworkNotificationMode::Immediate,
+                NetworkNotificationModeArg::Ignore => NetworkNotificationMode::Ignore,
+                NetworkNotificationModeArg::Count => NetworkNotificationMode::Count,
+                NetworkNotificationModeArg::Duration => NetworkNotificationMode::Duration,
+            }),
+            *network_count,
+            *network_minutes,
+            *dry_run,
+        ),
         DaemonConfigCommand::SetNotificationWebhook {
             name,
             url,
