@@ -25,7 +25,7 @@ use vulcan_app::sync_conflicts::{
     SyncConflictResolutionSide, SyncConflictResolutionState,
 };
 use vulcan_app::sync_devices::{
-    fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
+    fetch_sync_device_backup, list_sync_device_backups_with_observation, remove_sync_device_backup,
     set_sync_device_name, GitSyncDeviceIdKind, SyncDeviceFetchReport, SyncDeviceListReport,
     SyncDeviceOptions, SyncDeviceRecoveryStatus, SyncDeviceRelation,
     SyncDeviceRemoteObservationState, SyncDeviceRemoveReport,
@@ -2651,7 +2651,7 @@ fn handle_sync_devices(
         );
     }
     let (wiki, target) = match command {
-        SyncDeviceCommand::List { wiki, target }
+        SyncDeviceCommand::List { wiki, target, .. }
         | SyncDeviceCommand::Fetch { wiki, target, .. }
         | SyncDeviceCommand::Remove { wiki, target, .. } => (wiki.as_deref(), target),
         SyncDeviceCommand::SetName { .. } | SyncDeviceCommand::ClearName { .. } => unreachable!(),
@@ -2663,8 +2663,9 @@ fn handle_sync_devices(
         live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
     };
     match command {
-        SyncDeviceCommand::List { .. } => {
-            let report = list_sync_device_backups(&paths, &options).map_err(CliError::operation)?;
+        SyncDeviceCommand::List { offline, .. } => {
+            let report = list_sync_device_backups_with_observation(&paths, &options, !offline)
+                .map_err(CliError::operation)?;
             print_sync_device_list(cli.output, &report)
         }
         SyncDeviceCommand::Fetch {
@@ -2724,18 +2725,24 @@ fn print_sync_device_list(
         return print_json(report);
     }
     println!(
-        "Remote device safety backups observed: {} (remote {}, profile {})",
-        report.count, report.remote, report.profile
+        "Device inventory (remote {}, profile {})",
+        report.remote, report.profile
     );
     match report.remote_observation.state {
         SyncDeviceRemoteObservationState::Available => {
+            println!("Remote device safety backups observed: {}", report.count);
             println!("Remote observation: available now.");
         }
         SyncDeviceRemoteObservationState::Unavailable => {
+            println!("Remote device safety backups: unknown");
             println!("Remote observation: unavailable; showing local inventory only.");
             if let Some(error) = &report.remote_observation.error {
                 println!("  Error: {error}");
             }
+        }
+        SyncDeviceRemoteObservationState::NotRequested => {
+            println!("Remote device safety backups: not requested (--offline); unknown.");
+            println!("Remote observation: not requested; showing local inventory only.");
         }
     }
     if let Some(device_id) = &report.current_device_id {
@@ -2744,6 +2751,9 @@ fn print_sync_device_list(
     if report.backups.is_empty() {
         if report.remote_observation.state == SyncDeviceRemoteObservationState::Available {
             println!("No device backups found. A successful non-dry-run sync creates one.");
+        } else if report.remote_observation.state == SyncDeviceRemoteObservationState::NotRequested
+        {
+            println!("No remote backups were requested; remote backup state is unknown.");
         } else {
             println!("No remote backups were observed; remote backup state is unknown.");
         }
@@ -2792,6 +2802,9 @@ fn print_sync_device_local_inventory(report: &SyncDeviceListReport) {
     if !report.retained_recovery.is_empty() {
         if report.remote_observation.state == SyncDeviceRemoteObservationState::Available {
             println!("\nRetained local recovery copies without a remote backup:");
+        } else if report.remote_observation.state == SyncDeviceRemoteObservationState::NotRequested
+        {
+            println!("\nRetained local recovery copies (remote backup not requested):");
         } else {
             println!("\nRetained local recovery copies (remote backup status unknown):");
         }
@@ -2816,15 +2829,26 @@ fn print_sync_device_local_inventory(report: &SyncDeviceListReport) {
             );
         }
     }
-    if !report.named_without_backup.is_empty() {
+    let named_without_recovery =
+        if report.remote_observation.state == SyncDeviceRemoteObservationState::NotRequested {
+            &report.named_without_local_recovery
+        } else {
+            &report.named_without_backup
+        };
+    if !named_without_recovery.is_empty() {
         if report.remote_observation.state == SyncDeviceRemoteObservationState::Available {
             println!("\nNamed devices without a backup or local recovery copy:");
+        } else if report.remote_observation.state == SyncDeviceRemoteObservationState::NotRequested
+        {
+            println!(
+                "\nNamed devices without a local recovery copy (remote backup not requested):"
+            );
         } else {
             println!(
                 "\nNamed devices without a local recovery copy (remote backup status unknown):"
             );
         }
-        for device in &report.named_without_backup {
+        for device in named_without_recovery {
             println!(
                 "\n{}{}\n  ID: {}",
                 device.name,

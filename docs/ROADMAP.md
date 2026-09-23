@@ -6017,6 +6017,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Preserve state-free reads. `vulcan device show` reports uninitialized/ready/degraded/legacy/invalid state without mutation; `vulcan device init [--dry-run]` creates only an absent identity; and `vulcan device public-key` explicitly exports the canonical public key. The first mutating identity-requiring operation may initialize only when no identity artifacts exist. No command in this slice replaces an existing key or asserts continuity.
 - [x] Add vault-independent `device show`, `device init --dry-run`/`init`, and `device public-key` over the local store, with the key ID and current legacy sync actor reported separately. Windows creation remains gated on verified private ACL handling.
 - [x] Add a read-only installation inventory for registered Git wikis that projects local identity, the separate legacy sync actor, per-vault names and recovery refs, and each vault's remote observation state without deriving trust or online status.
+- [x] Provide an explicit local-only device inventory mode that skips remote Git observation, marks remote status `not_requested`, and keeps local names and recovery refs visible; preserve local key inspection when legacy sync actor state is malformed.
 
 #### 12.15.3 Ref/provenance integration and compatibility rollout
 

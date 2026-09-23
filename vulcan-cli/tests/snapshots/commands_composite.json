@@ -8626,6 +8626,20 @@
                     "value_names": [
                       "LIVE_REF"
                     ]
+                  },
+                  {
+                    "help": "List local recovery refs and labels without observing the remote",
+                    "id": "offline",
+                    "long": "offline",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "OFFLINE"
+                    ]
                   }
                 ],
                 "subcommands": []
@@ -10976,7 +10990,22 @@
           {
             "about": "List this installation and registered vaults' device inventory",
             "name": "list",
-            "options": [],
+            "options": [
+              {
+                "help": "Use local recovery refs and labels without observing remotes",
+                "id": "offline",
+                "long": "offline",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OFFLINE"
+                ]
+              }
+            ],
             "subcommands": []
           }
         ]

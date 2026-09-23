@@ -15652,6 +15652,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan device show --output json"));
     assert!(sync_skill.contains("vulcan device init --dry-run"));
     assert!(sync_skill.contains("vulcan devices list --output json"));
+    assert!(sync_skill.contains("vulcan devices list --offline"));
+    assert!(sync_skill.contains("vulcan sync devices list --offline"));
+    assert!(sync_skill.contains("legacy_unavailable"));
     assert!(sync_skill.contains("key_pending_rollout"));
     assert!(sync_skill.contains("vulcan sync run <wiki>"));
     assert!(sync_skill.contains("`safe.directory`"));

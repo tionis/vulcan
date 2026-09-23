@@ -98,6 +98,7 @@ pub struct SyncDeviceListReport {
     pub backups: Vec<SyncDeviceBackupSummary>,
     pub retained_recovery: Vec<SyncDeviceLocalRecoverySummary>,
     pub named_without_backup: Vec<SyncDeviceNamedSummary>,
+    pub named_without_local_recovery: Vec<SyncDeviceNamedSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -112,6 +113,7 @@ pub struct SyncDeviceRemoteObservation {
 pub enum SyncDeviceRemoteObservationState {
     Available,
     Unavailable,
+    NotRequested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -172,6 +174,16 @@ pub fn list_sync_device_backups(
     paths: &VaultPaths,
     options: &SyncDeviceOptions,
 ) -> Result<SyncDeviceListReport, AppError> {
+    list_sync_device_backups_with_observation(paths, options, true)
+}
+
+/// List local recovery refs and shared names without contacting the remote
+/// when `observe_remote` is false.
+pub fn list_sync_device_backups_with_observation(
+    paths: &VaultPaths,
+    options: &SyncDeviceOptions,
+    observe_remote: bool,
+) -> Result<SyncDeviceListReport, AppError> {
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = vulcan_sync::GitCliEngine::default();
     let repository = engine
@@ -206,12 +218,18 @@ pub fn list_sync_device_backups(
         vault: &vault,
         current: current.as_ref(),
     };
-    let remote = observe_remote_device_backups(&remote_context, &mut recovery_refs)?;
+    let remote = if observe_remote {
+        observe_remote_device_backups(&remote_context, &mut recovery_refs)?
+    } else {
+        RemoteDeviceBackups::not_requested()
+    };
     let mut retained_recovery = Vec::new();
     let mut seen = remote.seen_device_ids;
+    let mut local_recovery_ids = BTreeSet::new();
     for (device_id, reference) in recovery_refs {
         let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
         seen.insert(parsed.as_str().to_string());
+        local_recovery_ids.insert(parsed.as_str().to_string());
         retained_recovery.push(SyncDeviceLocalRecoverySummary {
             device_id: parsed.as_str().to_string(),
             identity_kind: parsed.kind(),
@@ -221,9 +239,23 @@ pub fn list_sync_device_backups(
             current_device: current.as_ref() == Some(&parsed),
         });
     }
-    let named_without_backup = list_device_names(&vault)?
+    let named_records = list_device_names(&vault)?;
+    let named_without_local_recovery = named_records
+        .iter()
+        .filter(|(id, _)| !local_recovery_ids.contains(id.as_str()))
+        .map(|(device_id, name)| SyncDeviceNamedSummary {
+            current_device: current.as_ref().is_some_and(|id| id == device_id),
+            identity_kind: device_id.kind(),
+            device_id: device_id.as_str().to_string(),
+            name: name.clone(),
+        })
+        .collect();
+    let named_without_backup = named_records
         .into_iter()
-        .filter(|(id, _)| !seen.contains(id.as_str()))
+        .filter(|(id, _)| {
+            remote.observation.state != SyncDeviceRemoteObservationState::NotRequested
+                && !seen.contains(id.as_str())
+        })
         .map(|(device_id, name)| SyncDeviceNamedSummary {
             current_device: current.as_ref().is_some_and(|id| id == &device_id),
             identity_kind: device_id.kind(),
@@ -243,6 +275,7 @@ pub fn list_sync_device_backups(
         backups: remote.backups,
         retained_recovery,
         named_without_backup,
+        named_without_local_recovery,
     })
 }
 
@@ -340,6 +373,17 @@ fn is_remote_observation_unavailable(error: &vulcan_sync::GitEngineError) -> boo
 }
 
 impl RemoteDeviceBackups {
+    fn not_requested() -> Self {
+        Self {
+            backups: Vec::new(),
+            observation: SyncDeviceRemoteObservation {
+                state: SyncDeviceRemoteObservationState::NotRequested,
+                error: None,
+            },
+            seen_device_ids: BTreeSet::new(),
+        }
+    }
+
     fn unavailable() -> Self {
         Self {
             backups: Vec::new(),
@@ -722,8 +766,9 @@ fn classify_relation(
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
-        set_sync_device_name, SyncDeviceOptions, SyncDeviceRecoveryStatus, SyncDeviceRelation,
+        fetch_sync_device_backup, list_sync_device_backups,
+        list_sync_device_backups_with_observation, remove_sync_device_backup, set_sync_device_name,
+        SyncDeviceOptions, SyncDeviceRecoveryStatus, SyncDeviceRelation,
     };
     use std::fs;
     use std::path::Path;
@@ -876,6 +921,21 @@ mod tests {
             Some("Recovered laptop")
         );
         assert_eq!(offline.retained_recovery[0].revision, base);
+        let local_only = list_sync_device_backups_with_observation(paths, options, false)
+            .expect("offline mode should inspect only local inventory");
+        assert_eq!(
+            local_only.remote_observation.state,
+            super::SyncDeviceRemoteObservationState::NotRequested
+        );
+        assert_eq!(local_only.remote_observation.error, None);
+        assert!(local_only.backups.is_empty());
+        assert_eq!(local_only.retained_recovery.len(), 1);
+        assert_eq!(local_only.retained_recovery[0].device_id, DEVICE_A);
+        assert_eq!(
+            local_only.retained_recovery[0].name.as_deref(),
+            Some("Recovered laptop")
+        );
+        assert!(local_only.named_without_backup.is_empty());
         git(vault, &["remote", "set-url", "origin", remote_path]);
     }
 

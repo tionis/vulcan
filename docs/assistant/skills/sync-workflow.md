@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 33
+version: 34
 metadata:
   vulcan:
     managed: true
@@ -30,8 +30,14 @@ both execute the same application workflow.
 - Use `vulcan devices list --output json` for an installation-wide view across registered wikis.
   Each wiki has its own local recovery and remote observation state; a failed remote observation
   means remote backup status is unknown, while locally retained recovery and names remain visible.
+  Use `vulcan devices list --offline` for a guaranteed local-only inventory; its remote state is
+  `not_requested`, which does not mean no remote backups exist. The same flag is available for a
+  selected wiki through `vulcan sync devices list --offline`.
   The current inventory uses the default `origin` remote and hidden live ref for Git registrations.
   It is an observed recovery inventory, not an enrollment, possession, trust, or online roster.
+- If `vulcan device show` reports `sync_identity_state: legacy_unavailable`, inspect the legacy
+  sync actor state with `vulcan sync doctor`; the local key identity status remains independently
+  visible. Do not infer a new sync actor from the key ID.
 
 For a new sync checkout, preview `vulcan sync clone <remote> <path> --dry-run` before applying it.
 The command derives the wiki ID from the destination, uses native clone defaults on desktop, and

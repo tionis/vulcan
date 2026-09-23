@@ -3929,7 +3929,13 @@ pub enum DeviceCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum DevicesCommand {
     #[command(about = "List this installation and registered vaults' device inventory")]
-    List,
+    List {
+        #[arg(
+            long,
+            help = "Use local recovery refs and labels without observing remotes"
+        )]
+        offline: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -3940,6 +3946,11 @@ pub enum SyncDeviceCommand {
         wiki: Option<String>,
         #[command(flatten)]
         target: SyncTargetArgs,
+        #[arg(
+            long,
+            help = "List local recovery refs and labels without observing the remote"
+        )]
+        offline: bool,
     },
     #[command(about = "Set a shared display name for a device ID")]
     SetName {

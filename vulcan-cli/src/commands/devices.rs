@@ -7,7 +7,9 @@ use serde::Serialize;
 use std::path::PathBuf;
 use vulcan_app::device_identity::{DeviceIdentityReport, DeviceIdentityStore};
 use vulcan_app::sync::{GitRefName, GitRemote};
-use vulcan_app::sync_devices::{list_sync_device_backups, SyncDeviceListReport, SyncDeviceOptions};
+use vulcan_app::sync_devices::{
+    list_sync_device_backups_with_observation, SyncDeviceListReport, SyncDeviceOptions,
+};
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::permissions::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard,
@@ -28,6 +30,8 @@ struct InventoryField<T> {
     source: &'static str,
     scope: String,
     freshness: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'static str>,
     value: T,
 }
 
@@ -53,20 +57,20 @@ struct VaultInventory {
 
 pub(crate) fn handle_devices_command(cli: &Cli, command: &DevicesCommand) -> Result<(), CliError> {
     match command {
-        DevicesCommand::List => {
-            let report = build_inventory(cli)?;
+        DevicesCommand::List { offline } => {
+            let report = build_inventory(cli, *offline)?;
             print_inventory(cli.output, &report)
         }
     }
 }
 
-fn build_inventory(cli: &Cli) -> Result<InstallationDeviceInventory, CliError> {
+fn build_inventory(cli: &Cli, offline: bool) -> Result<InstallationDeviceInventory, CliError> {
     let identity_store = DeviceIdentityStore::user_default().map_err(CliError::operation)?;
-    let sync_actor = SyncStateStore::user_default()
+    let sync_actor_result = SyncStateStore::user_default()
         .map_err(CliError::operation)?
         .load_or_create_device_id(false)
-        .map_err(CliError::operation)?
-        .map(|id| id.as_str().to_string());
+        .map(|id| id.map(|id| id.as_str().to_string()));
+    let sync_actor = sync_actor_result.as_ref().ok().and_then(Clone::clone);
     let identity = identity_store.inspect_with_legacy_id(sync_actor.as_deref());
     let registrations = WikiRegistry::user_default()
         .map_err(CliError::operation)?
@@ -75,7 +79,7 @@ fn build_inventory(cli: &Cli) -> Result<InstallationDeviceInventory, CliError> {
 
     let vaults = registrations
         .into_iter()
-        .map(|status| inspect_registered_vault(cli, status))
+        .map(|status| inspect_registered_vault(cli, status, offline))
         .collect();
 
     Ok(InstallationDeviceInventory {
@@ -84,12 +88,20 @@ fn build_inventory(cli: &Cli) -> Result<InstallationDeviceInventory, CliError> {
             source: "installation_device_identity_store",
             scope: "user_data/device".to_string(),
             freshness: "current_local_read",
+            error: None,
             value: identity,
         },
         sync_actor: InventoryField {
             source: "installation_sync_state_store",
             scope: "user_state/sync".to_string(),
-            freshness: "current_local_read",
+            freshness: if sync_actor_result.is_ok() {
+                "current_local_read"
+            } else {
+                "current_local_read_failed"
+            },
+            error: sync_actor_result
+                .is_err()
+                .then_some("legacy sync actor metadata could not be read"),
             value: sync_actor,
         },
         vaults,
@@ -99,6 +111,7 @@ fn build_inventory(cli: &Cli) -> Result<InstallationDeviceInventory, CliError> {
 fn inspect_registered_vault(
     cli: &Cli,
     status: vulcan_daemon::registry::WikiRegistrationStatus,
+    offline: bool,
 ) -> VaultInventory {
     let registration = status.registration;
     let mut entry = new_vault_inventory(&registration);
@@ -145,12 +158,20 @@ fn inspect_registered_vault(
             Some("local sync inventory was denied by the active path permissions".to_string());
         return entry;
     }
-    match list_sync_device_backups(&paths, &default_sync_device_options()) {
+    match list_sync_device_backups_with_observation(
+        &paths,
+        &default_sync_device_options(),
+        !offline,
+    ) {
         Ok(report) => {
             entry.local_state = "observed";
             entry.local_freshness = "current_local_read";
             entry.remote_scope = Some(format!("{}|{}", report.remote, report.live_ref));
-            entry.remote_freshness = "current_remote_observation_attempt";
+            entry.remote_freshness = if offline {
+                "not_requested"
+            } else {
+                "current_remote_observation_attempt"
+            };
             entry.sync_inventory = Some(report);
         }
         Err(error) => {
@@ -246,6 +267,10 @@ fn print_inventory(
                 if inventory.backups.is_empty() {
                     println!("    (none observed)");
                 }
+            } else if inventory.remote_observation.state
+                == vulcan_app::sync_devices::SyncDeviceRemoteObservationState::NotRequested
+            {
+                println!("  Remote safety backups: not requested (--offline); unknown");
             } else {
                 println!("  Remote safety backups: unknown (remote observation unavailable)");
                 if let Some(error) = &inventory.remote_observation.error {
@@ -267,9 +292,16 @@ fn print_inventory(
                     );
                 }
             }
-            if !inventory.named_without_backup.is_empty() {
+            let named_without_recovery = if inventory.remote_observation.state
+                == vulcan_app::sync_devices::SyncDeviceRemoteObservationState::NotRequested
+            {
+                &inventory.named_without_local_recovery
+            } else {
+                &inventory.named_without_backup
+            };
+            if !named_without_recovery.is_empty() {
                 println!("  Named devices without an observed local recovery copy:");
-                for named in &inventory.named_without_backup {
+                for named in named_without_recovery {
                     println!(
                         "    {} — {} [{}]",
                         named.name,
@@ -293,6 +325,7 @@ mod tests {
             source: "vault_local_refs_and_shared_labels",
             scope: "wiki:notes:registration".to_string(),
             freshness: "current_local_read",
+            error: None,
             value: "observed",
         };
         let value = serde_json::to_value(report).expect("serialize provenance");

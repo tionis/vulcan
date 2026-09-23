@@ -2441,6 +2441,29 @@ fn parses_sync_device_recovery_commands() {
 }
 
 #[test]
+fn parses_offline_sync_and_installation_device_lists() {
+    let sync = Cli::try_parse_from(["vulcan", "sync", "devices", "list", "--offline"])
+        .expect("offline sync device list should parse");
+    assert!(matches!(
+        sync.command,
+        Command::Sync {
+            command: SyncCommand::Devices {
+                command: SyncDeviceCommand::List { offline: true, .. }
+            }
+        }
+    ));
+
+    let installation = Cli::try_parse_from(["vulcan", "devices", "list", "--offline"])
+        .expect("offline installation device list should parse");
+    assert!(matches!(
+        installation.command,
+        Command::Devices {
+            command: crate::cli::DevicesCommand::List { offline: true }
+        }
+    ));
+}
+
+#[test]
 fn parses_termux_sync_scheduler_commands() {
     let termux = Cli::try_parse_from([
         "vulcan",

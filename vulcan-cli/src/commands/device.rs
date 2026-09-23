@@ -17,28 +17,12 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
     let store = DeviceIdentityStore::user_default().map_err(CliError::operation)?;
     match command {
         DeviceCommand::Show => {
-            let legacy = SyncStateStore::user_default()
-                .map_err(CliError::operation)?
-                .load_or_create_device_id(false)
-                .map_err(CliError::operation)?;
-            let report = store.inspect_with_legacy_id(
-                legacy
-                    .as_ref()
-                    .map(vulcan_app::sync::GitSyncDeviceId::as_str),
-            );
+            let report = inspect_with_legacy_state(&store);
             print_device_show(cli.output, &report)
         }
         DeviceCommand::Init { dry_run } => {
             let mut report = store.initialize(*dry_run).map_err(CliError::operation)?;
-            let legacy = SyncStateStore::user_default()
-                .map_err(CliError::operation)?
-                .load_or_create_device_id(false)
-                .map_err(CliError::operation)?;
-            report.identity = store.inspect_with_legacy_id(
-                legacy
-                    .as_ref()
-                    .map(vulcan_app::sync::GitSyncDeviceId::as_str),
-            );
+            report.identity = inspect_with_legacy_state(&store);
             print_device_init(cli.output, &report)
         }
         DeviceCommand::PublicKey => {
@@ -55,6 +39,23 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
             }
         }
     }
+}
+
+fn inspect_with_legacy_state(store: &DeviceIdentityStore) -> DeviceIdentityReport {
+    let legacy =
+        SyncStateStore::user_default().and_then(|state| state.load_or_create_device_id(false));
+    if let Ok(id) = legacy {
+        return store
+            .inspect_with_legacy_id(id.as_ref().map(vulcan_app::sync::GitSyncDeviceId::as_str));
+    }
+    let mut report = store.inspect();
+    report.sync_identity_state = "legacy_unavailable".to_string();
+    let detail = "legacy sync actor state could not be read or validated; run `vulcan sync doctor`";
+    report.diagnostic = Some(match report.diagnostic {
+        Some(existing) => format!("{existing}; {detail}"),
+        None => detail.to_string(),
+    });
+    report
 }
 
 fn print_device_show(output: OutputFormat, report: &DeviceIdentityReport) -> Result<(), CliError> {

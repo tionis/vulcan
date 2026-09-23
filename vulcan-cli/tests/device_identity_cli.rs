@@ -109,7 +109,91 @@ fn installation_inventory_keeps_registry_and_per_vault_remote_state_scoped() {
         "Office Laptop"
     );
 
-    let human = run_vulcan(&["devices", "list"]);
+    assert_offline_inventory(root, &vault, named_id);
+}
+
+fn assert_offline_inventory(root: &Path, vault: &Path, named_id: &str) {
+    let home = root.join("home");
+    let config = root.join("config");
+    let state = root.join("state");
+    let data = root.join("data");
+    let trace = root.join("git-trace.log");
+    let offline = Command::cargo_bin("vulcan")
+        .expect("vulcan binary")
+        .current_dir(root)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_STATE_HOME", &state)
+        .env("XDG_DATA_HOME", &data)
+        .env("GIT_TRACE", &trace)
+        .args(["--output", "json", "devices", "list", "--offline"])
+        .output()
+        .expect("offline installation inventory output");
+    let offline_report = json_output(&offline);
+    let offline_wiki = &offline_report["vaults"][0];
+    assert_eq!(offline_wiki["remote_freshness"], "not_requested");
+    assert_eq!(
+        offline_wiki["sync_inventory"]["remote_observation"]["state"],
+        "not_requested"
+    );
+    assert_eq!(
+        offline_wiki["sync_inventory"]["named_without_local_recovery"][0]["name"],
+        "Office Laptop"
+    );
+    assert_eq!(
+        offline_wiki["sync_inventory"]["named_without_backup"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "without remote observation, do not assert that the named device has no remote backup"
+    );
+
+    let sync_offline = Command::cargo_bin("vulcan")
+        .expect("vulcan binary")
+        .current_dir(root)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_STATE_HOME", &state)
+        .env("XDG_DATA_HOME", &data)
+        .env("GIT_TRACE", &trace)
+        .args([
+            "--vault",
+            vault.to_str().unwrap(),
+            "--output",
+            "json",
+            "sync",
+            "devices",
+            "list",
+            "--offline",
+        ])
+        .output()
+        .expect("offline per-vault inventory output");
+    let sync_report = json_output(&sync_offline);
+    assert_eq!(sync_report["remote_observation"]["state"], "not_requested");
+    assert_eq!(
+        sync_report["named_without_local_recovery"][0]["device_id"],
+        named_id
+    );
+    assert_eq!(
+        sync_report["named_without_backup"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_no_remote_git_trace(&trace);
+
+    let human = Command::cargo_bin("vulcan")
+        .expect("vulcan binary")
+        .current_dir(root)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_STATE_HOME", &state)
+        .env("XDG_DATA_HOME", &data)
+        .args(["devices", "list", "--offline"])
+        .output()
+        .expect("offline human inventory output");
     assert!(
         human.status.success(),
         "{}",
@@ -117,9 +201,21 @@ fn installation_inventory_keeps_registry_and_per_vault_remote_state_scoped() {
     );
     let text = String::from_utf8_lossy(&human.stdout);
     assert!(text.contains("does not establish trust or authorization"));
-    assert!(text.contains("Remote safety backups: unknown (remote observation unavailable)"));
+    assert!(text.contains("Remote safety backups: not requested (--offline); unknown"));
     assert!(text.contains("Office Laptop"));
     assert!(text.contains(named_id));
+}
+
+fn assert_no_remote_git_trace(trace: &Path) {
+    let trace_text = fs::read_to_string(trace).expect("Git trace output");
+    assert!(
+        trace_text.contains("rev-parse"),
+        "local Git checks should run"
+    );
+    assert!(
+        !trace_text.contains("ls-remote"),
+        "offline list must not invoke Git remote refs: {trace_text}"
+    );
 }
 
 #[cfg(unix)]
@@ -225,5 +321,37 @@ fn local_identity_show_reports_legacy_ulid_without_creating_key_material() {
             fs::read(state.join("_device.json")).expect("legacy state retained"),
             br#"{"version":1,"device_id":"01arz3ndektsv4rrffq69g5fav"}"#
         );
+    }
+}
+
+#[test]
+fn malformed_legacy_actor_does_not_hide_local_identity_inspection() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let state = root.join("state/vulcan/sync/repositories");
+    fs::create_dir_all(&state).expect("legacy sync state directory");
+    fs::write(state.join("_device.json"), b"not-json").expect("malformed legacy state");
+
+    let shown = json_output(&run(root, &["--output", "json", "device", "show"]));
+    assert_eq!(shown["status"], "uninitialized");
+    assert_eq!(shown["sync_identity_state"], "legacy_unavailable");
+    assert!(shown["sync_actor_id"].is_null());
+    assert!(shown["diagnostic"]
+        .as_str()
+        .unwrap()
+        .contains("vulcan sync doctor"));
+    assert!(!root.join("data/vulcan/device").exists());
+
+    #[cfg(unix)]
+    {
+        let initialized = json_output(&run(root, &["--output", "json", "device", "init"]));
+        assert_eq!(initialized["identity"]["status"], "ready");
+        assert_eq!(
+            initialized["identity"]["sync_identity_state"],
+            "legacy_unavailable"
+        );
+        let ready = json_output(&run(root, &["--output", "json", "device", "show"]));
+        assert_eq!(ready["status"], "ready");
+        assert_eq!(ready["device_id"], initialized["identity"]["device_id"]);
     }
 }
