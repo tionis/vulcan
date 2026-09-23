@@ -34,6 +34,7 @@ mod durable_file;
 mod error;
 
 pub mod artifact;
+pub mod background_policy;
 pub mod browse;
 pub mod config;
 pub mod decomposition;

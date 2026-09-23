@@ -231,6 +231,11 @@ fn parses_self_update_schedule_and_unattended_run() {
         "main",
         "--at",
         "04:30",
+        "--network",
+        "any",
+        "--allow-low-battery",
+        "--require-charging",
+        "--defer-on-unknown",
         "--notify-on-failure",
         "--dry-run",
     ])
@@ -242,6 +247,12 @@ fn parses_self_update_schedule_and_unattended_run() {
                 command: UpdateScheduleCommand::Install {
                     channel: UpdateChannelArgs { channel: Some(UpdateChannelArg::Main), .. },
                     at,
+                    policy: UpdatePolicyArgs {
+                        network: Some(UpdateNetworkArg::Any),
+                        allow_low_battery: true,
+                        require_charging: true,
+                        defer_on_unknown: true,
+                    },
                     notify_on_failure: true,
                     dry_run: true,
                     ..
@@ -250,13 +261,31 @@ fn parses_self_update_schedule_and_unattended_run() {
         } if at == "04:30"
     ));
 
-    let run = Cli::try_parse_from(["vulcan", "self-update", "run", "--notify-on-failure"])
-        .expect("unattended update cycle should parse");
+    let run = Cli::try_parse_from([
+        "vulcan",
+        "self-update",
+        "run",
+        "--notify-on-failure",
+        "--network",
+        "unmetered",
+    ])
+    .expect("unattended update cycle should parse");
     assert!(matches!(
         run.command,
         Command::SelfUpdate {
             command: Some(UpdateCommand::Run {
                 notify_on_failure: true,
+                ..
+            })
+        }
+    ));
+    let legacy_run = Cli::try_parse_from(["vulcan", "self-update", "run"])
+        .expect("old scheduled update invocation should still parse");
+    assert!(matches!(
+        legacy_run.command,
+        Command::SelfUpdate {
+            command: Some(UpdateCommand::Run {
+                policy: UpdatePolicyArgs { network: None, .. },
                 ..
             })
         }

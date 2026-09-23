@@ -3,7 +3,7 @@ use crate::build_version;
 use crate::output::print_json;
 use crate::{
     build_update_channel, Cli, CliError, OutputFormat, UpdateChannelArg, UpdateChannelArgs,
-    UpdateCommand, UpdateScheduleCommand,
+    UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand,
 };
 #[cfg(feature = "web")]
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -11,6 +11,12 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+#[cfg(feature = "web")]
+use vulcan_app::background_policy::{
+    evaluate, probe_conditions, BackgroundPolicy, NetworkRequirement, PowerRequirement,
+    UnknownBehavior,
+};
+use vulcan_app::background_policy::{BackgroundConditions, DeferReason};
 use vulcan_app::update::UpdateCheckReport;
 #[cfg(feature = "web")]
 use vulcan_app::update::{
@@ -26,7 +32,8 @@ use vulcan_daemon::service::{
 };
 use vulcan_daemon::update_schedule::{
     apply_update_schedule, load_update_schedule, plan_update_schedule, UpdateScheduleAction,
-    UpdateScheduleOptions, UpdateSchedulePlatform, UpdateScheduleReport,
+    UpdateScheduleNetwork, UpdateScheduleOptions, UpdateSchedulePlatform, UpdateScheduleReport,
+    UpdateScheduleUnknown,
 };
 
 #[cfg(feature = "web")]
@@ -122,8 +129,9 @@ pub(crate) fn handle_update_command(
         Some(UpdateCommand::Schedule { command }) => handle_schedule(cli, command),
         Some(UpdateCommand::Run {
             channel,
+            policy,
             notify_on_failure,
-        }) => match run_unattended_update(channel) {
+        }) => match run_unattended_update(channel, policy) {
             Ok(report) => print_unattended_report(cli.output, &report),
             Err(error) => {
                 if *notify_on_failure {
@@ -141,7 +149,12 @@ struct UnattendedUpdateReport {
     update_available: bool,
     daemon_was_running: bool,
     daemon_restored: bool,
-    check: UpdateCheckReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check: Option<UpdateCheckReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deferred: Option<DeferReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conditions: Option<BackgroundConditions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     applied: Option<vulcan_app::update::UpdateApplyReport>,
 }
@@ -166,6 +179,7 @@ fn handle_schedule(cli: &Cli, command: &UpdateScheduleCommand) -> Result<(), Cli
                 } else {
                     println!("Daily local time: {}", plan.options.daily_at);
                 }
+                print_policy(&plan.options);
                 println!(
                     "Failure notifications: {}",
                     if plan.options.notify_on_failure {
@@ -182,6 +196,7 @@ fn handle_schedule(cli: &Cli, command: &UpdateScheduleCommand) -> Result<(), Cli
         }
         UpdateScheduleCommand::Install {
             channel,
+            policy,
             at,
             android_period_hours,
             notify_on_failure,
@@ -201,6 +216,17 @@ fn handle_schedule(cli: &Cli, command: &UpdateScheduleCommand) -> Result<(), Cli
                 channel: selected_channel.to_string(),
                 channel_url: channel.channel_url.clone(),
                 notify_on_failure: *notify_on_failure,
+                network: match policy.network.unwrap_or(UpdateNetworkArg::Unmetered) {
+                    UpdateNetworkArg::Any => UpdateScheduleNetwork::Any,
+                    UpdateNetworkArg::Unmetered => UpdateScheduleNetwork::Unmetered,
+                },
+                battery_not_low: !policy.allow_low_battery,
+                charging: policy.require_charging,
+                unknown: if policy.defer_on_unknown {
+                    UpdateScheduleUnknown::Defer
+                } else {
+                    UpdateScheduleUnknown::Allow
+                },
             };
             manage_schedule(
                 cli.output,
@@ -283,11 +309,57 @@ fn print_schedule_report(
     } else {
         println!("Daily local time: {}", report.plan.options.daily_at);
     }
+    if report.plan.action == UpdateScheduleAction::Install {
+        print_policy(&report.plan.options);
+    }
     Ok(())
 }
 
+fn print_policy(options: &UpdateScheduleOptions) {
+    let network = match options.network {
+        UpdateScheduleNetwork::Any => "any",
+        UpdateScheduleNetwork::Unmetered => "unmetered",
+    };
+    let unknown = match options.unknown {
+        UpdateScheduleUnknown::Allow => "allow",
+        UpdateScheduleUnknown::Defer => "defer",
+    };
+    println!(
+        "Background policy: network {network}, battery not low {}, external power {}, unknown readings {unknown}.",
+        options.battery_not_low, options.charging
+    );
+}
+
 #[cfg(feature = "web")]
-fn run_unattended_update(options: &UpdateChannelArgs) -> Result<UnattendedUpdateReport, CliError> {
+fn run_unattended_update(
+    options: &UpdateChannelArgs,
+    policy_args: &UpdatePolicyArgs,
+) -> Result<UnattendedUpdateReport, CliError> {
+    let policy = BackgroundPolicy {
+        // Old installed jobs omit --network and retain their original `any` policy.
+        network: match policy_args.network.unwrap_or(UpdateNetworkArg::Any) {
+            UpdateNetworkArg::Any => NetworkRequirement::Any,
+            UpdateNetworkArg::Unmetered => NetworkRequirement::Unmetered,
+        },
+        power: if policy_args.require_charging && !policy_args.allow_low_battery {
+            PowerRequirement::BatteryNotLowAndCharging
+        } else if policy_args.require_charging {
+            PowerRequirement::Charging
+        } else if policy_args.allow_low_battery {
+            PowerRequirement::Any
+        } else {
+            PowerRequirement::BatteryNotLow
+        },
+        unknown: if policy_args.defer_on_unknown {
+            UnknownBehavior::Defer
+        } else {
+            UnknownBehavior::Allow
+        },
+    };
+    let conditions = probe_conditions();
+    if let Some(reason) = evaluate(&policy, &conditions) {
+        return Ok(deferred_update(None, reason, conditions));
+    }
     let check = run_check(options)?;
     if !check.update_available {
         return Ok(UnattendedUpdateReport {
@@ -295,9 +367,15 @@ fn run_unattended_update(options: &UpdateChannelArgs) -> Result<UnattendedUpdate
             update_available: false,
             daemon_was_running: false,
             daemon_restored: false,
-            check,
+            check: Some(check),
+            deferred: None,
+            conditions: Some(conditions),
             applied: None,
         });
+    }
+    let conditions = probe_conditions();
+    if let Some(reason) = evaluate(&policy, &conditions) {
+        return Ok(deferred_update(Some(check), reason, conditions));
     }
     let source = vulcan_app::update::HttpUpdateSource::new()?;
     let prepared = prepare_update(&source, check.clone(), false)?;
@@ -334,9 +412,29 @@ fn run_unattended_update(options: &UpdateChannelArgs) -> Result<UnattendedUpdate
         update_available: true,
         daemon_was_running,
         daemon_restored,
-        check: prepared.check,
+        check: Some(prepared.check),
+        deferred: None,
+        conditions: Some(conditions),
         applied: Some(applied),
     })
+}
+
+#[cfg(feature = "web")]
+fn deferred_update(
+    check: Option<UpdateCheckReport>,
+    reason: DeferReason,
+    conditions: BackgroundConditions,
+) -> UnattendedUpdateReport {
+    UnattendedUpdateReport {
+        action: "scheduled_update",
+        update_available: check.as_ref().is_some_and(|check| check.update_available),
+        daemon_was_running: false,
+        daemon_restored: false,
+        check,
+        deferred: Some(reason),
+        conditions: Some(conditions),
+        applied: None,
+    }
 }
 
 fn coordinate_daemon_replacement<T, E>(
@@ -364,7 +462,10 @@ fn coordinate_daemon_replacement<T, E>(
 }
 
 #[cfg(not(feature = "web"))]
-fn run_unattended_update(_options: &UpdateChannelArgs) -> Result<UnattendedUpdateReport, CliError> {
+fn run_unattended_update(
+    _options: &UpdateChannelArgs,
+    _policy: &UpdatePolicyArgs,
+) -> Result<UnattendedUpdateReport, CliError> {
     Err(CliError::operation(
         "the `self-update run` command requires a build with the `web` feature enabled",
     ))
@@ -377,6 +478,17 @@ fn print_unattended_report(
     if output == OutputFormat::Json {
         return print_json(report);
     }
+    if let Some(reason) = &report.deferred {
+        let detail = match reason {
+            DeferReason::MeteredNetwork => "the network is metered",
+            DeferReason::LowBattery => "the battery is low",
+            DeferReason::NotCharging => "external power is unavailable",
+            DeferReason::UnknownNetwork => "the network cost is unknown",
+            DeferReason::UnknownPower => "the power state is unknown",
+        };
+        println!("Deferred unattended update: {detail}.");
+        return Ok(());
+    }
     if let Some(applied) = &report.applied {
         println!(
             "Updated Vulcan {} -> {}.",
@@ -385,7 +497,10 @@ fn print_unattended_report(
     } else {
         println!(
             "Vulcan {} is already current.",
-            report.check.current_version
+            report
+                .check
+                .as_ref()
+                .map_or("unknown", |check| check.current_version.as_str())
         );
     }
     if report.daemon_restored {
@@ -751,7 +866,27 @@ mod coordination_tests {
 
 #[cfg(all(test, feature = "web"))]
 mod tests {
-    use super::{release_target, trusted_update_keys, MAIN_CHANNEL_URL};
+    use super::{deferred_update, release_target, trusted_update_keys, MAIN_CHANNEL_URL};
+    use vulcan_app::background_policy::{BackgroundConditions, DeferReason};
+
+    #[test]
+    fn deferred_cycle_is_successful_and_reports_why_no_check_was_made() {
+        let report = deferred_update(
+            None,
+            DeferReason::MeteredNetwork,
+            BackgroundConditions {
+                metered: Some(true),
+                battery_low: None,
+                charging: None,
+            },
+        );
+        let json = serde_json::to_value(report).expect("serializable update report");
+        assert_eq!(json["action"], "scheduled_update");
+        assert_eq!(json["deferred"], "metered_network");
+        assert_eq!(json["conditions"]["metered"], true);
+        assert!(json.get("check").is_none());
+        assert!(json.get("applied").is_none());
+    }
 
     #[test]
     fn main_channel_uses_a_tag_distinct_from_the_main_branch() {

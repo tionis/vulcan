@@ -61,6 +61,10 @@ fn self_update_schedule_is_vault_independent_and_mutation_free_in_dry_run() {
             "install",
             "--at",
             "04:30",
+            "--network",
+            "any",
+            "--require-charging",
+            "--defer-on-unknown",
             "--notify-on-failure",
             "--dry-run",
         ])
@@ -69,6 +73,10 @@ fn self_update_schedule_is_vault_independent_and_mutation_free_in_dry_run() {
     let json = parse_stdout_json(&assert);
     assert_eq!(json["action"], "install");
     assert_eq!(json["options"]["daily_at"], "04:30");
+    assert_eq!(json["options"]["network"], "any");
+    assert_eq!(json["options"]["battery_not_low"], true);
+    assert_eq!(json["options"]["charging"], true);
+    assert_eq!(json["options"]["unknown"], "defer");
     assert_eq!(json["options"]["notify_on_failure"], true);
     assert_eq!(json["dry_run"], true);
     assert_eq!(json["changed"], false);
@@ -15508,6 +15516,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("unpushed candidates, old epochs, conflicts"));
     assert!(diagnostics_skill.contains("vulcan self-update apply --dry-run"));
     assert!(diagnostics_skill.contains("vulcan self-update schedule install --at 03:00"));
+    assert!(diagnostics_skill.contains("--network any"));
+    assert!(diagnostics_skill.contains("--allow-low-battery"));
+    assert!(diagnostics_skill.contains("--require-charging"));
+    assert!(diagnostics_skill.contains("--defer-on-unknown"));
     assert!(diagnostics_skill.contains("vulcan self-update schedule show"));
     assert!(diagnostics_skill.contains("unattended schedules reject `--allow-unsigned`"));
     assert!(diagnostics_skill.contains("Never run `self-update` for an APT"));

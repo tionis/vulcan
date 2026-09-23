@@ -443,8 +443,8 @@ pub use cli::{
     TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
     TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg,
     TextBundleCommand, ToolCommand, ToolInitTemplateArg, TrustCommand, UpdateChannelArg,
-    UpdateChannelArgs, UpdateCommand, UpdateScheduleCommand, VaultCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    UpdateChannelArgs, UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand,
+    VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 #[must_use]

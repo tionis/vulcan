@@ -7762,6 +7762,31 @@ pub enum UpdateChannelArg {
     Main,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UpdateNetworkArg {
+    Any,
+    Unmetered,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct UpdatePolicyArgs {
+    #[arg(
+        long,
+        value_enum,
+        help = "Network allowed for unattended update downloads (new schedules default to unmetered)"
+    )]
+    pub network: Option<UpdateNetworkArg>,
+    #[arg(long, help = "Permit unattended updates when the battery is low")]
+    pub allow_low_battery: bool,
+    #[arg(long, help = "Require external power for unattended updates")]
+    pub require_charging: bool,
+    #[arg(
+        long,
+        help = "Defer when a required network or power reading is unavailable"
+    )]
+    pub defer_on_unknown: bool,
+}
+
 impl UpdateChannelArg {
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -7820,6 +7845,8 @@ pub enum UpdateCommand {
     Run {
         #[command(flatten)]
         channel: UpdateChannelArgs,
+        #[command(flatten)]
+        policy: UpdatePolicyArgs,
         #[arg(
             long,
             help = "Send a native desktop or Termux notification when the cycle fails"
@@ -7834,6 +7861,8 @@ pub enum UpdateScheduleCommand {
     Install {
         #[command(flatten)]
         channel: UpdateChannelArgs,
+        #[command(flatten)]
+        policy: UpdatePolicyArgs,
         #[arg(
             long,
             default_value = "03:00",

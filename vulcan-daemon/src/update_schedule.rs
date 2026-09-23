@@ -51,6 +51,22 @@ pub enum UpdateScheduleAction {
     Uninstall,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateScheduleNetwork {
+    Any,
+    #[default]
+    Unmetered,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateScheduleUnknown {
+    #[default]
+    Allow,
+    Defer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateScheduleOptions {
     /// Local wall-clock time used by desktop schedulers, in HH:MM form.
@@ -60,6 +76,26 @@ pub struct UpdateScheduleOptions {
     pub channel: String,
     pub channel_url: Option<String>,
     pub notify_on_failure: bool,
+    /// Native scheduler network constraint when the platform supports it.
+    #[serde(default = "legacy_network_any")]
+    pub network: UpdateScheduleNetwork,
+    /// Require the platform's low-battery condition when supported.
+    #[serde(default = "default_true")]
+    pub battery_not_low: bool,
+    /// Require external power when supported by the native scheduler.
+    #[serde(default)]
+    pub charging: bool,
+    /// Behavior when runtime battery or power state cannot be determined.
+    #[serde(default)]
+    pub unknown: UpdateScheduleUnknown,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn legacy_network_any() -> UpdateScheduleNetwork {
+    UpdateScheduleNetwork::Any
 }
 
 impl Default for UpdateScheduleOptions {
@@ -70,6 +106,10 @@ impl Default for UpdateScheduleOptions {
             channel: "stable".to_string(),
             channel_url: None,
             notify_on_failure: false,
+            network: UpdateScheduleNetwork::default(),
+            battery_not_low: true,
+            charging: false,
+            unknown: UpdateScheduleUnknown::default(),
         }
     }
 }
@@ -354,7 +394,8 @@ pub fn plan_update_schedule(
                 .map(|v| windows_argument(v))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><RegistrationInfo><Description>Daily Vulcan portable binary self-update</Description></RegistrationInfo><Triggers><CalendarTrigger><StartBoundary>{start}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Principals><Principal id=\"CurrentUser\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT1H</ExecutionTimeLimit></Settings><Actions Context=\"CurrentUser\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions></Task>\n", xml_escape(sid), xml_escape(&executable.to_string_lossy()), xml_escape(&arguments));
+            let disallow_on_battery = options.charging;
+            let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><RegistrationInfo><Description>Daily Vulcan portable binary self-update</Description></RegistrationInfo><Triggers><CalendarTrigger><StartBoundary>{start}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Principals><Principal id=\"CurrentUser\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>{disallow_on_battery}</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT1H</ExecutionTimeLimit></Settings><Actions Context=\"CurrentUser\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions></Task>\n", xml_escape(sid), xml_escape(&executable.to_string_lossy()), xml_escape(&arguments));
             let path_arg = path.to_string_lossy().into_owned();
             let commands = match action {
                 UpdateScheduleAction::Install => vec![UpdateScheduleCommand::new(
@@ -398,9 +439,14 @@ pub fn plan_update_schedule(
                         "--period-ms".into(),
                         (u64::from(options.android_period_hours) * 3_600_000).to_string(),
                         "--network".into(),
-                        "any".into(),
+                        match options.network {
+                            UpdateScheduleNetwork::Any => "any".into(),
+                            UpdateScheduleNetwork::Unmetered => "unmetered".into(),
+                        },
                         "--battery-not-low".into(),
-                        "true".into(),
+                        options.battery_not_low.to_string(),
+                        "--charging".into(),
+                        options.charging.to_string(),
                         "--storage-not-low".into(),
                         "true".into(),
                         "--persisted".into(),
@@ -513,6 +559,22 @@ fn updater_arguments(options: &UpdateScheduleOptions) -> Vec<String> {
     }
     if options.notify_on_failure {
         values.push("--notify-on-failure".into());
+    }
+    values.extend([
+        "--network".into(),
+        match options.network {
+            UpdateScheduleNetwork::Any => "any".into(),
+            UpdateScheduleNetwork::Unmetered => "unmetered".into(),
+        },
+    ]);
+    if !options.battery_not_low {
+        values.push("--allow-low-battery".into());
+    }
+    if options.charging {
+        values.push("--require-charging".into());
+    }
+    if options.unknown == UpdateScheduleUnknown::Defer {
+        values.push("--defer-on-unknown".into());
     }
     values
 }
@@ -676,6 +738,19 @@ mod tests {
         path
     }
     fn plan(platform: UpdateSchedulePlatform) -> UpdateSchedulePlan {
+        plan_with_options(
+            platform,
+            UpdateScheduleOptions {
+                notify_on_failure: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn plan_with_options(
+        platform: UpdateSchedulePlatform,
+        options: UpdateScheduleOptions,
+    ) -> UpdateSchedulePlan {
         let root = tempfile::tempdir().unwrap().keep();
         plan_update_schedule(
             UpdateScheduleAction::Install,
@@ -686,10 +761,7 @@ mod tests {
             &root.join("home"),
             Some("S-1-5-21-42"),
             501,
-            UpdateScheduleOptions {
-                notify_on_failure: true,
-                ..Default::default()
-            },
+            options,
         )
         .unwrap()
     }
@@ -719,9 +791,89 @@ mod tests {
         assert!(android.commands[0]
             .arguments
             .contains(&"86400000".to_string()));
+        assert!(android.commands[0]
+            .arguments
+            .windows(2)
+            .any(|args| args == ["--network", "unmetered"]));
+        assert!(android.commands[0]
+            .arguments
+            .windows(2)
+            .any(|args| args == ["--battery-not-low", "true"]));
         assert!(android.definitions[0]
             .contents
             .contains("--notify-on-failure"));
+        assert!(android.definitions[0]
+            .contents
+            .contains("'--network' 'unmetered'"));
+    }
+
+    #[test]
+    fn defaults_and_legacy_manifest_fields_are_compatible() {
+        let defaults = UpdateScheduleOptions::default();
+        assert_eq!(defaults.network, UpdateScheduleNetwork::Unmetered);
+        assert!(defaults.battery_not_low);
+        assert!(!defaults.charging);
+        assert_eq!(defaults.unknown, UpdateScheduleUnknown::Allow);
+
+        let mut legacy = serde_json::to_value(defaults).unwrap();
+        let fields = legacy.as_object_mut().unwrap();
+        fields.remove("network");
+        fields.remove("battery_not_low");
+        fields.remove("charging");
+        fields.remove("unknown");
+        let loaded: UpdateScheduleOptions = serde_json::from_value(legacy).unwrap();
+        assert_eq!(loaded.network, UpdateScheduleNetwork::Any);
+        assert!(loaded.battery_not_low);
+        assert!(!loaded.charging);
+        assert_eq!(loaded.unknown, UpdateScheduleUnknown::Allow);
+    }
+
+    #[test]
+    fn scheduler_projections_and_runtime_arguments_honor_overrides() {
+        let options = UpdateScheduleOptions {
+            network: UpdateScheduleNetwork::Any,
+            battery_not_low: false,
+            charging: true,
+            unknown: UpdateScheduleUnknown::Defer,
+            ..Default::default()
+        };
+        let android = plan_with_options(UpdateSchedulePlatform::TermuxJob, options.clone());
+        let android_args = &android.commands[0].arguments;
+        assert!(android_args
+            .windows(2)
+            .any(|args| args == ["--network", "any"]));
+        assert!(android_args
+            .windows(2)
+            .any(|args| args == ["--battery-not-low", "false"]));
+        assert!(android_args
+            .windows(2)
+            .any(|args| args == ["--charging", "true"]));
+        let script = &android.definitions[0].contents;
+        for flag in [
+            "'--network' 'any'",
+            "--allow-low-battery",
+            "--require-charging",
+            "--defer-on-unknown",
+        ] {
+            assert!(script.contains(flag), "missing {flag}");
+        }
+
+        let windows = plan_with_options(UpdateSchedulePlatform::WindowsScheduledTask, options);
+        assert!(windows.definitions[0]
+            .contents
+            .contains("<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>"));
+        for flag in [
+            "--network",
+            "any",
+            "--allow-low-battery",
+            "--require-charging",
+            "--defer-on-unknown",
+        ] {
+            assert!(
+                windows.definitions[0].contents.contains(flag),
+                "missing {flag}"
+            );
+        }
     }
 
     #[test]

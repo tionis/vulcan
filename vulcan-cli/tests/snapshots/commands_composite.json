@@ -12599,6 +12599,62 @@
                     ]
                   },
                   {
+                    "help": "Network allowed for unattended update downloads (new schedules default to unmetered)",
+                    "id": "network",
+                    "long": "network",
+                    "possible_values": [
+                      "any",
+                      "unmetered"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NETWORK"
+                    ]
+                  },
+                  {
+                    "help": "Permit unattended updates when the battery is low",
+                    "id": "allow_low_battery",
+                    "long": "allow-low-battery",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ALLOW_LOW_BATTERY"
+                    ]
+                  },
+                  {
+                    "help": "Require external power for unattended updates",
+                    "id": "require_charging",
+                    "long": "require-charging",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REQUIRE_CHARGING"
+                    ]
+                  },
+                  {
+                    "help": "Defer when a required network or power reading is unavailable",
+                    "id": "defer_on_unknown",
+                    "long": "defer-on-unknown",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DEFER_ON_UNKNOWN"
+                    ]
+                  },
+                  {
                     "help": "Local daily run time on Linux, macOS, and Windows (HH:MM)",
                     "id": "at",
                     "long": "at",
@@ -12721,6 +12777,62 @@
                 "short": null,
                 "value_names": [
                   "ALLOW_UNSIGNED"
+                ]
+              },
+              {
+                "help": "Network allowed for unattended update downloads (new schedules default to unmetered)",
+                "id": "network",
+                "long": "network",
+                "possible_values": [
+                  "any",
+                  "unmetered"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NETWORK"
+                ]
+              },
+              {
+                "help": "Permit unattended updates when the battery is low",
+                "id": "allow_low_battery",
+                "long": "allow-low-battery",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALLOW_LOW_BATTERY"
+                ]
+              },
+              {
+                "help": "Require external power for unattended updates",
+                "id": "require_charging",
+                "long": "require-charging",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REQUIRE_CHARGING"
+                ]
+              },
+              {
+                "help": "Defer when a required network or power reading is unavailable",
+                "id": "defer_on_unknown",
+                "long": "defer-on-unknown",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DEFER_ON_UNKNOWN"
                 ]
               },
               {
