@@ -267,7 +267,10 @@ fn sync_device_list_shows_shared_name_and_full_id() {
         "{}",
         String::from_utf8_lossy(&unnamed.stderr)
     );
-    assert!(String::from_utf8_lossy(&unnamed.stdout).contains(&format!("(unnamed)\t{device_id}\t")));
+    assert!(
+        String::from_utf8_lossy(&unnamed.stdout).contains(&format!("(unnamed)\n  ID: {device_id}"))
+    );
+    assert!(String::from_utf8_lossy(&unnamed.stdout).contains("Local recovery: not fetched"));
 
     let preview = run(&[
         "sync",
@@ -289,12 +292,31 @@ fn sync_device_list_shows_shared_name_and_full_id() {
     );
     let named = run(&["sync", "devices", "list"]);
     assert!(named.status.success());
-    assert!(String::from_utf8_lossy(&named.stdout).contains(&format!("Desk laptop\t{device_id}\t")));
+    assert!(
+        String::from_utf8_lossy(&named.stdout).contains(&format!("Desk laptop\n  ID: {device_id}"))
+    );
     let json = run(&["--output", "json", "sync", "devices", "list"]);
     assert!(json.status.success());
     let report: Value = serde_json::from_slice(&json.stdout).expect("JSON device list");
     assert_eq!(report["backups"][0]["name"], "Desk laptop");
     assert_eq!(report["backups"][0]["device_id"], device_id);
+    assert_eq!(report["backups"][0]["recovery_status"], "not_fetched");
+    let fetch = run(&["sync", "devices", "fetch", device_id]);
+    assert!(fetch.status.success());
+    let fetched = run(&["--output", "json", "sync", "devices", "list"]);
+    let fetched_report: Value = serde_json::from_slice(&fetched.stdout).expect("fetched list");
+    assert_eq!(fetched_report["backups"][0]["recovery_status"], "current");
+    let unbacked_id = "01arz3ndektsv4rrffq69g5faw";
+    assert!(
+        run(&["sync", "devices", "set-name", unbacked_id, "Spare laptop"])
+            .status
+            .success()
+    );
+    let inventory = run(&["sync", "devices", "list"]);
+    assert!(String::from_utf8_lossy(&inventory.stdout)
+        .contains("Named devices without a backup or local recovery copy:"));
+    assert!(String::from_utf8_lossy(&inventory.stdout)
+        .contains(&format!("Spare laptop\n  ID: {unbacked_id}")));
 }
 
 fn run_daemon_test_command(

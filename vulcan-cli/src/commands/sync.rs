@@ -27,7 +27,7 @@ use vulcan_app::sync_conflicts::{
 use vulcan_app::sync_devices::{
     fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
     set_sync_device_name, SyncDeviceFetchReport, SyncDeviceListReport, SyncDeviceOptions,
-    SyncDeviceRelation, SyncDeviceRemoveReport,
+    SyncDeviceRecoveryStatus, SyncDeviceRelation, SyncDeviceRemoveReport,
 };
 use vulcan_app::sync_notifications::{
     notification_status, publish_sync_notification_advertisement,
@@ -2726,25 +2726,64 @@ fn print_sync_device_list(
         "Remote device safety backups: {} (remote {}, profile {})",
         report.count, report.remote, report.profile
     );
+    if let Some(device_id) = &report.current_device_id {
+        println!("This device: {device_id}");
+    }
     if report.backups.is_empty() {
         println!("No device backups found. A successful non-dry-run sync creates one.");
-        return Ok(());
-    }
-    for backup in &report.backups {
-        println!(
-            "{}\t{}\t{}\t{}{}",
-            backup.name.as_deref().unwrap_or("(unnamed)"),
-            backup.device_id,
-            backup.revision,
-            backup.remote_ref,
-            if backup.current_device {
-                "\t(this device)"
-            } else {
-                ""
+    } else {
+        for backup in &report.backups {
+            println!(
+                "\n{}{}",
+                backup.name.as_deref().unwrap_or("(unnamed)"),
+                if backup.current_device {
+                    " (this device)"
+                } else {
+                    ""
+                }
+            );
+            println!("  ID: {}", backup.device_id);
+            println!(
+                "  Remote backup: {} at {}",
+                backup.revision, backup.remote_ref
+            );
+            match backup.recovery_status {
+                SyncDeviceRecoveryStatus::NotFetched => {
+                    println!("  Local recovery: not fetched");
+                }
+                SyncDeviceRecoveryStatus::Current => {
+                    println!("  Local recovery: current at {}", backup.recovery_ref);
+                }
+                SyncDeviceRecoveryStatus::Stale => {
+                    println!(
+                        "  Local recovery: stale at {} in {}",
+                        backup.recovery_revision.as_deref().unwrap_or("unknown"),
+                        backup.recovery_ref
+                    );
+                }
             }
-        );
+        }
     }
-    println!("Recover another device with: vulcan sync devices fetch <device-id>");
+    if !report.retained_recovery.is_empty() {
+        println!("\nRetained local recovery copies without a remote backup:");
+        for recovery in &report.retained_recovery {
+            println!("\n{}", recovery.name.as_deref().unwrap_or("(unnamed)"));
+            println!("  ID: {}", recovery.device_id);
+            println!(
+                "  Local recovery: {} at {}",
+                recovery.revision, recovery.recovery_ref
+            );
+        }
+    }
+    if !report.named_without_backup.is_empty() {
+        println!("\nNamed devices without a backup or local recovery copy:");
+        for device in &report.named_without_backup {
+            println!("\n{}\n  ID: {}", device.name, device.device_id);
+        }
+    }
+    if !report.backups.is_empty() {
+        println!("\nRecover another device with: vulcan sync devices fetch <device-id>");
+    }
     Ok(())
 }
 

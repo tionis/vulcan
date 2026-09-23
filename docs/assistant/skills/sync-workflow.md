@@ -112,8 +112,11 @@ bytes even when later reconciliation conflicts. The moving head retains earlier 
 if restored checkouts accidentally reuse one device ID and diverge, Vulcan publishes a bridge
 that keeps both histories reachable.
 
-- Run `vulcan sync devices list [--wiki <id>]` to enumerate remote device IDs, friendly names
-  when set, and exact revisions. Use `vulcan sync devices set-name <device-id> <name>` to save a
+- Run `vulcan sync devices list [--wiki <id>]` to inventory remote safety heads, whether their
+  local recovery copies are missing, current, or stale, retained local copies without remote heads,
+  and named devices without backups. A fetched local copy is not proof that a backup is integrated
+  or safe to remove. The list shows friendly names when set and exact IDs and revisions. Use
+  `vulcan sync devices set-name <device-id> <name>` to save a
   shared vault label, or `clear-name <device-id>` to remove it; both support `--dry-run`. Labels
   travel with the vault when `.vulcan/device-names/` is tracked by Git, while refs and recovery
   commands always use the full device ID. These

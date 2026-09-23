@@ -4,12 +4,13 @@ use crate::durable_file;
 use crate::sync_state::SyncStateStore;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
     device_recovery_live_ref, device_recovery_ref, sync_profile_key, GitEngine, GitRefDeleteResult,
-    GitRefName, GitRemote, GitSyncDeviceId, GitSyncOptions, RepositoryLock,
+    GitRefName, GitReference, GitRemote, GitSyncDeviceId, GitSyncOptions, RepositoryLock,
     REMOTE_DEVICE_BRANCH_ROOT,
 };
 
@@ -48,6 +49,35 @@ pub struct SyncDeviceBackupSummary {
     pub remote_ref: GitRefName,
     pub revision: String,
     pub current_device: bool,
+    pub recovery_ref: GitRefName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_revision: Option<String>,
+    pub recovery_status: SyncDeviceRecoveryStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncDeviceRecoveryStatus {
+    NotFetched,
+    Current,
+    Stale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncDeviceLocalRecoverySummary {
+    pub device_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub recovery_ref: GitRefName,
+    pub revision: String,
+    pub current_device: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncDeviceNamedSummary {
+    pub device_id: String,
+    pub name: String,
+    pub current_device: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -61,6 +91,8 @@ pub struct SyncDeviceListReport {
     pub current_device_id: Option<String>,
     pub count: usize,
     pub backups: Vec<SyncDeviceBackupSummary>,
+    pub retained_recovery: Vec<SyncDeviceLocalRecoverySummary>,
+    pub named_without_backup: Vec<SyncDeviceNamedSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -131,7 +163,24 @@ pub fn list_sync_device_backups(
     let references = engine
         .list_remote_refs(&repository, &options.remote, &prefix)
         .map_err(AppError::operation)?;
+    let recovery_prefix = GitRefName::parse(format!("refs/vulcan/recovery/devices/{profile}"))
+        .map_err(AppError::operation)?;
+    let recovery_namespace = format!("{}/", recovery_prefix.as_str());
+    let mut recovery_refs: BTreeMap<String, GitReference> = engine
+        .list_refs(&repository, &recovery_prefix)
+        .map_err(AppError::operation)?
+        .into_iter()
+        .filter_map(|reference| {
+            let id = reference
+                .name
+                .as_str()
+                .strip_prefix(&recovery_namespace)?
+                .to_string();
+            (id != "live").then_some((id, reference))
+        })
+        .collect();
     let mut backups = Vec::with_capacity(references.len());
+    let mut seen = BTreeSet::new();
     for reference in references {
         let device_id = reference
             .name
@@ -139,14 +188,51 @@ pub fn list_sync_device_backups(
             .strip_prefix(&format!("{}/", prefix.as_str()))
             .ok_or_else(|| AppError::operation("remote returned an out-of-namespace device ref"))?;
         let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
+        seen.insert(parsed.as_str().to_string());
+        let recovery_ref =
+            device_recovery_ref(&profile, parsed.as_str()).map_err(AppError::operation)?;
+        let recovery_revision = recovery_refs
+            .remove(parsed.as_str())
+            .map(|reference| reference.target.to_string());
+        let recovery_status = match recovery_revision.as_deref() {
+            None => SyncDeviceRecoveryStatus::NotFetched,
+            Some(revision) if revision == reference.target.as_str() => {
+                SyncDeviceRecoveryStatus::Current
+            }
+            Some(_) => SyncDeviceRecoveryStatus::Stale,
+        };
         backups.push(SyncDeviceBackupSummary {
             device_id: parsed.as_str().to_string(),
             name: read_device_name(&vault, &parsed)?,
             remote_ref: reference.name,
             revision: reference.target.to_string(),
             current_device: current.as_ref() == Some(&parsed),
+            recovery_ref,
+            recovery_revision,
+            recovery_status,
         });
     }
+    let mut retained_recovery = Vec::new();
+    for (device_id, reference) in recovery_refs {
+        let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
+        seen.insert(parsed.as_str().to_string());
+        retained_recovery.push(SyncDeviceLocalRecoverySummary {
+            device_id: parsed.as_str().to_string(),
+            name: read_device_name(&vault, &parsed)?,
+            recovery_ref: reference.name,
+            revision: reference.target.to_string(),
+            current_device: current.as_ref() == Some(&parsed),
+        });
+    }
+    let named_without_backup = list_device_names(&vault)?
+        .into_iter()
+        .filter(|(id, _)| !seen.contains(id))
+        .map(|(device_id, name)| SyncDeviceNamedSummary {
+            current_device: current.as_ref().is_some_and(|id| id.as_str() == device_id),
+            device_id,
+            name,
+        })
+        .collect();
     Ok(SyncDeviceListReport {
         version: SYNC_DEVICE_REPORT_VERSION,
         vault,
@@ -156,6 +242,8 @@ pub fn list_sync_device_backups(
         current_device_id: current.map(|id| id.as_str().to_string()),
         count: backups.len(),
         backups,
+        retained_recovery,
+        named_without_backup,
     })
 }
 
@@ -262,6 +350,34 @@ fn read_device_name(vault: &Path, device_id: &GitSyncDeviceId) -> Result<Option<
     }
     validate_device_name(&record.name)?;
     Ok(Some(record.name))
+}
+
+fn list_device_names(vault: &Path) -> Result<Vec<(String, String)>, AppError> {
+    check_device_name_directory(vault)?;
+    let directory = vault.join(".vulcan/device-names");
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(AppError::operation)?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let device_id = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| AppError::operation("invalid device name filename"))?;
+        let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
+        let name = read_device_name(vault, &parsed)?
+            .ok_or_else(|| AppError::operation("device name file disappeared while listing"))?;
+        names.push((parsed.as_str().to_string(), name));
+    }
+    names.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(names)
 }
 
 pub fn fetch_sync_device_backup(
@@ -488,7 +604,7 @@ fn classify_relation(
 mod tests {
     use super::{
         fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
-        set_sync_device_name, SyncDeviceOptions, SyncDeviceRelation,
+        set_sync_device_name, SyncDeviceOptions, SyncDeviceRecoveryStatus, SyncDeviceRelation,
     };
     use std::fs;
     use std::path::Path;
@@ -524,6 +640,62 @@ mod tests {
         assert!(!SyncDeviceRelation::ContainsLive.safe_to_remove());
         assert!(!SyncDeviceRelation::Diverged.safe_to_remove());
         assert!(!SyncDeviceRelation::LiveUninitialized.safe_to_remove());
+    }
+
+    fn check_name_inventory(paths: &VaultPaths, options: &SyncDeviceOptions, vault: &Path) {
+        set_sync_device_name(paths, DEVICE_A, Some("Living room laptop"), true)
+            .expect("preview name");
+        assert!(!vault
+            .join(format!(".vulcan/device-names/{DEVICE_A}.json"))
+            .exists());
+        set_sync_device_name(paths, DEVICE_A, Some("Living room laptop"), false).expect("set name");
+        assert_eq!(
+            list_sync_device_backups(paths, options)
+                .expect("list named backup")
+                .backups[0]
+                .name
+                .as_deref(),
+            Some("Living room laptop")
+        );
+        assert!(set_sync_device_name(paths, DEVICE_A, Some("bad\nname"), false).is_err());
+        set_sync_device_name(paths, DEVICE_A, None, false).expect("clear name");
+        assert_eq!(
+            list_sync_device_backups(paths, options)
+                .expect("list unnamed backup")
+                .backups[0]
+                .name,
+            None
+        );
+    }
+
+    fn check_stale_recovery_inventory(
+        paths: &VaultPaths,
+        options: &SyncDeviceOptions,
+        vault: &Path,
+        base: &str,
+        live: &str,
+        integrated_ref: &str,
+    ) {
+        let fetched_list = list_sync_device_backups(paths, options).expect("list fetched backup");
+        assert_eq!(
+            fetched_list.backups[0].recovery_status,
+            SyncDeviceRecoveryStatus::Current
+        );
+        assert_eq!(
+            fetched_list.backups[0].recovery_revision.as_deref(),
+            Some(base)
+        );
+        let advanced_refspec = format!("{live}:{integrated_ref}");
+        git(vault, &["push", "--quiet", "origin", &advanced_refspec]);
+        assert_eq!(
+            list_sync_device_backups(paths, options)
+                .expect("list stale recovery")
+                .backups[0]
+                .recovery_status,
+            SyncDeviceRecoveryStatus::Stale
+        );
+        let restored_refspec = format!("+{base}:{integrated_ref}");
+        git(vault, &["push", "--quiet", "origin", &restored_refspec]);
     }
 
     #[test]
@@ -563,33 +735,15 @@ mod tests {
         assert_eq!(listed.count, 1);
         assert_eq!(listed.backups[0].device_id, DEVICE_A);
         assert_eq!(listed.backups[0].name, None);
-        set_sync_device_name(&paths, DEVICE_A, Some("Living room laptop"), true)
-            .expect("preview name");
-        assert!(!vault
-            .join(format!(".vulcan/device-names/{DEVICE_A}.json"))
-            .exists());
-        set_sync_device_name(&paths, DEVICE_A, Some("Living room laptop"), false)
-            .expect("set name");
         assert_eq!(
-            list_sync_device_backups(&paths, &options)
-                .expect("list named backup")
-                .backups[0]
-                .name
-                .as_deref(),
-            Some("Living room laptop")
+            listed.backups[0].recovery_status,
+            SyncDeviceRecoveryStatus::NotFetched
         );
-        assert!(set_sync_device_name(&paths, DEVICE_A, Some("bad\nname"), false).is_err());
-        set_sync_device_name(&paths, DEVICE_A, None, false).expect("clear name");
-        assert_eq!(
-            list_sync_device_backups(&paths, &options)
-                .expect("list unnamed backup")
-                .backups[0]
-                .name,
-            None
-        );
+        check_name_inventory(&paths, &options, &vault);
         let fetched = fetch_sync_device_backup(&paths, &options, DEVICE_A, false)
             .expect("fetch integrated backup");
         assert_eq!(fetched.relation, Some(SyncDeviceRelation::Integrated));
+        check_stale_recovery_inventory(&paths, &options, &vault, &base, &live, &integrated_ref);
         let preview = remove_sync_device_backup(&paths, &options, DEVICE_A, true)
             .expect("preview safe removal");
         assert!(!preview.removed);
@@ -598,6 +752,15 @@ mod tests {
                 .expect("remove integrated backup")
                 .removed
         );
+        let retained = list_sync_device_backups(&paths, &options).expect("list retained recovery");
+        assert_eq!(retained.count, 0);
+        assert_eq!(retained.retained_recovery.len(), 1);
+        assert_eq!(retained.retained_recovery[0].device_id, DEVICE_A);
+        set_sync_device_name(&paths, DEVICE_B, Some("Travel tablet"), false)
+            .expect("name unbacked device");
+        let named = list_sync_device_backups(&paths, &options).expect("list named-only device");
+        assert_eq!(named.named_without_backup.len(), 1);
+        assert_eq!(named.named_without_backup[0].name, "Travel tablet");
 
         git(&vault, &["checkout", "--quiet", "--detach", &base]);
         fs::write(vault.join("device-only.md"), "preserve me\n").expect("device note");
@@ -607,6 +770,9 @@ mod tests {
         let divergent_ref = format!("refs/heads/__vulcan-sync/devices/{profile}/{DEVICE_B}");
         let divergent_refspec = format!("{divergent}:{divergent_ref}");
         git(&vault, &["push", "--quiet", "origin", &divergent_refspec]);
+        let listed = list_sync_device_backups(&paths, &options).expect("list new backup");
+        assert!(listed.named_without_backup.is_empty());
+        assert_eq!(listed.backups[0].name.as_deref(), Some("Travel tablet"));
         let fetched = fetch_sync_device_backup(&paths, &options, DEVICE_B, false)
             .expect("fetch divergent backup");
         assert_eq!(fetched.relation, Some(SyncDeviceRelation::Diverged));
