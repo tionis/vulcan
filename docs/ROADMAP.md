@@ -5998,6 +5998,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 **Depends on:** The versioned ref contract and remote per-device safety heads in 12.4. Trust management, device fleet management, transport authorization, and signed statements are follow-ons, not blockers. Key custody is designed separately in 12.16 and does not broaden this identity slice.
 
+**UX and security review:** `docs/investigations/device-management-ux.md` analyzes current and planned device workflows, including the already-emitted namespace-version-2 value that must be reconciled with the staged identity rollout before implementation. Its recommendations are not an accepted protocol change.
+
 #### 12.15.1 Identifier and key format
 
 - [ ] Add a versioned `GitSyncDeviceId` grammar that accepts both legacy lowercase Crockford-Base32 ULIDs and `vdev1_<base32>` key identities, reports their kind, rejects ambiguous/non-canonical spellings, and remains safe as one Git ref component.
