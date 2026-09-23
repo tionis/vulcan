@@ -30,6 +30,7 @@
 
 #[cfg(feature = "web")]
 mod credential_transport;
+mod device_state;
 mod durable_file;
 mod error;
 

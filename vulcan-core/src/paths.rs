@@ -110,6 +110,25 @@ impl VaultPaths {
         &self.cache_db
     }
 
+    /// Device-local authoritative workflow state. On Android this stays off
+    /// the shared worktree so locks and directory synchronization remain usable.
+    pub fn operational_state_dir(&self) -> Result<PathBuf, std::io::Error> {
+        #[cfg(target_os = "android")]
+        {
+            let root = vulcan_user_state_dir().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "cannot determine the private Vulcan state directory",
+                )
+            })?;
+            return private_operational_state_dir(&self.vault_root, &root);
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            Ok(self.vulcan_dir.clone())
+        }
+    }
+
     #[must_use]
     pub fn config_file(&self) -> &Path {
         &self.config_file
@@ -151,6 +170,16 @@ pub(crate) fn private_cache_db_path(
 ) -> Result<PathBuf, std::io::Error> {
     let key = device_local_vault_key(vault_root)?;
     Ok(state_root.join("caches").join(key).join(CACHE_DB_NAME))
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn private_operational_state_dir(
+    vault_root: &Path,
+    state_root: &Path,
+) -> Result<PathBuf, std::io::Error> {
+    Ok(state_root
+        .join("vaults")
+        .join(device_local_vault_key(vault_root)?))
 }
 
 #[must_use]
@@ -718,6 +747,11 @@ mod tests {
         assert_eq!(paths.vulcan_dir(), Path::new("/tmp/example-vault/.vulcan"));
         #[cfg(not(target_os = "android"))]
         assert_eq!(
+            paths.operational_state_dir().expect("state directory"),
+            Path::new("/tmp/example-vault/.vulcan")
+        );
+        #[cfg(not(target_os = "android"))]
+        assert_eq!(
             paths.cache_db(),
             Path::new("/tmp/example-vault/.vulcan/cache.db")
         );
@@ -756,6 +790,22 @@ mod tests {
         assert!(!direct.exists(), "path calculation is read-only");
     }
 
+    #[test]
+    fn private_operational_state_uses_the_same_canonical_vault_identity() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let state = temporary.path().join("device-state");
+        let operational = private_operational_state_dir(&vault, &state).expect("state path");
+        let cache = private_cache_db_path(&vault, &state).expect("cache path");
+        assert_eq!(
+            operational.file_name(),
+            cache.parent().and_then(Path::file_name)
+        );
+        assert!(operational.starts_with(&state));
+        assert!(!operational.starts_with(&vault));
+    }
+
     #[cfg(target_os = "android")]
     #[test]
     fn android_vault_paths_select_the_private_cache() {
@@ -767,6 +817,10 @@ mod tests {
             private_cache_db_path(temporary.path(), &state)
                 .expect("private cache path")
                 .as_path()
+        );
+        assert_eq!(
+            paths.operational_state_dir().expect("private state path"),
+            private_operational_state_dir(temporary.path(), &state).expect("private state path")
         );
     }
 

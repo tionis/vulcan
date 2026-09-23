@@ -2769,6 +2769,11 @@ fn bytes_hash(bytes: &[u8]) -> String {
 }
 
 fn state_path(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppError> {
+    validate_state_profile(profile)?;
+    crate::device_state::path(paths, &state_relative_path(profile))
+}
+
+fn validate_state_profile(profile: &str) -> Result<(), AppError> {
     if profile.is_empty()
         || !profile
             .chars()
@@ -2778,11 +2783,11 @@ fn state_path(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppError> {
             "Outline profile names may contain only ASCII letters, digits, '-' and '_'",
         ));
     }
-    Ok(paths
-        .vulcan_dir()
-        .join("integrations")
-        .join("outline-pull")
-        .join(format!("{profile}.json")))
+    Ok(())
+}
+
+fn state_relative_path(profile: &str) -> PathBuf {
+    PathBuf::from("integrations/outline-pull").join(format!("{profile}.json"))
 }
 
 fn load_state(
@@ -2792,7 +2797,8 @@ fn load_state(
     destination: &str,
     connector_identity: Option<&str>,
 ) -> Result<OutlinePullState, AppError> {
-    let path = state_path(paths, profile)?;
+    validate_state_profile(profile)?;
+    let path = crate::device_state::readable_path(paths, &state_relative_path(profile))?;
     if !path.exists() {
         return Ok(OutlinePullState::empty(
             profile,
@@ -2815,7 +2821,8 @@ pub fn load_outline_pulled_bindings(
     profile: &str,
     collection_id: &str,
 ) -> Result<Vec<OutlinePulledBinding>, AppError> {
-    let path = state_path(paths, profile)?;
+    validate_state_profile(profile)?;
+    let path = crate::device_state::readable_path(paths, &state_relative_path(profile))?;
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -2873,6 +2880,13 @@ impl StateLock {
             .map_err(AppError::operation)?;
         file.try_lock_exclusive()
             .map_err(|_| AppError::operation("Outline pull state is locked by another process"))?;
+        if !state_path.exists() {
+            crate::device_state::migrate_flat_directory(
+                paths,
+                Path::new("integrations/outline-pull/sources"),
+            )?;
+            crate::device_state::migrate_file(paths, &state_relative_path(profile))?;
+        }
         Ok(Self { file, state_path })
     }
 
@@ -4435,7 +4449,8 @@ mod tests {
         assert!(!persisted.contains("remote source"));
         assert!(
             paths
-                .vulcan_dir()
+                .operational_state_dir()
+                .expect("state root")
                 .join("integrations/outline-pull/sources")
                 .read_dir()
                 .unwrap()

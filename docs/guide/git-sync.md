@@ -39,7 +39,7 @@ The default colocated layout keeps `.git/` beside the vault. `sync run` does not
 
 ## Android and Termux
 
-Android shared storage is suitable for the Obsidian-visible files but not for Git's private repository machinery or SQLite WAL. Keep the worktree in shared storage; Vulcan places the detached Git directory, rebuildable cache, and vault write lock in Termux-private storage. After upgrading from a build that kept `.vulcan/cache.db` in shared storage, run `vulcan scan` to build the private cache. The old shared cache is not used and can be removed after the rebuild succeeds.
+Android shared storage is suitable for the Obsidian-visible files but not for Git's private repository machinery or SQLite WAL. Keep the worktree in shared storage; Vulcan places the detached Git directory, rebuildable cache, vault write lock, mdbase transaction state, and integration/Outline state in Termux-private storage. Existing route and Outline state is copied there on the first write, with the older files left intact. An existing mdbase transaction is copied under the vault lock before recovery. After upgrading from a build that kept `.vulcan/cache.db` in shared storage, run `vulcan scan` to build the private cache. The old shared cache is not used and can be removed after the rebuild succeeds. Mdbase canonical file writes require directory sync on the shared worktree; if the Android filesystem rejects it, Vulcan refuses the write before creating a transaction.
 
 After granting Termux storage access and installing Git, preview the layout. In Termux,
 `sync clone` automatically keeps Git metadata in the private Vulcan data directory and selects the

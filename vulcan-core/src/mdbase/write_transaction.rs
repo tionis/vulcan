@@ -252,6 +252,13 @@ pub fn acquire_mdbase_consistent_read(
         }
         Ok(_) => {}
     }
+    #[cfg(target_os = "android")]
+    if !state_root(paths).exists() && paths.vulcan_dir().join(MDBASE_WRITE_STATE_DIR).exists() {
+        let _migration_lock = acquire_write_lock(paths).map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to acquire mdbase migration lock", error)
+        })?;
+        ensure_state_layout(paths)?;
+    }
     let lock = acquire_read_lock(paths).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to acquire vault read lock", error)
     })?;
@@ -368,6 +375,7 @@ pub fn acknowledge_mdbase_write_outbox(
     let _lock = acquire_write_lock(paths).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to acquire vault write lock", error)
     })?;
+    ensure_state_layout(paths)?;
     let path = state_root(paths)
         .join("outbox")
         .join(format!("{transaction_id}.json"));
@@ -415,6 +423,8 @@ where
         return Ok(receipt.outcome);
     }
     validate_apply(paths, collection, request)?;
+    #[cfg(target_os = "android")]
+    verify_android_directory_sync(&collection.root)?;
     preflight().map_err(|error| {
         MdbaseWriteTransactionError::new(
             "preflight_failed",
@@ -477,6 +487,21 @@ where
     finish_committed(paths, collection, journal, &mut reconcile, &mut boundary)
 }
 
+#[cfg(any(test, target_os = "android"))]
+fn verify_android_directory_sync(root: &Path) -> Result<(), MdbaseWriteTransactionError> {
+    File::open(root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            MdbaseWriteTransactionError::new(
+                "unsupported_storage",
+                format!(
+                    "mdbase writes require directory sync for crash recovery; {} does not support it: {error}",
+                    root.display()
+                ),
+            )
+        })
+}
+
 fn recover_locked<F>(
     paths: &VaultPaths,
     collection: &super::MdbaseCollection,
@@ -490,6 +515,8 @@ where
         return Ok(None);
     };
     ensure_collection_identity(collection, &journal.preview.collection_root)?;
+    #[cfg(target_os = "android")]
+    verify_android_directory_sync(&collection.root)?;
     if journal.phase == JournalPhase::Blocked {
         let path = journal
             .conflict
@@ -1062,12 +1089,114 @@ fn journal_outcome(journal: &WriteJournal, status: MdbaseWriteOutcomeStatus) -> 
 fn ensure_state_layout(paths: &VaultPaths) -> Result<(), MdbaseWriteTransactionError> {
     ensure_vulcan_dir(paths)
         .map_err(|error| MdbaseWriteTransactionError::io("failed to validate .vulcan", error))?;
+    #[cfg(target_os = "android")]
+    {
+        paths.operational_state_dir().map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to locate private mdbase state", error)
+        })?;
+        fs::create_dir_all(
+            state_root(paths)
+                .parent()
+                .expect("mdbase state has a private parent"),
+        )
+        .map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to create private mdbase state parent", error)
+        })?;
+        migrate_legacy_state_directory(
+            &paths.vulcan_dir().join(MDBASE_WRITE_STATE_DIR),
+            &state_root(paths),
+        )?;
+    }
     let root = state_root(paths);
     ensure_plain_directory(&root)?;
     ensure_plain_directory(&root.join("receipts"))?;
     ensure_plain_directory(&root.join("outbox"))?;
     ensure_plain_directory(&root.join("staging"))?;
     Ok(())
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn migrate_legacy_state_directory(
+    legacy: &Path,
+    private: &Path,
+) -> Result<(), MdbaseWriteTransactionError> {
+    if legacy == private || private.exists() || !legacy.exists() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(legacy).map_err(|error| {
+        MdbaseWriteTransactionError::io("failed to inspect legacy mdbase state", error)
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(MdbaseWriteTransactionError::new(
+            "state_unsafe",
+            "legacy mdbase state is not a plain directory",
+        ));
+    }
+    let parent = private.parent().expect("private mdbase state has a parent");
+    fs::create_dir_all(parent).map_err(|error| {
+        MdbaseWriteTransactionError::io("failed to create private mdbase state parent", error)
+    })?;
+    let staging = tempfile::Builder::new()
+        .prefix("mdbase-migration-")
+        .tempdir_in(parent)
+        .map_err(|error| MdbaseWriteTransactionError::io("failed to stage mdbase state", error))?;
+    copy_legacy_state_tree(legacy, staging.path(), 0)?;
+    fs::rename(staging.path(), private).map_err(|error| {
+        MdbaseWriteTransactionError::io("failed to publish private mdbase state", error)
+    })?;
+    sync_directory(parent)
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn copy_legacy_state_tree(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+) -> Result<(), MdbaseWriteTransactionError> {
+    if depth > 8 {
+        return Err(MdbaseWriteTransactionError::new(
+            "state_unsafe",
+            "legacy mdbase state nesting exceeds the migration limit",
+        ));
+    }
+    for entry in fs::read_dir(source).map_err(|error| {
+        MdbaseWriteTransactionError::io("failed to enumerate legacy mdbase state", error)
+    })? {
+        let entry = entry.map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to read legacy mdbase state", error)
+        })?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to inspect legacy mdbase entry", error)
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(MdbaseWriteTransactionError::new(
+                "state_unsafe",
+                "legacy mdbase state contains a symlink",
+            ));
+        }
+        let target = destination.join(entry.file_name());
+        if metadata.is_dir() {
+            fs::create_dir(&target).map_err(|error| {
+                MdbaseWriteTransactionError::io("failed to create private mdbase directory", error)
+            })?;
+            copy_legacy_state_tree(&entry.path(), &target, depth + 1)?;
+        } else if metadata.is_file() {
+            fs::copy(entry.path(), &target).map_err(|error| {
+                MdbaseWriteTransactionError::io("failed to copy legacy mdbase state", error)
+            })?;
+            File::open(&target)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| {
+                    MdbaseWriteTransactionError::io("failed to sync private mdbase state", error)
+                })?;
+        } else {
+            return Err(MdbaseWriteTransactionError::new(
+                "state_unsafe",
+                "legacy mdbase state contains a non-regular entry",
+            ));
+        }
+    }
+    sync_directory(destination)
 }
 
 fn ensure_plain_directory(path: &Path) -> Result<(), MdbaseWriteTransactionError> {
@@ -1357,7 +1486,10 @@ fn staged_path(
 }
 
 fn state_root(paths: &VaultPaths) -> PathBuf {
-    paths.vulcan_dir().join(MDBASE_WRITE_STATE_DIR)
+    paths
+        .operational_state_dir()
+        .unwrap_or_else(|_| paths.vulcan_dir().to_path_buf())
+        .join(MDBASE_WRITE_STATE_DIR)
 }
 
 fn journal_path(paths: &VaultPaths) -> PathBuf {
@@ -1417,6 +1549,58 @@ mod tests {
     use chrono::TimeZone;
     use std::cell::Cell;
     use tempfile::tempdir;
+
+    #[test]
+    fn legacy_mdbase_state_migrates_atomically_with_journal_and_snapshots() {
+        let temporary = tempdir().expect("temporary directory");
+        let legacy = temporary.path().join("shared/mdbase-write");
+        let private = temporary.path().join("private/mdbase-write");
+        fs::create_dir_all(legacy.join("staging/transaction")).expect("legacy staging directory");
+        fs::write(legacy.join("journal.json"), b"journal").expect("legacy journal");
+        fs::write(legacy.join("staging/transaction/blob"), b"staged").expect("legacy staged bytes");
+
+        migrate_legacy_state_directory(&legacy, &private).expect("migrate state");
+        assert_eq!(
+            fs::read(private.join("journal.json")).expect("journal"),
+            b"journal"
+        );
+        assert_eq!(
+            fs::read(private.join("staging/transaction/blob")).expect("staged bytes"),
+            b"staged"
+        );
+        assert!(
+            legacy.join("journal.json").exists(),
+            "legacy state is preserved"
+        );
+        migrate_legacy_state_directory(&legacy, &private).expect("repeat is idempotent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_mdbase_symlink_blocks_private_migration() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempdir().expect("temporary directory");
+        let legacy = temporary.path().join("shared/mdbase-write");
+        let private = temporary.path().join("private/mdbase-write");
+        fs::create_dir_all(&legacy).expect("legacy state");
+        let outside = temporary.path().join("outside");
+        fs::write(&outside, b"outside").expect("outside file");
+        symlink(&outside, legacy.join("journal.json")).expect("legacy symlink");
+
+        let error = migrate_legacy_state_directory(&legacy, &private).expect_err("unsafe state");
+        assert_eq!(error.code, "state_unsafe");
+        assert!(!private.exists());
+    }
+
+    #[test]
+    fn unsupported_directory_sync_is_reported_before_transaction_state() {
+        let temporary = tempdir().expect("temporary directory");
+        let missing = temporary.path().join("missing-collection");
+        let error = verify_android_directory_sync(&missing).expect_err("missing directory");
+        assert_eq!(error.code, "unsupported_storage");
+        assert!(!temporary.path().join("mdbase-write").exists());
+    }
 
     fn write(root: &Path, path: &str, contents: &str) {
         let path = root.join(path);

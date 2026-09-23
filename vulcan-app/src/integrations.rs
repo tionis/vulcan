@@ -1,6 +1,6 @@
 //! Named external-content routes and topology validation.
 
-use crate::AppError;
+use crate::{device_state, AppError};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -118,6 +118,7 @@ pub fn begin_route_run(
     file.try_lock_exclusive().map_err(|_| {
         AppError::operation(format!("integration route `{route}` is already running"))
     })?;
+    device_state::migrate_file(paths, &route_relative_path(route))?;
     let mut state = load_route_runtime_state(paths, route)?.unwrap_or(RouteRuntimeState {
         version: ROUTE_STATE_VERSION,
         route: route.to_string(),
@@ -164,7 +165,8 @@ pub fn load_route_runtime_state(
     paths: &VaultPaths,
     route: &str,
 ) -> Result<Option<RouteRuntimeState>, AppError> {
-    let path = route_state_path(paths, route)?;
+    validate_state_route_name(route)?;
+    let path = device_state::readable_path(paths, &route_relative_path(route))?;
     if !path.exists() {
         return Ok(None);
     }
@@ -181,11 +183,11 @@ pub fn load_route_runtime_state(
 
 fn route_state_path(paths: &VaultPaths, route: &str) -> Result<PathBuf, AppError> {
     validate_state_route_name(route)?;
-    Ok(paths
-        .vulcan_dir()
-        .join("integrations")
-        .join("routes")
-        .join(format!("{route}.json")))
+    device_state::path(paths, &route_relative_path(route))
+}
+
+fn route_relative_path(route: &str) -> PathBuf {
+    PathBuf::from("integrations/routes").join(format!("{route}.json"))
 }
 
 fn validate_state_route_name(route: &str) -> Result<(), AppError> {

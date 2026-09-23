@@ -1,4 +1,4 @@
-use crate::AppError;
+use crate::{device_state, AppError};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -171,7 +171,8 @@ pub fn load_outline_state(
     profile: &str,
     collection_id: &str,
 ) -> Result<OutlinePublishState, AppError> {
-    let state_path = outline_state_path(paths, profile)?;
+    validate_profile(profile)?;
+    let state_path = device_state::readable_path(paths, &outline_relative_path(profile))?;
     if !state_path.exists() {
         return Ok(OutlinePublishState::empty(profile, collection_id));
     }
@@ -190,7 +191,8 @@ pub fn outline_state_collection_id(
     paths: &VaultPaths,
     profile: &str,
 ) -> Result<Option<String>, AppError> {
-    let state_path = outline_state_path(paths, profile)?;
+    validate_profile(profile)?;
+    let state_path = device_state::readable_path(paths, &outline_relative_path(profile))?;
     if !state_path.exists() {
         return Ok(None);
     }
@@ -224,10 +226,16 @@ pub fn lock_outline_state(paths: &VaultPaths, profile: &str) -> Result<OutlineSt
             "Outline publisher state is locked by another process: {error}"
         ))
     })?;
+    device_state::migrate_file(paths, &outline_relative_path(profile))?;
     Ok(OutlineStateLock { file, state_path })
 }
 
 fn outline_state_path(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppError> {
+    validate_profile(profile)?;
+    device_state::path(paths, &outline_relative_path(profile))
+}
+
+fn validate_profile(profile: &str) -> Result<(), AppError> {
     if profile.is_empty()
         || !profile
             .chars()
@@ -237,11 +245,11 @@ fn outline_state_path(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppE
             "Outline profile names may contain only ASCII letters, digits, '-' and '_'",
         ));
     }
-    Ok(paths
-        .vulcan_dir()
-        .join("publish")
-        .join("outline")
-        .join(format!("{profile}.json")))
+    Ok(())
+}
+
+fn outline_relative_path(profile: &str) -> PathBuf {
+    PathBuf::from("publish/outline").join(format!("{profile}.json"))
 }
 
 #[cfg(test)]
@@ -280,7 +288,9 @@ mod tests {
             .expect("mapping")
             .last_published_title = "Updated Projects".to_string();
         lock.save(&state).expect("replace existing state");
-        assert!(lock.state_path().starts_with(paths.vulcan_dir()));
+        assert!(lock
+            .state_path()
+            .starts_with(paths.operational_state_dir().expect("state root")));
         assert_ne!(lock.state_path(), paths.cache_db());
         drop(lock);
 

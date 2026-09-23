@@ -56,7 +56,9 @@ Then preview the complete detached layout without spelling out platform or priva
 vulcan sync clone <remote> /storage/emulated/0/Documents/<vault> --dry-run
 ```
 
-Vulcan keeps its rebuildable SQLite cache and vault write lock in Termux-private state. After
+Vulcan keeps its rebuildable SQLite cache, vault write lock, mdbase recovery state, and
+integration/Outline mappings in Termux-private state. Keep Termux installed while any workflow
+may need recovery or remote identity mappings. After
 upgrading an existing shared-storage vault, run `vulcan scan` to build the private cache; an older
 `.vulcan/cache.db` is left in place but is no longer used on Android.
 

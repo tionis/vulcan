@@ -1756,9 +1756,10 @@ mod tests {
             fs::read_to_string(directory.path().join("tasks/public.md")).expect("external source"),
             external
         );
-        assert!(!directory
-            .path()
-            .join(".vulcan/mdbase-write/journal.json")
+        assert!(!paths
+            .operational_state_dir()
+            .expect("state root")
+            .join("mdbase-write/journal.json")
             .exists());
     }
 
