@@ -28,6 +28,24 @@ pub struct CacheDatabase {
 impl CacheDatabase {
     pub fn open(paths: &VaultPaths) -> Result<Self, CacheError> {
         ensure_vulcan_dir(paths)?;
+        #[cfg(target_os = "android")]
+        {
+            let state_root = crate::vulcan_user_state_dir().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "cannot determine the private Vulcan state directory for the Android cache",
+                )
+            })?;
+            let expected = crate::paths::private_cache_db_path(paths.vault_root(), &state_root)?;
+            if paths.cache_db() != expected {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Android cache path is stale; reopen the vault from its existing directory",
+                )
+                .into());
+            }
+            std::fs::create_dir_all(expected.parent().expect("cache path has a parent"))?;
+        }
         #[cfg(feature = "vectors")]
         register_sqlite_vec_extension();
 
@@ -263,6 +281,18 @@ mod tests {
                 .expect("extraction version should be stored"),
             Some(EXTRACTION_VERSION.to_string())
         );
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn android_cache_open_creates_private_database_and_wal() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let paths = VaultPaths::new(temporary.path());
+        crate::initialize_vulcan_dir(&paths).expect("initialize vault");
+        let database = CacheDatabase::open(&paths).expect("open private cache");
+        assert!(paths.cache_db().exists());
+        assert!(!paths.vulcan_dir().join("cache.db").exists());
+        assert_eq!(query_journal_mode(database.connection()), "wal");
     }
 
     #[test]

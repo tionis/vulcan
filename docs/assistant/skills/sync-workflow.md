@@ -29,9 +29,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
 - Direct and daemon sync of an initialized vault use the same vault-write and repository locks as
   ordinary Vulcan mutations and Git/auto-commit commands. A competing writer may therefore wait or
   report bounded repository contention; do not bypass the lock with raw Git while sync is active.
-  On Android, Vulcan keeps its vault-write lock in private device state because Android shared
-  storage does not support the required file locking. The detached Git directory and sync journal
-  must also remain in private storage.
+  On Android, Vulcan keeps its vault-write lock and rebuildable SQLite cache in private device
+  state because Android shared storage does not support the required file locking and SQLite WAL
+  behavior. The detached Git directory and sync journal must also remain in private storage.
 - Use `vulcan daemon status` before diagnosing automatic work. It reports each registered wiki's
   reconstructed daemon state, latest daemon-supervised attempt, path, and locally cached
   notification-advertisement discovery. It also lists hosted sync, trigger, notification, alert,
@@ -389,6 +389,8 @@ they commit.
   the Android build compile.
 - Under Termux, keep the worktree in shared storage and the detached Git directory in Termux-private
   storage. `vulcan sync clone <remote> <shared-path> --dry-run` selects both defaults automatically.
+  The SQLite cache is rebuilt in Termux state after `vulcan init` or `vulcan scan`; an older
+  `.vulcan/cache.db` in shared storage is left untouched but no longer used on Android.
 - After a successful clone, an ownership rejection from Git automatically adds only the canonical
   new worktree path to the user's global `safe.directory` entries and retries discovery. This also
   applies to `vault clone`; dry runs do not change Git configuration. Existing repositories are

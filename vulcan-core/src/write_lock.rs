@@ -66,9 +66,8 @@ fn private_lock_file_path(
     paths: &VaultPaths,
     state_root: &Path,
 ) -> Result<PathBuf, std::io::Error> {
-    let canonical = fs::canonicalize(paths.vault_root())?;
-    let key = blake3::hash(canonical.to_string_lossy().as_bytes());
-    let directory = state_root.join("locks").join(&key.to_hex()[..32]);
+    let key = crate::paths::device_local_vault_key(paths.vault_root())?;
+    let directory = state_root.join("locks").join(key);
     fs::create_dir_all(&directory)?;
     Ok(directory.join("write.lock"))
 }

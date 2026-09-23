@@ -78,9 +78,15 @@ impl VaultPaths {
     pub fn new(vault_root: impl Into<PathBuf>) -> Self {
         let vault_root = vault_root.into();
         let vulcan_dir = vault_root.join(VULCAN_DIR_NAME);
+        #[cfg(target_os = "android")]
+        let cache_db = vulcan_user_state_dir()
+            .and_then(|state| private_cache_db_path(&vault_root, &state).ok())
+            .unwrap_or_else(|| vulcan_dir.join(CACHE_DB_NAME));
+        #[cfg(not(target_os = "android"))]
+        let cache_db = vulcan_dir.join(CACHE_DB_NAME);
 
         Self {
-            cache_db: vulcan_dir.join(CACHE_DB_NAME),
+            cache_db,
             config_file: vulcan_dir.join(CONFIG_FILE_NAME),
             local_config_file: vulcan_dir.join(LOCAL_CONFIG_FILE_NAME),
             reports_dir: vulcan_dir.join(REPORTS_DIR_NAME),
@@ -130,6 +136,21 @@ impl VaultPaths {
             .ok()
             .map(Path::to_path_buf)
     }
+}
+
+#[cfg(any(test, target_os = "android"))]
+pub(crate) fn device_local_vault_key(vault_root: &Path) -> Result<String, std::io::Error> {
+    let canonical = fs::canonicalize(vault_root)?;
+    Ok(blake3::hash(canonical.to_string_lossy().as_bytes()).to_hex()[..32].to_string())
+}
+
+#[cfg(any(test, target_os = "android"))]
+pub(crate) fn private_cache_db_path(
+    vault_root: &Path,
+    state_root: &Path,
+) -> Result<PathBuf, std::io::Error> {
+    let key = device_local_vault_key(vault_root)?;
+    Ok(state_root.join("caches").join(key).join(CACHE_DB_NAME))
 }
 
 #[must_use]
@@ -695,6 +716,7 @@ mod tests {
 
         assert_eq!(paths.vault_root(), Path::new("/tmp/example-vault"));
         assert_eq!(paths.vulcan_dir(), Path::new("/tmp/example-vault/.vulcan"));
+        #[cfg(not(target_os = "android"))]
         assert_eq!(
             paths.cache_db(),
             Path::new("/tmp/example-vault/.vulcan/cache.db")
@@ -714,6 +736,37 @@ mod tests {
         assert_eq!(
             paths.gitignore_file(),
             PathBuf::from("/tmp/example-vault/.vulcan/.gitignore")
+        );
+    }
+
+    #[test]
+    fn private_cache_path_uses_canonical_vault_identity_outside_the_worktree() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        fs::create_dir(vault.join("subdir")).expect("subdirectory");
+        let state = temporary.path().join("device-state");
+        let direct = private_cache_db_path(&vault, &state).expect("private cache path");
+        let equivalent = private_cache_db_path(&vault.join("subdir/.."), &state)
+            .expect("equivalent private cache path");
+        assert_eq!(direct, equivalent);
+        assert!(direct.starts_with(&state));
+        assert!(!direct.starts_with(&vault));
+        assert_eq!(direct.file_name().expect("cache filename"), CACHE_DB_NAME);
+        assert!(!direct.exists(), "path calculation is read-only");
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn android_vault_paths_select_the_private_cache() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let state = vulcan_user_state_dir().expect("Termux state directory");
+        let paths = VaultPaths::new(temporary.path());
+        assert_eq!(
+            paths.cache_db(),
+            private_cache_db_path(temporary.path(), &state)
+                .expect("private cache path")
+                .as_path()
         );
     }
 
