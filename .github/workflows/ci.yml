@@ -69,6 +69,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        suite: [core, cli]
+    name: test (${{ matrix.os }}, ${{ matrix.suite }})
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -80,14 +82,23 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
-      - name: Cache cargo registry
+      - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        with:
+          key: ${{ matrix.suite }}
 
       - name: Check formatting
+        if: matrix.os == 'ubuntu-latest' && matrix.suite == 'cli'
         run: cargo fmt --all --check
+
+      - name: Test workspace except CLI
+        if: matrix.suite == 'core'
+        run: cargo test --workspace --exclude vulcan-cli
+
+      - name: Test CLI
+        if: matrix.suite == 'cli'
+        run: cargo test -p vulcan-cli
+
+      - name: Run clippy
+        if: matrix.suite == 'cli'
+        run: cargo clippy --workspace --all-targets -- -D warnings
