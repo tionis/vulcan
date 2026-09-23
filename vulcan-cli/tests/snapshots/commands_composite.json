@@ -8631,6 +8631,103 @@
                 "subcommands": []
               },
               {
+                "about": "Set a shared display name for a device ID",
+                "name": "set-name",
+                "options": [
+                  {
+                    "help": "Full device ID shown by `vulcan sync devices list`",
+                    "id": "device_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DEVICE_ID"
+                    ]
+                  },
+                  {
+                    "help": "Friendly name to show in device lists",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Validate without writing the name",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Clear a shared device display name",
+                "name": "clear-name",
+                "options": [
+                  {
+                    "help": "Full device ID shown by `vulcan sync devices list`",
+                    "id": "device_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DEVICE_ID"
+                    ]
+                  },
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Validate without clearing the name",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Fetch one device backup into a durable local recovery ref",
                 "name": "fetch",
                 "options": [

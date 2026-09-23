@@ -1,10 +1,11 @@
 //! Inspection, recovery, and safe retirement of remote per-device sync backups.
 
+use crate::durable_file;
 use crate::sync_state::SyncStateStore;
 use crate::AppError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
     device_recovery_live_ref, device_recovery_ref, sync_profile_key, GitEngine, GitRefDeleteResult,
@@ -13,6 +14,16 @@ use vulcan_sync::{
 };
 
 pub const SYNC_DEVICE_REPORT_VERSION: u32 = 1;
+const DEVICE_NAME_VERSION: u32 = 1;
+const MAX_DEVICE_NAME_BYTES: usize = 80;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceNameRecord {
+    version: u32,
+    device_id: String,
+    name: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncDeviceOptions {
@@ -32,6 +43,8 @@ impl From<&GitSyncOptions> for SyncDeviceOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncDeviceBackupSummary {
     pub device_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub remote_ref: GitRefName,
     pub revision: String,
     pub current_device: bool,
@@ -128,6 +141,7 @@ pub fn list_sync_device_backups(
         let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
         backups.push(SyncDeviceBackupSummary {
             device_id: parsed.as_str().to_string(),
+            name: read_device_name(&vault, &parsed)?,
             remote_ref: reference.name,
             revision: reference.target.to_string(),
             current_device: current.as_ref() == Some(&parsed),
@@ -143,6 +157,111 @@ pub fn list_sync_device_backups(
         count: backups.len(),
         backups,
     })
+}
+
+/// Store a display-only label in the shared vault. The device ID remains the
+/// stable identity used by refs and recovery commands.
+pub fn set_sync_device_name(
+    paths: &VaultPaths,
+    device_id: &str,
+    name: Option<&str>,
+    dry_run: bool,
+) -> Result<(), AppError> {
+    let device_id = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
+    if let Some(name) = name {
+        validate_device_name(name)?;
+    }
+    check_device_name_directory(paths.vault_root())?;
+    let path = device_name_path(paths.vault_root(), &device_id);
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(AppError::operation("device name path is a symlink"));
+    }
+    if dry_run {
+        return Ok(());
+    }
+    if let Some(name) = name {
+        fs::create_dir_all(path.parent().expect("device name path has parent"))
+            .map_err(AppError::operation)?;
+        let record = DeviceNameRecord {
+            version: DEVICE_NAME_VERSION,
+            device_id: device_id.as_str().to_string(),
+            name: name.to_string(),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&record).map_err(AppError::operation)?;
+        bytes.push(b'\n');
+        durable_file::replace(&path, &bytes)
+    } else {
+        if path.exists() {
+            durable_file::remove(&path)?;
+        }
+        Ok(())
+    }
+}
+
+fn device_name_path(vault: &Path, device_id: &GitSyncDeviceId) -> PathBuf {
+    vault
+        .join(".vulcan/device-names")
+        .join(format!("{}.json", device_id.as_str()))
+}
+
+fn check_device_name_directory(vault: &Path) -> Result<(), AppError> {
+    for directory in [vault.join(".vulcan"), vault.join(".vulcan/device-names")] {
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(AppError::operation(format!(
+                    "device name directory is not a regular directory: {}",
+                    directory.display()
+                )))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::operation(error)),
+        }
+    }
+    Ok(())
+}
+
+fn validate_device_name(name: &str) -> Result<(), AppError> {
+    if name.trim() != name
+        || name.is_empty()
+        || name.len() > MAX_DEVICE_NAME_BYTES
+        || name.chars().any(char::is_control)
+    {
+        return Err(AppError::operation(
+            "device name must be 1–80 UTF-8 bytes with no surrounding whitespace or control characters",
+        ));
+    }
+    Ok(())
+}
+
+fn read_device_name(vault: &Path, device_id: &GitSyncDeviceId) -> Result<Option<String>, AppError> {
+    check_device_name_directory(vault)?;
+    let path = device_name_path(vault, device_id);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    if !metadata.is_file() || metadata.len() > 512 {
+        return Err(AppError::operation(format!(
+            "invalid device name file at {}",
+            path.display()
+        )));
+    }
+    let record: DeviceNameRecord =
+        serde_json::from_slice(&fs::read(&path).map_err(AppError::operation)?)
+            .map_err(AppError::operation)?;
+    if record.version != DEVICE_NAME_VERSION || record.device_id != device_id.as_str() {
+        return Err(AppError::operation(format!(
+            "invalid device name record at {}",
+            path.display()
+        )));
+    }
+    validate_device_name(&record.name)?;
+    Ok(Some(record.name))
 }
 
 pub fn fetch_sync_device_backup(
@@ -369,7 +488,7 @@ fn classify_relation(
 mod tests {
     use super::{
         fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
-        SyncDeviceOptions, SyncDeviceRelation,
+        set_sync_device_name, SyncDeviceOptions, SyncDeviceRelation,
     };
     use std::fs;
     use std::path::Path;
@@ -443,6 +562,31 @@ mod tests {
         let listed = list_sync_device_backups(&paths, &options).expect("list backups");
         assert_eq!(listed.count, 1);
         assert_eq!(listed.backups[0].device_id, DEVICE_A);
+        assert_eq!(listed.backups[0].name, None);
+        set_sync_device_name(&paths, DEVICE_A, Some("Living room laptop"), true)
+            .expect("preview name");
+        assert!(!vault
+            .join(format!(".vulcan/device-names/{DEVICE_A}.json"))
+            .exists());
+        set_sync_device_name(&paths, DEVICE_A, Some("Living room laptop"), false)
+            .expect("set name");
+        assert_eq!(
+            list_sync_device_backups(&paths, &options)
+                .expect("list named backup")
+                .backups[0]
+                .name
+                .as_deref(),
+            Some("Living room laptop")
+        );
+        assert!(set_sync_device_name(&paths, DEVICE_A, Some("bad\nname"), false).is_err());
+        set_sync_device_name(&paths, DEVICE_A, None, false).expect("clear name");
+        assert_eq!(
+            list_sync_device_backups(&paths, &options)
+                .expect("list unnamed backup")
+                .backups[0]
+                .name,
+            None
+        );
         let fetched = fetch_sync_device_backup(&paths, &options, DEVICE_A, false)
             .expect("fetch integrated backup");
         assert_eq!(fetched.relation, Some(SyncDeviceRelation::Integrated));

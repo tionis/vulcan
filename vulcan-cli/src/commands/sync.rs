@@ -26,8 +26,8 @@ use vulcan_app::sync_conflicts::{
 };
 use vulcan_app::sync_devices::{
     fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
-    SyncDeviceFetchReport, SyncDeviceListReport, SyncDeviceOptions, SyncDeviceRelation,
-    SyncDeviceRemoveReport,
+    set_sync_device_name, SyncDeviceFetchReport, SyncDeviceListReport, SyncDeviceOptions,
+    SyncDeviceRelation, SyncDeviceRemoveReport,
 };
 use vulcan_app::sync_notifications::{
     notification_status, publish_sync_notification_advertisement,
@@ -2618,10 +2618,42 @@ fn handle_sync_devices(
     selected_paths: &VaultPaths,
     command: &SyncDeviceCommand,
 ) -> Result<(), CliError> {
+    if let SyncDeviceCommand::SetName {
+        device_id,
+        name,
+        wiki,
+        dry_run,
+    } = command
+    {
+        return handle_sync_device_name(
+            cli,
+            selected_paths,
+            wiki.as_deref(),
+            device_id,
+            Some(name),
+            *dry_run,
+        );
+    }
+    if let SyncDeviceCommand::ClearName {
+        device_id,
+        wiki,
+        dry_run,
+    } = command
+    {
+        return handle_sync_device_name(
+            cli,
+            selected_paths,
+            wiki.as_deref(),
+            device_id,
+            None,
+            *dry_run,
+        );
+    }
     let (wiki, target) = match command {
         SyncDeviceCommand::List { wiki, target }
         | SyncDeviceCommand::Fetch { wiki, target, .. }
         | SyncDeviceCommand::Remove { wiki, target, .. } => (wiki.as_deref(), target),
+        SyncDeviceCommand::SetName { .. } | SyncDeviceCommand::ClearName { .. } => unreachable!(),
     };
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
@@ -2648,7 +2680,39 @@ fn handle_sync_devices(
                 .map_err(CliError::operation)?;
             print_sync_device_remove(cli.output, &report)
         }
+        SyncDeviceCommand::SetName { .. } | SyncDeviceCommand::ClearName { .. } => unreachable!(),
     }
+}
+
+fn handle_sync_device_name(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    device_id: &str,
+    name: Option<&str>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    set_sync_device_name(&paths, device_id, name, dry_run).map_err(CliError::operation)?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&serde_json::json!({
+            "device_id": device_id,
+            "name": name,
+            "dry_run": dry_run,
+        }));
+    }
+    let action = match (name, dry_run) {
+        (Some(_), true) => "Would set",
+        (Some(_), false) => "Set",
+        (None, true) => "Would clear",
+        (None, false) => "Cleared",
+    };
+    match name {
+        Some(name) => println!("{action} device name {name} for {device_id}."),
+        None => println!("{action} device name for {device_id}."),
+    }
+    Ok(())
 }
 
 fn print_sync_device_list(
@@ -2668,7 +2732,8 @@ fn print_sync_device_list(
     }
     for backup in &report.backups {
         println!(
-            "{}\t{}\t{}{}",
+            "{}\t{}\t{}\t{}{}",
+            backup.name.as_deref().unwrap_or("(unnamed)"),
             backup.device_id,
             backup.revision,
             backup.remote_ref,

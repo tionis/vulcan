@@ -220,6 +220,83 @@ fn sync_run_defaults_to_a_compact_result_and_keeps_durable_progress_opt_in() {
     assert!(json.stderr.is_empty());
 }
 
+#[test]
+fn sync_device_list_shows_shared_name_and_full_id() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let remote = temporary.path().join("remote.git");
+    let vault = temporary.path().join("vault");
+    fs::create_dir(&vault).expect("vault directory");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    init_git_repo(&vault);
+    fs::write(vault.join("Home.md"), "home\n").expect("home note");
+    commit_all(&vault, "initial");
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let device_id = "01arz3ndektsv4rrffq69g5fav";
+    let run = |args: &[&str]| {
+        ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+            .args(["--vault", vault.to_str().expect("vault path")])
+            .args(args)
+            .output()
+            .expect("vulcan command")
+    };
+    let empty = run(&["--output", "json", "sync", "devices", "list"]);
+    assert!(empty.status.success());
+    let empty_report: Value = serde_json::from_slice(&empty.stdout).expect("empty device list");
+    let profile = empty_report["profile"].as_str().expect("profile");
+    let backup_ref = format!("HEAD:refs/heads/__vulcan-sync/devices/{profile}/{device_id}");
+    run_git_ok(&vault, &["push", "--quiet", "origin", &backup_ref]);
+    let unnamed = run(&["sync", "devices", "list"]);
+    assert!(
+        unnamed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unnamed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&unnamed.stdout).contains(&format!("(unnamed)\t{device_id}\t")));
+
+    let preview = run(&[
+        "sync",
+        "devices",
+        "set-name",
+        device_id,
+        "Desk laptop",
+        "--dry-run",
+    ]);
+    assert!(preview.status.success());
+    assert!(!vault
+        .join(format!(".vulcan/device-names/{device_id}.json"))
+        .exists());
+    let set = run(&["sync", "devices", "set-name", device_id, "Desk laptop"]);
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let named = run(&["sync", "devices", "list"]);
+    assert!(named.status.success());
+    assert!(String::from_utf8_lossy(&named.stdout).contains(&format!("Desk laptop\t{device_id}\t")));
+    let json = run(&["--output", "json", "sync", "devices", "list"]);
+    assert!(json.status.success());
+    let report: Value = serde_json::from_slice(&json.stdout).expect("JSON device list");
+    assert_eq!(report["backups"][0]["name"], "Desk laptop");
+    assert_eq!(report["backups"][0]["device_id"], device_id);
+}
+
 fn run_daemon_test_command(
     config_home: &Path,
     state_home: &Path,
@@ -15502,6 +15579,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("--network-notification-mode"));
     assert!(sync_skill.contains("--network-failure-count 3"));
     assert!(sync_skill.contains("vulcan sync devices list"));
+    assert!(sync_skill.contains("vulcan sync devices set-name"));
     assert!(sync_skill.contains("vulcan sync devices fetch <device-id>"));
     assert!(sync_skill.contains("vulcan sync devices remove <device-id> --dry-run"));
     assert!(sync_skill.contains("cleanup cannot silently destroy"));

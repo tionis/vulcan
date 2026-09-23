@@ -3922,6 +3922,26 @@ pub enum SyncDeviceCommand {
         #[command(flatten)]
         target: SyncTargetArgs,
     },
+    #[command(about = "Set a shared display name for a device ID")]
+    SetName {
+        #[arg(help = "Full device ID shown by `vulcan sync devices list`")]
+        device_id: String,
+        #[arg(help = "Friendly name to show in device lists")]
+        name: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[arg(long, help = "Validate without writing the name")]
+        dry_run: bool,
+    },
+    #[command(about = "Clear a shared device display name")]
+    ClearName {
+        #[arg(help = "Full device ID shown by `vulcan sync devices list`")]
+        device_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[arg(long, help = "Validate without clearing the name")]
+        dry_run: bool,
+    },
     #[command(about = "Fetch one device backup into a durable local recovery ref")]
     Fetch {
         #[arg(help = "Device ID shown by `vulcan sync devices list`")]
