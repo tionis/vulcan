@@ -206,8 +206,7 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
   applyStatus(status) {
     this.status = status;
     this.renderStatus();
-    if (!this.settings.notifyOnFailure) return;
-    const alert = this.failureAlerts.observe(status);
+    const alert = this.failureAlerts.observe(status, this.settings);
     if (alert) new Notice(alert.message);
   }
 
@@ -351,11 +350,45 @@ class VulcanSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Notify on failed synchronization")
-      .setDesc("Show one notice per failed daemon job or retained failed transaction.")
+      .setDesc("Show notices for failed daemon jobs and retained failed transactions. The status dialog always retains failure details.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.notifyOnFailure)
         .onChange(async (value) => {
           this.plugin.settings.notifyOnFailure = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Network failure notices")
+      .setDesc("Choose when repeated network failures warrant a notice. Other sync failures are shown immediately.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("immediate", "Every failed job")
+        .addOption("ignore", "Never")
+        .addOption("count", "After a failure count")
+        .addOption("duration", "After a duration")
+        .setValue(this.plugin.settings.networkFailureNotifications)
+        .onChange(async (value) => {
+          this.plugin.settings.networkFailureNotifications = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Network failure count")
+      .setDesc("Show one notice after this many distinct consecutive failed network jobs (2–100).")
+      .addText((text) => text
+        .setValue(String(this.plugin.settings.networkFailureCount))
+        .onChange(async (value) => {
+          this.plugin.settings.networkFailureCount = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Network failure duration (minutes)")
+      .setDesc("Show one notice after a network failure remains unresolved this long (1–1440 minutes).")
+      .addText((text) => text
+        .setValue(String(this.plugin.settings.networkFailureMinutes))
+        .onChange(async (value) => {
+          this.plugin.settings.networkFailureMinutes = value;
           await this.plugin.saveSettings();
         }));
 
@@ -391,6 +424,15 @@ class StatusModal extends Modal {
     detail(details, "Source", this.status.source);
     detail(details, "Conflicts", String(this.status.unresolved_conflicts || 0));
     if (this.status.detail) detail(details, "Detail", this.status.detail);
+    const job = this.status.job;
+    if (job && job.state === "failed") {
+      detail(details, "Failed job", job.id);
+      if (job.error) {
+        detail(details, "Error category", job.error.category);
+        detail(details, "Retryable", job.error.retryable ? "Yes" : "No");
+        detail(details, "Error", job.error.message);
+      }
+    }
   }
 
   onClose() { this.contentEl.empty(); }

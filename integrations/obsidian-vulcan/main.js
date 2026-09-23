@@ -200,7 +200,10 @@ var require_core = __commonJS({
       syncOnSave: false,
       saveDebounceMs: 1500,
       eventStream: true,
-      notifyOnFailure: true
+      notifyOnFailure: true,
+      networkFailureNotifications: "immediate",
+      networkFailureCount: 3,
+      networkFailureMinutes: 15
     });
     var MAX_FAILURE_DETAIL_CHARS = 240;
     var BUSY_STATES = /* @__PURE__ */ new Set([
@@ -222,8 +225,16 @@ var require_core = __commonJS({
         syncOnSave: input.syncOnSave === true,
         saveDebounceMs: Number.isFinite(debounce) ? Math.min(6e4, Math.max(250, Math.round(debounce))) : DEFAULT_SETTINGS2.saveDebounceMs,
         eventStream: input.eventStream !== false,
-        notifyOnFailure: input.notifyOnFailure !== false
+        notifyOnFailure: input.notifyOnFailure !== false,
+        networkFailureNotifications: ["immediate", "ignore", "count", "duration"].includes(input.networkFailureNotifications) ? input.networkFailureNotifications : DEFAULT_SETTINGS2.networkFailureNotifications,
+        networkFailureCount: boundedInteger(input.networkFailureCount, 2, 100, DEFAULT_SETTINGS2.networkFailureCount),
+        networkFailureMinutes: boundedInteger(input.networkFailureMinutes, 1, 1440, DEFAULT_SETTINGS2.networkFailureMinutes)
       };
+    }
+    function boundedInteger(value, minimum, maximum, fallback) {
+      if (value === "" || value === null || value === void 0) return fallback;
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, Math.round(number))) : fallback;
     }
     function boundedFailureDetail(value) {
       const detail2 = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
@@ -239,31 +250,79 @@ var require_core = __commonJS({
         const category = typeof error.category === "string" && error.category ? ` (${error.category.replaceAll("_", " ")})` : "";
         return {
           key: `job:${job.id}`,
-          message: `Vulcan synchronization failed${category}: ${boundedFailureDetail(error.message || status.detail)}`
+          network: error.category === "network",
+          message: `Vulcan sync failed${category}${error.retryable ? " (retryable)" : ""}: ${boundedFailureDetail(error.message || status.detail)}`
         };
       }
+      if (job && typeof job === "object") return null;
       if (status.state !== "error") return null;
       const transactionId = typeof status.transaction_id === "string" && status.transaction_id ? status.transaction_id : `${status.wiki_id || "unknown"}:${boundedFailureDetail(status.detail)}`;
       return {
         key: `transaction:${transactionId}`,
+        network: false,
         message: `Vulcan synchronization failed: ${boundedFailureDetail(status.detail)}`
       };
     }
     var SyncFailureAlertTracker2 = class {
-      constructor(limit = 64) {
+      constructor(limit = 64, now = Date.now) {
         this.limit = Math.max(1, limit);
+        this.now = now;
         this.seen = /* @__PURE__ */ new Set();
         this.order = [];
+        this.networkKeys = /* @__PURE__ */ new Set();
+        this.networkSince = null;
+        this.networkNotified = false;
+        this.policy = null;
       }
-      observe(status) {
+      observe(status, settings = DEFAULT_SETTINGS2) {
+        const policy = `${settings.notifyOnFailure}:${settings.networkFailureNotifications}:${settings.networkFailureCount}:${settings.networkFailureMinutes}`;
+        if (policy !== this.policy) {
+          this.resetNetwork();
+          this.policy = policy;
+        }
         const alert = syncFailureAlert(status);
-        if (!alert || this.seen.has(alert.key)) return null;
-        this.seen.add(alert.key);
-        this.order.push(alert.key);
-        if (this.order.length > this.limit) {
-          this.seen.delete(this.order.shift());
+        if (!alert) {
+          if (!status || !status.job || ["succeeded", "conflicted", "paused", "cancelled"].includes(status.job.state)) {
+            this.resetNetwork();
+          }
+          return null;
+        }
+        if (!alert.network) this.resetNetwork();
+        if (!settings.notifyOnFailure) return null;
+        const alreadySeen = this.seen.has(alert.key);
+        if (alreadySeen && (!alert.network || settings.networkFailureNotifications !== "duration")) return null;
+        if (!alreadySeen) {
+          this.seen.add(alert.key);
+          this.order.push(alert.key);
+          if (this.order.length > this.limit) this.seen.delete(this.order.shift());
+        }
+        if (alert.network) {
+          if (this.networkSince === null) this.networkSince = this.now();
+          if (settings.networkFailureNotifications === "count" && !this.networkNotified) {
+            this.networkKeys.add(alert.key);
+          }
+          switch (settings.networkFailureNotifications) {
+            case "ignore":
+              return null;
+            case "count":
+              if (this.networkNotified || this.networkKeys.size < settings.networkFailureCount) return null;
+              break;
+            case "duration":
+              if (this.networkNotified || this.now() - this.networkSince < settings.networkFailureMinutes * 6e4) return null;
+              break;
+            default:
+              return alreadySeen ? null : alert;
+          }
+          this.networkNotified = true;
+          const context = settings.networkFailureNotifications === "count" ? ` after ${this.networkKeys.size} consecutive network failures` : ` for at least ${settings.networkFailureMinutes} minute${settings.networkFailureMinutes === 1 ? "" : "s"}`;
+          return { ...alert, message: `${alert.message}${context}` };
         }
         return alert;
+      }
+      resetNetwork() {
+        this.networkKeys.clear();
+        this.networkSince = null;
+        this.networkNotified = false;
       }
     };
     function statusPresentation2(status) {
@@ -534,8 +593,7 @@ module.exports = class VulcanCompanionPlugin extends Plugin {
   applyStatus(status) {
     this.status = status;
     this.renderStatus();
-    if (!this.settings.notifyOnFailure) return;
-    const alert = this.failureAlerts.observe(status);
+    const alert = this.failureAlerts.observe(status, this.settings);
     if (alert) new Notice(alert.message);
   }
   reconnectEvents() {
@@ -635,8 +693,20 @@ var VulcanSettingTab = class extends PluginSettingTab {
       this.plugin.settings.eventStream = value;
       await this.plugin.saveSettings();
     }));
-    new Setting(containerEl).setName("Notify on failed synchronization").setDesc("Show one notice per failed daemon job or retained failed transaction.").addToggle((toggle) => toggle.setValue(this.plugin.settings.notifyOnFailure).onChange(async (value) => {
+    new Setting(containerEl).setName("Notify on failed synchronization").setDesc("Show notices for failed daemon jobs and retained failed transactions. The status dialog always retains failure details.").addToggle((toggle) => toggle.setValue(this.plugin.settings.notifyOnFailure).onChange(async (value) => {
       this.plugin.settings.notifyOnFailure = value;
+      await this.plugin.saveSettings();
+    }));
+    new Setting(containerEl).setName("Network failure notices").setDesc("Choose when repeated network failures warrant a notice. Other sync failures are shown immediately.").addDropdown((dropdown) => dropdown.addOption("immediate", "Every failed job").addOption("ignore", "Never").addOption("count", "After a failure count").addOption("duration", "After a duration").setValue(this.plugin.settings.networkFailureNotifications).onChange(async (value) => {
+      this.plugin.settings.networkFailureNotifications = value;
+      await this.plugin.saveSettings();
+    }));
+    new Setting(containerEl).setName("Network failure count").setDesc("Show one notice after this many distinct consecutive failed network jobs (2\u2013100).").addText((text) => text.setValue(String(this.plugin.settings.networkFailureCount)).onChange(async (value) => {
+      this.plugin.settings.networkFailureCount = value;
+      await this.plugin.saveSettings();
+    }));
+    new Setting(containerEl).setName("Network failure duration (minutes)").setDesc("Show one notice after a network failure remains unresolved this long (1\u20131440 minutes).").addText((text) => text.setValue(String(this.plugin.settings.networkFailureMinutes)).onChange(async (value) => {
+      this.plugin.settings.networkFailureMinutes = value;
       await this.plugin.saveSettings();
     }));
     new Setting(containerEl).setName("Test connection").addButton((button) => button.setButtonText("Test").onClick(async () => {
@@ -667,6 +737,15 @@ var StatusModal = class extends Modal {
     detail(details, "Source", this.status.source);
     detail(details, "Conflicts", String(this.status.unresolved_conflicts || 0));
     if (this.status.detail) detail(details, "Detail", this.status.detail);
+    const job = this.status.job;
+    if (job && job.state === "failed") {
+      detail(details, "Failed job", job.id);
+      if (job.error) {
+        detail(details, "Error category", job.error.category);
+        detail(details, "Retryable", job.error.retryable ? "Yes" : "No");
+        detail(details, "Error", job.error.message);
+      }
+    }
   }
   onClose() {
     this.contentEl.empty();

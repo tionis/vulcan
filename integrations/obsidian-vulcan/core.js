@@ -7,6 +7,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   saveDebounceMs: 1500,
   eventStream: true,
   notifyOnFailure: true,
+  networkFailureNotifications: "immediate",
+  networkFailureCount: 3,
+  networkFailureMinutes: 15,
 });
 
 const MAX_FAILURE_DETAIL_CHARS = 240;
@@ -34,7 +37,17 @@ function sanitizeSettings(value) {
       : DEFAULT_SETTINGS.saveDebounceMs,
     eventStream: input.eventStream !== false,
     notifyOnFailure: input.notifyOnFailure !== false,
+    networkFailureNotifications: ["immediate", "ignore", "count", "duration"].includes(input.networkFailureNotifications)
+      ? input.networkFailureNotifications : DEFAULT_SETTINGS.networkFailureNotifications,
+    networkFailureCount: boundedInteger(input.networkFailureCount, 2, 100, DEFAULT_SETTINGS.networkFailureCount),
+    networkFailureMinutes: boundedInteger(input.networkFailureMinutes, 1, 1440, DEFAULT_SETTINGS.networkFailureMinutes),
   };
+}
+
+function boundedInteger(value, minimum, maximum, fallback) {
+  if (value === "" || value === null || value === undefined) return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, Math.round(number))) : fallback;
 }
 
 function boundedFailureDetail(value) {
@@ -54,35 +67,84 @@ function syncFailureAlert(status) {
       : "";
     return {
       key: `job:${job.id}`,
-      message: `Vulcan synchronization failed${category}: ${boundedFailureDetail(error.message || status.detail)}`,
+      network: error.category === "network",
+      message: `Vulcan sync failed${category}${error.retryable ? " (retryable)" : ""}: ${boundedFailureDetail(error.message || status.detail)}`,
     };
   }
+  if (job && typeof job === "object") return null;
   if (status.state !== "error") return null;
   const transactionId = typeof status.transaction_id === "string" && status.transaction_id
     ? status.transaction_id
     : `${status.wiki_id || "unknown"}:${boundedFailureDetail(status.detail)}`;
   return {
     key: `transaction:${transactionId}`,
+    network: false,
     message: `Vulcan synchronization failed: ${boundedFailureDetail(status.detail)}`,
   };
 }
 
 class SyncFailureAlertTracker {
-  constructor(limit = 64) {
+  constructor(limit = 64, now = Date.now) {
     this.limit = Math.max(1, limit);
+    this.now = now;
     this.seen = new Set();
     this.order = [];
+    this.networkKeys = new Set();
+    this.networkSince = null;
+    this.networkNotified = false;
+    this.policy = null;
   }
 
-  observe(status) {
+  observe(status, settings = DEFAULT_SETTINGS) {
+    const policy = `${settings.notifyOnFailure}:${settings.networkFailureNotifications}:${settings.networkFailureCount}:${settings.networkFailureMinutes}`;
+    if (policy !== this.policy) {
+      this.resetNetwork();
+      this.policy = policy;
+    }
     const alert = syncFailureAlert(status);
-    if (!alert || this.seen.has(alert.key)) return null;
-    this.seen.add(alert.key);
-    this.order.push(alert.key);
-    if (this.order.length > this.limit) {
-      this.seen.delete(this.order.shift());
+    if (!alert) {
+      if (!status || !status.job || ["succeeded", "conflicted", "paused", "cancelled"].includes(status.job.state)) {
+        this.resetNetwork();
+      }
+      return null;
+    }
+    if (!alert.network) this.resetNetwork();
+    if (!settings.notifyOnFailure) return null;
+    const alreadySeen = this.seen.has(alert.key);
+    if (alreadySeen && (!alert.network || settings.networkFailureNotifications !== "duration")) return null;
+    if (!alreadySeen) {
+      this.seen.add(alert.key);
+      this.order.push(alert.key);
+      if (this.order.length > this.limit) this.seen.delete(this.order.shift());
+    }
+    if (alert.network) {
+      if (this.networkSince === null) this.networkSince = this.now();
+      if (settings.networkFailureNotifications === "count" && !this.networkNotified) {
+        this.networkKeys.add(alert.key);
+      }
+      switch (settings.networkFailureNotifications) {
+        case "ignore": return null;
+        case "count":
+          if (this.networkNotified || this.networkKeys.size < settings.networkFailureCount) return null;
+          break;
+        case "duration":
+          if (this.networkNotified || this.now() - this.networkSince < settings.networkFailureMinutes * 60_000) return null;
+          break;
+        default: return alreadySeen ? null : alert;
+      }
+      this.networkNotified = true;
+      const context = settings.networkFailureNotifications === "count"
+        ? ` after ${this.networkKeys.size} consecutive network failures`
+        : ` for at least ${settings.networkFailureMinutes} minute${settings.networkFailureMinutes === 1 ? "" : "s"}`;
+      return { ...alert, message: `${alert.message}${context}` };
     }
     return alert;
+  }
+
+  resetNetwork() {
+    this.networkKeys.clear();
+    this.networkSince = null;
+    this.networkNotified = false;
   }
 }
 

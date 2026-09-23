@@ -335,8 +335,12 @@ they commit.
 - The reference Obsidian companion requests editor save, debounces completed writes, displays
   authenticated state, and previews conflicts. By default it shows one bounded notice per failed
   daemon job or retained failed transaction, deduplicated by durable job/transaction identity
-  across its live event stream and 30-second polling fallback. A temporary companion connection
-  failure changes the status bar to offline but is not labeled as a sync failure. The setting can
+  across its live event stream and 30-second polling fallback. Network failure notices can be
+  ignored, delayed until a configured number of distinct failed jobs, or delayed until a failure
+  remains observed for a configured duration. Those delayed policies notify once per continuous
+  network outage; recovery resets them. The status dialog retains job ID, category, retryability,
+  and full error text even when a notice is suppressed. A temporary companion connection failure
+  changes the status bar to offline but is not labeled as a sync failure. The master setting can
   disable notices without changing authoritative status. It is not a second Git engine. Do not run
   it beside another independent Git-sync plugin against the same worktree.
 - Provider endpoints/models are daemon configuration, not companion request fields. Use

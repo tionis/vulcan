@@ -110,6 +110,9 @@ pub fn install_obsidian_companion(
             "saveDebounceMs": 1500,
             "eventStream": true,
             "notifyOnFailure": true,
+            "networkFailureNotifications": "immediate",
+            "networkFailureCount": 3,
+            "networkFailureMinutes": 15,
         }))
         .map(|mut bytes| {
             bytes.push(b'\n');

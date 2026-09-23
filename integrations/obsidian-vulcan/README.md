@@ -48,10 +48,14 @@ Obsidian application, so install only trusted plugins on a device that holds thi
 The daemon must remain loopback-only and its registered permission profile remains authoritative.
 The WebSocket sends deduplicated snapshots; a 30-second HTTP refresh remains as recovery when the
 stream is unavailable. By default, the companion shows one Obsidian notice for each failed daemon
-job or retained failed transaction. Notices are deduplicated by job or transaction identity and
-bound their error detail; temporary companion connection loss changes the status bar to offline but
-does not masquerade as a failed synchronization. Disable **Notify on failed synchronization** when
-another device-local alerting system owns that responsibility.
+job or retained failed transaction. Notices include a bounded error summary, while the status dialog
+shows the failed job ID, category, retryability, and full retained error. **Network failure notices**
+can instead be disabled, delayed until a chosen number of distinct failed jobs, or delayed until a
+network failure remains unresolved for a chosen number of minutes. Count and duration policies show
+one notice per continuous network outage and reset after recovery. Duration starts when the companion
+first observes the failure; a restart resets its timer. Other failures still notify immediately.
+Temporary companion connection loss changes the status bar to offline and is not treated as a sync
+failure. Disable **Notify on failed synchronization** to suppress every failure notice.
 
 ## Conflict review
 
