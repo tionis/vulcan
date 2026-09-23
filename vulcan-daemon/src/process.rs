@@ -1076,22 +1076,32 @@ fn write_runtime_record(
 }
 
 fn read_runtime_record(path: &Path) -> Result<Option<DaemonRuntimeRecord>, DaemonProcessError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink()
-                || !metadata.is_file()
-                || metadata.len() > 64 * 1024
-            {
-                return Err(DaemonProcessError::Configuration(format!(
-                    "daemon runtime record at {} is not a bounded regular file",
-                    path.display()
-                )));
-            }
-        }
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
+    };
+    read_runtime_record_after_metadata(path, &metadata)
+}
+
+fn read_runtime_record_after_metadata(
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<Option<DaemonRuntimeRecord>, DaemonProcessError> {
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 64 * 1024 {
+        return Err(DaemonProcessError::Configuration(format!(
+            "daemon runtime record at {} is not a bounded regular file",
+            path.display()
+        )));
     }
-    let record: DaemonRuntimeRecord = serde_json::from_slice(&fs::read(path)?)?;
+    // The daemon removes its record during shutdown. Disappearance after the
+    // metadata check is the same stopped state as disappearance before it.
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let record: DaemonRuntimeRecord = serde_json::from_slice(&bytes)?;
     if record.version != DAEMON_RUNTIME_VERSION || !record.bind.ip().is_loopback() {
         return Err(DaemonProcessError::Configuration(format!(
             "invalid daemon runtime record at {}",
@@ -1620,6 +1630,18 @@ mod tests {
             let error = read_runtime_record(&link).expect_err("symlink must fail");
             assert!(error.to_string().contains("bounded regular file"));
         }
+    }
+
+    #[test]
+    fn runtime_record_disappearing_during_shutdown_is_stopped() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("runtime.json");
+        fs::write(&path, "{}").expect("runtime fixture");
+        let metadata = fs::symlink_metadata(&path).expect("metadata before shutdown");
+        fs::remove_file(&path).expect("daemon removes runtime record");
+        assert!(read_runtime_record_after_metadata(&path, &metadata)
+            .expect("disappearance is a stopped state")
+            .is_none());
     }
 
     #[test]

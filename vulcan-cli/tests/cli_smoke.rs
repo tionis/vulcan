@@ -8322,8 +8322,19 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
     let config_home = temporary.path().join("config");
     let state_home = temporary.path().join("state");
     let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
-    successful_process_json(&daemon(&["config", "set-bind", "127.0.0.1:0"]));
-    successful_process_json(&daemon(&[
+    let checked = |arguments: &[&str]| {
+        let output = daemon(arguments);
+        assert!(
+            output.status.success(),
+            "daemon {arguments:?} failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        successful_process_json(&output)
+    };
+    checked(&["config", "set-bind", "127.0.0.1:0"]);
+    checked(&[
         "config",
         "set-agent",
         "semantic",
@@ -8331,16 +8342,16 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
         "http://127.0.0.1:9/v1",
         "--model",
         "fixture-model",
-    ]));
-    successful_process_json(&daemon(&[
+    ]);
+    checked(&[
         "config",
         "set-semantic-worker",
         "--wiki",
         "missing",
         "--poll-seconds",
         "1",
-    ]));
-    successful_process_json(&daemon(&["start", "--detach"]));
+    ]);
+    checked(&["start", "--detach"]);
     let worker_status = state_home.join("vulcan/daemon/semantic-worker.json");
     for _ in 0..40 {
         if worker_status.is_file() {
@@ -8352,13 +8363,13 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
         worker_status.is_file(),
         "semantic worker status should appear"
     );
-    let status = successful_process_json(&daemon(&["semantic-status"]));
+    let status = checked(&["semantic-status"]);
     assert_eq!(status["version"], 1);
     assert_eq!(status["entries"][0]["wiki_id"], "missing");
     assert!(status["entries"][0]["error"]
         .as_str()
         .is_some_and(|error| error.contains("no longer exists")));
-    successful_process_json(&daemon(&["stop"]));
+    checked(&["stop"]);
 }
 
 #[test]
