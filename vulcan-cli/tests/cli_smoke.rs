@@ -259,6 +259,9 @@ fn sync_device_list_shows_shared_name_and_full_id() {
     assert!(empty.status.success());
     let empty_report: Value = serde_json::from_slice(&empty.stdout).expect("empty device list");
     let profile = empty_report["profile"].as_str().expect("profile");
+    let live_ref = empty_report["live_ref"].as_str().expect("live ref");
+    let live_refspec = format!("HEAD:{live_ref}");
+    run_git_ok(&vault, &["push", "--quiet", "origin", &live_refspec]);
     let backup_ref = format!("HEAD:refs/heads/__vulcan-sync/devices/{profile}/{device_id}");
     run_git_ok(&vault, &["push", "--quiet", "origin", &backup_ref]);
     let unnamed = run(&["sync", "devices", "list"]);
@@ -317,6 +320,74 @@ fn sync_device_list_shows_shared_name_and_full_id() {
         .contains("Named devices without a backup or local recovery copy:"));
     assert!(String::from_utf8_lossy(&inventory.stdout)
         .contains(&format!("Spare laptop\n  ID: {unbacked_id}")));
+
+    let prune_preview = run(&["sync", "devices", "prune-backup", device_id, "--dry-run"]);
+    assert!(
+        prune_preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prune_preview.stderr)
+    );
+    let prune_text = String::from_utf8_lossy(&prune_preview.stdout);
+    assert!(prune_text.contains("Safe to prune integrated remote safety backup"));
+    assert!(prune_text.contains("device, Git, and vault access will remain unchanged"));
+    let legacy_remove = run(&["--output", "json", "sync", "devices", "remove", device_id]);
+    assert!(
+        legacy_remove.status.success(),
+        "{}",
+        String::from_utf8_lossy(&legacy_remove.stderr)
+    );
+    let prune_report: Value =
+        serde_json::from_slice(&legacy_remove.stdout).expect("prune report via remove alias");
+    assert_eq!(prune_report["removed"], true);
+    assert_eq!(prune_report["access_unchanged"], true);
+
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            vault.join("offline.git").to_str().expect("offline path"),
+        ],
+    );
+    let offline_json = run(&["--output", "json", "sync", "devices", "list"]);
+    assert!(
+        offline_json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&offline_json.stderr)
+    );
+    let offline_report: Value =
+        serde_json::from_slice(&offline_json.stdout).expect("offline device inventory JSON");
+    assert_eq!(offline_report["remote_observation"]["state"], "unavailable");
+    assert_eq!(
+        offline_report["remote_observation"]["error"],
+        "Remote ref observation failed; check configured remote availability and access."
+    );
+    assert_eq!(offline_report["backups"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        offline_report["retained_recovery"][0]["device_id"],
+        device_id
+    );
+    assert_eq!(
+        offline_report["retained_recovery"][0]["name"],
+        "Desk laptop"
+    );
+    assert!(
+        offline_report["current_device_id"].is_null()
+            || offline_report["current_device_id"].is_string()
+    );
+
+    let offline_human = run(&["sync", "devices", "list"]);
+    assert!(offline_human.status.success());
+    let offline_text = String::from_utf8_lossy(&offline_human.stdout);
+    assert!(offline_text.contains("Remote observation: unavailable; showing local inventory only."));
+    assert!(offline_text.contains(&format!("Desk laptop\n  ID: {device_id}")));
+    assert!(offline_text.contains("Retained local recovery copies (remote backup status unknown):"));
+    assert!(offline_text
+        .contains("Named devices without a local recovery copy (remote backup status unknown):"));
+    assert!(
+        offline_text.contains("No remote backups were observed; remote backup state is unknown.")
+    );
 }
 
 fn run_daemon_test_command(
@@ -15509,6 +15580,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
     assert!(git_skill.contains("`refs.namespace_version`"));
     assert!(git_skill.contains("remain local under `refs/vulcan/**`"));
+    assert!(git_skill.contains("vulcan sync devices prune-backup <device-id> --dry-run"));
+    assert!(git_skill.contains("does not revoke device, Git, or vault access"));
+    assert!(git_skill.contains("remote fields are unknown"));
     assert!(git_skill.contains("MCP `sync` pack"));
     assert!(git_skill.contains("mutation-free `sync_plan`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
@@ -15603,8 +15677,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan sync devices list"));
     assert!(sync_skill.contains("vulcan sync devices set-name"));
     assert!(sync_skill.contains("vulcan sync devices fetch <device-id>"));
-    assert!(sync_skill.contains("vulcan sync devices remove <device-id> --dry-run"));
-    assert!(sync_skill.contains("cleanup cannot silently destroy"));
+    assert!(sync_skill.contains("vulcan sync devices prune-backup <device-id> --dry-run"));
+    assert!(sync_skill.contains("`remove` spelling remains a"));
+    assert!(sync_skill.contains("device, Git, and vault access are unchanged"));
     assert!(sync_skill.contains("## Branch lane"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));

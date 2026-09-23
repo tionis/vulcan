@@ -27,7 +27,8 @@ use vulcan_app::sync_conflicts::{
 use vulcan_app::sync_devices::{
     fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
     set_sync_device_name, SyncDeviceFetchReport, SyncDeviceListReport, SyncDeviceOptions,
-    SyncDeviceRecoveryStatus, SyncDeviceRelation, SyncDeviceRemoveReport,
+    SyncDeviceRecoveryStatus, SyncDeviceRelation, SyncDeviceRemoteObservationState,
+    SyncDeviceRemoveReport,
 };
 use vulcan_app::sync_notifications::{
     notification_status, publish_sync_notification_advertisement,
@@ -2723,14 +2724,29 @@ fn print_sync_device_list(
         return print_json(report);
     }
     println!(
-        "Remote device safety backups: {} (remote {}, profile {})",
+        "Remote device safety backups observed: {} (remote {}, profile {})",
         report.count, report.remote, report.profile
     );
+    match report.remote_observation.state {
+        SyncDeviceRemoteObservationState::Available => {
+            println!("Remote observation: available now.");
+        }
+        SyncDeviceRemoteObservationState::Unavailable => {
+            println!("Remote observation: unavailable; showing local inventory only.");
+            if let Some(error) = &report.remote_observation.error {
+                println!("  Error: {error}");
+            }
+        }
+    }
     if let Some(device_id) = &report.current_device_id {
         println!("This device: {device_id}");
     }
     if report.backups.is_empty() {
-        println!("No device backups found. A successful non-dry-run sync creates one.");
+        if report.remote_observation.state == SyncDeviceRemoteObservationState::Available {
+            println!("No device backups found. A successful non-dry-run sync creates one.");
+        } else {
+            println!("No remote backups were observed; remote backup state is unknown.");
+        }
     } else {
         for backup in &report.backups {
             println!(
@@ -2764,10 +2780,30 @@ fn print_sync_device_list(
             }
         }
     }
+    print_sync_device_local_inventory(report);
+    if !report.backups.is_empty() {
+        println!("\nRecover another device with: vulcan sync devices fetch <device-id>");
+    }
+    Ok(())
+}
+
+fn print_sync_device_local_inventory(report: &SyncDeviceListReport) {
     if !report.retained_recovery.is_empty() {
-        println!("\nRetained local recovery copies without a remote backup:");
+        if report.remote_observation.state == SyncDeviceRemoteObservationState::Available {
+            println!("\nRetained local recovery copies without a remote backup:");
+        } else {
+            println!("\nRetained local recovery copies (remote backup status unknown):");
+        }
         for recovery in &report.retained_recovery {
-            println!("\n{}", recovery.name.as_deref().unwrap_or("(unnamed)"));
+            println!(
+                "\n{}{}",
+                recovery.name.as_deref().unwrap_or("(unnamed)"),
+                if recovery.current_device {
+                    " (this device)"
+                } else {
+                    ""
+                }
+            );
             println!("  ID: {}", recovery.device_id);
             println!(
                 "  Local recovery: {} at {}",
@@ -2776,15 +2812,26 @@ fn print_sync_device_list(
         }
     }
     if !report.named_without_backup.is_empty() {
-        println!("\nNamed devices without a backup or local recovery copy:");
+        if report.remote_observation.state == SyncDeviceRemoteObservationState::Available {
+            println!("\nNamed devices without a backup or local recovery copy:");
+        } else {
+            println!(
+                "\nNamed devices without a local recovery copy (remote backup status unknown):"
+            );
+        }
         for device in &report.named_without_backup {
-            println!("\n{}\n  ID: {}", device.name, device.device_id);
+            println!(
+                "\n{}{}\n  ID: {}",
+                device.name,
+                if device.current_device {
+                    " (this device)"
+                } else {
+                    ""
+                },
+                device.device_id
+            );
         }
     }
-    if !report.backups.is_empty() {
-        println!("\nRecover another device with: vulcan sync devices fetch <device-id>");
-    }
-    Ok(())
 }
 
 fn print_sync_device_fetch(
@@ -2846,22 +2893,22 @@ fn print_sync_device_remove(
     }
     if report.dry_run {
         println!(
-            "Safe to remove integrated device backup {} at {} ({}).",
+            "Safe to prune integrated remote safety backup {} at {} ({}).",
             report.device_id,
             report.revision,
             device_relation_label(report.relation)
         );
         println!(
-            "Run again without --dry-run to delete {}.",
+            "Run again without --dry-run to delete remote ref {}; device, Git, and vault access will remain unchanged.",
             report.remote_device_ref
         );
     } else if report.removed {
         println!(
-            "Removed remote device backup {}. Local recovery ref {} remains available.",
+            "Pruned remote safety backup {}. Local recovery ref {} remains available. Device, Git, and vault access are unchanged.",
             report.remote_device_ref, report.local_recovery_retained
         );
     } else {
-        println!("Remote device backup was already absent; local recovery ref remains available.");
+        println!("Remote safety backup was already absent; local recovery ref remains available. Device, Git, and vault access are unchanged.");
     }
     Ok(())
 }

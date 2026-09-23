@@ -538,7 +538,7 @@ Examples:
   vulcan sync conflicts <conflict-id>
   vulcan sync devices list --wiki personal
   vulcan sync devices fetch <device-id> --wiki personal --dry-run
-  vulcan sync devices remove <device-id> --wiki personal --dry-run
+  vulcan sync devices prune-backup <device-id> --wiki personal --dry-run
   vulcan sync propose <conflict-id> --model <model> --base-url <url>
   vulcan sync reject <conflict-id> <proposal-id> --dry-run
   vulcan sync resolve <conflict-id> --side local --dry-run
@@ -3956,9 +3956,13 @@ pub enum SyncDeviceCommand {
         )]
         dry_run: bool,
     },
-    #[command(about = "Safely remove an integrated remote device backup")]
+    #[command(
+        name = "prune-backup",
+        alias = "remove",
+        about = "Prune an integrated remote safety backup; device, Git, and vault access are unchanged"
+    )]
     Remove {
-        #[arg(help = "Retired device ID previously fetched for verification")]
+        #[arg(help = "Device ID whose remote backup should be pruned")]
         device_id: String,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,

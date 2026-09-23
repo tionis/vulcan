@@ -114,8 +114,10 @@ that keeps both histories reachable.
 
 - Run `vulcan sync devices list [--wiki <id>]` to inventory remote safety heads, whether their
   local recovery copies are missing, current, or stale, retained local copies without remote heads,
-  and named devices without backups. A fetched local copy is not proof that a backup is integrated
-  or safe to remove. The list shows friendly names when set and exact IDs and revisions. Use
+  and named devices without backups. If `remote_observation.state` is `unavailable`, remote backup
+  presence is unknown; use the displayed local recovery refs and labels as local evidence only. A
+  fetched local copy is not proof that a backup is integrated or safe to prune. The list shows
+  friendly names when set and exact IDs and revisions. Use
   `vulcan sync devices set-name <device-id> <name>` to save a
   shared vault label, or `clear-name <device-id>` to remove it; both support `--dry-run`. Labels
   travel with the vault when `.vulcan/device-names/` is tracked by Git, while refs and recovery
@@ -127,11 +129,12 @@ that keeps both histories reachable.
   paths and `git diff <live-recovery-ref>..<device-recovery-ref>`. Use the printed detached
   `git worktree add` command to resolve a lost or inaccessible device in isolation; publish the
   reviewed result through the normal sync/conflict workflow.
-- Retire a device head only after its work is integrated. First fetch it again, then run
-  `vulcan sync devices remove <device-id> --dry-run`. Removal refuses the current device, stale
-  recovery refs, uninitialized live, and any `contains_live` or `diverged` candidate whose tree is
-  not already accepted. Applying removal uses an exact lease and keeps the local recovery ref, so
-  cleanup cannot silently destroy the last reviewed copy.
+- Prune a remote safety backup only after its work is integrated. First fetch it again, then run
+  `vulcan sync devices prune-backup <device-id> --dry-run`. The `remove` spelling remains a
+  compatibility alias. Pruning refuses the current device, stale recovery refs, uninitialized
+  live, and any `contains_live` or `diverged` candidate whose tree is not already accepted.
+  Applying the prune uses an exact lease and keeps the local recovery ref. It deletes only the
+  remote backup ref; device, Git, and vault access are unchanged.
 - A safety-head publication failure stops canonical reconciliation. Do not delete the head or
   bypass this gate just to make sync green; restore remote write access or select the correct
   remote, then rerun.

@@ -87,12 +87,27 @@ pub struct SyncDeviceListReport {
     pub remote: GitRemote,
     pub live_ref: GitRefName,
     pub profile: String,
+    pub remote_observation: SyncDeviceRemoteObservation,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_device_id: Option<String>,
     pub count: usize,
     pub backups: Vec<SyncDeviceBackupSummary>,
     pub retained_recovery: Vec<SyncDeviceLocalRecoverySummary>,
     pub named_without_backup: Vec<SyncDeviceNamedSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncDeviceRemoteObservation {
+    pub state: SyncDeviceRemoteObservationState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncDeviceRemoteObservationState {
+    Available,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -145,6 +160,8 @@ pub struct SyncDeviceRemoveReport {
     pub dry_run: bool,
     pub removed: bool,
     pub local_recovery_retained: GitRefName,
+    /// Pruning the backup does not change access to the device, Git remote, or vault.
+    pub access_unchanged: bool,
 }
 
 pub fn list_sync_device_backups(
@@ -160,9 +177,6 @@ pub fn list_sync_device_backups(
     let prefix = GitRefName::parse(format!("{REMOTE_DEVICE_BRANCH_ROOT}/{profile}"))
         .map_err(AppError::operation)?;
     let current = SyncStateStore::user_default()?.load_or_create_device_id(false)?;
-    let references = engine
-        .list_remote_refs(&repository, &options.remote, &prefix)
-        .map_err(AppError::operation)?;
     let recovery_prefix = GitRefName::parse(format!("refs/vulcan/recovery/devices/{profile}"))
         .map_err(AppError::operation)?;
     let recovery_namespace = format!("{}/", recovery_prefix.as_str());
@@ -179,40 +193,18 @@ pub fn list_sync_device_backups(
             (id != "live").then_some((id, reference))
         })
         .collect();
-    let mut backups = Vec::with_capacity(references.len());
-    let mut seen = BTreeSet::new();
-    for reference in references {
-        let device_id = reference
-            .name
-            .as_str()
-            .strip_prefix(&format!("{}/", prefix.as_str()))
-            .ok_or_else(|| AppError::operation("remote returned an out-of-namespace device ref"))?;
-        let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
-        seen.insert(parsed.as_str().to_string());
-        let recovery_ref =
-            device_recovery_ref(&profile, parsed.as_str()).map_err(AppError::operation)?;
-        let recovery_revision = recovery_refs
-            .remove(parsed.as_str())
-            .map(|reference| reference.target.to_string());
-        let recovery_status = match recovery_revision.as_deref() {
-            None => SyncDeviceRecoveryStatus::NotFetched,
-            Some(revision) if revision == reference.target.as_str() => {
-                SyncDeviceRecoveryStatus::Current
-            }
-            Some(_) => SyncDeviceRecoveryStatus::Stale,
-        };
-        backups.push(SyncDeviceBackupSummary {
-            device_id: parsed.as_str().to_string(),
-            name: read_device_name(&vault, &parsed)?,
-            remote_ref: reference.name,
-            revision: reference.target.to_string(),
-            current_device: current.as_ref() == Some(&parsed),
-            recovery_ref,
-            recovery_revision,
-            recovery_status,
-        });
-    }
+    let remote_context = RemoteBackupContext {
+        engine: &engine,
+        repository: &repository,
+        options,
+        prefix: &prefix,
+        profile: &profile,
+        vault: &vault,
+        current: current.as_ref(),
+    };
+    let remote = observe_remote_device_backups(&remote_context, &mut recovery_refs)?;
     let mut retained_recovery = Vec::new();
+    let mut seen = remote.seen_device_ids;
     for (device_id, reference) in recovery_refs {
         let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
         seen.insert(parsed.as_str().to_string());
@@ -239,12 +231,121 @@ pub fn list_sync_device_backups(
         remote: options.remote.clone(),
         live_ref: options.live_ref.clone(),
         profile,
+        remote_observation: remote.observation,
         current_device_id: current.map(|id| id.as_str().to_string()),
-        count: backups.len(),
-        backups,
+        count: remote.backups.len(),
+        backups: remote.backups,
         retained_recovery,
         named_without_backup,
     })
+}
+
+struct RemoteDeviceBackups {
+    backups: Vec<SyncDeviceBackupSummary>,
+    observation: SyncDeviceRemoteObservation,
+    seen_device_ids: BTreeSet<String>,
+}
+
+struct RemoteBackupContext<'a> {
+    engine: &'a vulcan_sync::GitCliEngine,
+    repository: &'a vulcan_sync::GitRepository,
+    options: &'a SyncDeviceOptions,
+    prefix: &'a GitRefName,
+    profile: &'a str,
+    vault: &'a Path,
+    current: Option<&'a GitSyncDeviceId>,
+}
+
+fn observe_remote_device_backups(
+    context: &RemoteBackupContext<'_>,
+    recovery_refs: &mut BTreeMap<String, GitReference>,
+) -> Result<RemoteDeviceBackups, AppError> {
+    let Some(references) = list_remote_refs_for_observation(context)? else {
+        return Ok(RemoteDeviceBackups::unavailable());
+    };
+    let mut backups = Vec::with_capacity(references.len());
+    let mut seen_device_ids = BTreeSet::new();
+    for reference in references {
+        let device_id = reference
+            .name
+            .as_str()
+            .strip_prefix(&format!("{}/", context.prefix.as_str()))
+            .ok_or_else(|| AppError::operation("remote returned an out-of-namespace device ref"))?;
+        let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
+        seen_device_ids.insert(parsed.as_str().to_string());
+        let recovery_ref =
+            device_recovery_ref(context.profile, parsed.as_str()).map_err(AppError::operation)?;
+        let recovery_revision = recovery_refs
+            .remove(parsed.as_str())
+            .map(|reference| reference.target.to_string());
+        let recovery_status = match recovery_revision.as_deref() {
+            None => SyncDeviceRecoveryStatus::NotFetched,
+            Some(revision) if revision == reference.target.as_str() => {
+                SyncDeviceRecoveryStatus::Current
+            }
+            Some(_) => SyncDeviceRecoveryStatus::Stale,
+        };
+        backups.push(SyncDeviceBackupSummary {
+            device_id: parsed.as_str().to_string(),
+            name: read_device_name(context.vault, &parsed)?,
+            remote_ref: reference.name,
+            revision: reference.target.to_string(),
+            current_device: context.current == Some(&parsed),
+            recovery_ref,
+            recovery_revision,
+            recovery_status,
+        });
+    }
+    Ok(RemoteDeviceBackups {
+        backups,
+        observation: SyncDeviceRemoteObservation {
+            state: SyncDeviceRemoteObservationState::Available,
+            error: None,
+        },
+        seen_device_ids,
+    })
+}
+
+fn list_remote_refs_for_observation(
+    context: &RemoteBackupContext<'_>,
+) -> Result<Option<Vec<GitReference>>, AppError> {
+    match context.engine.list_remote_refs(
+        context.repository,
+        &context.options.remote,
+        context.prefix,
+    ) {
+        Ok(references) => Ok(Some(references)),
+        Err(error) if is_remote_observation_unavailable(&error) => Ok(None),
+        Err(_) => Err(AppError::operation(
+            "remote device ref observation returned invalid data",
+        )),
+    }
+}
+
+fn is_remote_observation_unavailable(error: &vulcan_sync::GitEngineError) -> bool {
+    matches!(
+        error,
+        vulcan_sync::GitEngineError::ExecutableUnavailable { .. }
+            | vulcan_sync::GitEngineError::CommandFailed { .. }
+            | vulcan_sync::GitEngineError::CommandTimedOut { .. }
+            | vulcan_sync::GitEngineError::Io(_)
+    )
+}
+
+impl RemoteDeviceBackups {
+    fn unavailable() -> Self {
+        Self {
+            backups: Vec::new(),
+            observation: SyncDeviceRemoteObservation {
+                state: SyncDeviceRemoteObservationState::Unavailable,
+                error: Some(
+                    "Remote ref observation failed; check configured remote availability and access."
+                        .to_string(),
+                ),
+            },
+            seen_device_ids: BTreeSet::new(),
+        }
+    }
 }
 
 /// Store a display-only label in the shared vault. The device ID remains the
@@ -316,10 +417,20 @@ fn validate_device_name(name: &str) -> Result<(), AppError> {
     if name.trim() != name
         || name.is_empty()
         || name.len() > MAX_DEVICE_NAME_BYTES
-        || name.chars().any(char::is_control)
+        || name.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '\u{061c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{206f}'
+                )
+        })
     {
         return Err(AppError::operation(
-            "device name must be 1–80 UTF-8 bytes with no surrounding whitespace or control characters",
+            "device name must be 1–80 UTF-8 bytes with no surrounding whitespace, control characters, or bidi formatting characters",
         ));
     }
     Ok(())
@@ -573,6 +684,7 @@ pub fn remove_sync_device_backup(
         dry_run,
         removed,
         local_recovery_retained: local_device_ref,
+        access_unchanged: true,
     })
 }
 
@@ -642,6 +754,26 @@ mod tests {
         assert!(!SyncDeviceRelation::LiveUninitialized.safe_to_remove());
     }
 
+    #[test]
+    fn remote_observation_only_degrades_for_transport_failures() {
+        assert!(super::is_remote_observation_unavailable(
+            &vulcan_sync::GitEngineError::CommandFailed {
+                operation: "git ls-remote",
+                exit_code: Some(128),
+                stderr: "unavailable".to_string(),
+            }
+        ));
+        assert!(!super::is_remote_observation_unavailable(
+            &vulcan_sync::GitEngineError::InvalidObjectId("bad-object-id".to_string())
+        ));
+        assert!(!super::is_remote_observation_unavailable(
+            &vulcan_sync::GitEngineError::InvalidOutput {
+                operation: "git ls-remote",
+                detail: "malformed ref output".to_string(),
+            }
+        ));
+    }
+
     fn check_name_inventory(paths: &VaultPaths, options: &SyncDeviceOptions, vault: &Path) {
         set_sync_device_name(paths, DEVICE_A, Some("Living room laptop"), true)
             .expect("preview name");
@@ -658,6 +790,8 @@ mod tests {
             Some("Living room laptop")
         );
         assert!(set_sync_device_name(paths, DEVICE_A, Some("bad\nname"), false).is_err());
+        assert!(set_sync_device_name(paths, DEVICE_A, Some("Desk\u{202e}laptop"), false).is_err());
+        assert!(set_sync_device_name(paths, DEVICE_A, Some("Desk\u{2066}laptop"), false).is_err());
         set_sync_device_name(paths, DEVICE_A, None, false).expect("clear name");
         assert_eq!(
             list_sync_device_backups(paths, options)
@@ -696,6 +830,46 @@ mod tests {
         );
         let restored_refspec = format!("+{base}:{integrated_ref}");
         git(vault, &["push", "--quiet", "origin", &restored_refspec]);
+    }
+
+    fn check_offline_recovery_inventory(
+        paths: &VaultPaths,
+        options: &SyncDeviceOptions,
+        vault: &Path,
+        base: &str,
+        remote_path: &str,
+    ) {
+        set_sync_device_name(paths, DEVICE_A, Some("Recovered laptop"), false)
+            .expect("name retained recovery");
+        let unavailable_remote = vault.join("unavailable.git");
+        git(
+            vault,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                unavailable_remote.to_str().expect("unavailable path"),
+            ],
+        );
+        let offline =
+            list_sync_device_backups(paths, options).expect("offline list retains local inventory");
+        assert_eq!(
+            offline.remote_observation.state,
+            super::SyncDeviceRemoteObservationState::Unavailable
+        );
+        assert_eq!(
+            offline.remote_observation.error.as_deref(),
+            Some("Remote ref observation failed; check configured remote availability and access.")
+        );
+        assert!(offline.backups.is_empty());
+        assert_eq!(offline.retained_recovery.len(), 1);
+        assert_eq!(offline.retained_recovery[0].device_id, DEVICE_A);
+        assert_eq!(
+            offline.retained_recovery[0].name.as_deref(),
+            Some("Recovered laptop")
+        );
+        assert_eq!(offline.retained_recovery[0].revision, base);
+        git(vault, &["remote", "set-url", "origin", remote_path]);
     }
 
     #[test]
@@ -756,6 +930,7 @@ mod tests {
         assert_eq!(retained.count, 0);
         assert_eq!(retained.retained_recovery.len(), 1);
         assert_eq!(retained.retained_recovery[0].device_id, DEVICE_A);
+        check_offline_recovery_inventory(&paths, &options, &vault, &base, &remote_path);
         set_sync_device_name(&paths, DEVICE_B, Some("Travel tablet"), false)
             .expect("name unbacked device");
         let named = list_sync_device_backups(&paths, &options).expect("list named-only device");

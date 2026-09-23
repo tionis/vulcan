@@ -2401,19 +2401,37 @@ fn parses_sync_device_recovery_commands() {
         }
     ));
 
-    let remove = Cli::try_parse_from([
+    let prune = Cli::try_parse_from([
         "vulcan",
         "sync",
         "devices",
-        "remove",
+        "prune-backup",
         "01arz3ndektsv4rrffq69g5fav",
         "--wiki",
         "mimir",
         "--dry-run",
     ])
-    .expect("device removal should parse");
+    .expect("device backup pruning should parse");
     assert!(matches!(
-        remove.command,
+        prune.command,
+        Command::Sync {
+            command: SyncCommand::Devices {
+                command: SyncDeviceCommand::Remove { dry_run: true, .. }
+            }
+        }
+    ));
+
+    let remove_alias = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "devices",
+        "remove",
+        "01arz3ndektsv4rrffq69g5fav",
+        "--dry-run",
+    ])
+    .expect("legacy remove alias should parse");
+    assert!(matches!(
+        remove_alias.command,
         Command::Sync {
             command: SyncCommand::Devices {
                 command: SyncDeviceCommand::Remove { dry_run: true, .. }
