@@ -1,6 +1,9 @@
 # Cryptographic Device Identity
 
-Status: accepted design for Roadmap 12.15; not yet implemented.
+Status: accepted design for Roadmap 12.15; partially implemented. Local identity inspection and
+Unix initialization, public-key export, and key-shaped recovery ID parsing are available. Sync
+writers still use legacy ULIDs and namespace version 2; live version-3 reconciliation remains
+blocked. Windows initialization is held until private ACL handling is verified.
 
 ## Purpose
 
@@ -67,9 +70,11 @@ Human output may additionally show the conventional OpenSSH `SHA256:` fingerprin
 device ID, but JSON, ref names, comparisons, and mutation commands always use the complete device ID.
 Friendly device names are future mutable metadata and never identity.
 
-`GitSyncDeviceId` becomes a versioned parser rather than a ULID wrapper. It accepts both the exact
-legacy 26-character lowercase Crockford-Base32 ULID grammar and the exact `vdev1_` grammar so old
-recovery heads remain manageable. New identities can only be key-derived.
+`GitSyncDeviceId` becomes a versioned parser rather than a ULID wrapper. It accepts the legacy
+26-character Crockford-Base32 ULID grammar and the exact `vdev1_` grammar so old recovery heads
+remain manageable. Legacy command input may still normalize uppercase to preserve existing CLI
+behavior; stored and reported IDs remain lowercase. Key-derived IDs must be canonical lowercase
+and are never normalized. New identities can only be key-derived.
 
 ## Local storage and initialization
 
@@ -157,24 +162,29 @@ work must not weaken capture-before-apply, compare-and-swap, conflict preservati
 retention.
 
 Current writers already emit namespace version 2 with legacy ULID device IDs. The key-derived ID
-grammar therefore requires namespace version 3. Rollout is deliberately two-stage:
+grammar therefore requires namespace version 3. Rollout has three gated stages:
 
-1. A compatibility release reads legacy ULIDs, key IDs, and namespace versions 1, 2, and 3 while
-   still creating the old identity form. It must tolerate mixed legacy/key device heads. Current
-   version-2 readers reject a future live-tip namespace version before canonical reconciliation.
-2. Only after that reader is deployed does a later release generate key identities and write namespace
-   version 3 provenance.
+1. A recovery-reader release accepts canonical key-shaped IDs alongside legacy ULIDs in device
+   backup inventory, labels, fetch, and safe pruning. It still creates legacy IDs, emits version 2,
+   and rejects a version-3 live tip before canonical reconciliation. Key-shaped ref names are
+   recovery evidence, not proof of key ownership or trust.
+2. A later live-reader release may reconcile version-3 live tips only when every newly written live
+   descendant preserves at least the observed namespace version. It still creates legacy IDs by
+   default. This monotonic rule prevents a version-2 descendant from hiding an upgrade requirement
+   from older clients.
+3. After the compatible reader is deployed, a key-writer release generates key identities and
+   writes version-3 provenance. It must tolerate mixed legacy/key device heads throughout rollout.
 
 An existing installation keeps its legacy `_device.json` intact during migration. The first explicit
 initialization or identity-requiring mutation creates a new key identity and therefore a new remote
 device head. Existing commits, trailers, conflict records, journals, recovery refs, and legacy remote
 heads are never rewritten, relabelled, or automatically deleted. The legacy head remains visible as a
-different historical device and uses the ordinary fetch, compare, integrate, and exact-lease removal
+different historical device and uses the ordinary fetch, compare, integrate, and exact-lease backup-pruning
 workflow. Local migration metadata may report the legacy ID, but it is not a predecessor claim and is
 not published as cryptographic continuity.
 
 Old binaries that do not understand namespace version 3 must fail closed and require upgrade. The
-two-stage rollout prevents that failure during an intentionally supported rolling upgrade; it does not
+staged rollout prevents that failure during an intentionally supported rolling upgrade; it does not
 promise indefinite write compatibility with unupgraded clients.
 
 ## Security and failure semantics

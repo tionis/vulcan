@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 32
+version: 33
 metadata:
   vulcan:
     managed: true
@@ -14,6 +14,24 @@ Vulcan synchronizes canonical vault files through finite, recoverable transactio
 are deliberately non-semantic and do not advance the user's checked-out branch. Use the direct CLI
 for one-shot work and the daemon for scheduling, watching, multiple wikis, or a companion client;
 both execute the same application workflow.
+
+## Inspect local device identity
+
+- Use `vulcan device show --output json` for a vault-independent, state-free view of the local
+  identity. `device_id` is the key-derived ID when initialized; `sync_actor_id` is the separate
+  legacy ULID currently used by sync. Neither field proves trust, remote access, or enrollment.
+- Preview `vulcan device init --dry-run` before initializing a missing local Ed25519 identity.
+  Initialization never replaces existing key material. `vulcan device public-key` explicitly
+  exports the public key; never request or print the private key for inventory work.
+- A local key may be ready while sync still reports `key_pending_rollout`. Continue using current
+  legacy sync actor and recovery procedures until version-3 live reconciliation and key-backed
+  writer migration are complete. On Windows, initialization remains unavailable until protected
+  private-file ACL creation is verified.
+- Use `vulcan devices list --output json` for an installation-wide view across registered wikis.
+  Each wiki has its own local recovery and remote observation state; a failed remote observation
+  means remote backup status is unknown, while locally retained recovery and names remain visible.
+  The current inventory uses the default `origin` remote and hidden live ref for Git registrations.
+  It is an observed recovery inventory, not an enrollment, possession, trust, or online roster.
 
 For a new sync checkout, preview `vulcan sync clone <remote> <path> --dry-run` before applying it.
 The command derives the wiki ID from the destination, uses native clone defaults on desktop, and
@@ -124,6 +142,11 @@ that keeps both histories reachable.
   commands always use the full device ID. These
   refs are recovery inputs, never automatic winners and never mixed into live merely because
   they exist.
+- Treat `identity_kind: ssh_key_v1` as the grammar of a key-shaped backup ID, not proof that the
+  listed device possesses that key, is trusted, has access, or is online. Legacy ULID and key-shaped
+  heads can coexist during migration. Current sync writers still create legacy IDs, and a
+  version-3 live tip requires an upgraded reconciler; recovery listing and fetch do not authorize
+  reconciliation.
 - Run `vulcan sync devices fetch <device-id> [--wiki <id>] --dry-run`, then omit `--dry-run` to
   anchor that device and accepted live under durable local recovery refs. Review the reported
   paths and `git diff <live-recovery-ref>..<device-recovery-ref>`. Use the printed detached

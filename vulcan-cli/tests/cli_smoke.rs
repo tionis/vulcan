@@ -264,6 +264,9 @@ fn sync_device_list_shows_shared_name_and_full_id() {
     run_git_ok(&vault, &["push", "--quiet", "origin", &live_refspec]);
     let backup_ref = format!("HEAD:refs/heads/__vulcan-sync/devices/{profile}/{device_id}");
     run_git_ok(&vault, &["push", "--quiet", "origin", &backup_ref]);
+    let key_device_id = format!("vdev1_{}", "a".repeat(52));
+    let key_backup_ref = format!("HEAD:refs/heads/__vulcan-sync/devices/{profile}/{key_device_id}");
+    run_git_ok(&vault, &["push", "--quiet", "origin", &key_backup_ref]);
     let unnamed = run(&["sync", "devices", "list"]);
     assert!(
         unnamed.status.success(),
@@ -298,12 +301,29 @@ fn sync_device_list_shows_shared_name_and_full_id() {
     assert!(
         String::from_utf8_lossy(&named.stdout).contains(&format!("Desk laptop\n  ID: {device_id}"))
     );
+    assert!(
+        run(&["sync", "devices", "set-name", &key_device_id, "Key device",])
+            .status
+            .success()
+    );
     let json = run(&["--output", "json", "sync", "devices", "list"]);
     assert!(json.status.success());
     let report: Value = serde_json::from_slice(&json.stdout).expect("JSON device list");
     assert_eq!(report["backups"][0]["name"], "Desk laptop");
     assert_eq!(report["backups"][0]["device_id"], device_id);
+    assert_eq!(report["backups"][0]["identity_kind"], "legacy_ulid");
     assert_eq!(report["backups"][0]["recovery_status"], "not_fetched");
+    let key_summary = report["backups"]
+        .as_array()
+        .expect("backup array")
+        .iter()
+        .find(|backup| backup["device_id"] == key_device_id)
+        .expect("key-shaped backup summary");
+    assert_eq!(key_summary["identity_kind"], "ssh_key_v1");
+    assert_eq!(key_summary["name"], "Key device");
+    let human_kinds = String::from_utf8_lossy(&named.stdout);
+    assert!(human_kinds.contains("ID kind: legacy_ulid"));
+    assert!(human_kinds.contains("ssh_key_v1 (key-shaped ID; unverified)"));
     let fetch = run(&["sync", "devices", "fetch", device_id]);
     assert!(fetch.status.success());
     let fetched = run(&["--output", "json", "sync", "devices", "list"]);
@@ -15629,6 +15649,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("sync workflow skill should be readable");
     assert!(sync_skill.contains("name: sync-workflow"));
+    assert!(sync_skill.contains("vulcan device show --output json"));
+    assert!(sync_skill.contains("vulcan device init --dry-run"));
+    assert!(sync_skill.contains("vulcan devices list --output json"));
+    assert!(sync_skill.contains("key_pending_rollout"));
     assert!(sync_skill.contains("vulcan sync run <wiki>"));
     assert!(sync_skill.contains("`safe.directory`"));
     assert!(sync_skill.contains("managed: true"));
@@ -15675,6 +15699,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("--network-notification-mode"));
     assert!(sync_skill.contains("--network-failure-count 3"));
     assert!(sync_skill.contains("vulcan sync devices list"));
+    assert!(sync_skill.contains("identity_kind: ssh_key_v1"));
+    assert!(sync_skill.contains("not proof that the"));
     assert!(sync_skill.contains("vulcan sync devices set-name"));
     assert!(sync_skill.contains("vulcan sync devices fetch <device-id>"));
     assert!(sync_skill.contains("vulcan sync devices prune-backup <device-id> --dry-run"));

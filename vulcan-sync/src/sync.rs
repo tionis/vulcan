@@ -52,22 +52,33 @@ pub fn git_live_epoch_id(profile: &str, previous: &GitOid) -> String {
 #[serde(transparent)]
 pub struct GitSyncDeviceId(String);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitSyncDeviceIdKind {
+    LegacyUlid,
+    SshKeyV1,
+}
+
 impl GitSyncDeviceId {
     pub fn parse(value: impl Into<String>) -> Result<Self, GitSyncError> {
-        let value = value.into().to_ascii_lowercase();
-        let valid = value.len() == 26
-            && value.bytes().all(|byte| {
+        let value = value.into();
+        let legacy_value = value.to_ascii_lowercase();
+        let legacy_valid = legacy_value.len() == 26
+            && legacy_value.bytes().all(|byte| {
                 byte.is_ascii_digit()
                     || matches!(byte, b'a'..=b'h' | b'j'..=b'k' | b'm'..=b'n' | b'p'..=b't' | b'v'..=b'z')
             });
-        if valid {
-            Ok(Self(value))
-        } else {
-            Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
-                detail: "sync device identity must be a 26-character Crockford Base32 ULID"
-                    .to_string(),
-            }))
+        if legacy_valid {
+            return Ok(Self(legacy_value));
         }
+        let key_digest = value.strip_prefix("vdev1_");
+        if key_digest.is_some_and(is_canonical_device_key_digest) {
+            return Ok(Self(value));
+        }
+        Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
+            detail: "sync device identity must be a 26-character Crockford Base32 ULID or a canonical vdev1_ key ID"
+                .to_string(),
+        }))
     }
 
     #[must_use]
@@ -78,6 +89,46 @@ impl GitSyncDeviceId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> GitSyncDeviceIdKind {
+        if self.0.starts_with("vdev1_") {
+            GitSyncDeviceIdKind::SshKeyV1
+        } else {
+            GitSyncDeviceIdKind::LegacyUlid
+        }
+    }
+}
+
+impl GitSyncDeviceIdKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyUlid => "legacy_ulid",
+            Self::SshKeyV1 => "ssh_key_v1",
+        }
+    }
+}
+
+fn is_canonical_device_key_digest(value: &str) -> bool {
+    value.len() == 52
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+        // 256 bits encode into 52 Base32 characters; the final character has
+        // one data bit and four zero padding bits, so its index is 0 or 16.
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| device_base32_index(*byte).is_some_and(|index| index % 16 == 0))
+}
+
+fn device_base32_index(byte: u8) -> Option<u8> {
+    match byte {
+        b'a'..=b'z' => Some(byte - b'a'),
+        b'2'..=b'7' => Some(byte - b'2' + 26),
+        _ => None,
     }
 }
 
@@ -3803,6 +3854,39 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[test]
+    fn device_id_parser_preserves_legacy_input_and_requires_canonical_key_ids() {
+        let legacy = GitSyncDeviceId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            .expect("legacy IDs retain case-insensitive compatibility");
+        assert_eq!(legacy.as_str(), "01arz3ndektsv4rrffq69g5fav");
+        assert_eq!(legacy.kind(), GitSyncDeviceIdKind::LegacyUlid);
+
+        let key_value = format!("vdev1_{}", "a".repeat(52));
+        let key = GitSyncDeviceId::parse(&key_value).expect("canonical key ID");
+        assert_eq!(key.as_str(), key_value);
+        assert_eq!(key.kind(), GitSyncDeviceIdKind::SshKeyV1);
+        let final_bit_set = format!("vdev1_{}q", "a".repeat(51));
+        assert!(GitSyncDeviceId::parse(final_bit_set).is_ok());
+        assert_eq!(
+            serde_json::to_string(&key.kind()).expect("identity kind JSON"),
+            "\"ssh_key_v1\""
+        );
+
+        for malformed in [
+            format!("VDEV1_{}", "a".repeat(52)),
+            format!("vdev1_{}", "A".repeat(52)),
+            format!("vdev1_{}", "a".repeat(51)),
+            format!("vdev1_{}b", "a".repeat(51)),
+            format!("vdev1_{}!", "a".repeat(51)),
+            format!("vdev2_{}", "a".repeat(52)),
+        ] {
+            assert!(
+                GitSyncDeviceId::parse(malformed.clone()).is_err(),
+                "accepted malformed key ID {malformed}"
+            );
+        }
+    }
 
     fn conflict_blob(data: &[u8]) -> GitPathObject {
         GitPathObject {

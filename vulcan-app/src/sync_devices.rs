@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::VaultPaths;
+pub use vulcan_sync::GitSyncDeviceIdKind;
 use vulcan_sync::{
     device_recovery_live_ref, device_recovery_ref, sync_profile_key, GitEngine, GitRefDeleteResult,
     GitRefName, GitReference, GitRemote, GitSyncDeviceId, GitSyncOptions, RepositoryLock,
@@ -44,6 +45,7 @@ impl From<&GitSyncOptions> for SyncDeviceOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncDeviceBackupSummary {
     pub device_id: String,
+    pub identity_kind: GitSyncDeviceIdKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub remote_ref: GitRefName,
@@ -66,6 +68,7 @@ pub enum SyncDeviceRecoveryStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncDeviceLocalRecoverySummary {
     pub device_id: String,
+    pub identity_kind: GitSyncDeviceIdKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub recovery_ref: GitRefName,
@@ -76,6 +79,7 @@ pub struct SyncDeviceLocalRecoverySummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncDeviceNamedSummary {
     pub device_id: String,
+    pub identity_kind: GitSyncDeviceIdKind,
     pub name: String,
     pub current_device: bool,
 }
@@ -210,6 +214,7 @@ pub fn list_sync_device_backups(
         seen.insert(parsed.as_str().to_string());
         retained_recovery.push(SyncDeviceLocalRecoverySummary {
             device_id: parsed.as_str().to_string(),
+            identity_kind: parsed.kind(),
             name: read_device_name(&vault, &parsed)?,
             recovery_ref: reference.name,
             revision: reference.target.to_string(),
@@ -218,10 +223,11 @@ pub fn list_sync_device_backups(
     }
     let named_without_backup = list_device_names(&vault)?
         .into_iter()
-        .filter(|(id, _)| !seen.contains(id))
+        .filter(|(id, _)| !seen.contains(id.as_str()))
         .map(|(device_id, name)| SyncDeviceNamedSummary {
-            current_device: current.as_ref().is_some_and(|id| id.as_str() == device_id),
-            device_id,
+            current_device: current.as_ref().is_some_and(|id| id == &device_id),
+            identity_kind: device_id.kind(),
+            device_id: device_id.as_str().to_string(),
             name,
         })
         .collect();
@@ -287,6 +293,7 @@ fn observe_remote_device_backups(
         };
         backups.push(SyncDeviceBackupSummary {
             device_id: parsed.as_str().to_string(),
+            identity_kind: parsed.kind(),
             name: read_device_name(context.vault, &parsed)?,
             remote_ref: reference.name,
             revision: reference.target.to_string(),
@@ -463,7 +470,7 @@ fn read_device_name(vault: &Path, device_id: &GitSyncDeviceId) -> Result<Option<
     Ok(Some(record.name))
 }
 
-fn list_device_names(vault: &Path) -> Result<Vec<(String, String)>, AppError> {
+fn list_device_names(vault: &Path) -> Result<Vec<(GitSyncDeviceId, String)>, AppError> {
     check_device_name_directory(vault)?;
     let directory = vault.join(".vulcan/device-names");
     let entries = match fs::read_dir(&directory) {
@@ -485,9 +492,9 @@ fn list_device_names(vault: &Path) -> Result<Vec<(String, String)>, AppError> {
         let parsed = GitSyncDeviceId::parse(device_id).map_err(AppError::operation)?;
         let name = read_device_name(vault, &parsed)?
             .ok_or_else(|| AppError::operation("device name file disappeared while listing"))?;
-        names.push((parsed.as_str().to_string(), name));
+        names.push((parsed, name));
     }
-    names.sort_by(|left, right| left.0.cmp(&right.0));
+    names.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
     Ok(names)
 }
 
@@ -723,7 +730,7 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
     use vulcan_core::VaultPaths;
-    use vulcan_sync::{GitRefName, GitRemote, DEFAULT_REMOTE_LIVE_REF};
+    use vulcan_sync::{GitRefName, GitRemote, GitSyncDeviceIdKind, DEFAULT_REMOTE_LIVE_REF};
 
     const DEVICE_A: &str = "01arz3ndektsv4rrffq69g5fav";
     const DEVICE_B: &str = "01arz3ndektsv4rrffq69g5faw";
@@ -954,5 +961,102 @@ mod tests {
         let error = remove_sync_device_backup(&paths, &options, DEVICE_B, true)
             .expect_err("unintegrated backup must be retained");
         assert!(error.to_string().contains("unintegrated information"));
+    }
+
+    #[test]
+    fn mixed_legacy_and_key_ids_can_be_listed_fetched_and_pruned_exactly() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&remote).expect("remote directory");
+        fs::create_dir(&vault).expect("vault directory");
+        git(&remote, &["init", "--bare", "--quiet"]);
+        git(&vault, &["init", "--quiet"]);
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(vault.join("note.md"), "shared tree\n").expect("note");
+        git(&vault, &["add", "note.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "shared tree"]);
+        let revision = git(&vault, &["rev-parse", "HEAD"]);
+        let remote_path = remote.to_string_lossy();
+        git(&vault, &["remote", "add", "origin", &remote_path]);
+
+        let options = SyncDeviceOptions {
+            remote: GitRemote::parse("origin").expect("remote"),
+            live_ref: GitRefName::parse(DEFAULT_REMOTE_LIVE_REF).expect("live ref"),
+        };
+        let profile = vulcan_sync::sync_profile_key(&options.remote, &options.live_ref);
+        let key_id = format!("vdev1_{}", "a".repeat(52));
+        for device_id in [DEVICE_A, key_id.as_str()] {
+            let device_ref = format!("HEAD:refs/heads/__vulcan-sync/devices/{profile}/{device_id}");
+            git(&vault, &["push", "--quiet", "origin", &device_ref]);
+        }
+        let live_refspec = format!("HEAD:{}", options.live_ref.as_str());
+        git(&vault, &["push", "--quiet", "origin", &live_refspec]);
+
+        let paths = VaultPaths::new(&vault);
+        set_sync_device_name(&paths, &key_id, Some("Key shaped ID"), false)
+            .expect("set key ID label");
+        let listed = list_sync_device_backups(&paths, &options).expect("list mixed IDs");
+        assert_eq!(listed.backups.len(), 2);
+        let legacy = listed
+            .backups
+            .iter()
+            .find(|backup| backup.device_id == DEVICE_A)
+            .expect("legacy backup");
+        assert_eq!(legacy.identity_kind, GitSyncDeviceIdKind::LegacyUlid);
+        let keyed = listed
+            .backups
+            .iter()
+            .find(|backup| backup.device_id == key_id)
+            .expect("key backup");
+        assert_eq!(keyed.identity_kind, GitSyncDeviceIdKind::SshKeyV1);
+        assert_eq!(keyed.name.as_deref(), Some("Key shaped ID"));
+        assert_eq!(keyed.revision, revision);
+
+        let fetched = fetch_sync_device_backup(&paths, &options, &key_id, false)
+            .expect("fetch exact key-shaped ID");
+        assert_eq!(fetched.device_id, key_id);
+        assert!(fetched.local_device_ref.as_str().ends_with(&key_id));
+        assert_eq!(fetched.relation, Some(SyncDeviceRelation::Same));
+        let preview = remove_sync_device_backup(&paths, &options, &key_id, true)
+            .expect("preview exact key backup prune");
+        assert!(!preview.removed);
+        assert_eq!(
+            preview.remote_device_ref.as_str(),
+            keyed.remote_ref.as_str()
+        );
+        let pruned = remove_sync_device_backup(&paths, &options, &key_id, false)
+            .expect("prune exact key backup");
+        assert!(pruned.removed);
+        assert_eq!(pruned.remote_device_ref.as_str(), keyed.remote_ref.as_str());
+
+        let after = list_sync_device_backups(&paths, &options).expect("list retained key recovery");
+        assert_eq!(after.backups.len(), 1);
+        assert_eq!(after.backups[0].device_id, DEVICE_A);
+        assert_eq!(after.retained_recovery.len(), 1);
+        assert_eq!(after.retained_recovery[0].device_id, key_id);
+        assert_eq!(
+            after.retained_recovery[0].identity_kind,
+            GitSyncDeviceIdKind::SshKeyV1
+        );
+        assert_eq!(
+            after.retained_recovery[0].name.as_deref(),
+            Some("Key shaped ID")
+        );
+        let named_only_key = format!("vdev1_{}q", "a".repeat(51));
+        set_sync_device_name(&paths, &named_only_key, Some("Unbacked key ID"), false)
+            .expect("label named-only key ID");
+        let with_named_only =
+            list_sync_device_backups(&paths, &options).expect("list named-only key ID");
+        assert_eq!(with_named_only.named_without_backup.len(), 1);
+        assert_eq!(
+            with_named_only.named_without_backup[0].device_id,
+            named_only_key
+        );
+        assert_eq!(
+            with_named_only.named_without_backup[0].identity_kind,
+            GitSyncDeviceIdKind::SshKeyV1
+        );
     }
 }

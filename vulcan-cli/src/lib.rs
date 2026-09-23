@@ -4897,6 +4897,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return commands::update::handle_update_command(cli, command.as_ref());
     }
 
+    if let Command::Device { ref command } = cli.command {
+        return commands::device::handle_device_command(cli, command);
+    }
+
+    if let Command::Devices { ref command } = cli.command {
+        return commands::devices::handle_devices_command(cli, command);
+    }
+
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
@@ -6560,6 +6568,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Git { ref command } => commands::runtime::handle_git_command(cli, &paths, command),
         Command::Sync { ref command } => commands::sync::handle_sync_command(cli, &paths, command),
+        Command::Device { .. } => unreachable!("device handled before vault resolution"),
+        Command::Devices { .. } => unreachable!("devices handled before vault resolution"),
         Command::Daemon { ref command } => commands::daemon::handle_daemon_command(cli, command),
         Command::Vault { ref command } => commands::vault::handle_vault_command(cli, command),
         Command::Run {

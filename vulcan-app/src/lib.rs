@@ -39,6 +39,7 @@ pub mod background_policy;
 pub mod browse;
 pub mod config;
 pub mod decomposition;
+pub mod device_identity;
 pub mod execution;
 pub mod export;
 pub mod folder_notes;

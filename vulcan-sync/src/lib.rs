@@ -73,7 +73,8 @@ pub use sync::{
     GitBranchSyncAction, GitConflictClass, GitConflictClassification, GitConflictProjection,
     GitConflictRefs, GitConflictScope, GitDeviceBackup, GitDeviceBackupOutcome, GitLiveEpoch,
     GitRemoteObservation, GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId,
-    GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    GitSyncDeviceIdKind, GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
+    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview,
+    GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress,
+    SyncCancellationToken,
 };

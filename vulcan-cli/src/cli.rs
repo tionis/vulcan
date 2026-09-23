@@ -3914,6 +3914,25 @@ pub enum SyncScheduleCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DeviceCommand {
+    #[command(about = "Inspect this installation's device identity without changing it")]
+    Show,
+    #[command(about = "Initialize this installation's Ed25519 device identity")]
+    Init {
+        #[arg(long, help = "Preview initialization without generating a key")]
+        dry_run: bool,
+    },
+    #[command(about = "Export this installation's canonical public device key")]
+    PublicKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DevicesCommand {
+    #[command(about = "List this installation and registered vaults' device inventory")]
+    List,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncDeviceCommand {
     #[command(about = "List remote per-device safety backups")]
     List {
@@ -6984,6 +7003,16 @@ pub enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    #[command(about = "Inspect or initialize this installation's device identity")]
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommand,
+    },
+    #[command(about = "List installation-wide device and recovery inventory")]
+    Devices {
+        #[command(subcommand)]
+        command: DevicesCommand,
     },
     #[command(
         about = "Run and inspect the multi-wiki synchronization daemon",

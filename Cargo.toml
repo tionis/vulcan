@@ -51,6 +51,7 @@ serde_json_canonicalizer = "0.3.2"
 serde_yaml = "0.9.34"
 semver = { version = "1.0.27", features = ["serde"] }
 sha2 = "0.10.9"
+ssh-key = { version = "0.6.7", features = ["ed25519", "getrandom"] }
 subtle = "2.6.1"
 sqlite-vec = "0.1.7"
 tempfile = "3.23.0"
@@ -60,6 +61,7 @@ toml = "0.8.23"
 tower = { version = "0.5.3", features = ["util"] }
 ulid = { version = "1.2.1", features = ["serde"] }
 unicode-normalization = "0.1.24"
+zeroize = "1.8.2"
 url = "2.5.8"
 wait-timeout = "0.2.1"
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }

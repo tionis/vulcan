@@ -10929,6 +10929,59 @@
         ]
       },
       {
+        "about": "Inspect or initialize this installation's device identity",
+        "name": "device",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Inspect this installation's device identity without changing it",
+            "name": "show",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Initialize this installation's Ed25519 device identity",
+            "name": "init",
+            "options": [
+              {
+                "help": "Preview initialization without generating a key",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Export this installation's canonical public device key",
+            "name": "public-key",
+            "options": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "List installation-wide device and recovery inventory",
+        "name": "devices",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List this installation and registered vaults' device inventory",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Run and inspect the multi-wiki synchronization daemon",
         "after_help": "Notes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon install --dry-run\n  vulcan daemon install\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon semantic-status --output json\n  vulcan daemon config set-semantic-worker --wiki personal --dry-run\n  vulcan daemon companion install personal --dry-run\n  vulcan daemon companion install personal\n  vulcan daemon companion --reveal-token --output json\n  vulcan daemon stop\n  vulcan daemon uninstall --dry-run",
         "name": "daemon",

@@ -7,6 +7,8 @@ pub(crate) mod completions;
 pub(crate) mod config;
 pub(crate) mod daemon;
 pub(crate) mod dataview;
+pub(crate) mod device;
+pub(crate) mod devices;
 pub(crate) mod docs;
 pub(crate) mod edit;
 pub(crate) mod graph;

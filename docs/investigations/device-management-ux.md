@@ -28,7 +28,7 @@ public-key name; private-key custody proves local control at the time of a chall
 registry history and resource grants establish scoped authority. Even accepted revocation may not
 have reached an offline device.
 
-## What exists today
+## Baseline at the initial review
 
 | Surface | Current behavior | Important limit |
 | --- | --- | --- |
@@ -43,6 +43,11 @@ accurate, but its `remove` verb and device-oriented naming can still be read as 
 deprovisioning. The human output should explicitly say “backup ref removed; access unchanged”
 when key-backed access arrives. An alias may preserve the existing command while a clearer
 `sync backups` surface takes over recovery operations.
+
+Since that baseline, the primary removal command became `prune-backup`, and list retains local
+recovery evidence if the remote is unavailable. The staged key-shaped recovery reader and local
+identity inspection/init/public-key commands are now implemented; live sync still writes legacy
+ULIDs, and Windows key initialization remains gated on private ACL handling.
 
 ## Model the user actually needs
 
@@ -140,10 +145,10 @@ so rather than promising immediate global revocation.
 
 | Priority | Gap | Recommended next work |
 | --- | --- | --- |
-| P0 | Current writers already emit ref namespace version `2` with legacy ULIDs. The identity rollout documents now reserve version `3` for key-derived IDs, and current readers reject unknown future live-tip versions. `GitSyncDeviceId::parse` still accepts only a 26-character ULID and lowercases input. | Implement and test the dual-reader/key-writer rollout before activating key IDs. Test old readers, mixed IDs, and trailers. Reject noncanonical key-ID spellings. Do not reuse an already emitted version as a migration signal. |
+| P0 | Current writers emit ref namespace version `2` with legacy ULIDs. Recovery inventory now parses canonical key-shaped IDs and reports the form, while live reconciliation still rejects version `3`. | Complete monotonic version-3 live reading and the later key-writer rollout before activating key IDs. Test old readers, mixed IDs, and trailers. Do not reuse an already emitted version as a migration signal. |
 | P0 | The original `sync devices remove` wording conflated recovery-head deletion with device deprovisioning. | The primary action is now `prune-backup`, with `remove` retained as an alias. Plans and completion reports state that access is unchanged. A separate retirement flow is still needed. |
 | P0 | Key-backed access could strand a lost-key device if replacement and independent re-enrollment are missing. | Make the replacement/re-enrollment journey a release gate before any device-key-backed authorization becomes required, as the accepted design already requires. |
-| P1 | The per-vault backup list now retains local recovery evidence when remote observation fails, but there is no global device overview. | Build a read-only projection from the local identity manifest, local recovery refs, labels, registered vaults, and optional remote observations; report source and freshness per field. |
+| P1 | The per-vault backup list and installation-wide registered-wiki view now retain local recovery evidence when remote observation fails. The global view still uses the default Git target and has no guaranteed local-only mode. | Add explicit per-registration target configuration and a bounded local-only inventory option when the sync app API supports it; preserve source and freshness per field. |
 | P1 | Labels are per-vault shared files while identity is installation-global. A shared label is untrusted presentation data, and `.vulcan/` may be ignored. | Decide between local preferred label and explicit shared vault alias, show provenance, handle collisions, and offer a deliberate publish/track path. Never use a label for authorization or exact selection. |
 | P1 | Provider state and unattended capability are planned but not yet shown in one device detail view. | Ship state-free `device show` and context-specific `device key status` before migration and signing flows. Use actionable degraded/invalid states without triggering unlocks. |
 | P1 | Accepted registry status, local denial, pending changes, and remote observation can look like one “trusted” state. | Display the exact accepted checkpoint and scope, plus pending/local-denial/offline-update states separately. Keep transport authorization separate. |

@@ -26,9 +26,9 @@ use vulcan_app::sync_conflicts::{
 };
 use vulcan_app::sync_devices::{
     fetch_sync_device_backup, list_sync_device_backups, remove_sync_device_backup,
-    set_sync_device_name, SyncDeviceFetchReport, SyncDeviceListReport, SyncDeviceOptions,
-    SyncDeviceRecoveryStatus, SyncDeviceRelation, SyncDeviceRemoteObservationState,
-    SyncDeviceRemoveReport,
+    set_sync_device_name, GitSyncDeviceIdKind, SyncDeviceFetchReport, SyncDeviceListReport,
+    SyncDeviceOptions, SyncDeviceRecoveryStatus, SyncDeviceRelation,
+    SyncDeviceRemoteObservationState, SyncDeviceRemoveReport,
 };
 use vulcan_app::sync_notifications::{
     notification_status, publish_sync_notification_advertisement,
@@ -2759,6 +2759,7 @@ fn print_sync_device_list(
                 }
             );
             println!("  ID: {}", backup.device_id);
+            println!("  ID kind: {}", device_id_kind_label(backup.identity_kind));
             println!(
                 "  Remote backup: {} at {}",
                 backup.revision, backup.remote_ref
@@ -2806,6 +2807,10 @@ fn print_sync_device_local_inventory(report: &SyncDeviceListReport) {
             );
             println!("  ID: {}", recovery.device_id);
             println!(
+                "  ID kind: {}",
+                device_id_kind_label(recovery.identity_kind)
+            );
+            println!(
                 "  Local recovery: {} at {}",
                 recovery.revision, recovery.recovery_ref
             );
@@ -2830,7 +2835,15 @@ fn print_sync_device_local_inventory(report: &SyncDeviceListReport) {
                 },
                 device.device_id
             );
+            println!("  ID kind: {}", device_id_kind_label(device.identity_kind));
         }
+    }
+}
+
+fn device_id_kind_label(kind: GitSyncDeviceIdKind) -> &'static str {
+    match kind {
+        GitSyncDeviceIdKind::LegacyUlid => "legacy_ulid",
+        GitSyncDeviceIdKind::SshKeyV1 => "ssh_key_v1 (key-shaped ID; unverified)",
     }
 }
 
