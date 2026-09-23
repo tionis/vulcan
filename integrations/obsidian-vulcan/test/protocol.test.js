@@ -10,6 +10,19 @@ const {
 
 const TOKEN = "a".repeat(43);
 
+test("connection accepts the daemon capability protocol field and rejects incompatible versions", async () => {
+  let protocolVersion = 1;
+  const client = new VulcanCompanionClient({
+    baseUrl: "http://127.0.0.1:3210",
+    token: TOKEN,
+    request: async () => ({ status: 200, json: { protocol_version: protocolVersion } }),
+  });
+
+  assert.deepEqual(await client.capabilities(), { protocol_version: 1 });
+  protocolVersion = 2;
+  await assert.rejects(client.capabilities(), /unsupported companion protocol version/);
+});
+
 test("loopback validation rejects remote, credential-bearing, and path endpoints", () => {
   assert.equal(normalizeBaseUrl("http://127.0.0.1:3210"), "http://127.0.0.1:3210");
   assert.equal(normalizeBaseUrl("http://[::1]:3210"), "http://[::1]:3210");

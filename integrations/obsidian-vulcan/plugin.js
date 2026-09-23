@@ -397,8 +397,7 @@ class VulcanSettingTab extends PluginSettingTab {
       .addButton((button) => button.setButtonText("Test").onClick(async () => {
         try {
           const client = await this.plugin.client();
-          const capabilities = await client.capabilities();
-          if (capabilities.version !== 1) throw new Error("unsupported companion protocol version");
+          await client.capabilities();
           await this.plugin.refreshStatus(false);
           new Notice("Connected to the Vulcan daemon");
         } catch (error) {

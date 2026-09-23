@@ -59,8 +59,12 @@ class VulcanCompanionClient {
     this.idempotencyKey = idempotencyKey;
   }
 
-  capabilities() {
-    return this.request("GET", "/capabilities");
+  async capabilities() {
+    const capabilities = await this.request("GET", "/capabilities");
+    if (capabilities.protocol_version !== PROTOCOL_VERSION) {
+      throw new Error("unsupported companion protocol version");
+    }
+    return capabilities;
   }
 
   listWikis(group) {

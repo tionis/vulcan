@@ -63,8 +63,12 @@ var require_protocol = __commonJS({
         this.WebSocketCtor = WebSocketCtor;
         this.idempotencyKey = idempotencyKey;
       }
-      capabilities() {
-        return this.request("GET", "/capabilities");
+      async capabilities() {
+        const capabilities = await this.request("GET", "/capabilities");
+        if (capabilities.protocol_version !== PROTOCOL_VERSION) {
+          throw new Error("unsupported companion protocol version");
+        }
+        return capabilities;
       }
       listWikis(group) {
         const query = group ? `?group=${encodeURIComponent(group)}` : "";
@@ -712,8 +716,7 @@ var VulcanSettingTab = class extends PluginSettingTab {
     new Setting(containerEl).setName("Test connection").addButton((button) => button.setButtonText("Test").onClick(async () => {
       try {
         const client = await this.plugin.client();
-        const capabilities = await client.capabilities();
-        if (capabilities.version !== 1) throw new Error("unsupported companion protocol version");
+        await client.capabilities();
         await this.plugin.refreshStatus(false);
         new Notice("Connected to the Vulcan daemon");
       } catch (error) {
