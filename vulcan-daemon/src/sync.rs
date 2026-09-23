@@ -9,9 +9,9 @@ use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use vulcan_app::sync::{
-    sync_git_vault_with_profile_and_observer_and_engine, GitPlatformProfile, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, SyncContentProfile,
-    VaultSyncReport,
+    sync_git_vault_with_profile_and_observer_and_engine_policy, GitPlatformProfile,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
+    SyncContentProfile, VaultSyncReport,
 };
 use vulcan_app::sync_conflicts::list_sync_conflicts;
 use vulcan_app::sync_state::{same_work_tree, SyncStateStore};
@@ -258,7 +258,11 @@ fn execute_claimed_job(
         job_id: &id,
         vault: &registration.path,
     };
-    match sync_git_vault_with_profile_and_observer_and_engine(
+    let unattended = !claimed
+        .job
+        .triggers
+        .contains(&vulcan_sync::SyncJobTrigger::Manual);
+    match sync_git_vault_with_profile_and_observer_and_engine_policy(
         &engine,
         &paths,
         &options,
@@ -266,6 +270,7 @@ fn execute_claimed_job(
         &claimed.cancellation,
         &mut observer,
         app_profile(registration.profile),
+        unattended,
     ) {
         Ok(report) => {
             let error = if matches!(

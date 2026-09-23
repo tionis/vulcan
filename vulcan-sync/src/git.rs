@@ -575,6 +575,13 @@ pub trait GitEngine: Send + Sync {
 
     fn safety_state(&self, repository: &GitRepository) -> Result<GitSafetyState, GitEngineError>;
 
+    /// Read-only repository facts used to decide whether unattended
+    /// files-only synchronization is safe for an active development checkout.
+    fn unattended_repository_state(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<GitUnattendedRepositoryState, GitEngineError>;
+
     fn repository_requirements(
         &self,
         repository: &GitRepository,
@@ -1281,6 +1288,16 @@ pub enum GitRefDeleteResult {
 pub struct GitSafetyState {
     pub staged_changes: bool,
     pub operation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitUnattendedRepositoryState {
+    pub attached_head: bool,
+    pub head_reference: Option<GitRefName>,
+    pub staged_changes: bool,
+    pub worktree_count: usize,
+    pub operation: Option<String>,
+    pub nested_repositories: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4001,6 +4018,51 @@ impl GitEngine for GitCliEngine {
         })
     }
 
+    fn unattended_repository_state(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<GitUnattendedRepositoryState, GitEngineError> {
+        repository.require_work_tree()?;
+        let safety = self.safety_state(repository)?;
+        let head_reference = self.head_reference(repository)?;
+        let attached_head = head_reference.is_some();
+
+        let mut worktrees = self.repository_command(repository);
+        worktrees.args(["worktree", "list", "--porcelain"]);
+        let worktrees = ensure_success("inspect Git worktrees", self.execute(worktrees)?)?;
+        let worktree_count = decode_stdout("inspect Git worktrees", worktrees.stdout)?
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count();
+
+        let mut index = self.repository_command(repository);
+        index.args(["ls-files", "--stage", "-z"]);
+        let index = ensure_success("inspect nested Git repositories", self.execute(index)?)?;
+        let mut nested_repositories: Vec<String> = index
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter_map(|entry| {
+                let tab = entry.iter().position(|byte| *byte == b'\t')?;
+                let (metadata, path) = entry.split_at(tab);
+                metadata
+                    .starts_with(b"160000 ")
+                    .then(|| String::from_utf8_lossy(&path[1..]).into_owned())
+            })
+            .collect();
+        nested_repositories.extend(find_nested_git_metadata(repository.require_work_tree()?)?);
+        nested_repositories.sort();
+        nested_repositories.dedup();
+
+        Ok(GitUnattendedRepositoryState {
+            attached_head,
+            head_reference,
+            staged_changes: safety.staged_changes,
+            worktree_count,
+            operation: safety.operation,
+            nested_repositories,
+        })
+    }
+
     fn repository_requirements(
         &self,
         repository: &GitRepository,
@@ -4099,6 +4161,45 @@ impl GitEngine for GitCliEngine {
         }
         Ok(())
     }
+}
+
+fn find_nested_git_metadata(root: &Path) -> Result<Vec<String>, GitEngineError> {
+    const MAX_INSPECTED_DIRECTORIES: usize = 100_000;
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        found: &mut Vec<String>,
+        inspected: &mut usize,
+    ) -> Result<(), GitEngineError> {
+        *inspected += 1;
+        if *inspected > MAX_INSPECTED_DIRECTORIES {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: format!(
+                    "nested-repository inspection exceeded {MAX_INSPECTED_DIRECTORIES} directories"
+                ),
+            });
+        }
+        let entries = std::fs::read_dir(directory).map_err(GitEngineError::Io)?;
+        for entry in entries {
+            let entry = entry.map_err(GitEngineError::Io)?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(GitEngineError::Io)?;
+            if entry.file_name() == ".git" && directory != root {
+                let relative = path.strip_prefix(root).unwrap_or(&path);
+                found.push(relative.to_string_lossy().into_owned());
+            } else if file_type.is_dir()
+                && !(directory == root
+                    && (entry.file_name() == ".git" || entry.file_name() == ".vulcan"))
+            {
+                visit(root, &path, found, inspected)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut found = Vec::new();
+    visit(root, root, &mut found, &mut 0)?;
+    Ok(found)
 }
 
 fn verify_materialized_tree(expected: &GitOid, actual: &GitOid) -> Result<(), GitEngineError> {

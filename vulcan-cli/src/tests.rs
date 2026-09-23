@@ -2260,6 +2260,7 @@ fn parses_sync_clone_command() {
                 remote: "ssh://git@example.invalid/wiki.git".to_string(),
                 path: PathBuf::from("/storage/wiki"),
                 id: Some("personal".to_string()),
+                profile: crate::cli::ManagedDirectoryProfileArg::Knowledge,
                 group: vec!["mobile".to_string()],
                 git_dir: None,
                 platform: Some(ClonePlatformArg::AndroidShared),
@@ -2271,6 +2272,7 @@ fn parses_sync_clone_command() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Parser matrix keeps related sync forms together.
 fn parses_sync_commands() {
     let run = Cli::try_parse_from([
         "vulcan",
@@ -2342,6 +2344,26 @@ fn parses_sync_commands() {
                 ..
             }
         } if wiki == "personal"
+    ));
+
+    let no_sync = Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "add",
+        "archive",
+        "/vaults/archive",
+        "--no-sync",
+    ])
+    .expect("files-only directories can be registered without Git sync");
+    assert!(matches!(
+        no_sync.command,
+        Command::Vault {
+            command: VaultCommand::Add {
+                no_sync: true,
+                sync_backend: None,
+                ..
+            }
+        }
     ));
     assert!(Cli::try_parse_from(["vulcan", "sync", "run", "personal", "--all"]).is_err());
 
@@ -2911,6 +2933,7 @@ fn parses_sync_doctor_command() {
                     remote: "backup".to_string(),
                     live_ref: "refs/heads/__vulcan-sync/live".to_string(),
                 },
+                profile: None,
             },
         }
     );
@@ -3373,6 +3396,7 @@ fn parses_supplied_file_sync_resolution() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Parser matrix keeps related registry forms together.
 fn parses_vault_registry_commands() {
     let clone = Cli::try_parse_from([
         "vulcan",
@@ -3398,6 +3422,7 @@ fn parses_vault_registry_commands() {
                 remote: "ssh://git@example.invalid/wiki.git".to_string(),
                 path: PathBuf::from("/storage/wiki"),
                 id: Some("personal".to_string()),
+                profile: crate::cli::ManagedDirectoryProfileArg::Knowledge,
                 group: vec!["mobile".to_string()],
                 git_dir: Some(PathBuf::from("/data/git/wiki")),
                 platform: ClonePlatformArg::AndroidShared,
@@ -3450,7 +3475,8 @@ fn parses_vault_registry_commands() {
                 group: vec!["daily".to_string()],
                 git_dir: Some(PathBuf::from("/data/git/personal")),
                 permissions_profile: None,
-                sync_backend: "git".to_string(),
+                sync_backend: None,
+                no_sync: false,
                 dry_run: true,
             },
         }

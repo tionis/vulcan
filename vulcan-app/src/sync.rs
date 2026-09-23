@@ -25,7 +25,8 @@ pub use vulcan_sync::{
     GitRemote, GitRemoteObservation, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
     GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError,
     GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
-    GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport, SyncCancellationToken,
+    GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    GitUnattendedRepositoryState, SyncCancellationToken,
 };
 
 /// Controls whether a finite file synchronization cycle composes Markdown
@@ -239,7 +240,55 @@ pub fn doctor_git_vault_for_platform(
     platform: GitPlatformProfile,
 ) -> SyncDoctorReport {
     let state_store = SyncStateStore::user_default().ok();
-    doctor_git_vault_with_optional_state(paths, options, platform, state_store.as_ref())
+    doctor_git_vault_with_optional_state(
+        paths,
+        options,
+        platform,
+        state_store.as_ref(),
+        SyncContentProfile::Knowledge,
+        false,
+    )
+}
+
+/// Inspects a repository using the selected content profile and optional
+/// unattended files-only safety policy.
+#[must_use]
+pub fn doctor_git_vault_for_profile(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    platform: GitPlatformProfile,
+    profile: SyncContentProfile,
+    unattended: bool,
+) -> SyncDoctorReport {
+    let state_store = SyncStateStore::user_default().ok();
+    doctor_git_vault_with_optional_state(
+        paths,
+        options,
+        platform,
+        state_store.as_ref(),
+        profile,
+        unattended,
+    )
+}
+
+/// State-store-aware form of [`doctor_git_vault_for_profile`].
+#[must_use]
+pub fn doctor_git_vault_with_profile_and_state_store(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    platform: GitPlatformProfile,
+    state_store: &SyncStateStore,
+    profile: SyncContentProfile,
+    unattended: bool,
+) -> SyncDoctorReport {
+    doctor_git_vault_with_optional_state(
+        paths,
+        options,
+        platform,
+        Some(state_store),
+        profile,
+        unattended,
+    )
 }
 
 #[must_use]
@@ -253,18 +302,23 @@ pub fn doctor_git_vault_with_state_store(
         options,
         GitPlatformProfile::native(),
         Some(state_store),
+        SyncContentProfile::Knowledge,
+        false,
     )
 }
 
+#[allow(clippy::too_many_lines)] // Keep the ordered diagnostic sequence in one report builder.
 fn doctor_git_vault_with_optional_state(
     paths: &VaultPaths,
     options: &GitSyncOptions,
     platform: GitPlatformProfile,
     state_store: Option<&SyncStateStore>,
+    profile: SyncContentProfile,
+    unattended: bool,
 ) -> SyncDoctorReport {
     let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
     let (effective_options, policy_severity, policy_detail) =
-        configured_options_for_doctor(paths, options);
+        configured_options_for_doctor_profile(paths, options, profile);
     let options = &effective_options;
     let mut report = initial_doctor_report(paths, options, platform);
     doctor_check(
@@ -317,7 +371,10 @@ fn doctor_git_vault_with_optional_state(
     doctor_repository_layout(&mut report, &repository);
     report.repository = Some(repository.clone());
 
-    match engine.safety_state(&repository) {
+    if unattended && profile == SyncContentProfile::FilesOnly {
+        doctor_unattended_files_only_state(&engine, &repository, &mut report);
+    } else {
+        match engine.safety_state(&repository) {
         Ok(safety) if safety.staged_changes => doctor_check(
             &mut report,
             "git.safety",
@@ -345,6 +402,7 @@ fn doctor_git_vault_with_optional_state(
             SyncDoctorSeverity::Error,
             error.to_string(),
         ),
+        }
     }
 
     match engine.repository_requirements(&repository) {
@@ -365,15 +423,18 @@ fn doctor_git_vault_with_optional_state(
     doctor_repository_lock(&repository, &mut report);
     doctor_journal(paths, state_store, &mut report);
     doctor_apply_marker(state_store, &repository, &mut report);
-    doctor_cache(paths, &mut report);
+    if profile == SyncContentProfile::Knowledge {
+        doctor_cache(paths, &mut report);
+    }
     finish_doctor_report(report)
 }
 
-fn configured_options_for_doctor(
+fn configured_options_for_doctor_profile(
     paths: &VaultPaths,
     options: &GitSyncOptions,
+    profile: SyncContentProfile,
 ) -> (GitSyncOptions, SyncDoctorSeverity, String) {
-    match configured_git_sync_options(paths, options) {
+    match configured_git_sync_options_for_profile(paths, options, profile) {
         Ok(options) => {
             let detail = format!(
                 "merge policy v{} is valid with automation ceiling {:?}",
@@ -385,6 +446,63 @@ fn configured_options_for_doctor(
             options.clone(),
             SyncDoctorSeverity::Error,
             error.to_string(),
+        ),
+    }
+}
+
+fn doctor_unattended_files_only_state(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    report: &mut SyncDoctorReport,
+) {
+    match engine.unattended_repository_state(repository) {
+        Ok(state) => {
+            let mut unsafe_conditions = Vec::new();
+            if !state.attached_head {
+                unsafe_conditions.push("HEAD is detached".to_string());
+            }
+            if state.staged_changes {
+                unsafe_conditions.push("the normal Git index has staged changes".to_string());
+            }
+            if state.worktree_count != 1 {
+                unsafe_conditions.push(format!(
+                    "the repository has {} linked worktrees (exactly one is supported)",
+                    state.worktree_count
+                ));
+            }
+            if let Some(operation) = state.operation {
+                unsafe_conditions.push(format!("a Git {operation} operation is in progress"));
+            }
+            if !state.nested_repositories.is_empty() {
+                unsafe_conditions.push(format!(
+                    "nested repositories or submodules are present: {}",
+                    state.nested_repositories.join(", ")
+                ));
+            }
+            if unsafe_conditions.is_empty() {
+                doctor_check(
+                    report,
+                    "git.files-only-safety",
+                    SyncDoctorSeverity::Pass,
+                    "repository state permits unattended files-only synchronization; Vulcan's repository lock does not exclude external Git processes, so avoid branch switches or Git operations while a job runs",
+                );
+            } else {
+                doctor_check(
+                    report,
+                    "git.files-only-safety",
+                    SyncDoctorSeverity::Error,
+                    format!(
+                        "unattended files-only synchronization is paused because {}; resolve these conditions or use an explicit manual synchronization",
+                        unsafe_conditions.join("; ")
+                    ),
+                );
+            }
+        }
+        Err(error) => doctor_check(
+            report,
+            "git.files-only-safety",
+            SyncDoctorSeverity::Error,
+            format!("cannot verify unattended files-only repository safety: {error}"),
         ),
     }
 }
@@ -1116,6 +1234,31 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine(
     delegate: &mut dyn GitSyncObserver,
     profile: SyncContentProfile,
 ) -> Result<VaultSyncReport, AppError> {
+    sync_git_vault_with_profile_and_observer_and_engine_policy(
+        engine,
+        paths,
+        options,
+        state_store,
+        cancellation,
+        delegate,
+        profile,
+        false,
+    )
+}
+
+/// Runs a profile-aware synchronization cycle with the extra repository
+/// preflight required for unattended files-only operation.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Finite sync composes independent repository, state, observer, and policy inputs.
+pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    cancellation: &SyncCancellationToken,
+    delegate: &mut dyn GitSyncObserver,
+    profile: SyncContentProfile,
+    unattended: bool,
+) -> Result<VaultSyncReport, AppError> {
     let started = Instant::now();
     let subprocesses_before = engine.subprocess_count();
     check_sync_start(cancellation)?;
@@ -1123,6 +1266,11 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine(
     let resolved_paths = resolved_repository_paths(engine, paths);
     let paths = &resolved_paths;
     let options = configured_git_sync_options_for_profile(paths, options, profile)?;
+    let branch_guard = if unattended && profile == SyncContentProfile::FilesOnly {
+        validate_unattended_files_only_repository(engine, paths)?
+    } else {
+        None
+    };
     let mut journal = SyncJournal::preparing(
         paths.vault_root(),
         options.remote.to_string(),
@@ -1150,6 +1298,8 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine(
         persist: !options.dry_run,
         delegate,
         profile,
+        engine,
+        branch_guard,
         tree_validator: validation_config.map(VaultTreeValidator::new),
     };
     let backend_started = Instant::now();
@@ -1249,6 +1399,70 @@ fn run_sync_backend_with_vault_lock(
     );
     drop(vault_lock);
     Ok(result)
+}
+
+fn validate_unattended_files_only_repository(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+) -> Result<Option<GitRefName>, AppError> {
+    let repository = engine
+        .discover_repository(paths.vault_root())
+        .map_err(|error| {
+            unattended_files_only_error(
+                format!(
+            "cannot verify repository safety for unattended files-only synchronization: {error}"
+        ),
+                true,
+            )
+        })?;
+    let state = engine
+        .unattended_repository_state(&repository)
+        .map_err(|error| {
+            unattended_files_only_error(
+                format!(
+            "cannot verify repository safety for unattended files-only synchronization: {error}"
+        ),
+                true,
+            )
+        })?;
+    let mut unsafe_conditions = Vec::new();
+    if !state.attached_head {
+        unsafe_conditions.push("HEAD is detached".to_string());
+    }
+    if state.staged_changes {
+        unsafe_conditions.push("the normal Git index has staged changes".to_string());
+    }
+    if state.worktree_count != 1 {
+        unsafe_conditions.push(format!(
+            "the repository has {} linked worktrees (exactly one is supported)",
+            state.worktree_count
+        ));
+    }
+    if let Some(operation) = state.operation {
+        unsafe_conditions.push(format!("a Git {operation} operation is in progress"));
+    }
+    if !state.nested_repositories.is_empty() {
+        unsafe_conditions.push(format!(
+            "nested repositories or submodules are present: {}",
+            state.nested_repositories.join(", ")
+        ));
+    }
+    if unsafe_conditions.is_empty() {
+        Ok(state.head_reference)
+    } else {
+        Err(unattended_files_only_error(format!(
+            "unattended files-only synchronization is paused because {}; resolve the repository state or run a manual synchronization",
+            unsafe_conditions.join("; ")
+        ), false))
+    }
+}
+
+fn unattended_files_only_error(message: String, retryable: bool) -> AppError {
+    AppError::sync(vulcan_sync::SyncError::new(
+        vulcan_sync::SyncErrorCategory::Repository,
+        message,
+        retryable,
+    ))
 }
 
 fn refresh_cache_after_sync_with_timing(
@@ -1583,11 +1797,26 @@ struct JournalSyncObserver<'a> {
     persist: bool,
     delegate: &'a mut dyn GitSyncObserver,
     profile: SyncContentProfile,
+    engine: &'a dyn GitEngine,
+    branch_guard: Option<GitRefName>,
     tree_validator: Option<VaultTreeValidator>,
 }
 
 impl GitSyncObserver for JournalSyncObserver<'_> {
     fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+        if progress.phase == GitSyncPhase::Applying {
+            if let Some(expected) = &self.branch_guard {
+                let actual = self
+                    .engine
+                    .head_reference(&progress.repository)
+                    .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+                if actual.as_ref() != Some(expected) {
+                    return Err(GitSyncObserverError::new(format!(
+                        "repository branch changed during unattended files-only synchronization (expected `{expected}`, found `{actual:?}`); synchronized files were not applied, retry after Git activity stops"
+                    )));
+                }
+            }
+        }
         self.journal.phase = match progress.phase {
             GitSyncPhase::Preparing => SyncJournalPhase::Preparing,
             GitSyncPhase::Capturing => SyncJournalPhase::Capturing,
@@ -2212,6 +2441,48 @@ mod tests {
             .expect("Git output should be UTF-8")
             .trim()
             .to_string()
+    }
+
+    #[test]
+    fn unattended_files_only_preflight_accepts_simple_checkout_and_rejects_staging() {
+        let temporary = tempdir().expect("temporary directory");
+        let repository_path = temporary.path().join("vault");
+        fs::create_dir(&repository_path).expect("repository directory");
+        git(
+            &repository_path,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&repository_path, &["config", "user.name", "Vulcan Test"]);
+        git(
+            &repository_path,
+            &["config", "user.email", "vulcan@example.invalid"],
+        );
+        fs::write(repository_path.join("file.bin"), b"bytes").expect("file");
+        git(&repository_path, &["add", "file.bin"]);
+        git(&repository_path, &["commit", "--quiet", "-m", "initial"]);
+        let engine = vulcan_sync::GitCliEngine::default();
+        let paths = VaultPaths::new(&repository_path);
+
+        validate_unattended_files_only_repository(&engine, &paths)
+            .expect("plain attached checkout should be accepted");
+
+        fs::write(repository_path.join("file.bin"), b"staged").expect("edit");
+        git(&repository_path, &["add", "file.bin"]);
+        let error = validate_unattended_files_only_repository(&engine, &paths)
+            .expect_err("staged work must pause unattended sync");
+        assert_eq!(
+            error.sync_error().map(|error| error.category),
+            Some(vulcan_sync::SyncErrorCategory::Repository)
+        );
+        assert!(error.to_string().contains("staged changes"));
+
+        git(&repository_path, &["reset", "--quiet"]);
+        let nested = repository_path.join("nested");
+        fs::create_dir(&nested).expect("nested repository directory");
+        git(&nested, &["init", "--quiet"]);
+        let error = validate_unattended_files_only_repository(&engine, &paths)
+            .expect_err("nested repository must pause unattended sync");
+        assert!(error.to_string().contains("nested/.git"));
     }
 
     fn assert_dry_run_recovers_journal_phase(
@@ -3705,6 +3976,22 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .as_ref()
             .is_some_and(|preflight| { preflight.compatible && preflight.entries == 2 }));
         assert!(!store.root().exists());
+
+        let files_only = doctor_git_vault_with_profile_and_state_store(
+            &paths,
+            &GitSyncOptions::default(),
+            GitPlatformProfile::native(),
+            &store,
+            SyncContentProfile::FilesOnly,
+            true,
+        );
+        assert!(files_only.checks.iter().any(|check| {
+            check.code == "git.files-only-safety" && check.severity == SyncDoctorSeverity::Pass
+        }));
+        assert!(!files_only
+            .checks
+            .iter()
+            .any(|check| check.code.starts_with("cache.")));
     }
 
     #[test]
@@ -3745,6 +4032,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &GitSyncOptions::default(),
             GitPlatformProfile::AndroidShared,
             Some(&store),
+            SyncContentProfile::Knowledge,
+            false,
         );
 
         assert!(!report.healthy);

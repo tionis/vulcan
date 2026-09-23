@@ -942,6 +942,8 @@ mod tests {
             .expect("symlink");
         let registration = WikiRegistration {
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
+            profile_version: None,
+            materialization: crate::registry::MaterializationProfile::Full,
             id: WikiId::parse("alpha").expect("wiki id"),
             registration_id: Ulid::new(),
             path: vault.clone(),
@@ -1074,6 +1076,8 @@ mod tests {
         assert!(output.status.success());
         let registration = WikiRegistration {
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
+            profile_version: None,
+            materialization: crate::registry::MaterializationProfile::Full,
             id: WikiId::parse("alpha").expect("wiki id"),
             registration_id: Ulid::new(),
             path: vault.clone(),

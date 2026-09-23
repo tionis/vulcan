@@ -4029,6 +4029,13 @@ pub enum SyncCommand {
             help = "Device-local wiki ID (lowercase, digits, `-`/`_`, max 64 chars); defaults to the destination name"
         )]
         id: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t,
+            help = "Managed-directory capability profile"
+        )]
+        profile: ManagedDirectoryProfileArg,
         #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
         group: Vec<String>,
         #[arg(
@@ -4530,6 +4537,12 @@ pub enum SyncCommand {
         wiki: Option<String>,
         #[command(flatten)]
         target: SyncTargetArgs,
+        #[arg(
+            long,
+            value_enum,
+            help = "Managed-directory capability profile for direct paths"
+        )]
+        profile: Option<ManagedDirectoryProfileArg>,
     },
     #[command(about = "Pause automatic sync for a registered wiki")]
     Pause {
@@ -4930,6 +4943,13 @@ pub enum VaultCommand {
             help = "Device-local wiki ID (lowercase, digits, `-`/`_`, max 64 chars); defaults to the destination name"
         )]
         id: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t,
+            help = "Managed-directory capability profile"
+        )]
+        profile: ManagedDirectoryProfileArg,
         #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
         group: Vec<String>,
         #[arg(long, help = "Create Git metadata in this separate directory")]
@@ -4977,10 +4997,16 @@ pub enum VaultCommand {
         permissions_profile: Option<String>,
         #[arg(
             long,
-            default_value = "git",
-            help = "Configured file-tree sync backend"
+            conflicts_with = "no_sync",
+            help = "Configured file-tree sync backend (defaults to git)"
         )]
-        sync_backend: String,
+        sync_backend: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "sync_backend",
+            help = "Register without a file-tree sync backend"
+        )]
+        no_sync: bool,
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },

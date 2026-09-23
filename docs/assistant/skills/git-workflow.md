@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 61
+version: 62
 tools:
   - git_status
   - git_diff
@@ -22,7 +22,7 @@ Use this skill when you need repository state rather than note content.
 
 Use `vulcan sync` when the user wants device/file-tree synchronization. This is separate from `git commit`: live sync snapshots are non-semantic and use Vulcan-owned refs without advancing the user's current branch.
 
-Registered directories default to the `knowledge` profile. Use `vulcan vault add <id> <path> --profile files-only` or `vulcan vault set <id> --profile files-only` when sync should handle arbitrary files without Markdown indexing or knowledge-specific validation, scripts, semantic history, and agent conflict resolution. Files-only devices retain concurrent automatic merges for review to preserve the shared accepted bytes. This profile choice is device-local and does not turn an active development checkout into an unattended Git-management target or promise a complete backup.
+Registered directories default to the versioned `knowledge` profile. Use `vulcan vault add <id> <path> --profile files-only`, either clone command with `--profile files-only`, or `vulcan vault set <id> --profile files-only` when a full working tree should be synchronized without Markdown indexing or knowledge-specific validation, scripts, semantic history, and agent conflict resolution. Both profiles currently use full-tree materialization. Files-only devices retain concurrent automatic merges for review to preserve shared accepted bytes. The daemon's unattended preflight rejects detached HEAD, staged changes, linked worktrees, in-progress Git operations, and nested repositories or submodules; branch changes are checked again before applying. Vulcan's lock does not exclude external Git processes. Do not use unattended sync for active development checkouts, and do not describe file replication as a complete refs/history/LFS backup.
 
 ## Recommended Flow
 
@@ -41,7 +41,7 @@ Registered directories default to the `knowledge` profile. Use `vulcan vault add
   `branch` report with action `paused` concerns only the branch lane (diverged past
   `pull.ff=only`, interactive rebase, or a merge/rebase conflict); the file lane proceeds
   independently.
-- Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, cache-coherence, and target-platform check. A registered wiki uses its recorded platform profile rather than the current host. Inspect `platform_preflight`: case-fold, canonical-Unicode, or Windows-reserved-name errors make the selected tree unsafe to materialize, while executable-bit, link-file symlink, and long-path warnings describe explicit target-filesystem limitations. `healthy: false` means at least one error-level invariant failed.
+- Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, cache-coherence, and target-platform check. Use `--profile files-only` for an unregistered files-only path; a registration uses its stored profile. Unattended files-only doctoring also reports whether repository state meets its conservative preflight. A registered wiki uses its recorded platform profile rather than the current host. Inspect `platform_preflight`: case-fold, canonical-Unicode, or Windows-reserved-name errors make the selected tree unsafe to materialize, while executable-bit, link-file symlink, and long-path warnings describe explicit target-filesystem limitations. `healthy: false` means at least one error-level invariant failed.
 - Finite sync carries that same recorded profile through direct registered and daemon jobs. Successful JSON reports retain `local_platform_preflight` and `accepted_platform_preflight`. A platform rejection after local capture is recoverable from the local candidate ref and `captured` journal and occurs before remote contact; a rejected fetched or merged tree is neither published nor applied. Do not change the registration profile merely to bypass incompatible path diagnostics.
 - Successful sync JSON also retains `requirements.required_filters` with clean, smudge, process, and executable readiness. A declared filter without a complete round-trip driver—or Git LFS without its executable—is a configuration error before capture or remote access. Install/configure the driver; do not remove `.gitattributes` merely to make synchronization proceed.
 - Treat `refs.namespace_version` as the parser contract for every reported Vulcan-owned ref. Current writers emit version 2 and use legacy ULID device IDs. An unknown future version on the remote live tip stops canonical reconciliation after the local safety backup is published; upgrade Vulcan before retrying, and retain that backup. Device candidates, fetched state, conflicts, checkpoints, proposals, and recovery refs remain local under `refs/vulcan/**`. Do not push or edit those local refs manually. Generic Git custom refs are transport-capable, but Vulcan deliberately retains the hidden-branch default until the hosting Forgejo deployment passes its separate conformance checklist.
@@ -94,9 +94,9 @@ Registered directories default to the `knowledge` profile. Use `vulcan vault add
 - Do not write a commit message before inspecting what actually changed.
 - Treat unrelated dirty worktree state as a coordination issue, not something to silently overwrite.
 - Prefer explicit commits over assuming auto-commit covers every workflow.
-- Do not reset or discard staged state to make synchronization proceed. Vulcan syncs staged
-  worktree bytes as ordinary filesystem state and never stages, resets, or rewrites the
-  normal index itself.
+- Do not reset or discard staged state to make synchronization proceed. Knowledge-profile and
+  explicit manual sync capture staged worktree bytes without changing the normal index. Unattended
+  files-only sync pauses when staged changes exist; review or commit them before retrying.
 - Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, `provenance_revision`, and `preserved_refs` are stable; the `record` ref names a Git-reachable trailer-bearing creation record, while `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, run mutating resolution, delete the record, or edit Vulcan-owned refs without explicit user direction. A preservation ref mismatch is evidence of unexpected mutation and must fail closed.
 - A conflicted report may include `conflict.projection` and the durable record includes matching metadata. When `published` and `applied` are true, the live ref and worktree contain its exact safe tree: accepted remote bytes remain provisionally at original conflicted paths, clean merged paths continue synchronizing, and no conflict artifacts enter the vault. The immutable record ref is also published remotely. Do not interpret the visible remote bytes as a semantic winner; use `sync conflicts` and reviewed resolution workflows. Structural conflicts may omit a projection and remain fully preserved by refs and device-local artifacts.
 - A projected conflict can also report `automatic_resolutions` for structured sibling paths that were resolved deterministically. Those bytes are already part of the validated projected tree; the immutable conflict record contains only the paths that still require review.

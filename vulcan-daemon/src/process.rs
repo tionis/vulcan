@@ -1135,7 +1135,10 @@ impl Drop for RuntimeRecordGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{DaemonConfig, DaemonConflictWorkerConfig, WikiId, WikiRegistration};
+    use crate::registry::{
+        AddWikiRequest, DaemonConfig, DaemonConflictWorkerConfig, ManagedDirectoryProfile, WikiId,
+        WikiRegistration,
+    };
     use std::process::Command;
     use ulid::Ulid;
 
@@ -1189,6 +1192,8 @@ mod tests {
             bind: "127.0.0.1:0".to_string(),
             vaults: vec![WikiRegistration {
                 profile: crate::registry::ManagedDirectoryProfile::Knowledge,
+                profile_version: None,
+                materialization: crate::registry::MaterializationProfile::Full,
                 id: WikiId::parse("notes").expect("wiki ID"),
                 registration_id: Ulid::new(),
                 path: vault,
@@ -1679,5 +1684,41 @@ mod tests {
         assert!(!status.running);
         assert!(status.runtime.is_some());
         assert!(status.capability_probe_error.is_some());
+    }
+
+    #[test]
+    fn files_only_daemon_status_reports_disabled_cache_without_initializing_index() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let directory = temporary.path().join("media");
+        fs::create_dir(&directory).expect("media directory");
+        fs::write(directory.join("clip.bin"), b"plain bytes").expect("media file");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        registry
+            .add(
+                &AddWikiRequest {
+                    id: WikiId::parse("media").expect("wiki ID"),
+                    path: directory.clone(),
+                    profile: Some(ManagedDirectoryProfile::FilesOnly),
+                    groups: Vec::new(),
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("none".to_string()),
+                    platform_profile: None,
+                },
+                false,
+            )
+            .expect("register files-only directory");
+        let context = DaemonProcessContext {
+            registry,
+            state_root: temporary.path().join("state"),
+            verbose: false,
+        };
+        let status = daemon_status(&context).expect("offline daemon status");
+        assert_eq!(status.wiki_statuses.len(), 1);
+        assert_eq!(
+            status.wiki_statuses[0].cache.state,
+            crate::scan_runtime::CacheFreshnessState::Disabled
+        );
+        assert!(!directory.join(".vulcan").exists());
     }
 }

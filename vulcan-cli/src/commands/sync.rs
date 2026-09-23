@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::io::{self, IsTerminal, Read, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
-    doctor_git_vault_for_platform, sync_git_vault_with_profile_and_progress, GitBranchSync,
+    doctor_git_vault_for_profile, sync_git_vault_with_profile_and_progress, GitBranchSync,
     GitBranchSyncAction, GitDeviceBackupOutcome, GitPlatformProfile, GitRefName, GitRemote,
     GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
     GitSyncPhase, GitSyncPreviewFileState, GitSyncProgress, GitSyncReport, SyncContentProfile,
@@ -73,7 +73,8 @@ use vulcan_core::{
 };
 use vulcan_daemon::process::{daemon_status, DaemonProcessContext};
 use vulcan_daemon::registry::{
-    NetworkNotificationMode, UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry,
+    ManagedDirectoryProfile, NetworkNotificationMode, UpdateWikiRequest, WikiId, WikiRegistration,
+    WikiRegistry,
 };
 use vulcan_daemon::sync::{sync_registered_wikis, RegisteredSyncReport, RegisteredSyncSelection};
 use vulcan_daemon::termux_scheduler::{
@@ -86,6 +87,7 @@ pub(crate) fn handle_sync_command(
     paths: &VaultPaths,
     command: &SyncCommand,
 ) -> Result<(), CliError> {
+    require_sync_knowledge_profile(cli, command)?;
     if matches!(command, SyncCommand::Clone { .. }) {
         return handle_sync_clone(cli, command);
     }
@@ -169,11 +171,50 @@ pub(crate) fn handle_sync_command(
     print_sync_report(cli.output, cli.verbose, &report)
 }
 
+fn require_sync_knowledge_profile(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
+    let wiki = match command {
+        SyncCommand::Propose { wiki, .. }
+        | SyncCommand::FormatPropose { wiki, .. }
+        | SyncCommand::SemanticPlan { wiki, .. }
+        | SyncCommand::SemanticAuto { wiki, .. }
+        | SyncCommand::Resolve {
+            wiki,
+            approve_proposal: Some(_),
+            ..
+        } => wiki.as_deref(),
+        SyncCommand::SemanticApply { .. }
+        | SyncCommand::SemanticPublish { .. }
+        | SyncCommand::SemanticReject { .. } => None,
+        _ => return Ok(()),
+    };
+    let registration = if let Some(id) = wiki {
+        let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
+        Some(
+            registry
+                .show(&WikiId::parse(id).map_err(CliError::operation)?)
+                .map_err(CliError::operation)?
+                .registration,
+        )
+    } else {
+        crate::registered_directory_for_path(&cli.vault)?
+    };
+    if let Some(registration) = registration {
+        if !registration.capabilities().knowledge_services {
+            return Err(CliError::operation(format!(
+                "registered directory `{}` uses the files-only profile; this sync operation requires knowledge services. Change it with `vulcan vault set {} --profile knowledge`",
+                registration.id, registration.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn handle_sync_clone(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
     let SyncCommand::Clone {
         remote,
         path,
         id,
+        profile,
         group,
         git_dir,
         platform,
@@ -215,6 +256,7 @@ fn handle_sync_clone(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
         &registry,
         crate::commands::vault::CloneCliRequest {
             id,
+            profile: crate::commands::vault::managed_profile(*profile),
             remote,
             path,
             groups: group,
@@ -455,9 +497,11 @@ fn handle_non_cycle_sync_command(
         | SyncCommand::Notifications { .. } => {
             unreachable!("notification commands are dispatched before the general sync match")
         }
-        SyncCommand::Doctor { wiki, target } => {
-            run_sync_doctor(cli, paths, wiki.as_deref(), target)
-        }
+        SyncCommand::Doctor {
+            wiki,
+            target,
+            profile,
+        } => run_sync_doctor(cli, paths, wiki.as_deref(), target, *profile),
         command @ SyncCommand::Conflicts { .. } => {
             handle_sync_conflicts_command(cli, paths, command)
         }
@@ -2562,9 +2606,38 @@ fn run_sync_doctor(
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
     target: &crate::SyncTargetArgs,
+    profile: Option<ManagedDirectoryProfileArg>,
 ) -> Result<(), CliError> {
+    if wiki.is_some() && profile.is_some() {
+        return Err(CliError::operation(
+            "`--profile` applies to direct paths only; registered wikis use their stored profile",
+        ));
+    }
     let (paths, registration_profile, registration_platform) =
         resolve_sync_paths(selected_paths, wiki)?;
+    let profile = if let Some(wiki) = wiki {
+        let id = WikiId::parse(wiki).map_err(CliError::operation)?;
+        let status = WikiRegistry::user_default()
+            .map_err(CliError::operation)?
+            .show(&id)
+            .map_err(CliError::operation)?;
+        match status.registration.profile {
+            ManagedDirectoryProfile::Knowledge => SyncContentProfile::Knowledge,
+            ManagedDirectoryProfile::FilesOnly => SyncContentProfile::FilesOnly,
+        }
+    } else if let Some(profile) = profile {
+        match profile {
+            ManagedDirectoryProfileArg::Knowledge => SyncContentProfile::Knowledge,
+            ManagedDirectoryProfileArg::FilesOnly => SyncContentProfile::FilesOnly,
+        }
+    } else if let Some(registration) = crate::registered_directory_for_path(paths.vault_root())? {
+        match registration.profile {
+            ManagedDirectoryProfile::Knowledge => SyncContentProfile::Knowledge,
+            ManagedDirectoryProfile::FilesOnly => SyncContentProfile::FilesOnly,
+        }
+    } else {
+        SyncContentProfile::Knowledge
+    };
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let options = GitSyncOptions {
         remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
@@ -2578,7 +2651,13 @@ fn run_sync_doctor(
         .transpose()
         .map_err(CliError::operation)?
         .unwrap_or_else(GitPlatformProfile::native);
-    let report = doctor_git_vault_for_platform(&paths, &options, platform);
+    let report = doctor_git_vault_for_profile(
+        &paths,
+        &options,
+        platform,
+        profile,
+        profile == SyncContentProfile::FilesOnly,
+    );
     print_sync_doctor_report(cli.output, &report)
 }
 

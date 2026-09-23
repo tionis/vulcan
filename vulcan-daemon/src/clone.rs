@@ -1,6 +1,9 @@
 //! Registry-aware Git clone orchestration for managed wikis.
 
-use crate::registry::{AddWikiRequest, RegistryError, WikiId, WikiRegistration, WikiRegistry};
+use crate::registry::{
+    AddWikiRequest, ManagedDirectoryCapabilities, ManagedDirectoryProfile, MaterializationProfile,
+    RegistryError, WikiId, WikiRegistration, WikiRegistry,
+};
 use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -15,6 +18,7 @@ use vulcan_sync::local_recovery_ref_namespaces;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloneWikiRequest {
     pub id: WikiId,
+    pub profile: ManagedDirectoryProfile,
     pub source: String,
     pub work_tree: PathBuf,
     pub git_dir: Option<PathBuf>,
@@ -27,6 +31,11 @@ pub struct CloneWikiRequest {
 pub struct CloneRegistrationPlan {
     pub id: WikiId,
     pub path: PathBuf,
+    pub profile: ManagedDirectoryProfile,
+    pub profile_version: u32,
+    pub capabilities: ManagedDirectoryCapabilities,
+    pub materialization: MaterializationProfile,
+    pub materialization_version: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,6 +183,15 @@ pub fn clone_registered_wiki(
     let proposed_registration = CloneRegistrationPlan {
         id: request.id.clone(),
         path: work_tree.clone(),
+        profile: request.profile,
+        profile_version: crate::registry::MANAGED_DIRECTORY_PROFILE_VERSION,
+        capabilities: ManagedDirectoryCapabilities::for_profile(
+            request.profile,
+            crate::registry::MANAGED_DIRECTORY_PROFILE_VERSION,
+            MaterializationProfile::Full,
+        ),
+        materialization: MaterializationProfile::Full,
+        materialization_version: crate::registry::MANAGED_MATERIALIZATION_VERSION,
         groups: groups.clone(),
         git_dir: git_dir.clone(),
         permissions_profile: request.permissions_profile.clone(),
@@ -216,7 +234,7 @@ pub fn clone_registered_wiki(
             &AddWikiRequest {
                 id: request.id.clone(),
                 path: work_tree.clone(),
-                profile: None,
+                profile: Some(request.profile),
                 groups,
                 git_dir,
                 permissions_profile: request.permissions_profile.clone(),
@@ -454,6 +472,7 @@ mod tests {
     fn request(root: &Path) -> CloneWikiRequest {
         CloneWikiRequest {
             id: WikiId::parse("personal").expect("valid ID"),
+            profile: ManagedDirectoryProfile::Knowledge,
             source: "https://token@example.invalid/wiki.git?secret=yes".to_string(),
             work_tree: root.join("wiki"),
             git_dir: Some(root.join("git/wiki.git")),
@@ -469,6 +488,7 @@ mod tests {
         let registry_path = temporary.path().join("config/daemon.toml");
         let registry = WikiRegistry::at(registry_path.clone());
         let mut planned_request = request(temporary.path());
+        planned_request.profile = ManagedDirectoryProfile::FilesOnly;
         planned_request.git_dir = Some(temporary.path().join("data/vulcan/git/wiki.git"));
 
         let report =
@@ -477,6 +497,19 @@ mod tests {
         assert!(report.dry_run);
         assert_eq!(report.source, "https://***@example.invalid/wiki.git");
         assert_eq!(report.proposed_registration.groups, ["mobile"]);
+        assert_eq!(
+            report.proposed_registration.profile,
+            ManagedDirectoryProfile::FilesOnly
+        );
+        assert_eq!(
+            report.proposed_registration.capabilities.profile_version,
+            crate::registry::MANAGED_DIRECTORY_PROFILE_VERSION
+        );
+        assert!(!report.proposed_registration.capabilities.markdown_index);
+        assert_eq!(
+            report.proposed_registration.materialization,
+            MaterializationProfile::Full
+        );
         assert_eq!(
             report.platform_policy.profile,
             GitPlatformProfile::AndroidShared

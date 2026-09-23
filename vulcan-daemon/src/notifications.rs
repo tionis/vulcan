@@ -560,6 +560,8 @@ mod tests {
     fn desired_listener_set_and_restart_identity_follow_effective_registration() {
         let registration = |id: &str, paused: bool, backend: Option<&str>| WikiRegistration {
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
+            profile_version: None,
+            materialization: crate::registry::MaterializationProfile::Full,
             id: WikiId::parse(id).expect("wiki id"),
             registration_id: ulid::Ulid::new(),
             path: Path::new("/").join(id),
@@ -874,6 +876,8 @@ mod tests {
         );
         let registration = WikiRegistration {
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
+            profile_version: None,
+            materialization: crate::registry::MaterializationProfile::Full,
             id: WikiId::parse("alpha").expect("wiki id"),
             registration_id: ulid::Ulid::new(),
             path: vault,

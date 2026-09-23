@@ -58,6 +58,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             git_dir,
             permissions_profile,
             sync_backend,
+            no_sync,
             dry_run,
         } => {
             let request = AddWikiRequest {
@@ -67,7 +68,11 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                 groups: group.clone(),
                 git_dir: git_dir.clone(),
                 permissions_profile: permissions_profile.clone(),
-                sync_backend: Some(sync_backend.clone()),
+                sync_backend: if *no_sync {
+                    Some("none".to_string())
+                } else {
+                    Some(sync_backend.clone().unwrap_or_else(|| "git".to_string()))
+                },
                 platform_profile: None,
             };
             let wiki = registry
@@ -152,6 +157,7 @@ fn handle_clone(
         remote,
         path,
         id,
+        profile,
         group,
         git_dir,
         platform,
@@ -177,6 +183,7 @@ fn handle_clone(
         registry,
         CloneCliRequest {
             id,
+            profile: managed_profile(*profile),
             remote,
             path,
             groups: group,
@@ -193,6 +200,7 @@ fn handle_clone(
 
 pub(crate) struct CloneCliRequest<'a> {
     pub(crate) id: WikiId,
+    pub(crate) profile: ManagedDirectoryProfile,
     pub(crate) remote: &'a str,
     pub(crate) path: &'a Path,
     pub(crate) groups: &'a [String],
@@ -211,6 +219,7 @@ pub(crate) fn clone_wiki(
         registry,
         &CloneWikiRequest {
             id: request.id,
+            profile: request.profile,
             source: request.remote.to_string(),
             work_tree: request.path.to_path_buf(),
             git_dir: request.git_dir.map(Path::to_path_buf),
@@ -302,7 +311,7 @@ fn parse_id(id: &str) -> Result<WikiId, CliError> {
     WikiId::parse(id).map_err(CliError::operation)
 }
 
-fn managed_profile(profile: ManagedDirectoryProfileArg) -> ManagedDirectoryProfile {
+pub(crate) fn managed_profile(profile: ManagedDirectoryProfileArg) -> ManagedDirectoryProfile {
     match profile {
         ManagedDirectoryProfileArg::Knowledge => ManagedDirectoryProfile::Knowledge,
         ManagedDirectoryProfileArg::FilesOnly => ManagedDirectoryProfile::FilesOnly,

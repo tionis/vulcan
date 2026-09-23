@@ -29,6 +29,13 @@ the bearer credential uses the native device-local `SecretStorage` API. The plug
 and mobile; Android still needs a reachable Vulcan daemon running in Termux or a later native
 bridge. One-shot `vulcan sync run` remains available without this plugin or the daemon.
 
+The companion follows the registered directory profile. For `files-only`, it supports sync status,
+sync requests, and review of preserved file conflicts. The profile disables indexing, scripts,
+semantic history, and agent conflict resolution. Full-tree materialization is the current sync
+contract; selecting files-only does not enable sparse checkout or partial clone. Unattended
+files-only sync applies conservative Git repository checks, but Vulcan cannot lock out external
+Git processes, so branch switches and Git operations must stay clear while a job runs.
+
 ## Pairing with the local daemon
 
 Start Vulcan, inspect the endpoint, and explicitly reveal the device credential:

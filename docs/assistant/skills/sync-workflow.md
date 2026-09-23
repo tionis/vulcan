@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 35
+version: 36
 metadata:
   vulcan:
     managed: true
@@ -42,17 +42,20 @@ both execute the same application workflow.
 For a new sync checkout, preview `vulcan sync clone <remote> <path> --dry-run` before applying it.
 The command derives the wiki ID from the destination, uses native clone defaults on desktop, and
 automatically selects a detached private Git directory plus the `android-shared` policy in Termux.
-Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appropriate.
+Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appropriate. Add
+`--profile files-only` when the registration should not expose knowledge services.
 
 ## Select the execution mode
 
-- A registered directory uses the device-local `knowledge` profile by default. Choose
-  `--profile files-only` on `vulcan vault add <id> <path>` or `vulcan vault set <id>` for a
-  directory whose sync should not initialize or refresh a Markdown index. This profile also
-  disables knowledge-specific validation, scripts, semantic history, and agent conflict
-  resolution while keeping the same deterministic file reconciliation. Profile state is local
-  registration metadata; it is not synchronized as vault config. Existing registrations retain
-  the `knowledge` default.
+- A registered directory uses the versioned device-local `knowledge` profile by default. Choose
+  `--profile files-only` on `vault add`, `vault clone`, `sync clone`, or `vault set` for a full
+  working tree that should not initialize or refresh a Markdown index. This profile also disables
+  knowledge-specific validation, scripts, semantic history, and agent conflict resolution while
+  keeping the same deterministic file reconciliation. Files-only registrations use full-tree
+  materialization; selective materialization remains Roadmap 12.20 work. Profile state is local
+  registration metadata, not synchronized vault config. Existing registrations keep the knowledge
+  default and their prior JSON representation. `vault add --no-sync` registers a directory without
+  a file-tree sync backend.
 - Use `vulcan vault show <id>` or `vulcan vault list` to inspect registration. Human output calls
   out a nondefault files-only profile; the JSON shape for existing knowledge registrations remains
   unchanged.
@@ -63,6 +66,14 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   registered directories use their stored profile.
 - Files-only devices retain concurrent automatic merges for review so they do not accept
   bytes that a knowledge device would reject. Resolve the retained conflict explicitly.
+- Files-only registrations cannot run knowledge commands. Change the stored profile back to
+  `knowledge` before using indexing, search, scripts, semantic history, or other knowledge services.
+- Unattended files-only preflight requires an attached branch, clean staging area, one worktree, no
+  active Git operation, and no nested repository or submodule. It checks the branch again before
+  applying. The Vulcan lock does not exclude external Git processes; do not switch branches or run
+  Git while a daemon job is active. Active development checkouts need a separate contract and are
+  not an unattended sync target. File replication does not provide a complete refs/history/LFS
+  backup.
 - For registered wikis, select one ID, `--group <name>`, or `--all`. Aggregate results are independent
   per-wiki transactions, not a cross-repository atomic commit.
 - Direct and daemon sync of an initialized vault use the same vault-write and repository locks as

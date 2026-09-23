@@ -628,6 +628,8 @@ mod tests {
             registration_id: ulid::Ulid::new(),
             path: PathBuf::from(format!("/{id}")),
             profile: ManagedDirectoryProfile::Knowledge,
+            profile_version: None,
+            materialization: crate::registry::MaterializationProfile::Full,
             groups: Vec::new(),
             git_dir: None,
             permissions_profile: None,
@@ -707,6 +709,51 @@ mod tests {
         stop_watcher(watcher);
         assert!(!directory.join(".vulcan/cache.db").exists());
         assert!(!state_store.root().join("daemon/scans").exists());
+    }
+
+    #[test]
+    fn mixed_profiles_keep_index_consumers_isolated() {
+        let temporary = tempdir().unwrap();
+        let knowledge_path = temporary.path().join("knowledge");
+        let files_path = temporary.path().join("files");
+        std::fs::create_dir(&knowledge_path).unwrap();
+        std::fs::create_dir(&files_path).unwrap();
+        std::fs::write(knowledge_path.join("Home.md"), "# Home\n").unwrap();
+        std::fs::write(files_path.join("Home.md"), "ordinary bytes\n").unwrap();
+        let mut knowledge = registration("knowledge", false, Some("none"));
+        knowledge.path = knowledge_path.clone();
+        let mut files = registration("files", false, Some("none"));
+        files.path = files_path.clone();
+        files.profile = ManagedDirectoryProfile::FilesOnly;
+        let supervisor = Arc::new(SyncSupervisor::at(temporary.path().join("jobs.json")).unwrap());
+        let state_store = SyncStateStore::at(temporary.path().join("state"));
+        let knowledge_watcher = spawn_watcher(
+            knowledge,
+            Arc::clone(&supervisor),
+            state_store.clone(),
+            DaemonWatchOptions::default(),
+        )
+        .unwrap();
+        let files_watcher = spawn_watcher(
+            files,
+            supervisor,
+            state_store,
+            DaemonWatchOptions::default(),
+        )
+        .unwrap();
+        assert!(knowledge_watcher.index.is_some());
+        assert!(files_watcher.index.is_none());
+        knowledge_watcher
+            .index
+            .as_ref()
+            .unwrap()
+            .tracker
+            .wait_for_generation(1, Duration::from_secs(5))
+            .unwrap();
+        stop_watcher(files_watcher);
+        stop_watcher(knowledge_watcher);
+        assert!(knowledge_path.join(".vulcan/cache.db").exists());
+        assert!(!files_path.join(".vulcan").exists());
     }
 
     #[test]

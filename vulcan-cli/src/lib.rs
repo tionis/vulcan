@@ -4845,6 +4845,7 @@ where
 
 #[allow(clippy::too_many_lines)]
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
+    require_registered_knowledge_profile(&cli.vault, &cli.command)?;
     // Handle `complete` before vault resolution: vault-independent contexts (e.g.
     // daily-date) must work when invoked from outside a vault by shell completion
     // hooks.  Vault-dependent contexts silently return empty output rather than
@@ -6932,6 +6933,55 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
     }
+}
+
+/// A registered files-only directory never acquires note services merely
+/// because a CLI invocation points at its path (or a nested path).
+fn require_registered_knowledge_profile(vault: &Path, command: &Command) -> Result<(), CliError> {
+    if matches!(
+        command,
+        Command::Git { .. }
+            | Command::Sync { .. }
+            | Command::Vault { .. }
+            | Command::Daemon { .. }
+            | Command::Device { .. }
+            | Command::Devices { .. }
+            | Command::SelfUpdate { .. }
+            | Command::Help { .. }
+            | Command::Describe { .. }
+            | Command::Completions { .. }
+    ) {
+        return Ok(());
+    }
+    let Some(registration) = registered_directory_for_path(vault)? else {
+        return Ok(());
+    };
+    if registration.capabilities().knowledge_services {
+        return Ok(());
+    }
+    Err(CliError::operation(format!(
+        "registered directory `{}` uses the files-only profile; this command requires knowledge services. Change it with `vulcan vault set {} --profile knowledge` before running this command",
+        registration.id, registration.id
+    )))
+}
+
+pub(crate) fn registered_directory_for_path(
+    vault: &Path,
+) -> Result<Option<vulcan_daemon::registry::WikiRegistration>, CliError> {
+    let Some(registry) = vulcan_daemon::registry::WikiRegistry::user_default().ok() else {
+        // An unregistered direct invocation has no daemon registry requirement.
+        return Ok(None);
+    };
+    let path = resolve_vault_root(vault)?;
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return Ok(None);
+    };
+    let config = registry.load().map_err(CliError::operation)?;
+    Ok(config
+        .vaults
+        .into_iter()
+        .filter(|registration| path.starts_with(&registration.path))
+        .max_by_key(|registration| registration.path.as_os_str().len()))
 }
 
 fn print_search_report(

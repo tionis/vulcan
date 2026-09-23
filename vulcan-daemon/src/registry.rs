@@ -58,6 +58,14 @@ pub struct WikiRegistration {
     /// Local knowledge-service profile. Missing values retain historical behavior.
     #[serde(default, skip_serializing_if = "ManagedDirectoryProfile::is_knowledge")]
     pub profile: ManagedDirectoryProfile,
+    /// Version of the local capability contract selected by `profile`.
+    /// Legacy knowledge registrations omit both fields; files-only is always
+    /// written with an explicit version so unsupported policy is never guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_version: Option<u32>,
+    /// Device-local selection policy, independent of knowledge capabilities.
+    #[serde(default, skip_serializing_if = "MaterializationProfile::is_full")]
+    pub materialization: MaterializationProfile,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +82,22 @@ pub struct WikiRegistration {
 
 /// Versioned local capability preset for a managed directory.
 pub const MANAGED_DIRECTORY_PROFILE_VERSION: u32 = 1;
+pub const MANAGED_MATERIALIZATION_VERSION: u32 = 1;
+
+/// Only full-tree materialization is supported by the current sync contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterializationProfile {
+    #[default]
+    Full,
+}
+
+impl MaterializationProfile {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    const fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,25 +118,45 @@ impl ManagedDirectoryProfile {
 #[allow(clippy::struct_excessive_bools)] // Public capability report exposes each independently gated service.
 pub struct ManagedDirectoryCapabilities {
     pub profile_version: u32,
+    pub materialization_version: u32,
     pub markdown_index: bool,
     pub knowledge_services: bool,
     pub scripts: bool,
     pub semantic_history: bool,
     pub agent_resolution: bool,
+    pub materialization: MaterializationProfile,
 }
 
-impl WikiRegistration {
+impl ManagedDirectoryCapabilities {
     #[must_use]
-    pub const fn capabilities(&self) -> ManagedDirectoryCapabilities {
-        let knowledge = matches!(self.profile, ManagedDirectoryProfile::Knowledge);
-        ManagedDirectoryCapabilities {
-            profile_version: MANAGED_DIRECTORY_PROFILE_VERSION,
+    pub const fn for_profile(
+        profile: ManagedDirectoryProfile,
+        profile_version: u32,
+        materialization: MaterializationProfile,
+    ) -> Self {
+        let knowledge = matches!(profile, ManagedDirectoryProfile::Knowledge);
+        Self {
+            profile_version,
+            materialization_version: MANAGED_MATERIALIZATION_VERSION,
             markdown_index: knowledge,
             knowledge_services: knowledge,
             scripts: knowledge,
             semantic_history: knowledge,
             agent_resolution: knowledge,
+            materialization,
         }
+    }
+}
+
+impl WikiRegistration {
+    #[must_use]
+    pub fn capabilities(&self) -> ManagedDirectoryCapabilities {
+        ManagedDirectoryCapabilities::for_profile(
+            self.profile,
+            self.profile_version
+                .unwrap_or(MANAGED_DIRECTORY_PROFILE_VERSION),
+            self.materialization,
+        )
     }
 }
 
@@ -385,6 +429,8 @@ pub struct WikiRegistrationStatus {
     pub available: bool,
     pub indexed: bool,
     pub git_repository: bool,
+    #[serde(skip_serializing_if = "MaterializationProfile::is_full")]
+    pub materialization: MaterializationProfile,
 }
 
 impl WikiRegistrationStatus {
@@ -404,6 +450,7 @@ impl WikiRegistrationStatus {
             available,
             indexed,
             git_repository,
+            materialization: registration.materialization,
         }
     }
 }
@@ -575,6 +622,14 @@ impl WikiRegistry {
     ) -> Result<WikiRegistration, RegistryError> {
         self.mutate(dry_run, |config| {
             validate_groups(&request.groups)?;
+            if request.sync_backend.as_deref() == Some("none")
+                && (request.git_dir.is_some() || request.platform_profile.is_some())
+            {
+                return Err(RegistryError::InvalidDaemonSetting(
+                    "a detached Git directory or platform policy requires an enabled Git sync backend; use --no-sync only without Git options"
+                        .to_string(),
+                ));
+            }
             let path = canonical_directory(&request.path)?;
             let git_dir = request
                 .git_dir
@@ -610,6 +665,10 @@ impl WikiRegistry {
                 registration_id: Ulid::new(),
                 path,
                 profile: request.profile.unwrap_or_default(),
+                profile_version: (request.profile.unwrap_or_default()
+                    == ManagedDirectoryProfile::FilesOnly)
+                    .then_some(MANAGED_DIRECTORY_PROFILE_VERSION),
+                materialization: MaterializationProfile::Full,
                 groups,
                 git_dir,
                 permissions_profile: request.permissions_profile.clone(),
@@ -651,6 +710,8 @@ impl WikiRegistry {
             }
             if let Some(profile) = request.profile {
                 wiki.profile = profile;
+                wiki.profile_version = (profile == ManagedDirectoryProfile::FilesOnly)
+                    .then_some(MANAGED_DIRECTORY_PROFILE_VERSION);
             }
             Ok(wiki.clone())
         })
@@ -973,6 +1034,24 @@ impl WikiRegistry {
 }
 
 fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
+    for wiki in &config.vaults {
+        match (wiki.profile, wiki.profile_version) {
+            (ManagedDirectoryProfile::Knowledge, None | Some(1))
+            | (ManagedDirectoryProfile::FilesOnly, Some(1)) => {}
+            (ManagedDirectoryProfile::FilesOnly, None) => {
+                return Err(RegistryError::InvalidDaemonSetting(format!(
+                    "files-only wiki `{}` has no capability profile version; re-register or set its profile explicitly",
+                    wiki.id
+                )));
+            }
+            (_, Some(version)) => {
+                return Err(RegistryError::InvalidDaemonSetting(format!(
+                    "wiki `{}` uses unsupported managed-directory profile version {version}; supported version is {MANAGED_DIRECTORY_PROFILE_VERSION}",
+                    wiki.id
+                )));
+            }
+        }
+    }
     validate_bind(&config.bind)?;
     if let Some(agent) = &config.resolution_agent {
         validate_agent_config(agent)?;
@@ -1348,10 +1427,25 @@ fn validate_groups(groups: &[String]) -> Result<(), RegistryError> {
 
 fn load_config(path: &Path) -> Result<DaemonConfig, RegistryError> {
     match fs::read_to_string(path) {
-        Ok(source) => toml::from_str(&source).map_err(|error| RegistryError::InvalidConfig {
-            path: path.to_path_buf(),
-            detail: error.to_string(),
-        }),
+        Ok(source) => {
+            let mut config: DaemonConfig =
+                toml::from_str(&source).map_err(|error| RegistryError::InvalidConfig {
+                    path: path.to_path_buf(),
+                    detail: error.to_string(),
+                })?;
+            // Migrate the first files-only representation (profile without a
+            // version) by assigning the only supported contract. Knowledge
+            // registrations intentionally remain byte-compatible with older
+            // daemon configs and continue to omit both fields.
+            for wiki in &mut config.vaults {
+                if wiki.profile == ManagedDirectoryProfile::FilesOnly
+                    && wiki.profile_version.is_none()
+                {
+                    wiki.profile_version = Some(MANAGED_DIRECTORY_PROFILE_VERSION);
+                }
+            }
+            Ok(config)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(DaemonConfig::default()),
         Err(error) => Err(RegistryError::Io(error)),
     }
@@ -1549,6 +1643,10 @@ mod tests {
             serde_json::to_value(&updated).expect("files-only registration JSON")["profile"],
             "files_only"
         );
+        assert_eq!(
+            serde_json::to_value(&updated).expect("versioned registration JSON")["profile_version"],
+            MANAGED_DIRECTORY_PROFILE_VERSION
+        );
     }
 
     #[test]
@@ -1575,6 +1673,7 @@ mod tests {
                 false,
             )
             .expect("configure semantic worker");
+        let before = fs::read(registry.path()).expect("capture registry before rejected update");
 
         let error = registry
             .update(
@@ -1591,6 +1690,11 @@ mod tests {
             .expect_err("worker incompatibility must be rejected");
         assert!(error.to_string().contains("semantic worker"));
         assert_eq!(
+            fs::read(registry.path()).expect("re-read registry after rejected update"),
+            before,
+            "a rejected capability change must not partially mutate persisted state"
+        );
+        assert_eq!(
             registry
                 .show(&registration.id)
                 .expect("show")
@@ -1598,6 +1702,147 @@ mod tests {
                 .profile,
             ManagedDirectoryProfile::Knowledge
         );
+    }
+
+    #[test]
+    fn legacy_files_only_config_migrates_and_knowledge_config_rolls_back_unchanged() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let config_path = temporary.path().join("daemon.toml");
+        let registry = WikiRegistry::at(config_path.clone());
+        let id = Ulid::new();
+        fs::write(
+            &config_path,
+            format!(
+                r#"device_id = "{}"
+bind = "127.0.0.1:3210"
+
+[[vault]]
+id = "archive"
+registration_id = "{}"
+path = "{}"
+profile = "files_only"
+"#,
+                Ulid::new(),
+                id,
+                vault.display()
+            ),
+        )
+        .expect("write pre-versioned files-only registry");
+
+        let migrated = registry
+            .show(&WikiId::parse("archive").expect("wiki id"))
+            .expect("load legacy files-only config");
+        assert_eq!(
+            migrated.registration.profile_version,
+            Some(MANAGED_DIRECTORY_PROFILE_VERSION)
+        );
+        assert_eq!(
+            migrated
+                .capabilities
+                .expect("files-only capabilities")
+                .profile_version,
+            1
+        );
+
+        registry
+            .add(
+                &request("knowledge", &temporary.path().join("knowledge")),
+                true,
+            )
+            .expect_err("nonexistent path must fail without config mutation");
+        let legacy_text = fs::read_to_string(&config_path).expect("registry text");
+        assert!(
+            !legacy_text.contains("profile_version"),
+            "migration remains read-only until a successful config write"
+        );
+
+        let knowledge_path = temporary.path().join("knowledge");
+        fs::create_dir(&knowledge_path).expect("knowledge directory");
+        registry
+            .add(&request("knowledge", &knowledge_path), false)
+            .expect("add knowledge wiki");
+        let saved = fs::read_to_string(&config_path).expect("saved registry");
+        assert!(
+            saved.contains("profile_version = 1"),
+            "files-only policy version is persisted on the next write"
+        );
+        let loaded = registry
+            .show(&WikiId::parse("knowledge").expect("wiki id"))
+            .expect("knowledge wiki");
+        let knowledge_json = serde_json::to_value(loaded).expect("knowledge status JSON");
+        assert!(knowledge_json.get("profile").is_none());
+        assert!(knowledge_json.get("profile_version").is_none());
+        assert!(knowledge_json.get("materialization").is_none());
+    }
+
+    #[test]
+    fn unsupported_profile_versions_and_partial_materialization_fail_before_write() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let config_path = temporary.path().join("daemon.toml");
+        let registry = WikiRegistry::at(config_path.clone());
+        registry
+            .add(&request("archive", &vault), false)
+            .expect("register wiki");
+        let mut config = fs::read_to_string(&config_path).expect("registry text");
+        config.push('\n');
+        config.push_str("# malformed/future policy is not accepted\n");
+        config = config.replace(
+            "id = \"archive\"",
+            "id = \"archive\"\nprofile = \"files_only\"\nprofile_version = 99",
+        );
+        fs::write(&config_path, &config).expect("write unsupported future profile");
+        let before = fs::read(&config_path).expect("capture future config");
+        let error = registry
+            .load()
+            .expect_err("future profile version must fail closed");
+        assert!(error
+            .to_string()
+            .contains("unsupported managed-directory profile version 99"));
+        assert_eq!(
+            fs::read(&config_path).expect("verify config was not rewritten"),
+            before
+        );
+
+        assert_eq!(
+            fs::read(&config_path).expect("config remains intact"),
+            before
+        );
+
+        let unsupported = r#"materialization = "sparse""#;
+        let error = toml::from_str::<MaterializationProfile>(unsupported)
+            .expect_err("sparse materialization is not implemented by this profile");
+        assert!(error.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn git_is_optional_for_registration_but_git_metadata_requires_a_backend() {
+        let temporary = tempdir().expect("temporary directory");
+        let wiki = temporary.path().join("wiki");
+        fs::create_dir(&wiki).expect("wiki directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+
+        let mut request_without_git = request("archive", &wiki);
+        request_without_git.sync_backend = Some("none".to_string());
+        let registration = registry
+            .add(&request_without_git, false)
+            .expect("register directory without initializing Git");
+        assert_eq!(registration.sync_backend.as_deref(), Some("none"));
+        assert!(!wiki.join(".git").exists());
+        assert!(!wiki.join(".vulcan/cache.db").exists());
+
+        let mut incompatible = request("other", &wiki);
+        incompatible.sync_backend = Some("none".to_string());
+        incompatible.git_dir = Some(wiki.clone());
+        assert!(registry
+            .add(&incompatible, false)
+            .expect_err("detached Git metadata requires an enabled backend")
+            .to_string()
+            .contains("requires an enabled Git sync backend"));
+        assert_eq!(registry.load().expect("reload registry").vaults.len(), 1);
     }
 
     #[test]

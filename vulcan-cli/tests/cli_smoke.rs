@@ -8070,8 +8070,6 @@ fn files_only_registration_json_reports_capabilities_without_initializing_index(
             directory_path,
             "--profile",
             "files-only",
-            "--sync-backend",
-            "none",
         ])
         .assert()
         .success();
@@ -8089,6 +8087,68 @@ fn files_only_registration_json_reports_capabilities_without_initializing_index(
     assert_eq!(shown["profile"], "files_only");
     assert_eq!(shown["capabilities"]["knowledge_services"], false);
     assert!(!directory.join(".vulcan").exists());
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", directory_path, "index", "init"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires knowledge services"));
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", directory_path, "search", "clip"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires knowledge services"));
+    cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "sync",
+            "semantic-plan",
+            "media",
+            "--from",
+            "base",
+            "--to",
+            "tip",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires knowledge services"));
+    assert!(!directory.join(".vulcan").exists());
+
+    init_git_repo(&directory);
+    run_git_ok(&directory, &["add", "clip.bin"]);
+    run_git_ok(&directory, &["commit", "-m", "Add media"]);
+    let doctor = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "sync", "doctor", "media"])
+        .assert()
+        .success();
+    let checks = parse_stdout_json(&doctor)["checks"]
+        .as_array()
+        .expect("doctor checks")
+        .clone();
+    assert!(!checks.iter().any(|check| check["code"]
+        .as_str()
+        .is_some_and(|code| code.starts_with("cache."))));
+    assert!(!directory.join(".vulcan").exists());
+
+    let direct_doctor = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--vault",
+            directory_path,
+            "--output",
+            "json",
+            "sync",
+            "doctor",
+            "--profile",
+            "files-only",
+        ])
+        .assert()
+        .success();
+    assert!(!parse_stdout_json(&direct_doctor)["checks"]
+        .as_array()
+        .expect("direct doctor checks")
+        .iter()
+        .any(|check| check["code"]
+            .as_str()
+            .is_some_and(|code| code.starts_with("cache."))));
 }
 
 #[test]
@@ -15634,6 +15694,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync status"));
     assert!(git_skill.contains("`safe.directory`"));
     assert!(git_skill.contains("vulcan sync doctor [<wiki>]"));
+    assert!(git_skill.contains("vulcan vault add <id> <path> --profile files-only"));
+    assert!(git_skill.contains("Vulcan's lock does not exclude external Git processes"));
     assert!(git_skill.contains("state.apply-marker"));
     assert!(git_skill.contains("vulcan-sync/apply.json"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
@@ -15690,6 +15752,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("sync workflow skill should be readable");
     assert!(sync_skill.contains("name: sync-workflow"));
+    assert!(sync_skill.contains("vault add --no-sync"));
+    assert!(sync_skill.contains("selective materialization remains Roadmap 12.20 work"));
     assert!(sync_skill.contains("vulcan device show --output json"));
     assert!(sync_skill.contains("vulcan device init --dry-run"));
     assert!(sync_skill.contains("vulcan devices list --output json"));
@@ -15845,6 +15909,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     )
     .expect("configuration skill should be readable");
     assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
+    assert!(configuration_skill.contains("--no-sync"));
     assert!(configuration_skill.contains("vulcan vault recover-git"));
     assert!(configuration_skill.contains("vulcan sync pause/resume [<wiki>]"));
     assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
@@ -15858,6 +15923,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .expect("diagnostics skill should be readable");
     assert!(diagnostics_skill.contains("state.recovered_from"));
     assert!(diagnostics_skill.contains("vulcan sync doctor [<wiki>]"));
+    assert!(diagnostics_skill.contains("sync doctor --profile files-only"));
     assert!(diagnostics_skill.contains("immutable conflict ID"));
     assert!(diagnostics_skill.contains("vulcan sync conflicts <id>"));
     assert!(diagnostics_skill.contains("vulcan sync resolve <id> --side <side> --dry-run"));

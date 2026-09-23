@@ -9076,6 +9076,20 @@
                 ]
               },
               {
+                "help": "Managed-directory capability profile",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [
+                  "knowledge",
+                  "files-only"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
                 "help": "Add the wiki to a local group",
                 "id": "group",
                 "long": "group",
@@ -10727,6 +10741,20 @@
                 "value_names": [
                   "LIVE_REF"
                 ]
+              },
+              {
+                "help": "Managed-directory capability profile for direct paths",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [
+                  "knowledge",
+                  "files-only"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
               }
             ],
             "subcommands": []
@@ -11858,6 +11886,20 @@
                 ]
               },
               {
+                "help": "Managed-directory capability profile",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [
+                  "knowledge",
+                  "files-only"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
                 "help": "Add the wiki to a local group",
                 "id": "group",
                 "long": "group",
@@ -12039,7 +12081,7 @@
                 ]
               },
               {
-                "help": "Configured file-tree sync backend",
+                "help": "Configured file-tree sync backend (defaults to git)",
                 "id": "sync_backend",
                 "long": "sync-backend",
                 "possible_values": [],
@@ -12047,6 +12089,20 @@
                 "short": null,
                 "value_names": [
                   "SYNC_BACKEND"
+                ]
+              },
+              {
+                "help": "Register without a file-tree sync backend",
+                "id": "no_sync",
+                "long": "no-sync",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_SYNC"
                 ]
               },
               {

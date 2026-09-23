@@ -583,6 +583,7 @@ impl<'a> CompanionService<'a> {
         conflict_id: &str,
         request: &ConflictProposalRequest,
     ) -> Result<ResolutionProposal, CompanionError> {
+        self.ensure_knowledge_profile(wiki_id)?;
         if request.proposal_contract_version != CONFLICT_PROPOSAL_REQUEST_VERSION {
             return Err(invalid_request(format!(
                 "conflict proposal request version {} is unsupported; expected {}",
@@ -640,6 +641,7 @@ impl<'a> CompanionService<'a> {
         conflict_id: &str,
         request: &ConflictProposalApprovalRequest,
     ) -> Result<ApproveResolutionProposalReport, CompanionError> {
+        self.ensure_knowledge_profile(wiki_id)?;
         let registration = self.checked_git_registration(wiki_id)?;
         approve_resolution_proposal_with_state_store(
             &VaultPaths::new(registration.path),
@@ -665,6 +667,7 @@ impl<'a> CompanionService<'a> {
         conflict_id: &str,
         request: &ConflictProposalRejectionRequest,
     ) -> Result<RejectResolutionProposalReport, CompanionError> {
+        self.ensure_knowledge_profile(wiki_id)?;
         let registration = self.checked_git_registration(wiki_id)?;
         reject_resolution_proposal_with_state_store(
             &VaultPaths::new(registration.path),
@@ -681,6 +684,7 @@ impl<'a> CompanionService<'a> {
         wiki_id: &WikiId,
         request: &SemanticPlanRequest,
     ) -> Result<SemanticPlanReport, CompanionError> {
+        self.ensure_knowledge_profile(wiki_id)?;
         let registration = self.checked_git_registration(wiki_id)?;
         let paths = VaultPaths::new(registration.path);
         let options = SemanticPlanOptions {
@@ -820,6 +824,18 @@ impl<'a> CompanionService<'a> {
                 CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
             })?;
         Ok(registration)
+    }
+
+    fn ensure_knowledge_profile(&self, wiki_id: &WikiId) -> Result<(), CompanionError> {
+        let registration = self.registration(wiki_id)?;
+        if registration.capabilities().knowledge_services {
+            Ok(())
+        } else {
+            Err(CompanionError::new(
+                CompanionErrorKind::PermissionDenied,
+                "this operation requires a knowledge profile; set the directory profile to knowledge",
+            ))
+        }
     }
 }
 
@@ -1384,6 +1400,94 @@ mod tests {
         assert!(error
             .detail
             .contains("no semantic planning agent is configured"));
+    }
+
+    #[test]
+    fn files_only_registration_rejects_knowledge_companion_operations() {
+        let temporary = tempdir().expect("temporary directory");
+        let (registry, supervisor, state_store, wiki_id) = fixture(&temporary);
+        registry
+            .update(
+                &wiki_id,
+                &UpdateWikiRequest {
+                    groups_to_add: Vec::new(),
+                    groups_to_remove: Vec::new(),
+                    permissions_profile: None,
+                    sync_paused: None,
+                    profile: Some(crate::registry::ManagedDirectoryProfile::FilesOnly),
+                },
+                false,
+            )
+            .expect("select files-only profile");
+        let resolution_agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
+        let semantic_agent = CompanionSemanticAgent::new(ConfiguredSemanticTestProvider);
+        let service = CompanionService::new(&registry, &supervisor, &state_store)
+            .with_resolution_agent(&resolution_agent)
+            .with_semantic_agent(&semantic_agent);
+
+        let semantic = service
+            .create_semantic_plan(
+                &wiki_id,
+                &SemanticPlanRequest {
+                    from: "main".to_string(),
+                    to: "refs/vulcan/sync/local/live".to_string(),
+                    semantic_ref: "refs/heads/main".to_string(),
+                    remote: "origin".to_string(),
+                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
+                    grouping: SemanticGrouping::Agent,
+                    agent: false,
+                    dry_run: true,
+                },
+            )
+            .expect_err("semantic plan must require knowledge profile");
+        assert_eq!(semantic.kind, CompanionErrorKind::PermissionDenied);
+        assert!(semantic.detail.contains("requires a knowledge profile"));
+        assert!(semantic
+            .detail
+            .contains("set the directory profile to knowledge"));
+
+        let proposal = service
+            .create_conflict_proposal(
+                &wiki_id,
+                "conflict",
+                &ConflictProposalRequest {
+                    proposal_contract_version: CONFLICT_PROPOSAL_REQUEST_VERSION,
+                    remote: "origin".to_string(),
+                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
+                    context: Vec::new(),
+                    allow_broad_context: false,
+                    group_ids: Vec::new(),
+                },
+            )
+            .expect_err("agent proposal must require knowledge profile");
+        assert_eq!(proposal.kind, CompanionErrorKind::PermissionDenied);
+        assert!(proposal.detail.contains("requires a knowledge profile"));
+
+        let approval = service
+            .approve_conflict_proposal(
+                &wiki_id,
+                "conflict",
+                &ConflictProposalApprovalRequest {
+                    proposal_id: "proposal".to_string(),
+                    remote: "origin".to_string(),
+                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
+                    dry_run: true,
+                },
+            )
+            .expect_err("proposal approval must require knowledge profile");
+        assert_eq!(approval.kind, CompanionErrorKind::PermissionDenied);
+
+        let rejection = service
+            .reject_conflict_proposal(
+                &wiki_id,
+                "conflict",
+                &ConflictProposalRejectionRequest {
+                    proposal_id: "proposal".to_string(),
+                    dry_run: true,
+                },
+            )
+            .expect_err("proposal rejection must require knowledge profile");
+        assert_eq!(rejection.kind, CompanionErrorKind::PermissionDenied);
     }
 
     #[test]

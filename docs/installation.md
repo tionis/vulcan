@@ -28,6 +28,13 @@ Place the executable in a stable path on `PATH`, such as `~/.local/bin/vulcan`. 
 when a native daemon service refers to it across upgrades. Replace the executable atomically, then
 run `vulcan daemon install` again after an upgrade to refresh the native service definition.
 
+Registered directories default to the `knowledge` profile. Add `--profile files-only` to either
+`sync clone` or `vault clone` to manage a full Git working tree without Markdown indexing or
+knowledge-specific services. Existing directories can be registered with
+`vulcan vault add <id> <path> --profile files-only`; add `--no-sync` when no file-tree backend is
+wanted. Files-only daemon sync has conservative Git-state checks, but does not support unattended
+management of active development checkouts and does not promise a complete repository or LFS backup.
+
 ### Android and Termux
 
 Install Termux, then install Git and grant shared-storage access:
