@@ -1266,14 +1266,11 @@ mod tests {
 
     #[test]
     fn ledger_failure_does_not_suppress_local_delivery_queue() {
-        use std::os::unix::fs::symlink;
-
         let temporary = tempdir().expect("temporary directory");
         let path = temporary.path().join("alerts.json");
-        let target = temporary.path().join("target.json");
-        fs::write(&target, "untouched").expect("target");
         let ledger = DeliveryLedger::load(path.clone()).expect("ledger");
-        symlink(&target, path).expect("symlink");
+        // A directory cannot be replaced by the ledger's atomic file persist on any host.
+        fs::create_dir(path).expect("blocking directory");
         let (sender, receiver) = mpsc::sync_channel(1);
         let delivery = AlertDeliverySender {
             sender,
