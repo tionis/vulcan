@@ -25,7 +25,6 @@ use vulcan_app::update::{
 use vulcan_daemon::process::DaemonProcessContext;
 #[cfg(feature = "web")]
 use vulcan_daemon::process::{daemon_status, request_daemon_shutdown};
-#[cfg(feature = "web")]
 use vulcan_daemon::service::{
     inspect_daemon_service, plan_daemon_service, DaemonServiceAction, DaemonServicePlatform,
     DaemonServiceUser,

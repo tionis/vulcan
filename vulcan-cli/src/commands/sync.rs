@@ -38,19 +38,18 @@ use vulcan_app::sync_notifications::{
 };
 use vulcan_app::sync_proposals::{
     approve_resolution_proposal, create_formatter_resolution_proposal,
-    create_resolution_proposal_for_target, create_supplied_resolution_proposal,
-    create_supplied_resolution_proposal_with_selection, prepare_editor_resolution,
-    prepare_patch_resolution, preview_patch_resolution, preview_supplied_resolution,
-    reject_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
-    EditorResolutionPlan, FormatterResolutionOptions, FormatterResolutionReport,
-    PatchResolutionPreviewReport, RejectResolutionProposalReport, ResolutionAgentPathOutput,
-    ResolutionProposal, ResolutionProposalOptions, ResolutionProposalSelection,
-    SuppliedResolutionPreviewReport,
+    create_supplied_resolution_proposal, create_supplied_resolution_proposal_with_selection,
+    prepare_editor_resolution, prepare_patch_resolution, preview_patch_resolution,
+    preview_supplied_resolution, reject_resolution_proposal, ApproveResolutionProposalOptions,
+    ApproveResolutionProposalReport, EditorResolutionPlan, FormatterResolutionOptions,
+    FormatterResolutionReport, PatchResolutionPreviewReport, RejectResolutionProposalReport,
+    ResolutionAgentPathOutput, ResolutionProposal, ResolutionProposalOptions,
+    ResolutionProposalSelection, SuppliedResolutionPreviewReport,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_proposals::{
-    create_and_auto_accept_resolution_proposal, AutoAcceptResolutionProposalReport,
-    OpenAiCompatibleResolutionProvider,
+    create_and_auto_accept_resolution_proposal, create_resolution_proposal_for_target,
+    AutoAcceptResolutionProposalReport, OpenAiCompatibleResolutionProvider,
 };
 use vulcan_app::sync_retention::{
     apply_sync_retention, plan_sync_retention, SyncRetentionApplyReport, SyncRetentionPlanOptions,
@@ -1201,6 +1200,7 @@ fn run_sync_propose(
     _selected_paths: &VaultPaths,
     _wiki: Option<&str>,
     _conflict_id: &str,
+    _groups: &[String],
     _base_url: &str,
     _model: &str,
     _api_key_env: Option<&str>,

@@ -478,7 +478,9 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
 use std::fs;
 use std::io;
-use std::io::{IsTerminal, Read, Write as IoWrite};
+#[cfg(feature = "web")]
+use std::io::Write as IoWrite;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
