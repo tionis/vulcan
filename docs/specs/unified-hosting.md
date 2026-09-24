@@ -219,8 +219,10 @@ its audience, grants, tool packs, vault ceiling, session keys, or revocation sta
 The initial extraction places transport-neutral request types and protocol constants in
 `vulcan-app::mcp_protocol`, tool input/output JSON Schemas in `vulcan-app::mcp_schemas`, and
 built-in tool metadata, pack selection, and permission visibility in `vulcan-app::mcp_catalog`.
-CLI stdio and foreground HTTP consume the same contracts. Dispatch and HTTP/OAuth hosting remain
-migration work under 10.7.6.
+`vulcan-app::mcp_dispatch` routes JSON-RPC requests through a method-handler boundary with the
+existing stdio and HTTP notification, error, and timeout shapes. CLI stdio and foreground HTTP
+consume these shared contracts. The method handlers and HTTP/OAuth hosting remain migration work
+under 10.7.6.
 
 ## Preserved compatibility contracts
 

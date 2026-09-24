@@ -46,6 +46,10 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
+use vulcan_app::mcp_dispatch::{
+    jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
+    timeout_response_for_request, McpHttpProcessResult, McpMethodHandler,
+};
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs,
     McpDailyListArgs, McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams,
@@ -362,13 +366,6 @@ struct NamedMcpRuntime {
     default_profile: String,
     eligible_tool_packs: Vec<String>,
     authorization_store: McpAuthorizationStore,
-}
-
-#[derive(Debug)]
-struct McpHttpProcessResult {
-    response: Option<Value>,
-    notifications: Vec<Value>,
-    accepted_notification: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1498,162 +1495,11 @@ impl McpServerCore {
     }
 
     fn process_request(&mut self, request: Value) -> Vec<Value> {
-        let Some(request_object) = request.as_object() else {
-            return vec![jsonrpc_error(
-                Value::Null,
-                -32600,
-                "Invalid request".to_string(),
-                None,
-            )];
-        };
-        if request_object.contains_key("result") || request_object.contains_key("error") {
-            return vec![jsonrpc_error(
-                request_object.get("id").cloned().unwrap_or(Value::Null),
-                -32600,
-                "Invalid request".to_string(),
-                None,
-            )];
-        }
-        if request.is_array() {
-            return vec![jsonrpc_error(
-                Value::Null,
-                -32600,
-                "Batch requests are not supported by the 2025-06-18 MCP baseline".to_string(),
-                None,
-            )];
-        }
-
-        let id = request_object.get("id").cloned().unwrap_or(Value::Null);
-        let is_notification = !request_object.contains_key("id");
-        let Some(method) = request_object.get("method").and_then(Value::as_str) else {
-            if is_notification {
-                return Vec::new();
-            }
-            return vec![jsonrpc_error(
-                id,
-                -32600,
-                "Invalid request".to_string(),
-                None,
-            )];
-        };
-
-        let outcome = match self.handle_method(method, request_object.get("params")) {
-            Ok(outcome) => outcome,
-            Err(McpMethodError::JsonRpc {
-                code,
-                message,
-                data,
-            }) => {
-                if is_notification {
-                    return Vec::new();
-                }
-                return vec![jsonrpc_error(id, code, message, data)];
-            }
-            Err(McpMethodError::Tool {
-                message,
-                structured,
-            }) => {
-                if is_notification {
-                    return Vec::new();
-                }
-                return vec![tool_error_response(id, message, structured)];
-            }
-        };
-
-        let mut messages = Vec::new();
-        if outcome.emit_list_notifications {
-            messages.extend(self.list_changed_notifications());
-        }
-        if let Some(response) = outcome.response {
-            messages.push(jsonrpc_result(id, response));
-        }
-        messages
+        process_stdio_request(self, request)
     }
 
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
-        let Some(request_object) = request.as_object() else {
-            return Err(jsonrpc_error(
-                Value::Null,
-                -32600,
-                "Invalid request".to_string(),
-                None,
-            ));
-        };
-        if request.is_array() {
-            return Err(jsonrpc_error(
-                Value::Null,
-                -32600,
-                "Batch requests are not supported by the 2025-06-18 MCP baseline".to_string(),
-                None,
-            ));
-        }
-        if request_object.contains_key("result") || request_object.contains_key("error") {
-            return Ok(McpHttpProcessResult {
-                response: None,
-                notifications: Vec::new(),
-                accepted_notification: true,
-            });
-        }
-
-        let id = request_object.get("id").cloned().unwrap_or(Value::Null);
-        let is_notification = !request_object.contains_key("id");
-        let Some(method) = request_object.get("method").and_then(Value::as_str) else {
-            return Err(jsonrpc_error(
-                if is_notification { Value::Null } else { id },
-                -32600,
-                "Invalid request".to_string(),
-                None,
-            ));
-        };
-
-        let outcome = match self.handle_method(method, request_object.get("params")) {
-            Ok(outcome) => outcome,
-            Err(McpMethodError::JsonRpc {
-                code,
-                message,
-                data,
-            }) => {
-                if is_notification {
-                    return Err(jsonrpc_error(Value::Null, code, message, data));
-                }
-                return Ok(McpHttpProcessResult {
-                    response: Some(jsonrpc_error(id, code, message, data)),
-                    notifications: Vec::new(),
-                    accepted_notification: false,
-                });
-            }
-            Err(McpMethodError::Tool {
-                message,
-                structured,
-            }) => {
-                if is_notification {
-                    return Err(jsonrpc_error(Value::Null, -32603, message, structured));
-                }
-                return Ok(McpHttpProcessResult {
-                    response: Some(tool_error_response(id, message, structured)),
-                    notifications: Vec::new(),
-                    accepted_notification: false,
-                });
-            }
-        };
-
-        let notifications = if outcome.emit_list_notifications {
-            self.list_changed_notifications()
-        } else {
-            Vec::new()
-        };
-
-        Ok(McpHttpProcessResult {
-            response: if is_notification {
-                None
-            } else {
-                outcome
-                    .response
-                    .map(|response| jsonrpc_result(id, response))
-            },
-            notifications,
-            accepted_notification: is_notification,
-        })
+        process_http_request(self, request)
     }
 
     fn process_http_request_with_timeout(
@@ -3799,6 +3645,20 @@ impl McpServerCore {
         self.guard
             .check_write_path(relative_path)
             .map_err(CliError::operation)
+    }
+}
+
+impl McpMethodHandler for McpServerCore {
+    fn handle_method(
+        &mut self,
+        method: &str,
+        params: Option<&Value>,
+    ) -> Result<McpMethodOutcome, McpMethodError> {
+        McpServerCore::handle_method(self, method, params)
+    }
+
+    fn list_changed_notifications(&mut self) -> Vec<Value> {
+        McpServerCore::list_changed_notifications(self)
     }
 }
 
@@ -6047,95 +5907,6 @@ fn paginated_result(
         result.insert("nextCursor".to_string(), Value::String(end.to_string()));
     }
     Ok(Value::Object(result))
-}
-
-fn jsonrpc_result(id: Value, result: Value) -> Value {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result,
-    })
-}
-
-fn jsonrpc_error(id: Value, code: i64, message: String, data: Option<Value>) -> Value {
-    let mut error = Map::new();
-    error.insert("code".to_string(), Value::Number(code.into()));
-    error.insert("message".to_string(), Value::String(message));
-    if let Some(data) = data {
-        error.insert("data".to_string(), data);
-    }
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": error,
-    })
-}
-
-fn tool_error_response(id: Value, message: String, structured: Option<Value>) -> Value {
-    let structured = structured.unwrap_or_else(|| serde_json::json!({ "error": message }));
-    jsonrpc_result(
-        id,
-        serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": message,
-            }],
-            "structuredContent": structured,
-            "isError": true,
-        }),
-    )
-}
-
-fn timeout_response_for_request(request: &Value, timeout: Duration) -> Option<Value> {
-    let id = request_id(request)?;
-    let message = format!(
-        "MCP request timed out after {}ms",
-        timeout.as_millis().max(1)
-    );
-    if request_method(request) == Some("tools/call") {
-        Some(tool_error_response(
-            id,
-            message.clone(),
-            Some(serde_json::json!({
-                "error": message,
-                "timed_out": true,
-                "timeout_ms": timeout.as_millis().max(1),
-            })),
-        ))
-    } else {
-        Some(jsonrpc_error(
-            id,
-            -32000,
-            message,
-            Some(serde_json::json!({
-                "timed_out": true,
-                "timeout_ms": timeout.as_millis().max(1),
-            })),
-        ))
-    }
-}
-
-fn timeout_http_result(request: &Value, timeout: Duration) -> McpHttpProcessResult {
-    let response = timeout_response_for_request(request, timeout);
-    McpHttpProcessResult {
-        accepted_notification: response.is_none(),
-        response,
-        notifications: Vec::new(),
-    }
-}
-
-fn request_id(request: &Value) -> Option<Value> {
-    request
-        .as_object()
-        .and_then(|object| object.get("id"))
-        .cloned()
-}
-
-fn request_method(request: &Value) -> Option<&str> {
-    request
-        .as_object()
-        .and_then(|object| object.get("method"))
-        .and_then(Value::as_str)
 }
 
 fn cli_tool_error(error: CliError) -> McpMethodError {
