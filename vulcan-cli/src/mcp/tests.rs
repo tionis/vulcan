@@ -650,6 +650,93 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
 
 #[cfg(feature = "oauth")]
 #[test]
+fn shutting_down_http_sessions_closes_live_sse_streams() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let context = consent_test_context(&paths, issuer);
+    let authority = McpSessionAuthority::direct(
+        context.instance_id,
+        "credential",
+        None,
+        None,
+        Some("readonly".to_string()),
+        vec!["notes-read".to_string()],
+        Vec::new(),
+    );
+    let session_id = Ulid::new().to_string();
+    let core = McpServerCore::new(
+        &paths,
+        Some("readonly"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let session = Arc::new(McpHttpSession::new(core, authority.clone()));
+    context
+        .sessions
+        .lock()
+        .expect("sessions lock")
+        .insert(session_id.clone(), Arc::clone(&session));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("SSE listener");
+    let address = listener.local_addr().expect("listener address");
+    let server_context = context.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("SSE connection");
+        let request = McpHttpRequest {
+            method: "GET".to_string(),
+            path: "/mcp".to_string(),
+            query: String::new(),
+            headers: BTreeMap::from([
+                ("accept".to_string(), "text/event-stream".to_string()),
+                ("mcp-session-id".to_string(), session_id),
+            ]),
+            body: Vec::new(),
+        };
+        handle_mcp_http_sse(&server_context, &request, &authority, &mut stream)
+            .expect("SSE should close cleanly");
+    });
+    let stream = TcpStream::connect(address).expect("SSE client");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+    let mut client = io::BufReader::new(stream);
+    let mut header = String::new();
+    loop {
+        let bytes = client.read_line(&mut header).expect("SSE headers");
+        assert!(bytes > 0, "SSE headers ended unexpectedly");
+        if header.ends_with("\r\n\r\n") {
+            break;
+        }
+    }
+    assert!(header.starts_with("HTTP/1.1 200 OK"));
+
+    close_mcp_http_sessions(&context);
+    let mut remaining = Vec::new();
+    client
+        .read_to_end(&mut remaining)
+        .expect("SSE stream should end");
+    server.join().expect("SSE handler");
+    assert!(session.is_closed());
+    assert!(context.sessions.lock().expect("sessions lock").is_empty());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 #[allow(clippy::too_many_lines)]
 fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
     let temporary = tempfile::tempdir().expect("temporary vault");

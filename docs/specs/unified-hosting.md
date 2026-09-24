@@ -218,8 +218,9 @@ router, OAuth implementation, and named-remote definition. A resident instance c
 its audience, grants, tool packs, vault ceiling, session keys, or revocation state.
 The daemon's host-service injection now supervises one-vault named remotes as an aggregate ingress
 service while invoking the same foreground listener, OAuth implementation, and session state per
-instance. Multi-vault routing and shared writer scheduling remain migration work; the resident
-adapter rejects those unsupported definitions explicitly.
+instance. Shutdown closes active MCP sessions and SSE streams after stopping the listener.
+Multi-vault routing and shared writer scheduling remain migration work; the resident adapter
+rejects those unsupported definitions explicitly.
 The initial extraction places transport-neutral request types and protocol constants in
 `vulcan-app::mcp_protocol`, tool input/output JSON Schemas in `vulcan-app::mcp_schemas`, and
 built-in tool metadata, pack selection, and permission visibility in `vulcan-app::mcp_catalog`.

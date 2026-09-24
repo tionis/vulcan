@@ -903,6 +903,7 @@ fn run_mcp_http_server_inner(
     }
     loop {
         if lifecycle.stop.is_some_and(ShutdownSignal::is_cancelled) {
+            close_mcp_http_sessions(&context);
             return Ok(());
         }
         match listener.accept() {
@@ -927,6 +928,16 @@ fn run_mcp_http_server_inner(
             }
             Err(error) => return Err(CliError::operation(error)),
         }
+    }
+}
+
+fn close_mcp_http_sessions(context: &McpHttpServerContext) {
+    let mut sessions = context
+        .sessions
+        .lock()
+        .expect("mcp sessions lock should not be poisoned");
+    for (_, session) in std::mem::take(&mut *sessions) {
+        session.close();
     }
 }
 
