@@ -5,12 +5,13 @@
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use vulcan_core::{
-    list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_vault_config,
-    render_assistant_prompt, AssistantPromptSummary, AssistantSkillSummary, PermissionGuard,
-    ProfilePermissionGuard, VaultPaths,
+    assistant_config_summary, list_assistant_prompts, list_assistant_skills, load_assistant_prompt,
+    load_assistant_skill, load_vault_config, read_vault_agents_file, render_assistant_prompt,
+    AssistantPromptSummary, AssistantSkillSummary, PermissionGuard, ProfilePermissionGuard,
+    VaultPaths,
 };
 
-use crate::mcp_protocol::McpMethodError;
+use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
 
 pub fn visible_prompts(
     paths: &VaultPaths,
@@ -118,6 +119,99 @@ pub fn get_prompt(
     }))
 }
 
+/// Handle vault-owned assistant resources. Other resource namespaces remain with the caller.
+pub fn read_resource(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    uri: &str,
+) -> Option<Result<Value, McpMethodError>> {
+    let result = match uri {
+        "vulcan://assistant/prompts/index" => {
+            visible_prompts(paths, guard).and_then(|prompts| json_resource(uri, &prompts))
+        }
+        "vulcan://assistant/skills/index" => {
+            visible_skills(paths, guard).and_then(|skills| json_resource(uri, &skills))
+        }
+        "vulcan://assistant/config" => {
+            if let Err(error) = guard.check_config_read() {
+                Err(McpMethodError::tool(error.to_string()))
+            } else {
+                json_resource(uri, &assistant_config_summary(paths))
+            }
+        }
+        "vulcan://assistant/agents" => {
+            if can_read_relative_path(guard, "AGENTS.md") {
+                match read_vault_agents_file(paths) {
+                    Ok(Some(contents)) => Ok(serde_json::json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": "text/markdown",
+                            "text": contents,
+                        }]
+                    })),
+                    Ok(None) => Err(resource_not_found_error(
+                        uri,
+                        "Resource not found".to_string(),
+                    )),
+                    Err(error) => Err(McpMethodError::internal(error.to_string())),
+                }
+            } else {
+                Err(resource_not_found_error(
+                    uri,
+                    format!(
+                        "permission denied: resource `{uri}` is not available under profile `{}`",
+                        guard.selection().name
+                    ),
+                ))
+            }
+        }
+        _ => {
+            let name = uri.strip_prefix("vulcan://assistant/skills/")?;
+            match load_assistant_skill(paths, name) {
+                Ok(skill) if skill_visible(paths, guard, &skill.summary) => {
+                    json_resource(uri, &skill)
+                }
+                Ok(_) => Err(resource_not_found_error(
+                    uri,
+                    format!(
+                        "permission denied: resource `{uri}` is not available under profile `{}`",
+                        guard.selection().name
+                    ),
+                )),
+                Err(error) => Err(resource_not_found_error(uri, error.to_string())),
+            }
+        }
+    };
+    Some(result)
+}
+
+fn can_read_relative_path(guard: &ProfilePermissionGuard, relative_path: &str) -> bool {
+    if guard.read_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
+        return true;
+    }
+    guard.check_read_path(relative_path).is_ok()
+}
+
+fn json_resource<T: serde::Serialize>(uri: &str, value: &T) -> Result<Value, McpMethodError> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|error| McpMethodError::internal(error.to_string()))?;
+    Ok(serde_json::json!({
+        "contents": [{
+            "uri": uri,
+            "mimeType": "application/json",
+            "text": text,
+        }]
+    }))
+}
+
+fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
+    McpMethodError::JsonRpc {
+        code: MCP_RESOURCE_NOT_FOUND,
+        message,
+        data: Some(serde_json::json!({ "uri": uri })),
+    }
+}
+
 fn string_argument_map(arguments: &Map<String, Value>) -> BTreeMap<String, String> {
     arguments
         .iter()
@@ -195,5 +289,49 @@ mod tests {
     fn prompt_arguments_preserve_existing_stringification() {
         assert_eq!(json_value_to_string(&json!(["a", true, 2])), "a,true,2");
         assert_eq!(json_value_to_string(&Value::Null), "");
+    }
+
+    #[test]
+    fn assistant_resources_keep_permission_and_response_shapes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir_all(temporary.path().join(".vulcan")).unwrap();
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(temporary.path().join("AGENTS.md"), "# Vault instructions\n").unwrap();
+        let readable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+
+        let agents = read_resource(&paths, &readable, "vulcan://assistant/agents")
+            .unwrap()
+            .unwrap();
+        assert_eq!(agents["contents"][0]["mimeType"], "text/markdown");
+        assert_eq!(agents["contents"][0]["text"], "# Vault instructions\n");
+        let denied = read_resource(&paths, &blind, "vulcan://assistant/agents")
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            denied,
+            McpMethodError::JsonRpc {
+                code: MCP_RESOURCE_NOT_FOUND,
+                ..
+            }
+        ));
+
+        let prompts = read_resource(&paths, &blind, "vulcan://assistant/prompts/index")
+            .unwrap()
+            .unwrap();
+        assert_eq!(prompts["contents"][0]["mimeType"], "application/json");
+        assert_eq!(prompts["contents"][0]["text"], "[]");
+        assert!(read_resource(&paths, &readable, "vulcan://help/overview").is_none());
     }
 }

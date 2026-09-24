@@ -222,8 +222,9 @@ built-in tool metadata, pack selection, and permission visibility in `vulcan-app
 `vulcan-app::mcp_dispatch` routes JSON-RPC requests through a method-handler boundary with the
 existing stdio and HTTP notification, error, and timeout shapes. CLI stdio and foreground HTTP
 consume these shared contracts. `vulcan-app::mcp_assistant` provides permission-filtered prompt
-and skill discovery plus prompt rendering to both transports. Remaining method handlers, resources,
-completions, and HTTP/OAuth hosting remain migration work under 10.7.6.
+and skill discovery, prompt rendering, and vault-owned assistant resource reads to both transports.
+Remaining method handlers, resource listings/help/custom-tool resources, completions, and
+HTTP/OAuth hosting remain migration work under 10.7.6.
 
 ## Preserved compatibility contracts
 

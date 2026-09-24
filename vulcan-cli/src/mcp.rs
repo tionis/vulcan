@@ -73,15 +73,14 @@ use vulcan_core::properties::load_note_index;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
-    accept_link_suggestion, assistant_config_summary, assistant_prompts_root,
-    assistant_skills_root, evaluate_dql_with_filter, execute_query_report_with_filter,
-    load_assistant_prompt, load_assistant_skill, load_vault_config,
-    query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
-    reject_link_suggestion, resolve_permission_profile, scan_vault_with_progress,
-    search_vault_with_filter, suggest_links, watch_vault, LinkSuggestionStatus, NoteQuery,
-    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
-    QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort, TasksQueryResult,
-    VaultPaths, WatchOptions,
+    accept_link_suggestion, assistant_prompts_root, assistant_skills_root,
+    evaluate_dql_with_filter, execute_query_report_with_filter, load_assistant_prompt,
+    load_vault_config, query_graph_communities_with_filter, query_notes_with_filter,
+    read_vault_agents_file, reject_link_suggestion, resolve_permission_profile,
+    scan_vault_with_progress, search_vault_with_filter, suggest_links, watch_vault,
+    LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionMode, PermissionProfile,
+    PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery,
+    SearchSort, TasksQueryResult, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -1706,10 +1705,6 @@ impl McpServerCore {
         mcp_assistant::prompt_visible(&self.paths, &self.guard, prompt)
     }
 
-    fn skill_visible(&self, skill: &vulcan_core::AssistantSkillSummary) -> bool {
-        mcp_assistant::skill_visible(&self.paths, &self.guard, skill)
-    }
-
     fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
         let mut resources = vec![serde_json::json!({
             "uri": "vulcan://help/overview",
@@ -1842,16 +1837,14 @@ impl McpServerCore {
             }));
         }
 
+        if let Some(result) = mcp_assistant::read_resource(&self.paths, &self.guard, uri) {
+            return result;
+        }
+
         match uri {
             "vulcan://help/overview" => {
                 let report = crate::help_overview();
                 return Self::json_resource(uri, &report);
-            }
-            "vulcan://assistant/prompts/index" => {
-                return Self::json_resource(uri, &self.visible_prompts()?);
-            }
-            "vulcan://assistant/skills/index" => {
-                return Self::json_resource(uri, &self.visible_skills()?);
             }
             "vulcan://assistant/skill-commands/index" => {
                 let commands = self
@@ -1877,35 +1870,6 @@ impl McpServerCore {
                 }
                 return Self::json_resource(uri, &tools);
             }
-            "vulcan://assistant/config" => {
-                self.guard
-                    .check_config_read()
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                return Self::json_resource(uri, &assistant_config_summary(&self.paths));
-            }
-            "vulcan://assistant/agents" => {
-                if !self.can_read_relative_path("AGENTS.md") {
-                    return Err(resource_not_found_error(
-                        uri,
-                        format!(
-                            "permission denied: resource `{uri}` is not available under profile `{}`",
-                            self.selection.name
-                        ),
-                    ));
-                }
-                let contents = read_vault_agents_file(&self.paths)
-                    .map_err(|error| McpMethodError::internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        resource_not_found_error(uri, "Resource not found".to_string())
-                    })?;
-                return Ok(serde_json::json!({
-                    "contents": [{
-                        "uri": uri,
-                        "mimeType": "text/markdown",
-                        "text": contents,
-                    }]
-                }));
-            }
             _ => {}
         }
 
@@ -1918,21 +1882,6 @@ impl McpServerCore {
                     .map_err(|error| resource_not_found_error(uri, error.message))?
             };
             return Self::json_resource(uri, &report);
-        }
-
-        if let Some(name) = uri.strip_prefix("vulcan://assistant/skills/") {
-            let skill = load_assistant_skill(&self.paths, name)
-                .map_err(|error| resource_not_found_error(uri, error.to_string()))?;
-            if !self.skill_visible(&skill.summary) {
-                return Err(resource_not_found_error(
-                    uri,
-                    format!(
-                        "permission denied: resource `{uri}` is not available under profile `{}`",
-                        self.selection.name
-                    ),
-                ));
-            }
-            return Self::json_resource(uri, &skill);
         }
 
         if let Some(name) = uri.strip_prefix("vulcan://assistant/skill-commands/") {
