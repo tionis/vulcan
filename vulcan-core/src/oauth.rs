@@ -10,8 +10,14 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
+use std::io::Read;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
+
+const INDIEAUTH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+const INDIEAUTH_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+const INDIEAUTH_PROFILE_MAX_BYTES: u64 = 256 * 1024;
+const INDIEAUTH_RESPONSE_MAX_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct OAuthResourceServerConfig {
@@ -592,13 +598,14 @@ pub struct IndieAuthEndpoints {
 
 pub fn discover_indieauth_endpoints(me: &str) -> Result<IndieAuthEndpoints, OAuthError> {
     let profile_url = parse_https_url(me, "IndieAuth profile URL")?;
-    let response = reqwest::blocking::Client::new()
+    let response = indieauth_http_client(INDIEAUTH_DISCOVERY_TIMEOUT)?
         .get(profile_url)
         .header("Accept", "text/html, application/xhtml+xml, */*")
         .send()
         .map_err(|error| OAuthError::Network(format!("IndieAuth profile fetch failed: {error}")))?
         .error_for_status()
         .map_err(|error| OAuthError::Network(format!("IndieAuth profile fetch failed: {error}")))?;
+    reject_indieauth_redirect(&response, "profile")?;
     let final_url = response.url().clone();
     let headers = response.headers().clone();
     let content_type = headers
@@ -606,9 +613,7 @@ pub fn discover_indieauth_endpoints(me: &str) -> Result<IndieAuthEndpoints, OAut
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    let body = response.text().map_err(|error| {
-        OAuthError::Network(format!("IndieAuth profile response read failed: {error}"))
-    })?;
+    let body = read_bounded_indieauth_text(response, INDIEAUTH_PROFILE_MAX_BYTES, "profile")?;
     let base_url = final_url.as_str();
     if let Some(metadata_url) = discover_link_header_rel(&headers, "indieauth-metadata")
         .and_then(|url| resolve_url(base_url, &url))
@@ -661,7 +666,7 @@ pub fn exchange_indieauth_code(
     code_verifier: &str,
 ) -> Result<String, OAuthError> {
     let token_endpoint = parse_https_url(token_endpoint, "IndieAuth token endpoint")?;
-    let response = reqwest::blocking::Client::new()
+    let response = indieauth_http_client(INDIEAUTH_TOKEN_TIMEOUT)?
         .post(token_endpoint)
         .header("Accept", "application/json")
         .form(&[
@@ -675,15 +680,14 @@ pub fn exchange_indieauth_code(
         .map_err(|error| OAuthError::Network(format!("IndieAuth token request failed: {error}")))?
         .error_for_status()
         .map_err(|error| OAuthError::Network(format!("IndieAuth token request failed: {error}")))?;
+    reject_indieauth_redirect(&response, "token")?;
     let content_type = response
         .headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    let body = response.text().map_err(|error| {
-        OAuthError::Network(format!("IndieAuth token response read failed: {error}"))
-    })?;
+    let body = read_bounded_indieauth_text(response, INDIEAUTH_RESPONSE_MAX_BYTES, "token")?;
     if content_type.contains("application/json") {
         let value = serde_json::from_str::<Value>(&body).map_err(|error| {
             OAuthError::Network(format!("invalid IndieAuth token JSON: {error}"))
@@ -748,14 +752,19 @@ struct IndieAuthMetadata {
 
 fn fetch_indieauth_metadata(metadata_url: &str) -> Result<IndieAuthEndpoints, OAuthError> {
     let metadata_url = parse_https_url(metadata_url, "IndieAuth metadata endpoint")?;
-    let metadata = reqwest::blocking::get(metadata_url)
+    let response = indieauth_http_client(INDIEAUTH_DISCOVERY_TIMEOUT)?
+        .get(metadata_url)
+        .send()
         .map_err(|error| OAuthError::Network(format!("IndieAuth metadata fetch failed: {error}")))?
         .error_for_status()
-        .map_err(|error| OAuthError::Network(format!("IndieAuth metadata fetch failed: {error}")))?
-        .json::<IndieAuthMetadata>()
         .map_err(|error| {
-            OAuthError::Network(format!("invalid IndieAuth metadata JSON: {error}"))
+            OAuthError::Network(format!("IndieAuth metadata fetch failed: {error}"))
         })?;
+    reject_indieauth_redirect(&response, "metadata")?;
+    let body = read_bounded_indieauth_text(response, INDIEAUTH_RESPONSE_MAX_BYTES, "metadata")?;
+    let metadata = serde_json::from_str::<IndieAuthMetadata>(&body).map_err(|error| {
+        OAuthError::Network(format!("invalid IndieAuth metadata JSON: {error}"))
+    })?;
     ensure_https_url(
         &metadata.authorization_endpoint,
         "IndieAuth authorization endpoint",
@@ -765,6 +774,47 @@ fn fetch_indieauth_metadata(metadata_url: &str) -> Result<IndieAuthEndpoints, OA
         authorization_endpoint: metadata.authorization_endpoint,
         token_endpoint: metadata.token_endpoint,
     })
+}
+
+fn indieauth_http_client(timeout: Duration) -> Result<reqwest::blocking::Client, OAuthError> {
+    reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| OAuthError::Network(format!("IndieAuth HTTP client failed: {error}")))
+}
+
+fn reject_indieauth_redirect(
+    response: &reqwest::blocking::Response,
+    stage: &str,
+) -> Result<(), OAuthError> {
+    if response.status().is_redirection() {
+        return Err(OAuthError::Network(format!(
+            "IndieAuth {stage} redirected; configure the final canonical HTTPS URL"
+        )));
+    }
+    Ok(())
+}
+
+fn read_bounded_indieauth_text(
+    response: impl Read,
+    maximum_bytes: u64,
+    stage: &str,
+) -> Result<String, OAuthError> {
+    let mut bytes = Vec::new();
+    response
+        .take(maximum_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            OAuthError::Network(format!("IndieAuth {stage} response read failed: {error}"))
+        })?;
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(OAuthError::Network(format!(
+            "IndieAuth {stage} response exceeds {maximum_bytes} bytes"
+        )));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn parse_https_url(raw: &str, label: &str) -> Result<reqwest::Url, OAuthError> {
@@ -985,6 +1035,65 @@ fn oauth_algorithm_allowed(algorithm: Algorithm) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indieauth_response_reader_rejects_oversized_profile_and_metadata() {
+        let exact = vec![b'a'; 8];
+        assert_eq!(
+            read_bounded_indieauth_text(std::io::Cursor::new(&exact), 8, "profile")
+                .expect("bounded response"),
+            "aaaaaaaa"
+        );
+        let oversized = vec![b'a'; 9];
+        let error = read_bounded_indieauth_text(std::io::Cursor::new(&oversized), 8, "metadata")
+            .expect_err("oversized response");
+        assert!(error
+            .to_string()
+            .contains("metadata response exceeds 8 bytes"));
+    }
+
+    #[test]
+    fn indieauth_http_client_does_not_follow_redirects() {
+        use std::io::Write;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client");
+            let mut method = [0; 3];
+            stream.read_exact(&mut method).expect("request method");
+            assert_eq!(&method, b"GET");
+            stream
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: https://example.test/final\r\nContent-Length: 0\r\n\r\n")
+                .expect("redirect");
+        });
+        let response = indieauth_http_client(Duration::from_secs(1))
+            .expect("client")
+            .get(format!("http://{address}/profile"))
+            .send()
+            .expect("response");
+        let error = reject_indieauth_redirect(&response, "profile")
+            .expect_err("redirect requires explicit canonical identity URL");
+        assert!(error.to_string().contains("final canonical HTTPS URL"));
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn indieauth_http_client_times_out_on_a_stalled_response() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("client");
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let error = indieauth_http_client(Duration::from_millis(50))
+            .expect("client")
+            .get(format!("http://{address}/profile"))
+            .send()
+            .expect_err("stalled response must time out");
+        assert!(error.is_timeout());
+        server.join().expect("server");
+    }
 
     #[test]
     fn external_oauth_rejects_unexpected_jwt_algorithms() {

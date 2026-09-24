@@ -38,6 +38,10 @@ Recommended setup:
    daemon after `remote init`, `set`, or `remove` to reload listener definitions. Multi-vault
    routing within one named remote is not available in resident mode yet.
 
+   Startup fetches the IndieAuth identity page and, when advertised, its metadata. Each discovery
+   request has a three-second timeout and a bounded response; redirects are not followed. If
+   discovery reports a redirect, configure `--identity` with the final canonical HTTPS URL.
+
 2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. In ChatGPT, open **Settings → Security and login**, enable **Developer mode**, then open **ChatGPT Plugins**, add a connection, and enter the public MCP URL including `/mcp`.
 4. Sign in through IndieAuth. On Vulcan's consent page, verify the client, identity, exact MCP URL,
