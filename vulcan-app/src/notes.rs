@@ -19,6 +19,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::html::HtmlRenderOptions;
+use vulcan_core::mdbase::{is_mdbase_record_path, load_mdbase_collection};
 use vulcan_core::paths::{
     normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
     RelativePathOptions,
@@ -1076,6 +1077,8 @@ pub fn apply_note_set(
     quiet: bool,
 ) -> Result<NoteSetReport, AppError> {
     let path = resolve_existing_note_path(paths, &request.note)?;
+    // Managed records take the vault lock inside their journaled transaction.
+    let managed = note_path_is_mdbase_managed(paths, &path)?;
     let existing =
         secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
     let content = if request.preserve_frontmatter {
@@ -1083,19 +1086,28 @@ pub fn apply_note_set(
     } else {
         request.replacement.clone()
     };
-    if !apply_mdbase_note_change(
-        paths,
-        &MdbaseManagedNoteWriteRequest {
-            path: &path,
-            before: Some(&existing),
-            after: Some(&content),
-            operation: MdbaseWriteOperation::Update,
-            mode: MdbaseManagedWriteMode::Validated,
-            dry_run: false,
-            permission_profile,
-            quiet,
-        },
-    )? {
+    if managed {
+        if !apply_mdbase_note_change(
+            paths,
+            &MdbaseManagedNoteWriteRequest {
+                path: &path,
+                before: Some(&existing),
+                after: Some(&content),
+                operation: MdbaseWriteOperation::Update,
+                mode: MdbaseManagedWriteMode::Validated,
+                dry_run: false,
+                permission_profile,
+                quiet,
+            },
+        )? {
+            return Err(AppError::operation(
+                "mdbase collection changed during note set; retry the operation",
+            ));
+        }
+    } else {
+        // Hooks may dispatch their own managed mutations, so they must not run
+        // under the ordinary-note lock. Recheck the source after locking to
+        // reject an intervening write instead of replacing it with stale data.
         dispatch_note_write_plugin_hooks(
             paths,
             permission_profile,
@@ -1105,8 +1117,7 @@ pub fn apply_note_set(
             &content,
             quiet,
         )?;
-        secure_write(paths.vault_root(), Path::new(&path), &content)
-            .map_err(AppError::operation)?;
+        write_ordinary_note_set_if_unchanged(paths, &path, &existing, &content)?;
     }
 
     Ok(NoteSetReport {
@@ -1115,6 +1126,39 @@ pub fn apply_note_set(
         changed_paths: vec![path],
         content,
     })
+}
+
+fn write_ordinary_note_set_if_unchanged(
+    paths: &VaultPaths,
+    path: &str,
+    before: &str,
+    after: &str,
+) -> Result<(), AppError> {
+    vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
+    let _write_lock =
+        vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    if note_path_is_mdbase_managed(paths, path)? {
+        return Err(AppError::operation(
+            "mdbase collection changed during note set; retry the operation",
+        ));
+    }
+    let current =
+        secure_read_to_string(paths.vault_root(), Path::new(path)).map_err(AppError::operation)?;
+    if current != before {
+        return Err(AppError::operation(
+            "note changed during note set; reread it before retrying",
+        ));
+    }
+    secure_write(paths.vault_root(), Path::new(path), after).map_err(AppError::operation)
+}
+
+fn note_path_is_mdbase_managed(paths: &VaultPaths, path: &str) -> Result<bool, AppError> {
+    load_mdbase_collection(paths.vault_root())
+        .map_err(AppError::operation)?
+        .map(|collection| is_mdbase_record_path(&collection, path))
+        .transpose()
+        .map_err(AppError::operation)
+        .map(|managed| managed.unwrap_or(false))
 }
 
 pub fn apply_note_patch(
@@ -2547,6 +2591,71 @@ folder_templates = [{ folder = "Projects", template = "project" }]
             .expect("updated note")
             .replace("\r\n", "\n");
         assert_eq!(rendered, "---\nstatus: draft\n---\nUpdated body\n");
+    }
+
+    #[test]
+    fn ordinary_note_set_waits_for_vault_write_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        fs::write(temp_dir.path().join("note.md"), "original\n").expect("seed note");
+        let held = vulcan_core::write_lock::acquire_write_lock(&paths).expect("vault lock");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).expect("start notification");
+            let result = apply_note_set(
+                &paths,
+                &NoteSetRequest {
+                    note: "note.md".to_string(),
+                    replacement: "updated\n".to_string(),
+                    preserve_frontmatter: false,
+                },
+                None,
+                true,
+            );
+            done_tx.send(result).expect("completion notification");
+        });
+        started_rx.recv().expect("worker started");
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("note.md")).expect("note before release"),
+            "original\n"
+        );
+        drop(held);
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker completion")
+            .expect("note set");
+        worker.join().expect("worker join");
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("note.md")).expect("note after release"),
+            "updated\n"
+        );
+    }
+
+    #[test]
+    fn ordinary_note_set_rejects_stale_source() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        let note = temp_dir.path().join("note.md");
+        fs::write(&note, "newer\n").expect("concurrent write");
+        let error = super::write_ordinary_note_set_if_unchanged(
+            &paths,
+            "note.md",
+            "original\n",
+            "stale replacement\n",
+        )
+        .expect_err("stale replacement should fail");
+        assert!(error.to_string().contains("note changed during note set"));
+        assert_eq!(fs::read_to_string(note).expect("current note"), "newer\n");
     }
 
     #[test]
