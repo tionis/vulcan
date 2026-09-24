@@ -17,7 +17,6 @@ use catalog::{
     tool_visible, visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack,
     McpToolPackMode, McpVisibilityRequirement, ALL_MCP_TOOL_PACKS,
 };
-#[cfg(feature = "oauth")]
 use fs2::FileExt;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -665,6 +664,16 @@ fn run_named_mcp_remote_inner(
         .join("mcp-remotes")
         .join(remote.id.as_str());
     let _runtime_lock = acquire_named_remote_runtime_lock(&storage_dir, remote)?;
+    let current = process
+        .registry
+        .show_mcp_remote(&remote.id)
+        .map_err(CliError::operation)?;
+    if current != *remote {
+        return Err(CliError::operation(format!(
+            "named MCP remote `{}` changed while starting; retry with the current definition",
+            remote.id
+        )));
+    }
     let options = McpHttpOptions {
         bind: remote.bind.clone(),
         endpoint,
@@ -834,8 +843,7 @@ fn join_resident_mcp_threads(handles: Vec<thread::JoinHandle<()>>) -> Result<(),
     Ok(())
 }
 
-#[cfg(feature = "oauth")]
-fn acquire_named_remote_runtime_lock(
+pub(crate) fn acquire_named_remote_runtime_lock(
     storage_dir: &Path,
     remote: &McpRemoteDefinition,
 ) -> Result<fs::File, CliError> {

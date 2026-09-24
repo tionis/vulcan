@@ -57,8 +57,9 @@ permission profiles, or diagnoses permission and trust failures.
     Definitions live in device-global daemon configuration and reference registered wikis plus
     vault-defined permission profiles; they never live in synced `.vulcan/config.toml`. Inspect and
     revoke the separate durable approval state with `vulcan mcp connections list/show/revoke`.
-    `vulcan daemon start --detach` hosts configured remotes; restart it after changing
-    definitions, and do not concurrently run the same remote in foreground mode.
+    `vulcan daemon start --detach` hosts configured remotes. Stop the remote before `remote set`
+    or `remote remove`, then restart the daemon. Use `remote set --add-wiki <id>`, `--wiki <id>`
+    for vault-specific policy changes, or `--remove-wiki <id>` to revoke one vault's grants.
 
 ## Guardrails
 

@@ -1178,6 +1178,7 @@ Notes:
   `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.
   `mcp remote init|list|show|set|run|remove` manages device-global hosted-client instances.
+  Stop an instance before `remote set` or `remote remove`; `set --add-wiki`, `--wiki`, and `--remove-wiki` manage per-vault exposure and ceilings.
   `mcp connections list|show|revoke` manages their durable consent grants.
   Non-loopback HTTP binds require `--auth-token` or OAuth.
   Named remotes use IndieAuth login plus explicit Vulcan consent, audience-bound short access tokens, rotating refresh tokens, CIMD/DCR client validation, and revocable grants.
@@ -1199,6 +1200,8 @@ Examples:
   vulcan mcp --vault ~/notes --request-timeout 30s
   vulcan mcp --transport http --bind 127.0.0.1:8765
   vulcan mcp remote init personal-chatgpt --public-url https://wiki.example.com/mcp --identity https://example.com/ --dry-run
+  vulcan mcp remote set personal-chatgpt --add-wiki team --dry-run
+  vulcan mcp remote set personal-chatgpt --wiki team --tool-pack notes-read,search
   vulcan mcp remote run personal-chatgpt
   vulcan mcp connections list --remote personal-chatgpt
   vulcan --permissions daily-wiki-agent mcp --transport http --public-url https://wiki.example.com/mcp --oauth-dcr --oauth-indieauth-me https://example.com/
@@ -5180,7 +5183,7 @@ pub enum McpCommand {
     #[command(about = "Manage named remotely reachable MCP instances")]
     Remote {
         #[command(subcommand)]
-        command: McpRemoteCommand,
+        command: Box<McpRemoteCommand>,
     },
     #[command(about = "Inspect and revoke approved remote MCP connections")]
     Connections {
@@ -5232,6 +5235,16 @@ pub enum McpRemoteCommand {
     Set {
         #[arg(help = "Named remote to update")]
         name: String,
+        #[arg(long, conflicts_with_all = ["add_wiki", "remove_wiki"], help = "Existing registered wiki whose ceiling or packs should change")]
+        wiki: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "remove_wiki",
+            help = "Expose another registered wiki with its own ceiling and packs"
+        )]
+        add_wiki: Option<String>,
+        #[arg(long, help = "Stop exposing a wiki and revoke its connection grants")]
+        remove_wiki: Option<String>,
         #[arg(long, help = "Replacement loopback listener")]
         bind: Option<String>,
         #[arg(long, help = "Replacement exact public HTTPS MCP resource URL")]

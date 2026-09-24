@@ -411,6 +411,39 @@ impl McpAuthorizationStore {
         })
     }
 
+    pub fn revoke_remote_wiki_grants(
+        &self,
+        remote: &McpRemoteId,
+        wiki: &WikiId,
+        revoked_at: u64,
+        dry_run: bool,
+    ) -> Result<Vec<ConnectionGrantReport>, McpStateError> {
+        self.mutate(dry_run, |state| {
+            let ids = state
+                .grants
+                .iter_mut()
+                .filter(|grant| &grant.remote_id == remote && &grant.wiki_id == wiki)
+                .map(|grant| {
+                    grant.revoked_at.get_or_insert(revoked_at);
+                    grant.id
+                })
+                .collect::<BTreeSet<_>>();
+            for family in state
+                .token_families
+                .iter_mut()
+                .filter(|family| ids.contains(&family.grant_id))
+            {
+                family.revoked_at.get_or_insert(revoked_at);
+            }
+            Ok(state
+                .grants
+                .iter()
+                .filter(|grant| ids.contains(&grant.id))
+                .map(ConnectionGrant::report)
+                .collect())
+        })
+    }
+
     pub fn issue_refresh_token(
         &self,
         grant_id: Ulid,
@@ -1073,6 +1106,59 @@ mod tests {
         assert!(store
             .rotate_refresh_token(second_token.family_id, second_token.secret.expose(), 2_001)
             .is_ok());
+    }
+
+    #[test]
+    fn revoking_one_remote_wiki_is_dry_run_safe_and_preserves_other_vaults() {
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let personal = store
+            .create_grant(
+                grant_request("shared", "client-a", "https://id.test/alice"),
+                false,
+            )
+            .expect("personal grant");
+        let mut team_request = grant_request("shared", "client-b", "https://id.test/bob");
+        team_request.wiki_id = WikiId::parse("team").expect("wiki ID");
+        let team = store.create_grant(team_request, false).expect("team grant");
+        let personal_refresh = store
+            .issue_refresh_token(personal.id, 9_000, 1_001)
+            .expect("personal refresh");
+        let team_refresh = store
+            .issue_refresh_token(team.id, 9_000, 1_001)
+            .expect("team refresh");
+
+        let preview = store
+            .revoke_remote_wiki_grants(&team.remote_id, &team.wiki_id, 2_000, true)
+            .expect("preview");
+        assert_eq!(preview.len(), 1);
+        assert_eq!(preview[0].id, team.id);
+        assert!(store
+            .show_grant(team.id)
+            .expect("unchanged")
+            .revoked_at
+            .is_none());
+
+        let revoked = store
+            .revoke_remote_wiki_grants(&team.remote_id, &team.wiki_id, 2_000, false)
+            .expect("revoke team");
+        assert_eq!(revoked[0].revoked_at, Some(2_000));
+        assert!(matches!(
+            store.rotate_refresh_token(team_refresh.family_id, team_refresh.secret.expose(), 2_001),
+            Err(McpStateError::InactiveTokenFamily(_))
+        ));
+        assert!(store
+            .rotate_refresh_token(
+                personal_refresh.family_id,
+                personal_refresh.secret.expose(),
+                2_001
+            )
+            .is_ok());
+        assert!(store
+            .show_grant(personal.id)
+            .expect("personal")
+            .revoked_at
+            .is_none());
     }
 
     #[cfg(unix)]

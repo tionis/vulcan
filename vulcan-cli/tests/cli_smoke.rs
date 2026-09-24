@@ -8304,6 +8304,285 @@ fn named_mcp_remote_cli_lifecycle_is_device_global_and_dry_run_safe() {
 }
 
 #[test]
+fn named_mcp_remote_cli_manages_multiple_vaults_and_revokes_removed_vault_grants() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let personal = temporary.path().join("personal");
+    let team = temporary.path().join("team");
+    fs::create_dir_all(&personal).expect("personal vault");
+    fs::create_dir_all(&team).expect("team vault");
+    let binary = assert_cmd::cargo::cargo_bin("vulcan");
+    let run = |arguments: &[&str]| {
+        ProcessCommand::new(&binary)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(arguments)
+            .output()
+            .expect("Vulcan command should run")
+    };
+    for (id, path) in [("personal", &personal), ("team", &team)] {
+        assert!(
+            run(&["vault", "add", id, path.to_str().expect("vault path")])
+                .status
+                .success()
+        );
+    }
+    let created = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "init",
+        "shared",
+        "--wiki",
+        "personal",
+        "--public-url",
+        "https://mcp.example.test/shared",
+        "--identity",
+        "https://identity.example.test/alice",
+    ]));
+    let instance_id = created["remote"]["instance_id"]
+        .as_str()
+        .expect("instance ID")
+        .parse::<ulid::Ulid>()
+        .expect("ULID");
+    let preview = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "set",
+        "shared",
+        "--add-wiki",
+        "team",
+        "--dry-run",
+    ]));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(
+        preview["remote"]["vaults"]
+            .as_array()
+            .expect("vaults")
+            .len(),
+        2
+    );
+    let one = successful_process_json(&run(&[
+        "--output", "json", "mcp", "remote", "show", "shared",
+    ]));
+    assert_eq!(one["vaults"].as_array().expect("vaults").len(), 1);
+    assert!(
+        !run(&[
+            "mcp",
+            "remote",
+            "set",
+            "shared",
+            "--add-wiki",
+            "team",
+            "--ceiling-profile",
+            "unrestricted",
+        ])
+        .status
+        .success(),
+        "a newly exposed vault cannot have an unrestricted ceiling"
+    );
+    let added = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "set",
+        "shared",
+        "--add-wiki",
+        "team",
+    ]));
+    assert_eq!(
+        added["remote"]["instance_id"],
+        created["remote"]["instance_id"]
+    );
+    assert_eq!(
+        added["remote"]["vaults"].as_array().expect("vaults").len(),
+        2
+    );
+    assert!(
+        !run(&["mcp", "remote", "set", "shared", "--add-wiki", "team"])
+            .status
+            .success()
+    );
+    assert!(
+        !run(&["mcp", "remote", "set", "shared", "--tool-pack", "search"])
+            .status
+            .success()
+    );
+    assert!(
+        !run(&[
+            "mcp",
+            "remote",
+            "set",
+            "shared",
+            "--wiki",
+            "team",
+            "--ceiling-profile",
+            "unrestricted",
+        ])
+        .status
+        .success(),
+        "an existing vault cannot be widened to unrestricted"
+    );
+    {
+        use fs2::FileExt as _;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(state_home.join("vulcan/mcp-remotes/shared/runtime.lock"))
+            .expect("runtime lock");
+        lock.try_lock_exclusive().expect("hold running remote lock");
+        assert!(
+            !run(&[
+                "mcp",
+                "remote",
+                "set",
+                "shared",
+                "--wiki",
+                "team",
+                "--tool-pack",
+                "search"
+            ])
+            .status
+            .success(),
+            "a running remote must reject a stale-policy update"
+        );
+    }
+    let changed = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "set",
+        "shared",
+        "--wiki",
+        "team",
+        "--tool-pack",
+        "search",
+    ]));
+    assert_eq!(
+        changed["remote"]["vaults"][0]["tool_packs"],
+        serde_json::json!(["notes-read", "search", "status"])
+    );
+    assert_eq!(
+        changed["remote"]["vaults"][1]["tool_packs"],
+        serde_json::json!(["search"])
+    );
+
+    let store = vulcan_daemon::mcp_state::McpAuthorizationStore::at(state_home.join("vulcan"));
+    let remote_id = vulcan_daemon::mcp_remote::McpRemoteId::parse("shared").expect("remote ID");
+    let create_grant = |wiki: &str, path: &Path| {
+        let profile =
+            vulcan_core::resolve_permission_profile(&VaultPaths::new(path), Some("readonly"))
+                .expect("readonly profile");
+        store
+            .create_grant(
+                vulcan_daemon::mcp_state::CreateConnectionGrant {
+                    remote_id: remote_id.clone(),
+                    remote_instance_id: instance_id,
+                    client_id: format!("client-{wiki}"),
+                    subject: "https://identity.example.test/alice".to_string(),
+                    wiki_id: vulcan_daemon::registry::WikiId::parse(wiki).expect("wiki ID"),
+                    permission_profile: "readonly".to_string(),
+                    approved_permissions: profile.grant,
+                    tool_packs: vec!["search".to_string()],
+                    scopes: vec!["mcp:tools".to_string()],
+                    audience: "https://mcp.example.test/shared".to_string(),
+                    created_at: 1_000,
+                    expires_at: 9_000,
+                },
+                false,
+            )
+            .expect("grant")
+    };
+    let personal_grant = create_grant("personal", &personal);
+    let team_grant = create_grant("team", &team);
+    assert!(
+        !run(&[
+            "mcp",
+            "remote",
+            "set",
+            "shared",
+            "--remove-wiki",
+            "team",
+            "--public-url",
+            "https://mcp.example.test/other",
+        ])
+        .status
+        .success(),
+        "vault removal must be isolated from other changes"
+    );
+    let preview = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "set",
+        "shared",
+        "--remove-wiki",
+        "team",
+        "--dry-run",
+    ]));
+    assert_eq!(
+        preview["revoked_connections"]
+            .as_array()
+            .expect("revocations")
+            .len(),
+        1
+    );
+    assert!(store
+        .show_grant(team_grant.id)
+        .expect("team grant")
+        .revoked_at
+        .is_none());
+    let removed = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "set",
+        "shared",
+        "--remove-wiki",
+        "team",
+    ]));
+    assert_eq!(
+        removed["remote"]["vaults"]
+            .as_array()
+            .expect("vaults")
+            .len(),
+        1
+    );
+    assert_eq!(
+        removed["revoked_connections"][0]["id"],
+        team_grant.id.to_string()
+    );
+    assert!(store
+        .show_grant(team_grant.id)
+        .expect("team grant")
+        .revoked_at
+        .is_some());
+    assert!(store
+        .show_grant(personal_grant.id)
+        .expect("personal grant")
+        .revoked_at
+        .is_none());
+    assert!(!run(&[
+        "mcp",
+        "remote",
+        "set",
+        "shared",
+        "--remove-wiki",
+        "personal"
+    ])
+    .status
+    .success());
+}
+
+#[test]
 fn daemon_companion_install_places_embedded_assets_and_preserves_configuration() {
     let temporary = TempDir::new().expect("temporary directory");
     let config_home = temporary.path().join("config");
@@ -15855,7 +16134,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
     assert!(mcp_skill.contains("vulcan daemon start --detach"));
-    assert!(mcp_skill.contains("Restart the daemon after `remote init`"));
+    assert!(mcp_skill.contains("Stop the remote before `remote set` or `remote remove`"));
+    assert!(mcp_skill.contains("remote set <name> --add-wiki <id> --dry-run"));
+    assert!(mcp_skill.contains("remote set <name> --remove-wiki <id>"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));
     assert!(mcp_skill.contains("explicitly select one vault"));
     assert!(mcp_skill.contains("each grant and MCP session stays bound"));
@@ -15872,6 +16153,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("full-vault read access"));
     assert!(permission_skill.contains("mcp remote init/list/show/set/run/remove"));
     assert!(permission_skill.contains("hosts configured remotes"));
+    assert!(permission_skill.contains("remote set --add-wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon config show"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));

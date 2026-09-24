@@ -6484,16 +6484,10 @@ fn named_mcp_remote_and_connection_commands_parse() {
     assert!(matches!(
         init.command,
         Command::Mcp {
-            command: Some(McpCommand::Remote {
-                command: McpRemoteCommand::Init {
-                    ref name,
-                    ref wiki,
-                    dry_run: true,
-                    ..
-                }
-            }),
+            command: Some(McpCommand::Remote { command }),
             ..
-        } if name == "personal-chatgpt" && wiki.as_deref() == Some("personal")
+        } if matches!(*command, McpRemoteCommand::Init { ref name, ref wiki, dry_run: true, .. }
+            if name == "personal-chatgpt" && wiki.as_deref() == Some("personal"))
     ));
 
     let revoke = Cli::try_parse_from([

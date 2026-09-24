@@ -35,9 +35,12 @@ Recommended setup:
    daemon starts all configured named remotes together and reports the aggregate
    `listener.mcp-remotes` service in `vulcan daemon status`. Do not run the same instance in
    foreground and resident mode at once; its instance lock rejects the overlap. Restart the
-   daemon after `remote init`, `set`, or `remove` to reload listener definitions. The listener can
-   route a grant-bound vault in a multi-vault definition, but the current CLI configures one vault
-   per remote; use separate named remotes until multi-vault CLI management is available.
+   daemon after `remote init`, `set`, or `remove` to reload listener definitions. Stop the remote
+   before changing it; an active instance lock rejects `set` and `remove`. To use one MCP URL for
+   multiple vaults, register each vault and run `vulcan mcp remote set personal-chatgpt
+   --add-wiki <id> --dry-run`, then apply it without `--dry-run`. `remote set --wiki <id>` changes
+   only that vault's ceiling/default/packs. `remote set --remove-wiki <id>` revokes that vault's
+   grants and refresh tokens; it cannot remove the final vault.
 
    Startup fetches the IndieAuth identity page and, when advertised, its metadata. Each discovery
    request has a three-second timeout and a bounded response; redirects are not followed. If

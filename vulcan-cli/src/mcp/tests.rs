@@ -1256,6 +1256,71 @@ fn named_runtime_locks_conflict_per_remote_but_not_across_remotes() {
 
 #[cfg(feature = "oauth")]
 #[test]
+fn named_runtime_rejects_a_definition_changed_before_listener_startup() {
+    let temporary = tempfile::tempdir().expect("temporary state");
+    let vault = temporary.path().join("vault");
+    std::fs::create_dir_all(&vault).expect("vault");
+    let process = DaemonProcessContext {
+        registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
+        state_root: temporary.path().join("state"),
+        verbose: false,
+    };
+    let wiki_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID");
+    process
+        .registry
+        .add(
+            &vulcan_daemon::registry::AddWikiRequest {
+                id: wiki_id.clone(),
+                path: vault,
+                profile: None,
+                groups: Vec::new(),
+                git_dir: None,
+                permissions_profile: None,
+                sync_backend: Some("none".to_string()),
+                platform_profile: None,
+            },
+            false,
+        )
+        .expect("registration");
+    let id = vulcan_daemon::mcp_remote::McpRemoteId::parse("personal-chatgpt").expect("remote ID");
+    let stale = process
+        .registry
+        .add_mcp_remote(
+            vulcan_daemon::mcp_remote::AddMcpRemoteRequest {
+                id: id.clone(),
+                bind: "127.0.0.1:8765".to_string(),
+                public_url: "https://mcp.example.test/personal".to_string(),
+                authentication: McpRemoteAuthentication::IndieAuth {
+                    identity: "https://identity.example.test/alice".to_string(),
+                },
+                vaults: vec![vulcan_daemon::mcp_remote::McpRemoteVault {
+                    wiki_id,
+                    ceiling_profile: "readonly".to_string(),
+                    default_profile: "readonly".to_string(),
+                    tool_packs: vec!["notes-read".to_string()],
+                }],
+            },
+            false,
+        )
+        .expect("remote");
+    process
+        .registry
+        .update_mcp_remote(
+            &id,
+            vulcan_daemon::mcp_remote::UpdateMcpRemoteRequest {
+                public_url: Some("https://mcp.example.test/changed".to_string()),
+                ..Default::default()
+            },
+            false,
+        )
+        .expect("changed remote");
+    let error = run_named_mcp_remote_inner(&process, &stale, None, None, None)
+        .expect_err("stale definition must not start a listener");
+    assert!(error.message.contains("changed while starting"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 fn resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions() {
     let temporary = tempfile::tempdir().expect("temporary state");
     let process = DaemonProcessContext {

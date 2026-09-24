@@ -220,8 +220,9 @@ The daemon's host-service injection now supervises named remotes as an aggregate
 service while invoking the same foreground listener, OAuth implementation, and session state per
 instance. Shutdown closes active MCP sessions and SSE streams after stopping the listener.
 Consent selects an exposed vault, and the durable grant routes session initialization and policy
-revalidation to that vault. Multi-vault CLI management remains migration work. The daemon constructs
-one mutation scheduler before ingress registration and supplies
+revalidation to that vault. The CLI adds, selects, and removes registered vaults in a stopped
+instance; removal revokes that vault's grants and refresh families. The daemon constructs one
+mutation scheduler before ingress registration and supplies
 that same instance to adapter factories and the hosted executor. Resident MCP request workers
 acquire per-vault read/write permits, revalidate their original OAuth/grant authority after the
 queue wait, and retain permits until execution ends even if the HTTP caller times out. Named

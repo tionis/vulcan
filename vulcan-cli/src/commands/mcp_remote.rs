@@ -102,6 +102,9 @@ fn handle_remote(
         }
         McpRemoteCommand::Set {
             name,
+            wiki,
+            add_wiki,
+            remove_wiki,
             bind,
             public_url,
             identity,
@@ -111,55 +114,143 @@ fn handle_remote(
             dry_run,
         } => {
             let id = McpRemoteId::parse(name).map_err(CliError::operation)?;
+            let _runtime_lock = if *dry_run {
+                None
+            } else {
+                Some(mcp::acquire_named_remote_runtime_lock(
+                    &context.state_root.join("mcp-remotes").join(id.as_str()),
+                    &context
+                        .registry
+                        .show_mcp_remote(&id)
+                        .map_err(CliError::operation)?,
+                )?)
+            };
             let existing = context
                 .registry
                 .show_mcp_remote(&id)
                 .map_err(CliError::operation)?;
             let mut vaults = existing.vaults.clone();
-            if ceiling_profile.is_some() || default_profile.is_some() || !tool_pack.is_empty() {
-                if vaults.len() != 1 {
+            let changing_vault_policy =
+                ceiling_profile.is_some() || default_profile.is_some() || !tool_pack.is_empty();
+            let removed_wiki = remove_wiki
+                .as_ref()
+                .map(WikiId::parse)
+                .transpose()
+                .map_err(CliError::operation)?;
+            if let Some(removed) = removed_wiki.as_ref() {
+                if changing_vault_policy
+                    || wiki.is_some()
+                    || add_wiki.is_some()
+                    || bind.is_some()
+                    || public_url.is_some()
+                    || identity.is_some()
+                {
                     return Err(CliError::operation(
-                        "profile and pack updates currently require a single-vault remote",
+                        "--remove-wiki must be a separate remote set operation",
                     ));
                 }
+                if vaults.len() == 1 {
+                    return Err(CliError::operation(
+                        "a named remote must expose at least one wiki; use `mcp remote remove` to remove the instance",
+                    ));
+                }
+                let before = vaults.len();
+                vaults.retain(|vault| &vault.wiki_id != removed);
+                if vaults.len() == before {
+                    return Err(CliError::operation(format!(
+                        "wiki `{removed}` is not exposed by remote `{id}`"
+                    )));
+                }
+            } else if let Some(added) = add_wiki.as_ref() {
+                let registration = resolve_registration(cli, context, Some(added))?;
+                if vaults.iter().any(|vault| vault.wiki_id == registration.id) {
+                    return Err(CliError::operation(format!(
+                        "wiki `{}` is already exposed by remote `{id}`",
+                        registration.id
+                    )));
+                }
+                let ceiling = ceiling_profile.as_deref().unwrap_or("readonly");
+                let default = default_profile.as_deref().unwrap_or("readonly");
+                validate_profiles(&registration, ceiling, default)?;
+                let packs = if tool_pack.is_empty() {
+                    tool_pack_names(&[
+                        McpToolPackArg::NotesRead,
+                        McpToolPackArg::Search,
+                        McpToolPackArg::Status,
+                    ])
+                } else {
+                    tool_pack_names(tool_pack)
+                };
+                vaults.push(McpRemoteVault {
+                    wiki_id: registration.id,
+                    ceiling_profile: ceiling.to_string(),
+                    default_profile: default.to_string(),
+                    tool_packs: packs,
+                });
+            } else if changing_vault_policy || wiki.is_some() {
+                let selected = match wiki {
+                    Some(wiki) => WikiId::parse(wiki).map_err(CliError::operation)?,
+                    None if vaults.len() == 1 => vaults[0].wiki_id.clone(),
+                    None => {
+                        return Err(CliError::operation(
+                            "multi-vault remote policy updates require --wiki <id>",
+                        ));
+                    }
+                };
+                let vault = vaults
+                    .iter_mut()
+                    .find(|vault| vault.wiki_id == selected)
+                    .ok_or_else(|| {
+                        CliError::operation(format!(
+                            "wiki `{selected}` is not exposed by remote `{id}`"
+                        ))
+                    })?;
                 if let Some(profile) = ceiling_profile {
-                    vaults[0].ceiling_profile.clone_from(profile);
+                    vault.ceiling_profile.clone_from(profile);
                 }
                 if let Some(profile) = default_profile {
-                    vaults[0].default_profile.clone_from(profile);
+                    vault.default_profile.clone_from(profile);
                 }
                 if !tool_pack.is_empty() {
-                    vaults[0].tool_packs = tool_pack_names(tool_pack);
+                    vault.tool_packs = tool_pack_names(tool_pack);
                 }
                 let registration = context
                     .registry
-                    .show(&vaults[0].wiki_id)
+                    .show(&selected)
                     .map_err(CliError::operation)?
                     .registration;
                 validate_profiles(
                     &registration,
-                    &vaults[0].ceiling_profile,
-                    &vaults[0].default_profile,
+                    &vault.ceiling_profile,
+                    &vault.default_profile,
                 )?;
             }
+            let update = UpdateMcpRemoteRequest {
+                bind: bind.clone(),
+                public_url: public_url.clone(),
+                authentication: identity.as_ref().map(|identity| {
+                    McpRemoteAuthentication::IndieAuth {
+                        identity: identity.clone(),
+                    }
+                }),
+                vaults: Some(vaults),
+            };
+            context
+                .registry
+                .update_mcp_remote(&id, update.clone(), true)
+                .map_err(CliError::operation)?;
+            let revoked = if let Some(removed) = removed_wiki.as_ref() {
+                McpAuthorizationStore::at(&context.state_root)
+                    .revoke_remote_wiki_grants(&id, removed, unix_timestamp()?, *dry_run)
+                    .map_err(CliError::operation)?
+            } else {
+                Vec::new()
+            };
             let remote = context
                 .registry
-                .update_mcp_remote(
-                    &id,
-                    UpdateMcpRemoteRequest {
-                        bind: bind.clone(),
-                        public_url: public_url.clone(),
-                        authentication: identity.as_ref().map(|identity| {
-                            McpRemoteAuthentication::IndieAuth {
-                                identity: identity.clone(),
-                            }
-                        }),
-                        vaults: Some(vaults),
-                    },
-                    *dry_run,
-                )
+                .update_mcp_remote(&id, update, *dry_run)
                 .map_err(CliError::operation)?;
-            print_remote_mutation(cli.output, *dry_run, "update", remote, Vec::new())
+            print_remote_mutation(cli.output, *dry_run, "update", remote, revoked)
         }
         McpRemoteCommand::Run { name } => {
             let remote = show_remote(context, name)?;
@@ -171,13 +262,20 @@ fn handle_remote(
             dry_run,
         } => {
             let id = McpRemoteId::parse(name).map_err(CliError::operation)?;
+            let _runtime_lock = if *dry_run {
+                None
+            } else {
+                Some(mcp::acquire_named_remote_runtime_lock(
+                    &context.state_root.join("mcp-remotes").join(id.as_str()),
+                    &context
+                        .registry
+                        .show_mcp_remote(&id)
+                        .map_err(CliError::operation)?,
+                )?)
+            };
             let remote = context
                 .registry
                 .show_mcp_remote(&id)
-                .map_err(CliError::operation)?;
-            context
-                .registry
-                .remove_mcp_remote(&id, *dry_run)
                 .map_err(CliError::operation)?;
             let revoked = if *preserve_grants {
                 Vec::new()
@@ -186,6 +284,10 @@ fn handle_remote(
                     .revoke_remote_grants(&id, unix_timestamp()?, *dry_run)
                     .map_err(CliError::operation)?
             };
+            context
+                .registry
+                .remove_mcp_remote(&id, *dry_run)
+                .map_err(CliError::operation)?;
             print_remote_mutation(cli.output, *dry_run, "remove", remote, revoked)
         }
     }

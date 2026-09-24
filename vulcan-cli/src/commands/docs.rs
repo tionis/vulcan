@@ -620,6 +620,7 @@ fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopi
     }
 }
 
+#[allow(clippy::too_many_lines)] // Renders the complete generated configuration reference.
 pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
     let descriptors = app_config::config_descriptor_catalog();
     let mut grouped = BTreeMap::<String, Vec<app_config::ConfigDescriptor>>::new();
@@ -657,9 +658,12 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
         "references with per-vault permission ceiling/default profile names and eligible tool packs. A"
             .to_string(),
     );
-    lines.push("multi-vault consent selects exactly one wiki for each grant; the current CLI only creates and edits".to_string());
-    lines.push("single-vault definitions. The definition contains no token secret and is not copied when the vault".to_string());
-    lines.push("is synchronized.".to_string());
+    lines.push("multi-vault consent selects exactly one wiki for each grant. `remote set --add-wiki <id>` adds a".to_string());
+    lines.push("registered wiki, `--wiki <id>` selects one for policy edits, and `--remove-wiki <id>` revokes that".to_string());
+    lines.push("wiki's grants before removal. Stop the instance before changing its definition. The definition".to_string());
+    lines.push(
+        "contains no token secret and is not copied when the vault is synchronized.".to_string(),
+    );
     lines.push(String::new());
     lines.push(
         "Connection grants and refresh-token-family records live in the user state directory outside the"
