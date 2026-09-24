@@ -3,7 +3,7 @@
 #![allow(clippy::must_use_candidate)]
 
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use vulcan_core::{
     assistant_config_summary, list_assistant_prompts, list_assistant_skills, load_assistant_prompt,
     load_assistant_skill, load_vault_config, read_vault_agents_file, render_assistant_prompt,
@@ -12,6 +12,145 @@ use vulcan_core::{
 };
 
 use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
+use crate::tools::{self, CustomToolDescriptor, CustomToolRegistryOptions};
+
+pub fn custom_tool_matches_selected_packs(
+    packs: &[String],
+    selected_pack_names: &BTreeSet<String>,
+) -> bool {
+    if packs.is_empty() {
+        return selected_pack_names.contains("custom");
+    }
+    packs.iter().any(|pack| selected_pack_names.contains(pack))
+}
+
+pub fn visible_custom_tools(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    selected_pack_names: &BTreeSet<String>,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<Vec<CustomToolDescriptor>, McpMethodError> {
+    if !selected_pack_names.contains("custom") {
+        return Ok(Vec::new());
+    }
+    Ok(
+        tools::list_custom_tools(paths, active_permission_profile, registry_options)
+            .map_err(|error| McpMethodError::tool(error.to_string()))?
+            .into_iter()
+            .filter(|tool| tool.callable)
+            .filter(|tool| {
+                custom_tool_matches_selected_packs(&tool.summary.packs, selected_pack_names)
+            })
+            .collect(),
+    )
+}
+
+/// Handle projected skill-command resource reads using the same visibility rule as tools/list.
+pub fn read_custom_tool_resource(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    selected_pack_names: &BTreeSet<String>,
+    registry_options: &CustomToolRegistryOptions,
+    uri: &str,
+) -> Option<Result<Value, McpMethodError>> {
+    let result = match uri {
+        "vulcan://assistant/skill-commands/index" => visible_custom_tools(
+            paths,
+            active_permission_profile,
+            selected_pack_names,
+            registry_options,
+        )
+        .and_then(|tools| {
+            let commands = tools
+                .into_iter()
+                .filter(|tool| tool.summary.name.starts_with("skill_"))
+                .collect::<Vec<_>>();
+            if commands.is_empty() {
+                Err(resource_not_found_error(
+                    uri,
+                    "Resource not found".to_string(),
+                ))
+            } else {
+                json_resource(uri, &commands)
+            }
+        }),
+        "vulcan://assistant/tools/index" => visible_custom_tools(
+            paths,
+            active_permission_profile,
+            selected_pack_names,
+            registry_options,
+        )
+        .and_then(|tools| {
+            if tools.is_empty() {
+                Err(resource_not_found_error(
+                    uri,
+                    "Resource not found".to_string(),
+                ))
+            } else {
+                json_resource(uri, &tools)
+            }
+        }),
+        _ => {
+            if let Some(name) = uri.strip_prefix("vulcan://assistant/skill-commands/") {
+                tools::show_custom_tool(paths, active_permission_profile, name, registry_options)
+                    .map_err(|error| resource_not_found_error(uri, error.to_string()))
+                    .and_then(|report| {
+                        if report.callable && report.tool.summary.name.starts_with("skill_") {
+                            json_resource(uri, &report)
+                        } else {
+                            Err(custom_resource_permission_error(
+                                uri,
+                                active_permission_profile,
+                            ))
+                        }
+                    })
+            } else if let Some(name) = uri.strip_prefix("vulcan://assistant/tools/") {
+                if selected_pack_names.contains("custom") {
+                    tools::show_custom_tool(
+                        paths,
+                        active_permission_profile,
+                        name,
+                        registry_options,
+                    )
+                    .map_err(|error| resource_not_found_error(uri, error.to_string()))
+                    .and_then(|report| {
+                        if report.callable
+                            && custom_tool_matches_selected_packs(
+                                &report.tool.summary.packs,
+                                selected_pack_names,
+                            )
+                        {
+                            json_resource(uri, &report)
+                        } else {
+                            Err(custom_resource_permission_error(
+                                uri,
+                                active_permission_profile,
+                            ))
+                        }
+                    })
+                } else {
+                    Err(custom_resource_permission_error(
+                        uri,
+                        active_permission_profile,
+                    ))
+                }
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(result)
+}
+
+fn custom_resource_permission_error(uri: &str, profile: Option<&str>) -> McpMethodError {
+    resource_not_found_error(
+        uri,
+        format!(
+            "permission denied: resource `{uri}` is not available under profile `{}`",
+            profile.unwrap_or("unrestricted")
+        ),
+    )
+}
 
 pub fn visible_prompts(
     paths: &VaultPaths,
@@ -502,5 +641,43 @@ mod tests {
         let blind_templates = visible_resource_templates(&blind, true);
         assert_eq!(blind_templates.len(), 1);
         assert_eq!(blind_templates[0]["uriTemplate"], "vulcan://help/{topic}");
+    }
+
+    #[test]
+    fn custom_tool_resources_require_the_pack_even_for_guessed_uris() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let options = CustomToolRegistryOptions::default();
+        let uri = "vulcan://assistant/tools/skill_example_run";
+        let no_packs = BTreeSet::new();
+        assert!(
+            visible_custom_tools(&paths, Some("readonly"), &no_packs, &options)
+                .unwrap()
+                .is_empty()
+        );
+        let denied = read_custom_tool_resource(&paths, Some("readonly"), &no_packs, &options, uri)
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            denied,
+            McpMethodError::JsonRpc {
+                code: MCP_RESOURCE_NOT_FOUND,
+                ..
+            }
+        ));
+        let selected = BTreeSet::from(["custom".to_string()]);
+        assert!(custom_tool_matches_selected_packs(&[], &selected));
+        assert!(!custom_tool_matches_selected_packs(
+            &["admin".to_string()],
+            &selected
+        ));
+        assert!(read_custom_tool_resource(
+            &paths,
+            Some("readonly"),
+            &selected,
+            &options,
+            "vulcan://help/overview"
+        )
+        .is_none());
     }
 }

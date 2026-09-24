@@ -1668,12 +1668,15 @@ impl McpServerCore {
     fn visible_custom_tools(
         &self,
     ) -> Result<Vec<crate::tools::CustomToolDescriptor>, McpMethodError> {
-        visible_custom_tools(
+        let selected_pack_names = pack_name_list(&self.selected_tool_packs)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        mcp_assistant::visible_custom_tools(
             &self.paths,
             Some(self.selection.name.as_str()),
-            &self.selected_tool_packs,
+            &selected_pack_names,
+            &crate::custom_tool_registry_options(),
         )
-        .map_err(cli_tool_error)
     }
 
     fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
@@ -1737,36 +1740,22 @@ impl McpServerCore {
             return result;
         }
 
-        match uri {
-            "vulcan://help/overview" => {
-                let report = crate::help_overview();
-                return Self::json_resource(uri, &report);
-            }
-            "vulcan://assistant/skill-commands/index" => {
-                let commands = self
-                    .visible_custom_tools()?
-                    .into_iter()
-                    .filter(|tool| tool.summary.name.starts_with("skill_"))
-                    .collect::<Vec<_>>();
-                if commands.is_empty() {
-                    return Err(resource_not_found_error(
-                        uri,
-                        "Resource not found".to_string(),
-                    ));
-                }
-                return Self::json_resource(uri, &commands);
-            }
-            "vulcan://assistant/tools/index" => {
-                let tools = self.visible_custom_tools()?;
-                if tools.is_empty() {
-                    return Err(resource_not_found_error(
-                        uri,
-                        "Resource not found".to_string(),
-                    ));
-                }
-                return Self::json_resource(uri, &tools);
-            }
-            _ => {}
+        let selected_pack_names = pack_name_list(&self.selected_tool_packs)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if let Some(result) = mcp_assistant::read_custom_tool_resource(
+            &self.paths,
+            Some(self.selection.name.as_str()),
+            &selected_pack_names,
+            &crate::custom_tool_registry_options(),
+            uri,
+        ) {
+            return result;
+        }
+
+        if uri == "vulcan://help/overview" {
+            let report = crate::help_overview();
+            return Self::json_resource(uri, &report);
         }
 
         if let Some(topic) = uri.strip_prefix("vulcan://help/") {
@@ -1777,54 +1766,6 @@ impl McpServerCore {
                 resolve_help_topic(&topic_path)
                     .map_err(|error| resource_not_found_error(uri, error.message))?
             };
-            return Self::json_resource(uri, &report);
-        }
-
-        if let Some(name) = uri.strip_prefix("vulcan://assistant/skill-commands/") {
-            let report = crate::tools::show_custom_tool(
-                &self.paths,
-                Some(self.selection.name.as_str()),
-                name,
-                &crate::custom_tool_registry_options(),
-            )
-            .map_err(|error| resource_not_found_error(uri, error.to_string()))?;
-            if !report.callable || !report.tool.summary.name.starts_with("skill_") {
-                return Err(resource_not_found_error(
-                    uri,
-                    format!(
-                        "permission denied: resource `{uri}` is not available under profile `{}`",
-                        self.selection.name
-                    ),
-                ));
-            }
-            return Self::json_resource(uri, &report);
-        }
-
-        if let Some(name) = uri.strip_prefix("vulcan://assistant/tools/") {
-            let report = crate::tools::show_custom_tool(
-                &self.paths,
-                Some(self.selection.name.as_str()),
-                name,
-                &crate::custom_tool_registry_options(),
-            )
-            .map_err(|error| resource_not_found_error(uri, error.to_string()))?;
-            let selected_pack_names = pack_name_list(&self.selected_tool_packs)
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            if !report.callable
-                || !custom_tool_matches_selected_packs(
-                    &report.tool.summary.packs,
-                    &selected_pack_names,
-                )
-            {
-                return Err(resource_not_found_error(
-                    uri,
-                    format!(
-                        "permission denied: resource `{uri}` is not available under profile `{}`",
-                        self.selection.name
-                    ),
-                ));
-            }
             return Self::json_resource(uri, &report);
         }
 
@@ -2653,7 +2594,10 @@ impl McpServerCore {
         let selected_pack_names = pack_name_list(&self.selected_tool_packs)
             .into_iter()
             .collect::<BTreeSet<_>>();
-        if !custom_tool_matches_selected_packs(&report.tool.summary.packs, &selected_pack_names) {
+        if !mcp_assistant::custom_tool_matches_selected_packs(
+            &report.tool.summary.packs,
+            &selected_pack_names,
+        ) {
             return Err(McpMethodError::invalid_params(format!(
                 "Unknown tool: {name}"
             )));
@@ -5111,18 +5055,10 @@ fn visible_custom_tools(
     )?
     .into_iter()
     .filter(|tool| tool.callable)
-    .filter(|tool| custom_tool_matches_selected_packs(&tool.summary.packs, &selected_pack_names))
+    .filter(|tool| {
+        mcp_assistant::custom_tool_matches_selected_packs(&tool.summary.packs, &selected_pack_names)
+    })
     .collect())
-}
-
-fn custom_tool_matches_selected_packs(
-    packs: &[String],
-    selected_pack_names: &BTreeSet<String>,
-) -> bool {
-    if packs.is_empty() {
-        return selected_pack_names.contains("custom");
-    }
-    packs.iter().any(|pack| selected_pack_names.contains(pack))
 }
 
 fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {

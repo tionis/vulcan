@@ -15850,6 +15850,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));
+    assert!(mcp_skill.contains(
+        "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"
+    ));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
@@ -29605,6 +29608,25 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected(
         .as_str()
         .is_some_and(|text| text.contains("Projects/Alpha.md")));
     assert!(session.finish().is_empty());
+
+    let mut default_session = start_mcp_session_with_xdg(&vault_root, &config_home_str, &[]);
+    let _ = default_session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let guessed = default_session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "resources/read",
+        "params": { "uri": format!("vulcan://assistant/tools/{summarize_tool}") }
+    }));
+    assert_eq!(
+        guessed.last().expect("guessed resource response")["error"]["code"],
+        -32002
+    );
+    assert!(default_session.finish().is_empty());
 }
 
 #[test]
