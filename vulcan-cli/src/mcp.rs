@@ -1,7 +1,6 @@
 #![allow(clippy::needless_pass_by_value, clippy::struct_excessive_bools)]
 
 mod catalog;
-mod protocol;
 mod schemas;
 
 use crate::app_config;
@@ -36,17 +35,6 @@ use catalog::{
 #[cfg(feature = "oauth")]
 use fs2::FileExt;
 use globset::Glob;
-use protocol::{
-    McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs,
-    McpDailyListArgs, McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams,
-    McpMethodError, McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs,
-    McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs,
-    McpPromptGetParams, McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs,
-    McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
-    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
-    McpToolPackMutationArgs, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
-    MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_RESOURCE_NOT_FOUND,
-};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,6 +47,17 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
+use vulcan_app::mcp_protocol::{
+    McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs,
+    McpDailyListArgs, McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams,
+    McpMethodError, McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs,
+    McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs,
+    McpPromptGetParams, McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs,
+    McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
+    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
+    McpToolPackMutationArgs, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
+    MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
+};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
@@ -6187,28 +6186,10 @@ fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {
         .collect()
 }
 
-fn default_search_limit() -> usize {
-    20
-}
-
-const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
 const MCP_QUERY_SOFT_MAX: usize = 200;
 const MCP_QUERY_HARD_MAX: usize = 1_000;
-const MCP_DAILY_LIST_DEFAULT_LIMIT: usize = 20;
 const MCP_DAILY_LIST_MAX_LIMIT: usize = 200;
 const MCP_STRUCTURED_CONTENT_LIMIT: usize = 65_536;
-
-fn default_query_limit() -> usize {
-    MCP_QUERY_DEFAULT_LIMIT
-}
-
-fn default_daily_list_limit() -> usize {
-    MCP_DAILY_LIST_DEFAULT_LIMIT
-}
-
-fn default_tool_pack_operation() -> String {
-    "list".to_string()
-}
 
 fn bounded_daily_list<T: serde::Serialize>(
     items: Vec<T>,
@@ -6415,22 +6396,6 @@ fn mcp_select_fields(value: &Value, fields: &[String]) -> Value {
         }
     }
     Value::Object(selected)
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_search_context_size() -> usize {
-    18
-}
-
-fn default_suggest_min_score() -> f64 {
-    0.0
-}
-
-fn default_web_limit() -> usize {
-    10
 }
 
 fn note_append_periodic_type(periodic: NoteAppendPeriodicArg) -> &'static str {
