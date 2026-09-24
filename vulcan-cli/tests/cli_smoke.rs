@@ -15660,7 +15660,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .expect("bundled skill should be readable");
     assert!(note_operations.contains("managed: true"));
     assert!(note_operations.contains("- note_info"));
+    assert!(note_operations.contains("- note_delete"));
     assert!(note_operations.contains("only readable source notes"));
+    assert!(note_operations.contains("A scoped preview is not proof"));
     assert!(note_operations.contains("mdbase record path"));
     assert!(note_operations.contains("validated, journaled write boundary"));
     assert!(note_operations.contains("explicit repair is a separate workflow"));
@@ -30021,6 +30023,70 @@ fn mcp_note_info_excludes_unreadable_backlinks_and_confidence() {
         hidden.last().expect("denied note_info")["result"]["isError"],
         true
     );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_note_delete_preview_hides_unreadable_backlinks() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\"] }\nwrite = { allow = [\"note:Target.md\"] }\n",
+    )
+    .expect("config");
+    fs::write(vault_root.join("Target.md"), "# Target\n").expect("target note");
+    fs::write(vault_root.join("Public.md"), "[[Target]]\n").expect("public note");
+    fs::write(vault_root.join("Private.md"), "[[Target]]\n").expect("private note");
+    run_scan(&vault_root);
+
+    let cli_preview = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "note",
+            "delete",
+            "Target.md",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let cli_preview = parse_stdout_json(&cli_preview);
+    assert_eq!(cli_preview["backlink_count"], 2);
+
+    let mut session = McpSession::start(
+        &vault_root,
+        &["--permissions", "public", "--tool-pack", "notes-manage"],
+    );
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let preview = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "note_delete", "arguments": { "note": "Target.md", "dry_run": true } }
+    }));
+    let preview = &preview.last().expect("note_delete response")["result"];
+    assert_eq!(preview["isError"], false);
+    assert_eq!(preview["structuredContent"]["backlink_count"], 1);
+    assert_eq!(
+        preview["structuredContent"]["backlinks"][0]["source_path"],
+        "Public.md"
+    );
+    assert!(vault_root.join("Target.md").exists());
+
+    let applied = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "note_delete", "arguments": { "note": "Target.md", "confirm": true } }
+    }));
+    let applied = &applied.last().expect("note_delete apply response")["result"];
+    assert_eq!(applied["isError"], false);
+    assert_eq!(applied["structuredContent"]["deleted"], true);
+    assert_eq!(applied["structuredContent"]["backlink_count"], 1);
+    assert!(!vault_root.join("Target.md").exists());
     assert!(session.finish().is_empty());
 }
 

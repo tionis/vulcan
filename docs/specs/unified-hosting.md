@@ -234,7 +234,8 @@ owns date/target resolution and daily list/show reports shared by CLI and MCP. M
 `vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline`,
 `note_get`, and `note_info` reports for CLI and MCP. Core graph queries provide
 permission-filtered note-link confidence, so MCP note-info counts exclude unreadable backlink
-sources.
+sources. MCP `note_delete` calls the app mutation directly and removes unreadable backlink
+sources from its preview using the connection's current read guard.
 `vulcan-app::web` provides permission-checked search/fetch workflows to CLI and MCP, including
 network and optional save-path preflight; MCP no longer calls CLI web handlers.
 Remaining tool workflows, CLI-derived command-help catalog sharing, and HTTP/OAuth hosting

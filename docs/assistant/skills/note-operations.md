@@ -10,6 +10,7 @@ tools:
   - note_set
   - note_append
   - note_patch
+  - note_delete
 metadata:
   vulcan:
     managed: true
@@ -34,6 +35,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 
 - `note patch` fails on multiple matches by design. Narrow the scope with `--section`, `--heading`, `--block-ref`, or `--lines` instead of forcing a broad replacement.
 - MCP `note_info` backlink and link-confidence counts include only readable source notes under the connection's permission profile; do not treat scoped counts as vault-wide totals.
+- MCP `note_delete` previews list only backlinks from source notes the connection can currently read. A scoped preview is not proof that deleting the note leaves no other backlinks; inspect with broader authorized access when that matters.
 - Prefer section, heading, block-ref, or `--match`-based targeting over whole-note rewrites.
 - Keep frontmatter changes structured. If the task is really metadata work, use `update` or `unset` instead of editing YAML by hand.
 - Note creates, replacements, appends, patches, and deletes targeting an mdbase record path use the collection's validated, journaled write boundary. Treat validation errors as blockers and do not bypass them with raw filesystem edits; explicit repair is a separate workflow that must be intentionally requested.
