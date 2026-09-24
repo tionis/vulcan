@@ -29,7 +29,6 @@ base64.workspace = true
 crossterm.workspace = true
 csv.workspace = true
 fs2.workspace = true
-globset.workspace = true
 ratatui.workspace = true
 regex.workspace = true
 pulldown-cmark.workspace = true

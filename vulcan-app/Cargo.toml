@@ -20,6 +20,7 @@ csv.workspace = true
 ed25519-dalek.workspace = true
 flate2.workspace = true
 fs2.workspace = true
+globset.workspace = true
 libc.workspace = true
 pulldown-cmark.workspace = true
 regex.workspace = true
