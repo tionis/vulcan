@@ -74,10 +74,10 @@ use vulcan_app::sync_conflicts::{get_sync_conflict, list_sync_conflicts};
 use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
     accept_link_suggestion, assistant_prompts_root, assistant_skills_root, load_vault_config,
-    query_graph_communities_with_filter, read_vault_agents_file, reject_link_suggestion,
-    resolve_permission_profile, scan_vault_with_progress, suggest_links, watch_vault,
-    LinkSuggestionStatus, PermissionGuard, PermissionProfile, PluginEvent, ProfilePermissionGuard,
-    ScanMode, ScanSummary, TasksQueryResult, VaultPaths, WatchOptions,
+    query_graph_communities_with_filter, reject_link_suggestion, resolve_permission_profile,
+    scan_vault_with_progress, suggest_links, watch_vault, LinkSuggestionStatus, PermissionGuard,
+    PermissionProfile, PluginEvent, ProfilePermissionGuard, ScanMode, ScanSummary,
+    TasksQueryResult, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -1695,115 +1695,22 @@ impl McpServerCore {
     }
 
     fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        let mut resources = vec![serde_json::json!({
-            "uri": "vulcan://help/overview",
-            "name": "Help Overview",
-            "title": "Vulcan Help Overview",
-            "description": "Integrated overview of the Vulcan command surface and built-in help topics.",
-            "mimeType": "application/json",
-        })];
-
-        if !self.selection.profile.read.is_none() {
-            resources.push(serde_json::json!({
-                "uri": "vulcan://assistant/prompts/index",
-                "name": "Assistant Prompt Index",
-                "title": "Vault Prompt Index",
-                "description": "Visible prompts loaded from the configured assistant prompts folder.",
-                "mimeType": "application/json",
-            }));
-            resources.push(serde_json::json!({
-                "uri": "vulcan://assistant/skills/index",
-                "name": "Assistant Skill Index",
-                "title": "Vault Skill Index",
-                "description": "Visible skills loaded from the configured assistant skills folder.",
-                "mimeType": "application/json",
-            }));
-            if self
-                .visible_custom_tools()?
-                .iter()
-                .any(|tool| tool.summary.name.starts_with("skill_"))
-            {
-                resources.push(serde_json::json!({
-                    "uri": "vulcan://assistant/skill-commands/index",
-                    "name": "Assistant Skill Command Index",
-                    "title": "Vault Skill Command Index",
-                    "description": "Visible Agent Skills-compatible command tools projected into the shared tool registry.",
-                    "mimeType": "application/json",
-                }));
-            }
-            if !self.visible_custom_tools()?.is_empty() {
-                resources.push(serde_json::json!({
-                    "uri": "vulcan://assistant/tools/index",
-                    "name": "Assistant Tool Index",
-                    "title": "Vault Custom Tool Index",
-                    "description": "Visible callable skill command tools projected into the shared tool registry.",
-                    "mimeType": "application/json",
-                }));
-            }
-            if read_vault_agents_file(&self.paths)
-                .map_err(|error| McpMethodError::internal(error.to_string()))?
-                .is_some()
-                && self.can_read_relative_path("AGENTS.md")
-            {
-                resources.push(serde_json::json!({
-                    "uri": "vulcan://assistant/agents",
-                    "name": "AGENTS.md",
-                    "title": "Vault Agent Instructions",
-                    "description": "The vault's root AGENTS.md instructions.",
-                    "mimeType": "text/markdown",
-                }));
-            }
-        }
-
-        if self.guard.check_config_read().is_ok() {
-            resources.push(serde_json::json!({
-                "uri": "vulcan://assistant/config",
-                "name": "Assistant Config Summary",
-                "title": "Assistant Config Summary",
-                "description": "Configured assistant prompt and skill folders for this vault.",
-                "mimeType": "application/json",
-            }));
-        }
-
-        Ok(resources)
+        let custom_tool_names = if self.selection.profile.read.is_none() {
+            Vec::new()
+        } else {
+            self.visible_custom_tools()?
+                .into_iter()
+                .map(|tool| tool.summary.name)
+                .collect()
+        };
+        mcp_assistant::visible_resources(&self.paths, &self.guard, &custom_tool_names)
     }
 
     fn visible_resource_templates(&self) -> Vec<Value> {
-        let mut templates = vec![serde_json::json!({
-            "uriTemplate": "vulcan://help/{topic}",
-            "name": "Help Topics",
-            "title": "Help Topic Resource",
-            "description": "Read one built-in or command help topic as structured JSON.",
-            "mimeType": "application/json",
-        })];
-
-        if !self.selection.profile.read.is_none() {
-            templates.push(serde_json::json!({
-                "uriTemplate": "vulcan://assistant/skills/{name}",
-                "name": "Assistant Skills",
-                "title": "Assistant Skill Resource",
-                "description": "Read one visible assistant skill as structured JSON.",
-                "mimeType": "application/json",
-            }));
-            templates.push(serde_json::json!({
-                "uriTemplate": "vulcan://assistant/skill-commands/{name}",
-                "name": "Assistant Skill Commands",
-                "title": "Assistant Skill Command Resource",
-                "description": "Read one visible projected skill command as structured JSON.",
-                "mimeType": "application/json",
-            }));
-            if self.selected_tool_packs.contains(&McpToolPack::Custom) {
-                templates.push(serde_json::json!({
-                    "uriTemplate": "vulcan://assistant/tools/{name}",
-                    "name": "Assistant Tools",
-                    "title": "Assistant Tool Resource",
-                    "description": "Read one visible callable skill command tool as structured JSON.",
-                    "mimeType": "application/json",
-                }));
-            }
-        }
-
-        templates
+        mcp_assistant::visible_resource_templates(
+            &self.guard,
+            self.selected_tool_packs.contains(&McpToolPack::Custom),
+        )
     }
 
     fn get_prompt(
@@ -3088,15 +2995,6 @@ impl McpServerCore {
         }
         self.snapshot = current;
         notifications
-    }
-
-    fn can_read_relative_path(&self, relative_path: &str) -> bool {
-        if self.guard.read_filter().path_permission().is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return true;
-        }
-        self.guard.check_read_path(relative_path).is_ok()
     }
 
     fn check_read_note_access(&self, note: &str) -> Result<(), CliError> {

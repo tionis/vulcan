@@ -43,6 +43,124 @@ pub fn visible_skills(
         .collect())
 }
 
+/// List stable MCP resources for one effective authority. Custom tool names must already be
+/// filtered by the caller's selected packs and permission profile.
+pub fn visible_resources(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    custom_tool_names: &[String],
+) -> Result<Vec<Value>, McpMethodError> {
+    let mut resources = vec![serde_json::json!({
+        "uri": "vulcan://help/overview",
+        "name": "Help Overview",
+        "title": "Vulcan Help Overview",
+        "description": "Integrated overview of the Vulcan command surface and built-in help topics.",
+        "mimeType": "application/json",
+    })];
+
+    if !guard.selection().profile.read.is_none() {
+        resources.push(serde_json::json!({
+            "uri": "vulcan://assistant/prompts/index",
+            "name": "Assistant Prompt Index",
+            "title": "Vault Prompt Index",
+            "description": "Visible prompts loaded from the configured assistant prompts folder.",
+            "mimeType": "application/json",
+        }));
+        resources.push(serde_json::json!({
+            "uri": "vulcan://assistant/skills/index",
+            "name": "Assistant Skill Index",
+            "title": "Vault Skill Index",
+            "description": "Visible skills loaded from the configured assistant skills folder.",
+            "mimeType": "application/json",
+        }));
+        if custom_tool_names
+            .iter()
+            .any(|name| name.starts_with("skill_"))
+        {
+            resources.push(serde_json::json!({
+                "uri": "vulcan://assistant/skill-commands/index",
+                "name": "Assistant Skill Command Index",
+                "title": "Vault Skill Command Index",
+                "description": "Visible Agent Skills-compatible command tools projected into the shared tool registry.",
+                "mimeType": "application/json",
+            }));
+        }
+        if !custom_tool_names.is_empty() {
+            resources.push(serde_json::json!({
+                "uri": "vulcan://assistant/tools/index",
+                "name": "Assistant Tool Index",
+                "title": "Vault Custom Tool Index",
+                "description": "Visible callable skill command tools projected into the shared tool registry.",
+                "mimeType": "application/json",
+            }));
+        }
+        if read_vault_agents_file(paths)
+            .map_err(|error| McpMethodError::internal(error.to_string()))?
+            .is_some()
+            && can_read_relative_path(guard, "AGENTS.md")
+        {
+            resources.push(serde_json::json!({
+                "uri": "vulcan://assistant/agents",
+                "name": "AGENTS.md",
+                "title": "Vault Agent Instructions",
+                "description": "The vault's root AGENTS.md instructions.",
+                "mimeType": "text/markdown",
+            }));
+        }
+    }
+
+    if guard.check_config_read().is_ok() {
+        resources.push(serde_json::json!({
+            "uri": "vulcan://assistant/config",
+            "name": "Assistant Config Summary",
+            "title": "Assistant Config Summary",
+            "description": "Configured assistant prompt and skill folders for this vault.",
+            "mimeType": "application/json",
+        }));
+    }
+    Ok(resources)
+}
+
+pub fn visible_resource_templates(
+    guard: &ProfilePermissionGuard,
+    custom_pack_selected: bool,
+) -> Vec<Value> {
+    let mut templates = vec![serde_json::json!({
+        "uriTemplate": "vulcan://help/{topic}",
+        "name": "Help Topics",
+        "title": "Help Topic Resource",
+        "description": "Read one built-in or command help topic as structured JSON.",
+        "mimeType": "application/json",
+    })];
+
+    if !guard.selection().profile.read.is_none() {
+        templates.push(serde_json::json!({
+            "uriTemplate": "vulcan://assistant/skills/{name}",
+            "name": "Assistant Skills",
+            "title": "Assistant Skill Resource",
+            "description": "Read one visible assistant skill as structured JSON.",
+            "mimeType": "application/json",
+        }));
+        templates.push(serde_json::json!({
+            "uriTemplate": "vulcan://assistant/skill-commands/{name}",
+            "name": "Assistant Skill Commands",
+            "title": "Assistant Skill Command Resource",
+            "description": "Read one visible projected skill command as structured JSON.",
+            "mimeType": "application/json",
+        }));
+        if custom_pack_selected {
+            templates.push(serde_json::json!({
+                "uriTemplate": "vulcan://assistant/tools/{name}",
+                "name": "Assistant Tools",
+                "title": "Assistant Tool Resource",
+                "description": "Read one visible callable skill command tool as structured JSON.",
+                "mimeType": "application/json",
+            }));
+        }
+    }
+    templates
+}
+
 pub fn prompt_visible(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
@@ -333,5 +451,56 @@ mod tests {
         assert_eq!(prompts["contents"][0]["mimeType"], "application/json");
         assert_eq!(prompts["contents"][0]["text"], "[]");
         assert!(read_resource(&paths, &readable, "vulcan://help/overview").is_none());
+    }
+
+    #[test]
+    fn resource_discovery_preserves_authority_and_custom_pack_visibility() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir_all(temporary.path().join(".vulcan")).unwrap();
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(temporary.path().join("AGENTS.md"), "# Instructions\n").unwrap();
+        let readable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+        let names = vec!["skill_summarize".to_string(), "other_tool".to_string()];
+
+        let visible = visible_resources(&paths, &readable, &names).unwrap();
+        let uris = visible
+            .iter()
+            .filter_map(|resource| resource["uri"].as_str())
+            .collect::<Vec<_>>();
+        assert!(uris.contains(&"vulcan://assistant/agents"));
+        assert!(uris.contains(&"vulcan://assistant/skill-commands/index"));
+        assert!(uris.contains(&"vulcan://assistant/tools/index"));
+        let without_custom = visible_resources(&paths, &readable, &[]).unwrap();
+        assert!(!without_custom
+            .iter()
+            .any(|resource| resource["uri"] == "vulcan://assistant/tools/index"));
+
+        let hidden = visible_resources(&paths, &blind, &names).unwrap();
+        assert_eq!(hidden.len(), 1);
+        assert_eq!(hidden[0]["uri"], "vulcan://help/overview");
+
+        let templates = visible_resource_templates(&readable, true);
+        assert!(templates
+            .iter()
+            .any(|template| template["uriTemplate"] == "vulcan://assistant/tools/{name}"));
+        let no_custom = visible_resource_templates(&readable, false);
+        assert!(!no_custom
+            .iter()
+            .any(|template| template["uriTemplate"] == "vulcan://assistant/tools/{name}"));
+        let blind_templates = visible_resource_templates(&blind, true);
+        assert_eq!(blind_templates.len(), 1);
+        assert_eq!(blind_templates[0]["uriTemplate"], "vulcan://help/{topic}");
     }
 }
