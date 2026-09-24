@@ -83,6 +83,7 @@ The CLI is designed to be self-describing at runtime.
 - The default MCP navigation surface exposes exact note reads, search, structured query, daily reads, status, and a compact `capabilities` tool. Graph analysis is available through `--tool-pack graph`.
 - Adaptive MCP sessions expose one `tool_packs` controller; startup-selected packs remain pinned, and clients must still refresh `tools/list` after a list-change notification.
 - MCP query pages default to 50 compact rows, daily list/range pages default to 20 rows, and oversized structured results are returned through session resource links.
+- A named remote write that outlives its response deadline returns an indeterminate tool error with `operation_id` and `status_path`. Query `GET <public-origin><status_path>` with a current bearer token for the same connection grant; the response reports whether dispatch occurred, the retained state, and any known commit outcome. The timed-out MCP session is retired. Never replay an unknown write merely because its HTTP response timed out; proxy the `/operations/<id>` subpath alongside the MCP resource path.
 - `vulcan help chatgpt-mcp` documents the private ChatGPT Developer Mode setup, including Authentik/OIDC OAuth, the `daily-wiki-agent` profile, and daily/task packs.
 - `vulcan completions <shell>` generates shell completions.
 

@@ -38,6 +38,8 @@ use vulcan_app::execution::{
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::json_value_to_string;
 use vulcan_app::mcp_completion;
+#[cfg(feature = "oauth")]
+use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
     jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler,
@@ -106,12 +108,18 @@ use vulcan_daemon::host::{
     RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration, ServiceScope,
 };
 #[cfg(feature = "oauth")]
+use vulcan_daemon::hosted_executor::{
+    HostedExecutionError, HostedExecutor, HostedOperationCompletion, HostedOperationFailure,
+};
+#[cfg(feature = "oauth")]
+use vulcan_daemon::hosted_jobs::HostedJobLedger;
+#[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 use vulcan_daemon::mcp_session::McpSessionAuthority;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
-#[cfg(all(feature = "oauth", test))]
+#[cfg(feature = "oauth")]
 use vulcan_daemon::mutation_scheduler::MutationSchedulerConfig;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mutation_scheduler::{
@@ -397,6 +405,14 @@ struct NamedMcpVaultRuntime {
 #[derive(Debug, Clone)]
 struct HostedMcpExecution {
     scheduler: Arc<MutationScheduler>,
+    executor: Arc<HostedExecutor>,
+    runtime: tokio::runtime::Handle,
+}
+
+#[cfg(feature = "oauth")]
+#[derive(Debug, Clone)]
+struct ResidentMcpScheduling {
+    scheduler: Arc<MutationScheduler>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -405,18 +421,19 @@ struct HostedMcpDispatch {
     http: McpHttpServerContext,
     inbound: McpHttpRequest,
     authority: McpSessionAuthority,
-    cancellation: ExecutionCancellationToken,
-    deadline: ExecutionDeadline,
+    execution: ExecutionContext,
 }
 
 #[cfg(feature = "oauth")]
 impl HostedMcpExecution {
-    fn execute(
+    fn prepare(
         &self,
-        core: &mut McpServerCore,
+        core: &McpServerCore,
         payload: &Value,
-        dispatch: &HostedMcpDispatch,
-    ) -> Result<McpHttpProcessResult, Value> {
+        authority: &McpSessionAuthority,
+        cancellation: ExecutionCancellationToken,
+        deadline: ExecutionDeadline,
+    ) -> Result<ExecutionContext, Value> {
         let failure = |message: String| {
             jsonrpc_error(
                 request_id(payload).unwrap_or(Value::Null),
@@ -427,56 +444,197 @@ impl HostedMcpExecution {
         };
         let kind = mcp_scheduled_operation(payload);
         let grant = core.selection.grant.clone();
-        let principal_id = dispatch
-            .authority
+        let principal_id = authority
             .subject
             .clone()
-            .or_else(|| dispatch.authority.client_id.clone())
-            .unwrap_or_else(|| format!("mcp:{}", dispatch.authority.remote_instance_id));
+            .or_else(|| authority.client_id.clone())
+            .unwrap_or_else(|| format!("mcp:{}", authority.remote_instance_id));
         let execution = ExecutionContext::new(
             ExecutionVaultIdentity::resolve(core.paths.vault_root(), None, None)
                 .map_err(|error| failure(error.to_string()))?,
             ExecutionAuthority::Caller {
                 principal_id,
-                credential_id: dispatch.authority.grant_id.map(|id| id.to_string()),
+                credential_id: authority.grant_id.map(|id| id.to_string()),
                 permission_ceiling: grant.clone(),
             },
             grant,
-            ExecutionIdentity::new(format!("mcp:{}", dispatch.authority.remote_instance_id)),
-            dispatch.authority.audience.clone(),
+            ExecutionIdentity::new(format!("mcp:{}", authority.remote_instance_id)),
+            authority.audience.clone(),
             if kind == ScheduledOperation::Read {
                 ExecutionRetryClass::ReadOnly
             } else {
                 ExecutionRetryClass::IndeterminateAfterDispatch
             },
-            dispatch.cancellation.clone(),
-            Some(dispatch.deadline),
+            cancellation,
+            Some(deadline),
         )
         .map_err(|error| failure(error.to_string()))?;
-        let permit = self
+        if kind == ScheduledOperation::Mutation {
+            self.runtime
+                .block_on(self.executor.register(&execution))
+                .map_err(|error| failure(error.to_string()))?;
+        }
+        Ok(execution)
+    }
+
+    fn execute(
+        &self,
+        core: &mut McpServerCore,
+        payload: &Value,
+        dispatch: &HostedMcpDispatch,
+    ) -> Result<McpHttpProcessResult, Value> {
+        let kind = mcp_scheduled_operation(payload);
+        if kind == ScheduledOperation::Read {
+            let permit = self
+                .runtime
+                .block_on(self.scheduler.acquire(&dispatch.execution, kind, |_| {
+                    revalidate_hosted_mcp_authority(
+                        &dispatch.http,
+                        &dispatch.inbound,
+                        &dispatch.authority,
+                    )
+                }))
+                .map_err(|error| hosted_mcp_json_error(payload, error.to_string(), None))?;
+            dispatch
+                .execution
+                .checkpoint()
+                .map_err(|error| hosted_mcp_json_error(payload, error.to_string(), None))?;
+            attenuate_mcp_core_profile(core)
+                .map_err(|error| hosted_mcp_json_error(payload, error, None))?;
+            let response = core.process_http_request(payload);
+            drop(permit);
+            return response;
+        }
+        let http = dispatch.http.clone();
+        let inbound = dispatch.inbound.clone();
+        let authority = dispatch.authority.clone();
+        let mut next_core = core.clone();
+        let request = payload.clone();
+        let result = self
             .runtime
-            .block_on(self.scheduler.acquire(&execution, kind, |_| {
-                let current = authenticate_mcp_http_request(&dispatch.http, &dispatch.inbound)
-                    .map_err(|_| {
-                        MutationScheduleError::Revalidation(
-                            "MCP authority is no longer valid".to_string(),
-                        )
+            .block_on(self.executor.execute_registered_caller(
+                dispatch.execution.clone(),
+                kind,
+                move |_| revalidate_hosted_mcp_authority(&http, &inbound, &authority),
+                move |execution| {
+                    execution.checkpoint().map_err(|error| {
+                        HostedOperationFailure::before_commit(error.to_string())
                     })?;
-                if !current.matches(&dispatch.authority) {
-                    return Err(MutationScheduleError::Revalidation(
-                        "MCP authority changed while queued".to_string(),
-                    ));
-                }
-                Ok(())
-            }))
-            .map_err(|error| failure(error.to_string()))?;
-        execution
-            .checkpoint()
-            .map_err(|error| failure(error.to_string()))?;
-        attenuate_mcp_core_profile(core).map_err(failure)?;
-        let result = core.process_http_request(payload);
-        drop(permit);
-        result
+                    attenuate_mcp_core_profile(&mut next_core)
+                        .map_err(HostedOperationFailure::before_commit)?;
+                    let response = next_core.process_http_request(&request);
+                    if kind == ScheduledOperation::Mutation
+                        && (response.is_err()
+                            || response.as_ref().is_ok_and(|result| {
+                                result.response.as_ref().is_some_and(|value| {
+                                    value.get("error").is_some()
+                                        || value.pointer("/result/isError").and_then(Value::as_bool)
+                                            == Some(true)
+                                })
+                            }))
+                    {
+                        return Err(HostedOperationFailure::indeterminate(
+                            "MCP mutation returned an error; its write outcome is unverified",
+                        ));
+                    }
+                    Ok(HostedOperationCompletion {
+                        value: (next_core, response),
+                        committed: kind == ScheduledOperation::Mutation,
+                    })
+                },
+            ));
+        match result {
+            Ok((next, response)) => {
+                *core = next;
+                response
+            }
+            Err(error) => hosted_mcp_execution_error(
+                payload,
+                &dispatch.execution,
+                &dispatch.http.endpoint,
+                error,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "oauth")]
+fn revalidate_hosted_mcp_authority(
+    http: &McpHttpServerContext,
+    inbound: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+) -> Result<(), MutationScheduleError> {
+    let current = authenticate_mcp_http_request(http, inbound).map_err(|_| {
+        MutationScheduleError::Revalidation("MCP authority is no longer valid".to_string())
+    })?;
+    if !current.matches(authority) {
+        return Err(MutationScheduleError::Revalidation(
+            "MCP authority changed while queued".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "oauth")]
+fn hosted_mcp_json_error(payload: &Value, message: String, operation_id: Option<&str>) -> Value {
+    jsonrpc_error(
+        request_id(payload).unwrap_or(Value::Null),
+        -32603,
+        message,
+        operation_id.map(|id| serde_json::json!({ "operation_id": id })),
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn hosted_mcp_unknown_result(
+    payload: &Value,
+    operation_id: &str,
+    detail: &str,
+    endpoint: &str,
+) -> McpHttpProcessResult {
+    let response = request_id(payload).map(|id| {
+        let structured = serde_json::json!({
+            "error": detail,
+            "operation_id": operation_id,
+            "status_path": format!("{}/operations/{operation_id}", endpoint.trim_end_matches('/')),
+            "outcome": "indeterminate",
+            "retry": "check_operation_status_first",
+        });
+        if payload.get("method").and_then(Value::as_str) == Some("tools/call") {
+            tool_error_response(id, detail.to_string(), Some(structured))
+        } else {
+            jsonrpc_error(id, -32000, detail.to_string(), Some(structured))
+        }
+    });
+    McpHttpProcessResult {
+        accepted_notification: response.is_none(),
+        response,
+        notifications: Vec::new(),
+        session_stale: true,
+    }
+}
+
+#[cfg(feature = "oauth")]
+fn hosted_mcp_execution_error(
+    payload: &Value,
+    execution: &ExecutionContext,
+    endpoint: &str,
+    error: HostedExecutionError,
+) -> Result<McpHttpProcessResult, Value> {
+    let operation_id = &execution.identity.operation_id;
+    match error {
+        HostedExecutionError::BeforeDispatch { detail, .. }
+        | HostedExecutionError::Operation {
+            detail,
+            committed: Some(false),
+            ..
+        } => Err(hosted_mcp_json_error(payload, detail, Some(operation_id))),
+        other => Ok(hosted_mcp_unknown_result(
+            payload,
+            operation_id,
+            &other.to_string(),
+            endpoint,
+        )),
     }
 }
 
@@ -626,12 +784,13 @@ pub(crate) fn run_named_mcp_remote(
 }
 
 #[cfg(feature = "oauth")]
+#[allow(clippy::too_many_lines)] // Keeps instance ownership, executor recovery, and listener startup together.
 fn run_named_mcp_remote_inner(
     process: &DaemonProcessContext,
     remote: &McpRemoteDefinition,
     stop: Option<&ShutdownSignal>,
     ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
-    hosted: Option<HostedMcpExecution>,
+    resident: Option<ResidentMcpScheduling>,
 ) -> Result<(), CliError> {
     let mut vaults = BTreeMap::new();
     for vault in &remote.vaults {
@@ -674,6 +833,43 @@ fn run_named_mcp_remote_inner(
             remote.id
         )));
     }
+    let foreground_runtime = if resident.is_none() {
+        Some(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(CliError::operation)?,
+        )
+    } else {
+        None
+    };
+    let scheduler = if let Some(resident) = resident.as_ref() {
+        Arc::clone(&resident.scheduler)
+    } else {
+        Arc::new(
+            MutationScheduler::new(MutationSchedulerConfig::default())
+                .map_err(CliError::operation)?,
+        )
+    };
+    let runtime = resident.map_or_else(
+        || {
+            foreground_runtime
+                .as_ref()
+                .expect("foreground runtime exists")
+                .handle()
+                .clone()
+        },
+        |resident| resident.runtime,
+    );
+    let ledger = Arc::new(HostedJobLedger::at(storage_dir.join("operations")));
+    ledger
+        .recover_interrupted(current_unix_millis())
+        .map_err(CliError::operation)?;
+    let hosted = HostedMcpExecution {
+        executor: Arc::new(HostedExecutor::new(Arc::clone(&scheduler), ledger)),
+        scheduler,
+        runtime,
+    };
     let options = McpHttpOptions {
         bind: remote.bind.clone(),
         endpoint,
@@ -716,7 +912,7 @@ fn run_named_mcp_remote_inner(
         McpHttpLifecycle {
             stop,
             ready,
-            hosted,
+            hosted: Some(hosted),
         },
     )
 }
@@ -758,7 +954,7 @@ pub(crate) fn resident_named_mcp_service(
             let stop = Arc::clone(service.stop());
             let process = process.clone();
             let name = remote.id.to_string();
-            let hosted = HostedMcpExecution {
+            let hosted = ResidentMcpScheduling {
                 scheduler: Arc::clone(&scheduler),
                 runtime: runtime.clone(),
             };
@@ -1169,6 +1365,20 @@ fn handle_mcp_http_connection(
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
             return Ok(());
         }
+        if let Some(operation_id) = named_mcp_operation_id(context, &request) {
+            let response = if request.method == "GET" {
+                match authenticate_mcp_http_request(context, &request) {
+                    Ok(authority) => {
+                        handle_named_mcp_operation_status(context, &authority, operation_id)
+                    }
+                    Err(response) => response,
+                }
+            } else {
+                mcp_http_json_error_response(405, "Method Not Allowed", Value::Null)
+            };
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+            return Ok(());
+        }
     }
 
     if request.path != context.endpoint {
@@ -1201,6 +1411,90 @@ fn handle_mcp_http_connection(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "oauth")]
+fn named_mcp_operation_id<'a>(
+    context: &McpHttpServerContext,
+    request: &'a McpHttpRequest,
+) -> Option<&'a str> {
+    context.named_runtime.as_ref()?;
+    let prefix = format!("{}/operations/", context.endpoint.trim_end_matches('/'));
+    request.path.strip_prefix(&prefix)
+}
+
+#[cfg(feature = "oauth")]
+fn handle_named_mcp_operation_status(
+    context: &McpHttpServerContext,
+    authority: &McpSessionAuthority,
+    operation_id: &str,
+) -> McpHttpResponse {
+    if !authority.allows_scope("mcp:tools") {
+        return insufficient_scope_response(context, "mcp:tools");
+    }
+    let not_found = || mcp_http_json_error_response(404, "Not Found", Value::Null);
+    let (Some(hosted), Some(named), Some(grant_id), Some(wiki_id)) = (
+        context.hosted.as_ref(),
+        context.named_runtime.as_ref(),
+        authority.grant_id,
+        authority.wiki_id.as_ref(),
+    ) else {
+        return not_found();
+    };
+    let Some(vault) = named.vaults.get(wiki_id) else {
+        return not_found();
+    };
+    let Ok(record) = hosted.executor.ledger().load(operation_id) else {
+        return not_found();
+    };
+    let Ok(selection) =
+        resolve_permission_profile(&vault.paths, authority.permission_profile.as_deref())
+    else {
+        return not_found();
+    };
+    let grant = selection.grant;
+    let caller = ExecutionContext::new(
+        match ExecutionVaultIdentity::resolve(vault.paths.vault_root(), None, None) {
+            Ok(vault) => vault,
+            Err(_) => return not_found(),
+        },
+        ExecutionAuthority::Caller {
+            principal_id: authority
+                .subject
+                .clone()
+                .or_else(|| authority.client_id.clone())
+                .unwrap_or_default(),
+            credential_id: Some(grant_id.to_string()),
+            permission_ceiling: grant.clone(),
+        },
+        grant,
+        ExecutionIdentity::new(format!("mcp:{}", authority.remote_instance_id)),
+        authority.audience.clone(),
+        ExecutionRetryClass::ReadOnly,
+        ExecutionCancellationToken::default(),
+        None,
+    );
+    if !caller.is_ok_and(|caller| record.matches_caller(&caller)) {
+        return not_found();
+    }
+    let body = serde_json::json!({
+        "operation_id": record.operation_id,
+        "state": record.state,
+        "dispatched": record.dispatched,
+        "committed": record.committed,
+        "retry_disposition": record.retry_disposition,
+        "updated_unix_ms": record.updated_unix_ms,
+        "detail": record.detail,
+    });
+    McpHttpResponse {
+        status: 200,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&body).expect("operation status should serialize"),
+        extra_headers: vec![
+            ("Cache-Control".to_string(), "no-store".to_string()),
+            ("Vary".to_string(), "Authorization".to_string()),
+        ],
+    }
 }
 
 fn handle_mcp_http_post(
@@ -1260,7 +1554,16 @@ fn handle_mcp_http_post(
         }
     };
 
-    session.broadcast(&result.notifications);
+    if result.session_stale {
+        context
+            .sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned")
+            .remove(&session_id);
+        session.close();
+    } else {
+        session.broadcast(&result.notifications);
+    }
 
     if result.accepted_notification {
         return McpHttpResponse {
@@ -1275,7 +1578,7 @@ fn handle_mcp_http_post(
         .response
         .expect("MCP HTTP requests should produce a JSON-RPC response");
     let mut extra_headers = Vec::new();
-    if created_session {
+    if created_session && !result.session_stale {
         extra_headers.push(("Mcp-Session-Id".to_string(), session_id));
     }
     McpHttpResponse {
@@ -1881,6 +2184,7 @@ impl McpServerCore {
         process_http_request(self, request)
     }
 
+    #[allow(clippy::too_many_lines)] // Registration must precede the worker, and all timeout branches share its ID.
     fn process_http_request_with_timeout(
         &mut self,
         request: Value,
@@ -1900,13 +2204,34 @@ impl McpServerCore {
         #[cfg(feature = "oauth")]
         let cancellation = ExecutionCancellationToken::default();
         #[cfg(feature = "oauth")]
-        let dispatch = HostedMcpDispatch {
-            http: http_context.clone(),
-            inbound: inbound.clone(),
-            authority: authority.clone(),
-            cancellation: cancellation.clone(),
-            deadline: ExecutionDeadline::after(timeout),
-        };
+        let dispatch = hosted
+            .as_ref()
+            .map(|hosted| {
+                hosted
+                    .prepare(
+                        self,
+                        &request,
+                        authority,
+                        cancellation.clone(),
+                        ExecutionDeadline::after(timeout),
+                    )
+                    .map(|execution| HostedMcpDispatch {
+                        http: http_context.clone(),
+                        inbound: inbound.clone(),
+                        authority: authority.clone(),
+                        execution,
+                    })
+            })
+            .transpose()?;
+        #[cfg(feature = "oauth")]
+        let operation_id = dispatch
+            .as_ref()
+            .filter(|_| mcp_scheduled_operation(&request) == ScheduledOperation::Mutation)
+            .map(|dispatch| dispatch.execution.identity.operation_id.clone());
+        #[cfg(feature = "oauth")]
+        let failed_ledger = hosted.as_ref().map(|hosted| hosted.executor.ledger());
+        #[cfg(feature = "oauth")]
+        let named_runtime = http_context.named_runtime.is_some();
         #[cfg(not(feature = "oauth"))]
         let _ = (http_context, inbound, authority);
         if thread::Builder::new()
@@ -1914,9 +2239,9 @@ impl McpServerCore {
             .stack_size(MCP_REQUEST_WORKER_STACK_SIZE)
             .spawn(move || {
                 #[cfg(feature = "oauth")]
-                let result = if let Some(hosted) = hosted {
+                let result = if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
                     hosted.execute(&mut worker, &request, &dispatch)
-                } else if dispatch.http.named_runtime.is_some() {
+                } else if named_runtime {
                     attenuate_mcp_core_profile(&mut worker)
                         .map_err(|message| {
                             jsonrpc_error(
@@ -1936,6 +2261,15 @@ impl McpServerCore {
             })
             .is_err()
         {
+            #[cfg(feature = "oauth")]
+            if let (Some(operation_id), Some(ledger)) = (&operation_id, failed_ledger) {
+                let _ = ledger.mark_failed(
+                    operation_id,
+                    Some(false),
+                    "MCP request worker could not be started",
+                    current_unix_millis(),
+                );
+            }
             return Err(jsonrpc_error(
                 request_id(&timeout_request).unwrap_or(Value::Null),
                 -32603,
@@ -1951,14 +2285,34 @@ impl McpServerCore {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 #[cfg(feature = "oauth")]
                 cancellation.cancel();
+                #[cfg(feature = "oauth")]
+                if let Some(operation_id) = operation_id.as_deref() {
+                    return Ok(hosted_mcp_unknown_result(
+                        &timeout_request,
+                        operation_id,
+                        "MCP response deadline expired; write outcome is not yet known",
+                        &http_context.endpoint,
+                    ));
+                }
                 Ok(timeout_http_result(&timeout_request, timeout))
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(jsonrpc_error(
-                request_id(&timeout_request).unwrap_or(Value::Null),
-                -32603,
-                "MCP request worker stopped before producing a response".to_string(),
-                None,
-            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                #[cfg(feature = "oauth")]
+                if let Some(operation_id) = operation_id.as_deref() {
+                    return Ok(hosted_mcp_unknown_result(
+                        &timeout_request,
+                        operation_id,
+                        "MCP request worker stopped; write outcome is not yet known",
+                        &http_context.endpoint,
+                    ));
+                }
+                Err(jsonrpc_error(
+                    request_id(&timeout_request).unwrap_or(Value::Null),
+                    -32603,
+                    "MCP request worker stopped before producing a response".to_string(),
+                    None,
+                ))
+            }
         }
     }
 
@@ -4978,6 +5332,15 @@ fn current_unix_timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+#[cfg(feature = "oauth")]
+fn current_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(feature = "oauth")]

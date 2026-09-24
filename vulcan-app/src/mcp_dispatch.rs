@@ -21,6 +21,9 @@ pub struct McpHttpProcessResult {
     pub response: Option<Value>,
     pub notifications: Vec<Value>,
     pub accepted_notification: bool,
+    /// A worker may still be running after its response deadline. The
+    /// transport must retire this session instead of reusing a stale clone.
+    pub session_stale: bool,
 }
 
 pub fn process_stdio_request<H: McpMethodHandler>(handler: &mut H, request: Value) -> Vec<Value> {
@@ -121,6 +124,7 @@ pub fn process_http_request<H: McpMethodHandler>(
             response: None,
             notifications: Vec::new(),
             accepted_notification: true,
+            session_stale: false,
         });
     }
 
@@ -149,6 +153,7 @@ pub fn process_http_request<H: McpMethodHandler>(
                 response: Some(jsonrpc_error(id, code, message, data)),
                 notifications: Vec::new(),
                 accepted_notification: false,
+                session_stale: false,
             });
         }
         Err(McpMethodError::Tool {
@@ -162,6 +167,7 @@ pub fn process_http_request<H: McpMethodHandler>(
                 response: Some(tool_error_response(id, message, structured)),
                 notifications: Vec::new(),
                 accepted_notification: false,
+                session_stale: false,
             });
         }
     };
@@ -182,6 +188,7 @@ pub fn process_http_request<H: McpMethodHandler>(
         },
         notifications,
         accepted_notification: is_notification,
+        session_stale: false,
     })
 }
 
@@ -257,6 +264,7 @@ pub fn timeout_http_result(request: &Value, timeout: Duration) -> McpHttpProcess
         accepted_notification: response.is_none(),
         response,
         notifications: Vec::new(),
+        session_stale: true,
     }
 }
 

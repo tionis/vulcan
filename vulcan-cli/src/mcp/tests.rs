@@ -1441,16 +1441,12 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
         .block_on(scheduler.acquire(&blocker, ScheduledOperation::Mutation, |_| Ok(())))
         .expect("hold vault mutation lane");
     let hosted = HostedMcpExecution {
+        executor: Arc::new(HostedExecutor::new(
+            Arc::clone(&scheduler),
+            Arc::new(HostedJobLedger::at(temporary.path().join("operations"))),
+        )),
         scheduler,
         runtime: runtime.handle().clone(),
-    };
-    let cancellation = ExecutionCancellationToken::default();
-    let dispatch = HostedMcpDispatch {
-        http,
-        inbound,
-        authority,
-        cancellation: cancellation.clone(),
-        deadline: ExecutionDeadline::after(Duration::from_secs(5)),
     };
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
@@ -1465,24 +1461,197 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
         mcp_scheduled_operation(&payload),
         ScheduledOperation::Mutation
     );
-    let (sender, receiver) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        sender
-            .send(hosted.execute(&mut core, &payload, &dispatch))
-            .expect("result receiver");
-    });
-    assert!(matches!(
-        receiver.recv_timeout(Duration::from_millis(100)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
-    cancellation.cancel();
-    assert!(receiver
-        .recv_timeout(Duration::from_secs(5))
-        .expect("cancelled result")
-        .is_err());
+    let ledger = hosted.executor.ledger();
+    http.hosted = Some(hosted);
+    let result = core
+        .process_http_request_with_timeout(
+            payload,
+            Duration::from_millis(50),
+            &http,
+            &inbound,
+            &authority,
+        )
+        .expect("timed-out hosted request");
+    assert!(result.session_stale);
+    let response = result.response.expect("timeout response");
+    let operation_id = response["result"]["structuredContent"]["operation_id"]
+        .as_str()
+        .expect("durable operation ID");
+    assert_eq!(
+        response["result"]["structuredContent"]["status_path"],
+        format!("/mcp/operations/{operation_id}")
+    );
     drop(held);
-    worker.join().expect("MCP worker");
+    let record = ledger.load(operation_id).expect("durable operation record");
+    assert!(!record.dispatched);
     assert!(!paths.vault_root().join("Blocked.md").exists());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+#[allow(clippy::too_many_lines)] // Exercises caller, grant, audience, and scope isolation in one fixture.
+fn named_mcp_operation_status_is_bound_to_grant_subject_and_audience() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/mcp".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let mut http = consent_test_context(&paths, issuer);
+    let remote_id = vulcan_daemon::mcp_remote::McpRemoteId::parse("personal").expect("remote");
+    let wiki_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki");
+    let instance_id = http.instance_id;
+    http.named_runtime = Some(NamedMcpRuntime {
+        remote_id: remote_id.clone(),
+        vaults: BTreeMap::from([(
+            wiki_id.clone(),
+            NamedMcpVaultRuntime {
+                paths: paths.clone(),
+                ceiling_profile: "readonly".to_string(),
+                default_profile: "readonly".to_string(),
+                eligible_tool_packs: vec!["notes-read".to_string()],
+            },
+        )]),
+        authorization_store: McpAuthorizationStore::at(temporary.path().join("state")),
+    });
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let scheduler =
+        Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
+    let ledger = Arc::new(HostedJobLedger::at(temporary.path().join("operations")));
+    http.hosted = Some(HostedMcpExecution {
+        executor: Arc::new(HostedExecutor::new(
+            Arc::clone(&scheduler),
+            Arc::clone(&ledger),
+        )),
+        scheduler,
+        runtime: runtime.handle().clone(),
+    });
+    let grant_id = Ulid::new();
+    let authority = McpSessionAuthority::granted(
+        remote_id,
+        instance_id,
+        grant_id,
+        "client-a".to_string(),
+        "https://identity.example.test/alice".to_string(),
+        wiki_id,
+        "https://mcp.example.test/mcp".to_string(),
+        "readonly".to_string(),
+        vec!["notes-read".to_string()],
+        vec!["mcp:tools".to_string()],
+        "token-a",
+    );
+    let core = McpServerCore::new(
+        &paths,
+        Some("readonly"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("core");
+    let payload = serde_json::json!({
+        "jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"note_create","arguments":{"path":"Idea.md"}}
+    });
+    let execution = http
+        .hosted
+        .as_ref()
+        .expect("hosted")
+        .prepare(
+            &core,
+            &payload,
+            &authority,
+            ExecutionCancellationToken::default(),
+            ExecutionDeadline::after(Duration::from_secs(5)),
+        )
+        .expect("register operation");
+    let operation_id = execution.identity.operation_id;
+    let response = handle_named_mcp_operation_status(&http, &authority, &operation_id);
+    assert_eq!(response.status, 200);
+    assert!(response
+        .extra_headers
+        .iter()
+        .any(|header| header == &("Cache-Control".to_string(), "no-store".to_string())));
+    let body: Value = serde_json::from_slice(&response.body).expect("status JSON");
+    assert_eq!(body["state"], "queued");
+    assert_eq!(body["operation_id"], operation_id);
+    assert!(
+        !String::from_utf8_lossy(&response.body).contains(&temporary.path().display().to_string())
+    );
+
+    let mut other = authority.clone();
+    other.grant_id = Some(Ulid::new());
+    assert_eq!(
+        handle_named_mcp_operation_status(&http, &other, &operation_id).status,
+        404
+    );
+    let mut other = authority.clone();
+    other.subject = Some("https://identity.example.test/bob".to_string());
+    assert_eq!(
+        handle_named_mcp_operation_status(&http, &other, &operation_id).status,
+        404
+    );
+    let mut other = authority.clone();
+    other.audience = Some("https://other.example.test/mcp".to_string());
+    assert_eq!(
+        handle_named_mcp_operation_status(&http, &other, &operation_id).status,
+        404
+    );
+    let mut other = authority;
+    other.scopes.clear();
+    assert_ne!(
+        handle_named_mcp_operation_status(&http, &other, &operation_id).status,
+        200
+    );
+    let request = McpHttpRequest {
+        method: "GET".to_string(),
+        path: format!("/mcp/operations/{operation_id}"),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
+    };
+    assert_eq!(
+        named_mcp_operation_id(&http, &request),
+        Some(operation_id.as_str())
+    );
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn timed_out_named_mutation_reports_durable_status_path_and_stale_session() {
+    let payload = serde_json::json!({
+        "jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"note_create","arguments":{}}
+    });
+    let result = hosted_mcp_unknown_result(
+        &payload,
+        "01abcdefghjkmnpqrstvwxyz12",
+        "write outcome is not yet known",
+        "/mcp",
+    );
+    assert!(result.session_stale);
+    let response = result.response.expect("tool response");
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(
+        response["result"]["structuredContent"]["status_path"],
+        "/mcp/operations/01abcdefghjkmnpqrstvwxyz12"
+    );
+    assert_eq!(
+        response["result"]["structuredContent"]["outcome"],
+        "indeterminate"
+    );
 }
 
 #[cfg(feature = "oauth")]
