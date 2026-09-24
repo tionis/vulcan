@@ -199,8 +199,7 @@ pub(crate) use commands::completions::{
 };
 pub(crate) use commands::docs::{
     cli_command_tree, collect_cli_leaf_tool_names, collect_help_command_topics,
-    custom_tool_registry_entry, resolve_help_topic, McpToolAnnotations, McpToolsReport,
-    ToolRegistryEntry,
+    custom_tool_registry_entry, resolve_help_topic, McpToolsReport, ToolRegistryEntry,
 };
 pub(crate) use help::help_overview;
 pub(crate) fn custom_tool_registry_options() -> tools::CustomToolRegistryOptions {
@@ -515,6 +514,8 @@ use vulcan_app::integrations::{
     list_routes as list_integration_routes, load_route_runtime_state, route as integration_route,
     route_is_due, validate_routes as validate_integration_routes, RouteDiagnosticSeverity,
 };
+#[cfg(test)]
+use vulcan_app::mcp_catalog::McpToolAnnotations;
 use vulcan_app::notes::json_properties_to_frontmatter;
 use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]

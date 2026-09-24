@@ -216,10 +216,11 @@ Routing is explicit and happens before dispatch:
 MCP stdio remains client-owned. Foreground and resident MCP HTTP must use one shared dispatcher,
 router, OAuth implementation, and named-remote definition. A resident instance cannot reinterpret
 its audience, grants, tool packs, vault ceiling, session keys, or revocation state.
-The initial extraction places transport-neutral request types, protocol constants, and serde defaults
-in `vulcan-app::mcp_protocol`, and tool input/output JSON Schemas in `vulcan-app::mcp_schemas`;
-CLI stdio and foreground HTTP consume them. Dispatch and HTTP/OAuth hosting remain migration work
-under 10.7.6.
+The initial extraction places transport-neutral request types and protocol constants in
+`vulcan-app::mcp_protocol`, tool input/output JSON Schemas in `vulcan-app::mcp_schemas`, and
+built-in tool metadata, pack selection, and permission visibility in `vulcan-app::mcp_catalog`.
+CLI stdio and foreground HTTP consume the same contracts. Dispatch and HTTP/OAuth hosting remain
+migration work under 10.7.6.
 
 ## Preserved compatibility contracts
 

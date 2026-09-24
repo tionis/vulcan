@@ -301,18 +301,7 @@ pub(crate) struct McpToolDefinition {
     pub(crate) examples: Vec<String>,
 }
 
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub(crate) struct McpToolAnnotations {
-    #[serde(rename = "readOnlyHint")]
-    pub(crate) read_only_hint: bool,
-    #[serde(rename = "destructiveHint")]
-    pub(crate) destructive_hint: bool,
-    #[serde(rename = "idempotentHint")]
-    pub(crate) idempotent_hint: bool,
-    #[serde(rename = "openWorldHint")]
-    pub(crate) open_world_hint: bool,
-}
+pub(crate) use vulcan_app::mcp_catalog::McpToolAnnotations;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ToolRegistryEntry {
