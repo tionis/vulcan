@@ -4,6 +4,7 @@
 
 use globset::Glob;
 use serde_json::{Map, Value};
+use std::fs;
 use vulcan_core::{
     evaluate_dql_with_filter, execute_query_report_with_filter, query_notes_with_filter,
     search_vault_with_filter, NoteQuery, PermissionGuard, ProfilePermissionGuard, QueryAst,
@@ -12,9 +13,90 @@ use vulcan_core::{
 
 use crate::mcp_protocol::{McpMethodError, McpQueryArgs, McpSearchArgs};
 use crate::notes::resolve_existing_markdown_target;
+use crate::periodic::DailyNoteReadReport;
 
 const MCP_QUERY_SOFT_MAX: usize = 200;
 pub const MCP_QUERY_HARD_MAX: usize = 1_000;
+const MCP_DAILY_LIST_MAX_LIMIT: usize = 200;
+
+/// Apply the read boundary even for a daily report that omits its content.
+pub fn include_daily_content_after_access(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    report: &mut DailyNoteReadReport,
+    include_content: bool,
+) -> Result<(), McpMethodError> {
+    let Some(path) = report.path.as_deref() else {
+        return Ok(());
+    };
+    guard
+        .check_read_path(path)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    if include_content && report.exists {
+        report.content = Some(
+            fs::read_to_string(paths.vault_root().join(path))
+                .map_err(|error| McpMethodError::tool(error.to_string()))?,
+        );
+    }
+    Ok(())
+}
+
+/// Bound and project daily-list reports identically for stdio and HTTP MCP hosts.
+pub fn bounded_daily_list<T: serde::Serialize>(
+    items: Vec<T>,
+    limit: usize,
+    offset: usize,
+    order: Option<&str>,
+    include_events: bool,
+) -> Result<Value, McpMethodError> {
+    if limit == 0 || limit > MCP_DAILY_LIST_MAX_LIMIT {
+        return Err(McpMethodError::invalid_params(format!(
+            "`daily.limit` must be between 1 and {MCP_DAILY_LIST_MAX_LIMIT}"
+        )));
+    }
+    let descending = match order.unwrap_or("desc") {
+        "asc" => false,
+        "desc" => true,
+        other => {
+            return Err(McpMethodError::invalid_params(format!(
+                "unsupported `daily.order`: {other}"
+            )));
+        }
+    };
+    let mut items = items
+        .into_iter()
+        .map(|item| {
+            serde_json::to_value(item).map_err(|error| McpMethodError::internal(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    items.sort_by(|left, right| {
+        left.get("date")
+            .and_then(Value::as_str)
+            .cmp(&right.get("date").and_then(Value::as_str))
+    });
+    if descending {
+        items.reverse();
+    }
+    if !include_events {
+        for item in &mut items {
+            item.as_object_mut().map(|object| object.remove("events"));
+        }
+    }
+    let total_count = items.len();
+    let start = offset.min(total_count);
+    let end = start.saturating_add(limit).min(total_count);
+    Ok(serde_json::json!({
+        "items": items[start..end],
+        "page": {
+            "limit": limit,
+            "offset": offset,
+            "returned": end.saturating_sub(start),
+            "total_count": total_count,
+            "has_more": end < total_count,
+            "next_offset": (end < total_count).then_some(end),
+        }
+    }))
+}
 
 /// Apply the note-source permission boundary before any MCP note read.
 pub fn check_read_markdown_source_access(
@@ -533,5 +615,64 @@ mod tests {
             McpMethodError::Tool { message, .. } if message.contains("outside the selected vault root")
         ));
         assert!(check_read_markdown_source_access(&paths, &blind, "Home.md").is_err());
+    }
+
+    #[test]
+    fn daily_list_bounds_sorting_projection_and_invalid_options() {
+        let items = vec![
+            json!({"date": "2026-09-01", "path": "Daily/2026-09-01.md", "events": [1]}),
+            json!({"date": "2026-09-03", "path": "Daily/2026-09-03.md", "events": [2]}),
+            json!({"date": "2026-09-02", "path": "Daily/2026-09-02.md", "events": [3]}),
+        ];
+        let first = bounded_daily_list(items.clone(), 1, 0, None, false).unwrap();
+        assert_eq!(first["items"][0]["date"], "2026-09-03");
+        assert!(first["items"][0].get("events").is_none());
+        assert_eq!(first["page"]["total_count"], 3);
+        assert_eq!(first["page"]["next_offset"], 1);
+        let ascending = bounded_daily_list(items, 2, 1, Some("asc"), true).unwrap();
+        assert_eq!(ascending["items"][0]["date"], "2026-09-02");
+        assert_eq!(ascending["items"][1]["events"], json!([2]));
+        for (limit, order) in [(0, None), (201, None), (1, Some("newest"))] {
+            assert!(matches!(
+                bounded_daily_list(vec![json!({"date": "2026-09-01"})], limit, 0, order, false),
+                Err(McpMethodError::JsonRpc { code: -32602, .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn daily_content_requires_read_access_even_when_content_is_omitted() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir_all(temporary.path().join(".vulcan")).unwrap();
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(temporary.path().join("2026-09-01.md"), "# Daily\n").unwrap();
+        let readable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+        let report = || DailyNoteReadReport {
+            operation: "show".to_string(),
+            date: Some("2026-09-01".to_string()),
+            path: Some("2026-09-01.md".to_string()),
+            exists: true,
+            content: None,
+            reason: None,
+        };
+        assert!(matches!(
+            include_daily_content_after_access(&paths, &blind, &mut report(), false),
+            Err(McpMethodError::Tool { .. })
+        ));
+        let mut visible = report();
+        include_daily_content_after_access(&paths, &readable, &mut visible, true).unwrap();
+        assert_eq!(visible.content.as_deref(), Some("# Daily\n"));
     }
 }

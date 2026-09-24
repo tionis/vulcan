@@ -19,10 +19,10 @@ use crate::{
     custom_tool_registry_entry, normalize_note_path, permission_error_to_cli,
     resolve_existing_markdown_target, resolve_help_topic, run_note_append_command,
     run_note_create_with_body, run_note_delete_command, run_note_info_command,
-    run_note_patch_command, run_note_set_with_content, run_status_command, CliError,
-    McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode,
-    NoteAppendOptions, NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, SearchBackendArg,
-    TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
+    run_note_patch_command, run_note_set_with_content, CliError, McpToolPackArg,
+    McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions,
+    NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, SearchBackendArg, TasksListSourceArg,
+    ToolRegistryEntry, WebFetchMode,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -1875,7 +1875,8 @@ impl McpServerCore {
                 Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::Status => {
-                let report = run_status_command(&self.paths).map_err(cli_tool_error)?;
+                let report = vulcan_app::browse::build_vault_status_report(&self.paths)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::Capabilities => Ok(self.tool_success_response(
@@ -1947,7 +1948,12 @@ impl McpServerCore {
                             |path| self.guard.check_read_path(path).is_ok(),
                         )
                         .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                        self.include_daily_content_after_access(&mut report, args.include_content)?;
+                        mcp_read_tools::include_daily_content_after_access(
+                            &self.paths,
+                            &self.guard,
+                            &mut report,
+                            args.include_content,
+                        )?;
                         serde_json::to_value(report)
                             .map_err(|error| McpMethodError::internal(error.to_string()))?
                     }
@@ -1969,7 +1975,12 @@ impl McpServerCore {
                         )
                         .map_err(|error| McpMethodError::tool(error.to_string()))?;
                         report.operation.clone_from(&args.operation);
-                        self.include_daily_content_after_access(&mut report, args.include_content)?;
+                        mcp_read_tools::include_daily_content_after_access(
+                            &self.paths,
+                            &self.guard,
+                            &mut report,
+                            args.include_content,
+                        )?;
                         serde_json::to_value(report)
                             .map_err(|error| McpMethodError::internal(error.to_string()))?
                     }
@@ -1985,7 +1996,7 @@ impl McpServerCore {
                         .into_iter()
                         .filter(|item| self.guard.check_read_path(&item.path).is_ok())
                         .collect::<Vec<_>>();
-                        let mut page = bounded_daily_list(
+                        let mut page = mcp_read_tools::bounded_daily_list(
                             items,
                             args.limit,
                             args.offset,
@@ -2027,7 +2038,7 @@ impl McpServerCore {
                     .into_iter()
                     .filter(|item| self.guard.check_read_path(&item.path).is_ok())
                     .collect::<Vec<_>>();
-                let structured = bounded_daily_list(
+                let structured = mcp_read_tools::bounded_daily_list(
                     filtered,
                     args.limit,
                     args.offset,
@@ -2647,26 +2658,6 @@ impl McpServerCore {
             true,
         );
         Ok(summary)
-    }
-
-    fn include_daily_content_after_access(
-        &self,
-        report: &mut vulcan_app::periodic::DailyNoteReadReport,
-        include_content: bool,
-    ) -> Result<(), McpMethodError> {
-        let Some(path) = report.path.as_deref() else {
-            return Ok(());
-        };
-        self.guard
-            .check_read_path(path)
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        if include_content && report.exists {
-            report.content = Some(
-                fs::read_to_string(self.paths.vault_root().join(path))
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?,
-            );
-        }
-        Ok(())
     }
 
     fn ensure_adaptive_tool_pack_mode(&self) -> Result<(), McpMethodError> {
@@ -5234,64 +5225,7 @@ fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {
         .collect()
 }
 
-const MCP_DAILY_LIST_MAX_LIMIT: usize = 200;
 const MCP_STRUCTURED_CONTENT_LIMIT: usize = 65_536;
-
-fn bounded_daily_list<T: serde::Serialize>(
-    items: Vec<T>,
-    limit: usize,
-    offset: usize,
-    order: Option<&str>,
-    include_events: bool,
-) -> Result<Value, McpMethodError> {
-    if limit == 0 || limit > MCP_DAILY_LIST_MAX_LIMIT {
-        return Err(McpMethodError::invalid_params(format!(
-            "`daily.limit` must be between 1 and {MCP_DAILY_LIST_MAX_LIMIT}"
-        )));
-    }
-    let descending = match order.unwrap_or("desc") {
-        "asc" => false,
-        "desc" => true,
-        other => {
-            return Err(McpMethodError::invalid_params(format!(
-                "unsupported `daily.order`: {other}"
-            )));
-        }
-    };
-    let mut items = items
-        .into_iter()
-        .map(|item| {
-            serde_json::to_value(item).map_err(|error| McpMethodError::internal(error.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    items.sort_by(|left, right| {
-        left.get("date")
-            .and_then(Value::as_str)
-            .cmp(&right.get("date").and_then(Value::as_str))
-    });
-    if descending {
-        items.reverse();
-    }
-    if !include_events {
-        for item in &mut items {
-            item.as_object_mut().map(|object| object.remove("events"));
-        }
-    }
-    let total_count = items.len();
-    let start = offset.min(total_count);
-    let end = start.saturating_add(limit).min(total_count);
-    Ok(serde_json::json!({
-        "items": items[start..end],
-        "page": {
-            "limit": limit,
-            "offset": offset,
-            "returned": end.saturating_sub(start),
-            "total_count": total_count,
-            "has_more": end < total_count,
-            "next_offset": (end < total_count).then_some(end),
-        }
-    }))
-}
 
 fn note_append_periodic_type(periodic: NoteAppendPeriodicArg) -> &'static str {
     match periodic {

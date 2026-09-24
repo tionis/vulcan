@@ -46,7 +46,6 @@ pub(crate) use commands::note::{
     run_note_create_with_body, run_note_delete_command, run_note_info_command,
     run_note_patch_command, run_note_set_with_content, NoteAppendOptions, NotePatchOptions,
 };
-pub(crate) use commands::status::run_status_command;
 #[cfg(test)]
 pub(crate) use commands::template::TemplateSummary;
 pub(crate) use commands::template::{
