@@ -42,7 +42,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - Note creates, replacements, appends, patches, and deletes targeting an mdbase record path use the collection's validated, journaled write boundary. Treat validation errors as blockers and do not bypass them with raw filesystem edits; explicit repair is a separate workflow that must be intentionally requested.
 - On Android, mdbase journals, staging, receipts, and outbox live in per-vault Termux-private state. A write returns `unsupported_storage` before changing records when shared storage cannot sync canonical directories; keep the worktree canonical and use a supported filesystem for that write workflow.
 - If a managed write reports `concurrent_modification`, reread the current note and rebuild the intended edit from its new revision. Never replay a stale whole-note replacement blindly.
-- If `note set` reports that an ordinary note changed during replacement, reread it and rebuild the replacement; Vulcan leaves the newer content untouched.
+- If an ordinary `note set`, `note append`, `note patch`, or `note delete` reports that the note changed during editing, reread it and rebuild the edit; Vulcan leaves the newer content untouched. A create or periodic append also refuses to replace a file created concurrently.
 
 ## Example Moves
 

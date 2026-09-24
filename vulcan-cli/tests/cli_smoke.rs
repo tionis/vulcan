@@ -15945,7 +15945,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("A scoped preview is not proof"));
     assert!(note_operations.contains("mdbase record path"));
     assert!(note_operations.contains("validated, journaled write boundary"));
-    assert!(note_operations.contains("ordinary note changed during replacement"));
+    assert!(note_operations.contains("`note append`, `note patch`, or `note delete`"));
+    assert!(note_operations.contains("created concurrently"));
     assert!(note_operations.contains("explicit repair is a separate workflow"));
     assert!(note_operations.contains("reports `concurrent_modification`"));
     assert!(note_operations.contains("Never replay a stale whole-note replacement blindly"));
