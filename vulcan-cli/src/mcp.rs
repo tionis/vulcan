@@ -46,6 +46,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
+use vulcan_app::mcp_assistant;
+use vulcan_app::mcp_assistant::json_value_to_string;
 use vulcan_app::mcp_dispatch::{
     jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler,
@@ -73,13 +75,13 @@ use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
     accept_link_suggestion, assistant_config_summary, assistant_prompts_root,
     assistant_skills_root, evaluate_dql_with_filter, execute_query_report_with_filter,
-    list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
-    load_vault_config, query_graph_communities_with_filter, query_notes_with_filter,
-    read_vault_agents_file, reject_link_suggestion, render_assistant_prompt,
-    resolve_permission_profile, scan_vault_with_progress, search_vault_with_filter, suggest_links,
-    watch_vault, LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionMode,
-    PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode,
-    ScanSummary, SearchQuery, SearchSort, TasksQueryResult, VaultPaths, WatchOptions,
+    load_assistant_prompt, load_assistant_skill, load_vault_config,
+    query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
+    reject_link_suggestion, resolve_permission_profile, scan_vault_with_progress,
+    search_vault_with_filter, suggest_links, watch_vault, LinkSuggestionStatus, NoteQuery,
+    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
+    QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort, TasksQueryResult,
+    VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -1693,69 +1695,19 @@ impl McpServerCore {
     }
 
     fn visible_prompts(&self) -> Result<Vec<vulcan_core::AssistantPromptSummary>, McpMethodError> {
-        if self.selection.profile.read.is_none() {
-            return Ok(Vec::new());
-        }
-        let prompts = list_assistant_prompts(&self.paths)
-            .map_err(|error| McpMethodError::internal(error.to_string()))?;
-        Ok(prompts
-            .into_iter()
-            .filter(|prompt| self.prompt_visible(prompt))
-            .collect())
+        mcp_assistant::visible_prompts(&self.paths, &self.guard)
     }
 
     fn visible_skills(&self) -> Result<Vec<vulcan_core::AssistantSkillSummary>, McpMethodError> {
-        if self.selection.profile.read.is_none() {
-            return Ok(Vec::new());
-        }
-        let skills = list_assistant_skills(&self.paths)
-            .map_err(|error| McpMethodError::internal(error.to_string()))?;
-        Ok(skills
-            .into_iter()
-            .filter(|skill| self.skill_visible(skill))
-            .collect())
+        mcp_assistant::visible_skills(&self.paths, &self.guard)
     }
 
     fn prompt_visible(&self, prompt: &vulcan_core::AssistantPromptSummary) -> bool {
-        if self.guard.read_filter().path_permission().is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return true;
-        }
-        self.guard
-            .check_read_path(&self.prompt_relative_path(prompt))
-            .is_ok()
+        mcp_assistant::prompt_visible(&self.paths, &self.guard, prompt)
     }
 
     fn skill_visible(&self, skill: &vulcan_core::AssistantSkillSummary) -> bool {
-        if self.guard.read_filter().path_permission().is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return true;
-        }
-        self.guard
-            .check_read_path(&self.skill_relative_path(skill))
-            .is_ok()
-    }
-
-    fn prompt_relative_path(&self, prompt: &vulcan_core::AssistantPromptSummary) -> String {
-        load_vault_config(&self.paths)
-            .config
-            .assistant
-            .prompts_folder
-            .join(&prompt.path)
-            .to_string_lossy()
-            .replace('\\', "/")
-    }
-
-    fn skill_relative_path(&self, skill: &vulcan_core::AssistantSkillSummary) -> String {
-        load_vault_config(&self.paths)
-            .config
-            .assistant
-            .skills_folder
-            .join(&skill.path)
-            .to_string_lossy()
-            .replace('\\', "/")
+        mcp_assistant::skill_visible(&self.paths, &self.guard, skill)
     }
 
     fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
@@ -1875,28 +1827,7 @@ impl McpServerCore {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        let prompt = load_assistant_prompt(&self.paths, name)
-            .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
-        if !self.prompt_visible(&prompt.summary) {
-            return Err(McpMethodError::invalid_params(format!(
-                "prompt `{name}` is not available under profile `{}`",
-                self.selection.name
-            )));
-        }
-        let rendered = render_assistant_prompt(&prompt, &string_argument_map(arguments))
-            .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
-        Ok(serde_json::json!({
-            "description": prompt.summary.description,
-            "messages": [
-                {
-                    "role": prompt.summary.role,
-                    "content": {
-                        "type": "text",
-                        "text": rendered,
-                    }
-                }
-            ]
-        }))
+        mcp_assistant::get_prompt(&self.paths, &self.guard, name, arguments)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5918,28 +5849,6 @@ fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
         code: MCP_RESOURCE_NOT_FOUND,
         message,
         data: Some(serde_json::json!({ "uri": uri })),
-    }
-}
-
-fn string_argument_map(arguments: &Map<String, Value>) -> BTreeMap<String, String> {
-    arguments
-        .iter()
-        .map(|(key, value)| (key.clone(), json_value_to_string(value)))
-        .collect()
-}
-
-fn json_value_to_string(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::Array(values) => values
-            .iter()
-            .map(json_value_to_string)
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
     }
 }
 

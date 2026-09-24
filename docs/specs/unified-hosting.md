@@ -221,8 +221,9 @@ The initial extraction places transport-neutral request types and protocol const
 built-in tool metadata, pack selection, and permission visibility in `vulcan-app::mcp_catalog`.
 `vulcan-app::mcp_dispatch` routes JSON-RPC requests through a method-handler boundary with the
 existing stdio and HTTP notification, error, and timeout shapes. CLI stdio and foreground HTTP
-consume these shared contracts. The method handlers and HTTP/OAuth hosting remain migration work
-under 10.7.6.
+consume these shared contracts. `vulcan-app::mcp_assistant` provides permission-filtered prompt
+and skill discovery plus prompt rendering to both transports. Remaining method handlers, resources,
+completions, and HTTP/OAuth hosting remain migration work under 10.7.6.
 
 ## Preserved compatibility contracts
 
