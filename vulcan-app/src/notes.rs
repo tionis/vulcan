@@ -137,6 +137,51 @@ impl MarkdownTarget {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteOutlineReport {
+    pub path: String,
+    pub total_lines: usize,
+    pub frontmatter_span: Option<vulcan_core::NoteLineSpan>,
+    pub scope_section: Option<vulcan_core::NoteOutlineSection>,
+    pub depth_limit: Option<usize>,
+    pub sections: Vec<vulcan_core::NoteOutlineSection>,
+    pub block_refs: Vec<vulcan_core::NoteOutlineBlockRef>,
+}
+
+pub fn read_note_outline(
+    paths: &VaultPaths,
+    note: &str,
+    section_id: Option<&str>,
+    depth: Option<usize>,
+) -> Result<NoteOutlineReport, AppError> {
+    if matches!(depth, Some(0)) {
+        return Err(AppError::operation(
+            "`note outline --depth` must be at least 1",
+        ));
+    }
+    let target = resolve_existing_markdown_target(paths, note)?;
+    let source = target.read_source()?;
+    let parsed = parse_document(&source, &target.config);
+    let outline = vulcan_core::outline_note(&source, &parsed);
+    let selection = vulcan_core::select_note_outline(
+        &outline,
+        &vulcan_core::NoteOutlineOptions {
+            section_id: section_id.map(ToOwned::to_owned),
+            depth,
+        },
+    )
+    .map_err(AppError::operation)?;
+    Ok(NoteOutlineReport {
+        path: target.display_path,
+        total_lines: selection.total_lines,
+        frontmatter_span: selection.frontmatter_span,
+        scope_section: selection.scope_section,
+        depth_limit: depth,
+        sections: selection.sections,
+        block_refs: selection.block_refs,
+    })
+}
+
 /// Resolve a note identifier or an explicit Markdown path for read workflows.
 /// A direct file outside the vault uses default parsing configuration and carries no vault authority.
 pub fn resolve_existing_markdown_target(
@@ -1648,8 +1693,8 @@ mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
         diagnose_note_contents, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
-        resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
-        NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
+        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
+        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde_json::Value as JsonValue;
@@ -1686,6 +1731,24 @@ mod tests {
         let non_markdown = temporary.path().join("Other.txt");
         fs::write(&non_markdown, "not markdown").unwrap();
         assert!(resolve_existing_markdown_target(&paths, non_markdown.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn shared_note_outline_preserves_scope_depth_and_external_path() {
+        let temporary = tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        let external = temporary.path().join("Outline.md");
+        fs::write(&external, "# Root\n## Child\n### Grandchild\n").unwrap();
+        let paths = VaultPaths::new(&vault);
+        let report =
+            read_note_outline(&paths, external.to_str().unwrap(), Some("root@1"), Some(1)).unwrap();
+        assert_eq!(report.path, external.display().to_string());
+        assert_eq!(report.scope_section.unwrap().id, "root@1");
+        assert_eq!(report.sections.len(), 1);
+        assert_eq!(report.sections[0].id, "root/child@2");
+        assert_eq!(report.depth_limit, Some(1));
+        assert!(read_note_outline(&paths, external.to_str().unwrap(), None, Some(0)).is_err());
     }
 
     #[test]

@@ -22,10 +22,12 @@ use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     diagnose_external_markdown_contents, diagnose_note_contents, parse_note_frontmatter_bindings,
+    read_note_outline as app_read_note_outline,
     resolve_existing_markdown_target as app_resolve_existing_markdown_target,
     MarkdownTarget as AppMarkdownTarget, NoteAppendRequest as AppNoteAppendRequest,
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
-    NotePatchRequest as AppNotePatchRequest, NoteSetRequest as AppNoteSetRequest,
+    NoteOutlineReport, NotePatchRequest as AppNotePatchRequest,
+    NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::templates::{
     find_frontmatter_block, parse_template_var_bindings, TemplateTimestamp,
@@ -592,17 +594,6 @@ pub(crate) struct NoteGetMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct NoteOutlineReport {
-    pub(crate) path: String,
-    pub(crate) total_lines: usize,
-    pub(crate) frontmatter_span: Option<vulcan_core::NoteLineSpan>,
-    pub(crate) scope_section: Option<vulcan_core::NoteOutlineSection>,
-    pub(crate) depth_limit: Option<usize>,
-    pub(crate) sections: Vec<vulcan_core::NoteOutlineSection>,
-    pub(crate) block_refs: Vec<vulcan_core::NoteOutlineBlockRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct NoteCheckboxReport {
     pub(crate) path: String,
     pub(crate) dry_run: bool,
@@ -873,32 +864,7 @@ pub(crate) fn run_note_outline_command(
     section_id: Option<&str>,
     depth: Option<usize>,
 ) -> Result<NoteOutlineReport, CliError> {
-    if matches!(depth, Some(0)) {
-        return Err(CliError::operation(
-            "`note outline --depth` must be at least 1",
-        ));
-    }
-    let target = read_existing_markdown_source(paths, note)?;
-    let parsed = vulcan_core::parse_document(&target.source, &target.target.config);
-    let outline = vulcan_core::outline_note(&target.source, &parsed);
-    let selection = vulcan_core::select_note_outline(
-        &outline,
-        &vulcan_core::NoteOutlineOptions {
-            section_id: section_id.map(ToOwned::to_owned),
-            depth,
-        },
-    )
-    .map_err(CliError::operation)?;
-
-    Ok(NoteOutlineReport {
-        path: target.target.display_path,
-        total_lines: selection.total_lines,
-        frontmatter_span: selection.frontmatter_span,
-        scope_section: selection.scope_section,
-        depth_limit: depth,
-        sections: selection.sections,
-        block_refs: selection.block_refs,
-    })
+    app_read_note_outline(paths, note, section_id, depth).map_err(CliError::operation)
 }
 
 #[allow(clippy::too_many_arguments)]

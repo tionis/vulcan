@@ -29492,6 +29492,21 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         .is_some_and(|hits| hits
             .iter()
             .any(|hit| hit["document_path"] == "Projects/Alpha.md")));
+    let messages = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "note_outline",
+            "arguments": { "note": "Projects/Alpha.md", "depth": 1 }
+        }
+    }));
+    let outline = &messages.last().expect("outline response")["result"];
+    assert_eq!(outline["isError"], false);
+    assert_eq!(outline["structuredContent"]["path"], "Projects/Alpha.md");
+    assert!(outline["structuredContent"]["sections"]
+        .as_array()
+        .is_some_and(|sections| !sections.is_empty()));
     assert!(session.finish().is_empty());
 }
 
