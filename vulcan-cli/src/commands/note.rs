@@ -21,13 +21,14 @@ use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     build_note_info_report, diagnose_external_markdown_contents, diagnose_note_contents,
-    parse_note_frontmatter_bindings, read_note as app_read_note,
+    finish_note_set_report, parse_note_frontmatter_bindings, read_note as app_read_note,
     read_note_outline as app_read_note_outline,
     resolve_existing_markdown_target as app_resolve_existing_markdown_target,
     MarkdownTarget as AppMarkdownTarget, NoteAppendRequest as AppNoteAppendRequest,
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
     NoteGetOptions as AppNoteGetOptions, NoteGetReport, NoteInfoReport, NoteOutlineReport,
-    NotePatchRequest as AppNotePatchRequest, NoteReadMode, NoteSetRequest as AppNoteSetRequest,
+    NotePatchRequest as AppNotePatchRequest, NoteReadMode, NoteSetCommandReport as NoteSetReport,
+    NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
@@ -575,14 +576,6 @@ pub(crate) struct NoteCheckboxReport {
     pub(crate) after_marker: String,
     pub(crate) before: String,
     pub(crate) after: String,
-    pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct NoteSetReport {
-    pub(crate) path: String,
-    pub(crate) checked: bool,
-    pub(crate) preserved_frontmatter: bool,
     pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
 }
 
@@ -1151,15 +1144,9 @@ pub(crate) fn run_note_set_with_content(
         permission_profile,
         quiet,
     )?;
-    let diagnostics = maybe_check_note(paths, &report.path, &report.content, check)?;
+    let report = finish_note_set_report(paths, report, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-
-    Ok(NoteSetReport {
-        path: report.path,
-        checked: check,
-        preserved_frontmatter: report.preserved_frontmatter,
-        diagnostics,
-    })
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)]

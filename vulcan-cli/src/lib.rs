@@ -43,8 +43,7 @@ pub(crate) use commands::edit::{
 pub(crate) use commands::inbox::{print_inbox_report, run_inbox_command};
 pub(crate) use commands::note::{
     normalize_note_path, resolve_existing_markdown_target, run_note_append_command,
-    run_note_create_with_body, run_note_patch_command, run_note_set_with_content,
-    NoteAppendOptions, NotePatchOptions,
+    run_note_create_with_body, run_note_patch_command, NoteAppendOptions, NotePatchOptions,
 };
 #[cfg(test)]
 pub(crate) use commands::template::TemplateSummary;

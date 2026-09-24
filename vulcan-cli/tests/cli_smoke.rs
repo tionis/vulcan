@@ -30091,6 +30091,59 @@ fn mcp_note_delete_preview_hides_unreadable_backlinks() {
 }
 
 #[test]
+fn mcp_note_set_matches_cli_report_and_checks_replacement() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &["--tool-pack", "notes-manage"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let replacement = "Replacement line\n\n[[Missing]]\n";
+    let set = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "note_set",
+            "arguments": {
+                "note": "Dashboard.md",
+                "content": replacement,
+                "preserve_frontmatter": true,
+                "check": true,
+                "confirm": true,
+                "no_commit": true
+            }
+        }
+    }));
+    let set = &set.last().expect("note_set response")["result"];
+    assert_eq!(set["isError"], false);
+    let mcp_report = &set["structuredContent"];
+    assert!(mcp_report["diagnostics"]
+        .as_array()
+        .is_some_and(|diagnostics| !diagnostics.is_empty()));
+
+    let cli_set = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "note",
+            "set",
+            "Dashboard.md",
+            "--no-frontmatter",
+            "--check",
+        ])
+        .write_stdin(replacement)
+        .assert()
+        .success();
+    assert_eq!(*mcp_report, parse_stdout_json(&cli_set));
+    assert!(session.finish().is_empty());
+}
+
+#[test]
 fn daily_latest_cli_returns_newest_existing_note_with_content() {
     let temp_dir = TempDir::new().expect("temp dir");
     let vault_root = temp_dir.path().join("vault");

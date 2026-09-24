@@ -9,9 +9,9 @@ use crate::{
     cli_command_tree, collect_help_command_topics, config_set_changed_files,
     custom_tool_registry_entry, normalize_note_path, permission_error_to_cli,
     resolve_existing_markdown_target, resolve_help_topic, run_note_append_command,
-    run_note_create_with_body, run_note_patch_command, run_note_set_with_content, CliError,
-    McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode,
-    NoteAppendOptions, NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, ToolRegistryEntry,
+    run_note_create_with_body, run_note_patch_command, CliError, McpToolPackArg,
+    McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions,
+    NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, ToolRegistryEntry,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -54,8 +54,8 @@ use vulcan_app::mcp_protocol::{
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
-    apply_note_delete, build_note_info_report, read_note, read_note_outline, NoteDeleteRequest,
-    NoteGetOptions, NoteReadMode,
+    apply_note_delete, apply_note_set, build_note_info_report, finish_note_set_report, read_note,
+    read_note_outline, NoteDeleteRequest, NoteGetOptions, NoteReadMode, NoteSetRequest,
 };
 use vulcan_app::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
@@ -2380,18 +2380,21 @@ impl McpServerCore {
                 }
                 self.check_write_note_access(&args.note)
                     .map_err(cli_tool_error)?;
-                let report = run_note_set_with_content(
+                let applied = apply_note_set(
                     &self.paths,
-                    &args.note,
-                    &args.content,
-                    args.preserve_frontmatter,
-                    args.check,
+                    &NoteSetRequest {
+                        note: args.note,
+                        replacement: args.content,
+                        preserve_frontmatter: args.preserve_frontmatter,
+                    },
                     Some(self.selection.name.as_str()),
-                    OutputFormat::Json,
-                    false,
                     true,
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let report = finish_note_set_report(&self.paths, applied, args.check)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                refresh_cache_incrementally(&self.paths)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                     .commit(
                         &self.paths,

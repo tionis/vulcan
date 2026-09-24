@@ -122,6 +122,32 @@ pub struct NoteSetReport {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteSetCommandReport {
+    pub path: String,
+    pub checked: bool,
+    pub preserved_frontmatter: bool,
+    pub diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+pub fn finish_note_set_report(
+    paths: &VaultPaths,
+    report: NoteSetReport,
+    check: bool,
+) -> Result<NoteSetCommandReport, AppError> {
+    let diagnostics = if check {
+        diagnose_note_contents(paths, &report.path, &report.content)?
+    } else {
+        Vec::new()
+    };
+    Ok(NoteSetCommandReport {
+        path: report.path,
+        checked: check,
+        preserved_frontmatter: report.preserved_frontmatter,
+        diagnostics,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct MarkdownTarget {
     pub display_path: String,
@@ -2000,11 +2026,11 @@ fn load_note_append_target(
 mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-        build_note_info_report, diagnose_note_contents, json_properties_to_frontmatter,
-        parse_note_frontmatter_bindings, read_note, read_note_outline,
-        resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
-        NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode,
-        NoteSetRequest,
+        build_note_info_report, diagnose_note_contents, finish_note_set_report,
+        json_properties_to_frontmatter, parse_note_frontmatter_bindings, read_note,
+        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
+        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest,
+        NoteReadMode, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde_json::Value as JsonValue;
@@ -2393,6 +2419,38 @@ folder_templates = [{ folder = "Projects", template = "project" }]
             .expect("updated note")
             .replace("\r\n", "\n");
         assert_eq!(rendered, "---\nstatus: draft\n---\nUpdated body\n");
+    }
+
+    #[test]
+    fn note_set_command_report_runs_diagnostics_only_when_requested() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        fs::write(temp_dir.path().join("Home.md"), "original\n").expect("seed note");
+
+        let applied = apply_note_set(
+            &paths,
+            &NoteSetRequest {
+                note: "Home.md".to_string(),
+                replacement: "[[Missing]]\n".to_string(),
+                preserve_frontmatter: true,
+            },
+            None,
+            true,
+        )
+        .expect("set note");
+        let unchecked = finish_note_set_report(&paths, applied.clone(), false).expect("unchecked");
+        assert!(!unchecked.checked);
+        assert!(unchecked.diagnostics.is_empty());
+
+        let checked = finish_note_set_report(&paths, applied, true).expect("checked");
+        assert_eq!(checked.path, "Home.md");
+        assert!(checked.checked);
+        assert!(checked.preserved_frontmatter);
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("Missing") }));
     }
 
     #[test]
