@@ -1712,6 +1712,12 @@ mod tests {
         let config_path = temporary.path().join("daemon.toml");
         let registry = WikiRegistry::at(config_path.clone());
         let id = Ulid::new();
+        let windows_path = r"C:\Users\Runner\vault";
+        let encoded_windows_path = toml::Value::String(windows_path.to_string()).to_string();
+        let parsed: toml::Value = toml::from_str(&format!("path = {encoded_windows_path}"))
+            .expect("Windows paths must be escaped in TOML fixtures");
+        assert_eq!(parsed["path"].as_str(), Some(windows_path));
+        let encoded_path = toml::Value::String(vault.to_string_lossy().into_owned()).to_string();
         fs::write(
             &config_path,
             format!(
@@ -1721,12 +1727,12 @@ bind = "127.0.0.1:3210"
 [[vault]]
 id = "archive"
 registration_id = "{}"
-path = "{}"
+path = {}
 profile = "files_only"
 "#,
                 Ulid::new(),
                 id,
-                vault.display()
+                encoded_path
             ),
         )
         .expect("write pre-versioned files-only registry");
