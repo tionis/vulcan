@@ -223,11 +223,13 @@ built-in tool metadata, pack selection, and permission visibility in `vulcan-app
 existing stdio and HTTP notification, error, and timeout shapes. CLI stdio and foreground HTTP
 consume these shared contracts. `vulcan-app::mcp_assistant` provides permission-filtered prompt
 and skill discovery, prompt rendering, resource discovery/templates, vault-owned assistant reads, and pack-filtered custom-tool resource reads to both transports.
+`vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
+shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
 host's help-topic catalog injected. `vulcan-app::mcp_read_tools` owns search and query workflows,
 including read-filtered results and bounded query projection, plus the note-source read boundary.
-`vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline` and `note_get` reports for CLI and MCP. Remaining tool workflows, help resource reads,
-the shared help-topic catalog, and HTTP/OAuth hosting remain migration work under 10.7.6.
+`vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline` and `note_get` reports for CLI and MCP. Remaining tool workflows, CLI-derived command-help catalog sharing,
+and HTTP/OAuth hosting remain migration work under 10.7.6.
 
 ## Preserved compatibility contracts
 

@@ -1753,20 +1753,10 @@ impl McpServerCore {
             return result;
         }
 
-        if uri == "vulcan://help/overview" {
-            let report = crate::help_overview();
-            return Self::json_resource(uri, &report);
-        }
-
-        if let Some(topic) = uri.strip_prefix("vulcan://help/") {
-            let report = if topic == "overview" {
-                crate::help_overview()
-            } else {
-                let topic_path = topic.split('/').map(ToOwned::to_owned).collect::<Vec<_>>();
-                resolve_help_topic(&topic_path)
-                    .map_err(|error| resource_not_found_error(uri, error.message))?
-            };
-            return Self::json_resource(uri, &report);
+        if let Some(result) = vulcan_app::mcp_help::read_help_resource(uri, |topic_path| {
+            resolve_help_topic(topic_path).map_err(|error| error.message)
+        }) {
+            return result;
         }
 
         Err(resource_not_found_error(
@@ -2893,18 +2883,6 @@ impl McpServerCore {
             "description": format!("Full text result for `{tool_name}`"),
             "mimeType": "text/plain",
         })
-    }
-
-    fn json_resource<T: serde::Serialize>(uri: &str, value: &T) -> Result<Value, McpMethodError> {
-        let text = serde_json::to_string_pretty(value)
-            .map_err(|error| McpMethodError::internal(error.to_string()))?;
-        Ok(serde_json::json!({
-            "contents": [{
-                "uri": uri,
-                "mimeType": "application/json",
-                "text": text,
-            }]
-        }))
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {

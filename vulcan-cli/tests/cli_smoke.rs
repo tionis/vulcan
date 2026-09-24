@@ -30802,6 +30802,30 @@ Use this skill to review the day.
     let help_json: Value = serde_json::from_str(help_text).expect("help resource should be JSON");
     assert_eq!(help_json["name"].as_str(), Some("help"));
 
+    for (id, uri, topic) in [
+        (60, "vulcan://help/query-dsl", vec!["query-dsl"]),
+        (61, "vulcan://help/note/get", vec!["note", "get"]),
+    ] {
+        let resource = session.send(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "resources/read",
+            "params": { "uri": uri }
+        }));
+        let resource_text = resource
+            .last()
+            .and_then(|response| response["result"]["contents"][0]["text"].as_str())
+            .expect("help resource should contain JSON text");
+        let resource_report: Value = serde_json::from_str(resource_text).expect("valid help JSON");
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command.args(["--output", "json", "help"]).args(topic);
+        let cli_report = parse_stdout_json(&command.assert().success());
+        assert_eq!(
+            resource_report, cli_report,
+            "help resource {uri} should match CLI"
+        );
+    }
+
     let note_completion = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,

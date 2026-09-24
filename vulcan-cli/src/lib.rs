@@ -28,7 +28,6 @@ mod commands;
 mod commit;
 mod config_tui;
 mod editor;
-mod help;
 mod js_repl;
 mod mcp;
 mod note_picker;
@@ -200,7 +199,6 @@ pub(crate) use commands::docs::{
     cli_command_tree, collect_cli_leaf_tool_names, collect_help_command_topics,
     custom_tool_registry_entry, resolve_help_topic, McpToolsReport, ToolRegistryEntry,
 };
-pub(crate) use help::help_overview;
 pub(crate) fn custom_tool_registry_options() -> tools::CustomToolRegistryOptions {
     let mut reserved_names = default_assistant_tool_reserved_names()
         .into_iter()

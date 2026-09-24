@@ -7476,7 +7476,7 @@ fn describe_report_options_have_help_text() {
 
 #[test]
 fn help_overview_lists_current_top_level_surfaces() {
-    let report = crate::help::help_overview();
+    let report = vulcan_app::mcp_help::help_overview();
 
     for expected in [
         "`mcp`",

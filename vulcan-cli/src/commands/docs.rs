@@ -1,7 +1,3 @@
-use crate::help::{
-    builtin_help_topic, builtin_help_topics, help_overview, HelpSearchMatch, HelpSearchReport,
-    HelpTopicKind, HelpTopicReport,
-};
 use crate::output::print_json;
 use crate::terminal_markdown;
 use crate::{
@@ -13,6 +9,11 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+pub(crate) use vulcan_app::mcp_help::CliArgDescribe;
+use vulcan_app::mcp_help::{
+    builtin_help_topic, builtin_help_topics, help_overview, HelpSearchMatch, HelpSearchReport,
+    HelpTopicKind, HelpTopicReport,
+};
 use vulcan_core::VaultPaths;
 
 pub(crate) fn handle_help_command(
@@ -218,17 +219,6 @@ pub(crate) struct CliCommandDescribe {
     pub(crate) after_help: Option<String>,
     pub(crate) options: Vec<CliArgDescribe>,
     pub(crate) subcommands: Vec<CliCommandDescribe>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct CliArgDescribe {
-    pub(crate) id: String,
-    pub(crate) long: Option<String>,
-    pub(crate) short: Option<char>,
-    pub(crate) help: Option<String>,
-    pub(crate) required: bool,
-    pub(crate) value_names: Vec<String>,
-    pub(crate) possible_values: Vec<String>,
 }
 
 pub(crate) fn describe_cli() -> CliDescribeReport {
@@ -1064,7 +1054,7 @@ fn describe_argument(argument: &clap::Arg) -> CliArgDescribe {
 #[cfg(test)]
 mod tests {
     use super::render_help_topic_markdown;
-    use crate::help::{HelpTopicKind, HelpTopicReport};
+    use vulcan_app::mcp_help::{HelpTopicKind, HelpTopicReport};
 
     fn report(body: &str) -> HelpTopicReport {
         HelpTopicReport {

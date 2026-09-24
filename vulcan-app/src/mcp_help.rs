@@ -1,10 +1,23 @@
-use crate::commands::docs::CliArgDescribe;
 use serde::Serialize;
+use serde_json::Value;
 use std::fmt::{Display, Formatter, Write as _};
+
+use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CliArgDescribe {
+    pub id: String,
+    pub long: Option<String>,
+    pub short: Option<char>,
+    pub help: Option<String>,
+    pub required: bool,
+    pub value_names: Vec<String>,
+    pub possible_values: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum HelpTopicKind {
+pub enum HelpTopicKind {
     Overview,
     Command,
     Concept,
@@ -23,31 +36,32 @@ impl Display for HelpTopicKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct HelpTopicReport {
-    pub(crate) name: String,
-    pub(crate) kind: HelpTopicKind,
-    pub(crate) summary: String,
-    pub(crate) body: String,
-    pub(crate) options: Vec<CliArgDescribe>,
-    pub(crate) subcommands: Vec<String>,
-    pub(crate) related: Vec<String>,
+pub struct HelpTopicReport {
+    pub name: String,
+    pub kind: HelpTopicKind,
+    pub summary: String,
+    pub body: String,
+    pub options: Vec<CliArgDescribe>,
+    pub subcommands: Vec<String>,
+    pub related: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct HelpSearchReport {
-    pub(crate) keyword: String,
-    pub(crate) matches: Vec<HelpSearchMatch>,
+pub struct HelpSearchReport {
+    pub keyword: String,
+    pub matches: Vec<HelpSearchMatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct HelpSearchMatch {
-    pub(crate) name: String,
-    pub(crate) kind: HelpTopicKind,
-    pub(crate) summary: String,
+pub struct HelpSearchMatch {
+    pub name: String,
+    pub kind: HelpTopicKind,
+    pub summary: String,
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn help_overview() -> HelpTopicReport {
+#[must_use]
+pub fn help_overview() -> HelpTopicReport {
     let concept_names = builtin_help_topics()
         .into_iter()
         .map(|topic| topic.name)
@@ -359,7 +373,8 @@ fn static_help_topic(
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn builtin_help_topics() -> Vec<HelpTopicReport> {
+#[must_use]
+pub fn builtin_help_topics() -> Vec<HelpTopicReport> {
     vec![
         static_help_topic(
             "assistant-integration",
@@ -580,15 +595,53 @@ complete but still report problems — useful for CI gates.",
     ]
 }
 
-pub(crate) fn builtin_help_topic(name: &str) -> Option<HelpTopicReport> {
+#[must_use]
+pub fn builtin_help_topic(name: &str) -> Option<HelpTopicReport> {
     builtin_help_topics()
         .into_iter()
         .find(|topic| topic.name.eq_ignore_ascii_case(name))
 }
 
+/// Resolve a help resource with built-in content shared by all hosts. The host supplies
+/// command-specific help from its command catalog without making the app layer depend on Clap.
+pub fn read_help_resource(
+    uri: &str,
+    resolve_command: impl FnOnce(&[String]) -> Result<HelpTopicReport, String>,
+) -> Option<Result<Value, McpMethodError>> {
+    let topic = uri.strip_prefix("vulcan://help/")?;
+    let topic_path = topic.split('/').map(ToOwned::to_owned).collect::<Vec<_>>();
+    let report = if topic == "overview" {
+        Ok(help_overview())
+    } else if let Some(builtin) = builtin_help_topic(&topic_path.join(" ")) {
+        Ok(builtin)
+    } else {
+        resolve_command(&topic_path).map_err(|message| help_resource_not_found(uri, message))
+    };
+    Some(report.and_then(|report| {
+        let text = serde_json::to_string_pretty(&report)
+            .map_err(|error| McpMethodError::internal(error.to_string()))?;
+        Ok(serde_json::json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "application/json",
+                "text": text,
+            }]
+        }))
+    }))
+}
+
+fn help_resource_not_found(uri: &str, message: String) -> McpMethodError {
+    McpMethodError::JsonRpc {
+        code: MCP_RESOURCE_NOT_FOUND,
+        message,
+        data: Some(serde_json::json!({ "uri": uri })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::builtin_help_topic;
+    use super::{builtin_help_topic, read_help_resource};
+    use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
     use vulcan_core::QueryAst;
 
     #[test]
@@ -633,5 +686,57 @@ mod tests {
         assert!(scripting.body.contains("JavaScript plugins"));
         assert!(scripting.body.contains("`host.exec()`"));
         assert!(scripting.body.contains("`js_runtime`"));
+    }
+
+    #[test]
+    fn help_resources_use_shared_catalog_and_injected_command_fallback() {
+        let overview = read_help_resource("vulcan://help/overview", |_| {
+            panic!("built-in overview should not ask the host")
+        })
+        .unwrap()
+        .unwrap();
+        let overview_text = overview["contents"][0]["text"].as_str().unwrap();
+        let overview_report: serde_json::Value = serde_json::from_str(overview_text).unwrap();
+        assert_eq!(overview_report["kind"], "overview");
+        let query = read_help_resource("vulcan://help/query-dsl", |_| {
+            panic!("built-in topic should not ask the host")
+        })
+        .unwrap()
+        .unwrap();
+        assert!(query["contents"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Native Query DSL"));
+        let command = read_help_resource("vulcan://help/note/get", |path| {
+            assert_eq!(path, ["note", "get"]);
+            Ok(super::HelpTopicReport {
+                name: "note get".to_string(),
+                kind: super::HelpTopicKind::Command,
+                summary: "Read a note".to_string(),
+                body: String::new(),
+                options: Vec::new(),
+                subcommands: Vec::new(),
+                related: Vec::new(),
+            })
+        })
+        .unwrap()
+        .unwrap();
+        assert!(command["contents"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("note get"));
+        let missing = read_help_resource("vulcan://help/no-such-topic", |_| {
+            Err("unknown help topic".to_string())
+        })
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(
+            missing,
+            McpMethodError::JsonRpc {
+                code: MCP_RESOURCE_NOT_FOUND,
+                ..
+            }
+        ));
+        assert!(read_help_resource("vulcan://assistant/config", |_| unreachable!()).is_none());
     }
 }
