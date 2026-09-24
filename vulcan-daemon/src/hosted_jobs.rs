@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tempfile::NamedTempFile;
 use ulid::Ulid;
-use vulcan_app::execution::{ExecutionCancellationToken, ExecutionContext, ExecutionRetryClass};
+use vulcan_app::execution::{
+    ExecutionAuthority, ExecutionCancellationToken, ExecutionContext, ExecutionRetryClass,
+};
 
 pub const HOSTED_JOB_VERSION: u32 = 1;
 const MAX_JOB_BYTES: u64 = 256 * 1024;
@@ -47,6 +49,35 @@ pub enum HostedRetryDisposition {
     DoNotRetryDirectly,
 }
 
+/// The non-secret identity needed to authorize later status reads. Older
+/// records have no caller binding and therefore cannot pass a scoped lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedCallerIdentity {
+    pub principal_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+}
+
+impl HostedCallerIdentity {
+    fn from_context(context: &ExecutionContext) -> Option<Self> {
+        let ExecutionAuthority::Caller {
+            principal_id,
+            credential_id,
+            ..
+        } = &context.authority
+        else {
+            return None;
+        };
+        Some(Self {
+            principal_id: principal_id.clone(),
+            credential_id: credential_id.clone(),
+            audience: context.audience.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedJobRecord {
     pub version: u32,
@@ -54,6 +85,8 @@ pub struct HostedJobRecord {
     pub request_id: String,
     pub service_instance_id: String,
     pub canonical_vault: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<HostedCallerIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository_key: Option<String>,
     pub retry_class: ExecutionRetryClass,
@@ -69,6 +102,17 @@ pub struct HostedJobRecord {
 }
 
 impl HostedJobRecord {
+    /// A status endpoint must authenticate its caller and then require this
+    /// exact instance, canonical vault, principal, credential, and audience.
+    /// Legacy records without a binding fail closed.
+    #[must_use]
+    pub fn matches_caller(&self, context: &ExecutionContext) -> bool {
+        self.service_instance_id == context.identity.service_instance_id
+            && self.canonical_vault == context.vault.canonical_root
+            && self.caller.as_ref() == HostedCallerIdentity::from_context(context).as_ref()
+            && self.caller.is_some()
+    }
+
     fn queued(context: &ExecutionContext, now_unix_ms: u64) -> Self {
         Self {
             version: HOSTED_JOB_VERSION,
@@ -76,6 +120,7 @@ impl HostedJobRecord {
             request_id: context.identity.request_id.clone(),
             service_instance_id: context.identity.service_instance_id.clone(),
             canonical_vault: context.vault.canonical_root.clone(),
+            caller: HostedCallerIdentity::from_context(context),
             repository_key: context
                 .vault
                 .repository
@@ -596,6 +641,74 @@ mod tests {
         assert_eq!(completed.state, HostedJobState::Succeeded);
         assert_eq!(completed.committed, Some(true));
         assert_eq!(ledger.load(&operation).expect("reload"), completed);
+    }
+
+    #[test]
+    fn caller_status_binding_survives_restart_and_rejects_other_authorities() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let vault = tempfile::tempdir().expect("vault");
+        let ledger = HostedJobLedger::at(temporary.path());
+        let mut caller = context(&vault, ExecutionRetryClass::IndeterminateAfterDispatch);
+        caller.authority = ExecutionAuthority::Caller {
+            principal_id: "alice".to_string(),
+            credential_id: Some("grant-alice".to_string()),
+            permission_ceiling: grant(),
+        };
+        caller.audience = Some("https://example.test/mcp".to_string());
+        let operation_id = caller.identity.operation_id.clone();
+        ledger.register(&caller, 1).expect("register");
+        let record = HostedJobLedger::at(temporary.path())
+            .load(&operation_id)
+            .expect("reload");
+        assert!(record.matches_caller(&caller));
+
+        let mut other = caller.clone();
+        other.authority = ExecutionAuthority::Caller {
+            principal_id: "bob".to_string(),
+            credential_id: Some("grant-alice".to_string()),
+            permission_ceiling: grant(),
+        };
+        assert!(!record.matches_caller(&other));
+        let mut other = caller.clone();
+        other.authority = ExecutionAuthority::Caller {
+            principal_id: "alice".to_string(),
+            credential_id: Some("grant-bob".to_string()),
+            permission_ceiling: grant(),
+        };
+        assert!(!record.matches_caller(&other));
+        let mut other = caller.clone();
+        other.audience = Some("https://other.test/mcp".to_string());
+        assert!(!record.matches_caller(&other));
+        let mut other = caller.clone();
+        other.identity.service_instance_id = "daemon:other".to_string();
+        assert!(!record.matches_caller(&other));
+        let mut other = caller.clone();
+        other.vault.canonical_root = temporary.path().to_path_buf();
+        assert!(!record.matches_caller(&other));
+        let mut other = caller.clone();
+        other.authority = ExecutionAuthority::BackgroundService {
+            service_id: "daemon".to_string(),
+            authority_id: "service".to_string(),
+            permission_ceiling: grant(),
+        };
+        assert!(!record.matches_caller(&other));
+        let background = HostedJobRecord::queued(&other, 2);
+        assert!(background.caller.is_none());
+        assert!(!background.matches_caller(&other));
+
+        let mut legacy = serde_json::to_value(&record).expect("record JSON");
+        legacy
+            .as_object_mut()
+            .expect("record object")
+            .remove("caller");
+        fs::write(
+            ledger.path(&operation_id),
+            serde_json::to_vec(&legacy).expect("legacy JSON"),
+        )
+        .expect("legacy record");
+        let legacy = ledger.load(&operation_id).expect("load legacy record");
+        assert!(legacy.caller.is_none());
+        assert!(!legacy.matches_caller(&caller));
     }
 
     #[test]

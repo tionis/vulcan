@@ -262,7 +262,7 @@ impl HostedExecutor {
         .await?;
         Err(HostedExecutionError::AfterDispatch {
             operation_id,
-            state: record,
+            state: Box::new(record),
             detail: format!("{detail}; query operation status before any retry"),
         })
     }
@@ -296,7 +296,7 @@ pub enum HostedExecutionError {
     },
     AfterDispatch {
         operation_id: String,
-        state: HostedJobRecord,
+        state: Box<HostedJobRecord>,
         detail: String,
     },
     Operation {
