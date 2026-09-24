@@ -8,7 +8,7 @@ use std::fs;
 use vulcan_core::{
     evaluate_dql_with_filter, execute_query_report_with_filter, query_notes_with_filter,
     search_vault_with_filter, NoteQuery, PermissionGuard, ProfilePermissionGuard, QueryAst,
-    QueryReport, SearchQuery, SearchSort, VaultPaths,
+    QueryReport, SearchQuery, SearchSort, TasksQueryResult, VaultPaths,
 };
 
 use crate::mcp_protocol::{McpMethodError, McpQueryArgs, McpSearchArgs};
@@ -18,6 +18,21 @@ use crate::periodic::DailyNoteReadReport;
 const MCP_QUERY_SOFT_MAX: usize = 200;
 pub const MCP_QUERY_HARD_MAX: usize = 1_000;
 const MCP_DAILY_LIST_MAX_LIMIT: usize = 200;
+
+/// Remove unreadable task rows from both flat and grouped task-query output.
+pub fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut TasksQueryResult) {
+    let readable = |task: &Value| {
+        task.get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| guard.check_read_path(path).is_ok())
+    };
+    report.tasks.retain(&readable);
+    for group in &mut report.groups {
+        group.tasks.retain(&readable);
+    }
+    report.groups.retain(|group| !group.tasks.is_empty());
+    report.result_count = report.tasks.len();
+}
 
 /// Apply the read boundary even for a daily report that omits its content.
 pub fn include_daily_content_after_access(
@@ -465,7 +480,41 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
-    use vulcan_core::{resolve_permission_profile, scan_vault, ScanMode};
+    use vulcan_core::{resolve_permission_profile, scan_vault, ScanMode, TasksQueryGroup};
+
+    #[test]
+    fn task_query_filter_removes_unreadable_flat_and_grouped_rows() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir_all(temporary.path().join(".vulcan")).unwrap();
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+        let task = json!({"path": "Private.md", "text": "Hidden"});
+        let mut report = TasksQueryResult {
+            tasks: vec![task.clone()],
+            groups: vec![TasksQueryGroup {
+                field: "status".to_string(),
+                key: json!("open"),
+                tasks: vec![task],
+            }],
+            result_count: 1,
+            hidden_fields: Vec::new(),
+            shown_fields: Vec::new(),
+            short_mode: false,
+            plan: None,
+        };
+        filter_tasks_query_report(&guard, &mut report);
+        assert!(report.tasks.is_empty());
+        assert!(report.groups.is_empty());
+        assert_eq!(report.result_count, 0);
+    }
 
     #[test]
     fn search_validates_mcp_arguments_before_running() {

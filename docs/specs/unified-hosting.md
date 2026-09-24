@@ -228,7 +228,7 @@ shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
 host's help-topic catalog injected. `vulcan-app::mcp_read_tools` owns search and query workflows,
 including read-filtered results and bounded query projection, plus the note-source read boundary,
-guarded daily-content access, and bounded daily-list response shaping. `vulcan-app::periodic`
+guarded daily-content access, bounded daily-list response shaping, and permission-filtered task-query reports. MCP task list/query and create/complete/reschedule invoke app task workflows directly, preserving their write preflight and cache refresh. `vulcan-app::periodic`
 owns date/target resolution and daily list/show reports shared by CLI and MCP. MCP status uses the existing
 `vulcan-app::browse` report directly.
 `vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline` and `note_get` reports for CLI and MCP. Remaining tool workflows, CLI-derived command-help catalog sharing,

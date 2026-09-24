@@ -1,6 +1,6 @@
 use super::*;
 use crate::McpToolPackModeArg;
-use vulcan_core::PermissionProfile;
+use vulcan_core::{PermissionProfile, TasksQueryResult};
 
 #[test]
 fn restricted_mcp_read_reports_exclude_denied_task_paths() {
@@ -32,7 +32,7 @@ fn restricted_mcp_read_reports_exclude_denied_task_paths() {
         plan: None,
     };
 
-    filter_tasks_query_report(&guard, &mut report);
+    mcp_read_tools::filter_tasks_query_report(&guard, &mut report);
 
     assert_eq!(report.result_count, 1);
     assert_eq!(report.tasks[0]["path"], "Public/Task.md");

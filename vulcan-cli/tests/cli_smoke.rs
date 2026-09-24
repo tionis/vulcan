@@ -30477,6 +30477,71 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
 }
 
 #[test]
+fn mcp_task_mutations_refresh_the_cache_for_following_reads() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &["--tool-pack", "tasks"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let created = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "task_create", "arguments": {
+            "text": "Prepare notes", "note": "Inbox.md", "no_commit": true
+        } }
+    }));
+    let created = &created.last().expect("task_create")["result"];
+    assert_eq!(created["isError"], false);
+    let task = created["structuredContent"]["task"]
+        .as_str()
+        .expect("created task ID");
+    assert!(fs::read_to_string(vault_root.join("Inbox.md"))
+        .expect("created note")
+        .contains("Prepare notes"));
+
+    let listed = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "task_list", "arguments": { "source": "inline" } }
+    }));
+    let listed = &listed.last().expect("task_list")["result"]["structuredContent"];
+    assert_eq!(listed["result_count"], 1);
+
+    let rescheduled = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "task_reschedule", "arguments": {
+            "task": task, "due": "2026-05-12", "no_commit": true
+        } }
+    }));
+    assert_eq!(
+        rescheduled.last().expect("task_reschedule")["result"]["isError"],
+        false
+    );
+    assert!(fs::read_to_string(vault_root.join("Inbox.md"))
+        .expect("rescheduled note")
+        .contains("2026-05-12"));
+
+    let completed = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": { "name": "task_complete", "arguments": {
+            "task": task, "date": "2026-05-13", "no_commit": true
+        } }
+    }));
+    assert_eq!(
+        completed.last().expect("task_complete")["result"]["isError"],
+        false
+    );
+    assert!(fs::read_to_string(vault_root.join("Inbox.md"))
+        .expect("completed note")
+        .contains("- [x]"));
+    assert!(session.finish().is_empty());
+}
+
+#[test]
 fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

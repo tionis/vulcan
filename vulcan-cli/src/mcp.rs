@@ -4,10 +4,6 @@ mod catalog;
 
 use crate::app_config;
 use crate::commands::runtime::{run_web_fetch_command, run_web_search_command};
-use crate::commands::tasks::{
-    run_tasks_complete_command, run_tasks_create_command, run_tasks_list_command,
-    run_tasks_query_command, run_tasks_reschedule_command, TasksCreateOptions, TasksListOptions,
-};
 use crate::commit::AutoCommitPolicy;
 use crate::plugins;
 use crate::{
@@ -17,8 +13,8 @@ use crate::{
     run_note_create_with_body, run_note_delete_command, run_note_info_command,
     run_note_patch_command, run_note_set_with_content, CliError, McpToolPackArg,
     McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions,
-    NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, SearchBackendArg, TasksListSourceArg,
-    ToolRegistryEntry, WebFetchMode,
+    NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, SearchBackendArg, ToolRegistryEntry,
+    WebFetchMode,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -64,19 +60,26 @@ use vulcan_app::notes::{read_note, read_note_outline, NoteGetOptions, NoteReadMo
 use vulcan_app::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
 };
+use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
     GitSyncOptions,
 };
 use vulcan_app::sync_conflicts::{get_sync_conflict, list_sync_conflicts};
+use vulcan_app::tasks::{
+    apply_task_complete, apply_task_create, apply_task_reschedule, build_tasks_list_report,
+    build_tasks_query_result, TaskCompleteRequest, TaskCreateRequest, TaskListRequest,
+    TaskRescheduleRequest,
+};
+use vulcan_core::config::TasksDefaultSource;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
     accept_link_suggestion, assistant_prompts_root, assistant_skills_root, load_vault_config,
     query_graph_communities_with_filter, reject_link_suggestion, resolve_permission_profile,
     scan_vault_with_progress, suggest_links, watch_vault, LinkSuggestionStatus, PermissionGuard,
-    PermissionProfile, PluginEvent, ProfilePermissionGuard, ScanMode, ScanSummary,
-    TasksQueryResult, VaultPaths, WatchOptions,
+    PermissionProfile, PluginEvent, ProfilePermissionGuard, ScanMode, ScanSummary, VaultPaths,
+    WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -119,20 +122,6 @@ fn mcp_git_sync_options(args: &McpSyncTargetArgs) -> Result<GitSyncOptions, McpM
     }
     options.dry_run = true;
     Ok(options)
-}
-
-fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut TasksQueryResult) {
-    let readable = |task: &Value| {
-        task.get("path")
-            .and_then(Value::as_str)
-            .is_some_and(|path| guard.check_read_path(path).is_ok())
-    };
-    report.tasks.retain(&readable);
-    for group in &mut report.groups {
-        group.tasks.retain(&readable);
-    }
-    report.groups.retain(|group| !group.tasks.is_empty());
-    report.result_count = report.tasks.len();
 }
 
 fn filter_link_suggestions_report(
@@ -2115,68 +2104,56 @@ impl McpServerCore {
             }
             McpToolId::TaskList => {
                 let args: McpTaskListArgs = parse_tool_arguments(arguments)?;
-                let mut report = run_tasks_list_command(
+                let mut report = build_tasks_list_report(
                     &self.paths,
-                    TasksListOptions {
-                        filter: args.filter.as_deref(),
+                    &TaskListRequest {
+                        filter: args.filter,
                         source: parse_tasks_default_source(args.source.as_deref())?,
-                        status: args.status.as_deref(),
-                        priority: args.priority.as_deref(),
-                        due_before: args.due_before.as_deref(),
-                        due_after: args.due_after.as_deref(),
-                        project: args.project.as_deref(),
-                        context: args.context.as_deref(),
-                        group_by: args.group_by.as_deref(),
-                        sort_by: args.sort_by.as_deref(),
+                        status: args.status,
+                        priority: args.priority,
+                        due_before: args.due_before,
+                        due_after: args.due_after,
+                        project: args.project,
+                        context: args.context,
+                        group_by: args.group_by,
+                        sort_by: args.sort_by,
                         include_archived: args.include_archived,
                     },
                 )
-                .map_err(cli_tool_error)?;
-                filter_tasks_query_report(&self.guard, &mut report);
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                mcp_read_tools::filter_tasks_query_report(&self.guard, &mut report);
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskQuery => {
                 let args: McpTaskQueryArgs = parse_tool_arguments(arguments)?;
-                let mut report =
-                    run_tasks_query_command(&self.paths, &args.query).map_err(cli_tool_error)?;
-                filter_tasks_query_report(&self.guard, &mut report);
+                let mut report = build_tasks_query_result(&self.paths, &args.query)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                mcp_read_tools::filter_tasks_query_report(&self.guard, &mut report);
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskCreate => {
                 let args: McpTaskCreateArgs = parse_tool_arguments(arguments)?;
+                let mut request = TaskCreateRequest {
+                    text: args.text,
+                    note: args.note,
+                    due: args.due,
+                    priority: args.priority,
+                    dry_run: true,
+                };
                 if !args.dry_run {
-                    let planned = run_tasks_create_command(
-                        &self.paths,
-                        TasksCreateOptions {
-                            text: &args.text,
-                            note: args.note.as_deref(),
-                            due: args.due.as_deref(),
-                            priority: args.priority.as_deref(),
-                            dry_run: true,
-                        },
-                        OutputFormat::Json,
-                        false,
-                        true,
-                    )
-                    .map_err(cli_tool_error)?;
+                    let planned = apply_task_create(&self.paths, &request)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     for path in &planned.changed_paths {
                         self.check_write_path_access(path).map_err(cli_tool_error)?;
                     }
                 }
-                let report = run_tasks_create_command(
-                    &self.paths,
-                    TasksCreateOptions {
-                        text: &args.text,
-                        note: args.note.as_deref(),
-                        due: args.due.as_deref(),
-                        priority: args.priority.as_deref(),
-                        dry_run: args.dry_run,
-                    },
-                    OutputFormat::Json,
-                    false,
-                    true,
-                )
-                .map_err(cli_tool_error)?;
+                request.dry_run = args.dry_run;
+                let report = apply_task_create(&self.paths, &request)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                if !report.dry_run && !report.changed_paths.is_empty() {
+                    refresh_cache_incrementally(&self.paths)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                }
                 if !args.dry_run {
                     AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                         .commit(
@@ -2192,31 +2169,25 @@ impl McpServerCore {
             }
             McpToolId::TaskComplete => {
                 let args: McpTaskCompleteArgs = parse_tool_arguments(arguments)?;
+                let mut request = TaskCompleteRequest {
+                    task: args.task,
+                    date: args.date,
+                    dry_run: true,
+                };
                 if !args.dry_run {
-                    let planned = run_tasks_complete_command(
-                        &self.paths,
-                        &args.task,
-                        args.date.as_deref(),
-                        true,
-                        OutputFormat::Json,
-                        false,
-                        true,
-                    )
-                    .map_err(cli_tool_error)?;
+                    let planned = apply_task_complete(&self.paths, &request)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     for path in &planned.changed_paths {
                         self.check_write_path_access(path).map_err(cli_tool_error)?;
                     }
                 }
-                let report = run_tasks_complete_command(
-                    &self.paths,
-                    &args.task,
-                    args.date.as_deref(),
-                    args.dry_run,
-                    OutputFormat::Json,
-                    false,
-                    true,
-                )
-                .map_err(cli_tool_error)?;
+                request.dry_run = args.dry_run;
+                let report = apply_task_complete(&self.paths, &request)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                if !report.dry_run && !report.changed_paths.is_empty() {
+                    refresh_cache_incrementally(&self.paths)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                }
                 if !args.dry_run {
                     AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                         .commit(
@@ -2232,31 +2203,25 @@ impl McpServerCore {
             }
             McpToolId::TaskReschedule => {
                 let args: McpTaskRescheduleArgs = parse_tool_arguments(arguments)?;
+                let mut request = TaskRescheduleRequest {
+                    task: args.task,
+                    due: args.due,
+                    dry_run: true,
+                };
                 if !args.dry_run {
-                    let planned = run_tasks_reschedule_command(
-                        &self.paths,
-                        &args.task,
-                        &args.due,
-                        true,
-                        OutputFormat::Json,
-                        false,
-                        true,
-                    )
-                    .map_err(cli_tool_error)?;
+                    let planned = apply_task_reschedule(&self.paths, &request)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     for path in &planned.changed_paths {
                         self.check_write_path_access(path).map_err(cli_tool_error)?;
                     }
                 }
-                let report = run_tasks_reschedule_command(
-                    &self.paths,
-                    &args.task,
-                    &args.due,
-                    args.dry_run,
-                    OutputFormat::Json,
-                    false,
-                    true,
-                )
-                .map_err(cli_tool_error)?;
+                request.dry_run = args.dry_run;
+                let report = apply_task_reschedule(&self.paths, &request)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                if !report.dry_run && !report.changed_paths.is_empty() {
+                    refresh_cache_incrementally(&self.paths)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                }
                 if !args.dry_run {
                     AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                         .commit(
@@ -5163,12 +5128,12 @@ fn parse_periodic_arg(
 
 fn parse_tasks_default_source(
     value: Option<&str>,
-) -> Result<Option<TasksListSourceArg>, McpMethodError> {
+) -> Result<Option<TasksDefaultSource>, McpMethodError> {
     match value {
         None => Ok(None),
-        Some("all") => Ok(Some(TasksListSourceArg::All)),
-        Some("inline") => Ok(Some(TasksListSourceArg::Inline)),
-        Some("tasknotes" | "file") => Ok(Some(TasksListSourceArg::Tasknotes)),
+        Some("all") => Ok(Some(TasksDefaultSource::All)),
+        Some("inline") => Ok(Some(TasksDefaultSource::Inline)),
+        Some("tasknotes" | "file") => Ok(Some(TasksDefaultSource::Tasknotes)),
         Some(other) => Err(McpMethodError::invalid_params(format!(
             "unsupported `task_list.source`: {other}"
         ))),
