@@ -82,9 +82,11 @@ Examples:
 Named remote MCP definitions are intentionally outside the vault config described below. Manage
 them with `vulcan mcp remote init/list/show/set/run/remove`; Vulcan stores them alongside daemon
 configuration in the user config directory. Each definition contains a stable instance ID, a
-loopback bind, exact public HTTPS resource URL, IndieAuth identity, registered wiki reference,
-permission ceiling/default profile names, and eligible tool packs. It contains no token secret and
-is not copied when the vault is synchronized.
+loopback bind, exact public HTTPS resource URL, IndieAuth identity, and one or more registered wiki
+references with per-vault permission ceiling/default profile names and eligible tool packs. A
+multi-vault consent selects exactly one wiki for each grant; the current CLI only creates and edits
+single-vault definitions. The definition contains no token secret and is not copied when the vault
+is synchronized.
 
 Connection grants and refresh-token-family records live in the user state directory outside the
 rebuildable cache. Per-remote OAuth signing/client material is also device-local and owner-only.

@@ -381,11 +381,17 @@ struct LocalOAuthIndieAuthConfig {
 #[derive(Debug, Clone)]
 struct NamedMcpRuntime {
     remote_id: vulcan_daemon::mcp_remote::McpRemoteId,
-    wiki_id: vulcan_daemon::registry::WikiId,
+    vaults: BTreeMap<vulcan_daemon::registry::WikiId, NamedMcpVaultRuntime>,
+    authorization_store: McpAuthorizationStore,
+}
+
+#[cfg(feature = "oauth")]
+#[derive(Debug, Clone)]
+struct NamedMcpVaultRuntime {
+    paths: VaultPaths,
     ceiling_profile: String,
     default_profile: String,
     eligible_tool_packs: Vec<String>,
-    authorization_store: McpAuthorizationStore,
 }
 
 #[cfg(feature = "oauth")]
@@ -628,17 +634,30 @@ fn run_named_mcp_remote_inner(
     ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
     hosted: Option<HostedMcpExecution>,
 ) -> Result<(), CliError> {
-    let [vault] = remote.vaults.as_slice() else {
-        return Err(CliError::operation(
-            "foreground named MCP execution currently requires exactly one vault",
-        ));
-    };
-    let registration = process
-        .registry
-        .show(&vault.wiki_id)
-        .map_err(CliError::operation)?
-        .registration;
-    let tool_packs = mcp_tool_pack_args_from_names(&vault.tool_packs)?;
+    let mut vaults = BTreeMap::new();
+    for vault in &remote.vaults {
+        let registration = process
+            .registry
+            .show(&vault.wiki_id)
+            .map_err(CliError::operation)?
+            .registration;
+        mcp_tool_pack_args_from_names(&vault.tool_packs)?;
+        vaults.insert(
+            vault.wiki_id.clone(),
+            NamedMcpVaultRuntime {
+                paths: VaultPaths::new(registration.path),
+                ceiling_profile: vault.ceiling_profile.clone(),
+                default_profile: vault.default_profile.clone(),
+                eligible_tool_packs: vault.tool_packs.clone(),
+            },
+        );
+    }
+    let first = vaults.values().next().ok_or_else(|| {
+        CliError::operation("named MCP remote must expose at least one registered vault")
+    })?;
+    let paths = first.paths.clone();
+    let default_profile = first.default_profile.clone();
+    let tool_packs = mcp_tool_pack_args_from_names(&first.eligible_tool_packs)?;
     let McpRemoteAuthentication::IndieAuth { identity } = &remote.authentication;
     let endpoint = public_url_path(&remote.public_url)?;
     let storage_dir = process
@@ -675,17 +694,14 @@ fn run_named_mcp_remote_inner(
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     };
     run_mcp_http_server_with_named_runtime(
-        &VaultPaths::new(registration.path),
-        Some(&vault.default_profile),
+        &paths,
+        Some(&default_profile),
         &tool_packs,
         McpToolPackModeArg::Static,
         &options,
         NamedMcpRuntime {
             remote_id: remote.id.clone(),
-            wiki_id: vault.wiki_id.clone(),
-            ceiling_profile: vault.ceiling_profile.clone(),
-            default_profile: vault.default_profile.clone(),
-            eligible_tool_packs: vault.tool_packs.clone(),
+            vaults,
             authorization_store: McpAuthorizationStore::at(&process.state_root),
         },
         McpHttpLifecycle {
@@ -713,14 +729,6 @@ pub(crate) fn resident_named_mcp_service(
 ) -> Result<Option<ServiceRegistration>, CliError> {
     if remotes.is_empty() {
         return Ok(None);
-    }
-    for remote in remotes {
-        if remote.vaults.len() != 1 {
-            return Err(CliError::operation(format!(
-                "resident named MCP remote `{}` currently requires exactly one vault; multi-vault routing is not yet available",
-                remote.id
-            )));
-        }
     }
     let definition = ServiceDefinition {
         id: ServiceId::parse("listener.mcp-remotes").map_err(CliError::operation)?,
@@ -981,6 +989,7 @@ fn run_mcp_http_server_with_named_runtime(
     )
 }
 
+#[allow(clippy::too_many_lines)] // Keeps listener setup and its lifecycle in one place.
 fn run_mcp_http_server_inner(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
@@ -1008,6 +1017,14 @@ fn run_mcp_http_server_inner(
     eprintln!("MCP HTTP server listening on http://{addr}{endpoint}");
     if lifecycle.stop.is_none() {
         spawn_mcp_index_watcher(paths.clone(), WatchOptions::default());
+        #[cfg(feature = "oauth")]
+        if let Some(named) = named_runtime.as_ref() {
+            for vault in named.vaults.values() {
+                if vault.paths.vault_root() != paths.vault_root() {
+                    spawn_mcp_index_watcher(vault.paths.clone(), WatchOptions::default());
+                }
+            }
+        }
     }
     let context = McpHttpServerContext {
         paths: paths.clone(),
@@ -1340,6 +1357,28 @@ fn resolve_mcp_http_session(
 
     if is_initialize {
         let session_id = Ulid::new().to_string();
+        #[cfg(feature = "oauth")]
+        let paths = match (&context.named_runtime, &authority.wiki_id) {
+            (Some(named), Some(wiki_id)) => {
+                &named
+                    .vaults
+                    .get(wiki_id)
+                    .ok_or_else(|| {
+                        mcp_http_json_error_response(403, "grant vault is unavailable", Value::Null)
+                    })?
+                    .paths
+            }
+            (Some(_), None) => {
+                return Err(mcp_http_json_error_response(
+                    403,
+                    "grant has no vault binding",
+                    Value::Null,
+                ));
+            }
+            (None, _) => &context.paths,
+        };
+        #[cfg(not(feature = "oauth"))]
+        let paths = &context.paths;
         let requested_profile = authority
             .permission_profile
             .as_deref()
@@ -1354,7 +1393,7 @@ fn resolve_mcp_http_session(
             None
         };
         let core = McpServerCore::new(
-            &context.paths,
+            paths,
             requested_profile,
             authority_tool_packs
                 .as_deref()
@@ -1648,14 +1687,20 @@ fn authenticate_mcp_http_request(
                     "invalid_token",
                 )
             })?;
+        let vault = named.vaults.get(&grant.wiki_id).ok_or_else(|| {
+            oauth_error_response(
+                context.oauth.as_ref().expect("named runtime has OAuth"),
+                "connection grant vault is no longer exposed",
+                "invalid_token",
+            )
+        })?;
         if grant.remote_id != named.remote_id
-            || grant.wiki_id != named.wiki_id
             || subject.as_deref() != Some(grant.subject.as_str())
             || !scopes.iter().all(|scope| grant.scopes.contains(scope))
             || !grant
                 .tool_packs
                 .iter()
-                .all(|pack| named.eligible_tool_packs.contains(pack))
+                .all(|pack| vault.eligible_tool_packs.contains(pack))
         {
             return Err(oauth_error_response(
                 context.oauth.as_ref().expect("named runtime has OAuth"),
@@ -1664,7 +1709,7 @@ fn authenticate_mcp_http_request(
             ));
         }
         let current_profile =
-            resolve_permission_profile(&context.paths, Some(&grant.permission_profile)).map_err(
+            resolve_permission_profile(&vault.paths, Some(&grant.permission_profile)).map_err(
                 |error| {
                     oauth_error_response(
                         context.oauth.as_ref().expect("named runtime has OAuth"),
@@ -1673,7 +1718,7 @@ fn authenticate_mcp_http_request(
                     )
                 },
             )?;
-        let ceiling = resolve_permission_profile(&context.paths, Some(&named.ceiling_profile))
+        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
             .map_err(|error| {
                 oauth_error_response(
                     context.oauth.as_ref().expect("named runtime has OAuth"),
@@ -4013,6 +4058,27 @@ fn handle_local_oauth_refresh(
     {
         return oauth_json_error_response(400, "invalid_target", "resource does not match grant");
     }
+    let Some(vault) = named.vaults.get(&grant.wiki_id) else {
+        return oauth_json_error_response(400, "invalid_grant", "grant vault is no longer exposed");
+    };
+    if grant.remote_id != named.remote_id
+        || !grant
+            .tool_packs
+            .iter()
+            .all(|pack| vault.eligible_tool_packs.contains(pack))
+    {
+        return oauth_json_error_response(400, "invalid_grant", "grant exceeds remote policy");
+    }
+    let valid_profile = resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
+        .and_then(|current| {
+            resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile)).map(|ceiling| {
+                current.grant.is_subset_of(&grant.approved_permissions)
+                    && current.grant.is_subset_of(&ceiling.grant)
+            })
+        });
+    if !matches!(valid_profile, Ok(true)) {
+        return oauth_json_error_response(400, "invalid_grant", "grant policy is no longer valid");
+    }
     let scopes = match params.get("scope") {
         Some(scope) => match parse_mcp_oauth_scopes(Some(scope)) {
             Ok(scopes) if scopes.iter().all(|scope| grant.scopes.contains(scope)) => scopes,
@@ -4228,12 +4294,32 @@ fn create_named_connection_grant(
     let Some(named) = context.named_runtime.as_ref() else {
         return Ok(None);
     };
+    let (wiki_id, vault) = match params.get("wiki_id") {
+        Some(value) => named
+            .vaults
+            .iter()
+            .find(|(wiki_id, _)| wiki_id.as_str() == value)
+            .ok_or_else(|| oauth_plain_response(400, "selected vault is not exposed"))?,
+        None if named.vaults.len() == 1 => named.vaults.iter().next().expect("one vault"),
+        None => {
+            return Err(oauth_plain_response(
+                400,
+                "select a vault for this connection",
+            ))
+        }
+    };
+    let profile_field = if named.vaults.len() == 1 {
+        "permission_profile".to_string()
+    } else {
+        format!("permission_profile_{wiki_id}")
+    };
     let profile_name = params
-        .get("permission_profile")
-        .map_or(named.default_profile.as_str(), String::as_str);
-    let selected = resolve_permission_profile(&context.paths, Some(profile_name))
+        .get(&profile_field)
+        .filter(|value| !value.is_empty())
+        .map_or(vault.default_profile.as_str(), String::as_str);
+    let selected = resolve_permission_profile(&vault.paths, Some(profile_name))
         .map_err(|error| oauth_plain_response(400, &error.to_string()))?;
-    let ceiling = resolve_permission_profile(&context.paths, Some(&named.ceiling_profile))
+    let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
         .map_err(|error| oauth_plain_response(500, &error.to_string()))?;
     if !selected.grant.is_subset_of(&ceiling.grant) {
         return Err(oauth_plain_response(
@@ -4241,10 +4327,15 @@ fn create_named_connection_grant(
             "selected permission profile exceeds this remote's ceiling",
         ));
     }
-    let tool_packs = named
+    let pack_prefix = if named.vaults.len() == 1 {
+        "pack_".to_string()
+    } else {
+        format!("pack_{wiki_id}_")
+    };
+    let tool_packs = vault
         .eligible_tool_packs
         .iter()
-        .filter(|pack| params.contains_key(&format!("pack_{pack}")))
+        .filter(|pack| params.contains_key(&format!("{pack_prefix}{pack}")))
         .cloned()
         .collect::<Vec<_>>();
     if tool_packs.is_empty() {
@@ -4268,7 +4359,7 @@ fn create_named_connection_grant(
                 remote_instance_id: context.instance_id,
                 client_id: pending.client_id.clone(),
                 subject: pending.subject.clone(),
-                wiki_id: named.wiki_id.clone(),
+                wiki_id: wiki_id.clone(),
                 permission_profile: selected.name,
                 approved_permissions: selected.grant,
                 tool_packs,
@@ -4311,28 +4402,46 @@ fn local_oauth_consent_form(
         .and_then(|client| client.client_name.as_deref())
         .unwrap_or(&pending.client_id)
         .to_string();
-    let (profile_control, pack_controls, expiry_control) = context.named_runtime.as_ref().map_or_else(
-        || (html_escape(&profile), html_escape(&packs.join(", ")), String::new()),
-        |named| {
-            let profile_control = format!(
-                "<input name=\"permission_profile\" value=\"{}\" list=\"profiles\" required><datalist id=\"profiles\"><option value=\"{}\"><option value=\"{}\"></datalist>",
-                html_escape(&named.default_profile),
-                html_escape(&named.default_profile),
-                html_escape(&named.ceiling_profile),
-            );
-            let pack_controls = named
-                .eligible_tool_packs
-                .iter()
-                .map(|pack| format!(
-                    "<label><input type=\"checkbox\" name=\"pack_{}\" value=\"on\" checked> {}</label>",
-                    html_escape(pack), html_escape(pack)
-                ))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let expiry = "<label>Expiry <select name=\"expiry_days\"><option value=\"1\">1 day</option><option value=\"7\">7 days</option><option value=\"30\" selected>30 days</option></select></label>".to_string();
-            (profile_control, pack_controls, expiry)
-        },
-    );
+    let (vault_control, profile_control, pack_controls, expiry_control) =
+        context.named_runtime.as_ref().map_or_else(
+            || (
+                html_escape(&context.paths.vault_root().display().to_string()),
+                html_escape(&profile),
+                html_escape(&packs.join(", ")),
+                String::new(),
+            ),
+            |named| {
+                let multi = named.vaults.len() > 1;
+                let controls = named.vaults.iter().map(|(wiki_id, vault)| {
+                    let wiki = html_escape(wiki_id.as_str());
+                    let profile_field = if multi { format!("permission_profile_{wiki}") } else { "permission_profile".to_string() };
+                    let profile_control = format!(
+                        "<input name=\"{profile_field}\" value=\"{}\" list=\"profiles_{wiki}\" required><datalist id=\"profiles_{wiki}\"><option value=\"{}\"><option value=\"{}\"></datalist>",
+                        html_escape(&vault.default_profile),
+                        html_escape(&vault.default_profile),
+                        html_escape(&vault.ceiling_profile),
+                    );
+                    let pack_controls = vault.eligible_tool_packs.iter().map(|pack| {
+                        let field = if multi { format!("pack_{wiki}_{pack}") } else { format!("pack_{pack}") };
+                        format!("<label><input type=\"checkbox\" name=\"{}\" value=\"on\" checked> {}</label>", html_escape(&field), html_escape(pack))
+                    }).collect::<Vec<_>>().join(" ");
+                    let label = format!("{} ({})", wiki, html_escape(&vault.paths.vault_root().display().to_string()));
+                    (label, profile_control, pack_controls)
+                }).collect::<Vec<_>>();
+                let expiry = "<label>Expiry <select name=\"expiry_days\"><option value=\"1\">1 day</option><option value=\"7\">7 days</option><option value=\"30\" selected>30 days</option></select></label>".to_string();
+                if multi {
+                    use std::fmt::Write as _;
+                    let mut vaults = String::new();
+                    for ((wiki_id, _), (label, profile, packs)) in named.vaults.iter().zip(&controls) {
+                        write!(&mut vaults, "<fieldset><legend><label><input type=\"radio\" name=\"wiki_id\" value=\"{}\" required> {label}</label></legend><p>Permission profile: {profile}</p><p>Tool packs: {packs}</p></fieldset>", html_escape(wiki_id.as_str())).expect("writing to a String cannot fail");
+                    }
+                    (vaults, "Choose one vault below".to_string(), "Each vault has its own eligible packs".to_string(), expiry)
+                } else {
+                    let (label, profile, packs) = controls.into_iter().next().expect("named remote has a vault");
+                    (label, profile, packs, expiry)
+                }
+            },
+        );
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
          <body><main><h1>Authorize this MCP connection?</h1>\
@@ -4350,7 +4459,7 @@ fn local_oauth_consent_form(
         html_escape(&client_name),
         html_escape(&pending.subject),
         html_escape(&pending.resource),
-        html_escape(&context.paths.vault_root().display().to_string()),
+        vault_control,
         profile_control,
         pack_controls,
         html_escape(&pending.scopes.join(" ")),

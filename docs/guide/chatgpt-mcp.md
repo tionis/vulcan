@@ -32,11 +32,12 @@ Recommended setup:
    ```
 
    For a resident process, use `vulcan daemon start --detach` in place of `remote run`. The
-   daemon starts all configured one-vault named remotes together and reports the aggregate
+   daemon starts all configured named remotes together and reports the aggregate
    `listener.mcp-remotes` service in `vulcan daemon status`. Do not run the same instance in
    foreground and resident mode at once; its instance lock rejects the overlap. Restart the
-   daemon after `remote init`, `set`, or `remove` to reload listener definitions. Multi-vault
-   routing within one named remote is not available in resident mode yet.
+   daemon after `remote init`, `set`, or `remove` to reload listener definitions. The listener can
+   route a grant-bound vault in a multi-vault definition, but the current CLI configures one vault
+   per remote; use separate named remotes until multi-vault CLI management is available.
 
    Startup fetches the IndieAuth identity page and, when advertised, its metadata. Each discovery
    request has a three-second timeout and a bounded response; redirects are not followed. If

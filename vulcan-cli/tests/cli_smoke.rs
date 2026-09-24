@@ -15857,6 +15857,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("vulcan daemon start --detach"));
     assert!(mcp_skill.contains("Restart the daemon after `remote init`"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));
+    assert!(mcp_skill.contains("explicitly select one vault"));
+    assert!(mcp_skill.contains("each grant and MCP session stays bound"));
     assert!(mcp_skill.contains("inspect the vault before retrying"));
     assert!(mcp_skill.contains("final canonical HTTPS URL"));
     assert!(mcp_skill.contains(
@@ -15869,7 +15871,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
     assert!(permission_skill.contains("mcp remote init/list/show/set/run/remove"));
-    assert!(permission_skill.contains("hosts configured one-vault remotes"));
+    assert!(permission_skill.contains("hosts configured remotes"));
     assert!(permission_skill.contains("vulcan daemon config show"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));

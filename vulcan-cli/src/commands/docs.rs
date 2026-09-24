@@ -650,14 +650,16 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
             .to_string(),
     );
     lines.push(
-        "loopback bind, exact public HTTPS resource URL, IndieAuth identity, registered wiki reference,"
+        "loopback bind, exact public HTTPS resource URL, IndieAuth identity, and one or more registered wiki"
             .to_string(),
     );
     lines.push(
-        "permission ceiling/default profile names, and eligible tool packs. It contains no token secret and"
+        "references with per-vault permission ceiling/default profile names and eligible tool packs. A"
             .to_string(),
     );
-    lines.push("is not copied when the vault is synchronized.".to_string());
+    lines.push("multi-vault consent selects exactly one wiki for each grant; the current CLI only creates and edits".to_string());
+    lines.push("single-vault definitions. The definition contains no token secret and is not copied when the vault".to_string());
+    lines.push("is synchronized.".to_string());
     lines.push(String::new());
     lines.push(
         "Connection grants and refresh-token-family records live in the user state directory outside the"

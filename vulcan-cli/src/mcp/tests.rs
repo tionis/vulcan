@@ -907,10 +907,15 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
     context.named_runtime = Some(NamedMcpRuntime {
         remote_id: vulcan_daemon::mcp_remote::McpRemoteId::parse("personal-chatgpt")
             .expect("remote"),
-        wiki_id: vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
-        ceiling_profile: "readonly".to_string(),
-        default_profile: "readonly".to_string(),
-        eligible_tool_packs: vec!["notes-read".to_string(), "search".to_string()],
+        vaults: BTreeMap::from([(
+            vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
+            NamedMcpVaultRuntime {
+                paths: paths.clone(),
+                ceiling_profile: "readonly".to_string(),
+                default_profile: "readonly".to_string(),
+                eligible_tool_packs: vec!["notes-read".to_string(), "search".to_string()],
+            },
+        )]),
         authorization_store: store.clone(),
     });
     let verifier = "named-consent-pkce-verifier";
@@ -1025,6 +1030,204 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
 
 #[cfg(feature = "oauth")]
 #[test]
+#[allow(clippy::too_many_lines)] // Covers consent, grant persistence, session routing, and removal.
+fn named_consent_routes_each_grant_to_its_selected_vault() {
+    let temporary = tempfile::tempdir().expect("temporary vaults");
+    let first_path = temporary.path().join("personal");
+    let second_path = temporary.path().join("team");
+    std::fs::create_dir_all(&first_path).expect("first vault");
+    std::fs::create_dir_all(&second_path).expect("second vault");
+    let first = VaultPaths::new(&first_path);
+    let second = VaultPaths::new(&second_path);
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/shared".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "shared-remote-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let mut context = consent_test_context(&first, Arc::clone(&issuer));
+    let store = McpAuthorizationStore::at(temporary.path().join("state"));
+    let personal_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki");
+    let team_id = vulcan_daemon::registry::WikiId::parse("team").expect("wiki");
+    context.named_runtime = Some(NamedMcpRuntime {
+        remote_id: vulcan_daemon::mcp_remote::McpRemoteId::parse("shared").expect("remote"),
+        vaults: BTreeMap::from([
+            (
+                personal_id.clone(),
+                NamedMcpVaultRuntime {
+                    paths: first.clone(),
+                    ceiling_profile: "readonly".to_string(),
+                    default_profile: "readonly".to_string(),
+                    eligible_tool_packs: vec!["notes-read".to_string()],
+                },
+            ),
+            (
+                team_id.clone(),
+                NamedMcpVaultRuntime {
+                    paths: second.clone(),
+                    ceiling_profile: "readonly".to_string(),
+                    default_profile: "readonly".to_string(),
+                    eligible_tool_packs: vec!["search".to_string()],
+                },
+            ),
+        ]),
+        authorization_store: store.clone(),
+    });
+    let pending = LocalOAuthPendingConsent {
+        client_id: "static-client".to_string(),
+        redirect_uri: "https://client.example.test/callback".to_string(),
+        code_challenge: "challenge".to_string(),
+        subject: "https://identity.example.test/alice".to_string(),
+        scopes: vec!["mcp:tools".to_string()],
+        resource: "https://mcp.example.test/shared".to_string(),
+        state: None,
+        csrf_token: "csrf".to_string(),
+        expires_at: std::time::Instant::now() + Duration::from_secs(60),
+    };
+    let form = local_oauth_consent_form(&context, &issuer, "transaction", &pending);
+    let html = String::from_utf8(form.body).expect("consent HTML");
+    assert!(html.contains("name=\"wiki_id\" value=\"personal\""));
+    assert!(html.contains("name=\"wiki_id\" value=\"team\""));
+    assert!(create_named_connection_grant(&context, &pending, &BTreeMap::new()).is_err());
+    assert!(create_named_connection_grant(
+        &context,
+        &pending,
+        &BTreeMap::from([("wiki_id".to_string(), "other".to_string())]),
+    )
+    .is_err());
+    let selected = BTreeMap::from([
+        ("wiki_id".to_string(), "team".to_string()),
+        (
+            "permission_profile_team".to_string(),
+            "readonly".to_string(),
+        ),
+        ("pack_team_search".to_string(), "on".to_string()),
+        ("expiry_days".to_string(), "7".to_string()),
+    ]);
+    let grant_id = create_named_connection_grant(&context, &pending, &selected)
+        .expect("team consent")
+        .expect("grant")
+        .parse::<Ulid>()
+        .expect("ULID");
+    let grant = store.show_grant(grant_id).expect("durable grant");
+    assert_eq!(grant.wiki_id, team_id);
+    assert_eq!(grant.tool_packs, ["search"]);
+    let token = issuer
+        .issue_access_token_for_authorization(
+            &pending.subject,
+            &pending.client_id,
+            &pending.scopes,
+            Some(grant_id.to_string()),
+        )
+        .expect("access token");
+    let request = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query: String::new(),
+        headers: BTreeMap::from([("authorization".to_string(), format!("Bearer {token}"))]),
+        body: Vec::new(),
+    };
+    let authority = authenticate_mcp_http_request(&context, &request).expect("team authority");
+    let (team_session_id, session, _) = resolve_mcp_http_session(
+        &context,
+        &request,
+        &serde_json::json!({"jsonrpc":"2.0","method":"initialize","id":1}),
+        &authority,
+    )
+    .expect("team session");
+    assert_eq!(
+        session.core.lock().expect("core").paths.vault_root(),
+        second.vault_root()
+    );
+    let personal_grant_id = create_named_connection_grant(
+        &context,
+        &pending,
+        &BTreeMap::from([
+            ("wiki_id".to_string(), "personal".to_string()),
+            ("pack_personal_notes-read".to_string(), "on".to_string()),
+            ("expiry_days".to_string(), "1".to_string()),
+        ]),
+    )
+    .expect("personal consent")
+    .expect("personal grant");
+    let personal_token = issuer
+        .issue_access_token_for_authorization(
+            &pending.subject,
+            &pending.client_id,
+            &pending.scopes,
+            Some(personal_grant_id),
+        )
+        .expect("personal token");
+    let mut personal_request = request.clone();
+    personal_request.headers.insert(
+        "authorization".to_string(),
+        format!("Bearer {personal_token}"),
+    );
+    let personal_authority =
+        authenticate_mcp_http_request(&context, &personal_request).expect("personal authority");
+    let (_, personal_session, _) = resolve_mcp_http_session(
+        &context,
+        &personal_request,
+        &serde_json::json!({"jsonrpc":"2.0","method":"initialize","id":2}),
+        &personal_authority,
+    )
+    .expect("personal session");
+    assert_eq!(
+        personal_session
+            .core
+            .lock()
+            .expect("core")
+            .paths
+            .vault_root(),
+        first.vault_root()
+    );
+    personal_request
+        .headers
+        .insert("mcp-session-id".to_string(), team_session_id);
+    assert!(
+        resolve_mcp_http_session(
+            &context,
+            &personal_request,
+            &serde_json::json!({"jsonrpc":"2.0","method":"tools/list","id":3}),
+            &personal_authority,
+        )
+        .is_err(),
+        "a personal grant cannot reuse the team vault session"
+    );
+    let refresh = store
+        .issue_refresh_token(grant_id, grant.expires_at, current_unix_timestamp())
+        .expect("refresh token");
+    context
+        .named_runtime
+        .as_mut()
+        .expect("named runtime")
+        .vaults
+        .remove(&team_id);
+    assert!(
+        authenticate_mcp_http_request(&context, &request).is_err(),
+        "removing a vault from the remote invalidates its existing grants"
+    );
+    let refresh_params = BTreeMap::from([(
+        "refresh_token".to_string(),
+        format!("{}.{}", refresh.family_id, refresh.secret.expose()),
+    )]);
+    assert_eq!(
+        handle_local_oauth_refresh(&context, &issuer, &pending.client_id, &refresh_params).status,
+        400,
+        "a removed vault cannot refresh an existing connection"
+    );
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 fn named_runtime_locks_conflict_per_remote_but_not_across_remotes() {
     let temporary = tempfile::tempdir().expect("temporary state");
     let definition = |name: &str, instance_id: Ulid| McpRemoteDefinition {
@@ -1053,7 +1256,7 @@ fn named_runtime_locks_conflict_per_remote_but_not_across_remotes() {
 
 #[cfg(feature = "oauth")]
 #[test]
-fn resident_mcp_service_groups_instances_and_rejects_unsupported_multi_vault_routing() {
+fn resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions() {
     let temporary = tempfile::tempdir().expect("temporary state");
     let process = DaemonProcessContext {
         registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
@@ -1098,13 +1301,13 @@ fn resident_mcp_service_groups_instances_and_rejects_unsupported_multi_vault_rou
     assert_eq!(service.definition.id.as_str(), "listener.mcp-remotes");
     assert!(service.definition.required);
 
-    let mut unsupported = first;
-    unsupported.vaults.push(unsupported.vaults[0].clone());
-    let error = resident_service(&[unsupported])
-        .expect_err("multi-vault routing must not be silently narrowed");
-    assert!(error
-        .message
-        .contains("multi-vault routing is not yet available"));
+    let mut multi = first;
+    let mut second_vault = multi.vaults[0].clone();
+    second_vault.wiki_id = vulcan_daemon::registry::WikiId::parse("team").expect("wiki ID");
+    multi.vaults.push(second_vault);
+    assert!(resident_service(&[multi])
+        .expect("multi-vault definitions are accepted")
+        .is_some());
 }
 
 #[cfg(feature = "oauth")]
