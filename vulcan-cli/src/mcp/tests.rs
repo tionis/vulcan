@@ -170,6 +170,51 @@ fn oauth_options() -> McpHttpOptions {
 
 #[cfg(feature = "oauth")]
 #[test]
+fn mcp_http_listener_reports_bound_address_and_stops_on_supervisor_signal() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let mut options = oauth_options();
+    options.bind = "127.0.0.1:0".to_string();
+    options.public_url = None;
+    options.oauth_issuer = None;
+    options.oauth_audience.clear();
+    options.oauth_jwks_url = None;
+    options.oauth_allowed_sub.clear();
+    options.oauth_local_subject = None;
+    let stop = Arc::new(ShutdownSignal::new(false));
+    let runner_stop = Arc::clone(&stop);
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let (done_sender, done_receiver) = mpsc::channel();
+    let runner = thread::spawn(move || {
+        let on_ready = |address| ready_sender.send(address).map_err(CliError::operation);
+        let result = run_mcp_http_server_inner(
+            &paths,
+            None,
+            &[],
+            McpToolPackModeArg::Static,
+            &options,
+            None,
+            McpHttpLifecycle {
+                stop: Some(&runner_stop),
+                ready: Some(&on_ready),
+            },
+        );
+        done_sender.send(result).expect("completion receiver");
+    });
+    let address = ready_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("listener readiness after bind");
+    TcpStream::connect(address).expect("ready listener should accept TCP connections");
+    stop.cancel();
+    done_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("listener should stop promptly")
+        .expect("listener should stop cleanly");
+    runner.join().expect("listener thread");
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 fn static_local_oauth_requires_registered_safe_redirects() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
@@ -915,6 +960,51 @@ fn named_runtime_locks_conflict_per_remote_but_not_across_remotes() {
     let _first_lock = acquire_named_remote_runtime_lock(&first_dir, &first).expect("first lock");
     assert!(acquire_named_remote_runtime_lock(&first_dir, &first).is_err());
     assert!(acquire_named_remote_runtime_lock(&temporary.path().join("second"), &second).is_ok());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn resident_mcp_service_groups_instances_and_rejects_unsupported_multi_vault_routing() {
+    let temporary = tempfile::tempdir().expect("temporary state");
+    let process = DaemonProcessContext {
+        registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
+        state_root: temporary.path().join("state"),
+        verbose: false,
+    };
+    let definition = |name: &str| McpRemoteDefinition {
+        version: vulcan_daemon::mcp_remote::MCP_REMOTE_DEFINITION_VERSION,
+        id: vulcan_daemon::mcp_remote::McpRemoteId::parse(name).expect("remote ID"),
+        instance_id: Ulid::new(),
+        bind: "127.0.0.1:8765".to_string(),
+        public_url: format!("https://mcp.example.test/{name}"),
+        authentication: McpRemoteAuthentication::IndieAuth {
+            identity: "https://identity.example.test/alice".to_string(),
+        },
+        vaults: vec![vulcan_daemon::mcp_remote::McpRemoteVault {
+            wiki_id: vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID"),
+            ceiling_profile: "readonly".to_string(),
+            default_profile: "readonly".to_string(),
+            tool_packs: vec!["notes-read".to_string()],
+        }],
+    };
+    assert!(resident_named_mcp_service(&process, &[])
+        .expect("empty registry")
+        .is_none());
+    let first = definition("first");
+    let second = definition("second");
+    let service = resident_named_mcp_service(&process, &[first.clone(), second])
+        .expect("two remotes share one supervised service")
+        .expect("service");
+    assert_eq!(service.definition.id.as_str(), "listener.mcp-remotes");
+    assert!(service.definition.required);
+
+    let mut unsupported = first;
+    unsupported.vaults.push(unsupported.vaults[0].clone());
+    let error = resident_named_mcp_service(&process, &[unsupported])
+        .expect_err("multi-vault routing must not be silently narrowed");
+    assert!(error
+        .message
+        .contains("multi-vault routing is not yet available"));
 }
 
 #[test]

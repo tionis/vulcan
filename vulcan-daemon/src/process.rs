@@ -235,6 +235,23 @@ impl From<HostRuntimeError> for DaemonProcessError {
 }
 
 pub fn run_daemon_foreground(context: &DaemonProcessContext) -> Result<(), DaemonProcessError> {
+    run_daemon_foreground_with_services(context, &|_, _| Ok(Vec::new()))
+}
+
+/// Starts the ordinary daemon graph with host-provided ingress services.
+/// The host may add protocol adapters without making the daemon import their
+/// presentation-layer types; all added services share normal readiness,
+/// shutdown, and status supervision.
+pub fn run_daemon_foreground_with_services<F>(
+    context: &DaemonProcessContext,
+    additional_services: &F,
+) -> Result<(), DaemonProcessError>
+where
+    F: Fn(
+        &DaemonProcessContext,
+        &crate::registry::DaemonConfig,
+    ) -> Result<Vec<ServiceRegistration>, String>,
+{
     let config_directory = context.registry.path().parent().ok_or_else(|| {
         DaemonProcessError::Configuration(
             "daemon registry path has no configuration directory".to_string(),
@@ -251,17 +268,25 @@ pub fn run_daemon_foreground(context: &DaemonProcessContext) -> Result<(), Daemo
         context,
         config,
         (agents.0.clone(), agents.1.clone()),
+        additional_services,
     ))
 }
 
-async fn run_daemon(
+async fn run_daemon<F>(
     context: &DaemonProcessContext,
     config: crate::registry::DaemonConfig,
     agents: (
         Option<Arc<CompanionResolutionAgent>>,
         Option<Arc<CompanionSemanticAgent>>,
     ),
-) -> Result<(), DaemonProcessError> {
+    additional_services: &F,
+) -> Result<(), DaemonProcessError>
+where
+    F: Fn(
+        &DaemonProcessContext,
+        &crate::registry::DaemonConfig,
+    ) -> Result<Vec<ServiceRegistration>, String>,
+{
     let daemon_dir = context.state_root.join("daemon");
     fs::create_dir_all(&daemon_dir)?;
     let lock = OpenOptions::new()
@@ -331,6 +356,8 @@ async fn run_daemon(
         state.semantic_agent.as_ref(),
         &runtime,
     )?;
+    registrations
+        .extend(additional_services(context, &config).map_err(DaemonProcessError::Configuration)?);
     registrations.push(companion_listener_service(
         listener,
         state.clone(),
@@ -1234,6 +1261,77 @@ mod tests {
         let error = ensure_daemon_service_budget(DAEMON_SERVICE_REGISTRATION_LIMIT + 1)
             .expect_err("oversized service graph must fail closed");
         assert!(error.to_string().contains("exceeding the readiness budget"));
+    }
+
+    #[test]
+    fn host_provided_ingress_is_ready_and_stops_with_the_daemon() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let config = DaemonConfig {
+            bind: "127.0.0.1:0".to_string(),
+            ..DaemonConfig::default()
+        };
+        fs::write(
+            registry.path(),
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write registry");
+        let context = DaemonProcessContext {
+            registry,
+            state_root: temporary.path().join("state"),
+            verbose: false,
+        };
+        let child_context = context.clone();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let daemon = thread::spawn(move || {
+            let result = run_daemon_foreground_with_services(&child_context, &|_, _| {
+                Ok(vec![ServiceRegistration::new(
+                    ServiceDefinition {
+                        id: ServiceId::parse("listener.test-ingress").expect("service ID"),
+                        service_kind: "listener".to_string(),
+                        scope: ServiceScope::Global,
+                        enabled: true,
+                        required: true,
+                        dependencies: vec![
+                            ServiceId::parse("worker.sync-trigger").expect("dependency")
+                        ],
+                        restart: RestartPolicy::Never,
+                    },
+                    |service| {
+                        service.ready()?;
+                        while !service.stop().wait_timeout(Duration::from_millis(20)) {}
+                        Ok(())
+                    },
+                )])
+            });
+            result_sender.send(result).expect("send daemon result");
+        });
+
+        let status = (0..100)
+            .find_map(|_| {
+                if let Ok(result) = result_receiver.try_recv() {
+                    panic!("daemon stopped before readiness: {result:?}");
+                }
+                let status = daemon_status(&context).ok()?;
+                if status.running {
+                    Some(status)
+                } else {
+                    thread::sleep(Duration::from_millis(25));
+                    None
+                }
+            })
+            .expect("daemon becomes ready");
+        assert_eq!(status.services.len(), 8);
+        assert!(status.services.iter().any(|service| {
+            service.id.as_str() == "listener.test-ingress"
+                && service.state == crate::host::ServiceLifecycleState::Ready
+        }));
+        request_daemon_shutdown(&context).expect("request shutdown");
+        daemon.join().expect("daemon thread");
+        result_receiver
+            .recv()
+            .expect("daemon result")
+            .expect("clean daemon shutdown");
     }
 
     fn assert_daemon_sync_attempted(context: &DaemonProcessContext) {

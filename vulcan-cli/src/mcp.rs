@@ -98,17 +98,28 @@ use vulcan_core::{
     OAuthResourceServer, OAuthResourceServerConfig,
 };
 #[cfg(feature = "oauth")]
+use vulcan_daemon::host::{
+    RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration, ServiceScope,
+};
+#[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 use vulcan_daemon::mcp_session::McpSessionAuthority;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
 use vulcan_daemon::process::DaemonProcessContext;
+use vulcan_daemon::shutdown::ShutdownSignal;
 
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+#[derive(Default)]
+struct McpHttpLifecycle<'a> {
+    stop: Option<&'a ShutdownSignal>,
+    ready: Option<&'a dyn Fn(SocketAddr) -> Result<(), CliError>>,
+}
 const DEFAULT_MCP_OAUTH_SCOPES: &[&str] = &["mcp:prompts", "mcp:resources", "mcp:tools"];
 #[cfg(feature = "oauth")]
 const SUPPORTED_MCP_OAUTH_SCOPES: &[&str] = &[
@@ -468,6 +479,16 @@ pub(crate) fn run_named_mcp_remote(
     process: &DaemonProcessContext,
     remote: &McpRemoteDefinition,
 ) -> Result<(), CliError> {
+    run_named_mcp_remote_inner(process, remote, None, None)
+}
+
+#[cfg(feature = "oauth")]
+fn run_named_mcp_remote_inner(
+    process: &DaemonProcessContext,
+    remote: &McpRemoteDefinition,
+    stop: Option<&ShutdownSignal>,
+    ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
+) -> Result<(), CliError> {
     let [vault] = remote.vaults.as_slice() else {
         return Err(CliError::operation(
             "foreground named MCP execution currently requires exactly one vault",
@@ -528,7 +549,126 @@ pub(crate) fn run_named_mcp_remote(
             eligible_tool_packs: vault.tool_packs.clone(),
             authorization_store: McpAuthorizationStore::at(&process.state_root),
         },
+        McpHttpLifecycle { stop, ready },
     )
+}
+
+#[cfg(feature = "oauth")]
+#[derive(Debug)]
+enum ResidentMcpEvent {
+    Ready(String),
+    Exited(String, Result<(), String>),
+}
+
+#[cfg(feature = "oauth")]
+pub(crate) fn resident_named_mcp_service(
+    process: &DaemonProcessContext,
+    remotes: &[McpRemoteDefinition],
+) -> Result<Option<ServiceRegistration>, CliError> {
+    if remotes.is_empty() {
+        return Ok(None);
+    }
+    for remote in remotes {
+        if remote.vaults.len() != 1 {
+            return Err(CliError::operation(format!(
+                "resident named MCP remote `{}` currently requires exactly one vault; multi-vault routing is not yet available",
+                remote.id
+            )));
+        }
+    }
+    let definition = ServiceDefinition {
+        id: ServiceId::parse("listener.mcp-remotes").map_err(CliError::operation)?,
+        service_kind: "listener".to_string(),
+        scope: ServiceScope::Global,
+        enabled: true,
+        required: true,
+        dependencies: vec![ServiceId::parse("worker.sync-trigger").map_err(CliError::operation)?],
+        restart: RestartPolicy::Never,
+    };
+    let process = process.clone();
+    let remotes = remotes.to_vec();
+    Ok(Some(ServiceRegistration::new(definition, move |service| {
+        let (sender, receiver) = mpsc::channel::<ResidentMcpEvent>();
+        let mut handles = Vec::with_capacity(remotes.len());
+        for remote in remotes.clone() {
+            let sender = sender.clone();
+            let stop = Arc::clone(service.stop());
+            let process = process.clone();
+            let name = remote.id.to_string();
+            let handle = match thread::Builder::new()
+                .name(format!("mcp-remote-{name}"))
+                .spawn(move || {
+                    let on_ready = |_address| {
+                        sender
+                            .send(ResidentMcpEvent::Ready(name.clone()))
+                            .map_err(CliError::operation)
+                    };
+                    let result =
+                        run_named_mcp_remote_inner(&process, &remote, Some(&stop), Some(&on_ready))
+                            .map_err(|error| error.message);
+                    let _ = sender.send(ResidentMcpEvent::Exited(name, result));
+                }) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    service.stop().cancel();
+                    return Err(format!("failed to spawn named MCP remote: {error}"));
+                }
+            };
+            handles.push(handle);
+        }
+        drop(sender);
+        let mut ready = BTreeSet::new();
+        while ready.len() < remotes.len() {
+            match receiver.recv_timeout(Duration::from_secs(8)) {
+                Ok(ResidentMcpEvent::Ready(name)) => {
+                    ready.insert(name);
+                }
+                Ok(ResidentMcpEvent::Exited(name, result)) => {
+                    service.stop().cancel();
+                    return Err(format!(
+                        "named MCP remote `{name}` stopped during startup: {}",
+                        result
+                            .err()
+                            .unwrap_or_else(|| "listener exited".to_string())
+                    ));
+                }
+                Err(error) => {
+                    service.stop().cancel();
+                    return Err(format!("named MCP listener startup timed out: {error}"));
+                }
+            }
+        }
+        if let Err(error) = service.ready() {
+            service.stop().cancel();
+            return Err(error);
+        }
+        loop {
+            if service.stop().wait_timeout(Duration::from_millis(50)) {
+                break;
+            }
+            if let Ok(ResidentMcpEvent::Exited(name, result)) = receiver.try_recv() {
+                service.stop().cancel();
+                join_resident_mcp_threads(handles)?;
+                return Err(format!(
+                    "named MCP remote `{name}` stopped unexpectedly: {}",
+                    result
+                        .err()
+                        .unwrap_or_else(|| "listener exited".to_string())
+                ));
+            }
+        }
+        join_resident_mcp_threads(handles)
+    })))
+}
+
+#[cfg(feature = "oauth")]
+fn join_resident_mcp_threads(handles: Vec<thread::JoinHandle<()>>) -> Result<(), String> {
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| "named MCP listener thread panicked".to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "oauth")]
@@ -661,6 +801,7 @@ fn run_mcp_http_server(
         options,
         #[cfg(feature = "oauth")]
         None,
+        McpHttpLifecycle::default(),
     )
 }
 
@@ -672,6 +813,7 @@ fn run_mcp_http_server_with_named_runtime(
     tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
     named_runtime: NamedMcpRuntime,
+    lifecycle: McpHttpLifecycle<'_>,
 ) -> Result<(), CliError> {
     run_mcp_http_server_inner(
         paths,
@@ -680,6 +822,7 @@ fn run_mcp_http_server_with_named_runtime(
         tool_pack_mode_arg,
         options,
         Some(named_runtime),
+        lifecycle,
     )
 }
 
@@ -690,6 +833,7 @@ fn run_mcp_http_server_inner(
     tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
     #[cfg(feature = "oauth")] named_runtime: Option<NamedMcpRuntime>,
+    lifecycle: McpHttpLifecycle<'_>,
 ) -> Result<(), CliError> {
     #[cfg(feature = "oauth")]
     let oauth = build_mcp_oauth_validator(paths, requested_profile, options)?;
@@ -707,7 +851,9 @@ fn run_mcp_http_server_inner(
         .map_err(CliError::operation)?;
     let addr = listener.local_addr().map_err(CliError::operation)?;
     eprintln!("MCP HTTP server listening on http://{addr}{endpoint}");
-    spawn_mcp_index_watcher(paths.clone(), WatchOptions::default());
+    if lifecycle.stop.is_none() {
+        spawn_mcp_index_watcher(paths.clone(), WatchOptions::default());
+    }
     let context = McpHttpServerContext {
         paths: paths.clone(),
         requested_profile: requested_profile.map(ToOwned::to_owned),
@@ -752,7 +898,13 @@ fn run_mcp_http_server_inner(
         request_timeout: options.request_timeout,
     };
 
+    if let Some(ready) = lifecycle.ready {
+        ready(addr)?;
+    }
     loop {
+        if lifecycle.stop.is_some_and(ShutdownSignal::is_cancelled) {
+            return Ok(());
+        }
         match listener.accept() {
             Ok((mut stream, _)) => {
                 let context = context.clone();
@@ -767,7 +919,11 @@ fn run_mcp_http_server_inner(
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(20));
+                if let Some(stop) = lifecycle.stop {
+                    stop.wait_timeout(Duration::from_millis(20));
+                } else {
+                    thread::sleep(Duration::from_millis(20));
+                }
             }
             Err(error) => return Err(CliError::operation(error)),
         }

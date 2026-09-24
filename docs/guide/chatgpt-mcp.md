@@ -31,6 +31,13 @@ Recommended setup:
    vulcan mcp remote run personal-chatgpt
    ```
 
+   For a resident process, use `vulcan daemon start --detach` in place of `remote run`. The
+   daemon starts all configured one-vault named remotes together and reports the aggregate
+   `listener.mcp-remotes` service in `vulcan daemon status`. Do not run the same instance in
+   foreground and resident mode at once; its instance lock rejects the overlap. Restart the
+   daemon after `remote init`, `set`, or `remove` to reload listener definitions. Multi-vault
+   routing within one named remote is not available in resident mode yet.
+
 2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. In ChatGPT, open **Settings → Security and login**, enable **Developer mode**, then open **ChatGPT Plugins**, add a connection, and enter the public MCP URL including `/mcp`.
 4. Sign in through IndieAuth. On Vulcan's consent page, verify the client, identity, exact MCP URL,
@@ -60,7 +67,11 @@ For external OIDC resource-server mode, use `--oauth-issuer`, `--oauth-audience`
 
 `--auth-token` remains useful for private/internal clients that can set a shared bearer token or `x-vulcan-token`. It is mutually exclusive with direct OAuth mode and is not a ChatGPT-compatible public auth mechanism.
 
-HTTP MCP starts a background vault watcher and runs incremental scans after filesystem changes. Use `index_scan` when you want an explicit refresh or a full reindex. Each request is bounded by `--request-timeout`, so long-running tool calls return a structured timeout error instead of leaving the client waiting indefinitely.
+Foreground HTTP MCP starts a background vault watcher; resident mode uses the daemon's vault
+observation runtime. Both run incremental scans after filesystem changes. Use `index_scan` when
+you want an explicit refresh or a full reindex. Each request is bounded by the configured request
+timeout, so long-running tool calls return a structured timeout error instead of leaving the client
+waiting indefinitely.
 
 For private development without publishing a public Vulcan endpoint, ChatGPT also supports Secure MCP Tunnel. That is a separate OpenAI-hosted connection path rather than a Vulcan authentication mode; keep the direct HTTPS/OAuth deployment above when you need a conventional independently reachable endpoint.
 

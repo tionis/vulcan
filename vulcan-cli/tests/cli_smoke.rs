@@ -15854,6 +15854,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
+    assert!(mcp_skill.contains("vulcan daemon start --detach"));
+    assert!(mcp_skill.contains("Restart the daemon after `remote init`"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));
     assert!(mcp_skill.contains(
         "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"
@@ -15865,6 +15867,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
     assert!(permission_skill.contains("mcp remote init/list/show/set/run/remove"));
+    assert!(permission_skill.contains("hosts configured one-vault remotes"));
     assert!(permission_skill.contains("vulcan daemon config show"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));

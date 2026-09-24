@@ -57,6 +57,8 @@ permission profiles, or diagnoses permission and trust failures.
     Definitions live in device-global daemon configuration and reference registered wikis plus
     vault-defined permission profiles; they never live in synced `.vulcan/config.toml`. Inspect and
     revoke the separate durable approval state with `vulcan mcp connections list/show/revoke`.
+    `vulcan daemon start --detach` hosts configured one-vault remotes; restart it after changing
+    definitions, and do not concurrently run the same remote in foreground mode.
 
 ## Guardrails
 

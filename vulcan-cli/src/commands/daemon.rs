@@ -18,8 +18,9 @@ use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
 use vulcan_daemon::conflict_worker::{load_conflict_worker_status, ConflictWorkerStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::daemon_host::DAEMON_READINESS_TIMEOUT;
+use vulcan_daemon::host::ServiceRegistration;
 use vulcan_daemon::process::{
-    daemon_status, request_daemon_shutdown, run_daemon_foreground,
+    daemon_status, request_daemon_shutdown, run_daemon_foreground_with_services,
     DaemonNotificationDiscoveryState, DaemonProcessContext, DaemonStatusReport,
 };
 use vulcan_daemon::registry::{
@@ -686,7 +687,7 @@ fn start_foreground(
     let daemon_context = context.clone();
     let (sender, receiver) = mpsc::channel();
     let daemon = thread::spawn(move || {
-        let result = run_daemon_foreground(&daemon_context);
+        let result = run_daemon_foreground_with_services(&daemon_context, &resident_mcp_services);
         let _ = sender.send(result);
     });
     let status = wait_until_ready(context, &receiver)?;
@@ -700,6 +701,30 @@ fn start_foreground(
         .recv()
         .map_err(CliError::operation)?
         .map_err(CliError::operation)
+}
+
+fn resident_mcp_services(
+    context: &DaemonProcessContext,
+    config: &DaemonConfig,
+) -> Result<Vec<ServiceRegistration>, String> {
+    #[cfg(feature = "oauth")]
+    {
+        crate::mcp::resident_named_mcp_service(context, &config.mcp_remotes)
+            .map(|service| service.into_iter().collect())
+            .map_err(|error| error.message)
+    }
+    #[cfg(not(feature = "oauth"))]
+    {
+        let _ = context;
+        if config.mcp_remotes.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(
+                "resident named MCP remotes require a build with the `oauth` feature enabled"
+                    .to_string(),
+            )
+        }
+    }
 }
 
 fn start_detached(cli: &Cli, context: &DaemonProcessContext) -> Result<(), CliError> {
@@ -1076,6 +1101,21 @@ fn detached_child_args(verbose: bool) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_without_named_remotes_adds_no_mcp_listener() {
+        let temporary = tempfile::tempdir().expect("temporary state");
+        let context = DaemonProcessContext {
+            registry: vulcan_daemon::registry::WikiRegistry::at(
+                temporary.path().join("daemon.toml"),
+            ),
+            state_root: temporary.path().join("state"),
+            verbose: false,
+        };
+        assert!(resident_mcp_services(&context, &DaemonConfig::default())
+            .expect("empty remote registry")
+            .is_empty());
+    }
 
     #[test]
     fn detached_child_preserves_verbose_logging() {

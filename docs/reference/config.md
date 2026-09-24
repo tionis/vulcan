@@ -98,6 +98,11 @@ into eligible packs, initialize the remote with the old exact `--public-url` and
 then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing
 direct flags remain supported and are not imported automatically.
 
+For resident one-vault remotes, `vulcan daemon start --detach` loads all named definitions at
+startup and supervises them under `listener.mcp-remotes`; restart the daemon after a remote
+definition changes. A foreground `remote run` and the resident daemon cannot own the same remote
+simultaneously. Multi-vault routing within one remote is not yet supported by the resident host.
+
 Derived from Vulcan's config descriptor registry. `config set`, `config unset`, `config list`, the settings TUI, and this help surface share the same supported key metadata.
 
 Precedence: `.vulcan/config.local.toml` > `.vulcan/config.toml` > `.obsidian/*` imports > built-in defaults.

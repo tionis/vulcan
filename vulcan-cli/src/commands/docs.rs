@@ -699,6 +699,23 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
     lines.push("direct flags remain supported and are not imported automatically.".to_string());
     lines.push(String::new());
     lines.push(
+        "For resident one-vault remotes, `vulcan daemon start --detach` loads all named definitions at"
+            .to_string(),
+    );
+    lines.push(
+        "startup and supervises them under `listener.mcp-remotes`; restart the daemon after a remote"
+            .to_string(),
+    );
+    lines.push(
+        "definition changes. A foreground `remote run` and the resident daemon cannot own the same remote"
+            .to_string(),
+    );
+    lines.push(
+        "simultaneously. Multi-vault routing within one remote is not yet supported by the resident host."
+            .to_string(),
+    );
+    lines.push(String::new());
+    lines.push(
         "Derived from Vulcan's config descriptor registry. `config set`, `config unset`, `config list`, the settings TUI, and this help surface share the same supported key metadata.".to_string(),
     );
     lines.push(String::new());
