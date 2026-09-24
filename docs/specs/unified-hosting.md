@@ -233,6 +233,8 @@ owns date/target resolution and daily list/show reports shared by CLI and MCP. M
 `vulcan-app::browse` report directly.
 `vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline` and `note_get` reports for CLI and MCP. Remaining tool workflows, CLI-derived command-help catalog sharing,
 and HTTP/OAuth hosting remain migration work under 10.7.6.
+`vulcan-app::web` provides permission-checked search/fetch workflows to CLI and MCP, including
+network and optional save-path preflight; MCP no longer calls CLI web handlers.
 
 ## Preserved compatibility contracts
 

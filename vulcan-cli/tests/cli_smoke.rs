@@ -30542,6 +30542,61 @@ fn mcp_task_mutations_refresh_the_cache_for_following_reads() {
 }
 
 #[test]
+fn mcp_web_tools_use_the_shared_permission_checked_workflows() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.network_only]\nnetwork = \"allow\"\n",
+    )
+    .expect("permissions config");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        format!(
+            "[web.search]\nbackend = \"duckduckgo\"\nbase_url = \"{}\"\n",
+            server.url("/html/")
+        ),
+    )
+    .expect("web config");
+
+    let mut session = McpSession::start(
+        &vault_root,
+        &["--permissions", "network_only", "--tool-pack", "web"],
+    );
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let search = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "web_search", "arguments": { "query": "release", "limit": 2 } }
+    }));
+    let search = &search.last().expect("web_search")["result"];
+    assert_eq!(search["isError"], false);
+    assert_eq!(
+        search["structuredContent"]["results"][0]["title"],
+        "Release Notes"
+    );
+
+    let fetch = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "web_fetch", "arguments": {
+            "url": server.url("/article"), "mode": "markdown"
+        } }
+    }));
+    let fetch = &fetch.last().expect("web_fetch")["result"];
+    assert_eq!(fetch["isError"], false);
+    assert_eq!(fetch["structuredContent"]["status"], 200);
+    assert!(fetch["structuredContent"]["content"]
+        .as_str()
+        .is_some_and(|content| content.contains("Release Summary")));
+    assert!(session.finish().is_empty());
+    server.shutdown();
+}
+
+#[test]
 fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

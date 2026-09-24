@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use vulcan_core::paths::{normalize_relative_input_path, secure_write, RelativePathOptions};
 use vulcan_core::{
-    fetch_web_content, load_vault_config, prepare_search_backend, search_web,
-    PreparedWebSearchBackend, SearchBackendKind, VaultPaths,
+    fetch_web_content, load_vault_config, prepare_search_backend, search_web, PermissionGuard,
+    PreparedWebSearchBackend, ProfilePermissionGuard, SearchBackendKind, VaultPaths,
 };
 
 pub use vulcan_core::{WebFetchReport, WebSearchReport};
@@ -97,6 +97,62 @@ pub fn build_web_search_report(
     execute_web_search(&prepared)
 }
 
+/// Enforce the caller's network boundary before issuing a search request.
+pub fn build_web_search_report_with_permissions(
+    paths: &VaultPaths,
+    request: &WebSearchRequest,
+    permissions: Option<&ProfilePermissionGuard>,
+) -> Result<WebSearchReport, AppError> {
+    let prepared = prepare_web_search(paths, request)?;
+    if let Some(permissions) = permissions {
+        permissions
+            .check_network(&prepared.base_url)
+            .map_err(AppError::operation)?;
+    }
+    execute_web_search(&prepared)
+}
+
+/// Check both network and optional vault-write authority before fetching.
+pub fn apply_web_fetch_report_with_permissions(
+    paths: &VaultPaths,
+    request: &WebFetchRequest,
+    permissions: Option<&ProfilePermissionGuard>,
+) -> Result<WebFetchReport, AppError> {
+    if let Some(permissions) = permissions {
+        permissions
+            .check_network(&request.url)
+            .map_err(AppError::operation)?;
+    }
+    let save = request
+        .save
+        .as_ref()
+        .map(|path| {
+            normalize_relative_input_path(
+                &path.to_string_lossy(),
+                RelativePathOptions {
+                    expected_extension: None,
+                    append_extension_if_missing: false,
+                },
+            )
+            .map(PathBuf::from)
+            .map_err(AppError::operation)
+        })
+        .transpose()?;
+    if let (Some(permissions), Some(save)) = (permissions, save.as_ref()) {
+        permissions
+            .check_write_path(&save.to_string_lossy())
+            .map_err(AppError::operation)?;
+    }
+    apply_web_fetch_report(
+        paths,
+        &WebFetchRequest {
+            url: request.url.clone(),
+            mode: request.mode,
+            save,
+        },
+    )
+}
+
 pub fn apply_web_fetch_report(
     paths: &VaultPaths,
     request: &WebFetchRequest,
@@ -138,21 +194,74 @@ pub fn apply_web_fetch_report(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_web_fetch_report, build_web_search_report, prepare_web_search, WebFetchMode,
+        apply_web_fetch_report, apply_web_fetch_report_with_permissions, build_web_search_report,
+        build_web_search_report_with_permissions, prepare_web_search, WebFetchMode,
         WebFetchRequest, WebSearchRequest,
     };
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::thread;
     use tempfile::tempdir;
-    use vulcan_core::{initialize_vulcan_dir, VaultPaths};
+    use vulcan_core::{
+        initialize_vulcan_dir, resolve_permission_profile, ProfilePermissionGuard,
+        SearchBackendKind, VaultPaths,
+    };
 
     fn test_paths() -> (tempfile::TempDir, VaultPaths) {
         let dir = tempdir().expect("temp dir");
         let paths = VaultPaths::new(dir.path());
         initialize_vulcan_dir(&paths).expect("init should succeed");
         (dir, paths)
+    }
+
+    #[test]
+    fn permission_aware_web_workflows_deny_before_network_access() {
+        let (_dir, paths) = test_paths();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).expect("readonly profile"),
+        );
+        let search = build_web_search_report_with_permissions(
+            &paths,
+            &WebSearchRequest {
+                query: "docs".to_string(),
+                backend: Some(SearchBackendKind::Duckduckgo),
+                limit: 1,
+            },
+            Some(&guard),
+        )
+        .expect_err("readonly search must be denied");
+        assert!(search.to_string().contains("network"));
+
+        let fetch = apply_web_fetch_report_with_permissions(
+            &paths,
+            &WebFetchRequest {
+                url: "http://127.0.0.1:1/private".to_string(),
+                mode: WebFetchMode::Markdown,
+                save: None,
+            },
+            Some(&guard),
+        )
+        .expect_err("readonly fetch must be denied");
+        assert!(fetch.to_string().contains("network"));
+    }
+
+    #[test]
+    fn invalid_web_fetch_save_path_is_rejected_before_fetching() {
+        let (_dir, paths) = test_paths();
+        let error = apply_web_fetch_report_with_permissions(
+            &paths,
+            &WebFetchRequest {
+                url: "http://127.0.0.1:1/test".to_string(),
+                mode: WebFetchMode::Raw,
+                save: Some(PathBuf::from("../outside.txt")),
+            },
+            None,
+        )
+        .expect_err("invalid save path must fail before networking");
+        assert!(!error.to_string().contains("connection"));
     }
 
     #[test]
