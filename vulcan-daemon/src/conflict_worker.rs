@@ -549,8 +549,10 @@ mod tests {
         fs::create_dir(&writer).expect("writer directory");
         git(&writer, &["init", "--quiet"]);
         configure_repository(&writer);
+        fs::write(writer.join(".gitattributes"), "Home.md text eol=lf\n")
+            .expect("LF-only note attribute");
         fs::write(writer.join("Home.md"), "base\n").expect("base note");
-        git(&writer, &["add", "Home.md"]);
+        git(&writer, &["add", ".gitattributes", "Home.md"]);
         git(&writer, &["commit", "--quiet", "-m", "base"]);
         git(
             &writer,
