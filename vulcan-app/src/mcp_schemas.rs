@@ -1,18 +1,22 @@
+//! Transport-neutral MCP tool schemas shared by CLI and daemon adapters.
+
+#![allow(clippy::must_use_candidate, clippy::needless_pass_by_value)]
+
 use serde_json::{Map, Value};
 
-pub(super) fn schema_string(description: &str) -> Value {
+pub fn schema_string(description: &str) -> Value {
     serde_json::json!({ "type": "string", "description": description })
 }
 
-pub(super) fn schema_boolean(description: &str) -> Value {
+pub fn schema_boolean(description: &str) -> Value {
     serde_json::json!({ "type": "boolean", "description": description })
 }
 
-pub(super) fn schema_integer(description: &str) -> Value {
+pub fn schema_integer(description: &str) -> Value {
     serde_json::json!({ "type": "integer", "description": description })
 }
 
-pub(super) fn schema_string_enum(description: &str, values: &[&str]) -> Value {
+pub fn schema_string_enum(description: &str, values: &[&str]) -> Value {
     serde_json::json!({
         "type": "string",
         "description": description,
@@ -20,7 +24,7 @@ pub(super) fn schema_string_enum(description: &str, values: &[&str]) -> Value {
     })
 }
 
-pub(super) fn schema_array(items: Value, description: &str) -> Value {
+pub fn schema_array(items: Value, description: &str) -> Value {
     serde_json::json!({
         "type": "array",
         "description": description,
@@ -28,7 +32,7 @@ pub(super) fn schema_array(items: Value, description: &str) -> Value {
     })
 }
 
-pub(super) fn schema_object(properties: Vec<(&str, Value)>, required: &[&str]) -> Value {
+pub fn schema_object(properties: Vec<(&str, Value)>, required: &[&str]) -> Value {
     let mut props = Map::new();
     for (key, value) in properties {
         props.insert(key.to_string(), value);
@@ -51,11 +55,11 @@ pub(super) fn schema_object(properties: Vec<(&str, Value)>, required: &[&str]) -
     Value::Object(object)
 }
 
-pub(super) fn empty_object_schema() -> Value {
+pub fn empty_object_schema() -> Value {
     schema_object(Vec::new(), &[])
 }
 
-pub(super) fn generic_report_output_schema() -> Value {
+pub fn generic_report_output_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": true,
@@ -77,15 +81,15 @@ fn sync_target_properties() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub(super) fn sync_status_input_schema() -> Value {
+pub fn sync_status_input_schema() -> Value {
     schema_object(sync_target_properties(), &[])
 }
 
-pub(super) fn sync_plan_input_schema() -> Value {
+pub fn sync_plan_input_schema() -> Value {
     schema_object(sync_target_properties(), &[])
 }
 
-pub(super) fn sync_doctor_input_schema() -> Value {
+pub fn sync_doctor_input_schema() -> Value {
     let mut properties = sync_target_properties();
     properties.push((
         "platform",
@@ -102,7 +106,7 @@ pub(super) fn sync_doctor_input_schema() -> Value {
     schema_object(properties, &[])
 }
 
-pub(super) fn sync_conflicts_input_schema() -> Value {
+pub fn sync_conflicts_input_schema() -> Value {
     schema_object(
         vec![(
             "conflict_id",
@@ -112,7 +116,7 @@ pub(super) fn sync_conflicts_input_schema() -> Value {
     )
 }
 
-pub(super) fn note_get_input_schema() -> Value {
+pub fn note_get_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -162,7 +166,7 @@ pub(super) fn note_get_input_schema() -> Value {
     )
 }
 
-pub(super) fn note_outline_input_schema() -> Value {
+pub fn note_outline_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -182,7 +186,7 @@ pub(super) fn note_outline_input_schema() -> Value {
     )
 }
 
-pub(super) fn search_input_schema() -> Value {
+pub fn search_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -247,7 +251,7 @@ pub(super) fn search_input_schema() -> Value {
     )
 }
 
-pub(super) fn query_input_schema() -> Value {
+pub fn query_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -292,7 +296,7 @@ pub(super) fn query_input_schema() -> Value {
     )
 }
 
-pub(super) fn daily_show_input_schema() -> Value {
+pub fn daily_show_input_schema() -> Value {
     schema_object(
         vec![(
             "date",
@@ -302,7 +306,7 @@ pub(super) fn daily_show_input_schema() -> Value {
     )
 }
 
-pub(super) fn daily_input_schema() -> Value {
+pub fn daily_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -333,7 +337,7 @@ pub(super) fn daily_input_schema() -> Value {
     )
 }
 
-pub(super) fn daily_output_schema() -> Value {
+pub fn daily_output_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "properties": {
@@ -351,7 +355,7 @@ pub(super) fn daily_output_schema() -> Value {
     })
 }
 
-pub(super) fn daily_list_input_schema() -> Value {
+pub fn daily_list_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -382,7 +386,7 @@ pub(super) fn daily_list_input_schema() -> Value {
     )
 }
 
-pub(super) fn task_list_input_schema() -> Value {
+pub fn task_list_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -422,14 +426,14 @@ pub(super) fn task_list_input_schema() -> Value {
     )
 }
 
-pub(super) fn task_query_input_schema() -> Value {
+pub fn task_query_input_schema() -> Value {
     schema_object(
         vec![("query", schema_string("Tasks plugin query source."))],
         &["query"],
     )
 }
 
-pub(super) fn task_create_input_schema() -> Value {
+pub fn task_create_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -452,7 +456,7 @@ pub(super) fn task_create_input_schema() -> Value {
     )
 }
 
-pub(super) fn task_complete_input_schema() -> Value {
+pub fn task_complete_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -470,7 +474,7 @@ pub(super) fn task_complete_input_schema() -> Value {
     )
 }
 
-pub(super) fn task_reschedule_input_schema() -> Value {
+pub fn task_reschedule_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -488,7 +492,7 @@ pub(super) fn task_reschedule_input_schema() -> Value {
     )
 }
 
-pub(super) fn note_create_input_schema() -> Value {
+pub fn note_create_input_schema() -> Value {
     schema_object(
         vec![
             ("path", schema_string("Vault-relative note path to create.")),
@@ -521,7 +525,7 @@ pub(super) fn note_create_input_schema() -> Value {
     )
 }
 
-pub(super) fn note_append_input_schema() -> Value {
+pub fn note_append_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -572,7 +576,7 @@ pub(super) fn note_append_input_schema() -> Value {
     )
 }
 
-pub(super) fn note_patch_input_schema() -> Value {
+pub fn note_patch_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -615,14 +619,14 @@ pub(super) fn note_patch_input_schema() -> Value {
     )
 }
 
-pub(super) fn note_info_input_schema() -> Value {
+pub fn note_info_input_schema() -> Value {
     schema_object(
         vec![("note", schema_string("Note path or note identifier."))],
         &["note"],
     )
 }
 
-pub(super) fn note_set_input_schema() -> Value {
+pub fn note_set_input_schema() -> Value {
     schema_object(
         vec![
             ("note", schema_string("Note identifier to replace.")),
@@ -648,7 +652,7 @@ pub(super) fn note_set_input_schema() -> Value {
     )
 }
 
-pub(super) fn note_delete_input_schema() -> Value {
+pub fn note_delete_input_schema() -> Value {
     schema_object(
         vec![
             ("note", schema_string("Note identifier to delete.")),
@@ -669,7 +673,7 @@ pub(super) fn note_delete_input_schema() -> Value {
     )
 }
 
-pub(super) fn web_search_input_schema() -> Value {
+pub fn web_search_input_schema() -> Value {
     schema_object(
         vec![
             ("query", schema_string("Web search query string.")),
@@ -698,7 +702,7 @@ pub(super) fn web_search_input_schema() -> Value {
     )
 }
 
-pub(super) fn web_fetch_input_schema() -> Value {
+pub fn web_fetch_input_schema() -> Value {
     schema_object(
         vec![
             ("url", schema_string("URL to fetch.")),
@@ -711,7 +715,7 @@ pub(super) fn web_fetch_input_schema() -> Value {
     )
 }
 
-pub(super) fn config_show_input_schema() -> Value {
+pub fn config_show_input_schema() -> Value {
     schema_object(
         vec![(
             "section",
@@ -721,7 +725,7 @@ pub(super) fn config_show_input_schema() -> Value {
     )
 }
 
-pub(super) fn config_set_input_schema() -> Value {
+pub fn config_set_input_schema() -> Value {
     schema_object(
         vec![
             ("key", schema_string("Dotted config key to write.")),
@@ -739,7 +743,7 @@ pub(super) fn config_set_input_schema() -> Value {
     )
 }
 
-pub(super) fn index_scan_input_schema() -> Value {
+pub fn index_scan_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -755,7 +759,7 @@ pub(super) fn index_scan_input_schema() -> Value {
     )
 }
 
-pub(super) fn graph_communities_input_schema() -> Value {
+pub fn graph_communities_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -773,7 +777,7 @@ pub(super) fn graph_communities_input_schema() -> Value {
     )
 }
 
-pub(super) fn suggest_links_input_schema() -> Value {
+pub fn suggest_links_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -805,7 +809,7 @@ pub(super) fn suggest_links_input_schema() -> Value {
     )
 }
 
-pub(super) fn tool_pack_mutation_input_schema() -> Value {
+pub fn tool_pack_mutation_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -844,7 +848,7 @@ pub(super) fn tool_pack_mutation_input_schema() -> Value {
     )
 }
 
-pub(super) fn tool_pack_state_output_schema() -> Value {
+pub fn tool_pack_state_output_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "properties": {
@@ -876,7 +880,7 @@ pub(super) fn tool_pack_state_output_schema() -> Value {
     })
 }
 
-pub(super) fn note_get_output_schema() -> Value {
+pub fn note_get_output_schema() -> Value {
     schema_object(
         vec![
             ("path", schema_string("Resolved path that was read.")),
@@ -891,11 +895,11 @@ pub(super) fn note_get_output_schema() -> Value {
     )
 }
 
-pub(super) fn note_outline_output_schema() -> Value {
+pub fn note_outline_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn search_output_schema() -> Value {
+pub fn search_output_schema() -> Value {
     schema_object(
         vec![
             ("query", schema_string("Effective query string.")),
@@ -908,7 +912,7 @@ pub(super) fn search_output_schema() -> Value {
     )
 }
 
-pub(super) fn status_output_schema() -> Value {
+pub fn status_output_schema() -> Value {
     schema_object(
         vec![
             ("vault_root", schema_string("Vault root path.")),
@@ -934,46 +938,68 @@ pub(super) fn status_output_schema() -> Value {
     )
 }
 
-pub(super) fn note_create_output_schema() -> Value {
+pub fn note_create_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn note_append_output_schema() -> Value {
+pub fn note_append_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn note_patch_output_schema() -> Value {
+pub fn note_patch_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn note_info_output_schema() -> Value {
+pub fn note_info_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn note_set_output_schema() -> Value {
+pub fn note_set_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn note_delete_output_schema() -> Value {
+pub fn note_delete_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn web_search_output_schema() -> Value {
+pub fn web_search_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn web_fetch_output_schema() -> Value {
+pub fn web_fetch_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn config_show_output_schema() -> Value {
+pub fn config_show_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn config_set_output_schema() -> Value {
+pub fn config_set_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub(super) fn index_scan_output_schema() -> Value {
+pub fn index_scan_output_schema() -> Value {
     generic_report_output_schema()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn shared_schemas_keep_required_fields_and_closed_inputs() {
+        let note = note_get_input_schema();
+        let search = search_input_schema();
+        let packs = tool_pack_mutation_input_schema();
+
+        assert_eq!(note["additionalProperties"], json!(false));
+        assert_eq!(note["required"], json!(["note"]));
+        assert_eq!(search["required"], json!(["query"]));
+        assert_eq!(search["properties"]["limit"]["type"], "integer");
+        assert_eq!(
+            packs["properties"]["packs"]["items"]["enum"][0],
+            "notes-read"
+        );
+    }
 }

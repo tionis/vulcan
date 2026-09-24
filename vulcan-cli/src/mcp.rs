@@ -1,7 +1,6 @@
 #![allow(clippy::needless_pass_by_value, clippy::struct_excessive_bools)]
 
 mod catalog;
-mod schemas;
 
 use crate::app_config;
 use crate::commands::periodic::{

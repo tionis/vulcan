@@ -45,6 +45,7 @@ pub mod export;
 pub mod folder_notes;
 pub mod integrations;
 pub mod mcp_protocol;
+pub mod mcp_schemas;
 pub mod mdbase;
 pub mod mdbase_conformance;
 pub mod notes;

@@ -4,7 +4,7 @@ use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 
 use crate::{McpToolAnnotations, McpToolPackArg, McpToolPackModeArg, ToolRegistryEntry};
 
-use super::schemas::{
+use vulcan_app::mcp_schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
     config_show_output_schema, daily_input_schema, daily_list_input_schema, daily_output_schema,
     daily_show_input_schema, empty_object_schema, generic_report_output_schema,
