@@ -15661,6 +15661,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("managed: true"));
     assert!(note_operations.contains("- note_info"));
     assert!(note_operations.contains("- note_delete"));
+    assert!(note_operations.contains("MCP `note_append.text` is literal"));
     assert!(note_operations.contains("only readable source notes"));
     assert!(note_operations.contains("A scoped preview is not proof"));
     assert!(note_operations.contains("mdbase record path"));
@@ -30140,6 +30141,111 @@ fn mcp_note_set_matches_cli_report_and_checks_replacement() {
         .assert()
         .success();
     assert_eq!(*mcp_report, parse_stdout_json(&cli_set));
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_note_create_and_append_match_cli_reports() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let mcp_root = temp_dir.path().join("mcp");
+    let cli_root = temp_dir.path().join("cli");
+    for root in [&mcp_root, &cli_root] {
+        write_note_crud_sample(root);
+        run_scan(root);
+    }
+
+    let mut session = McpSession::start(&mcp_root, &["--tool-pack", "notes-write"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let body = "# Agent\n[[Missing]]\n";
+    let created = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "note_create",
+            "arguments": {
+                "path": "Inbox/Agent",
+                "body": body,
+                "frontmatter": { "reviewed": true },
+                "check": true,
+                "no_commit": true
+            }
+        }
+    }));
+    let created = &created.last().expect("note_create response")["result"];
+    assert_eq!(created["isError"], false);
+    let cli_created = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            cli_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "note",
+            "create",
+            "Inbox/Agent",
+            "--frontmatter",
+            "reviewed=true",
+            "--check",
+        ])
+        .write_stdin(body)
+        .assert()
+        .success();
+    assert_eq!(
+        created["structuredContent"],
+        parse_stdout_json(&cli_created)
+    );
+
+    let appended = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {
+            "name": "note_append",
+            "arguments": {
+                "note": "Dashboard.md",
+                "text": "[[Missing]]\n",
+                "heading": "## Done",
+                "check": true,
+                "no_commit": true
+            }
+        }
+    }));
+    let appended = &appended.last().expect("note_append response")["result"];
+    assert_eq!(appended["isError"], false);
+    let cli_appended = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            cli_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "note",
+            "append",
+            "Dashboard.md",
+            "[[Missing]]\n",
+            "--heading",
+            "## Done",
+            "--check",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        appended["structuredContent"],
+        parse_stdout_json(&cli_appended)
+    );
+
+    let literal_dash = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {
+            "name": "note_append",
+            "arguments": { "note": "Dashboard.md", "text": "-", "no_commit": true }
+        }
+    }));
+    assert_eq!(
+        literal_dash.last().expect("literal dash response")["result"]["isError"],
+        false
+    );
+    assert!(fs::read_to_string(mcp_root.join("Dashboard.md"))
+        .expect("appended note")
+        .ends_with("-\n"));
     assert!(session.finish().is_empty());
 }
 

@@ -21,10 +21,12 @@ use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     build_note_info_report, diagnose_external_markdown_contents, diagnose_note_contents,
-    finish_note_set_report, parse_note_frontmatter_bindings, read_note as app_read_note,
+    finish_note_append_report, finish_note_create_report, finish_note_set_report,
+    parse_note_frontmatter_bindings, read_note as app_read_note,
     read_note_outline as app_read_note_outline,
     resolve_existing_markdown_target as app_resolve_existing_markdown_target,
-    MarkdownTarget as AppMarkdownTarget, NoteAppendRequest as AppNoteAppendRequest,
+    MarkdownTarget as AppMarkdownTarget, NoteAppendCommandReport as NoteAppendReport,
+    NoteAppendRequest as AppNoteAppendRequest, NoteCreateCommandReport as NoteCreateReport,
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
     NoteGetOptions as AppNoteGetOptions, NoteGetReport, NoteInfoReport, NoteOutlineReport,
     NotePatchRequest as AppNotePatchRequest, NoteReadMode, NoteSetCommandReport as NoteSetReport,
@@ -576,33 +578,6 @@ pub(crate) struct NoteCheckboxReport {
     pub(crate) after_marker: String,
     pub(crate) before: String,
     pub(crate) after: String,
-    pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct NoteCreateReport {
-    pub(crate) path: String,
-    pub(crate) created: bool,
-    pub(crate) checked: bool,
-    pub(crate) template: Option<String>,
-    pub(crate) engine: Option<String>,
-    pub(crate) warnings: Vec<String>,
-    pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
-    #[serde(skip)]
-    pub(crate) changed_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct NoteAppendReport {
-    pub(crate) path: String,
-    pub(crate) appended: bool,
-    pub(crate) mode: String,
-    pub(crate) checked: bool,
-    pub(crate) created: bool,
-    pub(crate) heading: Option<String>,
-    pub(crate) period_type: Option<String>,
-    pub(crate) reference_date: Option<String>,
-    pub(crate) warnings: Vec<String>,
     pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
 }
 
@@ -1200,19 +1175,9 @@ pub(crate) fn run_note_create_with_body(
         permission_profile,
         quiet,
     )?;
-    let diagnostics = maybe_check_note(paths, &report.path, &report.content, check)?;
+    let report = finish_note_create_report(paths, report, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-
-    Ok(NoteCreateReport {
-        path: report.path,
-        created: true,
-        checked: check,
-        template: report.template,
-        engine: report.engine,
-        warnings: report.warnings,
-        diagnostics,
-        changed_paths: report.changed_paths,
-    })
+    Ok(report)
 }
 
 fn note_append_periodic_type(periodic: NoteAppendPeriodicArg) -> &'static str {
@@ -1267,21 +1232,9 @@ pub(crate) fn run_note_append_command(
         permission_profile,
         quiet,
     )?;
-    let diagnostics = maybe_check_note(paths, &report.path, &report.content, check)?;
+    let report = finish_note_append_report(paths, report, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-
-    Ok(NoteAppendReport {
-        path: report.path,
-        appended: true,
-        mode: report.mode,
-        checked: check,
-        created: report.created,
-        heading: report.heading,
-        period_type: report.period_type,
-        reference_date: report.reference_date,
-        warnings: report.warnings,
-        diagnostics,
-    })
+    Ok(report)
 }
 
 pub(crate) fn run_note_patch_command(
@@ -2063,19 +2016,6 @@ fn maybe_check_markdown_target(
         None => diagnose_external_markdown_contents(&target.display_path, &target.config, content)
             .map_err(Into::into),
     }
-}
-
-fn maybe_check_note(
-    paths: &VaultPaths,
-    relative_path: &str,
-    content: &str,
-    check: bool,
-) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
-    if !check {
-        return Ok(Vec::new());
-    }
-
-    diagnose_note_contents(paths, relative_path, content).map_err(Into::into)
 }
 
 #[cfg(test)]

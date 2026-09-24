@@ -57,6 +57,41 @@ pub struct NoteCreateReport {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteCreateCommandReport {
+    pub path: String,
+    pub created: bool,
+    pub checked: bool,
+    pub template: Option<String>,
+    pub engine: Option<String>,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<DoctorDiagnosticIssue>,
+    #[serde(skip)]
+    pub changed_paths: Vec<String>,
+}
+
+pub fn finish_note_create_report(
+    paths: &VaultPaths,
+    report: NoteCreateReport,
+    check: bool,
+) -> Result<NoteCreateCommandReport, AppError> {
+    let diagnostics = if check {
+        diagnose_note_contents(paths, &report.path, &report.content)?
+    } else {
+        Vec::new()
+    };
+    Ok(NoteCreateCommandReport {
+        path: report.path,
+        created: true,
+        checked: check,
+        template: report.template,
+        engine: report.engine,
+        warnings: report.warnings,
+        diagnostics,
+        changed_paths: report.changed_paths,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteAppendMode {
@@ -103,6 +138,44 @@ pub struct NoteAppendReport {
     pub changed_paths: Vec<String>,
     #[serde(skip)]
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteAppendCommandReport {
+    pub path: String,
+    pub appended: bool,
+    pub mode: String,
+    pub checked: bool,
+    pub created: bool,
+    pub heading: Option<String>,
+    pub period_type: Option<String>,
+    pub reference_date: Option<String>,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+pub fn finish_note_append_report(
+    paths: &VaultPaths,
+    report: NoteAppendReport,
+    check: bool,
+) -> Result<NoteAppendCommandReport, AppError> {
+    let diagnostics = if check {
+        diagnose_note_contents(paths, &report.path, &report.content)?
+    } else {
+        Vec::new()
+    };
+    Ok(NoteAppendCommandReport {
+        path: report.path,
+        appended: true,
+        mode: report.mode,
+        checked: check,
+        created: report.created,
+        heading: report.heading,
+        period_type: report.period_type,
+        reference_date: report.reference_date,
+        warnings: report.warnings,
+        diagnostics,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2026,11 +2099,12 @@ fn load_note_append_target(
 mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-        build_note_info_report, diagnose_note_contents, finish_note_set_report,
-        json_properties_to_frontmatter, parse_note_frontmatter_bindings, read_note,
-        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
-        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest,
-        NoteReadMode, NoteSetRequest,
+        build_note_info_report, diagnose_note_contents, finish_note_append_report,
+        finish_note_create_report, finish_note_set_report, json_properties_to_frontmatter,
+        parse_note_frontmatter_bindings, read_note, read_note_outline,
+        resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
+        NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode,
+        NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde_json::Value as JsonValue;
@@ -2451,6 +2525,59 @@ folder_templates = [{ folder = "Projects", template = "project" }]
             .diagnostics
             .iter()
             .any(|diagnostic| { diagnostic.message.contains("Missing") }));
+    }
+
+    #[test]
+    fn create_and_append_command_reports_preserve_checked_diagnostics() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        fs::write(temp_dir.path().join("Home.md"), "# Home\n").expect("seed note");
+
+        let created = apply_note_create(
+            &paths,
+            &NoteCreateRequest {
+                path: "New.md".to_string(),
+                template: None,
+                frontmatter: None,
+                body: "[[Missing]]\n".to_string(),
+            },
+            None,
+            true,
+        )
+        .expect("create");
+        let created = finish_note_create_report(&paths, created, true).expect("create report");
+        assert!(created.created);
+        assert!(created.checked);
+        assert_eq!(created.changed_paths, vec!["New.md"]);
+        assert!(created
+            .diagnostics
+            .iter()
+            .any(|item| item.message.contains("Missing")));
+
+        let appended = apply_note_append(
+            &paths,
+            &NoteAppendRequest {
+                note: Some("Home.md".to_string()),
+                text: "[[Missing]]".to_string(),
+                mode: NoteAppendMode::Append,
+                heading: None,
+                periodic: None,
+                date: None,
+                vars: HashMap::new(),
+            },
+            None,
+            true,
+        )
+        .expect("append");
+        let appended = finish_note_append_report(&paths, appended, true).expect("append report");
+        assert!(appended.appended);
+        assert!(appended.checked);
+        assert!(!appended.created);
+        assert!(appended
+            .diagnostics
+            .iter()
+            .any(|item| item.message.contains("Missing")));
     }
 
     #[test]

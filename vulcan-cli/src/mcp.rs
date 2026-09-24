@@ -7,11 +7,10 @@ use crate::commit::AutoCommitPolicy;
 use crate::plugins;
 use crate::{
     cli_command_tree, collect_help_command_topics, config_set_changed_files,
-    custom_tool_registry_entry, normalize_note_path, permission_error_to_cli,
-    resolve_existing_markdown_target, resolve_help_topic, run_note_append_command,
-    run_note_create_with_body, run_note_patch_command, CliError, McpToolPackArg,
-    McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions,
-    NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, ToolRegistryEntry,
+    custom_tool_registry_entry, permission_error_to_cli, resolve_existing_markdown_target,
+    resolve_help_topic, run_note_patch_command, CliError, McpToolPackArg, McpToolPackModeArg,
+    McpToolsReport, McpTransportArg, NoteAppendMode, NotePatchOptions, OutputFormat,
+    ToolRegistryEntry,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -54,8 +53,11 @@ use vulcan_app::mcp_protocol::{
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
-    apply_note_delete, apply_note_set, build_note_info_report, finish_note_set_report, read_note,
-    read_note_outline, NoteDeleteRequest, NoteGetOptions, NoteReadMode, NoteSetRequest,
+    apply_note_append, apply_note_create, apply_note_delete, apply_note_set,
+    build_note_info_report, finish_note_append_report, finish_note_create_report,
+    finish_note_set_report, parse_note_frontmatter_bindings, read_note, read_note_outline,
+    NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NoteReadMode,
+    NoteSetRequest,
 };
 use vulcan_app::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
@@ -71,12 +73,14 @@ use vulcan_app::tasks::{
     build_tasks_query_result, TaskCompleteRequest, TaskCreateRequest, TaskListRequest,
     TaskRescheduleRequest,
 };
+use vulcan_app::templates::parse_template_var_bindings;
 #[cfg(feature = "web")]
 use vulcan_app::web::{
     apply_web_fetch_report_with_permissions, build_web_search_report_with_permissions,
     WebFetchMode as AppWebFetchMode, WebFetchRequest, WebSearchRequest,
 };
 use vulcan_core::config::TasksDefaultSource;
+use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
 #[cfg(feature = "web")]
@@ -2244,22 +2248,35 @@ impl McpServerCore {
             }
             McpToolId::NoteCreate => {
                 let args: McpNoteCreateArgs = parse_tool_arguments(arguments)?;
-                let normalized_path = normalize_note_path(&args.path).map_err(cli_tool_error)?;
+                let normalized_path = normalize_relative_input_path(
+                    &args.path,
+                    RelativePathOptions {
+                        expected_extension: Some("md"),
+                        append_extension_if_missing: true,
+                    },
+                )
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 self.check_write_path_access(&normalized_path)
                     .map_err(cli_tool_error)?;
-                let report = run_note_create_with_body(
+                let frontmatter =
+                    parse_note_frontmatter_bindings(&frontmatter_bindings(&args.frontmatter))
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let applied = apply_note_create(
                     &self.paths,
-                    &normalized_path,
-                    args.template.as_deref(),
-                    &frontmatter_bindings(&args.frontmatter),
-                    &args.body,
-                    args.check,
+                    &NoteCreateRequest {
+                        path: normalized_path,
+                        template: args.template,
+                        frontmatter,
+                        body: args.body,
+                    },
                     Some(self.selection.name.as_str()),
-                    OutputFormat::Json,
-                    false,
                     true,
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let report = finish_note_create_report(&self.paths, applied, args.check)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                refresh_cache_incrementally(&self.paths)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                     .commit(
                         &self.paths,
@@ -2273,7 +2290,7 @@ impl McpServerCore {
             }
             McpToolId::NoteAppend => {
                 let args: McpNoteAppendArgs = parse_tool_arguments(arguments)?;
-                let periodic = parse_periodic_arg(args.periodic)?;
+                let periodic = parse_periodic_arg(args.periodic.clone())?;
                 if args.note.is_some() == periodic.is_some() {
                     return Err(McpMethodError::invalid_params(
                         "`note_append` requires exactly one of `note` or `periodic`",
@@ -2281,11 +2298,11 @@ impl McpServerCore {
                 }
                 if let Some(note) = args.note.as_deref() {
                     self.check_write_note_access(note).map_err(cli_tool_error)?;
-                } else if let Some(periodic) = periodic {
+                } else if let Some(periodic) = periodic.as_deref() {
                     let config = load_vault_config(&self.paths).config;
                     let target = app_resolve_periodic_target(
                         &config.periodic,
-                        note_append_periodic_type(periodic),
+                        periodic,
                         args.date.as_deref(),
                         true,
                     )
@@ -2293,24 +2310,27 @@ impl McpServerCore {
                     self.check_write_path_access(&target.path)
                         .map_err(cli_tool_error)?;
                 }
-                let report = run_note_append_command(
+                let vars = parse_template_var_bindings(&template_var_bindings(&args.vars))
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let applied = apply_note_append(
                     &self.paths,
-                    NoteAppendOptions {
-                        note: args.note.as_deref(),
-                        text: &args.text,
+                    &NoteAppendRequest {
+                        note: args.note,
+                        text: args.text,
                         mode: parse_note_append_mode(args.mode, args.heading.is_some())?,
-                        heading: args.heading.as_deref(),
+                        heading: args.heading,
                         periodic,
-                        date: args.date.as_deref(),
-                        vars: &template_var_bindings(&args.vars),
-                        check: args.check,
+                        date: args.date,
+                        vars,
                     },
                     Some(self.selection.name.as_str()),
-                    OutputFormat::Json,
-                    false,
                     true,
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let report = finish_note_append_report(&self.paths, applied, args.check)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                refresh_cache_incrementally(&self.paths)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                     .commit(
                         &self.paths,
@@ -5194,23 +5214,16 @@ fn parse_note_append_mode(
     }
 }
 
-fn parse_periodic_arg(
-    value: Option<String>,
-) -> Result<Option<NoteAppendPeriodicArg>, McpMethodError> {
+fn parse_periodic_arg(value: Option<String>) -> Result<Option<String>, McpMethodError> {
     let Some(value) = value else {
         return Ok(None);
     };
-    let parsed = match value.as_str() {
-        "daily" => NoteAppendPeriodicArg::Daily,
-        "weekly" => NoteAppendPeriodicArg::Weekly,
-        "monthly" => NoteAppendPeriodicArg::Monthly,
-        other => {
-            return Err(McpMethodError::invalid_params(format!(
-                "unsupported `note_append.periodic`: {other}"
-            )));
-        }
-    };
-    Ok(Some(parsed))
+    match value.as_str() {
+        "daily" | "weekly" | "monthly" => Ok(Some(value)),
+        other => Err(McpMethodError::invalid_params(format!(
+            "unsupported `note_append.periodic`: {other}"
+        ))),
+    }
 }
 
 fn parse_tasks_default_source(
@@ -5278,14 +5291,6 @@ fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {
 }
 
 const MCP_STRUCTURED_CONTENT_LIMIT: usize = 65_536;
-
-fn note_append_periodic_type(periodic: NoteAppendPeriodicArg) -> &'static str {
-    match periodic {
-        NoteAppendPeriodicArg::Daily => "daily",
-        NoteAppendPeriodicArg::Weekly => "weekly",
-        NoteAppendPeriodicArg::Monthly => "monthly",
-    }
-}
 
 fn tool_summary_text(tool_name: &str, structured: &Value) -> String {
     if let Some(path) = structured.get("path").and_then(Value::as_str) {

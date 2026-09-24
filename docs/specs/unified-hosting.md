@@ -238,6 +238,8 @@ sources. MCP `note_delete` calls the app mutation directly and removes unreadabl
 sources from its preview using the connection's current read guard.
 The app also builds the shared `note_set` checked report for CLI and MCP; each transport retains
 its own cache-refresh presentation while MCP no longer calls the CLI note-set handler.
+The same pattern now covers `note_create` and `note_append`, including their checked reports;
+MCP treats the append text parameter as literal protocol data rather than a CLI stdin sentinel.
 `vulcan-app::web` provides permission-checked search/fetch workflows to CLI and MCP, including
 network and optional save-path preflight; MCP no longer calls CLI web handlers.
 Remaining tool workflows, CLI-derived command-help catalog sharing, and HTTP/OAuth hosting
