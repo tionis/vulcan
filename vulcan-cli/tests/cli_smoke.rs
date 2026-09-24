@@ -30250,6 +30250,72 @@ fn mcp_note_create_and_append_match_cli_reports() {
 }
 
 #[test]
+fn mcp_note_patch_matches_cli_scoped_dry_run_and_apply_reports() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let mcp_root = temp_dir.path().join("mcp");
+    let cli_root = temp_dir.path().join("cli");
+    for root in [&mcp_root, &cli_root] {
+        write_note_crud_sample(root);
+        run_scan(root);
+    }
+
+    let mut session = McpSession::start(&mcp_root, &["--tool-pack", "notes-write"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    for (id, dry_run) in [(2, true), (3, false)] {
+        let patched = session.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {
+                "name": "note_patch",
+                "arguments": {
+                    "note": "Dashboard.md",
+                    "heading": "Nested",
+                    "find": "TODO",
+                    "replace": "[[Missing]]",
+                    "check": true,
+                    "dry_run": dry_run,
+                    "no_commit": true
+                }
+            }
+        }));
+        let patched = &patched.last().expect("note_patch response")["result"];
+        assert_eq!(patched["isError"], false);
+        let mut cli_args = vec![
+            "--vault",
+            cli_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "note",
+            "patch",
+            "Dashboard.md",
+            "--heading",
+            "Nested",
+            "--find",
+            "TODO",
+            "--replace",
+            "[[Missing]]",
+            "--check",
+        ];
+        if dry_run {
+            cli_args.push("--dry-run");
+        }
+        let cli_patch = cargo_vulcan_fixed_now().args(cli_args).assert().success();
+        assert_eq!(patched["structuredContent"], parse_stdout_json(&cli_patch));
+        assert!(patched["structuredContent"]["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| !diagnostics.is_empty()));
+        assert_eq!(
+            fs::read_to_string(mcp_root.join("Dashboard.md")).expect("mcp note"),
+            fs::read_to_string(cli_root.join("Dashboard.md")).expect("cli note")
+        );
+    }
+    assert!(session.finish().is_empty());
+}
+
+#[test]
 fn daily_latest_cli_returns_newest_existing_note_with_content() {
     let temp_dir = TempDir::new().expect("temp dir");
     let vault_root = temp_dir.path().join("vault");

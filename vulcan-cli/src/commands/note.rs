@@ -21,23 +21,23 @@ use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     build_note_info_report, diagnose_external_markdown_contents, diagnose_note_contents,
-    finish_note_append_report, finish_note_create_report, finish_note_set_report,
-    parse_note_frontmatter_bindings, read_note as app_read_note,
+    finish_note_append_report, finish_note_create_report, finish_note_patch_report,
+    finish_note_set_report, parse_note_frontmatter_bindings, read_note as app_read_note,
     read_note_outline as app_read_note_outline,
     resolve_existing_markdown_target as app_resolve_existing_markdown_target,
     MarkdownTarget as AppMarkdownTarget, NoteAppendCommandReport as NoteAppendReport,
     NoteAppendRequest as AppNoteAppendRequest, NoteCreateCommandReport as NoteCreateReport,
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
     NoteGetOptions as AppNoteGetOptions, NoteGetReport, NoteInfoReport, NoteOutlineReport,
-    NotePatchRequest as AppNotePatchRequest, NoteReadMode, NoteSetCommandReport as NoteSetReport,
-    NoteSetRequest as AppNoteSetRequest,
+    NotePatchCommandReport as NotePatchReport, NotePatchRequest as AppNotePatchRequest,
+    NoteReadMode, NoteSetCommandReport as NoteSetReport, NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     git_log, move_note, query_backlinks_with_filter, query_links_with_filter,
     resolve_note_reference, BacklinkRecord, DoctorDiagnosticIssue, GitLogEntry, GraphQueryError,
-    NoteMatchKind, PermissionGuard, PluginEvent, RefactorChange, VaultPaths,
+    NoteMatchKind, PermissionGuard, PluginEvent, VaultPaths,
 };
 
 fn check_read_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
@@ -578,24 +578,6 @@ pub(crate) struct NoteCheckboxReport {
     pub(crate) after_marker: String,
     pub(crate) before: String,
     pub(crate) after: String,
-    pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct NotePatchReport {
-    pub(crate) path: String,
-    pub(crate) dry_run: bool,
-    pub(crate) checked: bool,
-    pub(crate) section_id: Option<String>,
-    pub(crate) heading: Option<String>,
-    pub(crate) block_ref: Option<String>,
-    pub(crate) lines: Option<String>,
-    pub(crate) line_spans: Vec<vulcan_core::NoteLineSpan>,
-    pub(crate) pattern: String,
-    pub(crate) regex: bool,
-    pub(crate) replace: String,
-    pub(crate) match_count: usize,
-    pub(crate) changes: Vec<RefactorChange>,
     pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
 }
 
@@ -1258,43 +1240,22 @@ pub(crate) fn run_note_patch_command(
         dry_run,
     } = options;
     let target = resolve_existing_markdown_target(paths, note)?;
-    let report = apply_note_patch(
-        paths,
-        &AppNotePatchRequest {
-            target: app_markdown_target(&target),
-            section_id: section_id.map(ToOwned::to_owned),
-            heading: heading.map(ToOwned::to_owned),
-            block_ref: block_ref.map(ToOwned::to_owned),
-            lines: lines.map(ToOwned::to_owned),
-            find: find.to_string(),
-            replace: replace.to_string(),
-            replace_all,
-            dry_run,
-        },
-        permission_profile,
-        quiet,
-    )?;
-    if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-    }
-    let diagnostics = maybe_check_markdown_target(paths, &target, &report.content, check)?;
-
-    Ok(NotePatchReport {
-        path: report.path,
-        dry_run: report.dry_run,
-        checked: check,
-        section_id: report.section_id,
+    let request = AppNotePatchRequest {
+        target: app_markdown_target(&target),
+        section_id: section_id.map(ToOwned::to_owned),
         heading: heading.map(ToOwned::to_owned),
         block_ref: block_ref.map(ToOwned::to_owned),
         lines: lines.map(ToOwned::to_owned),
-        line_spans: report.line_spans,
-        pattern: find.to_string(),
-        regex: report.regex,
+        find: find.to_string(),
         replace: replace.to_string(),
-        match_count: report.match_count,
-        changes: report.changes,
-        diagnostics,
-    })
+        replace_all,
+        dry_run,
+    };
+    let report = apply_note_patch(paths, &request, permission_profile, quiet)?;
+    if !report.dry_run && !report.changed_paths.is_empty() {
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+    }
+    finish_note_patch_report(paths, &request, report, check).map_err(Into::into)
 }
 
 pub(crate) fn run_note_delete_command(

@@ -240,6 +240,8 @@ The app also builds the shared `note_set` checked report for CLI and MCP; each t
 its own cache-refresh presentation while MCP no longer calls the CLI note-set handler.
 The same pattern now covers `note_create` and `note_append`, including their checked reports;
 MCP treats the append text parameter as literal protocol data rather than a CLI stdin sentinel.
+`note_patch` also uses app target resolution, mutation, and report shaping, preserving scoped
+selection and dry-run diagnostics without CLI handler imports.
 `vulcan-app::web` provides permission-checked search/fetch workflows to CLI and MCP, including
 network and optional save-path preflight; MCP no longer calls CLI web handlers.
 Remaining tool workflows, CLI-derived command-help catalog sharing, and HTTP/OAuth hosting

@@ -7,9 +7,8 @@ use crate::commit::AutoCommitPolicy;
 use crate::plugins;
 use crate::{
     cli_command_tree, collect_help_command_topics, config_set_changed_files,
-    custom_tool_registry_entry, permission_error_to_cli, resolve_existing_markdown_target,
-    resolve_help_topic, run_note_patch_command, CliError, McpToolPackArg, McpToolPackModeArg,
-    McpToolsReport, McpTransportArg, NoteAppendMode, NotePatchOptions, OutputFormat,
+    custom_tool_registry_entry, permission_error_to_cli, resolve_help_topic, CliError,
+    McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode,
     ToolRegistryEntry,
 };
 use catalog::{
@@ -53,11 +52,11 @@ use vulcan_app::mcp_protocol::{
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
-    apply_note_append, apply_note_create, apply_note_delete, apply_note_set,
+    apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     build_note_info_report, finish_note_append_report, finish_note_create_report,
-    finish_note_set_report, parse_note_frontmatter_bindings, read_note, read_note_outline,
-    NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NoteReadMode,
-    NoteSetRequest,
+    finish_note_patch_report, finish_note_set_report, parse_note_frontmatter_bindings, read_note,
+    read_note_outline, resolve_existing_markdown_target, NoteAppendRequest, NoteCreateRequest,
+    NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode, NoteSetRequest,
 };
 use vulcan_app::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
@@ -2346,26 +2345,31 @@ impl McpServerCore {
                 let args: McpNotePatchArgs = parse_tool_arguments(arguments)?;
                 self.check_write_markdown_source_access(&args.note)
                     .map_err(cli_tool_error)?;
-                let report = run_note_patch_command(
+                let request = NotePatchRequest {
+                    target: resolve_existing_markdown_target(&self.paths, &args.note)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?,
+                    section_id: args.section_id,
+                    heading: args.heading,
+                    block_ref: args.block_ref,
+                    lines: args.lines,
+                    find: args.find,
+                    replace: args.replace,
+                    replace_all: args.all,
+                    dry_run: args.dry_run,
+                };
+                let applied = apply_note_patch(
                     &self.paths,
-                    NotePatchOptions {
-                        note: &args.note,
-                        section_id: args.section_id.as_deref(),
-                        heading: args.heading.as_deref(),
-                        block_ref: args.block_ref.as_deref(),
-                        lines: args.lines.as_deref(),
-                        find: &args.find,
-                        replace: &args.replace,
-                        replace_all: args.all,
-                        check: args.check,
-                        dry_run: args.dry_run,
-                    },
+                    &request,
                     Some(self.selection.name.as_str()),
-                    OutputFormat::Json,
-                    false,
                     true,
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                if !applied.dry_run && !applied.changed_paths.is_empty() {
+                    refresh_cache_incrementally(&self.paths)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                }
+                let report = finish_note_patch_report(&self.paths, &request, applied, args.check)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 if !args.dry_run {
                     AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                         .commit(
@@ -2964,7 +2968,8 @@ impl McpServerCore {
         {
             return Ok(());
         }
-        let target = resolve_existing_markdown_target(&self.paths, note)?;
+        let target =
+            resolve_existing_markdown_target(&self.paths, note).map_err(CliError::operation)?;
         let Some(relative_path) = target.vault_relative_path.as_deref() else {
             return Err(CliError::operation(format!(
                 "permission profiles cannot write markdown files outside the selected vault root: {}",

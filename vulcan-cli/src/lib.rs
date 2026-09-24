@@ -41,9 +41,6 @@ pub(crate) use commands::edit::{
     print_diff_report, print_edit_report, run_diff_command, run_edit_command, EditReport,
 };
 pub(crate) use commands::inbox::{print_inbox_report, run_inbox_command};
-pub(crate) use commands::note::{
-    resolve_existing_markdown_target, run_note_patch_command, NotePatchOptions,
-};
 #[cfg(test)]
 pub(crate) use commands::template::TemplateSummary;
 pub(crate) use commands::template::{

@@ -712,6 +712,60 @@ pub struct NotePatchReport {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotePatchCommandReport {
+    pub path: String,
+    pub dry_run: bool,
+    pub checked: bool,
+    pub section_id: Option<String>,
+    pub heading: Option<String>,
+    pub block_ref: Option<String>,
+    pub lines: Option<String>,
+    pub line_spans: Vec<NoteLineSpan>,
+    pub pattern: String,
+    pub regex: bool,
+    pub replace: String,
+    pub match_count: usize,
+    pub changes: Vec<RefactorChange>,
+    pub diagnostics: Vec<DoctorDiagnosticIssue>,
+}
+
+pub fn finish_note_patch_report(
+    paths: &VaultPaths,
+    request: &NotePatchRequest,
+    report: NotePatchReport,
+    check: bool,
+) -> Result<NotePatchCommandReport, AppError> {
+    let diagnostics = if check {
+        match request.target.vault_relative_path.as_deref() {
+            Some(relative_path) => diagnose_note_contents(paths, relative_path, &report.content)?,
+            None => diagnose_external_markdown_contents(
+                &request.target.display_path,
+                &request.target.config,
+                &report.content,
+            )?,
+        }
+    } else {
+        Vec::new()
+    };
+    Ok(NotePatchCommandReport {
+        path: report.path,
+        dry_run: report.dry_run,
+        checked: check,
+        section_id: report.section_id,
+        heading: request.heading.clone(),
+        block_ref: request.block_ref.clone(),
+        lines: request.lines.clone(),
+        line_spans: report.line_spans,
+        pattern: request.find.clone(),
+        regex: report.regex,
+        replace: request.replace.clone(),
+        match_count: report.match_count,
+        changes: report.changes,
+        diagnostics,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct NoteDeleteRequest {
     pub note: String,
@@ -2100,11 +2154,11 @@ mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
         build_note_info_report, diagnose_note_contents, finish_note_append_report,
-        finish_note_create_report, finish_note_set_report, json_properties_to_frontmatter,
-        parse_note_frontmatter_bindings, read_note, read_note_outline,
-        resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
-        NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode,
-        NoteSetRequest,
+        finish_note_create_report, finish_note_patch_report, finish_note_set_report,
+        json_properties_to_frontmatter, parse_note_frontmatter_bindings, read_note,
+        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
+        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest,
+        NoteReadMode, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde_json::Value as JsonValue;
@@ -2639,6 +2693,42 @@ folder_templates = [{ folder = "Projects", template = "project" }]
             .expect("patched note")
             .replace("\r\n", "\n");
         assert_eq!(updated, "# Title\n\n## Status\nDONE\n\n## Notes\nTODO\n");
+    }
+
+    #[test]
+    fn patch_command_report_checks_dry_run_content_without_writing() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        fs::write(temp_dir.path().join("Home.md"), "# Home\nTODO\n").expect("seed note");
+        let request = NotePatchRequest {
+            target: resolve_existing_markdown_target(&paths, "Home.md").expect("target"),
+            section_id: None,
+            heading: Some("Home".to_string()),
+            block_ref: None,
+            lines: None,
+            find: "TODO".to_string(),
+            replace: "[[Missing]]".to_string(),
+            replace_all: false,
+            dry_run: true,
+        };
+
+        let applied = apply_note_patch(&paths, &request, None, true).expect("patch preview");
+        let report = finish_note_patch_report(&paths, &request, applied, true).expect("report");
+        assert!(report.dry_run);
+        assert!(report.checked);
+        assert_eq!(report.path, "Home.md");
+        assert_eq!(report.heading.as_deref(), Some("Home"));
+        assert_eq!(report.pattern, "TODO");
+        assert_eq!(report.match_count, 1);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|item| item.message.contains("Missing")));
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("Home.md")).expect("unchanged source"),
+            "# Home\nTODO\n"
+        );
     }
 
     #[cfg(unix)]
