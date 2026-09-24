@@ -15,15 +15,15 @@ use crate::commands::tasks::{
 use crate::commit::AutoCommitPolicy;
 use crate::plugins;
 use crate::{
-    cli_command_tree, collect_complete_candidates, collect_help_command_topics,
-    config_set_changed_files, custom_tool_registry_entry, normalize_note_path,
-    permission_error_to_cli, resolve_existing_markdown_target, resolve_existing_note_path,
-    resolve_help_topic, run_note_append_command, run_note_create_with_body,
-    run_note_delete_command, run_note_get_command, run_note_info_command, run_note_outline_command,
-    run_note_patch_command, run_note_set_with_content, run_status_command, CliError,
-    McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode,
-    NoteAppendOptions, NoteAppendPeriodicArg, NoteGetMode, NoteGetOptions, NotePatchOptions,
-    OutputFormat, SearchBackendArg, TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
+    cli_command_tree, collect_help_command_topics, config_set_changed_files,
+    custom_tool_registry_entry, normalize_note_path, permission_error_to_cli,
+    resolve_existing_markdown_target, resolve_help_topic, run_note_append_command,
+    run_note_create_with_body, run_note_delete_command, run_note_get_command,
+    run_note_info_command, run_note_outline_command, run_note_patch_command,
+    run_note_set_with_content, run_status_command, CliError, McpToolPackArg, McpToolPackModeArg,
+    McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg,
+    NoteGetMode, NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg,
+    TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -48,20 +48,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::json_value_to_string;
+use vulcan_app::mcp_completion;
 use vulcan_app::mcp_dispatch::{
     jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler,
 };
 use vulcan_app::mcp_protocol::{
-    McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs,
-    McpDailyListArgs, McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams,
-    McpMethodError, McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs,
-    McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs,
-    McpPromptGetParams, McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs,
-    McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
-    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
-    McpToolPackMutationArgs, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
-    MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
+    McpCompletionParams, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs,
+    McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams, McpMethodError,
+    McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteGetArgs,
+    McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs, McpPromptGetParams,
+    McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs, McpSyncConflictsArgs,
+    McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskListArgs,
+    McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams, McpToolPackMutationArgs,
+    McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION,
+    MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
 };
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::sync::{
@@ -69,18 +70,16 @@ use vulcan_app::sync::{
     GitSyncOptions,
 };
 use vulcan_app::sync_conflicts::{get_sync_conflict, list_sync_conflicts};
-use vulcan_core::properties::load_note_index;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
     accept_link_suggestion, assistant_prompts_root, assistant_skills_root,
-    evaluate_dql_with_filter, execute_query_report_with_filter, load_assistant_prompt,
-    load_vault_config, query_graph_communities_with_filter, query_notes_with_filter,
-    read_vault_agents_file, reject_link_suggestion, resolve_permission_profile,
-    scan_vault_with_progress, search_vault_with_filter, suggest_links, watch_vault,
-    LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionMode, PermissionProfile,
-    PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery,
-    SearchSort, TasksQueryResult, VaultPaths, WatchOptions,
+    evaluate_dql_with_filter, execute_query_report_with_filter, load_vault_config,
+    query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
+    reject_link_suggestion, resolve_permission_profile, scan_vault_with_progress,
+    search_vault_with_filter, suggest_links, watch_vault, LinkSuggestionStatus, NoteQuery,
+    PermissionGuard, PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport,
+    ScanMode, ScanSummary, SearchQuery, SearchSort, TasksQueryResult, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -1697,14 +1696,6 @@ impl McpServerCore {
         mcp_assistant::visible_prompts(&self.paths, &self.guard)
     }
 
-    fn visible_skills(&self) -> Result<Vec<vulcan_core::AssistantSkillSummary>, McpMethodError> {
-        mcp_assistant::visible_skills(&self.paths, &self.guard)
-    }
-
-    fn prompt_visible(&self, prompt: &vulcan_core::AssistantPromptSummary) -> bool {
-        mcp_assistant::prompt_visible(&self.paths, &self.guard, prompt)
-    }
-
     fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
         let mut resources = vec![serde_json::json!({
             "uri": "vulcan://help/overview",
@@ -1939,120 +1930,12 @@ impl McpServerCore {
     }
 
     fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
-        let values = match &params.reference {
-            McpCompletionReference::Prompt { name } => {
-                let prompt = load_assistant_prompt(&self.paths, name)
-                    .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
-                if !self.prompt_visible(&prompt.summary) {
-                    return Err(McpMethodError::invalid_params(format!(
-                        "prompt `{name}` is not available under profile `{}`",
-                        self.selection.name
-                    )));
-                }
-                let argument = prompt
-                    .summary
-                    .arguments
-                    .iter()
-                    .find(|argument| argument.name == params.argument.name)
-                    .ok_or_else(|| {
-                        McpMethodError::invalid_params(format!(
-                            "prompt `{name}` does not define argument `{}`",
-                            params.argument.name
-                        ))
-                    })?;
-                self.complete_context(
-                    argument.completion.as_deref().unwrap_or_default(),
-                    &params.argument.value,
-                    &params.context.arguments,
-                )?
-            }
-            McpCompletionReference::Resource { uri } if uri == "vulcan://help/{topic}" => {
-                if params.argument.name != "topic" {
-                    return Err(McpMethodError::invalid_params(format!(
-                        "resource template `{uri}` does not define argument `{}`",
-                        params.argument.name
-                    )));
-                }
-                help_topic_completion_candidates(&params.argument.value)
-            }
-            McpCompletionReference::Resource { uri }
-                if uri == "vulcan://assistant/skills/{name}" =>
-            {
-                if params.argument.name != "name" {
-                    return Err(McpMethodError::invalid_params(format!(
-                        "resource template `{uri}` does not define argument `{}`",
-                        params.argument.name
-                    )));
-                }
-                self.visible_skills()?
-                    .into_iter()
-                    .map(|skill| skill.name)
-                    .filter(|skill| skill.starts_with(&params.argument.value))
-                    .collect()
-            }
-            McpCompletionReference::Resource { uri } => {
-                return Err(McpMethodError::invalid_params(format!(
-                    "unknown completion reference `{uri}`"
-                )));
-            }
-        };
-
-        Ok(serde_json::json!({
-            "completion": {
-                "values": values,
-                "total": values.len(),
-                "hasMore": false,
-            }
-        }))
-    }
-
-    fn complete_context(
-        &self,
-        context: &str,
-        prefix: &str,
-        _arguments: &BTreeMap<String, String>,
-    ) -> Result<Vec<String>, McpMethodError> {
-        match context {
-            "" => Ok(Vec::new()),
-            "note" => Ok(self.visible_note_completion_candidates(prefix)),
-            "daily-date" => Ok(self.visible_daily_date_candidates(prefix)?),
-            "prompt-name" => Ok(self
-                .visible_prompts()?
-                .into_iter()
-                .map(|prompt| prompt.name)
-                .filter(|name| name.starts_with(prefix))
-                .collect()),
-            "skill-name" => Ok(self
-                .visible_skills()?
-                .into_iter()
-                .map(|skill| skill.name)
-                .filter(|name| name.starts_with(prefix))
-                .collect()),
-            "help-topic" => Ok(help_topic_completion_candidates(prefix)),
-            "bases-file" | "bases-view" | "kanban-board" | "vault-path" => Ok(self
-                .filter_read_path_candidates(collect_complete_candidates(
-                    &self.paths,
-                    context,
-                    Some(prefix),
-                ))),
-            "task-view" => Ok(
-                self.filter_task_view_candidates(collect_complete_candidates(
-                    &self.paths,
-                    context,
-                    Some(prefix),
-                )),
-            ),
-            "script" => Ok(self.filter_script_candidates(collect_complete_candidates(
-                &self.paths,
-                context,
-                Some(prefix),
-            ))),
-            other => Ok(collect_complete_candidates(
-                &self.paths,
-                other,
-                Some(prefix),
-            )),
-        }
+        mcp_completion::complete(
+            &self.paths,
+            &self.guard,
+            params,
+            &help_topic_completion_candidates(""),
+        )
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3354,83 +3237,6 @@ impl McpServerCore {
         }
         self.snapshot = current;
         notifications
-    }
-
-    fn visible_note_completion_candidates(&self, prefix: &str) -> Vec<String> {
-        let candidates = collect_complete_candidates(&self.paths, "note", Some(prefix));
-        let mut seen = BTreeSet::new();
-        candidates
-            .into_iter()
-            .filter(|candidate| {
-                if self.guard.read_filter().path_permission().is_unrestricted()
-                    && !self.guard.has_policy_hook()
-                {
-                    return true;
-                }
-                resolve_existing_note_path(&self.paths, candidate)
-                    .is_ok_and(|path| self.guard.check_read_path(&path).is_ok())
-            })
-            .filter(|candidate| seen.insert(candidate.clone()))
-            .collect()
-    }
-
-    fn visible_daily_date_candidates(&self, prefix: &str) -> Result<Vec<String>, McpMethodError> {
-        if self.selection.profile.read.is_none() {
-            return Ok(Vec::new());
-        }
-        let mut dates = load_note_index(&self.paths)
-            .map_err(|error| McpMethodError::internal(error.to_string()))?
-            .into_values()
-            .filter(|note| note.periodic_type.as_deref() == Some("daily"))
-            .filter(|note| {
-                if self.guard.read_filter().path_permission().is_unrestricted()
-                    && !self.guard.has_policy_hook()
-                {
-                    return true;
-                }
-                self.guard.check_read_path(&note.document_path).is_ok()
-            })
-            .filter_map(|note| note.periodic_date)
-            .collect::<Vec<_>>();
-        dates.sort_by(|left, right| right.cmp(left));
-        dates.dedup();
-        dates.retain(|date| date.starts_with(prefix));
-        Ok(dates)
-    }
-
-    fn filter_read_path_candidates(&self, candidates: Vec<String>) -> Vec<String> {
-        candidates
-            .into_iter()
-            .filter(|candidate| self.can_read_relative_path(candidate.trim_end_matches('/')))
-            .collect()
-    }
-
-    fn filter_task_view_candidates(&self, candidates: Vec<String>) -> Vec<String> {
-        let config_visible = self.guard.check_config_read().is_ok();
-        candidates
-            .into_iter()
-            .filter(|candidate| {
-                if Path::new(candidate)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("base"))
-                {
-                    return self.can_read_relative_path(candidate);
-                }
-                config_visible
-            })
-            .collect()
-    }
-
-    fn filter_script_candidates(&self, candidates: Vec<String>) -> Vec<String> {
-        if !matches!(self.selection.profile.execute, PermissionMode::Allow) {
-            return Vec::new();
-        }
-        candidates
-            .into_iter()
-            .filter(|candidate| {
-                self.can_read_relative_path(&format!(".vulcan/scripts/{candidate}.js"))
-            })
-            .collect()
     }
 
     fn can_read_relative_path(&self, relative_path: &str) -> bool {

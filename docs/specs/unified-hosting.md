@@ -223,8 +223,9 @@ built-in tool metadata, pack selection, and permission visibility in `vulcan-app
 existing stdio and HTTP notification, error, and timeout shapes. CLI stdio and foreground HTTP
 consume these shared contracts. `vulcan-app::mcp_assistant` provides permission-filtered prompt
 and skill discovery, prompt rendering, and vault-owned assistant resource reads to both transports.
-Remaining method handlers, resource listings/help/custom-tool resources, completions, and
-HTTP/OAuth hosting remain migration work under 10.7.6.
+`vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
+host's help-topic catalog injected. Remaining method handlers, resource listings/help/custom-tool
+resources, the shared help-topic catalog, and HTTP/OAuth hosting remain migration work under 10.7.6.
 
 ## Preserved compatibility contracts
 
