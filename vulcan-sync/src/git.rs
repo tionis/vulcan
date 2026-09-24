@@ -4186,7 +4186,13 @@ fn find_nested_git_metadata(root: &Path) -> Result<Vec<String>, GitEngineError> 
             let file_type = entry.file_type().map_err(GitEngineError::Io)?;
             if entry.file_name() == ".git" && directory != root {
                 let relative = path.strip_prefix(root).unwrap_or(&path);
-                found.push(relative.to_string_lossy().into_owned());
+                found.push(
+                    relative
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
             } else if file_type.is_dir()
                 && !(directory == root
                     && (entry.file_name() == ".git" || entry.file_name() == ".vulcan"))
