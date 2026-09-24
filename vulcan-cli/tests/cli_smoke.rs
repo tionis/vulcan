@@ -30370,6 +30370,54 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
             .is_some_and(|content| content.contains("Review open tasks")),
         "daily_show should return daily note content"
     );
+    let cli_show = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "daily",
+            "show",
+            "2026-05-08",
+        ])
+        .assert()
+        .success();
+    assert_eq!(*daily, parse_stdout_json(&cli_show));
+
+    let daily_list = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 31,
+        "method": "tools/call",
+        "params": {
+            "name": "daily_list",
+            "arguments": {
+                "from": "2026-05-08",
+                "to": "2026-05-08",
+                "include_events": true
+            }
+        }
+    }));
+    let daily_list =
+        &daily_list.last().expect("daily_list response")["result"]["structuredContent"];
+    let cli_list = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "daily",
+            "list",
+            "--from",
+            "2026-05-08",
+            "--to",
+            "2026-05-08",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        daily_list["items"],
+        serde_json::json!(parse_stdout_json_lines(&cli_list))
+    );
 
     let query = session.send(serde_json::json!({
         "jsonrpc": "2.0",

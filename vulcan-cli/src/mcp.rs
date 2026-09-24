@@ -3,10 +3,6 @@
 mod catalog;
 
 use crate::app_config;
-use crate::commands::periodic::{
-    current_utc_date_string, normalize_date_argument, run_daily_list_command,
-    run_daily_show_command,
-};
 use crate::commands::runtime::{run_web_fetch_command, run_web_search_command};
 use crate::commands::tasks::{
     run_tasks_complete_command, run_tasks_create_command, run_tasks_list_command,
@@ -65,6 +61,9 @@ use vulcan_app::mcp_protocol::{
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{read_note, read_note_outline, NoteGetOptions, NoteReadMode};
+use vulcan_app::periodic::{
+    current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
+};
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
     GitSyncOptions,
@@ -1966,7 +1965,8 @@ impl McpServerCore {
                                     "daily operation `show` requires `date`",
                                 )
                             })?;
-                            normalize_date_argument(Some(raw)).map_err(cli_tool_error)?
+                            normalize_date_argument(Some(raw))
+                                .map_err(|error| McpMethodError::tool(error.to_string()))?
                         };
                         let mut report = vulcan_app::periodic::read_daily_note(
                             &self.paths,
@@ -1985,14 +1985,14 @@ impl McpServerCore {
                             .map_err(|error| McpMethodError::internal(error.to_string()))?
                     }
                     "list" | "range" => {
-                        let items = run_daily_list_command(
+                        let items = list_daily_notes(
                             &self.paths,
                             args.from.as_deref(),
                             args.to.as_deref(),
                             args.week,
                             args.month,
                         )
-                        .map_err(cli_tool_error)?
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?
                         .into_iter()
                         .filter(|item| self.guard.check_read_path(&item.path).is_ok())
                         .collect::<Vec<_>>();
@@ -2018,22 +2018,22 @@ impl McpServerCore {
             }
             McpToolId::DailyShow => {
                 let args: McpDailyShowArgs = parse_tool_arguments(arguments)?;
-                let report = run_daily_show_command(&self.paths, args.date.as_deref(), "daily")
-                    .map_err(cli_tool_error)?;
+                let report = show_periodic_note(&self.paths, args.date.as_deref(), "daily")
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 self.check_read_note_access(&report.path)
                     .map_err(cli_tool_error)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::DailyList => {
                 let args: McpDailyListArgs = parse_tool_arguments(arguments)?;
-                let report = run_daily_list_command(
+                let report = list_daily_notes(
                     &self.paths,
                     args.from.as_deref(),
                     args.to.as_deref(),
                     args.week,
                     args.month,
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 let filtered = report
                     .into_iter()
                     .filter(|item| self.guard.check_read_path(&item.path).is_ok())

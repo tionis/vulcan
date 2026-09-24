@@ -11,41 +11,26 @@ use crate::{
     PeriodicSubcommand, PermissionGuard,
 };
 use serde::Serialize;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use vulcan_app::browse::{build_periodic_list_report, PeriodicListItem};
-use vulcan_app::periodic::{read_daily_note, DailyNoteReadReport, DailyReadTarget};
+use vulcan_app::periodic::{
+    current_utc_date_string as app_current_utc_date_string, list_daily_notes,
+    normalize_date_argument as app_normalize_date_argument, read_daily_note,
+    resolve_daily_list_window as app_resolve_daily_list_window,
+    resolve_periodic_target as app_resolve_periodic_target, show_periodic_note, DailyListItem,
+    DailyNoteReadReport, DailyReadTarget, PeriodicShowReport, PeriodicTarget,
+};
 use vulcan_app::templates::{
     load_named_template, render_loaded_template, LoadedTemplateRenderRequest, TemplateEngineKind,
     TemplateRunMode,
 };
 use vulcan_core::config::PeriodicConfig;
-use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::{
-    expected_periodic_note_path, export_daily_events_to_ics, list_daily_note_events,
-    load_events_for_periodic_note, load_vault_config, period_range_for_date, resolve_periodic_note,
-    step_period_start, VaultPaths,
+    expected_periodic_note_path, export_daily_events_to_ics, load_vault_config,
+    period_range_for_date, resolve_periodic_note, step_period_start, VaultPaths,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PeriodicTarget {
-    period_type: String,
-    reference_date: String,
-    start_date: String,
-    end_date: String,
-    path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct PeriodicEventReport {
-    start_time: String,
-    end_time: Option<String>,
-    title: String,
-    metadata: Value,
-    tags: Vec<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct PeriodicOpenReport {
@@ -57,26 +42,6 @@ struct PeriodicOpenReport {
     created: bool,
     opened_editor: bool,
     warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct PeriodicShowReport {
-    period_type: String,
-    reference_date: String,
-    start_date: String,
-    pub(crate) path: String,
-    end_date: String,
-    content: String,
-    events: Vec<PeriodicEventReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct DailyListItem {
-    period_type: String,
-    date: String,
-    pub(crate) path: String,
-    event_count: usize,
-    events: Vec<PeriodicEventReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -395,24 +360,11 @@ fn check_periodic_write_access(
 }
 
 pub(crate) fn current_utc_date_string() -> String {
-    vulcan_app::templates::TemplateTimestamp::current().default_date_string()
+    app_current_utc_date_string()
 }
 
 pub(crate) fn normalize_date_argument(date: Option<&str>) -> Result<String, CliError> {
-    match date
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-    {
-        None => Ok(current_utc_date_string()),
-        Some(value) if value == "today" => Ok(current_utc_date_string()),
-        Some(value) => {
-            let timestamp = parse_date_like_string(&value)
-                .ok_or_else(|| CliError::operation(format!("invalid date: {value}")))?;
-            let (year, month, day, _, _, _, _) = date_components(timestamp);
-            Ok(format!("{year:04}-{month:02}-{day:02}"))
-        }
-    }
+    app_normalize_date_argument(date).map_err(CliError::operation)
 }
 
 fn resolve_periodic_target(
@@ -421,36 +373,8 @@ fn resolve_periodic_target(
     date: Option<&str>,
     require_enabled: bool,
 ) -> Result<PeriodicTarget, CliError> {
-    let note = config
-        .note(period_type)
-        .ok_or_else(|| CliError::operation(format!("unknown periodic note type: {period_type}")))?;
-    if require_enabled && !note.enabled {
-        return Err(CliError::operation(format!(
-            "periodic note type `{period_type}` is disabled in config"
-        )));
-    }
-
-    let reference_date = normalize_date_argument(date)?;
-    let (start_date, end_date) = period_range_for_date(config, period_type, &reference_date)
-        .ok_or_else(|| {
-            CliError::operation(format!(
-                "failed to resolve period range for `{period_type}` and {reference_date}"
-            ))
-        })?;
-    let path =
-        expected_periodic_note_path(config, period_type, &reference_date).ok_or_else(|| {
-            CliError::operation(format!(
-                "failed to resolve note path for `{period_type}` and {reference_date}"
-            ))
-        })?;
-
-    Ok(PeriodicTarget {
-        period_type: period_type.to_string(),
-        reference_date,
-        start_date,
-        end_date,
-        path,
-    })
+    app_resolve_periodic_target(config, period_type, date, require_enabled)
+        .map_err(CliError::operation)
 }
 
 fn render_periodic_note_contents(
@@ -581,63 +505,12 @@ fn run_periodic_open_command(
     })
 }
 
-fn load_daily_events_for_path(
-    paths: &VaultPaths,
-    relative_path: &str,
-) -> Result<Vec<PeriodicEventReport>, CliError> {
-    load_events_for_periodic_note(paths, relative_path)
-        .map(|events| {
-            events
-                .into_iter()
-                .map(|event| PeriodicEventReport {
-                    start_time: event.start_time,
-                    end_time: event.end_time,
-                    title: event.title,
-                    metadata: event.metadata,
-                    tags: event.tags,
-                })
-                .collect()
-        })
-        .map_err(CliError::operation)
-}
-
 pub(crate) fn run_daily_show_command(
     paths: &VaultPaths,
     date: Option<&str>,
     period_type: &str,
 ) -> Result<PeriodicShowReport, CliError> {
-    let config = load_vault_config(paths).config;
-    let target = resolve_periodic_target(&config.periodic, period_type, date, false)?;
-    let resolved = resolve_periodic_note(
-        paths.vault_root(),
-        &config.periodic,
-        period_type,
-        &target.reference_date,
-    )
-    .unwrap_or_else(|| target.path.clone());
-    let absolute_path = paths.vault_root().join(&resolved);
-    if !absolute_path.is_file() {
-        return Err(CliError::operation(format!(
-            "{period_type} note does not exist on disk: {}",
-            target.path
-        )));
-    }
-
-    let events = if period_type == "daily" {
-        load_daily_events_for_path(paths, &resolved)?
-    } else {
-        Vec::new()
-    };
-
-    Ok(PeriodicShowReport {
-        period_type: period_type.to_string(),
-        reference_date: target.reference_date,
-        start_date: target.start_date,
-        end_date: target.end_date,
-        path: resolved.clone(),
-        content: fs::read_to_string(&absolute_path).map_err(CliError::operation)?,
-        events,
-    })
+    show_periodic_note(paths, date, period_type).map_err(CliError::operation)
 }
 
 fn resolve_daily_list_window(
@@ -647,28 +520,7 @@ fn resolve_daily_list_window(
     week: bool,
     month: bool,
 ) -> Result<(String, String), CliError> {
-    let today = current_utc_date_string();
-    if week {
-        return period_range_for_date(config, "weekly", &today)
-            .ok_or_else(|| CliError::operation("failed to resolve weekly date range"));
-    }
-    if month {
-        return period_range_for_date(config, "monthly", &today)
-            .ok_or_else(|| CliError::operation("failed to resolve monthly date range"));
-    }
-
-    let start = normalize_date_argument(from)?;
-    let end = match to {
-        Some(value) => normalize_date_argument(Some(value))?,
-        None if from.is_some() => start.clone(),
-        None => today,
-    };
-    if start > end {
-        return Err(CliError::operation(format!(
-            "start date must be before or equal to end date: {start} > {end}"
-        )));
-    }
-    Ok((start, end))
+    app_resolve_daily_list_window(config, from, to, week, month).map_err(CliError::operation)
 }
 
 pub(crate) fn run_daily_list_command(
@@ -678,35 +530,7 @@ pub(crate) fn run_daily_list_command(
     week: bool,
     month: bool,
 ) -> Result<Vec<DailyListItem>, CliError> {
-    let config = load_vault_config(paths).config;
-    let (start, end) = resolve_daily_list_window(&config.periodic, from, to, week, month)?;
-    list_daily_note_events(paths, &start, &end)
-        .map(|items| {
-            items
-                .into_iter()
-                .map(|item| {
-                    let events = item
-                        .events
-                        .into_iter()
-                        .map(|event| PeriodicEventReport {
-                            start_time: event.start_time,
-                            end_time: event.end_time,
-                            title: event.title,
-                            metadata: event.metadata,
-                            tags: event.tags,
-                        })
-                        .collect::<Vec<_>>();
-                    DailyListItem {
-                        period_type: "daily".to_string(),
-                        date: item.date,
-                        path: item.path,
-                        event_count: events.len(),
-                        events,
-                    }
-                })
-                .collect()
-        })
-        .map_err(CliError::operation)
+    list_daily_notes(paths, from, to, week, month).map_err(CliError::operation)
 }
 
 fn run_periodic_export_ics_command(
