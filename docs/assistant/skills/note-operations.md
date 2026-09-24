@@ -5,6 +5,7 @@ version: 1
 tools:
   - note_outline
   - note_get
+  - note_info
   - note_create
   - note_set
   - note_append
@@ -24,7 +25,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 ## Recommended Flow
 
 1. Start with `note outline` when the note might be long or structurally complex, then use `note get --section <id>` or `note get --heading <name>` to narrow the read.
-2. Read the target with `note get` before patching so the agent is editing the right content.
+2. Use `note info` for a quick metadata and link-count summary, or read the target with `note get` before patching so the agent is editing the right content.
 3. Prefer `note append` for additive changes and `note patch --section|--heading|--block-ref|--lines` for surgical replacements inside one resolved scope.
 4. Use `note set` only when replacing the whole note is intentional.
 5. Switch to a vault-relative path when note names or aliases are ambiguous.
@@ -32,6 +33,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 ## Guardrails
 
 - `note patch` fails on multiple matches by design. Narrow the scope with `--section`, `--heading`, `--block-ref`, or `--lines` instead of forcing a broad replacement.
+- MCP `note_info` backlink and link-confidence counts include only readable source notes under the connection's permission profile; do not treat scoped counts as vault-wide totals.
 - Prefer section, heading, block-ref, or `--match`-based targeting over whole-note rewrites.
 - Keep frontmatter changes structured. If the task is really metadata work, use `update` or `unset` instead of editing YAML by hand.
 - Note creates, replacements, appends, patches, and deletes targeting an mdbase record path use the collection's validated, journaled write boundary. Treat validation errors as blockers and do not bypass them with raw filesystem edits; explicit repair is a separate workflow that must be intentionally requested.

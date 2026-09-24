@@ -231,10 +231,14 @@ including read-filtered results and bounded query projection, plus the note-sour
 guarded daily-content access, bounded daily-list response shaping, and permission-filtered task-query reports. MCP task list/query and create/complete/reschedule invoke app task workflows directly, preserving their write preflight and cache refresh. `vulcan-app::periodic`
 owns date/target resolution and daily list/show reports shared by CLI and MCP. MCP status uses the existing
 `vulcan-app::browse` report directly.
-`vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline` and `note_get` reports for CLI and MCP. Remaining tool workflows, CLI-derived command-help catalog sharing,
-and HTTP/OAuth hosting remain migration work under 10.7.6.
+`vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline`,
+`note_get`, and `note_info` reports for CLI and MCP. Core graph queries provide
+permission-filtered note-link confidence, so MCP note-info counts exclude unreadable backlink
+sources.
 `vulcan-app::web` provides permission-checked search/fetch workflows to CLI and MCP, including
 network and optional save-path preflight; MCP no longer calls CLI web handlers.
+Remaining tool workflows, CLI-derived command-help catalog sharing, and HTTP/OAuth hosting
+remain migration work under 10.7.6.
 
 ## Preserved compatibility contracts
 

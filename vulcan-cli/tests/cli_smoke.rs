@@ -15659,6 +15659,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         fs::read_to_string(vault_root.join(".agents/skills/note-operations/SKILL.md"))
             .expect("bundled skill should be readable");
     assert!(note_operations.contains("managed: true"));
+    assert!(note_operations.contains("- note_info"));
+    assert!(note_operations.contains("only readable source notes"));
     assert!(note_operations.contains("mdbase record path"));
     assert!(note_operations.contains("validated, journaled write boundary"));
     assert!(note_operations.contains("explicit repair is a separate workflow"));
@@ -29957,7 +29959,68 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
             .is_some_and(|count| count > 0),
         "note_info should expose link confidence in structured MCP content"
     );
+    let cli_info = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 vault"),
+            "--output",
+            "json",
+            "note",
+            "info",
+            "Projects/Alpha.md",
+        ])
+        .assert()
+        .success();
+    assert_eq!(result["structuredContent"], parse_stdout_json(&cli_info));
 
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_note_info_excludes_unreadable_backlinks_and_confidence() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\"] }\n",
+    )
+    .expect("config");
+    fs::write(vault_root.join("Target.md"), "# Target\n[[Public]]\n").expect("target note");
+    fs::write(vault_root.join("Public.md"), "[[Target]]\n").expect("public note");
+    fs::write(vault_root.join("Private.md"), "[[Target]]\n").expect("private note");
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(
+        &vault_root,
+        &["--permissions", "public", "--tool-pack", "notes-manage"],
+    );
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let visible = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "note_info", "arguments": { "note": "Target.md" } }
+    }));
+    let visible = &visible.last().expect("note_info")["result"];
+    assert_eq!(visible["isError"], false);
+    let info = &visible["structuredContent"];
+    assert_eq!(info["backlink_count"], 1);
+    let confidence = &info["link_confidence"];
+    let total = confidence["extracted"].as_u64().unwrap_or(0)
+        + confidence["inferred"].as_u64().unwrap_or(0)
+        + confidence["ambiguous"].as_u64().unwrap_or(0);
+    assert_eq!(total, 2);
+
+    let hidden = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "note_info", "arguments": { "note": "Private.md" } }
+    }));
+    assert_eq!(
+        hidden.last().expect("denied note_info")["result"]["isError"],
+        true
+    );
     assert!(session.finish().is_empty());
 }
 

@@ -26,11 +26,13 @@ use vulcan_core::paths::{
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     expected_periodic_note_path, load_vault_config, parse_document, parse_dql_with_diagnostics,
-    period_range_for_date, query_backlinks, render_note_fragment_html, render_note_html,
-    render_vault_html, resolve_link, resolve_note_reference, BacklinkRecord, DoctorByteRange,
-    DoctorDiagnosticIssue, GraphQueryError, LinkResolutionProblem, NoteLineSpan, ParsedDocument,
-    PeriodicConfig, PluginEvent, RefactorChange, ResolverDocument, ResolverLink, VaultConfig,
-    VaultPaths,
+    period_range_for_date, query_backlinks, query_backlinks_with_filter, query_links_with_filter,
+    query_note_link_confidence_with_filter, render_note_fragment_html, render_note_html,
+    render_vault_html, resolve_link, resolve_note_reference, resolve_note_reference_with_filter,
+    BacklinkRecord, DoctorByteRange, DoctorDiagnosticIssue, GraphConfidenceBreakdown,
+    GraphQueryError, LinkResolutionProblem, NoteLineSpan, NoteMatchKind, ParsedDocument,
+    PeriodicConfig, PermissionFilter, PluginEvent, RefactorChange, ResolverDocument, ResolverLink,
+    VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -177,6 +179,155 @@ pub struct NoteGetReport {
     pub metadata: NoteGetMetadata,
     #[serde(skip)]
     pub display_lines: Vec<vulcan_core::NoteSelectedLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteInfoReport {
+    pub path: String,
+    pub matched_by: NoteMatchKind,
+    pub word_count: usize,
+    pub heading_count: usize,
+    pub outgoing_link_count: usize,
+    pub backlink_count: usize,
+    pub alias_count: usize,
+    pub tag_count: usize,
+    pub file_size: i64,
+    pub tags: Vec<String>,
+    pub frontmatter_keys: Vec<String>,
+    pub created_at_ms: Option<i64>,
+    pub created_at: Option<String>,
+    pub modified_at_ms: Option<i64>,
+    pub modified_at: Option<String>,
+    pub link_confidence: GraphConfidenceBreakdown,
+}
+
+pub fn build_note_info_report(
+    paths: &VaultPaths,
+    note: &str,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<NoteInfoReport, AppError> {
+    let resolved = resolve_note_reference_with_filter(paths, note, read_filter)
+        .map_err(AppError::operation)?;
+    let absolute_path = paths.vault_root().join(&resolved.path);
+    let source = fs::read_to_string(&absolute_path).map_err(AppError::operation)?;
+    let metadata = fs::metadata(&absolute_path).map_err(AppError::operation)?;
+    let config = load_vault_config(paths).config;
+    let parsed = parse_document(&source, &config);
+    let outgoing =
+        query_links_with_filter(paths, &resolved.path, read_filter).map_err(AppError::operation)?;
+    let backlinks = query_backlinks_with_filter(paths, &resolved.path, read_filter)
+        .map_err(AppError::operation)?;
+
+    let mut tags = parsed
+        .tags
+        .iter()
+        .map(|tag| tag.tag_text.clone())
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+
+    let mut frontmatter_keys = parsed
+        .frontmatter
+        .as_ref()
+        .and_then(|frontmatter| frontmatter.as_mapping())
+        .map(|mapping| {
+            mapping
+                .keys()
+                .filter_map(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    frontmatter_keys.sort();
+
+    let modified_at_ms = metadata
+        .modified()
+        .ok()
+        .or_else(|| metadata.created().ok())
+        .and_then(system_time_to_millis);
+    let created_at_ms = metadata
+        .created()
+        .ok()
+        .or_else(|| metadata.modified().ok())
+        .and_then(system_time_to_millis)
+        .or(modified_at_ms);
+
+    Ok(NoteInfoReport {
+        link_confidence: query_note_link_confidence_with_filter(paths, &resolved.path, read_filter)
+            .map_err(AppError::operation)?,
+        path: resolved.path,
+        matched_by: resolved.matched_by,
+        word_count: note_word_count(&source),
+        heading_count: parsed.headings.len(),
+        outgoing_link_count: outgoing.links.len(),
+        backlink_count: backlinks.backlinks.len(),
+        alias_count: parsed.aliases.len(),
+        tag_count: tags.len(),
+        file_size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+        tags,
+        frontmatter_keys,
+        created_at_ms,
+        created_at: created_at_ms.map(format_utc_timestamp_ms),
+        modified_at_ms,
+        modified_at: modified_at_ms.map(format_utc_timestamp_ms),
+    })
+}
+
+fn note_word_count(source: &str) -> usize {
+    let body = find_frontmatter_block(source).map_or(source, |(_, _, end)| &source[end..]);
+    body.lines()
+        .filter_map(normalize_note_word_line)
+        .flat_map(str::split_whitespace)
+        .count()
+}
+
+fn normalize_note_word_line(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || is_block_ref_only_line(trimmed) {
+        return None;
+    }
+    let trimmed = if let Some(level) = markdown_heading_level(trimmed) {
+        trimmed[level..].trim()
+    } else {
+        trimmed
+    };
+    let trimmed = strip_markdown_list_marker(trimmed).trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn is_block_ref_only_line(line: &str) -> bool {
+    line.starts_with('^')
+        && line.len() > 1
+        && line[1..]
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+fn strip_markdown_list_marker(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    for prefix in ["- ", "* ", "+ "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 {
+        if let Some(rest) = trimmed[digits..].strip_prefix(". ") {
+            return rest;
+        }
+    }
+    trimmed
+}
+
+fn system_time_to_millis(time: std::time::SystemTime) -> Option<i64> {
+    let duration = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_millis()).ok()
+}
+
+fn format_utc_timestamp_ms(ms: i64) -> String {
+    TemplateTimestamp::from_millis(ms)
+        .default_strings()
+        .datetime
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1849,10 +2000,11 @@ fn load_note_append_target(
 mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-        diagnose_note_contents, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
-        read_note, read_note_outline, resolve_existing_markdown_target, MarkdownTarget,
-        NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions,
-        NotePatchRequest, NoteReadMode, NoteSetRequest,
+        build_note_info_report, diagnose_note_contents, json_properties_to_frontmatter,
+        parse_note_frontmatter_bindings, read_note, read_note_outline,
+        resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
+        NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode,
+        NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde_json::Value as JsonValue;
@@ -1861,6 +2013,29 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultPaths};
+
+    #[test]
+    fn note_info_report_preserves_metadata_and_word_count() {
+        let temporary = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        fs::write(
+            temporary.path().join("Home.md"),
+            "---\ntitle: Home\n---\n# Home\n- One task\n^block-ref\n[[Other]]\n",
+        )
+        .expect("home note");
+        fs::write(temporary.path().join("Other.md"), "[[Home]]\n").expect("other note");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_note_info_report(&paths, "Home.md", None).expect("info");
+        assert_eq!(report.path, "Home.md");
+        assert_eq!(report.heading_count, 1);
+        assert_eq!(report.outgoing_link_count, 1);
+        assert_eq!(report.backlink_count, 1);
+        assert_eq!(report.frontmatter_keys, vec!["title"]);
+        assert_eq!(report.word_count, 4);
+        assert!(report.modified_at_ms.is_some());
+    }
 
     #[test]
     fn existing_markdown_target_distinguishes_vault_and_external_files() {

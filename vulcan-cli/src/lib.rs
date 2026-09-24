@@ -43,8 +43,8 @@ pub(crate) use commands::edit::{
 pub(crate) use commands::inbox::{print_inbox_report, run_inbox_command};
 pub(crate) use commands::note::{
     normalize_note_path, resolve_existing_markdown_target, run_note_append_command,
-    run_note_create_with_body, run_note_delete_command, run_note_info_command,
-    run_note_patch_command, run_note_set_with_content, NoteAppendOptions, NotePatchOptions,
+    run_note_create_with_body, run_note_delete_command, run_note_patch_command,
+    run_note_set_with_content, NoteAppendOptions, NotePatchOptions,
 };
 #[cfg(test)]
 pub(crate) use commands::template::TemplateSummary;
@@ -573,17 +573,17 @@ use vulcan_core::{
     repair_fts, resolve_note_reference, resolve_permission_profile, save_saved_report, scan_vault,
     scan_vault_with_progress, search_vault_with_filter, verify_cache, watch_vault, AutoScanMode,
     BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
-    CacheDatabase, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    GraphConfidenceBreakdown, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter, PermissionGuard, PluginEvent,
-    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, SelectionPlan, VaultPaths, WatchOptions, WatchReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
+    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion,
+    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
+    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport,
+    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport,
+    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, SelectionPlan, VaultPaths,
+    WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -4100,42 +4100,6 @@ pub(crate) fn markdown_heading_level(line: &str) -> Option<usize> {
     let hashes = line.chars().take_while(|ch| *ch == '#').count();
     (hashes > 0 && hashes <= 6 && line.chars().nth(hashes).is_some_and(char::is_whitespace))
         .then_some(hashes)
-}
-
-fn link_confidence_for_note(
-    paths: &VaultPaths,
-    note_path: &str,
-) -> Result<GraphConfidenceBreakdown, CliError> {
-    let database = CacheDatabase::open(paths).map_err(CliError::operation)?;
-    let mut statement = database
-        .connection()
-        .prepare(
-            "
-            SELECT links.confidence, COUNT(*)
-            FROM links
-            JOIN documents AS source ON source.id = links.source_document_id
-            LEFT JOIN documents AS target ON target.id = links.resolved_target_id
-            WHERE source.path = ?1 OR target.path = ?1
-            GROUP BY links.confidence
-            ",
-        )
-        .map_err(CliError::operation)?;
-    let rows = statement
-        .query_map([note_path], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
-        })
-        .map_err(CliError::operation)?;
-    let mut confidence = GraphConfidenceBreakdown::default();
-    for row in rows {
-        let (label, count) = row.map_err(CliError::operation)?;
-        match label.as_str() {
-            "EXTRACTED" => confidence.extracted += count,
-            "INFERRED" => confidence.inferred += count,
-            "AMBIGUOUS" => confidence.ambiguous += count,
-            _ => {}
-        }
-    }
-    Ok(confidence)
 }
 
 pub(crate) fn resolve_bulk_note_selection(

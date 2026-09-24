@@ -842,6 +842,54 @@ pub fn query_backlinks(
     query_backlinks_with_filter(paths, identifier, None)
 }
 
+/// Count link confidence for one note without including backlinks from unreadable sources.
+pub fn query_note_link_confidence_with_filter(
+    paths: &VaultPaths,
+    note_path: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphConfidenceBreakdown, GraphQueryError> {
+    if filter.is_some_and(|filter| !filter.is_allowed(note_path)) {
+        return Err(PermissionError::PathDenied {
+            profile: "selected profile".to_string(),
+            action: "read",
+            path: note_path.to_string(),
+        }
+        .into());
+    }
+    let connection = open_existing_cache(paths)?;
+    let mut statement = connection.prepare(
+        "
+        SELECT links.confidence, source.path, COUNT(*)
+        FROM links
+        JOIN documents AS source ON source.id = links.source_document_id
+        LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE source.path = ?1 OR target.path = ?1
+        GROUP BY links.confidence, source.path
+        ",
+    )?;
+    let rows = statement.query_map([note_path], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, usize>(2)?,
+        ))
+    })?;
+    let mut confidence = GraphConfidenceBreakdown::default();
+    for row in rows {
+        let (label, source_path, count) = row?;
+        if filter.is_some_and(|filter| !filter.is_allowed(&source_path)) {
+            continue;
+        }
+        match label.as_str() {
+            "EXTRACTED" => confidence.extracted += count,
+            "INFERRED" => confidence.inferred += count,
+            "AMBIGUOUS" => confidence.ambiguous += count,
+            _ => {}
+        }
+    }
+    Ok(confidence)
+}
+
 pub fn query_backlinks_with_filter(
     paths: &VaultPaths,
     identifier: &str,
@@ -2117,9 +2165,48 @@ fn count_as_f64(value: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{scan_vault, ScanMode};
+    use crate::{
+        resolve_permission_profile, scan_vault, PermissionGuard, ProfilePermissionGuard, ScanMode,
+    };
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn note_link_confidence_excludes_unreadable_backlink_sources() {
+        let temp = TempDir::new().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).expect("config dir");
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\"] }\n",
+        )
+        .expect("config");
+        fs::write(temp.path().join("Target.md"), "# Target\n[[Public]]\n").expect("target note");
+        fs::write(temp.path().join("Public.md"), "[[Target]]\n").expect("public note");
+        fs::write(temp.path().join("Private.md"), "[[Target]]\n").expect("private note");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        let all = query_note_link_confidence_with_filter(&paths, "Target.md", None)
+            .expect("unfiltered confidence");
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("public")).expect("public profile"),
+        );
+        let filtered =
+            query_note_link_confidence_with_filter(&paths, "Target.md", Some(&guard.read_filter()))
+                .expect("filtered confidence");
+        let total = |counts: GraphConfidenceBreakdown| {
+            counts.extracted + counts.inferred + counts.ambiguous
+        };
+        assert_eq!(total(all), 3);
+        assert_eq!(total(filtered), 2);
+        assert!(query_note_link_confidence_with_filter(
+            &paths,
+            "Private.md",
+            Some(&guard.read_filter())
+        )
+        .is_err());
+    }
 
     #[test]
     fn query_links_resolves_path_filename_and_alias() {

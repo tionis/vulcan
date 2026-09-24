@@ -8,7 +8,7 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::{print_json, ListOutputControls};
 use crate::resolve::resolve_note_argument;
 use crate::{
-    markdown_heading_level, print_diagnostic_section, print_markdown_output, run_incremental_scan,
+    print_diagnostic_section, print_markdown_output, run_incremental_scan,
     selected_permission_guard, selected_read_permission_filter, warn_auto_commit_if_needed,
     AnsiPalette, Cli, CliError, NoteAppendMode, NoteAppendPeriodicArg, NoteCheckboxState,
     NoteCommand, NoteGetMode, OutputFormat,
@@ -20,24 +20,21 @@ use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-    diagnose_external_markdown_contents, diagnose_note_contents, parse_note_frontmatter_bindings,
-    read_note as app_read_note, read_note_outline as app_read_note_outline,
+    build_note_info_report, diagnose_external_markdown_contents, diagnose_note_contents,
+    parse_note_frontmatter_bindings, read_note as app_read_note,
+    read_note_outline as app_read_note_outline,
     resolve_existing_markdown_target as app_resolve_existing_markdown_target,
     MarkdownTarget as AppMarkdownTarget, NoteAppendRequest as AppNoteAppendRequest,
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
-    NoteGetOptions as AppNoteGetOptions, NoteGetReport, NoteOutlineReport,
+    NoteGetOptions as AppNoteGetOptions, NoteGetReport, NoteInfoReport, NoteOutlineReport,
     NotePatchRequest as AppNotePatchRequest, NoteReadMode, NoteSetRequest as AppNoteSetRequest,
 };
-use vulcan_app::templates::{
-    find_frontmatter_block, parse_template_var_bindings, TemplateTimestamp,
-};
-use vulcan_core::config::load_vault_config;
+use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
-    git_log, move_note, query_backlinks, query_backlinks_with_filter, query_links,
-    query_links_with_filter, resolve_note_reference, BacklinkRecord, DoctorDiagnosticIssue,
-    GitLogEntry, GraphConfidenceBreakdown, GraphQueryError, NoteMatchKind, PermissionGuard,
-    PluginEvent, RefactorChange, VaultPaths,
+    git_log, move_note, query_backlinks_with_filter, query_links_with_filter,
+    resolve_note_reference, BacklinkRecord, DoctorDiagnosticIssue, GitLogEntry, GraphQueryError,
+    NoteMatchKind, PermissionGuard, PluginEvent, RefactorChange, VaultPaths,
 };
 
 fn check_read_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
@@ -641,26 +638,6 @@ pub(crate) struct NoteDeleteReport {
     pub(crate) deleted: bool,
     pub(crate) backlink_count: usize,
     pub(crate) backlinks: Vec<BacklinkRecord>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct NoteInfoReport {
-    pub(crate) path: String,
-    pub(crate) matched_by: NoteMatchKind,
-    pub(crate) word_count: usize,
-    pub(crate) heading_count: usize,
-    pub(crate) outgoing_link_count: usize,
-    pub(crate) backlink_count: usize,
-    pub(crate) alias_count: usize,
-    pub(crate) tag_count: usize,
-    pub(crate) file_size: i64,
-    pub(crate) tags: Vec<String>,
-    pub(crate) frontmatter_keys: Vec<String>,
-    pub(crate) created_at_ms: Option<i64>,
-    pub(crate) created_at: Option<String>,
-    pub(crate) modified_at_ms: Option<i64>,
-    pub(crate) modified_at: Option<String>,
-    pub(crate) link_confidence: GraphConfidenceBreakdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1415,67 +1392,7 @@ pub(crate) fn run_note_info_command(
     paths: &VaultPaths,
     note: &str,
 ) -> Result<NoteInfoReport, CliError> {
-    let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
-    let absolute_path = paths.vault_root().join(&resolved.path);
-    let source = fs::read_to_string(&absolute_path).map_err(CliError::operation)?;
-    let metadata = fs::metadata(&absolute_path).map_err(CliError::operation)?;
-    let config = load_vault_config(paths).config;
-    let parsed = vulcan_core::parse_document(&source, &config);
-    let outgoing = query_links(paths, &resolved.path).map_err(CliError::operation)?;
-    let backlinks = query_backlinks(paths, &resolved.path).map_err(CliError::operation)?;
-
-    let mut tags = parsed
-        .tags
-        .iter()
-        .map(|tag| tag.tag_text.clone())
-        .collect::<Vec<_>>();
-    tags.sort();
-    tags.dedup();
-
-    let mut frontmatter_keys = parsed
-        .frontmatter
-        .as_ref()
-        .and_then(|frontmatter| frontmatter.as_mapping())
-        .map(|mapping| {
-            mapping
-                .keys()
-                .filter_map(|value| value.as_str())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    frontmatter_keys.sort();
-
-    let modified_at_ms = metadata
-        .modified()
-        .ok()
-        .or_else(|| metadata.created().ok())
-        .and_then(system_time_to_millis);
-    let created_at_ms = metadata
-        .created()
-        .ok()
-        .or_else(|| metadata.modified().ok())
-        .and_then(system_time_to_millis)
-        .or(modified_at_ms);
-
-    Ok(NoteInfoReport {
-        link_confidence: crate::link_confidence_for_note(paths, &resolved.path)?,
-        path: resolved.path,
-        matched_by: resolved.matched_by,
-        word_count: note_word_count(&source),
-        heading_count: parsed.headings.len(),
-        outgoing_link_count: outgoing.links.len(),
-        backlink_count: backlinks.backlinks.len(),
-        alias_count: parsed.aliases.len(),
-        tag_count: tags.len(),
-        file_size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-        tags,
-        frontmatter_keys,
-        created_at_ms,
-        created_at: created_at_ms.map(format_utc_timestamp_ms),
-        modified_at_ms,
-        modified_at: modified_at_ms.map(format_utc_timestamp_ms),
-    })
+    build_note_info_report(paths, note, None).map_err(CliError::operation)
 }
 
 pub(crate) fn run_note_history_command(
@@ -1503,71 +1420,6 @@ pub(crate) fn run_note_doctor_command(
         path: relative_path,
         diagnostics,
     })
-}
-
-fn note_word_count(source: &str) -> usize {
-    let body = note_body_without_frontmatter(source);
-    body.lines()
-        .filter_map(normalize_note_word_line)
-        .flat_map(str::split_whitespace)
-        .count()
-}
-
-fn note_body_without_frontmatter(source: &str) -> &str {
-    find_frontmatter_block(source).map_or(source, |(_, _, end)| &source[end..])
-}
-
-fn normalize_note_word_line(line: &str) -> Option<&str> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || is_block_ref_only_line(trimmed) {
-        return None;
-    }
-
-    let trimmed = if let Some(level) = markdown_heading_level(trimmed) {
-        trimmed[level..].trim()
-    } else {
-        trimmed
-    };
-    let trimmed = strip_markdown_list_marker(trimmed).trim();
-    (!trimmed.is_empty()).then_some(trimmed)
-}
-
-fn is_block_ref_only_line(line: &str) -> bool {
-    line.starts_with('^')
-        && line.len() > 1
-        && line[1..]
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
-}
-
-fn strip_markdown_list_marker(line: &str) -> &str {
-    let trimmed = line.trim_start();
-    for prefix in ["- ", "* ", "+ "] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            return rest;
-        }
-    }
-
-    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
-    if digits > 0 {
-        let rest = &trimmed[digits..];
-        if let Some(rest) = rest.strip_prefix(". ") {
-            return rest;
-        }
-    }
-
-    trimmed
-}
-
-fn system_time_to_millis(time: std::time::SystemTime) -> Option<i64> {
-    let duration = time.duration_since(std::time::UNIX_EPOCH).ok()?;
-    i64::try_from(duration.as_millis()).ok()
-}
-
-fn format_utc_timestamp_ms(ms: i64) -> String {
-    TemplateTimestamp::from_millis(ms)
-        .default_strings()
-        .datetime
 }
 
 #[derive(Debug, Clone)]
