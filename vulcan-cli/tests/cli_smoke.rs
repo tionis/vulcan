@@ -31227,6 +31227,39 @@ fn mcp_structured_outputs_match_cli_json_reports() {
     .expect("cli note get json should parse");
     assert_eq!(mcp_note_get, cli_note_get);
 
+    let html_note_get = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "note_get",
+            "arguments": { "note": "Projects/Alpha.md", "mode": "html" }
+        }
+    }));
+    let mcp_html_note_get = html_note_get.last().expect("html note_get response")["result"]
+        ["structuredContent"]
+        .clone();
+    let cli_html_note_get: Value = serde_json::from_slice(
+        &cargo_vulcan_fixed_now()
+            .args([
+                "--vault",
+                vault_root.to_str().expect("utf-8"),
+                "--output",
+                "json",
+                "note",
+                "get",
+                "Projects/Alpha.md",
+                "--mode",
+                "html",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("cli html note get json should parse");
+    assert_eq!(mcp_html_note_get, cli_html_note_get);
+
     let status = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 3,

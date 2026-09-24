@@ -18,11 +18,11 @@ use crate::{
     cli_command_tree, collect_help_command_topics, config_set_changed_files,
     custom_tool_registry_entry, normalize_note_path, permission_error_to_cli,
     resolve_existing_markdown_target, resolve_help_topic, run_note_append_command,
-    run_note_create_with_body, run_note_delete_command, run_note_get_command,
-    run_note_info_command, run_note_patch_command, run_note_set_with_content, run_status_command,
-    CliError, McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode,
-    NoteAppendOptions, NoteAppendPeriodicArg, NoteGetMode, NoteGetOptions, NotePatchOptions,
-    OutputFormat, SearchBackendArg, TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
+    run_note_create_with_body, run_note_delete_command, run_note_info_command,
+    run_note_patch_command, run_note_set_with_content, run_status_command, CliError,
+    McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode,
+    NoteAppendOptions, NoteAppendPeriodicArg, NotePatchOptions, OutputFormat, SearchBackendArg,
+    TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -63,8 +63,8 @@ use vulcan_app::mcp_protocol::{
     MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
 };
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
-use vulcan_app::notes::read_note_outline;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
+use vulcan_app::notes::{read_note, read_note_outline, NoteGetOptions, NoteReadMode};
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
     GitSyncOptions,
@@ -1992,7 +1992,7 @@ impl McpServerCore {
                     &self.guard,
                     &args.note,
                 )?;
-                let report = run_note_get_command(
+                let report = read_note(
                     &self.paths,
                     NoteGetOptions {
                         note: &args.note,
@@ -2007,7 +2007,7 @@ impl McpServerCore {
                         raw: args.raw,
                     },
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteOutline => {
@@ -5266,10 +5266,10 @@ fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
         .map_err(|error| McpMethodError::invalid_params(error.to_string()))
 }
 
-fn parse_note_get_mode(mode: Option<String>) -> Result<NoteGetMode, McpMethodError> {
+fn parse_note_get_mode(mode: Option<String>) -> Result<NoteReadMode, McpMethodError> {
     match mode.as_deref().unwrap_or("markdown") {
-        "markdown" => Ok(NoteGetMode::Markdown),
-        "html" => Ok(NoteGetMode::Html),
+        "markdown" => Ok(NoteReadMode::Markdown),
+        "html" => Ok(NoteReadMode::Html),
         other => Err(McpMethodError::invalid_params(format!(
             "unsupported `note_get.mode`: {other}"
         ))),

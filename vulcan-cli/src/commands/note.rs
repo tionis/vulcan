@@ -15,32 +15,29 @@ use crate::{
 };
 use regex::Regex;
 use serde::Serialize;
-use serde_json::Value;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     diagnose_external_markdown_contents, diagnose_note_contents, parse_note_frontmatter_bindings,
-    read_note_outline as app_read_note_outline,
+    read_note as app_read_note, read_note_outline as app_read_note_outline,
     resolve_existing_markdown_target as app_resolve_existing_markdown_target,
     MarkdownTarget as AppMarkdownTarget, NoteAppendRequest as AppNoteAppendRequest,
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
-    NoteOutlineReport, NotePatchRequest as AppNotePatchRequest,
-    NoteSetRequest as AppNoteSetRequest,
+    NoteGetOptions as AppNoteGetOptions, NoteGetReport, NoteOutlineReport,
+    NotePatchRequest as AppNotePatchRequest, NoteReadMode, NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::templates::{
     find_frontmatter_block, parse_template_var_bindings, TemplateTimestamp,
 };
 use vulcan_core::config::load_vault_config;
-use vulcan_core::html::HtmlRenderOptions;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     git_log, move_note, query_backlinks, query_backlinks_with_filter, query_links,
-    query_links_with_filter, render_note_fragment_html, render_note_html, render_vault_html,
-    resolve_note_reference, BacklinkRecord, DoctorDiagnosticIssue, GitLogEntry,
-    GraphConfidenceBreakdown, GraphQueryError, NoteMatchKind, PermissionGuard, PluginEvent,
-    RefactorChange, VaultPaths,
+    query_links_with_filter, resolve_note_reference, BacklinkRecord, DoctorDiagnosticIssue,
+    GitLogEntry, GraphConfidenceBreakdown, GraphQueryError, NoteMatchKind, PermissionGuard,
+    PluginEvent, RefactorChange, VaultPaths,
 };
 
 fn check_read_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
@@ -564,35 +561,6 @@ fn note_rename_destination(source_path: &str, new_name: &str) -> String {
 }
 
 // Note command implementation moved from crate root.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct NoteGetReport {
-    pub(crate) path: String,
-    pub(crate) content: String,
-    pub(crate) frontmatter: Option<Value>,
-    pub(crate) metadata: NoteGetMetadata,
-    #[serde(skip)]
-    pub(crate) display_lines: Vec<vulcan_core::NoteSelectedLine>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
-pub(crate) struct NoteGetMetadata {
-    pub(crate) mode: String,
-    pub(crate) section_id: Option<String>,
-    pub(crate) heading: Option<String>,
-    pub(crate) block_ref: Option<String>,
-    pub(crate) lines: Option<String>,
-    pub(crate) match_pattern: Option<String>,
-    pub(crate) context: usize,
-    pub(crate) no_frontmatter: bool,
-    pub(crate) raw: bool,
-    pub(crate) match_count: usize,
-    pub(crate) total_lines: usize,
-    pub(crate) has_more_before: bool,
-    pub(crate) has_more_after: bool,
-    pub(crate) line_spans: Vec<vulcan_core::NoteLineSpan>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct NoteCheckboxReport {
     pub(crate) path: String,
@@ -789,73 +757,25 @@ pub(crate) fn run_note_get_command(
     paths: &VaultPaths,
     options: NoteGetOptions<'_>,
 ) -> Result<NoteGetReport, CliError> {
-    let NoteGetOptions {
-        note,
-        mode,
-        section_id,
-        heading,
-        block_ref,
-        lines,
-        match_pattern,
-        context,
-        no_frontmatter,
-        raw,
-    } = options;
-    let target = read_existing_markdown_source(paths, note)?;
-    let parsed = vulcan_core::parse_document(&target.source, &target.target.config);
-    let selection = vulcan_core::read_note(
-        &target.source,
-        &parsed,
-        &vulcan_core::NoteReadOptions {
-            heading: heading.map(ToOwned::to_owned),
-            section_id: section_id.map(ToOwned::to_owned),
-            block_ref: block_ref.map(ToOwned::to_owned),
-            lines: lines.map(ToOwned::to_owned),
-            match_pattern: match_pattern.map(ToOwned::to_owned),
-            context,
-            no_frontmatter,
+    app_read_note(
+        paths,
+        AppNoteGetOptions {
+            note: options.note,
+            mode: match options.mode {
+                NoteGetMode::Markdown => NoteReadMode::Markdown,
+                NoteGetMode::Html => NoteReadMode::Html,
+            },
+            section_id: options.section_id,
+            heading: options.heading,
+            block_ref: options.block_ref,
+            lines: options.lines,
+            match_pattern: options.match_pattern,
+            context: options.context,
+            no_frontmatter: options.no_frontmatter,
+            raw: options.raw,
         },
     )
-    .map_err(CliError::operation)?;
-
-    let selection_is_full_document =
-        selection_covers_full_document(&selection.selected_lines, selection.total_lines);
-    let rendered_content = render_note_get_content(
-        paths,
-        target.target.vault_relative_path.as_deref(),
-        &selection.content,
-        mode,
-        selection_is_full_document && !no_frontmatter,
-    );
-    let frontmatter = parsed
-        .frontmatter
-        .as_ref()
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(CliError::operation)?;
-
-    Ok(NoteGetReport {
-        path: target.target.display_path,
-        content: rendered_content,
-        frontmatter,
-        metadata: NoteGetMetadata {
-            mode: note_get_mode_name(mode).to_string(),
-            section_id: selection.section_id.clone(),
-            heading: heading.map(ToOwned::to_owned),
-            block_ref: block_ref.map(ToOwned::to_owned),
-            lines: lines.map(ToOwned::to_owned),
-            match_pattern: match_pattern.map(ToOwned::to_owned),
-            context,
-            no_frontmatter,
-            raw,
-            match_count: selection.match_count,
-            total_lines: selection.total_lines,
-            has_more_before: selection.has_more_before,
-            has_more_after: selection.has_more_after,
-            line_spans: selection.line_spans.clone(),
-        },
-        display_lines: selection.selected_lines,
-    })
+    .map_err(CliError::operation)
 }
 
 pub(crate) fn run_note_outline_command(
@@ -962,45 +882,6 @@ pub(crate) fn run_note_checkbox_command(
         after: updated_line,
         diagnostics,
     })
-}
-
-fn render_note_get_content(
-    paths: &VaultPaths,
-    source_path: Option<&str>,
-    content: &str,
-    mode: NoteGetMode,
-    full_document: bool,
-) -> String {
-    match mode {
-        NoteGetMode::Markdown => content.to_string(),
-        NoteGetMode::Html => {
-            if full_document {
-                source_path.map_or_else(
-                    || {
-                        render_vault_html(
-                            paths,
-                            content,
-                            &HtmlRenderOptions {
-                                full_document: true,
-                                ..HtmlRenderOptions::default()
-                            },
-                        )
-                        .html
-                    },
-                    |path| render_note_html(paths, path, content).html,
-                )
-            } else {
-                render_note_fragment_html(paths, source_path, content).html
-            }
-        }
-    }
-}
-
-fn note_get_mode_name(mode: NoteGetMode) -> &'static str {
-    match mode {
-        NoteGetMode::Markdown => "markdown",
-        NoteGetMode::Html => "html",
-    }
 }
 
 fn resolve_note_checkbox_selection(
@@ -1243,17 +1124,6 @@ fn replace_source_line(
     };
     lines[index] = format!("{updated_line}{newline}");
     Ok(lines.concat())
-}
-
-fn selection_covers_full_document(
-    selected: &[vulcan_core::NoteSelectedLine],
-    total_lines: usize,
-) -> bool {
-    selected.len() == total_lines
-        && selected
-            .iter()
-            .enumerate()
-            .all(|(expected, actual)| actual.line_number == expected + 1)
 }
 
 #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]

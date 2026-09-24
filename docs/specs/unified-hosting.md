@@ -226,7 +226,7 @@ and skill discovery, prompt rendering, and vault-owned assistant resource reads 
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
 host's help-topic catalog injected. `vulcan-app::mcp_read_tools` owns search and query workflows,
 including read-filtered results and bounded query projection, plus the note-source read boundary.
-`vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline` reports for CLI and MCP. Remaining `note_get` and other tool workflows, resource listings/help/custom-tool resources,
+`vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline` and `note_get` reports for CLI and MCP. Remaining tool workflows, resource listings/help/custom-tool resources,
 the shared help-topic catalog, and HTTP/OAuth hosting remain migration work under 10.7.6.
 
 ## Preserved compatibility contracts

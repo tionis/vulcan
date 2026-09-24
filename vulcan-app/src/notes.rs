@@ -18,6 +18,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
+use vulcan_core::html::HtmlRenderOptions;
 use vulcan_core::paths::{
     normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
     RelativePathOptions,
@@ -25,10 +26,11 @@ use vulcan_core::paths::{
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     expected_periodic_note_path, load_vault_config, parse_document, parse_dql_with_diagnostics,
-    period_range_for_date, query_backlinks, resolve_link, resolve_note_reference, BacklinkRecord,
-    DoctorByteRange, DoctorDiagnosticIssue, GraphQueryError, LinkResolutionProblem, NoteLineSpan,
-    ParsedDocument, PeriodicConfig, PluginEvent, RefactorChange, ResolverDocument, ResolverLink,
-    VaultConfig, VaultPaths,
+    period_range_for_date, query_backlinks, render_note_fragment_html, render_note_html,
+    render_vault_html, resolve_link, resolve_note_reference, BacklinkRecord, DoctorByteRange,
+    DoctorDiagnosticIssue, GraphQueryError, LinkResolutionProblem, NoteLineSpan, ParsedDocument,
+    PeriodicConfig, PluginEvent, RefactorChange, ResolverDocument, ResolverLink, VaultConfig,
+    VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -135,6 +137,161 @@ impl MarkdownTarget {
     pub fn read_source(&self) -> Result<String, AppError> {
         fs::read_to_string(&self.absolute_path).map_err(AppError::operation)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteReadMode {
+    Markdown,
+    Html,
+}
+
+impl NoteReadMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Html => "html",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NoteGetOptions<'a> {
+    pub note: &'a str,
+    pub mode: NoteReadMode,
+    pub section_id: Option<&'a str>,
+    pub heading: Option<&'a str>,
+    pub block_ref: Option<&'a str>,
+    pub lines: Option<&'a str>,
+    pub match_pattern: Option<&'a str>,
+    pub context: usize,
+    pub no_frontmatter: bool,
+    pub raw: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NoteGetReport {
+    pub path: String,
+    pub content: String,
+    pub frontmatter: Option<JsonValue>,
+    pub metadata: NoteGetMetadata,
+    #[serde(skip)]
+    pub display_lines: Vec<vulcan_core::NoteSelectedLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct NoteGetMetadata {
+    pub mode: String,
+    pub section_id: Option<String>,
+    pub heading: Option<String>,
+    pub block_ref: Option<String>,
+    pub lines: Option<String>,
+    pub match_pattern: Option<String>,
+    pub context: usize,
+    pub no_frontmatter: bool,
+    pub raw: bool,
+    pub match_count: usize,
+    pub total_lines: usize,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+    pub line_spans: Vec<vulcan_core::NoteLineSpan>,
+}
+
+pub fn read_note(
+    paths: &VaultPaths,
+    options: NoteGetOptions<'_>,
+) -> Result<NoteGetReport, AppError> {
+    let NoteGetOptions {
+        note,
+        mode,
+        section_id,
+        heading,
+        block_ref,
+        lines,
+        match_pattern,
+        context,
+        no_frontmatter,
+        raw,
+    } = options;
+    let target = resolve_existing_markdown_target(paths, note)?;
+    let source = target.read_source()?;
+    let parsed = parse_document(&source, &target.config);
+    let selection = vulcan_core::read_note(
+        &source,
+        &parsed,
+        &vulcan_core::NoteReadOptions {
+            heading: heading.map(ToOwned::to_owned),
+            section_id: section_id.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            match_pattern: match_pattern.map(ToOwned::to_owned),
+            context,
+            no_frontmatter,
+        },
+    )
+    .map_err(AppError::operation)?;
+    let full_document = selection.selected_lines.len() == selection.total_lines
+        && selection
+            .selected_lines
+            .iter()
+            .enumerate()
+            .all(|(expected, actual)| actual.line_number == expected + 1);
+    let content = match mode {
+        NoteReadMode::Markdown => selection.content.clone(),
+        NoteReadMode::Html if full_document && !no_frontmatter => {
+            target.vault_relative_path.as_deref().map_or_else(
+                || {
+                    render_vault_html(
+                        paths,
+                        &selection.content,
+                        &HtmlRenderOptions {
+                            full_document: true,
+                            ..HtmlRenderOptions::default()
+                        },
+                    )
+                    .html
+                },
+                |path| render_note_html(paths, path, &selection.content).html,
+            )
+        }
+        NoteReadMode::Html => {
+            render_note_fragment_html(
+                paths,
+                target.vault_relative_path.as_deref(),
+                &selection.content,
+            )
+            .html
+        }
+    };
+    let frontmatter = parsed
+        .frontmatter
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(AppError::operation)?;
+    Ok(NoteGetReport {
+        path: target.display_path,
+        content,
+        frontmatter,
+        metadata: NoteGetMetadata {
+            mode: mode.as_str().to_string(),
+            section_id: selection.section_id.clone(),
+            heading: heading.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            match_pattern: match_pattern.map(ToOwned::to_owned),
+            context,
+            no_frontmatter,
+            raw,
+            match_count: selection.match_count,
+            total_lines: selection.total_lines,
+            has_more_before: selection.has_more_before,
+            has_more_after: selection.has_more_after,
+            line_spans: selection.line_spans.clone(),
+        },
+        display_lines: selection.selected_lines,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1693,8 +1850,9 @@ mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
         diagnose_note_contents, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
-        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
-        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
+        read_note, read_note_outline, resolve_existing_markdown_target, MarkdownTarget,
+        NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions,
+        NotePatchRequest, NoteReadMode, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde_json::Value as JsonValue;
@@ -1749,6 +1907,61 @@ mod tests {
         assert_eq!(report.sections[0].id, "root/child@2");
         assert_eq!(report.depth_limit, Some(1));
         assert!(read_note_outline(&paths, external.to_str().unwrap(), None, Some(0)).is_err());
+    }
+
+    #[test]
+    fn shared_note_get_preserves_selection_metadata_and_html_shape() {
+        let temporary = tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(
+            vault.join("Read.md"),
+            "---\ntitle: Read\n---\n# First\nText\n## Second\nMore\n",
+        )
+        .unwrap();
+        let paths = VaultPaths::new(&vault);
+        let markdown = read_note(
+            &paths,
+            NoteGetOptions {
+                note: "Read.md",
+                mode: NoteReadMode::Markdown,
+                section_id: Some("first/second@6"),
+                heading: None,
+                block_ref: None,
+                lines: None,
+                match_pattern: None,
+                context: 0,
+                no_frontmatter: false,
+                raw: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(markdown.path, "Read.md");
+        assert_eq!(markdown.metadata.mode, "markdown");
+        assert_eq!(
+            markdown.metadata.section_id.as_deref(),
+            Some("first/second@6")
+        );
+        assert_eq!(markdown.metadata.total_lines, 7);
+        assert_eq!(markdown.content, "## Second\nMore\n");
+        let html = read_note(
+            &paths,
+            NoteGetOptions {
+                note: "Read.md",
+                mode: NoteReadMode::Html,
+                section_id: None,
+                heading: None,
+                block_ref: None,
+                lines: None,
+                match_pattern: None,
+                context: 0,
+                no_frontmatter: false,
+                raw: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(html.metadata.mode, "html");
+        assert!(html.content.contains("<h1 id=\"first\">First</h1>"));
     }
 
     #[test]
