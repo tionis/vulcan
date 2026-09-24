@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     diagnose_external_markdown_contents, diagnose_note_contents, parse_note_frontmatter_bindings,
+    resolve_existing_markdown_target as app_resolve_existing_markdown_target,
     MarkdownTarget as AppMarkdownTarget, NoteAppendRequest as AppNoteAppendRequest,
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
     NotePatchRequest as AppNotePatchRequest, NoteSetRequest as AppNoteSetRequest,
@@ -1743,21 +1744,13 @@ pub(crate) fn resolve_existing_markdown_target(
     paths: &VaultPaths,
     note: &str,
 ) -> Result<ExistingMarkdownTarget, CliError> {
-    if let Ok(relative_path) = resolve_existing_note_path(paths, note) {
-        let absolute_path = paths.vault_root().join(&relative_path);
-        return Ok(ExistingMarkdownTarget {
-            display_path: relative_path.clone(),
-            absolute_path,
-            vault_relative_path: Some(relative_path),
-            config: load_vault_config(paths).config,
-        });
-    }
-
-    if note_argument_looks_like_path(note) {
-        return resolve_existing_direct_markdown_target(paths, note);
-    }
-
-    Err(CliError::operation(format!("note not found: {note}")))
+    let target = app_resolve_existing_markdown_target(paths, note).map_err(CliError::operation)?;
+    Ok(ExistingMarkdownTarget {
+        display_path: target.display_path,
+        absolute_path: target.absolute_path,
+        vault_relative_path: target.vault_relative_path,
+        config: target.config,
+    })
 }
 
 fn read_existing_markdown_source(
@@ -1806,77 +1799,6 @@ pub(crate) fn normalize_note_path(path: &str) -> Result<String, CliError> {
         },
     )
     .map_err(CliError::operation)
-}
-
-fn note_argument_looks_like_path(note: &str) -> bool {
-    let path = Path::new(note);
-    path.is_absolute()
-        || path.extension().is_some()
-        || note.starts_with('.')
-        || path.components().count() > 1
-}
-
-fn resolve_existing_direct_markdown_target(
-    paths: &VaultPaths,
-    note: &str,
-) -> Result<ExistingMarkdownTarget, CliError> {
-    let current_dir = std::env::current_dir().map_err(CliError::operation)?;
-    for candidate in direct_markdown_path_candidates(note) {
-        if !has_markdown_extension(&candidate) {
-            continue;
-        }
-
-        let absolute_candidate = if candidate.is_absolute() {
-            candidate.clone()
-        } else {
-            current_dir.join(&candidate)
-        };
-        if !absolute_candidate.is_file() {
-            continue;
-        }
-
-        let absolute_path = fs::canonicalize(&absolute_candidate).map_err(CliError::operation)?;
-        let vault_relative_path = paths
-            .relative_to_vault(&absolute_path)
-            .map(|path| path_buf_to_slash_string(&path));
-        let display_path = vault_relative_path.clone().unwrap_or_else(|| {
-            if candidate.is_absolute() {
-                absolute_candidate.to_string_lossy().into_owned()
-            } else {
-                candidate.to_string_lossy().into_owned()
-            }
-        });
-
-        return Ok(ExistingMarkdownTarget {
-            display_path,
-            absolute_path,
-            vault_relative_path: vault_relative_path.clone(),
-            config: if vault_relative_path.is_some() {
-                load_vault_config(paths).config
-            } else {
-                vulcan_core::VaultConfig::default()
-            },
-        });
-    }
-
-    Err(CliError::operation(format!("note not found: {note}")))
-}
-
-fn direct_markdown_path_candidates(note: &str) -> Vec<PathBuf> {
-    let path = PathBuf::from(note);
-    let mut candidates = vec![path.clone()];
-    if path.extension().is_none() {
-        let mut with_extension = path;
-        with_extension.set_extension("md");
-        candidates.push(with_extension);
-    }
-    candidates
-}
-
-fn has_markdown_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
 }
 
 pub(crate) fn path_buf_to_slash_string(path: &Path) -> String {

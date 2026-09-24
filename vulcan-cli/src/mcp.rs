@@ -1987,8 +1987,11 @@ impl McpServerCore {
         match tool.id {
             McpToolId::NoteGet => {
                 let args: McpNoteGetArgs = parse_tool_arguments(arguments)?;
-                self.check_read_markdown_source_access(&args.note)
-                    .map_err(cli_tool_error)?;
+                mcp_read_tools::check_read_markdown_source_access(
+                    &self.paths,
+                    &self.guard,
+                    &args.note,
+                )?;
                 let report = run_note_get_command(
                     &self.paths,
                     NoteGetOptions {
@@ -2009,8 +2012,11 @@ impl McpServerCore {
             }
             McpToolId::NoteOutline => {
                 let args: McpNoteOutlineArgs = parse_tool_arguments(arguments)?;
-                self.check_read_markdown_source_access(&args.note)
-                    .map_err(cli_tool_error)?;
+                mcp_read_tools::check_read_markdown_source_access(
+                    &self.paths,
+                    &self.guard,
+                    &args.note,
+                )?;
                 let report = run_note_outline_command(
                     &self.paths,
                     &args.note,
@@ -3135,24 +3141,6 @@ impl McpServerCore {
         }
         self.guard
             .check_write_path(path)
-            .map_err(CliError::operation)
-    }
-
-    fn check_read_markdown_source_access(&self, note: &str) -> Result<(), CliError> {
-        if self.guard.read_filter().path_permission().is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return Ok(());
-        }
-        let target = resolve_existing_markdown_target(&self.paths, note)?;
-        let Some(relative_path) = target.vault_relative_path.as_deref() else {
-            return Err(CliError::operation(format!(
-                "permission profiles cannot read markdown files outside the selected vault root: {}",
-                target.display_path
-            )));
-        };
-        self.guard
-            .check_read_path(relative_path)
             .map_err(CliError::operation)
     }
 

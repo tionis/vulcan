@@ -137,6 +137,100 @@ impl MarkdownTarget {
     }
 }
 
+/// Resolve a note identifier or an explicit Markdown path for read workflows.
+/// A direct file outside the vault uses default parsing configuration and carries no vault authority.
+pub fn resolve_existing_markdown_target(
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<MarkdownTarget, AppError> {
+    if let Ok(relative_path) = resolve_existing_note_path(paths, note) {
+        let absolute_path = paths.vault_root().join(&relative_path);
+        return Ok(MarkdownTarget {
+            display_path: relative_path.clone(),
+            absolute_path,
+            vault_relative_path: Some(relative_path),
+            config: load_vault_config(paths).config,
+        });
+    }
+
+    if note_argument_looks_like_path(note) {
+        return resolve_existing_direct_markdown_target(paths, note);
+    }
+
+    Err(AppError::operation(format!("note not found: {note}")))
+}
+
+fn note_argument_looks_like_path(note: &str) -> bool {
+    let path = Path::new(note);
+    path.is_absolute()
+        || path.extension().is_some()
+        || note.starts_with('.')
+        || path.components().count() > 1
+}
+
+fn resolve_existing_direct_markdown_target(
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<MarkdownTarget, AppError> {
+    let current_dir = std::env::current_dir().map_err(AppError::operation)?;
+    for candidate in direct_markdown_path_candidates(note) {
+        if !has_markdown_extension(&candidate) {
+            continue;
+        }
+
+        let absolute_candidate = if candidate.is_absolute() {
+            candidate.clone()
+        } else {
+            current_dir.join(&candidate)
+        };
+        if !absolute_candidate.is_file() {
+            continue;
+        }
+
+        let absolute_path = fs::canonicalize(&absolute_candidate).map_err(AppError::operation)?;
+        let vault_relative_path = paths
+            .relative_to_vault(&absolute_path)
+            .map(|path| path.to_string_lossy().replace('\\', "/"));
+        let display_path = vault_relative_path.clone().unwrap_or_else(|| {
+            if candidate.is_absolute() {
+                absolute_candidate.to_string_lossy().into_owned()
+            } else {
+                candidate.to_string_lossy().into_owned()
+            }
+        });
+
+        return Ok(MarkdownTarget {
+            display_path,
+            absolute_path,
+            vault_relative_path: vault_relative_path.clone(),
+            config: if vault_relative_path.is_some() {
+                load_vault_config(paths).config
+            } else {
+                VaultConfig::default()
+            },
+        });
+    }
+
+    Err(AppError::operation(format!("note not found: {note}")))
+}
+
+fn direct_markdown_path_candidates(note: &str) -> Vec<PathBuf> {
+    let path = PathBuf::from(note);
+    let mut candidates = vec![path.clone()];
+    if path.extension().is_none() {
+        let mut with_extension = path;
+        with_extension.set_extension("md");
+        candidates.push(with_extension);
+    }
+    candidates
+}
+
+fn has_markdown_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
 #[derive(Debug, Clone)]
 pub struct NotePatchRequest {
     pub target: MarkdownTarget,
@@ -1554,8 +1648,8 @@ mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
         diagnose_note_contents, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
-        MarkdownTarget, NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest,
-        NotePatchRequest, NoteSetRequest,
+        resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
+        NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde_json::Value as JsonValue;
@@ -1564,6 +1658,35 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultPaths};
+
+    #[test]
+    fn existing_markdown_target_distinguishes_vault_and_external_files() {
+        let temporary = tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(vault.join("Projects")).unwrap();
+        fs::write(vault.join("Projects/Alpha.md"), "# Alpha\n").unwrap();
+        let external = temporary.path().join("External.md");
+        fs::write(&external, "# External\n").unwrap();
+        let paths = VaultPaths::new(&vault);
+
+        let internal = resolve_existing_markdown_target(&paths, "Projects/Alpha.md").unwrap();
+        assert_eq!(internal.display_path, "Projects/Alpha.md");
+        assert_eq!(
+            internal.vault_relative_path.as_deref(),
+            Some("Projects/Alpha.md")
+        );
+        assert_eq!(internal.read_source().unwrap(), "# Alpha\n");
+
+        let external_target =
+            resolve_existing_markdown_target(&paths, external.to_str().unwrap()).unwrap();
+        assert_eq!(external_target.display_path, external.display().to_string());
+        assert!(external_target.vault_relative_path.is_none());
+        assert_eq!(external_target.read_source().unwrap(), "# External\n");
+        assert!(resolve_existing_markdown_target(&paths, "Missing.md").is_err());
+        let non_markdown = temporary.path().join("Other.txt");
+        fs::write(&non_markdown, "not markdown").unwrap();
+        assert!(resolve_existing_markdown_target(&paths, non_markdown.to_str().unwrap()).is_err());
+    }
 
     #[test]
     fn parse_note_frontmatter_bindings_parses_yaml_scalars_and_lists() {

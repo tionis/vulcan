@@ -11,9 +11,32 @@ use vulcan_core::{
 };
 
 use crate::mcp_protocol::{McpMethodError, McpQueryArgs, McpSearchArgs};
+use crate::notes::resolve_existing_markdown_target;
 
 const MCP_QUERY_SOFT_MAX: usize = 200;
 pub const MCP_QUERY_HARD_MAX: usize = 1_000;
+
+/// Apply the note-source permission boundary before any MCP note read.
+pub fn check_read_markdown_source_access(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    note: &str,
+) -> Result<(), McpMethodError> {
+    if guard.read_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
+        return Ok(());
+    }
+    let target = resolve_existing_markdown_target(paths, note)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let Some(relative_path) = target.vault_relative_path.as_deref() else {
+        return Err(McpMethodError::tool(format!(
+            "permission profiles cannot read markdown files outside the selected vault root: {}",
+            target.display_path
+        )));
+    };
+    guard
+        .check_read_path(relative_path)
+        .map_err(|error| McpMethodError::tool(error.to_string()))
+}
 
 pub fn search(
     paths: &VaultPaths,
@@ -478,5 +501,37 @@ mod tests {
                 Err(McpMethodError::JsonRpc { code: -32602, .. })
             ));
         }
+    }
+
+    #[test]
+    fn note_source_access_denies_external_files_for_restricted_profiles() {
+        let temporary = tempfile::tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(vault.join(".vulcan")).unwrap();
+        fs::write(
+            vault.join(".vulcan/config.toml"),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(vault.join("Home.md"), "# Home\n").unwrap();
+        let external = temporary.path().join("External.md");
+        fs::write(&external, "# External\n").unwrap();
+        let paths = VaultPaths::new(&vault);
+        let unrestricted = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+        let external = external.to_str().unwrap();
+        assert!(check_read_markdown_source_access(&paths, &unrestricted, external).is_ok());
+        let denied = check_read_markdown_source_access(&paths, &blind, external).unwrap_err();
+        assert!(matches!(
+            denied,
+            McpMethodError::Tool { message, .. } if message.contains("outside the selected vault root")
+        ));
+        assert!(check_read_markdown_source_access(&paths, &blind, "Home.md").is_err());
     }
 }
