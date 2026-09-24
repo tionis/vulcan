@@ -49,6 +49,7 @@ pub mod mcp_catalog;
 pub mod mcp_completion;
 pub mod mcp_dispatch;
 pub mod mcp_protocol;
+pub mod mcp_read_tools;
 pub mod mcp_schemas;
 pub mod mdbase;
 pub mod mdbase_conformance;

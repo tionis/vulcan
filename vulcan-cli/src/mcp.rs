@@ -64,6 +64,7 @@ use vulcan_app::mcp_protocol::{
     McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION,
     MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
 };
+use vulcan_app::mcp_read_tools;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
@@ -76,10 +77,10 @@ use vulcan_core::{
     accept_link_suggestion, assistant_prompts_root, assistant_skills_root,
     evaluate_dql_with_filter, execute_query_report_with_filter, load_vault_config,
     query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
-    reject_link_suggestion, resolve_permission_profile, scan_vault_with_progress,
-    search_vault_with_filter, suggest_links, watch_vault, LinkSuggestionStatus, NoteQuery,
-    PermissionGuard, PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport,
-    ScanMode, ScanSummary, SearchQuery, SearchSort, TasksQueryResult, VaultPaths, WatchOptions,
+    reject_link_suggestion, resolve_permission_profile, scan_vault_with_progress, suggest_links,
+    watch_vault, LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionProfile, PluginEvent,
+    ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, TasksQueryResult,
+    VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -2024,33 +2025,8 @@ impl McpServerCore {
             }
             McpToolId::Search => {
                 let args: McpSearchArgs = parse_tool_arguments(arguments)?;
-                if args.limit == 0 {
-                    return Err(McpMethodError::invalid_params(
-                        "`search.limit` must be at least 1",
-                    ));
-                }
-                let report = search_vault_with_filter(
-                    &self.paths,
-                    &SearchQuery {
-                        text: args.query,
-                        tag: args.tag,
-                        path_prefix: args.path_prefix,
-                        has_property: args.has_property,
-                        filters: args.filters,
-                        provider: None,
-                        mode: parse_search_mode(args.mode)?,
-                        sort: parse_search_sort(args.sort)?,
-                        match_case: args.match_case.then_some(true),
-                        limit: Some(args.limit),
-                        context_size: args.context_size,
-                        raw_query: args.raw_query,
-                        fuzzy: args.fuzzy,
-                        explain: args.explain,
-                    },
-                    Some(&self.guard.read_filter()),
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                self.serialize_tool_report(tool.name, &report)
+                let report = mcp_read_tools::search(&self.paths, &self.guard, args)?;
+                Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::Query => {
                 let mut args: McpQueryArgs = parse_tool_arguments(arguments)?;
@@ -5441,37 +5417,6 @@ fn parse_note_get_mode(mode: Option<String>) -> Result<NoteGetMode, McpMethodErr
             "unsupported `note_get.mode`: {other}"
         ))),
     }
-}
-
-fn parse_search_mode(
-    mode: Option<String>,
-) -> Result<vulcan_core::search::SearchMode, McpMethodError> {
-    match mode.as_deref().unwrap_or("keyword") {
-        "keyword" => Ok(vulcan_core::search::SearchMode::Keyword),
-        "hybrid" => Ok(vulcan_core::search::SearchMode::Hybrid),
-        other => Err(McpMethodError::invalid_params(format!(
-            "unsupported `search.mode`: {other}"
-        ))),
-    }
-}
-
-fn parse_search_sort(sort: Option<String>) -> Result<Option<SearchSort>, McpMethodError> {
-    let value = match sort.as_deref() {
-        None => return Ok(None),
-        Some("relevance") => SearchSort::Relevance,
-        Some("path_asc") => SearchSort::PathAsc,
-        Some("path_desc") => SearchSort::PathDesc,
-        Some("modified_newest") => SearchSort::ModifiedNewest,
-        Some("modified_oldest") => SearchSort::ModifiedOldest,
-        Some("created_newest") => SearchSort::CreatedNewest,
-        Some("created_oldest") => SearchSort::CreatedOldest,
-        Some(other) => {
-            return Err(McpMethodError::invalid_params(format!(
-                "unsupported `search.sort`: {other}"
-            )));
-        }
-    };
-    Ok(Some(value))
 }
 
 fn parse_link_suggestion_status(value: &str) -> Result<LinkSuggestionStatus, McpMethodError> {

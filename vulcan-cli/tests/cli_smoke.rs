@@ -29475,6 +29475,23 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
             .is_some(),
         "status should expose graph confidence in structured MCP content"
     );
+    let messages = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+            "name": "search",
+            "arguments": { "query": "Alpha" }
+        }
+    }));
+    let search = &messages.last().expect("search response")["result"];
+    assert_eq!(search["isError"], false);
+    assert_eq!(search["structuredContent"]["query"], "Alpha");
+    assert!(search["structuredContent"]["hits"]
+        .as_array()
+        .is_some_and(|hits| hits
+            .iter()
+            .any(|hit| hit["document_path"] == "Projects/Alpha.md")));
     assert!(session.finish().is_empty());
 }
 
