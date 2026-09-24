@@ -71,7 +71,9 @@ Foreground HTTP MCP starts a background vault watcher; resident mode uses the da
 observation runtime. Both run incremental scans after filesystem changes. Use `index_scan` when
 you want an explicit refresh or a full reindex. Each request is bounded by the configured request
 timeout, so long-running tool calls return a structured timeout error instead of leaving the client
-waiting indefinitely.
+waiting indefinitely. Resident requests wait for the daemon's per-vault read/write lane and
+recheck their grant after queuing. A request that times out before dispatch is cancelled, but a
+write already running may still finish; inspect the vault before retrying a timed-out mutation.
 
 For private development without publishing a public Vulcan endpoint, ChatGPT also supports Secure MCP Tunnel. That is a separate OpenAI-hosted connection path rather than a Vulcan authentication mode; keep the direct HTTPS/OAuth deployment above when you need a conventional independently reachable endpoint.
 

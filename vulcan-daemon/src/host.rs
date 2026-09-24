@@ -613,6 +613,7 @@ impl HostSupervisor {
             startup_timeout,
             Arc::new(ShutdownSignal::default()),
             None,
+            None,
         )
     }
 
@@ -621,7 +622,7 @@ impl HostSupervisor {
         startup_timeout: Duration,
         host_stop: Arc<ShutdownSignal>,
     ) -> Result<Self, HostRuntimeError> {
-        Self::start_inner(registrations, startup_timeout, host_stop, None)
+        Self::start_inner(registrations, startup_timeout, host_stop, None, None)
     }
 
     pub fn start_persisted_with_signal(
@@ -635,6 +636,23 @@ impl HostSupervisor {
             startup_timeout,
             host_stop,
             Some(status_path.into()),
+            None,
+        )
+    }
+
+    pub fn start_persisted_with_signal_and_scheduler(
+        registrations: Vec<ServiceRegistration>,
+        startup_timeout: Duration,
+        host_stop: Arc<ShutdownSignal>,
+        status_path: impl Into<PathBuf>,
+        scheduler: Arc<MutationScheduler>,
+    ) -> Result<Self, HostRuntimeError> {
+        Self::start_inner(
+            registrations,
+            startup_timeout,
+            host_stop,
+            Some(status_path.into()),
+            Some(scheduler),
         )
     }
 
@@ -643,6 +661,7 @@ impl HostSupervisor {
         startup_timeout: Duration,
         host_stop: Arc<ShutdownSignal>,
         status_path: Option<PathBuf>,
+        scheduler: Option<Arc<MutationScheduler>>,
     ) -> Result<Self, HostRuntimeError> {
         if startup_timeout.is_zero() {
             return Err(HostRuntimeError::InvalidStartupTimeout);
@@ -670,10 +689,12 @@ impl HostSupervisor {
             }),
         };
         persist_shared(&status.catalog)?;
-        let scheduler = Arc::new(
-            MutationScheduler::new(MutationSchedulerConfig::default())
-                .expect("default mutation scheduler limits are valid"),
-        );
+        let scheduler = scheduler.unwrap_or_else(|| {
+            Arc::new(
+                MutationScheduler::new(MutationSchedulerConfig::default())
+                    .expect("default mutation scheduler limits are valid"),
+            )
+        });
         let hosted_executor = if let Some(root) = hosted_job_root {
             let ledger = Arc::new(HostedJobLedger::at(root));
             ledger
@@ -1562,6 +1583,26 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn persisted_host_reuses_preconstructed_scheduler() {
+        let temporary = tempdir().expect("temporary state");
+        let scheduler = Arc::new(
+            MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"),
+        );
+        let host = HostSupervisor::start_persisted_with_signal_and_scheduler(
+            vec![quiet_registration("listener.test")],
+            Duration::from_secs(1),
+            Arc::new(ShutdownSignal::default()),
+            temporary.path().join("daemon/services.json"),
+            Arc::clone(&scheduler),
+        )
+        .expect("host");
+
+        assert!(Arc::ptr_eq(&scheduler, &host.mutation_scheduler()));
+        assert!(host.hosted_executor().is_some());
+        host.shutdown().expect("shutdown");
     }
 
     #[cfg(unix)]

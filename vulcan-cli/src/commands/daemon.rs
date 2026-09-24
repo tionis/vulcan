@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vulcan_app::obsidian_companion::{
@@ -19,6 +19,9 @@ use vulcan_daemon::conflict_worker::{load_conflict_worker_status, ConflictWorker
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::daemon_host::DAEMON_READINESS_TIMEOUT;
 use vulcan_daemon::host::ServiceRegistration;
+use vulcan_daemon::mutation_scheduler::MutationScheduler;
+#[cfg(test)]
+use vulcan_daemon::mutation_scheduler::MutationSchedulerConfig;
 use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground_with_services,
     DaemonNotificationDiscoveryState, DaemonProcessContext, DaemonStatusReport,
@@ -706,16 +709,25 @@ fn start_foreground(
 fn resident_mcp_services(
     context: &DaemonProcessContext,
     config: &DaemonConfig,
+    scheduler: &Arc<MutationScheduler>,
 ) -> Result<Vec<ServiceRegistration>, String> {
     #[cfg(feature = "oauth")]
     {
-        crate::mcp::resident_named_mcp_service(context, &config.mcp_remotes)
-            .map(|service| service.into_iter().collect())
-            .map_err(|error| error.message)
+        if config.mcp_remotes.is_empty() {
+            return Ok(Vec::new());
+        }
+        crate::mcp::resident_named_mcp_service(
+            context,
+            &config.mcp_remotes,
+            Arc::clone(scheduler),
+            tokio::runtime::Handle::current(),
+        )
+        .map(|service| service.into_iter().collect())
+        .map_err(|error| error.message)
     }
     #[cfg(not(feature = "oauth"))]
     {
-        let _ = context;
+        let _ = (context, scheduler);
         if config.mcp_remotes.is_empty() {
             Ok(Vec::new())
         } else {
@@ -1112,9 +1124,14 @@ mod tests {
             state_root: temporary.path().join("state"),
             verbose: false,
         };
-        assert!(resident_mcp_services(&context, &DaemonConfig::default())
-            .expect("empty remote registry")
-            .is_empty());
+        let scheduler = Arc::new(
+            MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"),
+        );
+        assert!(
+            resident_mcp_services(&context, &DaemonConfig::default(), &scheduler)
+                .expect("empty remote registry")
+                .is_empty()
+        );
     }
 
     #[test]

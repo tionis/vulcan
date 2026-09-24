@@ -5,6 +5,7 @@ use crate::host::{
     ServiceRegistration, ServiceScope,
 };
 use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
+use crate::mutation_scheduler::MutationScheduler;
 use crate::shutdown::ShutdownSignal;
 use std::io;
 use std::net::SocketAddr;
@@ -43,12 +44,14 @@ pub fn start_daemon_host(
     registrations: Vec<ServiceRegistration>,
     stop: Arc<ShutdownSignal>,
     status_path: PathBuf,
+    scheduler: Arc<MutationScheduler>,
 ) -> Result<HostSupervisor, HostRuntimeError> {
-    HostSupervisor::start_persisted_with_signal(
+    HostSupervisor::start_persisted_with_signal_and_scheduler(
         registrations,
         SERVICE_STARTUP_TIMEOUT,
         stop,
         status_path,
+        scheduler,
     )
 }
 

@@ -197,6 +197,7 @@ fn mcp_http_listener_reports_bound_address_and_stops_on_supervisor_signal() {
             McpHttpLifecycle {
                 stop: Some(&runner_stop),
                 ready: Some(&on_ready),
+                hosted: None,
             },
         );
         done_sender.send(result).expect("completion receiver");
@@ -631,6 +632,7 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         endpoint: "/mcp".to_string(),
         auth_token: None,
         oauth: Some(McpOAuthMode::Local(issuer)),
+        hosted: None,
         bind_addr: "127.0.0.1:8765".parse().expect("bind"),
         instance_id: Ulid::new(),
         sessions: Arc::new(Mutex::new(BTreeMap::new())),
@@ -1058,6 +1060,19 @@ fn resident_mcp_service_groups_instances_and_rejects_unsupported_multi_vault_rou
         state_root: temporary.path().join("state"),
         verbose: false,
     };
+    let scheduler =
+        Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    let resident_service = |remotes: &[McpRemoteDefinition]| {
+        resident_named_mcp_service(
+            &process,
+            remotes,
+            Arc::clone(&scheduler),
+            runtime.handle().clone(),
+        )
+    };
     let definition = |name: &str| McpRemoteDefinition {
         version: vulcan_daemon::mcp_remote::MCP_REMOTE_DEFINITION_VERSION,
         id: vulcan_daemon::mcp_remote::McpRemoteId::parse(name).expect("remote ID"),
@@ -1074,12 +1089,10 @@ fn resident_mcp_service_groups_instances_and_rejects_unsupported_multi_vault_rou
             tool_packs: vec!["notes-read".to_string()],
         }],
     };
-    assert!(resident_named_mcp_service(&process, &[])
-        .expect("empty registry")
-        .is_none());
+    assert!(resident_service(&[]).expect("empty registry").is_none());
     let first = definition("first");
     let second = definition("second");
-    let service = resident_named_mcp_service(&process, &[first.clone(), second])
+    let service = resident_service(&[first.clone(), second])
         .expect("two remotes share one supervised service")
         .expect("service");
     assert_eq!(service.definition.id.as_str(), "listener.mcp-remotes");
@@ -1087,11 +1100,189 @@ fn resident_mcp_service_groups_instances_and_rejects_unsupported_multi_vault_rou
 
     let mut unsupported = first;
     unsupported.vaults.push(unsupported.vaults[0].clone());
-    let error = resident_named_mcp_service(&process, &[unsupported])
+    let error = resident_service(&[unsupported])
         .expect_err("multi-vault routing must not be silently narrowed");
     assert!(error
         .message
         .contains("multi-vault routing is not yet available"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+#[allow(clippy::too_many_lines)] // Builds a real competing hosted request and cancellation race.
+fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let mut core = McpServerCore::new(
+        &paths,
+        Some("unrestricted"),
+        &[McpToolPackArg::NotesWrite],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let mut http = consent_test_context(&paths, issuer);
+    http.oauth = None;
+    http.requested_profile = Some("unrestricted".to_string());
+    http.tool_pack_args = vec![McpToolPackArg::NotesWrite];
+    let inbound = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
+    };
+    let authority = authenticate_mcp_http_request(&http, &inbound).expect("direct authority");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let scheduler =
+        Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
+    let grant = core.selection.grant.clone();
+    let blocker = ExecutionContext::new(
+        ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
+        ExecutionAuthority::Caller {
+            principal_id: "blocker".to_string(),
+            credential_id: None,
+            permission_ceiling: grant.clone(),
+        },
+        grant,
+        ExecutionIdentity::new("test:blocker"),
+        None,
+        ExecutionRetryClass::IndeterminateAfterDispatch,
+        ExecutionCancellationToken::default(),
+        None,
+    )
+    .expect("blocking context");
+    let held = runtime
+        .block_on(scheduler.acquire(&blocker, ScheduledOperation::Mutation, |_| Ok(())))
+        .expect("hold vault mutation lane");
+    let hosted = HostedMcpExecution {
+        scheduler,
+        runtime: runtime.handle().clone(),
+    };
+    let cancellation = ExecutionCancellationToken::default();
+    let dispatch = HostedMcpDispatch {
+        http,
+        inbound,
+        authority,
+        cancellation: cancellation.clone(),
+        deadline: ExecutionDeadline::after(Duration::from_secs(5)),
+    };
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "note_create",
+            "arguments": {"path": "Blocked.md", "body": "must not appear"}
+        }
+    });
+    assert_eq!(
+        mcp_scheduled_operation(&payload),
+        ScheduledOperation::Mutation
+    );
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        sender
+            .send(hosted.execute(&mut core, &payload, &dispatch))
+            .expect("result receiver");
+    });
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    cancellation.cancel();
+    assert!(receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("cancelled result")
+        .is_err());
+    drop(held);
+    worker.join().expect("MCP worker");
+    assert!(!paths.vault_root().join("Blocked.md").exists());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn hosted_mcp_scheduling_treats_custom_and_saving_web_tools_as_mutations() {
+    let call = |name| {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}}
+        })
+    };
+    assert_eq!(
+        mcp_scheduled_operation(&call("note_get")),
+        ScheduledOperation::Read
+    );
+    assert_eq!(
+        mcp_scheduled_operation(&call("note_create")),
+        ScheduledOperation::Mutation
+    );
+    assert_eq!(
+        mcp_scheduled_operation(&call("web_fetch")),
+        ScheduledOperation::Mutation
+    );
+    assert_eq!(
+        mcp_scheduled_operation(&call("custom_tool")),
+        ScheduledOperation::Mutation
+    );
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+    )
+    .expect("writable profile");
+    let mut core = McpServerCore::new(
+        &paths,
+        Some("agent"),
+        &[McpToolPackArg::NotesWrite],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    assert!(core.guard.check_write_path("Note.md").is_ok());
+
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"none\"\n",
+    )
+    .expect("narrow profile");
+    attenuate_mcp_core_profile(&mut core).expect("narrowed profile");
+    assert!(core.guard.check_write_path("Note.md").is_err());
+
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+    )
+    .expect("widen profile");
+    assert!(attenuate_mcp_core_profile(&mut core)
+        .expect_err("existing session cannot widen")
+        .contains("widened"));
+    assert!(core.guard.check_write_path("Note.md").is_err());
 }
 
 #[test]

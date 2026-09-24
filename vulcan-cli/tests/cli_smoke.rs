@@ -15857,6 +15857,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("vulcan daemon start --detach"));
     assert!(mcp_skill.contains("Restart the daemon after `remote init`"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));
+    assert!(mcp_skill.contains("inspect the vault before retrying"));
     assert!(mcp_skill.contains(
         "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"
     ));

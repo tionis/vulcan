@@ -18,6 +18,7 @@ use crate::host::{
     ServiceRegistration, ServiceScope, ServiceStatus,
 };
 use crate::http::CompanionHttpState;
+use crate::mutation_scheduler::{MutationScheduler, MutationSchedulerConfig};
 use crate::notifications::{
     run_notification_runtime_until, NotificationRuntimeError, NotificationRuntimeOptions,
 };
@@ -235,7 +236,7 @@ impl From<HostRuntimeError> for DaemonProcessError {
 }
 
 pub fn run_daemon_foreground(context: &DaemonProcessContext) -> Result<(), DaemonProcessError> {
-    run_daemon_foreground_with_services(context, &|_, _| Ok(Vec::new()))
+    run_daemon_foreground_with_services(context, &|_, _, _| Ok(Vec::new()))
 }
 
 /// Starts the ordinary daemon graph with host-provided ingress services.
@@ -250,6 +251,7 @@ where
     F: Fn(
         &DaemonProcessContext,
         &crate::registry::DaemonConfig,
+        &Arc<MutationScheduler>,
     ) -> Result<Vec<ServiceRegistration>, String>,
 {
     let config_directory = context.registry.path().parent().ok_or_else(|| {
@@ -272,6 +274,7 @@ where
     ))
 }
 
+#[allow(clippy::too_many_lines)] // Assembles the one supervised daemon service graph.
 async fn run_daemon<F>(
     context: &DaemonProcessContext,
     config: crate::registry::DaemonConfig,
@@ -285,6 +288,7 @@ where
     F: Fn(
         &DaemonProcessContext,
         &crate::registry::DaemonConfig,
+        &Arc<MutationScheduler>,
     ) -> Result<Vec<ServiceRegistration>, String>,
 {
     let daemon_dir = context.state_root.join("daemon");
@@ -347,6 +351,10 @@ where
         ingress_shutdown: Some(Arc::clone(&ingress_stop)),
     };
     let runtime = tokio::runtime::Handle::current();
+    let scheduler = Arc::new(
+        MutationScheduler::new(MutationSchedulerConfig::default())
+            .expect("default daemon scheduler limits are valid"),
+    );
     let mut registrations = daemon_worker_registrations(
         context,
         &config,
@@ -356,8 +364,10 @@ where
         state.semantic_agent.as_ref(),
         &runtime,
     )?;
-    registrations
-        .extend(additional_services(context, &config).map_err(DaemonProcessError::Configuration)?);
+    registrations.extend(
+        additional_services(context, &config, &scheduler)
+            .map_err(DaemonProcessError::Configuration)?,
+    );
     registrations.push(companion_listener_service(
         listener,
         state.clone(),
@@ -366,7 +376,12 @@ where
         vec![service_id("worker.remote-notifications")?],
     )?);
     ensure_daemon_service_budget(registrations.len())?;
-    let mut host = start_daemon_host(registrations, Arc::clone(&stop), context.host_status_path())?;
+    let mut host = start_daemon_host(
+        registrations,
+        Arc::clone(&stop),
+        context.host_status_path(),
+        scheduler,
+    )?;
     if let Err(error) = write_runtime_record(&context.runtime_path(), &record) {
         let _ = host.shutdown();
         return Err(error);
@@ -1284,7 +1299,7 @@ mod tests {
         let child_context = context.clone();
         let (result_sender, result_receiver) = std::sync::mpsc::channel();
         let daemon = thread::spawn(move || {
-            let result = run_daemon_foreground_with_services(&child_context, &|_, _| {
+            let result = run_daemon_foreground_with_services(&child_context, &|_, _, _| {
                 Ok(vec![ServiceRegistration::new(
                     ServiceDefinition {
                         id: ServiceId::parse("listener.test-ingress").expect("service ID"),

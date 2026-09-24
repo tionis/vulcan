@@ -50,6 +50,7 @@ debugging, tool pack selection, and permission-profile questions.
 - Named remote definitions are device-global and never copied through vault sync. Vault permission profiles remain in `.vulcan/config.toml`; grants, refresh-token families, revocations, and per-remote OAuth secrets remain device-local outside the rebuildable cache.
 - Restart the daemon after `remote init`, `set`, or `remove` to reload resident listeners. Do not start the same remote with `remote run` while the daemon owns it; the instance lock rejects overlap. Resident routing for multiple vaults inside one named remote is not yet available.
 - A named remote ceiling cannot be `unrestricted`. Changing a profile may narrow an existing grant, but a broader current profile is rejected until the user grants fresh consent.
+- Resident MCP requests share the daemon's per-vault read/write queue and recheck consent after waiting. If a mutation times out after dispatch, inspect the vault before retrying: the worker may still finish its write.
 - Client ID Metadata Documents are accepted only as public HTTPS clients with exact IDs and allowlisted redirect hosts. Dynamic registration remains available; do not work around failed client validation by weakening redirect checks.
 
 ## Example Moves
