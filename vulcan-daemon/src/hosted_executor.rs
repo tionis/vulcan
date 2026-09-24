@@ -4,7 +4,7 @@
 //! remains supervised and updates the durable job record when it actually
 //! finishes, so adapters never imply that an uncertain write was rolled back.
 
-use crate::hosted_jobs::{HostedJobError, HostedJobLedger, HostedJobRecord};
+use crate::hosted_jobs::{HostedJobError, HostedJobLedger, HostedJobRecord, HostedJobState};
 use crate::mutation_scheduler::{MutationScheduleError, MutationScheduler, ScheduledOperation};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -96,6 +96,15 @@ impl HostedExecutor {
         run_ledger(move || ledger.request_cancel(&operation_id, now_unix_ms())).await
     }
 
+    pub async fn register(
+        &self,
+        context: &ExecutionContext,
+    ) -> Result<HostedJobRecord, HostedExecutionError> {
+        let ledger = Arc::clone(&self.ledger);
+        let context = context.clone();
+        run_ledger(move || ledger.register(&context, now_unix_ms())).await
+    }
+
     pub async fn execute<T, R, F>(
         &self,
         context: ExecutionContext,
@@ -110,10 +119,59 @@ impl HostedExecutor {
             + Send
             + 'static,
     {
+        self.register(&context).await?;
+        self.execute_after_registration(context, kind, revalidate, operation)
+            .await
+    }
+
+    /// Execute a caller operation whose identity was durably registered before
+    /// an adapter launched its request worker. A changed or already-dispatched
+    /// record fails before invoking the operation closure.
+    pub async fn execute_registered_caller<T, R, F>(
+        &self,
+        context: ExecutionContext,
+        kind: ScheduledOperation,
+        revalidate: R,
+        operation: F,
+    ) -> Result<T, HostedExecutionError>
+    where
+        T: Send + 'static,
+        R: FnOnce(&ExecutionContext) -> Result<(), MutationScheduleError>,
+        F: FnOnce(ExecutionContext) -> Result<HostedOperationCompletion<T>, HostedOperationFailure>
+            + Send
+            + 'static,
+    {
         let operation_id = context.identity.operation_id.clone();
-        let ledger = Arc::clone(&self.ledger);
-        let register_context = context.clone();
-        run_ledger(move || ledger.register(&register_context, now_unix_ms())).await?;
+        let record = self.status(operation_id.clone()).await?;
+        if record.state != HostedJobState::Queued
+            || record.request_id != context.identity.request_id
+            || !record.matches_caller(&context)
+        {
+            return Err(HostedExecutionError::BeforeDispatch {
+                operation_id,
+                detail: "pre-registered caller operation is not queued for this authority"
+                    .to_string(),
+            });
+        }
+        self.execute_after_registration(context, kind, revalidate, operation)
+            .await
+    }
+
+    async fn execute_after_registration<T, R, F>(
+        &self,
+        context: ExecutionContext,
+        kind: ScheduledOperation,
+        revalidate: R,
+        operation: F,
+    ) -> Result<T, HostedExecutionError>
+    where
+        T: Send + 'static,
+        R: FnOnce(&ExecutionContext) -> Result<(), MutationScheduleError>,
+        F: FnOnce(ExecutionContext) -> Result<HostedOperationCompletion<T>, HostedOperationFailure>
+            + Send
+            + 'static,
+    {
+        let operation_id = context.identity.operation_id.clone();
 
         let permit = match self.scheduler.acquire(&context, kind, revalidate).await {
             Ok(permit) => permit,
@@ -455,6 +513,91 @@ mod tests {
         assert_eq!(record.state, HostedJobState::Succeeded);
         assert_eq!(record.committed, Some(false));
         assert!(record.dispatched);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pre_registered_caller_runs_once_with_durable_identity() {
+        let state = tempfile::tempdir().expect("state");
+        let vault = tempfile::tempdir().expect("vault");
+        let executor = executor(state.path(), MutationSchedulerConfig::default());
+        let context = context(vault.path(), None);
+        let operation_id = context.identity.operation_id.clone();
+        let queued = executor.register(&context).await.expect("register");
+        assert_eq!(queued.state, HostedJobState::Queued);
+        assert!(queued.matches_caller(&context));
+
+        let value = executor
+            .execute_registered_caller(
+                context.clone(),
+                ScheduledOperation::Mutation,
+                |_| Ok(()),
+                |_| Ok(HostedOperationCompletion::mutation(42)),
+            )
+            .await
+            .expect("execute registered caller");
+        assert_eq!(value, 42);
+        let completed = executor
+            .status(operation_id)
+            .await
+            .expect("completed status");
+        assert_eq!(completed.state, HostedJobState::Succeeded);
+        assert_eq!(completed.committed, Some(true));
+        assert!(completed.dispatched);
+
+        let error = executor
+            .execute_registered_caller(
+                context,
+                ScheduledOperation::Mutation,
+                |_| Ok(()),
+                |_| -> Result<HostedOperationCompletion<()>, HostedOperationFailure> {
+                    panic!("completed operation must never be replayed")
+                },
+            )
+            .await
+            .expect_err("replay should fail");
+        assert!(matches!(error, HostedExecutionError::BeforeDispatch { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pre_registered_caller_rejects_changed_authority_without_dispatch() {
+        let state = tempfile::tempdir().expect("state");
+        let vault = tempfile::tempdir().expect("vault");
+        let executor = executor(state.path(), MutationSchedulerConfig::default());
+        let context = context(vault.path(), None);
+        let operation_id = context.identity.operation_id.clone();
+        executor.register(&context).await.expect("register");
+
+        let mut other = context.clone();
+        other.authority = ExecutionAuthority::Caller {
+            principal_id: "other".to_string(),
+            credential_id: None,
+            permission_ceiling: grant(),
+        };
+        let error = executor
+            .execute_registered_caller(
+                other,
+                ScheduledOperation::Mutation,
+                |_| Ok(()),
+                |_| -> Result<HostedOperationCompletion<()>, HostedOperationFailure> {
+                    panic!("wrong authority must never dispatch")
+                },
+            )
+            .await
+            .expect_err("wrong authority should fail");
+        assert!(matches!(error, HostedExecutionError::BeforeDispatch { .. }));
+        let queued = executor.status(operation_id).await.expect("queued status");
+        assert_eq!(queued.state, HostedJobState::Queued);
+        assert!(!queued.dispatched);
+
+        executor
+            .execute_registered_caller(
+                context,
+                ScheduledOperation::Read,
+                |_| Ok(()),
+                |_| Ok(HostedOperationCompletion::read(())),
+            )
+            .await
+            .expect("original caller can still execute");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
