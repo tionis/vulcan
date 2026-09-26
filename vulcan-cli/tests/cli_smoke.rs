@@ -15980,6 +15980,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("Converting an existing ordinary note"));
     assert!(task_management.contains("rejects a source note changed after planning"));
     assert!(task_management.contains("Ordinary TaskNotes add refuses a new task path"));
+    assert!(task_management.contains("Pomodoro state written to an ordinary or daily note"));
     let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));

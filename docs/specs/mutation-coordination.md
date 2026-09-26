@@ -75,6 +75,8 @@ transaction audit.
 Single-note TaskNotes conversion also uses that lock and rejects a source changed after planning;
 line-to-note conversion is still a multi-file transaction gap.
 Ordinary TaskNotes add uses the same lock and exclusive create to reject a late destination collision.
+Task metadata updates to ordinary notes, including pomodoro state stored in daily notes, check the
+original source bytes under that lock; creating a missing periodic note refuses a late collision.
 
 MCP `task_create`, `task_complete`, and `task_reschedule` now pass their attenuated connection
 guard into the app apply call. The app checks the actual resolved target before managed routing

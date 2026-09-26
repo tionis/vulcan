@@ -212,6 +212,7 @@ struct TaskDependencyReference {
 #[derive(Debug, Clone)]
 struct LoadedNoteMutation {
     path: String,
+    source: String,
     body: String,
     frontmatter: YamlMapping,
     created: bool,
@@ -4698,6 +4699,7 @@ fn load_note_frontmatter_for_mutation(
         parse_frontmatter_document(&source, false).map_err(AppError::operation)?;
     Ok(LoadedNoteMutation {
         path: relative_path.to_string(),
+        source,
         body: normalize_tasknote_body(&body),
         frontmatter: frontmatter.unwrap_or_default(),
         created,
@@ -4729,14 +4731,10 @@ where
     };
 
     let routed = if has_writes {
-        let before = (!loaded.created)
-            .then(|| render_note_from_parts(Some(&loaded.frontmatter), &loaded.body))
-            .transpose()
-            .map_err(AppError::operation)?;
         route_task_note_write(
             paths,
             &loaded.path,
-            before.as_deref(),
+            (!loaded.created).then_some(loaded.source.as_str()),
             Some(&rendered),
             if loaded.created {
                 MdbaseWriteOperation::Create
@@ -4750,11 +4748,13 @@ where
     };
 
     if !dry_run && has_writes && !routed {
-        let absolute_path = paths.vault_root().join(&loaded.path);
-        if let Some(parent) = absolute_path.parent() {
-            fs::create_dir_all(parent).map_err(AppError::operation)?;
-        }
-        fs::write(&absolute_path, rendered).map_err(AppError::operation)?;
+        write_ordinary_note_if_unchanged(
+            paths,
+            &loaded.path,
+            (!loaded.created).then_some(loaded.source.as_str()),
+            &rendered,
+            action,
+        )?;
     }
 
     if loaded.created {

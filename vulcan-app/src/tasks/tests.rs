@@ -1,8 +1,9 @@
 use super::{
-    apply_task_add, apply_task_archive, apply_task_complete, apply_task_complete_with_guard,
-    apply_task_convert, apply_task_create, apply_task_create_with_guard, apply_task_pomodoro_start,
-    apply_task_pomodoro_stop, apply_task_reschedule, apply_task_reschedule_with_guard,
-    apply_task_set, apply_task_track_start, apply_task_track_stop, build_task_due_report,
+    apply_note_frontmatter_mutation, apply_task_add, apply_task_archive, apply_task_complete,
+    apply_task_complete_with_guard, apply_task_convert, apply_task_create,
+    apply_task_create_with_guard, apply_task_pomodoro_start, apply_task_pomodoro_stop,
+    apply_task_reschedule, apply_task_reschedule_with_guard, apply_task_set,
+    apply_task_track_start, apply_task_track_stop, build_task_due_report,
     build_task_pomodoro_status_report, build_task_reminders_report, build_task_show_report,
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
     build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
@@ -23,8 +24,72 @@ use tempfile::tempdir;
 use vulcan_core::mdbase::list_mdbase_write_outbox;
 use vulcan_core::{
     initialize_vulcan_dir, load_vault_config, resolve_permission_profile, scan_vault_with_progress,
-    ProfilePermissionGuard, ScanMode, VaultPaths,
+    ProfilePermissionGuard, RefactorChange, ScanMode, VaultPaths,
 };
+
+#[test]
+fn task_note_frontmatter_mutation_rejects_a_source_changed_after_loading() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    fs::write(temp_dir.path().join("Daily.md"), "original\n").expect("seed note");
+
+    let error = apply_note_frontmatter_mutation(
+        &paths,
+        "Daily.md",
+        None,
+        "task metadata",
+        false,
+        |frontmatter, _loaded| {
+            frontmatter.insert(
+                YamlValue::String("pomodoros".to_string()),
+                YamlValue::Sequence(Vec::new()),
+            );
+            fs::write(temp_dir.path().join("Daily.md"), "concurrent edit\n")
+                .expect("concurrent edit");
+            Ok(vec![RefactorChange {
+                before: "<missing>".to_string(),
+                after: "pomodoros".to_string(),
+            }])
+        },
+    )
+    .expect_err("stale task metadata must fail");
+    assert!(error
+        .to_string()
+        .contains("note changed during note task metadata"));
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Daily.md")).expect("retained note"),
+        "concurrent edit\n"
+    );
+}
+
+#[test]
+fn task_note_frontmatter_mutation_refuses_a_late_periodic_note_collision() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    let relative_path = "Daily/2026-04-20.md";
+    let target = temp_dir.path().join(relative_path);
+
+    let error = apply_note_frontmatter_mutation(
+        &paths,
+        relative_path,
+        Some("daily"),
+        "task metadata",
+        false,
+        |_frontmatter, _loaded| {
+            fs::create_dir_all(target.parent().expect("daily folder")).expect("create folder");
+            fs::write(&target, "concurrent daily note\n").expect("concurrent note");
+            Ok(Vec::new())
+        },
+    )
+    .expect_err("late periodic note collision must fail");
+    assert!(!error.to_string().is_empty());
+    assert_eq!(
+        fs::read_to_string(&target).expect("retained daily note"),
+        "concurrent daily note\n"
+    );
+}
 
 #[test]
 fn process_due_tasknote_auto_archives_moves_completed_tasks() {
