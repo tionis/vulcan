@@ -407,6 +407,58 @@ fn apply_task_add_creates_tasknote_from_natural_language_input() {
 }
 
 #[test]
+fn task_add_refuses_a_destination_created_while_waiting_for_the_vault_lock() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    let config = load_vault_config(&paths).config;
+    let target = temp_dir
+        .path()
+        .join(&config.tasknotes.tasks_folder)
+        .join("Review.md");
+    let held = vulcan_core::write_lock::acquire_write_lock(&paths).expect("hold vault lock");
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        started_sender.send(()).expect("start signal");
+        let result = apply_task_add(
+            &paths,
+            &TaskAddRequest {
+                text: "Review".to_string(),
+                no_nlp: true,
+                status: None,
+                priority: None,
+                due: None,
+                scheduled: None,
+                contexts: Vec::new(),
+                projects: Vec::new(),
+                tags: Vec::new(),
+                template: None,
+                dry_run: false,
+            },
+        );
+        result_sender.send(result).expect("result signal");
+    });
+    started_receiver.recv().expect("worker started");
+    assert!(result_receiver
+        .recv_timeout(Duration::from_millis(100))
+        .is_err());
+    fs::create_dir_all(target.parent().expect("task folder")).expect("create task folder");
+    fs::write(&target, "concurrent task\n").expect("create concurrent task");
+    drop(held);
+    let error = result_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker completed")
+        .expect_err("collision must fail");
+    worker.join().expect("worker joined");
+    assert!(!error.to_string().is_empty());
+    assert_eq!(
+        fs::read_to_string(target).expect("retained task"),
+        "concurrent task\n"
+    );
+}
+
+#[test]
 fn apply_task_add_dry_run_reports_changed_path() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());

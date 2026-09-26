@@ -34,6 +34,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 - In an mdbase collection, task create/update/convert/archive workflows preflight proposed records and commit through the validated journal. Treat a validation failure as a schema or collection-rule conflict; do not bypass it with a direct Markdown edit.
 - Ordinary inline task create, complete, and reschedule writes are serialized with other Vulcan vault writes and reject a note changed after planning. On a changed-note error, reread the task and its source note before deciding whether to retry; never overwrite the newer edit.
 - Converting an existing ordinary note into a TaskNotes task also rejects a source note changed after planning. Reread the note and rerun conversion only if it is still appropriate.
+- Ordinary TaskNotes add refuses a new task path that another writer created after planning. Inspect that task before choosing a new title or retrying.
 
 ## Example Moves
 

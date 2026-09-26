@@ -5552,6 +5552,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - MCP `task_create`, `task_complete`, and `task_reschedule` now pass their attenuated connection guard to the app apply call, which checks the actual resolved target before any managed or ordinary write. Completion and rescheduling cover both TaskNotes and inline-task branches. The earlier dry-run permission check remains for prompt feedback; it is no longer the only authority check.
   - A live transport regression now starts two named HTTP listeners with distinct OAuth resource URLs, verifies each advertises its own URL, and confirms stopping one does not interrupt the other. Full resident/foreground request and grant conformance remains open.
   - Single-note TaskNotes conversion now uses the ordinary-note vault lock and stale-source check after planning. Line-to-note conversion and other multi-file task effects still need a coordinated transaction.
+  - Ordinary TaskNotes `add` now creates under the same vault lock and refuses a destination created after planning, instead of overwriting it.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,

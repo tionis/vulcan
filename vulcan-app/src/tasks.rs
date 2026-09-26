@@ -798,10 +798,7 @@ pub fn apply_task_add(
         request.dry_run,
     )?;
     if !request.dry_run && !routed {
-        if let Some(parent) = absolute_path.parent() {
-            fs::create_dir_all(parent).map_err(AppError::operation)?;
-        }
-        fs::write(&absolute_path, rendered).map_err(AppError::operation)?;
+        write_ordinary_note_if_unchanged(paths, &relative_path, None, &rendered, "task add")?;
     }
 
     Ok(TaskAddReport {

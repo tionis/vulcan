@@ -74,6 +74,7 @@ multi-file task conversion and other task side effects still require a separate 
 transaction audit.
 Single-note TaskNotes conversion also uses that lock and rejects a source changed after planning;
 line-to-note conversion is still a multi-file transaction gap.
+Ordinary TaskNotes add uses the same lock and exclusive create to reject a late destination collision.
 
 MCP `task_create`, `task_complete`, and `task_reschedule` now pass their attenuated connection
 guard into the app apply call. The app checks the actual resolved target before managed routing
