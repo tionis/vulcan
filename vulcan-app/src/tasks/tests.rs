@@ -1,16 +1,17 @@
 use super::{
-    apply_task_add, apply_task_archive, apply_task_complete, apply_task_convert, apply_task_create,
-    apply_task_create_with_guard, apply_task_pomodoro_start, apply_task_pomodoro_stop,
-    apply_task_reschedule, apply_task_set, apply_task_track_start, apply_task_track_stop,
-    build_task_due_report, build_task_pomodoro_status_report, build_task_reminders_report,
-    build_task_show_report, build_task_track_log_report, build_task_track_status_report,
-    build_task_track_summary_report, build_tasks_blocked_report, build_tasks_eval_report,
-    build_tasks_graph_report, build_tasks_list_report, build_tasks_next_report,
-    build_tasks_view_list_report, build_tasks_view_report, current_utc_date_string,
-    process_due_tasknote_auto_archives, TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest,
-    TaskConvertRequest, TaskCreateRequest, TaskEvalRequest, TaskListRequest,
-    TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest,
-    TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
+    apply_task_add, apply_task_archive, apply_task_complete, apply_task_complete_with_guard,
+    apply_task_convert, apply_task_create, apply_task_create_with_guard, apply_task_pomodoro_start,
+    apply_task_pomodoro_stop, apply_task_reschedule, apply_task_reschedule_with_guard,
+    apply_task_set, apply_task_track_start, apply_task_track_stop, build_task_due_report,
+    build_task_pomodoro_status_report, build_task_reminders_report, build_task_show_report,
+    build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
+    build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
+    build_tasks_list_report, build_tasks_next_report, build_tasks_view_list_report,
+    build_tasks_view_report, current_utc_date_string, process_due_tasknote_auto_archives,
+    TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
+    TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
+    TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest, TaskTrackStopRequest,
+    TaskTrackSummaryPeriod,
 };
 use crate::templates::render_note_from_parts;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -505,6 +506,132 @@ fn guarded_task_create_checks_the_actual_write_path_before_mutation() {
     .expect("allowed path");
     assert_eq!(allowed.path, "Allowed/Inbox.md");
     assert!(temp_dir.path().join("Allowed/Inbox.md").exists());
+}
+
+#[test]
+fn guarded_task_updates_reject_denied_tasknote_and_inline_paths() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = { allow = [\"folder:Allowed/**\"] }\n",
+    )
+    .expect("config");
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Denied/Task.md",
+        "Denied task",
+        "open",
+        &[],
+        "",
+    )
+    .expect("tasknote");
+    seed_tasknote(
+        &paths,
+        &config,
+        "Allowed/PermittedTask.md",
+        "Allowed task",
+        "open",
+        &[],
+        "",
+    )
+    .expect("allowed tasknote");
+    fs::write(
+        temp_dir.path().join("Denied/Inline.md"),
+        "- [ ] Denied inline\n",
+    )
+    .expect("inline note");
+    fs::write(
+        temp_dir.path().join("Allowed/PermittedInline.md"),
+        "- [ ] Allowed inline\n",
+    )
+    .expect("allowed inline note");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+    let note_index = vulcan_core::properties::load_note_index(&paths).expect("note index");
+    assert_eq!(
+        super::inline_tasks_for_path(&note_index, "Allowed/PermittedInline.md").len(),
+        1,
+        "allowed inline task should be indexed: {:?}",
+        note_index
+            .values()
+            .map(|note| (&note.document_path, note.tasks.len()))
+            .collect::<Vec<_>>()
+    );
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("agent")).expect("profile"),
+    );
+    let tasknote_before =
+        fs::read_to_string(temp_dir.path().join("Denied/Task.md")).expect("tasknote before");
+    let inline_before =
+        fs::read_to_string(temp_dir.path().join("Denied/Inline.md")).expect("inline before");
+
+    for request in [
+        TaskCompleteRequest {
+            task: "Denied/Task".to_string(),
+            date: Some("2026-04-20".to_string()),
+            dry_run: false,
+        },
+        TaskCompleteRequest {
+            task: "Denied/Inline.md:1".to_string(),
+            date: Some("2026-04-20".to_string()),
+            dry_run: false,
+        },
+    ] {
+        let error = apply_task_complete_with_guard(&paths, &request, Some(&guard))
+            .expect_err("denied completion must fail");
+        assert!(error.to_string().contains("permission denied"), "{error}");
+    }
+    for request in [
+        TaskRescheduleRequest {
+            task: "Denied/Task".to_string(),
+            due: "2026-04-20".to_string(),
+            dry_run: false,
+        },
+        TaskRescheduleRequest {
+            task: "Denied/Inline.md:1".to_string(),
+            due: "2026-04-20".to_string(),
+            dry_run: false,
+        },
+    ] {
+        let error = apply_task_reschedule_with_guard(&paths, &request, Some(&guard))
+            .expect_err("denied reschedule must fail");
+        assert!(error.to_string().contains("permission denied"), "{error}");
+    }
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Denied/Task.md")).expect("tasknote after"),
+        tasknote_before
+    );
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Denied/Inline.md")).expect("inline after"),
+        inline_before
+    );
+
+    let completed = apply_task_complete_with_guard(
+        &paths,
+        &TaskCompleteRequest {
+            task: "Allowed/PermittedTask".to_string(),
+            date: Some("2026-04-20".to_string()),
+            dry_run: false,
+        },
+        Some(&guard),
+    )
+    .expect("allowed tasknote completion");
+    assert_eq!(completed.changed_paths, ["Allowed/PermittedTask.md"]);
+    let rescheduled = apply_task_reschedule_with_guard(
+        &paths,
+        &TaskRescheduleRequest {
+            task: "Allowed/PermittedInline.md:1".to_string(),
+            due: "2026-04-20".to_string(),
+            dry_run: false,
+        },
+        Some(&guard),
+    )
+    .expect("allowed inline reschedule");
+    assert_eq!(rescheduled.changed_paths, ["Allowed/PermittedInline.md"]);
 }
 
 #[test]

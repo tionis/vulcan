@@ -73,10 +73,10 @@ stale-checked note write lock after managed-mdbase routing. This covers the same
 multi-file task conversion and other task side effects still require a separate coordinated
 transaction audit.
 
-MCP `task_create` now passes its attenuated connection guard into the app apply call. The app
-checks the actual resolved target before managed routing or the ordinary write, rather than
-relying only on the MCP adapter's earlier dry-run path preview. Equivalent apply-time grant
-checks for the remaining task mutations are still open.
+MCP `task_create`, `task_complete`, and `task_reschedule` now pass their attenuated connection
+guard into the app apply call. The app checks the actual resolved target before managed routing
+or the ordinary write, rather than relying only on the MCP adapter's earlier dry-run path
+preview. Completion and rescheduling check both TaskNotes and inline-task branches.
 
 For profile-scoped note creation, explicit templates and creation triggers carry the same path
 grant into Templater's native and JS file-create/move callbacks. A file create must be writable;

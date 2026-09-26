@@ -288,13 +288,22 @@ pub fn apply_task_reschedule(
     paths: &VaultPaths,
     request: &TaskRescheduleRequest,
 ) -> Result<TaskMutationReport, AppError> {
+    apply_task_reschedule_with_guard(paths, request, None)
+}
+
+pub fn apply_task_reschedule_with_guard(
+    paths: &VaultPaths,
+    request: &TaskRescheduleRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
     if let Ok(loaded) = load_tasknote_note(paths, &request.task) {
         let due_value = resolve_tasknote_date_input(&loaded.config, &request.due, false)?;
-        return apply_loaded_tasknote_mutation(
+        return apply_loaded_tasknote_mutation_with_guard(
             paths,
             &loaded,
             "reschedule",
             request.dry_run,
+            guard,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 let due_key = &loaded.config.tasknotes.field_mapping.due;
@@ -323,19 +332,28 @@ pub fn apply_task_reschedule(
         );
     }
 
-    apply_inline_task_reschedule(paths, request)
+    apply_inline_task_reschedule(paths, request, guard)
 }
 
 pub fn apply_task_complete(
     paths: &VaultPaths,
     request: &TaskCompleteRequest,
 ) -> Result<TaskMutationReport, AppError> {
+    apply_task_complete_with_guard(paths, request, None)
+}
+
+pub fn apply_task_complete_with_guard(
+    paths: &VaultPaths,
+    request: &TaskCompleteRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
     if let Ok(loaded) = load_tasknote_note(paths, &request.task) {
-        return apply_loaded_tasknote_mutation(
+        return apply_loaded_tasknote_mutation_with_guard(
             paths,
             &loaded,
             "complete",
             request.dry_run,
+            guard,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 if loaded.indexed.recurrence.is_some() {
@@ -432,7 +450,7 @@ pub fn apply_task_complete(
         );
     }
 
-    apply_inline_task_complete(paths, request)
+    apply_inline_task_complete(paths, request, guard)
 }
 
 pub fn apply_task_archive(
@@ -4258,6 +4276,20 @@ fn apply_loaded_tasknote_mutation<F>(
 where
     F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, AppError>,
 {
+    apply_loaded_tasknote_mutation_with_guard(paths, loaded, action, dry_run, None, mutate)
+}
+
+fn apply_loaded_tasknote_mutation_with_guard<F>(
+    paths: &VaultPaths,
+    loaded: &LoadedTaskNote,
+    action: &str,
+    dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
+    mutate: F,
+) -> Result<TaskMutationReport, AppError>
+where
+    F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, AppError>,
+{
     let mut frontmatter = loaded.frontmatter.clone();
     let TaskMutationPlan {
         mut changes,
@@ -4274,8 +4306,7 @@ where
             changed_paths.push(path.clone());
         }
     }
-    changed_paths.sort();
-    changed_paths.dedup();
+    authorize_task_changed_paths(&mut changed_paths, guard)?;
 
     let routed = if changed_paths.is_empty() {
         false
@@ -5282,9 +5313,24 @@ fn inline_tasks_for_note(note: &NoteRecord) -> Vec<ResolvedInlineTask> {
         .collect()
 }
 
+fn authorize_task_changed_paths(
+    changed_paths: &mut Vec<String>,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<(), AppError> {
+    changed_paths.sort();
+    changed_paths.dedup();
+    if let Some(guard) = guard {
+        for path in changed_paths {
+            guard.check_write_path(path).map_err(AppError::operation)?;
+        }
+    }
+    Ok(())
+}
+
 fn apply_inline_task_reschedule(
     paths: &VaultPaths,
     request: &TaskRescheduleRequest,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskMutationReport, AppError> {
     let resolved = resolve_inline_task(paths, &request.task)?;
     let config = load_vault_config(paths).config;
@@ -5294,11 +5340,12 @@ fn apply_inline_task_reschedule(
     let (rendered, change) =
         reschedule_inline_task_source(&source, resolved.line_number, &due_value)?;
     let changes = change.into_iter().collect::<Vec<_>>();
-    let changed_paths = if changes.is_empty() {
+    let mut changed_paths = if changes.is_empty() {
         Vec::new()
     } else {
         vec![resolved.path.clone()]
     };
+    authorize_task_changed_paths(&mut changed_paths, guard)?;
 
     let routed = if changes.is_empty() {
         false
@@ -5336,6 +5383,7 @@ fn apply_inline_task_reschedule(
 fn apply_inline_task_complete(
     paths: &VaultPaths,
     request: &TaskCompleteRequest,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskMutationReport, AppError> {
     let resolved = resolve_inline_task(paths, &request.task)?;
     let config = load_vault_config(paths).config;
@@ -5350,11 +5398,12 @@ fn apply_inline_task_complete(
         &completed_date,
     )?;
     let changes = change.into_iter().collect::<Vec<_>>();
-    let changed_paths = if changes.is_empty() {
+    let mut changed_paths = if changes.is_empty() {
         Vec::new()
     } else {
         vec![resolved.path.clone()]
     };
+    authorize_task_changed_paths(&mut changed_paths, guard)?;
 
     let routed = if changes.is_empty() {
         false
