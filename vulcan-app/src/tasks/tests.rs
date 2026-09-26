@@ -919,6 +919,9 @@ fn apply_task_convert_line_creates_tasknote_and_rewrites_source() {
         "- [ ] Review launch plan tomorrow @work\n",
     )
     .expect("seed inbox");
+    #[cfg(unix)]
+    let mut original_handle = fs::File::open(temp_dir.path().join("Inbox.md"))
+        .expect("open original source before conversion");
 
     let report = apply_task_convert(
         &paths,
@@ -939,6 +942,15 @@ fn apply_task_convert_line_creates_tasknote_and_rewrites_source() {
         .replace("\r\n", "\n");
     let link_target = report.target_path.trim_end_matches(".md");
     assert!(source.contains(&format!("[[{link_target}]]")));
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut original = String::new();
+        original_handle
+            .read_to_string(&mut original)
+            .expect("read pre-conversion source handle");
+        assert_eq!(original, "- [ ] Review launch plan tomorrow @work\n");
+    }
 }
 
 #[test]

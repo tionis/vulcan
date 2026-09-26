@@ -27,7 +27,7 @@ use vulcan_core::expression::functions::{
 };
 use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{
-    normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
+    normalize_relative_input_path, secure_create, secure_read_to_string, secure_replace,
     RelativePathOptions,
 };
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
@@ -3292,7 +3292,7 @@ fn write_ordinary_task_conversion(
     }
     secure_create(paths.vault_root(), Path::new(task_path), task_contents)
         .map_err(AppError::operation)?;
-    if let Err(error) = secure_write(paths.vault_root(), Path::new(source_path), source_after) {
+    if let Err(error) = secure_replace(paths.vault_root(), Path::new(source_path), source_after) {
         if secure_read_to_string(paths.vault_root(), Path::new(task_path))
             .is_ok_and(|current| current == task_contents)
         {
