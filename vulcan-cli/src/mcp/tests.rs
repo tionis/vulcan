@@ -541,6 +541,46 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .expect("foreground thread")
         .expect("foreground stop");
 
+    let write_grant = named
+        .authorization_store
+        .list_grants(Some(&remote.id))
+        .expect("persisted grants")
+        .into_iter()
+        .find(|grant| grant.permission_profile == "unrestricted")
+        .expect("write grant");
+    let grant_permissions = resolve_permission_profile(&paths, Some("unrestricted"))
+        .expect("write permissions")
+        .grant;
+    let interrupted_context = ExecutionContext::new(
+        ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault identity"),
+        ExecutionAuthority::Caller {
+            principal_id: "https://identity.example.test/alice".to_string(),
+            credential_id: Some(write_grant.id.to_string()),
+            permission_ceiling: grant_permissions.clone(),
+        },
+        grant_permissions,
+        ExecutionIdentity::new(format!("mcp:{}", remote.instance_id)),
+        Some(remote.public_url.clone()),
+        ExecutionRetryClass::IndeterminateAfterDispatch,
+        ExecutionCancellationToken::default(),
+        None,
+    )
+    .expect("interrupted operation context");
+    let operation_id = interrupted_context.identity.operation_id.clone();
+    let ledger = HostedJobLedger::at(
+        process
+            .state_root
+            .join("mcp-remotes")
+            .join(remote.id.as_str())
+            .join("operations"),
+    );
+    ledger
+        .register(&interrupted_context, current_unix_millis())
+        .expect("register pending operation");
+    ledger
+        .mark_running(&operation_id, current_unix_millis())
+        .expect("mark pending operation running");
+
     let runtime = tokio::runtime::Runtime::new().expect("resident runtime");
     let scheduler =
         Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
@@ -574,6 +614,27 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         Duration::from_secs(10),
     )
     .expect("resident host startup");
+    assert_eq!(
+        ledger
+            .load(&operation_id)
+            .expect("recovered operation")
+            .state,
+        vulcan_daemon::hosted_jobs::HostedJobState::Interrupted
+    );
+    let visible_status =
+        named_listener_operation_status(address, "parity", &write_token, &operation_id);
+    assert!(
+        visible_status.starts_with("HTTP/1.1 200"),
+        "{visible_status}"
+    );
+    assert!(
+        visible_status.contains("\"state\":\"interrupted\""),
+        "{visible_status}"
+    );
+    assert!(
+        named_listener_operation_status(address, "parity", &token, &operation_id)
+            .starts_with("HTTP/1.1 404")
+    );
     let resident_init = named_listener_initialize(address, "parity", &token);
     assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
     let resident_session = named_listener_session_id(&resident_init);
@@ -768,6 +829,29 @@ fn named_listener_create_note(
     stream
         .read_to_string(&mut response)
         .expect("note-create response");
+    response
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_operation_status(
+    address: SocketAddr,
+    name: &str,
+    token: &str,
+    operation_id: &str,
+) -> String {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    write!(
+        stream,
+        "GET /{name}/operations/{operation_id} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("operation-status request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("operation-status response");
     response
 }
 
