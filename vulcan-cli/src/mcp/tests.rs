@@ -290,14 +290,8 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
     }
 
     assert_ne!(listeners[0].0, listeners[1].0);
-    assert_eq!(
-        named_listener_resource_metadata(listeners[0].0, "first")["resource"],
-        "https://mcp.example.test/first"
-    );
-    assert_eq!(
-        named_listener_resource_metadata(listeners[1].0, "second")["resource"],
-        "https://mcp.example.test/second"
-    );
+    assert_named_listener_identity(listeners[0].0, "first");
+    assert_named_listener_identity(listeners[1].0, "second");
     listeners[0].1.cancel();
     listeners[0]
         .2
@@ -354,6 +348,35 @@ fn named_listener_resource_metadata(address: SocketAddr, name: &str) -> Value {
     let (headers, body) = response.split_once("\r\n\r\n").expect("HTTP response");
     assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
     serde_json::from_str(body).expect("resource metadata JSON")
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_identity(address: SocketAddr, name: &str) {
+    assert_eq!(
+        named_listener_resource_metadata(address, name)["resource"],
+        format!("https://mcp.example.test/{name}")
+    );
+    assert_named_listener_auth_challenge(address, name);
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_auth_challenge(address: SocketAddr, name: &str) {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    write!(
+        stream,
+        "POST /{name} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    )
+    .expect("unauthenticated MCP request");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("auth response");
+    let (headers, _) = response.split_once("\r\n\r\n").expect("HTTP response");
+    assert!(headers.starts_with("HTTP/1.1 401"), "{headers}");
+    assert!(headers.contains(&format!(
+        "resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/{name}\""
+    )));
 }
 
 #[cfg(feature = "oauth")]
