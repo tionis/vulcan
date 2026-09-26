@@ -1059,6 +1059,12 @@ fn apply_task_archive_moves_completed_task_into_archive_folder() {
     assert_eq!(report.moved_from.as_deref(), Some("Tasks/Done.md"));
     assert_eq!(report.moved_to.as_deref(), Some(report.path.as_str()));
     assert!(temp_dir.path().join(&report.path).exists());
+    assert!(!temp_dir.path().join("Tasks/Done.md").exists());
+    assert!(!paths
+        .operational_state_dir()
+        .expect("operational state")
+        .join("ordinary-write/journal.json")
+        .exists());
     let rendered = fs::read_to_string(temp_dir.path().join(&report.path))
         .expect("archived task")
         .replace("\r\n", "\n");
@@ -1081,7 +1087,10 @@ fn ordinary_task_move_refuses_stale_source_and_late_destination_collision() {
         "archived task\n",
     )
     .expect_err("stale move must fail");
-    assert!(error.to_string().contains("source note changed"));
+    assert_eq!(error.code(), Some("ordinary_write_stale"));
+    assert!(error
+        .to_string()
+        .contains("Tasks/Done.md changed before apply"));
     assert!(!temp_dir.path().join("Archive/Done.md").exists());
 
     fs::create_dir_all(temp_dir.path().join("Archive")).expect("archive folder");

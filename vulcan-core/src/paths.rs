@@ -489,6 +489,104 @@ pub fn secure_open_read(root: &Path, relative_path: &Path) -> Result<fs::File, s
     secure_open(root, relative_path, SecureOpenMode::Read)
 }
 
+/// Remove an existing regular file below `root` without following symlinked
+/// path components. Callers serialize cooperating writers and check the
+/// expected content before calling this function.
+#[cfg(unix)]
+pub fn secure_remove(root: &Path, relative_path: &Path) -> Result<(), std::io::Error> {
+    use std::ffi::{CString, OsStr};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    fn c_string(value: &OsStr) -> Result<CString, std::io::Error> {
+        CString::new(value.as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL bytes")
+        })
+    }
+
+    let components = validated_components(relative_path)?;
+    let root = c_string(root.as_os_str())?;
+    // SAFETY: the path is NUL-terminated and the descriptor is owned below.
+    let root_fd = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if root_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `open` returned this unique descriptor.
+    let mut directory = unsafe { fs::File::from_raw_fd(root_fd) };
+    for component in &components[..components.len() - 1] {
+        let component = c_string(component)?;
+        // SAFETY: the descriptor is an opened directory and the component has no separator.
+        let next_fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if next_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `openat` returned this unique descriptor.
+        directory = unsafe { fs::File::from_raw_fd(next_fd) };
+    }
+    let target = c_string(components.last().expect("validated file name"))?;
+    // SAFETY: descriptor-relative O_NOFOLLOW open rejects a symlinked target.
+    let target_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            target.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if target_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `openat` returned this unique descriptor.
+    let target_file = unsafe { fs::File::from_raw_fd(target_fd) };
+    if !target_file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "remove target is not a regular file",
+        ));
+    }
+    // SAFETY: the target name is NUL-terminated and removal stays in the pinned parent.
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), target.as_ptr(), 0) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    directory.sync_all()
+}
+
+#[cfg(not(unix))]
+pub fn secure_remove(root: &Path, relative_path: &Path) -> Result<(), std::io::Error> {
+    let components = validated_components(relative_path)?;
+    let root = root.canonicalize()?;
+    let mut parent = root;
+    for component in &components[..components.len() - 1] {
+        parent.push(component);
+        let metadata = fs::symlink_metadata(&parent)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "remove parent is not a plain directory",
+            ));
+        }
+    }
+    let target = parent.join(components.last().expect("validated file name"));
+    let metadata = fs::symlink_metadata(&target)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "remove target is not a plain file",
+        ));
+    }
+    fs::remove_file(target)
+}
+
 pub fn secure_write(
     root: &Path,
     relative_path: &Path,
@@ -1498,6 +1596,34 @@ mod tests {
         assert_eq!(
             secure_read_to_string(temporary.path(), relative).expect("original note"),
             "complete\n"
+        );
+    }
+
+    #[test]
+    fn secure_remove_deletes_only_an_existing_plain_file() {
+        let temporary = TempDir::new().expect("temporary root");
+        fs::create_dir(temporary.path().join("notes")).expect("notes folder");
+        fs::write(temporary.path().join("notes/old.md"), "old\n").expect("note");
+        secure_remove(temporary.path(), Path::new("notes/old.md")).expect("remove note");
+        assert!(!temporary.path().join("notes/old.md").exists());
+        assert!(secure_remove(temporary.path(), Path::new("notes/old.md")).is_err());
+        assert!(secure_remove(temporary.path(), Path::new("../outside.md")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_remove_rejects_symlinked_target_and_parent() {
+        let temporary = TempDir::new().expect("temporary root");
+        fs::create_dir(temporary.path().join("real")).expect("real folder");
+        fs::write(temporary.path().join("real/note.md"), "keep\n").expect("note");
+        std::os::unix::fs::symlink("real", temporary.path().join("linked")).expect("linked folder");
+        std::os::unix::fs::symlink("real/note.md", temporary.path().join("alias.md"))
+            .expect("linked note");
+        assert!(secure_remove(temporary.path(), Path::new("linked/note.md")).is_err());
+        assert!(secure_remove(temporary.path(), Path::new("alias.md")).is_err());
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("real/note.md")).expect("note"),
+            "keep\n"
         );
     }
 

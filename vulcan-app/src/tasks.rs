@@ -29,9 +29,7 @@ use vulcan_core::expression::parse_expression;
 use vulcan_core::ordinary_write::{
     apply_ordinary_write_batch, recover_ordinary_write_batch, OrdinaryWriteChange,
 };
-use vulcan_core::paths::{
-    normalize_relative_input_path, secure_create_atomic, secure_read_to_string, RelativePathOptions,
-};
+use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, evaluate_base_file, evaluate_tasks_query,
@@ -475,6 +473,7 @@ pub fn process_due_tasknote_auto_archives(
     paths: &VaultPaths,
     exclude_task: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
+    recover_pending_ordinary_task_write(paths)?;
     let config = load_vault_config(paths).config;
     let now_ms = current_utc_timestamp_ms();
     let excluded_path = exclude_task
@@ -3207,9 +3206,8 @@ fn apply_task_convert_line(
     line_number: i64,
     dry_run: bool,
 ) -> Result<TaskConvertReport, AppError> {
-    if !dry_run && paths.vulcan_dir().exists() {
-        recover_ordinary_write_batch(paths)
-            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    if !dry_run {
+        recover_pending_ordinary_task_write(paths)?;
     }
     let config = load_vault_config(paths).config;
     let (source_path, source) = read_existing_note_source(paths, file)?;
@@ -3293,12 +3291,12 @@ fn write_ordinary_task_conversion(
             OrdinaryWriteChange {
                 path: task_path.to_string(),
                 before: None,
-                after: task_contents.to_string(),
+                after: Some(task_contents.to_string()),
             },
             OrdinaryWriteChange {
                 path: source_path.to_string(),
                 before: Some(source_before.to_string()),
-                after: source_after.to_string(),
+                after: Some(source_after.to_string()),
             },
         ],
     )
@@ -4269,6 +4267,9 @@ fn apply_tasknote_mutation<F>(
 where
     F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, AppError>,
 {
+    if !dry_run {
+        recover_pending_ordinary_task_write(paths)?;
+    }
     let loaded = load_tasknote_note(paths, task)?;
     apply_loaded_tasknote_mutation(paths, &loaded, action, dry_run, mutate)
 }
@@ -4403,43 +4404,31 @@ fn move_ordinary_tasknote_if_unchanged(
     destination_contents: &str,
 ) -> Result<(), AppError> {
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
-    let _write_lock =
-        vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
-    let current = secure_read_to_string(paths.vault_root(), Path::new(source_path))
-        .map_err(AppError::operation)?;
-    if current != source_before {
-        return Err(AppError::operation(
-            "source note changed during task move; reread it before retrying",
-        ));
-    }
-    secure_create_atomic(
-        paths.vault_root(),
-        Path::new(destination_path),
-        destination_contents,
+    apply_ordinary_write_batch(
+        paths,
+        &[
+            OrdinaryWriteChange {
+                path: destination_path.to_string(),
+                before: None,
+                after: Some(destination_contents.to_string()),
+            },
+            OrdinaryWriteChange {
+                path: source_path.to_string(),
+                before: Some(source_before.to_string()),
+                after: None,
+            },
+        ],
     )
-    .map_err(AppError::operation)?;
-    let source = paths.vault_root().join(source_path);
-    let source_unchanged = secure_read_to_string(paths.vault_root(), Path::new(source_path))
-        .is_ok_and(|current| current == source_before);
-    if !source_unchanged {
-        rollback_unchanged_task_destination(paths, destination_path, destination_contents);
-        return Err(AppError::operation(
-            "source note changed during task move; reread it before retrying",
-        ));
-    }
-    if let Err(error) = fs::remove_file(source) {
-        rollback_unchanged_task_destination(paths, destination_path, destination_contents);
-        return Err(AppError::operation(error));
-    }
-    Ok(())
+    .map(|_| ())
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))
 }
 
-fn rollback_unchanged_task_destination(paths: &VaultPaths, destination: &str, contents: &str) {
-    if secure_read_to_string(paths.vault_root(), Path::new(destination))
-        .is_ok_and(|current| current == contents)
-    {
-        let _ = fs::remove_file(paths.vault_root().join(destination));
+fn recover_pending_ordinary_task_write(paths: &VaultPaths) -> Result<(), AppError> {
+    if paths.vulcan_dir().exists() {
+        recover_ordinary_write_batch(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     }
+    Ok(())
 }
 
 fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, AppError> {

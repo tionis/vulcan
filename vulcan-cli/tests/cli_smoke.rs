@@ -15978,6 +15978,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("journaled for roll-forward recovery"));
     assert!(task_management.contains("preserve the journal for explicit repair"));
     assert!(task_management.contains("archive moves reject a changed source"));
+    assert!(task_management.contains("ordinary-write journal to finish the move"));
     assert!(task_management.contains("do not bypass it with a direct Markdown edit"));
     assert!(task_management.contains("serialized with other Vulcan vault writes"));
     assert!(task_management.contains("reread the task and its source note"));
@@ -16161,6 +16162,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("unknown terminal status is retained for 90 days"));
     assert!(mcp_skill.contains("After status expires, inspect the vault"));
     assert!(mcp_skill.contains("startup recovers an interrupted ordinary TaskNotes"));
+    assert!(mcp_skill.contains("or archive move before accepting requests"));
     assert!(mcp_skill.contains("preserve the ordinary-write journal"));
     assert!(mcp_skill.contains("template-created files, template moves/renames"));
     assert!(mcp_skill.contains("obtain fresh consent"));

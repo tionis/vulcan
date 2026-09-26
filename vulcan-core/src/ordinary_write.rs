@@ -1,12 +1,12 @@
-//! Crash-recoverable batches of ordinary Markdown creates and replacements.
+//! Crash-recoverable batches of ordinary Markdown creates, replacements, and deletes.
 //!
 //! The journal is device-local authoritative workflow state, never cache data.
 //! A prepared batch rolls forward only while every observed path still matches
 //! its recorded before or after bytes; external edits block recovery.
 
 use crate::paths::{
-    normalize_relative_input_path, secure_create_atomic, secure_open_read, secure_replace,
-    RelativePathOptions, VaultPaths,
+    normalize_relative_input_path, secure_create_atomic, secure_open_read, secure_remove,
+    secure_replace, RelativePathOptions, VaultPaths,
 };
 use crate::write_lock::acquire_write_lock;
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 pub struct OrdinaryWriteChange {
     pub path: String,
     pub before: Option<String>,
-    pub after: String,
+    pub after: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,13 +195,13 @@ fn recover_locked(paths: &VaultPaths) -> Result<Option<OrdinaryWriteOutcome>, Or
     for change in &journal.changes {
         let current = current_content(paths, &change.path)?;
         if current.as_deref() != change.before.as_deref()
-            && current.as_deref() != Some(change.after.as_str())
+            && current.as_deref() != change.after.as_deref()
         {
             return Err(OrdinaryWriteError::drift(&change.path));
         }
     }
     for change in &journal.changes {
-        if current_content(paths, &change.path)?.as_deref() == Some(change.after.as_str()) {
+        if current_content(paths, &change.path)?.as_deref() == change.after.as_deref() {
             continue;
         }
         apply_one(paths, change)?;
@@ -215,10 +215,15 @@ fn apply_one(paths: &VaultPaths, change: &OrdinaryWriteChange) -> Result<(), Ord
     if current != change.before {
         return Err(OrdinaryWriteError::drift(&change.path));
     }
-    let write = if change.before.is_some() {
-        secure_replace(paths.vault_root(), Path::new(&change.path), &change.after)
-    } else {
-        secure_create_atomic(paths.vault_root(), Path::new(&change.path), &change.after)
+    let write = match (&change.before, &change.after) {
+        (None, Some(after)) => {
+            secure_create_atomic(paths.vault_root(), Path::new(&change.path), after)
+        }
+        (Some(_), Some(after)) => {
+            secure_replace(paths.vault_root(), Path::new(&change.path), after)
+        }
+        (Some(_), None) => secure_remove(paths.vault_root(), Path::new(&change.path)),
+        (None, None) => unreachable!("validated change must have a before or after image"),
     };
     write.map_err(|error| OrdinaryWriteError::io("publish ordinary write", error))
 }
@@ -290,9 +295,19 @@ fn validate_changes(changes: &[OrdinaryWriteChange]) -> Result<(), OrdinaryWrite
                 Some(change.path.clone()),
             ));
         }
+        if change.before.is_none() && change.after.is_none() {
+            return Err(OrdinaryWriteError::new(
+                "ordinary_write_invalid_change",
+                format!(
+                    "ordinary write change has neither before nor after bytes: {}",
+                    change.path
+                ),
+                Some(change.path.clone()),
+            ));
+        }
         total = total
             .saturating_add(change.before.as_ref().map_or(0, String::len))
-            .saturating_add(change.after.len());
+            .saturating_add(change.after.as_ref().map_or(0, String::len));
         if total > MAX_CONTENT_BYTES {
             return Err(OrdinaryWriteError::new(
                 "ordinary_write_limit",
@@ -427,14 +442,83 @@ mod tests {
             OrdinaryWriteChange {
                 path: "Task.md".to_string(),
                 before: None,
-                after: "new task\n".to_string(),
+                after: Some("new task\n".to_string()),
             },
             OrdinaryWriteChange {
                 path: "Inbox.md".to_string(),
                 before: Some("old task\n".to_string()),
-                after: "[[Task]]\n".to_string(),
+                after: Some("[[Task]]\n".to_string()),
             },
         ]
+    }
+
+    fn archive_changes() -> Vec<OrdinaryWriteChange> {
+        vec![
+            OrdinaryWriteChange {
+                path: "Archive/Task.md".to_string(),
+                before: None,
+                after: Some("archived task\n".to_string()),
+            },
+            OrdinaryWriteChange {
+                path: "Task.md".to_string(),
+                before: Some("active task\n".to_string()),
+                after: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn interrupted_archive_rolls_forward_and_removes_source() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Task.md"), "active task\n").expect("source");
+        fs::create_dir(temporary.path().join("Archive")).expect("archive folder");
+        apply_with_hook(&paths, &archive_changes(), |index| {
+            if index == 0 {
+                Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("simulated interruption");
+        assert!(temporary.path().join("Task.md").exists());
+        assert!(temporary.path().join("Archive/Task.md").exists());
+
+        let recovered = recover_ordinary_write_batch(&paths)
+            .expect("recover archive")
+            .expect("journaled batch");
+        assert!(recovered.recovered);
+        assert!(!temporary.path().join("Task.md").exists());
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Archive/Task.md")).expect("archive"),
+            "archived task\n"
+        );
+        assert!(recover_ordinary_write_batch(&paths)
+            .expect("idempotent recovery")
+            .is_none());
+    }
+
+    #[test]
+    fn archive_recovery_preserves_externally_edited_source() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Task.md"), "active task\n").expect("source");
+        fs::create_dir(temporary.path().join("Archive")).expect("archive folder");
+        apply_with_hook(&paths, &archive_changes(), |_| {
+            Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+        })
+        .expect_err("simulated interruption");
+        fs::write(temporary.path().join("Task.md"), "external edit\n").expect("external edit");
+
+        let error = recover_ordinary_write_batch(&paths).expect_err("external edit blocks");
+        assert_eq!(error.code, "ordinary_write_recovery_blocked");
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Task.md")).expect("source"),
+            "external edit\n"
+        );
+        assert!(temporary.path().join("Archive/Task.md").exists());
     }
 
     #[test]
