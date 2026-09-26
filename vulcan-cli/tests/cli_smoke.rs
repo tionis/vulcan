@@ -29858,6 +29858,7 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
     assert!(session.finish().is_empty());
 }
 
+#[cfg(feature = "js_runtime")]
 #[test]
 fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -29974,6 +29975,7 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected(
     assert!(default_session.finish().is_empty());
 }
 
+#[cfg(feature = "js_runtime")]
 #[test]
 fn mcp_server_projects_agent_skill_commands_as_custom_tools_and_resources() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -31235,6 +31237,7 @@ fn mcp_task_mutations_refresh_the_cache_for_following_reads() {
     assert!(session.finish().is_empty());
 }
 
+#[cfg(feature = "web")]
 #[test]
 fn mcp_web_tools_use_the_shared_permission_checked_workflows() {
     let server = MockWebServer::spawn();

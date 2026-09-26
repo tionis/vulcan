@@ -5561,6 +5561,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - The named consent lifecycle regression now rejects a valid token reused against another instance under the same issuer and against another public resource URL even when the issuers share signing material. Full live resident/foreground authenticated request parity remains open.
   - Resident aggregate startup now cancels and joins every named listener thread if spawning, pre-readiness exit, readiness wait, or host-ready publication fails. Join waits for all listeners even if one panics, so a failed required service cannot leave an owned listener detached.
   - The live two-listener hosted regression now initializes grant-bound sessions over HTTP, lists only the approved read tools, rejects cross-instance bearer tokens even with shared signing material, and verifies that revoking one grant leaves the other listener usable. An actual resident-supervisor versus foreground launch comparison remains open.
+  - Optional JS-backed custom-tool and web-backed MCP smoke scenarios now run only when their respective features are enabled. All 35 MCP CLI smoke tests available without default features pass; unrelated optional-feature smoke cases and no-default lint warnings remain outside this slice.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,
