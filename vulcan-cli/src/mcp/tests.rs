@@ -399,6 +399,27 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             false,
         )
         .expect("wiki registration");
+    let team_root = temporary.path().join("team-vault");
+    fs::create_dir_all(&team_root).expect("team vault root");
+    let team_paths = VaultPaths::new(&team_root);
+    vulcan_core::initialize_vulcan_dir(&team_paths).expect("initialize team vault");
+    let team_id = vulcan_daemon::registry::WikiId::parse("team").expect("team wiki ID");
+    process
+        .registry
+        .add(
+            &vulcan_daemon::registry::AddWikiRequest {
+                id: team_id.clone(),
+                path: team_root,
+                profile: None,
+                groups: Vec::new(),
+                git_dir: None,
+                permissions_profile: None,
+                sync_backend: Some("none".to_string()),
+                platform_profile: None,
+            },
+            false,
+        )
+        .expect("team wiki registration");
     let reserved = TcpListener::bind("127.0.0.1:0").expect("reserve listener port");
     let address = reserved.local_addr().expect("listener address");
     drop(reserved);
@@ -412,12 +433,20 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                 authentication: McpRemoteAuthentication::IndieAuth {
                     identity: "https://identity.example.test/alice".to_string(),
                 },
-                vaults: vec![vulcan_daemon::mcp_remote::McpRemoteVault {
-                    wiki_id: wiki_id.clone(),
-                    ceiling_profile: "unrestricted".to_string(),
-                    default_profile: "readonly".to_string(),
-                    tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
-                }],
+                vaults: vec![
+                    vulcan_daemon::mcp_remote::McpRemoteVault {
+                        wiki_id: wiki_id.clone(),
+                        ceiling_profile: "unrestricted".to_string(),
+                        default_profile: "readonly".to_string(),
+                        tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                    },
+                    vulcan_daemon::mcp_remote::McpRemoteVault {
+                        wiki_id: team_id.clone(),
+                        ceiling_profile: "unrestricted".to_string(),
+                        default_profile: "readonly".to_string(),
+                        tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                    },
+                ],
             },
             false,
         )
@@ -436,15 +465,26 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     token_options.oauth_local_approval_token = Some("test-approval-token".to_string());
     let named = NamedMcpRuntime {
         remote_id: remote.id.clone(),
-        vaults: BTreeMap::from([(
-            wiki_id,
-            NamedMcpVaultRuntime {
-                paths: paths.clone(),
-                ceiling_profile: "unrestricted".to_string(),
-                default_profile: "readonly".to_string(),
-                eligible_tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
-            },
-        )]),
+        vaults: BTreeMap::from([
+            (
+                wiki_id,
+                NamedMcpVaultRuntime {
+                    paths: paths.clone(),
+                    ceiling_profile: "unrestricted".to_string(),
+                    default_profile: "readonly".to_string(),
+                    eligible_tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                },
+            ),
+            (
+                team_id,
+                NamedMcpVaultRuntime {
+                    paths: team_paths.clone(),
+                    ceiling_profile: "unrestricted".to_string(),
+                    default_profile: "readonly".to_string(),
+                    eligible_tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                },
+            ),
+        ]),
         authorization_store: McpAuthorizationStore::at(&process.state_root),
     };
     let token = named_listener_test_token(
@@ -460,6 +500,14 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &named,
         &token_options,
         "personal",
+        "unrestricted",
+        &["notes-write"],
+    );
+    let team_token = named_listener_test_token(
+        &team_paths,
+        &named,
+        &token_options,
+        "team",
         "unrestricted",
         &["notes-write"],
     );
@@ -535,6 +583,29 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{foreground_write}"
     );
     assert!(paths.vault_root().join("Foreground.md").is_file());
+    let foreground_team_init = named_listener_initialize(address, "parity", &team_token);
+    assert!(
+        foreground_team_init.starts_with("HTTP/1.1 200"),
+        "{foreground_team_init}"
+    );
+    let foreground_team_session = named_listener_session_id(&foreground_team_init);
+    assert!(
+        named_listener_tools(address, "parity", &team_token, &foreground_session)
+            .starts_with("HTTP/1.1 404")
+    );
+    let foreground_team_write = named_listener_create_note(
+        address,
+        "parity",
+        &team_token,
+        &foreground_team_session,
+        "TeamForeground.md",
+    );
+    assert!(
+        foreground_team_write.contains("\"isError\":false"),
+        "{foreground_team_write}"
+    );
+    assert!(team_paths.vault_root().join("TeamForeground.md").is_file());
+    assert!(!paths.vault_root().join("TeamForeground.md").exists());
     stop.cancel();
     runner
         .join()
@@ -692,6 +763,29 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_write}"
     );
     assert!(paths.vault_root().join("Resident.md").is_file());
+    let resident_team_init = named_listener_initialize(address, "parity", &team_token);
+    assert!(
+        resident_team_init.starts_with("HTTP/1.1 200"),
+        "{resident_team_init}"
+    );
+    let resident_team_session = named_listener_session_id(&resident_team_init);
+    assert!(
+        named_listener_tools(address, "parity", &team_token, &resident_session)
+            .starts_with("HTTP/1.1 404")
+    );
+    let resident_team_write = named_listener_create_note(
+        address,
+        "parity",
+        &team_token,
+        &resident_team_session,
+        "TeamResident.md",
+    );
+    assert!(
+        resident_team_write.contains("\"isError\":false"),
+        "{resident_team_write}"
+    );
+    assert!(team_paths.vault_root().join("TeamResident.md").is_file());
+    assert!(!paths.vault_root().join("TeamResident.md").exists());
     supervisor.shutdown().expect("resident shutdown");
 }
 
