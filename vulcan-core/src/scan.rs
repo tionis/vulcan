@@ -2060,11 +2060,12 @@ fn extract_task_text_properties(text: &str) -> Vec<(String, String)> {
     let mut properties = Vec::new();
 
     for (key, markers) in [
-        ("due", &["🗓️", "🗓"][..]),
+        ("due", &["📅", "📆", "🗓️", "🗓"][..]),
         ("completion", &["✅"][..]),
+        ("cancelled", &["❌"][..]),
         ("created", &["➕"][..]),
         ("start", &["🛫"][..]),
-        ("scheduled", &["⏳"][..]),
+        ("scheduled", &["⏳", "⌛"][..]),
     ] {
         if let Some(value) = extract_task_marker_token(text, markers) {
             properties.push((key.to_string(), value));
@@ -2072,8 +2073,8 @@ fn extract_task_text_properties(text: &str) -> Vec<(String, String)> {
     }
 
     for (marker, value) in [
-        ("⏫", "highest"),
-        ("🔺", "high"),
+        ("🔺", "highest"),
+        ("⏫", "high"),
         ("🔼", "medium"),
         ("🔽", "low"),
         ("⏬", "lowest"),
@@ -2122,7 +2123,8 @@ fn extract_task_marker_segment(text: &str, marker: &str) -> Option<String> {
 
 fn task_annotation_markers() -> &'static [&'static str] {
     &[
-        "🗓️", "🗓", "✅", "➕", "🛫", "⏳", "⏫", "🔺", "🔼", "🔽", "⏬", "🔁", "⛔", "🆔",
+        "📅", "📆", "🗓️", "🗓", "✅", "❌", "➕", "🛫", "⏳", "⌛", "⏫", "🔺", "🔼", "🔽", "⏬",
+        "🔁", "🏁", "⛔", "🆔",
     ]
 }
 
@@ -3535,7 +3537,10 @@ mod tests {
             beta_tasks[0]["scheduled"],
             Value::String("2026-04-05".to_string())
         );
-        assert_eq!(beta_tasks[0]["priority"], Value::String("high".to_string()));
+        assert_eq!(
+            beta_tasks[0]["priority"],
+            Value::String("highest".to_string())
+        );
         assert_eq!(
             beta_tasks[0]["recurrence"],
             Value::String("every week".to_string())
@@ -4175,12 +4180,37 @@ mod tests {
                 ("created".to_string(), "2026-04-01".to_string()),
                 ("start".to_string(), "2026-04-02".to_string()),
                 ("scheduled".to_string(), "2026-04-05".to_string()),
-                ("priority".to_string(), "high".to_string()),
+                ("priority".to_string(), "highest".to_string()),
                 ("recurrence".to_string(), "every week".to_string()),
                 ("blocked-by".to_string(), "ALPHA-1".to_string()),
                 ("id".to_string(), "BETA-1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn extracts_default_tasks_plugin_symbols() {
+        let properties = extract_task_text_properties(
+            "Ship release 📅 2026-04-03 ⌛ 2026-04-02 ❌ 2026-04-04 ⏫ 🔁 every day 🏁 delete",
+        );
+
+        assert_eq!(
+            properties,
+            vec![
+                ("due".to_string(), "2026-04-03".to_string()),
+                ("cancelled".to_string(), "2026-04-04".to_string()),
+                ("scheduled".to_string(), "2026-04-02".to_string()),
+                ("priority".to_string(), "high".to_string()),
+                ("recurrence".to_string(), "every day".to_string()),
+            ]
+        );
+        for marker in ["📆", "🗓️", "🗓"] {
+            assert_eq!(
+                extract_task_text_properties(&format!("Task {marker} 2026-05-01")),
+                vec![("due".to_string(), "2026-05-01".to_string())],
+                "{marker}"
+            );
+        }
     }
 
     #[test]

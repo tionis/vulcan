@@ -193,7 +193,35 @@ fn apply_task_reschedule_updates_inline_task_due_marker() {
     assert_eq!(report.path, "Inbox.md");
     assert_eq!(report.changed_paths, vec!["Inbox.md".to_string()]);
     let rendered = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("updated note");
-    assert!(rendered.contains("- [ ] Call Alice 🗓️ 2026-04-20"));
+    assert!(rendered.contains("- [ ] Call Alice 📅 2026-04-20"));
+}
+
+#[test]
+fn apply_task_reschedule_replaces_any_tasks_due_marker() {
+    for marker in ["📅", "📆", "🗓️", "🗓"] {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::write(
+            temp_dir.path().join("Inbox.md"),
+            format!("- [ ] Call Alice {marker} 2026-01-01 🔺\n"),
+        )
+        .expect("seed note");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        apply_task_reschedule(
+            &paths,
+            &TaskRescheduleRequest {
+                task: "Inbox.md:1".to_string(),
+                due: "2026-04-20".to_string(),
+                dry_run: false,
+            },
+        )
+        .expect("reschedule report");
+
+        let rendered = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("updated note");
+        assert_eq!(rendered, "- [ ] Call Alice 📅 2026-04-20 🔺\n", "{marker}");
+    }
 }
 
 #[test]
@@ -361,7 +389,7 @@ fn apply_task_create_appends_inline_task_to_target_note() {
     let rendered = fs::read_to_string(temp_dir.path().join("Inbox.md"))
         .expect("updated inbox")
         .replace("\r\n", "\n");
-    assert!(rendered.contains("- [ ] Call Alice 🗓️ 2026-04-20 🔺"));
+    assert!(rendered.contains("- [ ] Call Alice 📅 2026-04-20 ⏫"));
 }
 
 #[test]
