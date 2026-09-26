@@ -534,7 +534,7 @@ impl<'a> SemanticProcessor<'a> {
     }
 
     fn finish(mut self, extract_dataview: bool) -> ParsedDocument {
-        self.parsed.block_refs = detect_block_refs(&self.semantic_blocks);
+        self.parsed.block_refs = detect_block_refs(self.source, &self.semantic_blocks);
         if extract_dataview {
             let dataview =
                 extract_dataview_metadata(self.source, self.comment_regions, &self.semantic_blocks);
