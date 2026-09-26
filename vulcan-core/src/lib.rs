@@ -77,6 +77,7 @@ pub mod move_rewrite;
 pub mod note;
 #[cfg(feature = "oauth")]
 pub mod oauth;
+pub mod ordinary_write;
 pub mod parser;
 pub mod paths;
 pub mod periodic;

@@ -868,6 +868,16 @@ fn run_named_mcp_remote_with_endpoints(
             remote.id
         )));
     }
+    for vault in vaults.values() {
+        if vault.paths.vulcan_dir().exists()
+            && vulcan_core::ordinary_write::recover_ordinary_write_batch(&vault.paths)
+                .map_err(CliError::operation)?
+                .is_some()
+        {
+            vulcan_core::scan_vault(&vault.paths, ScanMode::Incremental)
+                .map_err(CliError::operation)?;
+        }
+    }
     let foreground_runtime = if resident.is_none() {
         Some(
             tokio::runtime::Builder::new_multi_thread()

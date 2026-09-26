@@ -26,9 +26,11 @@ use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
 };
 use vulcan_core::expression::parse_expression;
+use vulcan_core::ordinary_write::{
+    apply_ordinary_write_batch, recover_ordinary_write_batch, OrdinaryWriteChange,
+};
 use vulcan_core::paths::{
-    normalize_relative_input_path, secure_create_atomic, secure_read_to_string, secure_replace,
-    RelativePathOptions,
+    normalize_relative_input_path, secure_create_atomic, secure_read_to_string, RelativePathOptions,
 };
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
@@ -3205,6 +3207,10 @@ fn apply_task_convert_line(
     line_number: i64,
     dry_run: bool,
 ) -> Result<TaskConvertReport, AppError> {
+    if !dry_run && paths.vulcan_dir().exists() {
+        recover_ordinary_write_batch(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    }
     let config = load_vault_config(paths).config;
     let (source_path, source) = read_existing_note_source(paths, file)?;
     let selection = resolve_task_convert_line(&source, line_number)?;
@@ -3281,26 +3287,23 @@ fn write_ordinary_task_conversion(
     task_contents: &str,
 ) -> Result<(), AppError> {
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
-    let _write_lock =
-        vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
-    let current = secure_read_to_string(paths.vault_root(), Path::new(source_path))
-        .map_err(AppError::operation)?;
-    if current != source_before {
-        return Err(AppError::operation(
-            "source note changed during task conversion; reread it before retrying",
-        ));
-    }
-    secure_create_atomic(paths.vault_root(), Path::new(task_path), task_contents)
-        .map_err(AppError::operation)?;
-    if let Err(error) = secure_replace(paths.vault_root(), Path::new(source_path), source_after) {
-        if secure_read_to_string(paths.vault_root(), Path::new(task_path))
-            .is_ok_and(|current| current == task_contents)
-        {
-            let _ = fs::remove_file(paths.vault_root().join(task_path));
-        }
-        return Err(AppError::operation(error));
-    }
-    Ok(())
+    apply_ordinary_write_batch(
+        paths,
+        &[
+            OrdinaryWriteChange {
+                path: task_path.to_string(),
+                before: None,
+                after: task_contents.to_string(),
+            },
+            OrdinaryWriteChange {
+                path: source_path.to_string(),
+                before: Some(source_before.to_string()),
+                after: source_after.to_string(),
+            },
+        ],
+    )
+    .map(|_| ())
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))
 }
 
 fn read_existing_note_source(paths: &VaultPaths, note: &str) -> Result<(String, String), AppError> {

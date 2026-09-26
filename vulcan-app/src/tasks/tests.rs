@@ -936,6 +936,11 @@ fn apply_task_convert_line_creates_tasknote_and_rewrites_source() {
     assert_eq!(report.mode, "line");
     assert_eq!(report.source_path, "Inbox.md");
     assert!(temp_dir.path().join(&report.target_path).exists());
+    assert!(!paths
+        .operational_state_dir()
+        .expect("operational state")
+        .join("ordinary-write/journal.json")
+        .exists());
 
     let source = fs::read_to_string(temp_dir.path().join("Inbox.md"))
         .expect("rewritten inbox")
@@ -997,7 +1002,8 @@ fn ordinary_task_line_conversion_refuses_stale_source_and_late_target_collision(
         "new task\n",
     )
     .expect_err("stale source must fail");
-    assert!(error.to_string().contains("source note changed"));
+    assert_eq!(error.code(), Some("ordinary_write_stale"));
+    assert!(error.to_string().contains("Inbox.md changed before apply"));
     assert!(!temp_dir.path().join("Tasks/New.md").exists());
 
     fs::create_dir_all(temp_dir.path().join("Tasks")).expect("task folder");
