@@ -73,7 +73,9 @@ stale-checked note write lock after managed-mdbase routing. This covers the same
 multi-file task conversion and other task side effects still require a separate coordinated
 transaction audit.
 Single-note TaskNotes conversion also uses that lock and rejects a source changed after planning;
-line-to-note conversion is still a multi-file transaction gap.
+purely ordinary line-to-note conversion is still a multi-file transaction gap.
+When either conversion endpoint is an mdbase record, the ordinary source and managed target now
+share one validated journal batch; the purely ordinary two-file case remains open.
 Ordinary TaskNotes add uses the same lock and exclusive create to reject a late destination collision.
 Task metadata updates to ordinary notes, including pomodoro state stored in daily notes, check the
 original source bytes under that lock; creating a missing periodic note refuses a late collision.

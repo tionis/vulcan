@@ -3225,7 +3225,7 @@ fn apply_task_convert_line(
     let frontmatter_json = tasknote_frontmatter_json(&planned.frontmatter);
     let changed_paths = vec![source_path.clone(), planned.relative_path.clone()];
 
-    route_task_note_batch(
+    let routed = route_task_note_batch(
         paths,
         &[
             MdbaseManagedNoteWriteChange {
@@ -3242,7 +3242,7 @@ fn apply_task_convert_line(
         dry_run,
     )?;
 
-    if !dry_run {
+    if !dry_run && !routed {
         let collection = load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?;
         let task_path = paths.vault_root().join(&planned.relative_path);
         let task_is_managed = collection
@@ -4218,41 +4218,25 @@ fn route_task_note_batch(
     paths: &VaultPaths,
     changes: &[MdbaseManagedNoteWriteChange<'_>],
     dry_run: bool,
-) -> Result<(), AppError> {
-    let Some(collection) =
-        load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?
-    else {
-        return Ok(());
-    };
-    let managed_changes = changes
-        .iter()
-        .filter_map(|change| {
-            is_mdbase_record_path(&collection, change.path)
-                .map(|managed| managed.then_some(change.clone()))
-                .transpose()
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(AppError::operation)?;
-    if managed_changes.is_empty() {
-        return Ok(());
-    }
-
+) -> Result<bool, AppError> {
     let request = |dry_run| MdbaseManagedNoteWriteBatchRequest {
-        changes: &managed_changes,
+        changes,
         operation: MdbaseWriteOperation::Batch,
         mode: MdbaseManagedWriteMode::Validated,
-        allow_mixed_paths: false,
+        allow_mixed_paths: true,
         dry_run,
         permission_profile: None,
         quiet: true,
     };
-    apply_managed_mdbase_note_writes(paths, &request(true))?
-        .ok_or_else(|| AppError::operation("task write batch contained no managed records"))?;
+    let routed = apply_managed_mdbase_note_writes(paths, &request(true))?.is_some();
+    if !routed {
+        return Ok(false);
+    }
     if !dry_run {
         apply_managed_mdbase_note_writes(paths, &request(false))?
             .ok_or_else(|| AppError::operation("task write batch contained no managed records"))?;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn apply_tasknote_mutation<F>(

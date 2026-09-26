@@ -1105,6 +1105,47 @@ fn managed_task_line_conversion_uses_one_batch_journal() {
 }
 
 #[test]
+fn mixed_task_line_conversion_journals_the_ordinary_source_with_the_managed_task() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    seed_mdbase_task_type(&paths);
+    let source_path = "TaskNotes/Archive/Inbox.md";
+    fs::create_dir_all(temp_dir.path().join("TaskNotes/Archive")).expect("archive folder");
+    fs::write(
+        temp_dir.path().join(source_path),
+        "- [ ] Convert mixed task\n",
+    )
+    .expect("seed ordinary source");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+    let report = apply_task_convert(
+        &paths,
+        &TaskConvertRequest {
+            file: source_path.to_string(),
+            line: Some(1),
+            dry_run: false,
+        },
+    )
+    .expect("mixed conversion");
+
+    assert!(temp_dir.path().join(&report.target_path).exists());
+    let source = fs::read_to_string(temp_dir.path().join(source_path)).expect("rewritten source");
+    assert!(source.contains(&format!(
+        "[[{}]]",
+        report.target_path.trim_end_matches(".md")
+    )));
+    let outbox = list_mdbase_write_outbox(&paths).expect("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].operation, "batch");
+    assert_eq!(outbox[0].paths.len(), 2);
+    assert!(outbox[0]
+        .paths
+        .iter()
+        .any(|event| event.path == source_path));
+}
+
+#[test]
 fn invalid_managed_task_set_fails_before_writing() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
