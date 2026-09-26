@@ -216,6 +216,7 @@ fn mcp_http_listener_reports_bound_address_and_stops_on_supervisor_signal() {
 
 #[cfg(feature = "oauth")]
 #[test]
+#[allow(clippy::too_many_lines)] // Covers live listener isolation, grant attenuation, and revocation together.
 fn two_named_hosted_http_listeners_bind_and_stop_independently() {
     let temporary = tempfile::tempdir().expect("temporary state");
     let runtime = tokio::runtime::Runtime::new().expect("hosted runtime");
@@ -250,8 +251,17 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
         options.oauth_allowed_sub.clear();
         options.oauth_local_client_secret = Some(format!("{name}-client-secret"));
         options.oauth_local_approval_token = Some(format!("{name}-approval-token"));
+        options.oauth_local_subject = Some(format!("https://identity.example.test/{name}"));
         options.instance_id = Some(Ulid::new());
         options.oauth_storage_dir = Some(temporary.path().join("state").join(name));
+        fs::create_dir_all(options.oauth_storage_dir.as_ref().expect("OAuth state"))
+            .expect("OAuth state directory");
+        write_secret_file(
+            &oauth_signing_key_path(&paths, &options),
+            "shared-test-signing-key",
+        )
+        .expect("shared signing key");
+        let token = named_listener_test_token(&paths, &named, &options, name);
         let hosted = named_listener_hosted_execution(
             &scheduler,
             runtime.handle(),
@@ -286,12 +296,56 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
                     done_receiver.recv_timeout(Duration::from_secs(1))
                 )
             });
-        listeners.push((address, stop, done_receiver, runner));
+        listeners.push((address, stop, done_receiver, runner, token));
     }
 
     assert_ne!(listeners[0].0, listeners[1].0);
     assert_named_listener_identity(listeners[0].0, "first");
     assert_named_listener_identity(listeners[1].0, "second");
+    let first_init = named_listener_initialize(listeners[0].0, "first", &listeners[0].4);
+    let second_init = named_listener_initialize(listeners[1].0, "second", &listeners[1].4);
+    assert!(first_init.starts_with("HTTP/1.1 200"), "{first_init}");
+    assert!(second_init.starts_with("HTTP/1.1 200"), "{second_init}");
+    for (name, listener, initialize) in [
+        ("first", &listeners[0], &first_init),
+        ("second", &listeners[1], &second_init),
+    ] {
+        let session_id = named_listener_session_id(initialize);
+        let tools = named_listener_tools(listener.0, name, &listener.4, &session_id);
+        assert!(tools.starts_with("HTTP/1.1 200"), "{tools}");
+        assert!(tools.contains("\"name\":\"note_get\""), "{tools}");
+        assert!(!tools.contains("\"name\":\"note_create\""), "{tools}");
+    }
+    assert!(
+        named_listener_initialize(listeners[0].0, "first", &listeners[1].4)
+            .starts_with("HTTP/1.1 401")
+    );
+    assert!(
+        named_listener_initialize(listeners[1].0, "second", &listeners[0].4)
+            .starts_with("HTTP/1.1 401")
+    );
+    let first_session = named_listener_session_id(&first_init);
+    let first_remote = vulcan_daemon::mcp_remote::McpRemoteId::parse("first").expect("remote ID");
+    let store = McpAuthorizationStore::at(temporary.path().join("state"));
+    let first_grant = store
+        .list_grants(Some(&first_remote))
+        .expect("first grants")
+        .pop()
+        .expect("first grant");
+    store
+        .revoke_grant(first_grant.id, current_unix_timestamp(), false)
+        .expect("revoke first grant");
+    assert!(
+        named_listener_tools(listeners[0].0, "first", &listeners[0].4, &first_session)
+            .starts_with("HTTP/1.1 401")
+    );
+    assert!(named_listener_tools(
+        listeners[1].0,
+        "second",
+        &listeners[1].4,
+        &named_listener_session_id(&second_init),
+    )
+    .starts_with("HTTP/1.1 200"));
     listeners[0].1.cancel();
     listeners[0]
         .2
@@ -308,9 +362,123 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
         .recv_timeout(Duration::from_secs(5))
         .expect("second listener stopped")
         .expect("second listener stopped cleanly");
-    for (_, _, _, runner) in listeners {
+    for (_, _, _, runner, _) in listeners {
         runner.join().expect("listener thread");
     }
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_test_token(
+    paths: &VaultPaths,
+    named: &NamedMcpRuntime,
+    options: &McpHttpOptions,
+    name: &str,
+) -> String {
+    let store = &named.authorization_store;
+    let now = current_unix_timestamp();
+    let subject = options.oauth_local_subject.as_deref().expect("subject");
+    let grant = store
+        .create_grant(
+            vulcan_daemon::mcp_state::CreateConnectionGrant {
+                remote_id: named.remote_id.clone(),
+                remote_instance_id: options.instance_id.expect("instance ID"),
+                client_id: "vulcan-mcp".to_string(),
+                subject: subject.to_string(),
+                wiki_id: vulcan_daemon::registry::WikiId::parse(name).expect("wiki ID"),
+                permission_profile: "readonly".to_string(),
+                approved_permissions: resolve_permission_profile(paths, Some("readonly"))
+                    .expect("readonly profile")
+                    .grant,
+                tool_packs: vec!["notes-read".to_string()],
+                scopes: vec!["mcp:tools".to_string()],
+                audience: options.public_url.clone().expect("public URL"),
+                created_at: now,
+                expires_at: now + 86400,
+            },
+            false,
+        )
+        .expect("connection grant");
+    LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+        public_url: options.public_url.clone().expect("public URL"),
+        client_id: "vulcan-mcp".to_string(),
+        client_secret: options
+            .oauth_local_client_secret
+            .clone()
+            .expect("client secret"),
+        signing_key: load_or_create_local_oauth_signing_key(paths, options).expect("signing key"),
+        approval_token: options
+            .oauth_local_approval_token
+            .clone()
+            .expect("approval token"),
+        subject: subject.to_string(),
+        email: None,
+        users: Vec::new(),
+        dcr_enabled: false,
+    })
+    .expect("issuer")
+    .issue_access_token_for_authorization(
+        subject,
+        "vulcan-mcp",
+        &["mcp:tools".to_string()],
+        Some(grant.id.to_string()),
+    )
+    .expect("access token")
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_initialize(address: SocketAddr, name: &str, token: &str) -> String {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}
+    })
+    .to_string();
+    write!(
+        stream,
+        "POST /{name} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    )
+    .expect("initialize request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("initialize response");
+    response
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_tools(address: SocketAddr, name: &str, token: &str, session_id: &str) -> String {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    let body = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string();
+    write!(
+        stream,
+        "POST /{name} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session_id}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    )
+    .expect("tool-list request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("tool-list response");
+    response
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_session_id(response: &str) -> String {
+    response
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("mcp-session-id: ")
+                .then(|| line[16..].trim().to_string())
+        })
+        .expect("MCP session ID")
 }
 
 #[cfg(feature = "oauth")]
