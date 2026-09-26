@@ -216,6 +216,124 @@ fn mcp_http_listener_reports_bound_address_and_stops_on_supervisor_signal() {
 
 #[cfg(feature = "oauth")]
 #[test]
+fn two_named_http_listeners_bind_and_stop_independently() {
+    let temporary = tempfile::tempdir().expect("temporary state");
+    let mut listeners = Vec::new();
+    for name in ["first", "second"] {
+        let root = temporary.path().join(name);
+        fs::create_dir_all(&root).expect("vault root");
+        let paths = VaultPaths::new(&root);
+        let wiki_id = vulcan_daemon::registry::WikiId::parse(name).expect("wiki ID");
+        let named = NamedMcpRuntime {
+            remote_id: vulcan_daemon::mcp_remote::McpRemoteId::parse(name).expect("remote ID"),
+            vaults: BTreeMap::from([(
+                wiki_id,
+                NamedMcpVaultRuntime {
+                    paths: paths.clone(),
+                    ceiling_profile: "readonly".to_string(),
+                    default_profile: "readonly".to_string(),
+                    eligible_tool_packs: vec!["notes-read".to_string()],
+                },
+            )]),
+            authorization_store: McpAuthorizationStore::at(temporary.path().join("state")),
+        };
+        let mut options = oauth_options();
+        options.bind = "127.0.0.1:0".to_string();
+        options.endpoint = format!("/{name}");
+        options.public_url = Some(format!("https://mcp.example.test/{name}"));
+        options.oauth_issuer = None;
+        options.oauth_audience.clear();
+        options.oauth_jwks_url = None;
+        options.oauth_allowed_sub.clear();
+        options.oauth_local_client_secret = Some(format!("{name}-client-secret"));
+        options.oauth_local_approval_token = Some(format!("{name}-approval-token"));
+        options.instance_id = Some(Ulid::new());
+        options.oauth_storage_dir = Some(temporary.path().join("state").join(name));
+        let stop = Arc::new(ShutdownSignal::new(false));
+        let runner_stop = Arc::clone(&stop);
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (done_sender, done_receiver) = mpsc::channel();
+        let runner = thread::spawn(move || {
+            let on_ready = |address| ready_sender.send(address).map_err(CliError::operation);
+            let result = run_mcp_http_server_with_named_runtime(
+                &paths,
+                Some("readonly"),
+                &[McpToolPackArg::NotesRead],
+                McpToolPackModeArg::Static,
+                &options,
+                named,
+                McpHttpLifecycle {
+                    stop: Some(&runner_stop),
+                    ready: Some(&on_ready),
+                    hosted: None,
+                },
+            );
+            done_sender.send(result).expect("completion receiver");
+        });
+        let address = ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "named listener readiness failed: {error}; startup: {:?}",
+                    done_receiver.recv_timeout(Duration::from_secs(1))
+                )
+            });
+        listeners.push((address, stop, done_receiver, runner));
+    }
+
+    assert_ne!(listeners[0].0, listeners[1].0);
+    assert_eq!(
+        named_listener_resource_metadata(listeners[0].0, "first")["resource"],
+        "https://mcp.example.test/first"
+    );
+    assert_eq!(
+        named_listener_resource_metadata(listeners[1].0, "second")["resource"],
+        "https://mcp.example.test/second"
+    );
+    listeners[0].1.cancel();
+    listeners[0]
+        .2
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first listener stopped")
+        .expect("first listener stopped cleanly");
+    assert_eq!(
+        named_listener_resource_metadata(listeners[1].0, "second")["resource"],
+        "https://mcp.example.test/second"
+    );
+    listeners[1].1.cancel();
+    listeners[1]
+        .2
+        .recv_timeout(Duration::from_secs(5))
+        .expect("second listener stopped")
+        .expect("second listener stopped cleanly");
+    for (_, _, _, runner) in listeners {
+        runner.join().expect("listener thread");
+    }
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_resource_metadata(address: SocketAddr, name: &str) -> Value {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    write!(
+        stream,
+        "GET /.well-known/oauth-protected-resource/{name} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .expect("metadata request");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .expect("metadata response");
+    let response = String::from_utf8(response).expect("UTF-8 metadata response");
+    let (headers, body) = response.split_once("\r\n\r\n").expect("HTTP response");
+    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+    serde_json::from_str(body).expect("resource metadata JSON")
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 fn static_local_oauth_requires_registered_safe_redirects() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
