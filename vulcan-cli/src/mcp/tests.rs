@@ -216,8 +216,11 @@ fn mcp_http_listener_reports_bound_address_and_stops_on_supervisor_signal() {
 
 #[cfg(feature = "oauth")]
 #[test]
-fn two_named_http_listeners_bind_and_stop_independently() {
+fn two_named_hosted_http_listeners_bind_and_stop_independently() {
     let temporary = tempfile::tempdir().expect("temporary state");
+    let runtime = tokio::runtime::Runtime::new().expect("hosted runtime");
+    let scheduler =
+        Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
     let mut listeners = Vec::new();
     for name in ["first", "second"] {
         let root = temporary.path().join(name);
@@ -249,6 +252,11 @@ fn two_named_http_listeners_bind_and_stop_independently() {
         options.oauth_local_approval_token = Some(format!("{name}-approval-token"));
         options.instance_id = Some(Ulid::new());
         options.oauth_storage_dir = Some(temporary.path().join("state").join(name));
+        let hosted = named_listener_hosted_execution(
+            &scheduler,
+            runtime.handle(),
+            &temporary.path().join("operations").join(name),
+        );
         let stop = Arc::new(ShutdownSignal::new(false));
         let runner_stop = Arc::clone(&stop);
         let (ready_sender, ready_receiver) = mpsc::channel();
@@ -265,7 +273,7 @@ fn two_named_http_listeners_bind_and_stop_independently() {
                 McpHttpLifecycle {
                     stop: Some(&runner_stop),
                     ready: Some(&on_ready),
-                    hosted: None,
+                    hosted: Some(hosted),
                 },
             );
             done_sender.send(result).expect("completion receiver");
@@ -308,6 +316,22 @@ fn two_named_http_listeners_bind_and_stop_independently() {
         .expect("second listener stopped cleanly");
     for (_, _, _, runner) in listeners {
         runner.join().expect("listener thread");
+    }
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_hosted_execution(
+    scheduler: &Arc<MutationScheduler>,
+    runtime: &tokio::runtime::Handle,
+    ledger_path: &Path,
+) -> HostedMcpExecution {
+    HostedMcpExecution {
+        executor: Arc::new(HostedExecutor::new(
+            Arc::clone(scheduler),
+            Arc::new(HostedJobLedger::at(ledger_path)),
+        )),
+        scheduler: Arc::clone(scheduler),
+        runtime: runtime.clone(),
     }
 }
 
