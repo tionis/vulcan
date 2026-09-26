@@ -368,6 +368,191 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
 }
 
 #[cfg(feature = "oauth")]
+#[test]
+#[allow(clippy::too_many_lines)] // Launches the same persisted definition through both real ownership paths.
+fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
+    let temporary = tempfile::tempdir().expect("temporary state");
+    let vault = temporary.path().join("vault");
+    fs::create_dir_all(&vault).expect("vault root");
+    let paths = VaultPaths::new(&vault);
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let process = DaemonProcessContext {
+        registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
+        state_root: temporary.path().join("state"),
+        verbose: false,
+    };
+    let wiki_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID");
+    process
+        .registry
+        .add(
+            &vulcan_daemon::registry::AddWikiRequest {
+                id: wiki_id.clone(),
+                path: vault,
+                profile: None,
+                groups: Vec::new(),
+                git_dir: None,
+                permissions_profile: None,
+                sync_backend: Some("none".to_string()),
+                platform_profile: None,
+            },
+            false,
+        )
+        .expect("wiki registration");
+    let reserved = TcpListener::bind("127.0.0.1:0").expect("reserve listener port");
+    let address = reserved.local_addr().expect("listener address");
+    drop(reserved);
+    let remote = process
+        .registry
+        .add_mcp_remote(
+            vulcan_daemon::mcp_remote::AddMcpRemoteRequest {
+                id: vulcan_daemon::mcp_remote::McpRemoteId::parse("parity").expect("remote ID"),
+                bind: address.to_string(),
+                public_url: "https://mcp.example.test/parity".to_string(),
+                authentication: McpRemoteAuthentication::IndieAuth {
+                    identity: "https://identity.example.test/alice".to_string(),
+                },
+                vaults: vec![vulcan_daemon::mcp_remote::McpRemoteVault {
+                    wiki_id: wiki_id.clone(),
+                    ceiling_profile: "readonly".to_string(),
+                    default_profile: "readonly".to_string(),
+                    tool_packs: vec!["notes-read".to_string()],
+                }],
+            },
+            false,
+        )
+        .expect("remote registration");
+    let mut token_options = oauth_options();
+    token_options.public_url = Some(remote.public_url.clone());
+    token_options.instance_id = Some(remote.instance_id);
+    token_options.oauth_storage_dir = Some(
+        process
+            .state_root
+            .join("mcp-remotes")
+            .join(remote.id.as_str()),
+    );
+    token_options.oauth_local_subject = Some("https://identity.example.test/alice".to_string());
+    token_options.oauth_local_client_secret = Some("test-client-secret".to_string());
+    token_options.oauth_local_approval_token = Some("test-approval-token".to_string());
+    let named = NamedMcpRuntime {
+        remote_id: remote.id.clone(),
+        vaults: BTreeMap::from([(
+            wiki_id,
+            NamedMcpVaultRuntime {
+                paths: paths.clone(),
+                ceiling_profile: "readonly".to_string(),
+                default_profile: "readonly".to_string(),
+                eligible_tool_packs: vec!["notes-read".to_string()],
+            },
+        )]),
+        authorization_store: McpAuthorizationStore::at(&process.state_root),
+    };
+    let token = named_listener_test_token(&paths, &named, &token_options, "personal");
+    let endpoints = (
+        "https://identity.example.test/authorize".to_string(),
+        "https://identity.example.test/token".to_string(),
+    );
+
+    let stop = Arc::new(ShutdownSignal::new(false));
+    let runner_stop = Arc::clone(&stop);
+    let runner_process = process.clone();
+    let runner_remote = remote.clone();
+    let runner_endpoints = endpoints.clone();
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let runner = thread::spawn(move || {
+        let on_ready = |bound| ready_sender.send(bound).map_err(CliError::operation);
+        run_named_mcp_remote_with_endpoints(
+            &runner_process,
+            &runner_remote,
+            Some(&runner_stop),
+            Some(&on_ready),
+            None,
+            Some(&runner_endpoints),
+        )
+    });
+    assert_eq!(
+        ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("foreground readiness"),
+        address
+    );
+    let foreground_init = named_listener_initialize(address, "parity", &token);
+    assert!(
+        foreground_init.starts_with("HTTP/1.1 200"),
+        "{foreground_init}"
+    );
+    let foreground_session = named_listener_session_id(&foreground_init);
+    let foreground_tools = named_listener_tools(address, "parity", &token, &foreground_session);
+    assert!(
+        foreground_tools.starts_with("HTTP/1.1 200"),
+        "{foreground_tools}"
+    );
+    stop.cancel();
+    runner
+        .join()
+        .expect("foreground thread")
+        .expect("foreground stop");
+
+    let runtime = tokio::runtime::Runtime::new().expect("resident runtime");
+    let scheduler =
+        Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
+    let resident = resident_named_mcp_service_with_endpoints(
+        &process,
+        &[remote],
+        scheduler,
+        runtime.handle().clone(),
+        Some(endpoints),
+    )
+    .expect("resident registration")
+    .expect("resident service");
+    let dependency = ServiceRegistration::new(
+        ServiceDefinition {
+            id: ServiceId::parse("worker.sync-trigger").expect("service ID"),
+            service_kind: "worker".to_string(),
+            scope: ServiceScope::Global,
+            enabled: true,
+            required: true,
+            dependencies: Vec::new(),
+            restart: RestartPolicy::Never,
+        },
+        |context| {
+            context.ready()?;
+            while !context.stop().wait_timeout(Duration::from_millis(25)) {}
+            Ok(())
+        },
+    );
+    let supervisor = vulcan_daemon::host::HostSupervisor::start(
+        vec![dependency, resident],
+        Duration::from_secs(10),
+    )
+    .expect("resident host startup");
+    let resident_init = named_listener_initialize(address, "parity", &token);
+    assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
+    let resident_session = named_listener_session_id(&resident_init);
+    let resident_tools = named_listener_tools(address, "parity", &token, &resident_session);
+    assert!(
+        resident_tools.starts_with("HTTP/1.1 200"),
+        "{resident_tools}"
+    );
+    assert!(resident_tools.contains("\"name\":\"note_get\""));
+    assert!(!resident_tools.contains("\"name\":\"note_create\""));
+    assert_eq!(
+        foreground_tools
+            .split_once("\r\n\r\n")
+            .expect("foreground body")
+            .1,
+        resident_tools
+            .split_once("\r\n\r\n")
+            .expect("resident body")
+            .1,
+    );
+    assert!(
+        named_listener_tools(address, "parity", &token, &foreground_session)
+            .starts_with("HTTP/1.1 404")
+    );
+    supervisor.shutdown().expect("resident shutdown");
+}
+
+#[cfg(feature = "oauth")]
 fn named_listener_test_token(
     paths: &VaultPaths,
     named: &NamedMcpRuntime,

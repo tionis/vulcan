@@ -814,6 +814,19 @@ fn run_named_mcp_remote_inner(
     ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
     resident: Option<ResidentMcpScheduling>,
 ) -> Result<(), CliError> {
+    run_named_mcp_remote_with_endpoints(process, remote, stop, ready, resident, None)
+}
+
+#[cfg(feature = "oauth")]
+#[allow(clippy::too_many_lines)] // Keeps the validated named definition and shared listener startup together.
+fn run_named_mcp_remote_with_endpoints(
+    process: &DaemonProcessContext,
+    remote: &McpRemoteDefinition,
+    stop: Option<&ShutdownSignal>,
+    ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
+    resident: Option<ResidentMcpScheduling>,
+    indieauth_endpoints: Option<&(String, String)>,
+) -> Result<(), CliError> {
     let mut vaults = BTreeMap::new();
     for vault in &remote.vaults {
         let registration = process
@@ -910,8 +923,8 @@ fn run_named_mcp_remote_inner(
         oauth_local_email: None,
         oauth_dcr: true,
         oauth_dcr_allowed_redirect_host: vec!["chatgpt.com".to_string()],
-        oauth_indieauth_authorization_endpoint: None,
-        oauth_indieauth_token_endpoint: None,
+        oauth_indieauth_authorization_endpoint: indieauth_endpoints.map(|item| item.0.clone()),
+        oauth_indieauth_token_endpoint: indieauth_endpoints.map(|item| item.1.clone()),
         oauth_indieauth_client_id: None,
         oauth_indieauth_redirect_uri: None,
         oauth_indieauth_me: Some(identity.clone()),
@@ -954,6 +967,18 @@ pub(crate) fn resident_named_mcp_service(
     scheduler: Arc<MutationScheduler>,
     runtime: tokio::runtime::Handle,
 ) -> Result<Option<ServiceRegistration>, CliError> {
+    resident_named_mcp_service_with_endpoints(process, remotes, scheduler, runtime, None)
+}
+
+#[cfg(feature = "oauth")]
+#[allow(clippy::too_many_lines)] // Wires each named listener into one aggregate supervised service.
+fn resident_named_mcp_service_with_endpoints(
+    process: &DaemonProcessContext,
+    remotes: &[McpRemoteDefinition],
+    scheduler: Arc<MutationScheduler>,
+    runtime: tokio::runtime::Handle,
+    indieauth_endpoints: Option<(String, String)>,
+) -> Result<Option<ServiceRegistration>, CliError> {
     if remotes.is_empty() {
         return Ok(None);
     }
@@ -980,6 +1005,7 @@ pub(crate) fn resident_named_mcp_service(
                 scheduler: Arc::clone(&scheduler),
                 runtime: runtime.clone(),
             };
+            let indieauth_endpoints = indieauth_endpoints.clone();
             let handle = match thread::Builder::new()
                 .name(format!("mcp-remote-{name}"))
                 .spawn(move || {
@@ -989,12 +1015,13 @@ pub(crate) fn resident_named_mcp_service(
                             .map_err(CliError::operation)
                     };
                     report_resident_mcp_listener_exit(&sender, name.clone(), || {
-                        run_named_mcp_remote_inner(
+                        run_named_mcp_remote_with_endpoints(
                             &process,
                             &remote,
                             Some(&stop),
                             Some(&on_ready),
                             Some(hosted),
+                            indieauth_endpoints.as_ref(),
                         )
                     });
                 }) {
