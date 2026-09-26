@@ -10,8 +10,8 @@
   code is indexed and later comments stay out of search and embeddings.
 - Inline tags accept non-ASCII letters and reject all-digit bodies such as `#1984`; trailing
   ` ^id` block IDs on paragraphs, quotes, and list items are recognised.
-- Tasks plugin markers follow upstream: `📅` due (`📆`/`🗓` still read), `❌` cancelled, `⌛`
-  scheduled, and `🔺` highest / `⏫` high. Task create and reschedule now write `📅`.
+- Tasks plugin markers follow upstream: `📅` due (`📆`/`🗓` still read), `❌` cancelled, `🏁`
+  on-completion, `⌛` scheduled, and `🔺` highest / `⏫` high. Task create and reschedule now write `📅`.
   **Behavior change:** tasks previously written by Vulcan with `🔺` for "high" now index as
   highest priority, matching the Tasks plugin.
 - With `newLinkFormat` set to `relative` or `absolute`, links that miss the exact path now fall

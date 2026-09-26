@@ -2094,6 +2094,9 @@ fn extract_task_text_properties(text: &str) -> Vec<(String, String)> {
     if let Some(value) = extract_task_marker_token(text, &["🆔"]) {
         properties.push(("id".to_string(), value));
     }
+    if let Some(value) = extract_task_marker_token(text, &["🏁"]) {
+        properties.push(("on-completion".to_string(), value));
+    }
 
     properties
 }
@@ -4202,6 +4205,7 @@ mod tests {
                 ("scheduled".to_string(), "2026-04-02".to_string()),
                 ("priority".to_string(), "high".to_string()),
                 ("recurrence".to_string(), "every day".to_string()),
+                ("on-completion".to_string(), "delete".to_string()),
             ]
         );
         for marker in ["📆", "🗓️", "🗓"] {

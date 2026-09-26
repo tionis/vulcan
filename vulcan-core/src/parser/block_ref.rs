@@ -50,19 +50,7 @@ fn trailing_block_refs(source: &str, block: &SemanticBlock) -> Vec<RawBlockRef> 
             })
             .into_iter()
             .collect(),
-        SemanticBlockKind::List => lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, &(start, end))| {
-                let (block_id, offset) = trailing_block_id(source, start, end)?;
-                Some(RawBlockRef {
-                    block_id_text: block_id,
-                    block_id_byte_offset: offset,
-                    target_block_byte_start: start,
-                    target_block_byte_end: list_item_end(source, &lines, index),
-                })
-            })
-            .collect(),
+        SemanticBlockKind::List => list_trailing_block_refs(source, &lines),
         SemanticBlockKind::CodeBlock | SemanticBlockKind::HtmlBlock | SemanticBlockKind::Table => {
             Vec::new()
         }
@@ -93,6 +81,96 @@ fn trailing_block_id(source: &str, start: usize, end: usize) -> Option<(String, 
     }
     let block_id = parse_block_id(&line[caret..])?;
     Some((block_id, start + caret))
+}
+
+/// Trailing IDs inside a list label the list item that owns the line: either the item's own
+/// marker line or a continuation line of that item. Lines inside fenced or indented code in the
+/// list are literal and never carry a block ID.
+fn list_trailing_block_refs(source: &str, lines: &[(usize, usize)]) -> Vec<RawBlockRef> {
+    let mut refs = Vec::new();
+    let mut fence: Option<(char, usize)> = None;
+    // Index of the innermost open list item and its content column.
+    let mut items: Vec<(usize, usize)> = Vec::new();
+
+    for (index, &(start, end)) in lines.iter().enumerate() {
+        let line = &source[start..end];
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+
+        if let Some((marker, length)) = fence {
+            if fence_marker(trimmed).is_some_and(|(candidate, candidate_length)| {
+                candidate == marker
+                    && candidate_length >= length
+                    && trimmed.trim_start_matches(marker).trim().is_empty()
+            }) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(opened) = fence_marker(trimmed) {
+            fence = Some(opened);
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        items.retain(|&(item_index, _)| {
+            let item = &source[lines[item_index].0..lines[item_index].1];
+            indent > item.len() - item.trim_start().len()
+        });
+        if let Some(width) = list_marker_width(trimmed) {
+            items.push((index, indent + width));
+        } else if items
+            .last()
+            .is_none_or(|&(_, content_column)| indent >= content_column + 4)
+        {
+            // Not inside an item's paragraph text: indented code or unrelated content.
+            continue;
+        }
+
+        let Some((block_id, offset)) = trailing_block_id(source, start, end) else {
+            continue;
+        };
+        let Some(&(item_index, _)) = items.last() else {
+            continue;
+        };
+        refs.push(RawBlockRef {
+            block_id_text: block_id,
+            block_id_byte_offset: offset,
+            target_block_byte_start: lines[item_index].0,
+            target_block_byte_end: list_item_end(source, lines, item_index),
+        });
+    }
+
+    refs
+}
+
+/// Width of a list marker plus its following space (`- `, `12. `), if the line starts one.
+fn list_marker_width(trimmed: &str) -> Option<usize> {
+    let bytes = trimmed.as_bytes();
+    let marker_len = match bytes.first()? {
+        b'-' | b'*' | b'+' => 1,
+        b'0'..=b'9' => {
+            let digits = bytes
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            if digits > 9 || !matches!(bytes.get(digits), Some(b'.' | b')')) {
+                return None;
+            }
+            digits + 1
+        }
+        _ => return None,
+    };
+    matches!(bytes.get(marker_len), Some(b' ' | b'\t')).then_some(marker_len + 1)
+}
+
+/// A fence opener or closer: at least three backticks or tildes.
+fn fence_marker(trimmed: &str) -> Option<(char, usize)> {
+    let marker = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let length = trimmed.chars().take_while(|&c| c == marker).count();
+    (length >= 3).then_some((marker, length))
 }
 
 /// A list item spans its own line plus following lines indented deeper than it.
@@ -198,6 +276,26 @@ mod tests {
                 ),
                 ("quote".to_string(), "> quoted ^quote\n".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn list_code_is_literal_and_continuations_label_their_item() {
+        assert!(parsed_refs(concat!(
+            "- item\n  ```\n  code ^fenced\n  ```\n",
+            "- other\n\n        indented code ^indented\n",
+        ))
+        .is_empty());
+        assert_eq!(
+            parsed_refs("- item\n  more text ^cont\n  - child\n- next\n"),
+            vec![(
+                "cont".to_string(),
+                "- item\n  more text ^cont\n  - child".to_string()
+            )]
+        );
+        assert_eq!(
+            parsed_refs("1. first\n2. second ^two\n"),
+            vec![("two".to_string(), "2. second ^two".to_string())]
         );
     }
 

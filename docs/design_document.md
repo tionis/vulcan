@@ -620,7 +620,7 @@ Walk the event stream once, maintaining a small state machine. For each event, t
 **a) Extract graph entities (using original byte offsets):**
 
 - **Links:** For every `WikiLink` event, split `dest_url` on `#` to extract `(target_path, subpath)`. If the subpath starts with `^`, classify as block reference; otherwise heading reference. For `Tag::Image` with `WikiLink` link type, distinguish note embeds from image embeds by checking file extension. Classify `obsidian://` URIs as external links.
-- **Block refs:** Obsidian accepts two forms. The common one is a trailing ` ^id` at the end of a paragraph, blockquote, or list-item line, which labels that paragraph, quote, or list item (including its more-indented children). The standalone form is a paragraph that is only `^[a-zA-Z0-9-]+`; it labels the preceding block and is the only way to label tables and code blocks. A caret that is not preceded by whitespace, is not at the end of the line, or sits inside code is not a block ID.
+- **Block refs:** Obsidian accepts two forms. The common one is a trailing ` ^id` at the end of a paragraph, blockquote, or list-item line, which labels that paragraph, quote, or list item (including its more-indented children). The standalone form is a paragraph that is only `^[a-zA-Z0-9-]+`; it labels the preceding block and is the only way to label tables and code blocks. Inside a list, an ID on a continuation line labels the item that owns it, and lines in fenced or indented code within the list are literal. A caret that is not preceded by whitespace, is not at the end of the line, or sits inside code is not a block ID.
 - **Headings:** Record level, text, byte offset.
 - **Tags:** Match `#` followed by Unicode letters and digits plus `/`, `_`, and `-` in `Text` events, supporting nested hierarchies (`#tag/subtag`) and non-ASCII tags (`#tâche`). A `#` preceded by a tag character is not a tag, and a body made only of digits (and `/`) is rejected, matching Obsidian: `#1984` is not a tag but `#y1984` is.
 - **HTML link detection:** Flag `<a href` and `<img src` patterns in `Html`/`InlineHtml` events for `doctor` diagnostic reporting.
@@ -934,6 +934,7 @@ Tasks extend list items with additional fields, synthesized at query time:
 | `start` | `🛫` | `🛫2026-02-01` |
 | `scheduled` | `⏳` | `⏳2026-03-01` |
 | `cancelled` | `❌` | `❌ 2026-03-20` |
+| `on-completion` | `🏁` | `🏁 delete` |
 
 Priorities use `🔺` highest, `⏫` high, `🔼` medium, `🔽` low, and `⏬` lowest; `⌛` is accepted for `scheduled`. These symbols follow the Tasks plugin's `DefaultTaskSerializer`, and Vulcan writes the canonical first symbol of each field.
 
