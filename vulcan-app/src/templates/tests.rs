@@ -504,6 +504,53 @@ fn templater_hooks_run_after_rendering() {
 
 #[cfg(feature = "js_runtime")]
 #[test]
+fn templater_file_create_waits_for_the_vault_write_lock() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("init");
+    let lock = vulcan_core::write_lock::acquire_write_lock(&paths).expect("write lock");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let config = VaultConfig::default();
+        let vars = HashMap::new();
+        started_tx.send(()).expect("started");
+        let result = render_template_request(TemplateRenderRequest {
+            paths: &paths,
+            vault_config: &config,
+            templates: &[],
+            template_path: None,
+            template_text: "<%* await tp.file.create_new('Body', 'Created'); %>",
+            target_path: "Main.md",
+            target_contents: None,
+            engine: TemplateEngineKind::Templater,
+            vars: &vars,
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Create,
+        });
+        done_tx.send(result).expect("result");
+    });
+    started_rx.recv().expect("worker started");
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    assert!(!temp_dir.path().join("Created.md").exists());
+    drop(lock);
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker finished")
+        .expect("template rendered");
+    worker.join().expect("worker join");
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Created.md")).expect("created note"),
+        "Body"
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
 fn templater_system_command_functions_expand_internal_templates() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());

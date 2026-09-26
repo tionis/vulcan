@@ -16156,6 +16156,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains(
         "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"
     ));
+    let template_skill =
+        fs::read_to_string(vault_root.join(".agents/skills/templates-and-capture/SKILL.md"))
+            .expect("template skill should be readable");
+    assert!(template_skill.contains("`tp.file.create_new` refuses an existing destination"));
+    assert!(template_skill.contains("collection's validated write workflow"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )

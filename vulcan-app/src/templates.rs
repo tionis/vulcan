@@ -1,3 +1,4 @@
+use crate::notes::write_ordinary_note_if_unchanged;
 use crate::AppError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,7 @@ use vulcan_core::move_note;
 use vulcan_core::move_rewrite::move_note_unlocked;
 use vulcan_core::parser::parse_document;
 use vulcan_core::paths::{
-    normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
-    RelativePathOptions,
+    normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
 };
 use vulcan_core::{
     load_vault_config, resolve_note_reference, resolve_permission_profile, MoveSummary,
@@ -1619,10 +1619,12 @@ impl<'a> TemplateSession<'a> {
                 .check_write_path(&normalized)
                 .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         }
-        secure_create(
-            self.request.paths.vault_root(),
-            Path::new(&normalized),
-            content,
+        write_ordinary_note_if_unchanged(
+            self.request.paths,
+            &normalized,
+            None,
+            &content,
+            "template file create",
         )
         .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         self.changed_paths.insert(normalized.clone());
@@ -2589,8 +2591,14 @@ fn js_file_create_new(
             .check_write_path(&normalized)
             .map_err(|error| error.to_string())?;
     }
-    secure_create(state.paths.vault_root(), Path::new(&normalized), content)
-        .map_err(|error| error.to_string())?;
+    write_ordinary_note_if_unchanged(
+        &state.paths,
+        &normalized,
+        None,
+        &content,
+        "template file create",
+    )
+    .map_err(|error| error.to_string())?;
     state.changed_paths.insert(normalized.clone());
     Ok(JsonValue::Object(file_object_json(&normalized)))
 }
