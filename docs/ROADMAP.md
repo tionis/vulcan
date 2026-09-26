@@ -445,6 +445,9 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 - [x] Pin scanner actions and test the checked-in workflow contract alongside supply-chain policy checks
 - [x] Triage the initial CodeQL backlog, remediate credential transport, and disposition proven false positives with audit comments
 
+### 6.8 Dependency maintenance follow-ups
+- [ ] Replace the archived, unmaintained `serde_yaml` crate with a maintained YAML parser behind the existing internal frontmatter/Bases/config wrappers. Acceptance gate: frontmatter raw-text round-trip, `broken-frontmatter` and `mixed-properties` fixtures, Bases `.base` parsing, and property type inference produce identical results before and after the swap; any intentional behavior difference ships with a parser-version bump and changelog entry.
+
 ---
 
 ## Phase 7: Post-v1 workflow features
@@ -1196,8 +1199,8 @@ Extract **all** list items (not just tasks) as structured data, matching Datavie
 - [x] Synthesize Dataview task fields at query time: `status` (char in brackets), `checked` (status is non-empty), `completed` (status is `x`), `fullyCompleted` (recursive subtree check), `visual` (rendered display text, defaults to `text`)
 - [x] Nested task query semantics: when a TASK query matches a parent, include child tasks in results even if children don't independently match the WHERE clause. Task hierarchy is preserved in output.
 - [x] Tasks inherit page-level fields (frontmatter, inline fields) from their containing note
-- [x] Tasks plugin emoji shorthand: detect `🗓️` (due), `✅` (completion), `➕` (created), `🛫` (start), `⏳` (scheduled) date annotations in task text and store as task properties with auto-parsed Date type
-- [x] Tasks plugin priority levels: detect `⏫` (highest), `🔺` (high), `🔼` (medium), `🔽` (low), `⏬` (lowest) and store as `priority` task property
+- [x] Tasks plugin emoji shorthand: detect `📅` (due; `📆` and `🗓️` are accepted alternates), `✅` (completion), `❌` (cancelled), `➕` (created), `🛫` (start), `⏳`/`⌛` (scheduled) date annotations in task text and store as task properties with auto-parsed Date type
+- [x] Tasks plugin priority levels: detect `🔺` (highest), `⏫` (high), `🔼` (medium), `🔽` (low), `⏬` (lowest) and store as `priority` task property
 - [x] Tasks plugin recurrence notation: detect `🔁 every <pattern>` in task text and store as `recurrence` task property (parsing the RRULE pattern is deferred to §9.10)
 - [x] Tasks plugin dependency notation: detect `⛔ <id>` (blocked by) and `🆔 <id>` (task ID) and store as task properties (dependency resolution deferred to §9.10)
 - [x] Unit tests: basic tasks, nested tasks, tasks with inline fields, custom status characters
@@ -1973,7 +1976,7 @@ Reuses the status type registry from 9.10.4 (which defines `TODO`, `DONE`, `IN_P
   - Map TaskNotes statuses to 9.10.4 status type categories (`isCompleted: true` → `DONE`, etc.) so unified queries work
 - [x] Custom priority definitions: each priority has `id`, `value`, `label`, `color`, `weight` (numeric for sorting/scoring)
   - Default priorities: `highest`, `high`, `medium`, `low`, `lowest`
-  - Map to Tasks plugin emoji priorities (⏫/🔺/🔼/🔽/⏬) for cross-format queries
+  - Map to Tasks plugin emoji priorities (🔺/⏫/🔼/🔽/⏬) for cross-format queries
 - [x] Status and priority are first-class query dimensions: filterable, sortable, groupable in DQL, Tasks DSL, and Bases views
 - [x] Auto-archive: when a task enters a completed status, optionally archive after a configurable delay
 

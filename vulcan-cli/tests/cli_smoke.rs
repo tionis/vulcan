@@ -13989,7 +13989,7 @@ fn tasks_create_json_output_appends_inline_task_to_default_inbox_note() {
     let updated = fs::read_to_string(vault_root.join("Inbox.md")).expect("inbox note should exist");
     assert_eq!(
         updated,
-        "- [ ] Review release @desk #ops #task 🗓️ 2026-04-05 ➕ 2026-04-04 🔺\n"
+        "- [ ] Review release @desk #ops #task 📅 2026-04-05 ➕ 2026-04-04 ⏫\n"
     );
 
     let list_assert = cargo_vulcan_fixed_now()
@@ -14012,7 +14012,7 @@ fn tasks_create_json_output_appends_inline_task_to_default_inbox_note() {
     assert_eq!(list_json["tasks"][0]["path"], "Inbox.md");
     assert_eq!(
         list_json["tasks"][0]["text"],
-        "Review release @desk #ops 🗓️ 2026-04-05 ➕ 2026-04-04 🔺"
+        "Review release @desk #ops 📅 2026-04-05 ➕ 2026-04-04 ⏫"
     );
 }
 
@@ -14052,13 +14052,13 @@ fn tasks_create_json_output_honors_explicit_target_and_flags() {
     assert_eq!(create_json["created_note"], false);
     assert_eq!(create_json["due"], "2026-04-12");
     assert_eq!(create_json["priority"], "low");
-    assert_eq!(create_json["line"], "- [ ] Ship checklist 🗓️ 2026-04-12 🔽");
+    assert_eq!(create_json["line"], "- [ ] Ship checklist 📅 2026-04-12 🔽");
 
     let updated = fs::read_to_string(vault_root.join("Projects/Website.md"))
         .expect("project note should exist");
     assert_eq!(
         updated,
-        "# Website\n\n- [ ] Ship checklist 🗓️ 2026-04-12 🔽\n"
+        "# Website\n\n- [ ] Ship checklist 📅 2026-04-12 🔽\n"
     );
 
     let list_assert = Command::cargo_bin("vulcan")
@@ -14170,12 +14170,12 @@ fn tasks_reschedule_json_output_replaces_inline_due_marker() {
     assert_eq!(reschedule_json["path"], "Inbox.md");
     assert_eq!(
         reschedule_json["changes"][0]["after"],
-        "- [ ] Review release #ops 🗓️ 2026-04-11"
+        "- [ ] Review release #ops 📅 2026-04-11"
     );
 
     let updated =
         fs::read_to_string(vault_root.join("Inbox.md")).expect("updated note should exist");
-    assert_eq!(updated, "- [ ] Review release #ops 🗓️ 2026-04-11\n");
+    assert_eq!(updated, "- [ ] Review release #ops 📅 2026-04-11\n");
 
     let list_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
