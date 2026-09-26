@@ -15,6 +15,9 @@ use super::{
 use crate::templates::render_note_from_parts;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::fs;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 use tempfile::tempdir;
 use vulcan_core::mdbase::list_mdbase_write_outbox;
 use vulcan_core::{
@@ -172,6 +175,43 @@ fn apply_task_complete_updates_recurring_instance_lists() {
 }
 
 #[test]
+fn tasknote_reschedule_waits_for_the_vault_write_lock() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(&paths, &config, "Tasks/One.md", "One", "open", &[], "").expect("seed tasknote");
+    let held = vulcan_core::write_lock::acquire_write_lock(&paths).expect("hold vault lock");
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        started_sender.send(()).expect("start signal");
+        let result = apply_task_reschedule(
+            &paths,
+            &TaskRescheduleRequest {
+                task: "Tasks/One".to_string(),
+                due: "2026-04-20".to_string(),
+                dry_run: false,
+            },
+        );
+        result_sender.send(result).expect("result signal");
+    });
+    started_receiver.recv().expect("worker started");
+    assert!(result_receiver
+        .recv_timeout(Duration::from_millis(100))
+        .is_err());
+    drop(held);
+    result_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker completed")
+        .expect("tasknote updated");
+    worker.join().expect("worker joined");
+    let updated =
+        fs::read_to_string(temp_dir.path().join("Tasks/One.md")).expect("updated tasknote");
+    assert!(updated.contains("2026-04-20"));
+}
+
+#[test]
 fn apply_task_reschedule_updates_inline_task_due_marker() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
@@ -241,6 +281,62 @@ fn apply_task_complete_updates_inline_task_checkbox_and_date() {
     assert_eq!(report.path, "Inbox.md");
     let rendered = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("updated note");
     assert!(rendered.contains("- [x] Call Alice ✅ 2026-04-20"));
+}
+
+#[test]
+fn inline_task_updates_wait_for_the_vault_write_lock() {
+    for action in ["complete", "reschedule"] {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        fs::write(temp_dir.path().join("Inbox.md"), "- [ ] Call Alice\n").expect("seed note");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+        let held = vulcan_core::write_lock::acquire_write_lock(&paths).expect("hold vault lock");
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            started_sender.send(()).expect("start signal");
+            let result = if action == "complete" {
+                apply_task_complete(
+                    &paths,
+                    &TaskCompleteRequest {
+                        task: "Inbox.md:1".to_string(),
+                        date: Some("2026-04-20".to_string()),
+                        dry_run: false,
+                    },
+                )
+            } else {
+                apply_task_reschedule(
+                    &paths,
+                    &TaskRescheduleRequest {
+                        task: "Inbox.md:1".to_string(),
+                        due: "2026-04-20".to_string(),
+                        dry_run: false,
+                    },
+                )
+            };
+            result_sender.send(result).expect("result signal");
+        });
+        started_receiver.recv().expect("worker started");
+        assert!(result_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("still unchanged"),
+            "- [ ] Call Alice\n"
+        );
+        drop(held);
+        result_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker completed")
+            .expect("task updated");
+        worker.join().expect("worker joined");
+        let updated = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("updated note");
+        assert!(
+            updated.contains("2026-04-20"),
+            "{action} did not update note"
+        );
+    }
 }
 
 #[test]
@@ -362,6 +458,47 @@ fn apply_task_create_appends_inline_task_to_target_note() {
         .expect("updated inbox")
         .replace("\r\n", "\n");
     assert!(rendered.contains("- [ ] Call Alice 🗓️ 2026-04-20 🔺"));
+}
+
+#[test]
+fn task_create_waits_for_the_vault_write_lock() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    fs::write(temp_dir.path().join("Inbox.md"), "# Tasks\n").expect("seed inbox");
+    let held = vulcan_core::write_lock::acquire_write_lock(&paths).expect("hold vault lock");
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        started_sender.send(()).expect("start signal");
+        let result = apply_task_create(
+            &paths,
+            &TaskCreateRequest {
+                text: "Call Alice".to_string(),
+                note: Some("Inbox".to_string()),
+                due: None,
+                priority: None,
+                dry_run: false,
+            },
+        );
+        result_sender.send(result).expect("result signal");
+    });
+    started_receiver.recv().expect("worker started");
+    assert!(result_receiver
+        .recv_timeout(Duration::from_millis(100))
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("still unchanged"),
+        "# Tasks\n"
+    );
+    drop(held);
+    result_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker completed")
+        .expect("task created");
+    worker.join().expect("worker joined");
+    let updated = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("updated inbox");
+    assert!(updated.contains("Call Alice"));
 }
 
 #[test]

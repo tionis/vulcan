@@ -1155,7 +1155,7 @@ pub fn apply_note_set(
     })
 }
 
-fn write_ordinary_note_if_unchanged(
+pub(crate) fn write_ordinary_note_if_unchanged(
     paths: &VaultPaths,
     path: &str,
     before: Option<&str>,

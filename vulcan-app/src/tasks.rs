@@ -5,7 +5,7 @@ use crate::mdbase::{
 };
 use crate::notes::{
     normalize_date_argument, normalize_note_path, render_periodic_note_contents,
-    resolve_existing_note_path,
+    resolve_existing_note_path, write_ordinary_note_if_unchanged,
 };
 use crate::templates::{
     load_named_template, merge_template_frontmatter, parse_frontmatter_document,
@@ -848,10 +848,13 @@ pub fn apply_task_create(
         request.dry_run,
     )?;
     if !request.dry_run && !routed {
-        if let Some(parent) = absolute_path.parent() {
-            fs::create_dir_all(parent).map_err(AppError::operation)?;
-        }
-        fs::write(&absolute_path, insertion.updated).map_err(AppError::operation)?;
+        write_ordinary_note_if_unchanged(
+            paths,
+            &relative_path,
+            (!created_note).then_some(existing.as_str()),
+            &insertion.updated,
+            "task create",
+        )?;
     }
 
     Ok(TaskCreateReport {
@@ -4312,14 +4315,21 @@ where
                 )));
             }
         }
-        fs::write(&source_path, rendered).map_err(AppError::operation)?;
-
         if let Some(destination) = moved_to.as_ref() {
+            fs::write(&source_path, rendered).map_err(AppError::operation)?;
             let destination_path = paths.vault_root().join(destination);
             if let Some(parent) = destination_path.parent() {
                 fs::create_dir_all(parent).map_err(AppError::operation)?;
             }
             fs::rename(&source_path, &destination_path).map_err(AppError::operation)?;
+        } else {
+            write_ordinary_note_if_unchanged(
+                paths,
+                &loaded.path,
+                Some(&loaded.source),
+                &rendered,
+                "task mutation",
+            )?;
         }
     }
 
@@ -5289,7 +5299,13 @@ fn apply_inline_task_reschedule(
         )?
     };
     if !request.dry_run && !changes.is_empty() && !routed {
-        fs::write(&absolute_path, rendered).map_err(AppError::operation)?;
+        write_ordinary_note_if_unchanged(
+            paths,
+            &resolved.path,
+            Some(&source),
+            &rendered,
+            "task reschedule",
+        )?;
     }
 
     Ok(TaskMutationReport {
@@ -5339,7 +5355,13 @@ fn apply_inline_task_complete(
         )?
     };
     if !request.dry_run && !changes.is_empty() && !routed {
-        fs::write(&absolute_path, rendered).map_err(AppError::operation)?;
+        write_ordinary_note_if_unchanged(
+            paths,
+            &resolved.path,
+            Some(&source),
+            &rendered,
+            "task complete",
+        )?;
     }
 
     Ok(TaskMutationReport {

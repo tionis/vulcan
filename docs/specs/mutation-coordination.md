@@ -68,6 +68,11 @@ These are not reasons to weaken existing locks. The shared mutation guard and ho
 bridge the lock domains in the required order, and direct entrypoints must retain equivalent
 cross-process protection.
 
+Ordinary Markdown fallbacks for MCP-facing task create, complete, and reschedule now reuse the
+stale-checked note write lock after managed-mdbase routing. This covers the same direct CLI calls;
+multi-file task conversion and other task side effects still require a separate coordinated
+transaction audit.
+
 ## Hosted scheduler
 
 `vulcan_daemon::mutation_scheduler::MutationScheduler` is the process-wide admission layer owned by
