@@ -969,8 +969,13 @@ pub fn apply_task_convert(
         )?
     };
     if !request.dry_run && !task_changes.is_empty() && !routed {
-        fs::write(paths.vault_root().join(&relative_path), rendered)
-            .map_err(AppError::operation)?;
+        write_ordinary_note_if_unchanged(
+            paths,
+            &relative_path,
+            Some(&source),
+            &rendered,
+            "task conversion",
+        )?;
     }
 
     Ok(TaskConvertReport {

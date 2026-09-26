@@ -72,6 +72,8 @@ Ordinary Markdown fallbacks for MCP-facing task create, complete, and reschedule
 stale-checked note write lock after managed-mdbase routing. This covers the same direct CLI calls;
 multi-file task conversion and other task side effects still require a separate coordinated
 transaction audit.
+Single-note TaskNotes conversion also uses that lock and rejects a source changed after planning;
+line-to-note conversion is still a multi-file transaction gap.
 
 MCP `task_create`, `task_complete`, and `task_reschedule` now pass their attenuated connection
 guard into the app apply call. The app checks the actual resolved target before managed routing

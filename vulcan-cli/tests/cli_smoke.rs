@@ -15977,6 +15977,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("do not bypass it with a direct Markdown edit"));
     assert!(task_management.contains("serialized with other Vulcan vault writes"));
     assert!(task_management.contains("reread the task and its source note"));
+    assert!(task_management.contains("Converting an existing ordinary note"));
+    assert!(task_management.contains("rejects a source note changed after planning"));
     let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));

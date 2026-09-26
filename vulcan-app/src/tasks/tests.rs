@@ -728,6 +728,47 @@ fn apply_task_convert_note_promotes_existing_note_to_tasknote() {
 }
 
 #[test]
+fn task_note_conversion_rejects_a_change_while_waiting_for_the_vault_lock() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    fs::write(temp_dir.path().join("Idea.md"), "original\n").expect("seed note");
+    let held = vulcan_core::write_lock::acquire_write_lock(&paths).expect("hold vault lock");
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        started_sender.send(()).expect("start signal");
+        let result = apply_task_convert(
+            &paths,
+            &TaskConvertRequest {
+                file: "Idea".to_string(),
+                line: None,
+                dry_run: false,
+            },
+        );
+        result_sender.send(result).expect("result signal");
+    });
+    started_receiver.recv().expect("worker started");
+    assert!(result_receiver
+        .recv_timeout(Duration::from_millis(100))
+        .is_err());
+    fs::write(temp_dir.path().join("Idea.md"), "concurrent edit\n").expect("change note");
+    drop(held);
+    let error = result_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker completed")
+        .expect_err("stale conversion must fail");
+    worker.join().expect("worker joined");
+    assert!(error
+        .to_string()
+        .contains("note changed during note task conversion"));
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Idea.md")).expect("retained note"),
+        "concurrent edit\n"
+    );
+}
+
+#[test]
 fn apply_task_convert_note_dry_run_reports_changed_path() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
