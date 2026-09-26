@@ -794,16 +794,13 @@ pub fn apply_template_create_with_filter(
         read_filter,
     )?;
     let absolute_output = paths.vault_root().join(&rendered.target_path);
-    if absolute_output.exists() {
-        return Err(AppError::operation(format!(
-            "destination note already exists: {}",
-            rendered.target_path
-        )));
-    }
-    if let Some(parent) = absolute_output.parent() {
-        fs::create_dir_all(parent).map_err(AppError::operation)?;
-    }
-    fs::write(&absolute_output, &rendered.content).map_err(AppError::operation)?;
+    write_ordinary_note_if_unchanged(
+        paths,
+        &rendered.target_path,
+        None,
+        &rendered.content,
+        "template create",
+    )?;
 
     let mut changed_paths = vec![rendered.target_path.clone()];
     changed_paths.extend(rendered.changed_paths.iter().cloned());
@@ -859,12 +856,23 @@ pub fn apply_template_insert_with_filter(
         },
         read_filter,
     )?;
-    let final_target_absolute = paths.vault_root().join(&rendered.target_path);
+    let expected_final = if rendered.target_path == target_path {
+        target_source.clone()
+    } else {
+        secure_read_to_string(paths.vault_root(), Path::new(&rendered.target_path))
+            .map_err(AppError::operation)?
+    };
     let prepared = prepare_template_insertion(&target_source, &rendered.content)
         .map_err(AppError::operation)?;
     let updated =
         apply_template_insertion_mode(&prepared, request.mode).map_err(AppError::operation)?;
-    fs::write(&final_target_absolute, updated).map_err(AppError::operation)?;
+    write_ordinary_note_if_unchanged(
+        paths,
+        &rendered.target_path,
+        Some(&expected_final),
+        &updated,
+        "template insert",
+    )?;
 
     let mut changed_paths = vec![rendered.target_path.clone()];
     changed_paths.extend(rendered.changed_paths.iter().cloned());

@@ -84,6 +84,11 @@ stale-checks its final target under the ordinary-note lock after rendering and p
 including when a template moved the target. Rendering several effects is not yet one atomic,
 stale-checked transaction; the remaining template write-path audit is still open.
 
+Direct `template create` and `template insert` now use that same ordinary-note final-write
+boundary: create refuses a destination created after rendering, and insert rejects a target
+changed since it was read. This does not make earlier Templater side effects atomic with the
+final note write.
+
 ## Hosted scheduler
 
 `vulcan_daemon::mutation_scheduler::MutationScheduler` is the process-wide admission layer owned by

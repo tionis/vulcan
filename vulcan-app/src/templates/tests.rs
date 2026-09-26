@@ -822,6 +822,50 @@ fn apply_template_create_writes_note_and_reports_changed_paths() {
 }
 
 #[test]
+fn template_create_rejects_a_destination_created_while_waiting_for_the_lock() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(root.join(".vulcan/templates/daily.md"), "# {{title}}\n").expect("template");
+    let paths = VaultPaths::new(root);
+    let lock = vulcan_core::write_lock::acquire_write_lock(&paths).expect("write lock");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).expect("started");
+        done_tx
+            .send(apply_template_create(
+                &paths,
+                &TemplateCreateRequest {
+                    template: "daily".to_string(),
+                    output_path: Some("Projects/Alpha".to_string()),
+                    engine: TemplateEngineKind::Auto,
+                    vars: HashMap::new(),
+                },
+            ))
+            .expect("result");
+    });
+    started_rx.recv().expect("worker started");
+    assert!(done_rx.recv_timeout(Duration::from_millis(150)).is_err());
+    fs::create_dir_all(root.join("Projects")).expect("project dir");
+    fs::write(root.join("Projects/Alpha.md"), "created elsewhere\n").expect("other create");
+    drop(lock);
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker finished")
+        .expect_err("destination collision must fail");
+    worker.join().expect("worker join");
+    assert_eq!(
+        fs::read_to_string(root.join("Projects/Alpha.md")).expect("other note"),
+        "created elsewhere\n"
+    );
+}
+
+#[test]
 fn disabled_template_creation_trigger_does_not_read_the_target() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
@@ -1051,4 +1095,53 @@ fn apply_template_insert_merges_frontmatter_and_updates_note() {
     assert!(updated.contains("- team"));
     assert!(updated.contains("## Template Section"));
     assert!(updated.contains("# Home"));
+}
+
+#[test]
+fn template_insert_rejects_a_concurrent_note_edit() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(root.join(".vulcan/templates/daily.md"), "Template body\n").expect("template");
+    fs::write(root.join("Home.md"), "Original\n").expect("source");
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+    let lock = vulcan_core::write_lock::acquire_write_lock(&paths).expect("write lock");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).expect("started");
+        done_tx
+            .send(apply_template_insert(
+                &paths,
+                &TemplateInsertRequest {
+                    template: "daily".to_string(),
+                    note: "Home".to_string(),
+                    mode: TemplateInsertMode::Append,
+                    engine: TemplateEngineKind::Auto,
+                    vars: HashMap::new(),
+                },
+            ))
+            .expect("result");
+    });
+    started_rx.recv().expect("worker started");
+    assert!(done_rx.recv_timeout(Duration::from_millis(150)).is_err());
+    fs::write(root.join("Home.md"), "Concurrent edit\n").expect("concurrent edit");
+    drop(lock);
+
+    let error = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker finished")
+        .expect_err("stale insert must fail");
+    worker.join().expect("worker join");
+    assert!(error
+        .to_string()
+        .contains("note changed during note template insert"));
+    assert_eq!(
+        fs::read_to_string(root.join("Home.md")).expect("current note"),
+        "Concurrent edit\n"
+    );
 }
