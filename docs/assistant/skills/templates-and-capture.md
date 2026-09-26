@@ -39,6 +39,7 @@ compatibility matter.
 - Mutating Templater helpers may require sandbox/permission checks and should not be assumed safe.
 - For profile-scoped `note create`, check every path a template may create, move, rename, or rewrite; the connection grant is enforced on those side effects and on the final note path.
 - `tp.file.create_new` refuses an existing destination and cannot create a managed mdbase collection record through the ordinary template path; use the collection's validated write workflow instead.
+- A creation trigger rejects a note that changed after template rendering; reread the note before retrying instead of forcing the rendered content over the newer edit.
 - Creation triggers are mutations and may execute Templater JS. Keep them disabled unless requested, and inspect folder/regex mappings plus ignored folders before enabling them.
 
 ## Example Moves

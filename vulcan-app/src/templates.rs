@@ -15,7 +15,7 @@ use vulcan_core::move_note;
 use vulcan_core::move_rewrite::move_note_unlocked;
 use vulcan_core::parser::parse_document;
 use vulcan_core::paths::{
-    normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
+    normalize_relative_input_path, secure_read_to_string, RelativePathOptions,
 };
 use vulcan_core::{
     load_vault_config, resolve_note_reference, resolve_permission_profile, MoveSummary,
@@ -479,6 +479,12 @@ pub fn apply_template_creation_trigger(
             .check_write_path(&rendered.target_path)
             .map_err(AppError::operation)?;
     }
+    let expected_final = if rendered.target_path == relative_path {
+        previous.clone()
+    } else {
+        secure_read_to_string(paths.vault_root(), Path::new(&rendered.target_path))
+            .map_err(AppError::operation)?
+    };
 
     crate::plugins::dispatch_plugin_event(
         paths,
@@ -494,12 +500,13 @@ pub fn apply_template_creation_trigger(
         }),
         quiet,
     )?;
-    secure_write(
-        paths.vault_root(),
-        Path::new(&rendered.target_path),
+    write_ordinary_note_if_unchanged(
+        paths,
+        &rendered.target_path,
+        Some(&expected_final),
         &rendered.content,
-    )
-    .map_err(AppError::operation)?;
+        "template trigger",
+    )?;
 
     let mut changed_paths = rendered.changed_paths;
     changed_paths.push(rendered.target_path.clone());

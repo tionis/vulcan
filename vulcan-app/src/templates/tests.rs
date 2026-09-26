@@ -888,6 +888,97 @@ ignore_folders_on_creation = [{ folder = "Projects/Archive" }]
 }
 
 #[test]
+fn creation_trigger_rejects_a_concurrent_edit_after_rendering() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        "[templates]\ntrigger_on_file_creation = true\ntrigger_on_file_creation_mode = \"regex\"\nfile_templates = [{ regex = \"^Projects/.*\\\\.md$\", template = \"project\" }]\n",
+    )
+    .expect("config");
+    fs::write(root.join(".vulcan/templates/project.md"), "# {{title}}\n").expect("template");
+    fs::create_dir_all(root.join("Projects")).expect("projects dir");
+    fs::write(root.join("Projects/Alpha.md"), "").expect("source");
+    let paths = VaultPaths::new(root);
+    let lock = vulcan_core::write_lock::acquire_write_lock(&paths).expect("write lock");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).expect("started");
+        done_tx
+            .send(apply_template_creation_trigger(
+                &paths,
+                "Projects/Alpha.md",
+                None,
+                true,
+                None,
+            ))
+            .expect("result");
+    });
+    started_rx.recv().expect("worker started");
+    let pending = done_rx.recv_timeout(Duration::from_millis(150));
+    assert!(
+        pending.is_err(),
+        "trigger returned before the lock: {pending:?}"
+    );
+    fs::write(root.join("Projects/Alpha.md"), "concurrent edit\n").expect("concurrent edit");
+    drop(lock);
+
+    let error = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker finished")
+        .expect_err("stale trigger must fail");
+    worker.join().expect("worker join");
+    assert!(error
+        .to_string()
+        .contains("note changed during note template trigger"));
+    assert_eq!(
+        fs::read_to_string(root.join("Projects/Alpha.md")).expect("current source"),
+        "concurrent edit\n"
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn creation_trigger_writes_to_a_template_moved_target() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::create_dir_all(root.join("Projects")).expect("projects dir");
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        "[templates]\ntrigger_on_file_creation = true\ntrigger_on_file_creation_mode = \"folder\"\nfolder_templates = [{ folder = \"Projects\", template = \"move\" }]\n",
+    )
+    .expect("config");
+    fs::write(
+        root.join(".vulcan/templates/move.md"),
+        "<%* await tp.file.move('Moved/Alpha'); %>Moved body",
+    )
+    .expect("template");
+    fs::write(root.join("Projects/Alpha.md"), "").expect("source");
+    scan_vault(&VaultPaths::new(root), ScanMode::Full).expect("scan");
+
+    let report = apply_template_creation_trigger(
+        &VaultPaths::new(root),
+        "Projects/Alpha.md",
+        None,
+        true,
+        None,
+    )
+    .expect("trigger report");
+    assert_eq!(report.path, "Moved/Alpha.md");
+    assert!(!root.join("Projects/Alpha.md").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("Moved/Alpha.md")).expect("moved note"),
+        "Moved body"
+    );
+}
+
+#[test]
 fn template_creation_trigger_rejects_an_invalid_file_regex() {
     let temp_dir = tempdir().expect("temp dir");
     let root = temp_dir.path();

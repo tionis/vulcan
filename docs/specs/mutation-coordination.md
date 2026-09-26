@@ -79,7 +79,9 @@ a move checks source and destination authority, then dry-runs backlink rewrites 
 rewritten path before applying under one vault write lock. A template that redirects the final
 note path must also have write authority there. Templater file creation shares the ordinary-note
 write lock, collision refusal, and managed-collection guard. These checks prevent template side
-effects from escaping an MCP connection grant, but rendering several effects is not yet one atomic,
+effects from escaping an MCP connection grant. The direct creation-trigger entrypoint now
+stale-checks its final target under the ordinary-note lock after rendering and plugin hooks,
+including when a template moved the target. Rendering several effects is not yet one atomic,
 stale-checked transaction; the remaining template write-path audit is still open.
 
 ## Hosted scheduler
