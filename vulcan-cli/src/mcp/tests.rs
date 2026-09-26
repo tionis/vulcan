@@ -1156,6 +1156,40 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
     assert_eq!(authority.grant_id, Some(grants[0].id));
     assert_eq!(authority.tool_packs, ["notes-read"]);
 
+    let mut other_named = context.named_runtime.clone().expect("named runtime");
+    other_named.remote_id =
+        vulcan_daemon::mcp_remote::McpRemoteId::parse("other-chatgpt").expect("other remote");
+    let mut other_instance = consent_test_context(&paths, Arc::clone(&issuer));
+    other_instance.named_runtime = Some(other_named.clone());
+    assert_eq!(
+        authenticate_mcp_http_request(&other_instance, &request)
+            .expect_err("same issuer token must not cross remote instance")
+            .status,
+        401
+    );
+    let other_issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/other".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("other issuer"),
+    );
+    let mut other_audience = consent_test_context(&paths, other_issuer);
+    other_audience.named_runtime = Some(other_named);
+    assert_eq!(
+        authenticate_mcp_http_request(&other_audience, &request)
+            .expect_err("same-key token must not cross audience")
+            .status,
+        401
+    );
+
     let refresh = |token: &str| {
         McpHttpRequest {
         method: "POST".to_string(),
