@@ -682,6 +682,173 @@ pub fn secure_create(
     )
 }
 
+/// Stage and sync a complete new file before publishing it below `root`.
+/// The target must not already exist, including as a symlink.
+pub fn secure_create_atomic(
+    root: &Path,
+    relative_path: &Path,
+    contents: impl AsRef<[u8]>,
+) -> Result<(), std::io::Error> {
+    secure_create_atomic_with_hook(root, relative_path, contents.as_ref(), || Ok(()))
+}
+
+#[cfg(unix)]
+fn secure_create_atomic_with_hook<F>(
+    root: &Path,
+    relative_path: &Path,
+    contents: &[u8],
+    before_publish: F,
+) -> Result<(), std::io::Error>
+where
+    F: FnOnce() -> Result<(), std::io::Error>,
+{
+    use std::ffi::{CString, OsStr};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    fn c_string(value: &OsStr) -> Result<CString, std::io::Error> {
+        CString::new(value.as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL bytes")
+        })
+    }
+
+    let components = validated_components(relative_path)?;
+    let root = c_string(root.as_os_str())?;
+    // SAFETY: the path is NUL-terminated and the returned descriptor is owned below.
+    let root_fd = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if root_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `open` returned this unique descriptor.
+    let mut directory = unsafe { fs::File::from_raw_fd(root_fd) };
+    for component in &components[..components.len() - 1] {
+        let component = c_string(component)?;
+        // SAFETY: the descriptor is a directory and the component has no separator.
+        let mut next_fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if next_fd < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+            // SAFETY: mkdirat operates under the already-open no-follow parent.
+            if unsafe { libc::mkdirat(directory.as_raw_fd(), component.as_ptr(), 0o755) } < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+            } else {
+                directory.sync_all()?;
+            }
+            // SAFETY: re-open the created or concurrently present component without following it.
+            next_fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    component.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+        }
+        if next_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `openat` returned this unique descriptor.
+        directory = unsafe { fs::File::from_raw_fd(next_fd) };
+    }
+    let target = c_string(components.last().expect("validated file name"))?;
+    let temporary_name = CString::new(format!(".vulcan-create-{}", ulid::Ulid::new()))
+        .expect("generated name has no NUL");
+    // SAFETY: exclusive descriptor-relative open creates a new temporary in the pinned parent.
+    let temporary_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            temporary_name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o644,
+        )
+    };
+    if temporary_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `openat` returned this unique descriptor.
+    let mut temporary = unsafe { fs::File::from_raw_fd(temporary_fd) };
+    let result = (|| {
+        temporary.write_all(contents)?;
+        temporary.sync_all()?;
+        before_publish()?;
+        // SAFETY: both names are NUL-terminated under the same pinned directory.
+        // Hard-link publication fails with EEXIST rather than replacing any target.
+        if unsafe {
+            libc::linkat(
+                directory.as_raw_fd(),
+                temporary_name.as_ptr(),
+                directory.as_raw_fd(),
+                target.as_ptr(),
+                0,
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: remove only the generated staging name after the complete target is linked.
+        if unsafe { libc::unlinkat(directory.as_raw_fd(), temporary_name.as_ptr(), 0) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        directory.sync_all()
+    })();
+    if result.is_err() {
+        // SAFETY: cleanup is constrained to the generated name in the pinned parent.
+        unsafe { libc::unlinkat(directory.as_raw_fd(), temporary_name.as_ptr(), 0) };
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn secure_create_atomic_with_hook<F>(
+    root: &Path,
+    relative_path: &Path,
+    contents: &[u8],
+    before_publish: F,
+) -> Result<(), std::io::Error>
+where
+    F: FnOnce() -> Result<(), std::io::Error>,
+{
+    let components = validated_components(relative_path)?;
+    let root = root.canonicalize()?;
+    let mut parent = root;
+    for component in &components[..components.len() - 1] {
+        parent.push(component);
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "creation parent is not a plain directory",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&parent)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let target = parent.join(components.last().expect("validated file name"));
+    let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
+    temporary.write_all(contents)?;
+    temporary.as_file().sync_all()?;
+    before_publish()?;
+    temporary
+        .persist_noclobber(target)
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
 /// Open a new regular file below `root` without following symlinks in any path
 /// component. Callers can stream large trusted-by-digest payloads into the
 /// returned handle without buffering them in memory.
@@ -1294,6 +1461,65 @@ mod tests {
                 .expect("symlink");
             assert!(secure_replace(temporary.path(), Path::new("linked.md"), "new").is_err());
         }
+    }
+
+    #[test]
+    fn secure_create_atomic_publishes_only_complete_bytes_and_refuses_collisions() {
+        let temporary = TempDir::new().expect("temporary root");
+        let relative = Path::new("notes/new.md");
+        secure_create_atomic_with_hook(temporary.path(), relative, b"complete\n", || {
+            assert!(!temporary.path().join(relative).exists());
+            Err(std::io::Error::other(
+                "simulated interruption before publish",
+            ))
+        })
+        .expect_err("failed staging must not publish a target");
+        assert!(!temporary.path().join(relative).exists());
+        assert_eq!(
+            fs::read_dir(temporary.path().join("notes"))
+                .expect("notes directory")
+                .count(),
+            0,
+            "failed staging must remove its temporary file"
+        );
+
+        secure_create_atomic(temporary.path(), relative, "complete\n")
+            .expect("publish complete note");
+        assert_eq!(
+            secure_read_to_string(temporary.path(), relative).expect("published note"),
+            "complete\n"
+        );
+        assert_eq!(
+            secure_create_atomic(temporary.path(), relative, "replacement\n")
+                .expect_err("creation must not overwrite")
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            secure_read_to_string(temporary.path(), relative).expect("original note"),
+            "complete\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_create_atomic_does_not_follow_symlinked_targets_or_parents() {
+        let temporary = TempDir::new().expect("temporary root");
+        fs::create_dir(temporary.path().join("real")).expect("real directory");
+        std::os::unix::fs::symlink("real", temporary.path().join("linked"))
+            .expect("linked directory");
+        assert!(
+            secure_create_atomic(temporary.path(), Path::new("linked/note.md"), "content").is_err()
+        );
+        std::os::unix::fs::symlink("real/missing.md", temporary.path().join("alias.md"))
+            .expect("linked target");
+        assert_eq!(
+            secure_create_atomic(temporary.path(), Path::new("alias.md"), "content")
+                .expect_err("symlink collision")
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert!(!temporary.path().join("real/missing.md").exists());
     }
 
     #[test]
