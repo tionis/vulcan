@@ -484,6 +484,19 @@ mod tests {
     use vulcan_app::sync_state::SyncStateStore;
     use vulcan_core::VaultPaths;
 
+    fn normalize_checkout_line_endings(contents: &str) -> String {
+        contents.replace("\r\n", "\n")
+    }
+
+    #[test]
+    fn checkout_assertions_accept_crlf_without_changing_the_expected_text() {
+        assert_eq!(
+            normalize_checkout_line_endings("resolved\r\n"),
+            "resolved\n"
+        );
+        assert_eq!(normalize_checkout_line_endings("resolved\n"), "resolved\n");
+    }
+
     struct ResolvingProvider;
 
     impl ResolutionAgentProvider for ResolvingProvider {
@@ -657,7 +670,7 @@ mod tests {
         );
         assert!(entry.resolution_commit.is_some());
         assert_eq!(
-            fs::read_to_string(reader.join("Home.md")).unwrap(),
+            normalize_checkout_line_endings(&fs::read_to_string(reader.join("Home.md")).unwrap()),
             "resolved\n"
         );
         assert_eq!(
