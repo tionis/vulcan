@@ -26,8 +26,10 @@ use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
 };
 use vulcan_core::expression::parse_expression;
-use vulcan_core::mdbase::{is_mdbase_record_path, load_mdbase_collection};
-use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::paths::{
+    normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
+    RelativePathOptions,
+};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, evaluate_base_file, evaluate_tasks_query,
@@ -3243,30 +3245,14 @@ fn apply_task_convert_line(
     )?;
 
     if !dry_run && !routed {
-        let collection = load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?;
-        let task_path = paths.vault_root().join(&planned.relative_path);
-        let task_is_managed = collection
-            .as_ref()
-            .map(|collection| is_mdbase_record_path(collection, &planned.relative_path))
-            .transpose()
-            .map_err(AppError::operation)?
-            .unwrap_or(false);
-        let source_is_managed = collection
-            .as_ref()
-            .map(|collection| is_mdbase_record_path(collection, &source_path))
-            .transpose()
-            .map_err(AppError::operation)?
-            .unwrap_or(false);
-        if !task_is_managed {
-            if let Some(parent) = task_path.parent() {
-                fs::create_dir_all(parent).map_err(AppError::operation)?;
-            }
-            fs::write(&task_path, rendered_task).map_err(AppError::operation)?;
-        }
-        if !source_is_managed {
-            fs::write(paths.vault_root().join(&source_path), updated_source)
-                .map_err(AppError::operation)?;
-        }
+        write_ordinary_task_conversion(
+            paths,
+            &source_path,
+            &source,
+            &updated_source,
+            &planned.relative_path,
+            &rendered_task,
+        )?;
     }
 
     Ok(TaskConvertReport {
@@ -3284,6 +3270,37 @@ fn apply_task_convert_line(
         body: planned.body,
         changed_paths,
     })
+}
+
+fn write_ordinary_task_conversion(
+    paths: &VaultPaths,
+    source_path: &str,
+    source_before: &str,
+    source_after: &str,
+    task_path: &str,
+    task_contents: &str,
+) -> Result<(), AppError> {
+    vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
+    let _write_lock =
+        vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    let current = secure_read_to_string(paths.vault_root(), Path::new(source_path))
+        .map_err(AppError::operation)?;
+    if current != source_before {
+        return Err(AppError::operation(
+            "source note changed during task conversion; reread it before retrying",
+        ));
+    }
+    secure_create(paths.vault_root(), Path::new(task_path), task_contents)
+        .map_err(AppError::operation)?;
+    if let Err(error) = secure_write(paths.vault_root(), Path::new(source_path), source_after) {
+        if secure_read_to_string(paths.vault_root(), Path::new(task_path))
+            .is_ok_and(|current| current == task_contents)
+        {
+            let _ = fs::remove_file(paths.vault_root().join(task_path));
+        }
+        return Err(AppError::operation(error));
+    }
+    Ok(())
 }
 
 fn read_existing_note_source(paths: &VaultPaths, note: &str) -> Result<(String, String), AppError> {

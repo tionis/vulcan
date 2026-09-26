@@ -9,10 +9,10 @@ use super::{
     build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
     build_tasks_list_report, build_tasks_next_report, build_tasks_view_list_report,
     build_tasks_view_report, current_utc_date_string, process_due_tasknote_auto_archives,
-    TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
-    TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
-    TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest, TaskTrackStopRequest,
-    TaskTrackSummaryPeriod,
+    write_ordinary_task_conversion, TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest,
+    TaskConvertRequest, TaskCreateRequest, TaskEvalRequest, TaskListRequest,
+    TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest,
+    TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
 };
 use crate::templates::render_note_from_parts;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -966,6 +966,46 @@ fn apply_task_convert_line_dry_run_reports_both_changed_paths() {
         vec!["Inbox.md".to_string(), report.target_path.clone()]
     );
     assert!(!temp_dir.path().join(&report.target_path).exists());
+}
+
+#[test]
+fn ordinary_task_line_conversion_refuses_stale_source_and_late_target_collision() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    fs::write(temp_dir.path().join("Inbox.md"), "newer source\n").expect("seed source");
+
+    let error = write_ordinary_task_conversion(
+        &paths,
+        "Inbox.md",
+        "old source\n",
+        "updated source\n",
+        "Tasks/New.md",
+        "new task\n",
+    )
+    .expect_err("stale source must fail");
+    assert!(error.to_string().contains("source note changed"));
+    assert!(!temp_dir.path().join("Tasks/New.md").exists());
+
+    fs::create_dir_all(temp_dir.path().join("Tasks")).expect("task folder");
+    fs::write(temp_dir.path().join("Tasks/New.md"), "other task\n").expect("concurrent task");
+    assert!(write_ordinary_task_conversion(
+        &paths,
+        "Inbox.md",
+        "newer source\n",
+        "updated source\n",
+        "Tasks/New.md",
+        "new task\n",
+    )
+    .is_err());
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("source"),
+        "newer source\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Tasks/New.md")).expect("target"),
+        "other task\n"
+    );
 }
 
 #[test]

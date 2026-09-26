@@ -15975,6 +15975,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("task create/update/convert/archive workflows"));
     assert!(task_management.contains("commit through the validated journal"));
     assert!(task_management.contains("source rewrite and new task are one journaled change"));
+    assert!(task_management.contains("two-file write is not yet crash-atomic"));
     assert!(task_management.contains("do not bypass it with a direct Markdown edit"));
     assert!(task_management.contains("serialized with other Vulcan vault writes"));
     assert!(task_management.contains("reread the task and its source note"));

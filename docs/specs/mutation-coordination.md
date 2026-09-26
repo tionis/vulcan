@@ -76,6 +76,9 @@ Single-note TaskNotes conversion also uses that lock and rejects a source change
 purely ordinary line-to-note conversion is still a multi-file transaction gap.
 When either conversion endpoint is an mdbase record, the ordinary source and managed target now
 share one validated journal batch; the purely ordinary two-file case remains open.
+The purely ordinary case now holds one vault lock across a stale-source check, exclusive target
+creation, and source rewrite. It rolls back its unchanged new target if the source write fails,
+but a process crash between writes still requires repair; no durable ordinary batch journal exists.
 Ordinary TaskNotes add uses the same lock and exclusive create to reject a late destination collision.
 Task metadata updates to ordinary notes, including pomodoro state stored in daily notes, check the
 original source bytes under that lock; creating a missing periodic note refuses a late collision.
