@@ -19,7 +19,50 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::tempdir;
 use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
-use vulcan_core::{scan_vault, PermissionFilter, ScanMode, VaultConfig, VaultPaths};
+use vulcan_core::{
+    resolve_permission_profile, scan_vault, PermissionFilter, ProfilePermissionGuard, ScanMode,
+    VaultConfig, VaultPaths,
+};
+
+#[test]
+fn scoped_template_move_rejects_rewrites_outside_its_grant() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    let paths = VaultPaths::new(root);
+    fs::create_dir_all(root.join(".vulcan")).expect("config dir");
+    fs::create_dir_all(root.join("Allowed")).expect("allowed dir");
+    fs::create_dir_all(root.join("Denied")).expect("denied dir");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = { allow = [\"folder:Allowed/**\"] }\nrefactor = { allow = [\"folder:Allowed/**\"] }\n",
+    )
+    .expect("config");
+    fs::write(root.join("Allowed/Source.md"), "# Source\n").expect("source");
+    fs::write(root.join("Denied/Backlink.md"), "[[Source]]\n").expect("backlink");
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("agent")).expect("profile"),
+    );
+
+    let error = super::guarded_template_move(
+        &paths,
+        "Allowed/Source.md",
+        "Allowed/Moved.md",
+        Some(&guard),
+    )
+    .expect_err("denied backlink rewrite");
+    assert!(!error.is_empty());
+    assert_eq!(
+        fs::read_to_string(root.join("Allowed/Source.md")).expect("source retained"),
+        "# Source\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("Denied/Backlink.md")).expect("backlink retained"),
+        "[[Source]]\n"
+    );
+    assert!(!root.join("Allowed/Moved.md").exists());
+}
 
 fn fixed_template_timestamp() -> TemplateTimestamp {
     TemplateTimestamp::from_millis(
@@ -233,7 +276,7 @@ fn native_renderer_supports_quickadd_date_and_file_tokens() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session
@@ -272,7 +315,7 @@ fn native_renderer_supports_quickadd_value_and_vdate_tokens() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session
@@ -318,7 +361,7 @@ fn native_renderer_supports_quickadd_global_variables() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session

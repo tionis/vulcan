@@ -37,6 +37,7 @@ compatibility matter.
 - Preview templates that include JS, dates, or user variables.
 - Keep capture append-only unless the user explicitly asks to reorganize captured material.
 - Mutating Templater helpers may require sandbox/permission checks and should not be assumed safe.
+- For profile-scoped `note create`, check every path a template may create, move, rename, or rewrite; the connection grant is enforced on those side effects and on the final note path.
 - Creation triggers are mutations and may execute Templater JS. Keep them disabled unless requested, and inspect folder/regex mappings plus ignored folders before enabling them.
 
 ## Example Moves

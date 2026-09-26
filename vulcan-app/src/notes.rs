@@ -5,9 +5,9 @@ use crate::mdbase::{
 use crate::plugins;
 use crate::templates::{
     find_frontmatter_block, load_named_template, parse_frontmatter_document,
-    render_creation_trigger, render_loaded_template, render_note_from_parts,
-    LoadedTemplateRenderRequest, TemplateEngineKind, TemplateRunMode, TemplateTimestamp,
-    YamlMapping, YamlValue,
+    render_creation_trigger_with_authority, render_loaded_template_with_authority,
+    render_note_from_parts, LoadedTemplateRenderRequest, TemplateEngineKind, TemplateRunMode,
+    TemplateTimestamp, YamlMapping, YamlValue,
 };
 use crate::AppError;
 use regex::Regex;
@@ -30,10 +30,11 @@ use vulcan_core::{
     period_range_for_date, query_backlinks, query_backlinks_with_filter, query_links_with_filter,
     query_note_link_confidence_with_filter, render_note_fragment_html, render_note_html,
     render_vault_html, resolve_link, resolve_note_reference, resolve_note_reference_with_filter,
-    BacklinkRecord, DoctorByteRange, DoctorDiagnosticIssue, GraphConfidenceBreakdown,
-    GraphQueryError, LinkResolutionProblem, NoteLineSpan, NoteMatchKind, ParsedDocument,
-    PeriodicConfig, PermissionFilter, PluginEvent, RefactorChange, ResolverDocument, ResolverLink,
-    VaultConfig, VaultPaths,
+    resolve_permission_profile, BacklinkRecord, DoctorByteRange, DoctorDiagnosticIssue,
+    GraphConfidenceBreakdown, GraphQueryError, LinkResolutionProblem, NoteLineSpan, NoteMatchKind,
+    ParsedDocument, PeriodicConfig, PermissionFilter, PermissionGuard, PluginEvent,
+    ProfilePermissionGuard, RefactorChange, ResolverDocument, ResolverLink, VaultConfig,
+    VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -823,6 +824,13 @@ pub fn apply_note_create(
 ) -> Result<NoteCreateReport, AppError> {
     let requested_path = normalize_note_path(&request.path)?;
     let config = load_vault_config(paths).config;
+    let mutation_guard = permission_profile
+        .map(|profile| {
+            resolve_permission_profile(paths, Some(profile))
+                .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                .map_err(AppError::operation)
+        })
+        .transpose()?;
     let mut warnings = Vec::new();
     let mut frontmatter = request.frontmatter.clone();
     let mut body = request.body.clone();
@@ -835,7 +843,7 @@ pub fn apply_note_create(
     if let Some(template_name) = request.template.as_deref() {
         let loaded = load_named_template(paths, &config, template_name)?;
         let vars = HashMap::new();
-        let rendered = render_loaded_template(
+        let rendered = render_loaded_template_with_authority(
             paths,
             &config,
             &loaded,
@@ -847,6 +855,8 @@ pub fn apply_note_create(
                 allow_mutations: true,
                 run_mode: TemplateRunMode::Create,
             },
+            None,
+            mutation_guard.as_ref(),
         )?;
         let (template_frontmatter, template_body) =
             parse_frontmatter_document(&rendered.content, true).map_err(AppError::operation)?;
@@ -862,9 +872,14 @@ pub fn apply_note_create(
     } else {
         let initial_content =
             render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?;
-        if let Some(rendered) =
-            render_creation_trigger(paths, &config, &requested_path, &initial_content, None)?
-        {
+        if let Some(rendered) = render_creation_trigger_with_authority(
+            paths,
+            &config,
+            &requested_path,
+            &initial_content,
+            None,
+            mutation_guard.as_ref(),
+        )? {
             final_path.clone_from(&rendered.target_path);
             template = rendered.template;
             engine = Some(rendered.engine.as_str().to_string());
@@ -876,6 +891,11 @@ pub fn apply_note_create(
     }
 
     let absolute_path = paths.vault_root().join(&final_path);
+    if let Some(guard) = mutation_guard.as_ref() {
+        guard
+            .check_write_path(&final_path)
+            .map_err(AppError::operation)?;
+    }
     if absolute_path.exists() {
         return Err(AppError::operation(format!(
             "destination note already exists: {final_path}"
@@ -1001,7 +1021,7 @@ pub fn apply_note_append(
     }
 
     let config = load_vault_config(paths).config;
-    let target = load_note_append_target(paths, &config, request)?;
+    let target = load_note_append_target(paths, &config, request, permission_profile)?;
     let rendered =
         crate::templates::render_template_request(crate::templates::TemplateRenderRequest {
             paths,
@@ -1471,6 +1491,7 @@ pub fn render_periodic_note_contents(
     period_type: &str,
     relative_path: &str,
     warnings: &mut Vec<String>,
+    permission_profile: Option<&str>,
 ) -> Result<String, AppError> {
     let config = load_vault_config(paths).config;
     let template_name = config
@@ -1491,7 +1512,14 @@ pub fn render_periodic_note_contents(
         }
     };
     let vars = HashMap::new();
-    let rendered = render_loaded_template(
+    let mutation_guard = permission_profile
+        .map(|profile| {
+            resolve_permission_profile(paths, Some(profile))
+                .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                .map_err(AppError::operation)
+        })
+        .transpose()?;
+    let rendered = render_loaded_template_with_authority(
         paths,
         &config,
         &loaded,
@@ -1503,6 +1531,8 @@ pub fn render_periodic_note_contents(
             allow_mutations: true,
             run_mode: TemplateRunMode::Create,
         },
+        None,
+        mutation_guard.as_ref(),
     )?;
     warnings.extend(loaded.template.warning);
     warnings.extend(rendered.warnings);
@@ -2221,6 +2251,7 @@ fn load_note_append_target(
     paths: &VaultPaths,
     config: &vulcan_core::VaultConfig,
     request: &NoteAppendRequest,
+    permission_profile: Option<&str>,
 ) -> Result<LoadedAppendTarget, AppError> {
     if let Some(period_type) = request.periodic.as_deref() {
         let target =
@@ -2239,7 +2270,13 @@ fn load_note_append_target(
             )));
         } else {
             (
-                render_periodic_note_contents(paths, period_type, &target.path, &mut warnings)?,
+                render_periodic_note_contents(
+                    paths,
+                    period_type,
+                    &target.path,
+                    &mut warnings,
+                    permission_profile,
+                )?,
                 true,
             )
         };
@@ -2500,6 +2537,126 @@ mod tests {
         assert!(rendered.contains("reviewed: true"));
         assert!(rendered.contains("# Idea"));
         assert!(rendered.contains("Template body\n\nExtra details\n"));
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn scoped_note_create_rejects_template_side_effect_outside_the_grant() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/config.toml"),
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = { allow = [\"folder:Allowed/**\"] }\n",
+        )
+        .expect("config");
+        fs::write(
+            root.join(".vulcan/templates/side.md"),
+            "<%* await tp.file.create_new('side', 'Denied/Leak'); %>Main body",
+        )
+        .expect("template");
+
+        let error = apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Allowed/Main".to_string(),
+                template: Some("side".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            Some("agent"),
+            true,
+        )
+        .expect_err("template side effect must be denied");
+        assert!(!error.to_string().is_empty());
+        assert!(!root.join("Denied/Leak.md").exists());
+        assert!(!root.join("Allowed/Main.md").exists());
+
+        fs::write(
+            root.join(".vulcan/templates/side.md"),
+            "<%* await tp.file.create_new('side', 'Allowed/Child'); %>Main body",
+        )
+        .expect("allowed template");
+        apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Allowed/Main".to_string(),
+                template: Some("side".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            Some("agent"),
+            true,
+        )
+        .expect("allowed side effect");
+        assert!(root.join("Allowed/Child.md").exists());
+        assert!(root.join("Allowed/Main.md").exists());
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn scoped_note_create_rejects_template_target_move_outside_the_grant() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/config.toml"),
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = { allow = [\"folder:Allowed/**\"] }\n",
+        )
+        .expect("config");
+        fs::write(
+            root.join(".vulcan/templates/move.md"),
+            "<%* await tp.file.move('Denied/Moved'); %>Main body",
+        )
+        .expect("template");
+
+        apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Allowed/Main".to_string(),
+                template: Some("move".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            Some("agent"),
+            true,
+        )
+        .expect_err("template target move must be denied");
+        assert!(!root.join("Denied/Moved.md").exists());
+        assert!(!root.join("Allowed/Main.md").exists());
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn scoped_note_create_rejects_creation_trigger_side_effect_outside_the_grant() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/config.toml"),
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = { allow = [\"folder:Allowed/**\"] }\n[templates]\ntrigger_on_file_creation = true\ntrigger_on_file_creation_mode = \"folder\"\nfolder_templates = [{ folder = \"Allowed\", template = \"side\" }]\n",
+        )
+        .expect("config");
+        fs::write(
+            root.join(".vulcan/templates/side.md"),
+            "<%* await tp.file.create_new('side', 'Denied/Leak'); %>Main body",
+        )
+        .expect("template");
+
+        apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Allowed/Main".to_string(),
+                template: None,
+                frontmatter: None,
+                body: String::new(),
+            },
+            Some("agent"),
+            true,
+        )
+        .expect_err("creation trigger side effect must be denied");
+        assert!(!root.join("Denied/Leak.md").exists());
+        assert!(!root.join("Allowed/Main.md").exists());
     }
 
     #[test]

@@ -16150,6 +16150,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("Known terminal status is retained for 30 days"));
     assert!(mcp_skill.contains("unknown terminal status is retained for 90 days"));
     assert!(mcp_skill.contains("After status expires, inspect the vault"));
+    assert!(mcp_skill.contains("template-created files, template moves/renames"));
+    assert!(mcp_skill.contains("obtain fresh consent"));
     assert!(mcp_skill.contains("final canonical HTTPS URL"));
     assert!(mcp_skill.contains(
         "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"

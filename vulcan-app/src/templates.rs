@@ -11,12 +11,15 @@ use vulcan_core::expression::functions::{
     format_date, parse_date_like_string, parse_date_with_format,
 };
 use vulcan_core::move_note;
+use vulcan_core::move_rewrite::move_note_unlocked;
 use vulcan_core::parser::parse_document;
 use vulcan_core::paths::{
-    normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
+    normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
+    RelativePathOptions,
 };
 use vulcan_core::{
-    load_vault_config, resolve_note_reference, PermissionFilter, PluginEvent,
+    load_vault_config, resolve_note_reference, resolve_permission_profile, MoveSummary,
+    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard,
     TemplaterFileCreationMode, VaultConfig, VaultPaths,
 };
 
@@ -278,9 +281,17 @@ pub fn render_template_request_with_filter(
     request: TemplateRenderRequest<'_>,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplateRenderOutput, CliError> {
+    render_template_request_with_authority(request, read_filter, None)
+}
+
+fn render_template_request_with_authority(
+    request: TemplateRenderRequest<'_>,
+    read_filter: Option<&PermissionFilter>,
+    mutation_guard: Option<&ProfilePermissionGuard>,
+) -> Result<TemplateRenderOutput, CliError> {
     let engine = detect_template_engine(request.template_text, request.engine);
     let template_text = request.template_text;
-    let mut session = TemplateSession::new(request, engine, read_filter);
+    let mut session = TemplateSession::new(request, engine, read_filter, mutation_guard);
     let content = session.render_source(template_text, engine, 0)?;
     let content = session.merge_pending_frontmatter(&content)?;
     #[cfg(feature = "js_runtime")]
@@ -293,6 +304,36 @@ pub fn render_template_request_with_filter(
         diagnostics: session.diagnostics,
         changed_paths: session.changed_paths.into_iter().collect(),
     })
+}
+
+fn guarded_template_move(
+    paths: &VaultPaths,
+    source: &str,
+    destination: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<MoveSummary, String> {
+    let Some(guard) = guard else {
+        return move_note(paths, source, destination, false).map_err(|error| error.to_string());
+    };
+    guard
+        .check_read_path(source)
+        .and_then(|()| guard.check_write_path(source))
+        .and_then(|()| guard.check_refactor_path(source))
+        .and_then(|()| guard.check_write_path(destination))
+        .and_then(|()| guard.check_refactor_path(destination))
+        .map_err(|error| error.to_string())?;
+    let _lock =
+        vulcan_core::write_lock::acquire_write_lock(paths).map_err(|error| error.to_string())?;
+    let plan =
+        move_note_unlocked(paths, source, destination, true).map_err(|error| error.to_string())?;
+    for rewrite in &plan.rewritten_files {
+        guard
+            .check_read_path(&rewrite.path)
+            .and_then(|()| guard.check_write_path(&rewrite.path))
+            .and_then(|()| guard.check_refactor_path(&rewrite.path))
+            .map_err(|error| error.to_string())?;
+    }
+    move_note_unlocked(paths, source, destination, false).map_err(|error| error.to_string())
 }
 
 pub fn build_template_list_report(paths: &VaultPaths) -> Result<TemplateListReport, AppError> {
@@ -351,7 +392,18 @@ pub fn render_loaded_template_with_filter(
     request: &LoadedTemplateRenderRequest<'_>,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplateRenderOutput, AppError> {
-    render_template_request_with_filter(
+    render_loaded_template_with_authority(paths, vault_config, loaded, request, read_filter, None)
+}
+
+pub(crate) fn render_loaded_template_with_authority(
+    paths: &VaultPaths,
+    vault_config: &VaultConfig,
+    loaded: &LoadedTemplateSource,
+    request: &LoadedTemplateRenderRequest<'_>,
+    read_filter: Option<&PermissionFilter>,
+    mutation_guard: Option<&ProfilePermissionGuard>,
+) -> Result<TemplateRenderOutput, AppError> {
+    render_template_request_with_authority(
         TemplateRenderRequest {
             paths,
             vault_config,
@@ -366,6 +418,7 @@ pub fn render_loaded_template_with_filter(
             run_mode: request.run_mode,
         },
         read_filter,
+        mutation_guard,
     )
 }
 
@@ -395,8 +448,21 @@ pub fn apply_template_creation_trigger(
     }
     let previous = secure_read_to_string(paths.vault_root(), Path::new(&relative_path))
         .map_err(AppError::operation)?;
-    let Some(rendered) =
-        render_creation_trigger(paths, &config, &relative_path, &previous, read_filter)?
+    let mutation_guard = permission_profile
+        .map(|profile| {
+            resolve_permission_profile(paths, Some(profile))
+                .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                .map_err(AppError::operation)
+        })
+        .transpose()?;
+    let Some(rendered) = render_creation_trigger_with_authority(
+        paths,
+        &config,
+        &relative_path,
+        &previous,
+        read_filter,
+        mutation_guard.as_ref(),
+    )?
     else {
         return Ok(TemplateCreationTriggerReport {
             path: relative_path,
@@ -408,6 +474,11 @@ pub fn apply_template_creation_trigger(
             changed_paths: Vec::new(),
         });
     };
+    if let Some(guard) = mutation_guard.as_ref() {
+        guard
+            .check_write_path(&rendered.target_path)
+            .map_err(AppError::operation)?;
+    }
 
     crate::plugins::dispatch_plugin_event(
         paths,
@@ -445,12 +516,13 @@ pub fn apply_template_creation_trigger(
     })
 }
 
-pub(crate) fn render_creation_trigger(
+pub(crate) fn render_creation_trigger_with_authority(
     paths: &VaultPaths,
     config: &VaultConfig,
     relative_path: &str,
     contents: &str,
     read_filter: Option<&PermissionFilter>,
+    mutation_guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Option<RenderedCreationTrigger>, AppError> {
     if !config.templates.trigger_on_file_creation
         || creation_trigger_path_is_excluded(config, relative_path)
@@ -471,7 +543,7 @@ pub(crate) fn render_creation_trigger(
     if let Some(template_name) = template_name {
         let loaded = load_named_template(paths, config, template_name)?;
         let vars = HashMap::new();
-        let rendered = render_loaded_template_with_filter(
+        let rendered = render_loaded_template_with_authority(
             paths,
             config,
             &loaded,
@@ -484,6 +556,7 @@ pub(crate) fn render_creation_trigger(
                 run_mode: TemplateRunMode::Create,
             },
             read_filter,
+            mutation_guard,
         )?;
         let (target_frontmatter, _) =
             parse_frontmatter_document(contents, false).map_err(AppError::operation)?;
@@ -519,7 +592,7 @@ pub(crate) fn render_creation_trigger(
         config.templates.templater_folder.as_deref(),
     )?;
     let vars = HashMap::new();
-    let rendered = render_template_request_with_filter(
+    let rendered = render_template_request_with_authority(
         TemplateRenderRequest {
             paths,
             vault_config: config,
@@ -534,6 +607,7 @@ pub(crate) fn render_creation_trigger(
             run_mode: TemplateRunMode::Create,
         },
         read_filter,
+        mutation_guard,
     )?;
     Ok(Some(RenderedCreationTrigger {
         content: rendered.content,
@@ -821,6 +895,7 @@ struct TemplateSession<'a> {
     quickadd_value_vars: HashMap<String, String>,
     quickadd_date_vars: HashMap<String, i64>,
     read_filter: Option<PermissionFilter>,
+    mutation_guard: Option<ProfilePermissionGuard>,
     #[cfg(feature = "js_runtime")]
     js_runtime: Option<JsTemplateRuntime>,
 }
@@ -830,6 +905,7 @@ impl<'a> TemplateSession<'a> {
         request: TemplateRenderRequest<'a>,
         _engine: TemplateEngineKind,
         read_filter: Option<&PermissionFilter>,
+        mutation_guard: Option<&ProfilePermissionGuard>,
     ) -> Self {
         Self {
             target_path: request.target_path.to_string(),
@@ -845,6 +921,7 @@ impl<'a> TemplateSession<'a> {
             quickadd_value_vars: HashMap::new(),
             quickadd_date_vars: HashMap::new(),
             read_filter: read_filter.cloned(),
+            mutation_guard: mutation_guard.cloned(),
             #[cfg(feature = "js_runtime")]
             js_runtime: None,
         }
@@ -1537,13 +1614,17 @@ impl<'a> TemplateSession<'a> {
             }
             other => template_value_to_string(&other),
         };
-        let absolute = self.request.paths.vault_root().join(&normalized);
-        if let Some(parent) = absolute.parent() {
-            fs::create_dir_all(parent)
+        if let Some(guard) = self.mutation_guard.as_ref() {
+            guard
+                .check_write_path(&normalized)
                 .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         }
-        fs::write(&absolute, content)
-            .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
+        secure_create(
+            self.request.paths.vault_root(),
+            Path::new(&normalized),
+            content,
+        )
+        .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         self.changed_paths.insert(normalized.clone());
         Ok(TemplateValue::Object(file_object_json(&normalized)))
     }
@@ -1569,9 +1650,18 @@ impl<'a> TemplateSession<'a> {
             .join(&self.target_path)
             .is_file()
         {
-            let summary = move_note(self.request.paths, &self.target_path, &normalized, false)
-                .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
+            let summary = guarded_template_move(
+                self.request.paths,
+                &self.target_path,
+                &normalized,
+                self.mutation_guard.as_ref(),
+            )
+            .map_err(NativeExpressionError::Message)?;
             self.record_move_summary(&summary);
+        } else if let Some(guard) = self.mutation_guard.as_ref() {
+            guard
+                .check_write_path(&normalized)
+                .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         }
         self.target_path = normalized;
         Ok(TemplateValue::String(String::new()))
@@ -2006,6 +2096,7 @@ struct JsTemplateState {
     changed_paths: BTreeSet<String>,
     diagnostics: Vec<String>,
     read_filter: Option<PermissionFilter>,
+    mutation_guard: Option<ProfilePermissionGuard>,
 }
 
 #[cfg(feature = "js_runtime")]
@@ -2024,6 +2115,7 @@ impl JsTemplateState {
             changed_paths: session.changed_paths.clone(),
             diagnostics: session.diagnostics.clone(),
             read_filter: session.read_filter.clone(),
+            mutation_guard: session.mutation_guard.clone(),
         }
     }
 
@@ -2492,11 +2584,13 @@ fn js_file_create_new(
         format!("{}/{}.md", folder.trim_matches('/'), filename)
     };
     let normalized = normalize_note_output_path(&path)?;
-    let absolute = state.paths.vault_root().join(&normalized);
-    if let Some(parent) = absolute.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    if let Some(guard) = state.mutation_guard.as_ref() {
+        guard
+            .check_write_path(&normalized)
+            .map_err(|error| error.to_string())?;
     }
-    fs::write(&absolute, content).map_err(|error| error.to_string())?;
+    secure_create(state.paths.vault_root(), Path::new(&normalized), content)
+        .map_err(|error| error.to_string())?;
     state.changed_paths.insert(normalized.clone());
     Ok(JsonValue::Object(file_object_json(&normalized)))
 }
@@ -2510,12 +2604,20 @@ fn js_file_move(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<(), S
     let new_path = args.first().and_then(JsonValue::as_str).unwrap_or_default();
     let normalized = normalize_note_output_path(new_path)?;
     if state.paths.vault_root().join(&state.target_path).is_file() {
-        let summary = move_note(&state.paths, &state.target_path, &normalized, false)
-            .map_err(|error| error.to_string())?;
+        let summary = guarded_template_move(
+            &state.paths,
+            &state.target_path,
+            &normalized,
+            state.mutation_guard.as_ref(),
+        )?;
         state.changed_paths.insert(summary.destination_path.clone());
         for rewritten in summary.rewritten_files {
             state.changed_paths.insert(rewritten.path);
         }
+    } else if let Some(guard) = state.mutation_guard.as_ref() {
+        guard
+            .check_write_path(&normalized)
+            .map_err(|error| error.to_string())?;
     }
     state.target_path = normalized;
     Ok(())

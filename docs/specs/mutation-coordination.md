@@ -73,6 +73,14 @@ stale-checked note write lock after managed-mdbase routing. This covers the same
 multi-file task conversion and other task side effects still require a separate coordinated
 transaction audit.
 
+For profile-scoped note creation, explicit templates and creation triggers carry the same path
+grant into Templater's native and JS file-create/move callbacks. A file create must be writable;
+a move checks source and destination authority, then dry-runs backlink rewrites and checks every
+rewritten path before applying under one vault write lock. A template that redirects the final
+note path must also have write authority there. These checks prevent template side effects from
+escaping an MCP connection grant, but rendering several side effects is not yet one atomic,
+stale-checked transaction; the remaining template write-path audit is still open.
+
 ## Hosted scheduler
 
 `vulcan_daemon::mutation_scheduler::MutationScheduler` is the process-wide admission layer owned by

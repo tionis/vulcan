@@ -4638,7 +4638,7 @@ fn load_note_frontmatter_for_mutation(
     } else if let Some(period_type) = create_periodic {
         let mut warnings = Vec::new();
         (
-            render_periodic_note_contents(paths, period_type, relative_path, &mut warnings)?,
+            render_periodic_note_contents(paths, period_type, relative_path, &mut warnings, None)?,
             true,
         )
     } else {
