@@ -7820,8 +7820,7 @@ Examples:
         oauth_local_approval_token: Option<String>,
         #[arg(
             long,
-            default_value = "local-user",
-            help = "Subject claim used by Vulcan's built-in MCP OAuth issuer"
+            help = "Subject claim for Vulcan's built-in MCP OAuth issuer; defaults to local-user unless IndieAuth selects the identity"
         )]
         oauth_local_subject: Option<String>,
         #[arg(

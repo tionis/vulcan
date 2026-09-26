@@ -18314,7 +18314,7 @@
             ]
           },
           {
-            "help": "Subject claim used by Vulcan's built-in MCP OAuth issuer",
+            "help": "Subject claim for Vulcan's built-in MCP OAuth issuer; defaults to local-user unless IndieAuth selects the identity",
             "id": "oauth_local_subject",
             "long": "oauth-local-subject",
             "possible_values": [],

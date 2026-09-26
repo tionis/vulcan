@@ -6449,7 +6449,7 @@ fn parses_help_and_describe_format_commands() {
             oauth_local_redirect_uri: Vec::new(),
             oauth_local_client_secret: None,
             oauth_local_approval_token: None,
-            oauth_local_subject: Some("local-user".to_string()),
+            oauth_local_subject: None,
             oauth_local_email: None,
             oauth_dcr: false,
             oauth_dcr_allowed_redirect_host: Vec::new(),
@@ -6462,6 +6462,19 @@ fn parses_help_and_describe_format_commands() {
         }
     );
     assert_eq!(mcp.permissions.as_deref(), Some("readonly"));
+}
+
+#[test]
+fn explicit_mcp_oauth_subject_remains_a_parsed_option() {
+    let explicit_subject = Cli::try_parse_from(["vulcan", "mcp", "--oauth-local-subject", "alice"])
+        .expect("explicit MCP OAuth subject should parse");
+    assert!(matches!(
+        explicit_subject.command,
+        Command::Mcp {
+            oauth_local_subject: Some(ref subject),
+            ..
+        } if subject == "alice"
+    ));
 }
 
 #[test]

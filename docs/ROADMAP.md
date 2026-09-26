@@ -5557,6 +5557,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - Line-to-note conversion now includes both paths in one validated journal batch when either path is an mdbase record, including a mixed ordinary-source/managed-target conversion. Purely ordinary multi-file conversion still needs a crash-atomic transaction.
   - Purely ordinary line-to-note conversion now holds one vault lock across source validation and both writes, refusing a changed source or a late target collision. It is not crash-atomic; a durable ordinary multi-file journal remains open.
   - Ordinary TaskNotes archive moves now hold the vault lock, recheck the source, and create the destination exclusively before deleting the source. A crash between those file operations still needs durable recovery.
+  - Direct MCP now leaves the local OAuth subject unset unless explicitly requested, preserving its issuer fallback and allowing stdio and loopback HTTP in builds without `oauth`; an explicit OAuth subject still fails closed there. Targeted no-default stdio and HTTP tests pass. The broad no-default CLI smoke suite still has optional-feature cases that need feature gates.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,

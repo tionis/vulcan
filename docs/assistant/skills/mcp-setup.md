@@ -35,6 +35,7 @@ debugging, tool pack selection, and permission-profile questions.
 ## Guardrails
 
 - Do not expose a no-auth public MCP server for a private vault.
+- Local stdio and loopback HTTP, with an optional static token, work without the `oauth` build feature. OAuth flags and named remotes require that feature; do not pass `--oauth-local-subject` merely to start local HTTP. For direct IndieAuth, leave that flag unset to use the authenticated identity unless intentionally overriding it.
 - Keep Vulcan bound to loopback or a private interface behind the HTTPS front door unless you have a deliberate deployment reason.
 - For private development, OpenAI Secure MCP Tunnel is an alternative to exposing a public endpoint. Treat it as a separate OpenAI connection path, not as a Vulcan authentication flag.
 - Tool packs are not authorization. Permission profiles still decide what is visible and callable.

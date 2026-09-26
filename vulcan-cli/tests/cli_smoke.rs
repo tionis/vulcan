@@ -16144,6 +16144,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
+    assert!(mcp_skill.contains("Local stdio and loopback HTTP"));
+    assert!(mcp_skill.contains("leave that flag unset to use the authenticated identity"));
     assert!(mcp_skill.contains("vulcan daemon start --detach"));
     assert!(mcp_skill.contains("Stop the remote before `remote set` or `remote remove`"));
     assert!(mcp_skill.contains("remote set <name> --add-wiki <id> --dry-run"));
@@ -29610,6 +29612,29 @@ fn mcp_http_transport_adaptive_pack_mutation_refreshes_visible_tools() {
         after_tools.iter().any(|tool| tool["name"] == "web_search"),
         "enabled packs should become visible over HTTP without restarting the session"
     );
+}
+
+#[cfg(not(feature = "oauth"))]
+#[test]
+fn mcp_http_rejects_explicit_oauth_subject_without_oauth_feature() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let output = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .args([
+            "--vault",
+            vault_root.to_str().expect("UTF-8 vault path"),
+            "mcp",
+            "--transport",
+            "http",
+            "--oauth-local-subject",
+            "alice",
+        ])
+        .output()
+        .expect("run MCP command");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("MCP OAuth requires a build with the `oauth` feature enabled"));
 }
 
 #[test]
