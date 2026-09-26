@@ -74,9 +74,9 @@ use vulcan_app::sync::{
 };
 use vulcan_app::sync_conflicts::{get_sync_conflict, list_sync_conflicts};
 use vulcan_app::tasks::{
-    apply_task_complete, apply_task_create, apply_task_reschedule, build_tasks_list_report,
-    build_tasks_query_result, TaskCompleteRequest, TaskCreateRequest, TaskListRequest,
-    TaskRescheduleRequest,
+    apply_task_complete, apply_task_create, apply_task_create_with_guard, apply_task_reschedule,
+    build_tasks_list_report, build_tasks_query_result, TaskCompleteRequest, TaskCreateRequest,
+    TaskListRequest, TaskRescheduleRequest,
 };
 use vulcan_app::templates::parse_template_var_bindings;
 #[cfg(feature = "web")]
@@ -2951,7 +2951,7 @@ impl McpServerCore {
                     }
                 }
                 request.dry_run = args.dry_run;
-                let report = apply_task_create(&self.paths, &request)
+                let report = apply_task_create_with_guard(&self.paths, &request, Some(&self.guard))
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 if !report.dry_run && !report.changed_paths.is_empty() {
                     refresh_cache_incrementally(&self.paths)

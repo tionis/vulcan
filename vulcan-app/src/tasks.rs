@@ -37,9 +37,10 @@ use vulcan_core::{
     shape_tasks_query_result, task_upcoming_occurrences, tasknotes_default_date_value,
     tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
     tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
-    BasesEvalReport, BasesEvaluator, GraphQueryError, IndexedTaskNote, NoteRecord, RefactorChange,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode,
-    TasksQueryResult, VaultConfig, VaultPaths,
+    BasesEvalReport, BasesEvaluator, GraphQueryError, IndexedTaskNote, NoteRecord, PermissionGuard,
+    ProfilePermissionGuard, RefactorChange, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksQueryResult, VaultConfig,
+    VaultPaths,
 };
 
 mod types;
@@ -813,6 +814,14 @@ pub fn apply_task_create(
     paths: &VaultPaths,
     request: &TaskCreateRequest,
 ) -> Result<TaskCreateReport, AppError> {
+    apply_task_create_with_guard(paths, request, None)
+}
+
+pub fn apply_task_create_with_guard(
+    paths: &VaultPaths,
+    request: &TaskCreateRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskCreateReport, AppError> {
     let config = load_vault_config(paths).config;
     let (relative_path, heading) = resolve_tasks_create_target(paths, request.note.as_deref())?;
     let absolute_path = paths.vault_root().join(&relative_path);
@@ -833,6 +842,11 @@ pub fn apply_task_create(
     let insertion = append_entry_to_note(&existing, &planned.line, heading.as_deref());
     let task = format!("{}:{}", relative_path, insertion.line_number);
     let changed_paths = vec![relative_path.clone()];
+    if let Some(guard) = guard {
+        guard
+            .check_write_path(&relative_path)
+            .map_err(AppError::operation)?;
+    }
 
     let operation = if created_note {
         MdbaseWriteOperation::Create

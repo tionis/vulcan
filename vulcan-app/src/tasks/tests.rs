@@ -1,16 +1,16 @@
 use super::{
     apply_task_add, apply_task_archive, apply_task_complete, apply_task_convert, apply_task_create,
-    apply_task_pomodoro_start, apply_task_pomodoro_stop, apply_task_reschedule, apply_task_set,
-    apply_task_track_start, apply_task_track_stop, build_task_due_report,
-    build_task_pomodoro_status_report, build_task_reminders_report, build_task_show_report,
-    build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
-    build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
-    build_tasks_list_report, build_tasks_next_report, build_tasks_view_list_report,
-    build_tasks_view_report, current_utc_date_string, process_due_tasknote_auto_archives,
-    TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
-    TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
-    TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest, TaskTrackStopRequest,
-    TaskTrackSummaryPeriod,
+    apply_task_create_with_guard, apply_task_pomodoro_start, apply_task_pomodoro_stop,
+    apply_task_reschedule, apply_task_set, apply_task_track_start, apply_task_track_stop,
+    build_task_due_report, build_task_pomodoro_status_report, build_task_reminders_report,
+    build_task_show_report, build_task_track_log_report, build_task_track_status_report,
+    build_task_track_summary_report, build_tasks_blocked_report, build_tasks_eval_report,
+    build_tasks_graph_report, build_tasks_list_report, build_tasks_next_report,
+    build_tasks_view_list_report, build_tasks_view_report, current_utc_date_string,
+    process_due_tasknote_auto_archives, TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest,
+    TaskConvertRequest, TaskCreateRequest, TaskEvalRequest, TaskListRequest,
+    TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest,
+    TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
 };
 use crate::templates::render_note_from_parts;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -21,7 +21,8 @@ use std::time::Duration;
 use tempfile::tempdir;
 use vulcan_core::mdbase::list_mdbase_write_outbox;
 use vulcan_core::{
-    initialize_vulcan_dir, load_vault_config, scan_vault_with_progress, ScanMode, VaultPaths,
+    initialize_vulcan_dir, load_vault_config, resolve_permission_profile, scan_vault_with_progress,
+    ProfilePermissionGuard, ScanMode, VaultPaths,
 };
 
 #[test]
@@ -458,6 +459,52 @@ fn apply_task_create_appends_inline_task_to_target_note() {
         .expect("updated inbox")
         .replace("\r\n", "\n");
     assert!(rendered.contains("- [ ] Call Alice 🗓️ 2026-04-20 🔺"));
+}
+
+#[test]
+fn guarded_task_create_checks_the_actual_write_path_before_mutation() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = { allow = [\"folder:Allowed/**\"] }\n",
+    )
+    .expect("config");
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("agent")).expect("profile"),
+    );
+
+    let denied = apply_task_create_with_guard(
+        &paths,
+        &TaskCreateRequest {
+            text: "Private task".to_string(),
+            note: Some("Denied/Inbox".to_string()),
+            due: None,
+            priority: None,
+            dry_run: false,
+        },
+        Some(&guard),
+    )
+    .expect_err("denied path must fail before writing");
+    assert!(!denied.to_string().is_empty());
+    assert!(!temp_dir.path().join("Denied/Inbox.md").exists());
+
+    let allowed = apply_task_create_with_guard(
+        &paths,
+        &TaskCreateRequest {
+            text: "Allowed task".to_string(),
+            note: Some("Allowed/Inbox".to_string()),
+            due: None,
+            priority: None,
+            dry_run: false,
+        },
+        Some(&guard),
+    )
+    .expect("allowed path");
+    assert_eq!(allowed.path, "Allowed/Inbox.md");
+    assert!(temp_dir.path().join("Allowed/Inbox.md").exists());
 }
 
 #[test]
