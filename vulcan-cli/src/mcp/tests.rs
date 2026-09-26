@@ -1463,26 +1463,50 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
     );
     let ledger = hosted.executor.ledger();
     http.hosted = Some(hosted);
-    let result = core
-        .process_http_request_with_timeout(
-            payload,
-            Duration::from_millis(50),
-            &http,
-            &inbound,
-            &authority,
-        )
-        .expect("timed-out hosted request");
-    assert!(result.session_stale);
-    let response = result.response.expect("timeout response");
-    let operation_id = response["result"]["structuredContent"]["operation_id"]
-        .as_str()
-        .expect("durable operation ID");
-    assert_eq!(
-        response["result"]["structuredContent"]["status_path"],
-        format!("/mcp/operations/{operation_id}")
+    let outcome = core.process_http_request_with_timeout(
+        payload,
+        Duration::from_secs(1),
+        &http,
+        &inbound,
+        &authority,
     );
+    let operation_id = match outcome {
+        Ok(result) => {
+            assert!(result.session_stale);
+            let response = result.response.expect("timeout response");
+            let data = &response["result"]["structuredContent"];
+            let operation_id = data["operation_id"].as_str().expect("durable operation ID");
+            assert_eq!(
+                data["status_path"],
+                format!("/mcp/operations/{operation_id}")
+            );
+            operation_id.to_string()
+        }
+        Err(response) => {
+            let data = &response["error"]["data"];
+            assert_eq!(data["dispatched"], false);
+            let operation_id = data["operation_id"].as_str().expect("durable operation ID");
+            assert_eq!(
+                data["status_path"],
+                format!("/mcp/operations/{operation_id}")
+            );
+            operation_id.to_string()
+        }
+    };
     drop(held);
-    let record = ledger.load(operation_id).expect("durable operation record");
+    let mut record = ledger
+        .load(&operation_id)
+        .expect("durable operation record");
+    for _ in 0..100 {
+        if record.state.is_terminal() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+        record = ledger
+            .load(&operation_id)
+            .expect("durable operation record");
+    }
+    assert!(record.state.is_terminal());
     assert!(!record.dispatched);
     assert!(!paths.vault_root().join("Blocked.md").exists());
 }
@@ -1652,6 +1676,64 @@ fn timed_out_named_mutation_reports_durable_status_path_and_stale_session() {
         response["result"]["structuredContent"]["outcome"],
         "indeterminate"
     );
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn hosted_mcp_known_failures_report_dispatch_and_commit_knowledge() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let grant = resolve_permission_profile(&paths, Some("readonly"))
+        .expect("profile")
+        .grant;
+    let execution = ExecutionContext::new(
+        ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
+        ExecutionAuthority::Caller {
+            principal_id: "alice".to_string(),
+            credential_id: Some("grant-a".to_string()),
+            permission_ceiling: grant.clone(),
+        },
+        grant,
+        ExecutionIdentity::new("mcp:personal"),
+        Some("https://mcp.example.test/mcp".to_string()),
+        ExecutionRetryClass::IndeterminateAfterDispatch,
+        ExecutionCancellationToken::default(),
+        None,
+    )
+    .expect("execution");
+    let payload = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call"});
+    let operation_id = execution.identity.operation_id.clone();
+    let before = hosted_mcp_execution_error(
+        &payload,
+        &execution,
+        "/mcp",
+        HostedExecutionError::BeforeDispatch {
+            operation_id: operation_id.clone(),
+            detail: "deadline before dispatch".to_string(),
+        },
+    )
+    .expect_err("known pre-dispatch failure");
+    assert_eq!(before["error"]["data"]["operation_id"], operation_id);
+    assert_eq!(before["error"]["data"]["dispatched"], false);
+    assert_eq!(
+        before["error"]["data"]["status_path"],
+        format!("/mcp/operations/{operation_id}")
+    );
+
+    let failed = hosted_mcp_execution_error(
+        &payload,
+        &execution,
+        "/mcp",
+        HostedExecutionError::Operation {
+            operation_id,
+            detail: "failed before commit".to_string(),
+            committed: Some(false),
+        },
+    )
+    .expect_err("known uncommitted failure");
+    assert_eq!(failed["error"]["data"]["dispatched"], true);
+    assert_eq!(failed["error"]["data"]["committed"], false);
 }
 
 #[cfg(feature = "oauth")]

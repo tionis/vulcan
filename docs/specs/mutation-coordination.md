@@ -112,6 +112,13 @@ knowledge, retry class, and a bounded diagnostic. They are atomically persisted 
 and surviving non-terminal records become `interrupted` during restart recovery. Startup never
 replays them.
 
+The hosted ledger retains known terminal outcomes for 30 days and terminal records whose commit
+outcome is unknown for 90 days. A bounded sweep on startup and after batches of registrations
+removes only validated, expired terminal records. Each instance admits at most 16,384 retained
+records; when all capacity is occupied by fresh or active records, registration fails before
+dispatch rather than evicting an operation whose status a caller may still need. Status lookup may
+return not-found after its retention horizon, so an old unknown write requires vault inspection.
+
 The retry projection is deliberately conservative:
 
 - work rejected while still queued has `dispatched = false` and can be status-checked before a new

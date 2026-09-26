@@ -623,12 +623,31 @@ fn hosted_mcp_execution_error(
 ) -> Result<McpHttpProcessResult, Value> {
     let operation_id = &execution.identity.operation_id;
     match error {
-        HostedExecutionError::BeforeDispatch { detail, .. }
-        | HostedExecutionError::Operation {
+        HostedExecutionError::BeforeDispatch { detail, .. } => Err(jsonrpc_error(
+            request_id(payload).unwrap_or(Value::Null),
+            -32603,
+            detail,
+            Some(serde_json::json!({
+                "operation_id": operation_id,
+                "status_path": format!("{}/operations/{operation_id}", endpoint.trim_end_matches('/')),
+                "dispatched": false,
+            })),
+        )),
+        HostedExecutionError::Operation {
             detail,
             committed: Some(false),
             ..
-        } => Err(hosted_mcp_json_error(payload, detail, Some(operation_id))),
+        } => Err(jsonrpc_error(
+            request_id(payload).unwrap_or(Value::Null),
+            -32603,
+            detail,
+            Some(serde_json::json!({
+                "operation_id": operation_id,
+                "status_path": format!("{}/operations/{operation_id}", endpoint.trim_end_matches('/')),
+                "dispatched": true,
+                "committed": false,
+            })),
+        )),
         other => Ok(hosted_mcp_unknown_result(
             payload,
             operation_id,

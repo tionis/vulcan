@@ -20,7 +20,10 @@ use vulcan_app::execution::{
 pub const HOSTED_JOB_VERSION: u32 = 1;
 const MAX_JOB_BYTES: u64 = 256 * 1024;
 const MAX_DETAIL_BYTES: usize = 4096;
-const MAX_RECOVERY_RECORDS: usize = 4096;
+const MAX_HOSTED_JOB_RECORDS: usize = 16_384;
+const SWEEP_EVERY_REGISTRATIONS: usize = 128;
+const KNOWN_OUTCOME_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+const UNKNOWN_OUTCOME_RETENTION_MS: u64 = 90 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,7 +145,13 @@ impl HostedJobRecord {
 pub struct HostedJobLedger {
     root: PathBuf,
     active: Mutex<BTreeMap<String, ExecutionCancellationToken>>,
-    storage: Mutex<()>,
+    storage: Mutex<HostedJobStorage>,
+}
+
+#[derive(Debug, Default)]
+struct HostedJobStorage {
+    known_records: Option<usize>,
+    registrations_since_sweep: usize,
 }
 
 impl HostedJobLedger {
@@ -151,7 +160,7 @@ impl HostedJobLedger {
         Self {
             root: root.into(),
             active: Mutex::new(BTreeMap::new()),
-            storage: Mutex::new(()),
+            storage: Mutex::new(HostedJobStorage::default()),
         }
     }
 
@@ -160,8 +169,32 @@ impl HostedJobLedger {
         context: &ExecutionContext,
         now_unix_ms: u64,
     ) -> Result<HostedJobRecord, HostedJobError> {
+        self.register_with_limit(context, now_unix_ms, MAX_HOSTED_JOB_RECORDS)
+    }
+
+    fn register_with_limit(
+        &self,
+        context: &ExecutionContext,
+        now_unix_ms: u64,
+        max_records: usize,
+    ) -> Result<HostedJobRecord, HostedJobError> {
         validate_operation_id(&context.identity.operation_id)?;
-        let _storage = self.storage.lock().map_err(|_| HostedJobError::Poisoned)?;
+        let mut storage = self.storage.lock().map_err(|_| HostedJobError::Poisoned)?;
+        if storage.known_records.is_none()
+            || storage.registrations_since_sweep >= SWEEP_EVERY_REGISTRATIONS
+            || storage
+                .known_records
+                .is_some_and(|count| count >= max_records)
+        {
+            storage.known_records = Some(self.sweep_expired_terminal(now_unix_ms)?);
+            storage.registrations_since_sweep = 0;
+        }
+        if storage
+            .known_records
+            .is_some_and(|count| count >= max_records)
+        {
+            return Err(HostedJobError::TooManyRecords);
+        }
         let path = self.path(&context.identity.operation_id);
         if path.exists() {
             return Err(HostedJobError::DuplicateOperation(
@@ -170,6 +203,8 @@ impl HostedJobLedger {
         }
         let record = HostedJobRecord::queued(context, now_unix_ms);
         self.save_new(&record)?;
+        storage.known_records = storage.known_records.map(|count| count + 1);
+        storage.registrations_since_sweep += 1;
         self.active
             .lock()
             .map_err(|_| HostedJobError::Poisoned)?
@@ -296,16 +331,16 @@ impl HostedJobLedger {
         if !self.root.exists() {
             return Ok(recovered);
         }
-        let _storage = self.storage.lock().map_err(|_| HostedJobError::Poisoned)?;
+        let mut storage = self.storage.lock().map_err(|_| HostedJobError::Poisoned)?;
+        let retained = self.sweep_expired_terminal(now_unix_ms)?;
+        storage.known_records = Some(retained);
+        storage.registrations_since_sweep = 0;
+        if retained > MAX_HOSTED_JOB_RECORDS {
+            return Err(HostedJobError::TooManyRecords);
+        }
         for entry in fs::read_dir(&self.root).map_err(HostedJobError::Io)? {
-            if recovered.len() >= MAX_RECOVERY_RECORDS {
-                return Err(HostedJobError::TooManyRecords);
-            }
             let entry = entry.map_err(HostedJobError::Io)?;
-            let metadata = entry.metadata().map_err(HostedJobError::Io)?;
-            if !metadata.is_file()
-                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
-            {
+            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
             let Some(operation_id) = entry
@@ -338,6 +373,45 @@ impl HostedJobLedger {
         }
         recovered.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
         Ok(recovered)
+    }
+
+    /// Remove only validated terminal records after their status-lookup horizon.
+    /// Unknown write outcomes get a longer horizon; fresh or active operations
+    /// are never evicted merely to admit another request.
+    fn sweep_expired_terminal(&self, now_unix_ms: u64) -> Result<usize, HostedJobError> {
+        if !self.root.exists() {
+            return Ok(0);
+        }
+        let mut retained = 0usize;
+        for entry in fs::read_dir(&self.root).map_err(HostedJobError::Io)? {
+            let entry = entry.map_err(HostedJobError::Io)?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let operation_id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| HostedJobError::UnsafePath(path.clone()))?;
+            validate_operation_id(operation_id)?;
+            let record = load_record(&path, operation_id)?;
+            let retention = if record.dispatched
+                && (record.state == HostedJobState::Interrupted
+                    || (record.state == HostedJobState::Failed && record.committed.is_none()))
+            {
+                UNKNOWN_OUTCOME_RETENTION_MS
+            } else {
+                KNOWN_OUTCOME_RETENTION_MS
+            };
+            if record.state.is_terminal()
+                && now_unix_ms.saturating_sub(record.updated_unix_ms) >= retention
+            {
+                fs::remove_file(&path).map_err(HostedJobError::Io)?;
+            } else {
+                retained += 1;
+            }
+        }
+        Ok(retained)
     }
 
     fn finish<F>(
@@ -565,9 +639,8 @@ impl Display for HostedJobError {
                 write!(formatter, "unsafe hosted job path `{}`", path.display())
             }
             Self::TooLarge => formatter.write_str("hosted job record exceeds its size limit"),
-            Self::TooManyRecords => {
-                formatter.write_str("hosted job recovery record limit exceeded")
-            }
+            Self::TooManyRecords => formatter
+                .write_str("hosted job record limit exceeded; fresh status records were retained"),
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Json(error) => Display::fmt(error, formatter),
             Self::Poisoned => formatter.write_str("hosted job state lock is poisoned"),
@@ -772,6 +845,75 @@ mod tests {
             record.retry_disposition,
             HostedRetryDisposition::StatusCheckThenRetry
         );
+        let later = self::context(&vault, ExecutionRetryClass::IndeterminateAfterDispatch);
+        HostedJobLedger::at(temporary.path())
+            .register_with_limit(&later, KNOWN_OUTCOME_RETENTION_MS + 3, 1)
+            .expect("undispatched interruption uses known-outcome retention");
+        assert!(ledger.load(&context.identity.operation_id).is_err());
+    }
+
+    #[test]
+    fn full_ledger_keeps_fresh_records_and_prunes_expired_known_outcomes() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let vault = tempfile::tempdir().expect("vault");
+        let ledger = HostedJobLedger::at(temporary.path());
+        let first = context(&vault, ExecutionRetryClass::IndeterminateAfterDispatch);
+        let second = context(&vault, ExecutionRetryClass::IndeterminateAfterDispatch);
+        let third = context(&vault, ExecutionRetryClass::IndeterminateAfterDispatch);
+        ledger.register_with_limit(&first, 1, 2).expect("first");
+        ledger.register_with_limit(&second, 2, 2).expect("second");
+        ledger
+            .mark_running(&first.identity.operation_id, 3)
+            .expect("running");
+        ledger
+            .mark_succeeded(&first.identity.operation_id, true, 4)
+            .expect("completed");
+        assert!(matches!(
+            ledger.register_with_limit(&third, KNOWN_OUTCOME_RETENTION_MS, 2),
+            Err(HostedJobError::TooManyRecords)
+        ));
+        assert!(ledger.load(&first.identity.operation_id).is_ok());
+        assert!(ledger.load(&second.identity.operation_id).is_ok());
+
+        ledger
+            .register_with_limit(&third, KNOWN_OUTCOME_RETENTION_MS + 4, 2)
+            .expect("expired terminal record makes room");
+        assert!(ledger.load(&first.identity.operation_id).is_err());
+        assert!(ledger.load(&second.identity.operation_id).is_ok());
+        assert!(ledger.load(&third.identity.operation_id).is_ok());
+    }
+
+    #[test]
+    fn interrupted_unknown_outcome_has_longer_status_retention() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let vault = tempfile::tempdir().expect("vault");
+        let ledger = HostedJobLedger::at(temporary.path());
+        let unknown = context(&vault, ExecutionRetryClass::IndeterminateAfterDispatch);
+        let later = context(&vault, ExecutionRetryClass::IndeterminateAfterDispatch);
+        ledger
+            .register_with_limit(&unknown, 1, 1)
+            .expect("unknown write");
+        ledger
+            .mark_running(&unknown.identity.operation_id, 2)
+            .expect("dispatch");
+        HostedJobLedger::at(temporary.path())
+            .recover_interrupted(3)
+            .expect("restart recovery");
+        assert!(matches!(
+            ledger.register_with_limit(&later, KNOWN_OUTCOME_RETENTION_MS + 3, 1),
+            Err(HostedJobError::TooManyRecords)
+        ));
+        assert_eq!(
+            ledger
+                .load(&unknown.identity.operation_id)
+                .expect("retained")
+                .state,
+            HostedJobState::Interrupted
+        );
+        ledger
+            .register_with_limit(&later, UNKNOWN_OUTCOME_RETENTION_MS + 3, 1)
+            .expect("unknown status horizon elapsed");
+        assert!(ledger.load(&unknown.identity.operation_id).is_err());
     }
 
     #[cfg(unix)]
