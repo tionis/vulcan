@@ -5556,6 +5556,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - Task metadata writes to ordinary notes, including pomodoro state in a daily note, now stale-check the original source under the vault lock; creating a missing daily note refuses a late path collision.
   - Line-to-note conversion now includes both paths in one validated journal batch when either path is an mdbase record, including a mixed ordinary-source/managed-target conversion. Purely ordinary multi-file conversion still needs a crash-atomic transaction.
   - Purely ordinary line-to-note conversion now holds one vault lock across source validation and both writes, refusing a changed source or a late target collision. It is not crash-atomic; a durable ordinary multi-file journal remains open.
+  - Ordinary TaskNotes archive moves now hold the vault lock, recheck the source, and create the destination exclusively before deleting the source. A crash between those file operations still needs durable recovery.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,

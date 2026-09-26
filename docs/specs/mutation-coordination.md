@@ -79,6 +79,9 @@ share one validated journal batch; the purely ordinary two-file case remains ope
 The purely ordinary case now holds one vault lock across a stale-source check, exclusive target
 creation, and source rewrite. It rolls back its unchanged new target if the source write fails,
 but a process crash between writes still requires repair; no durable ordinary batch journal exists.
+Ordinary TaskNotes archive moves now stale-check the source and exclusively create the rendered
+destination under one vault lock before removing the original. They reject a late destination
+collision but are not yet crash-atomic; a crash may leave both files present.
 Ordinary TaskNotes add uses the same lock and exclusive create to reject a late destination collision.
 Task metadata updates to ordinary notes, including pomodoro state stored in daily notes, check the
 original source bytes under that lock; creating a missing periodic note refuses a late collision.

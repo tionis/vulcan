@@ -4355,22 +4355,14 @@ where
     };
 
     if !dry_run && !changed_paths.is_empty() && !routed {
-        let source_path = paths.vault_root().join(&loaded.path);
         if let Some(destination) = moved_to.as_ref() {
-            let destination_path = paths.vault_root().join(destination);
-            if destination_path.exists() {
-                return Err(AppError::operation(format!(
-                    "destination task already exists: {destination}"
-                )));
-            }
-        }
-        if let Some(destination) = moved_to.as_ref() {
-            fs::write(&source_path, rendered).map_err(AppError::operation)?;
-            let destination_path = paths.vault_root().join(destination);
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent).map_err(AppError::operation)?;
-            }
-            fs::rename(&source_path, &destination_path).map_err(AppError::operation)?;
+            move_ordinary_tasknote_if_unchanged(
+                paths,
+                &loaded.path,
+                &loaded.source,
+                destination,
+                &rendered,
+            )?;
         } else {
             write_ordinary_note_if_unchanged(
                 paths,
@@ -4398,6 +4390,53 @@ where
         changes,
         changed_paths,
     })
+}
+
+fn move_ordinary_tasknote_if_unchanged(
+    paths: &VaultPaths,
+    source_path: &str,
+    source_before: &str,
+    destination_path: &str,
+    destination_contents: &str,
+) -> Result<(), AppError> {
+    vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
+    let _write_lock =
+        vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    let current = secure_read_to_string(paths.vault_root(), Path::new(source_path))
+        .map_err(AppError::operation)?;
+    if current != source_before {
+        return Err(AppError::operation(
+            "source note changed during task move; reread it before retrying",
+        ));
+    }
+    secure_create(
+        paths.vault_root(),
+        Path::new(destination_path),
+        destination_contents,
+    )
+    .map_err(AppError::operation)?;
+    let source = paths.vault_root().join(source_path);
+    let source_unchanged = secure_read_to_string(paths.vault_root(), Path::new(source_path))
+        .is_ok_and(|current| current == source_before);
+    if !source_unchanged {
+        rollback_unchanged_task_destination(paths, destination_path, destination_contents);
+        return Err(AppError::operation(
+            "source note changed during task move; reread it before retrying",
+        ));
+    }
+    if let Err(error) = fs::remove_file(source) {
+        rollback_unchanged_task_destination(paths, destination_path, destination_contents);
+        return Err(AppError::operation(error));
+    }
+    Ok(())
+}
+
+fn rollback_unchanged_task_destination(paths: &VaultPaths, destination: &str, contents: &str) {
+    if secure_read_to_string(paths.vault_root(), Path::new(destination))
+        .is_ok_and(|current| current == contents)
+    {
+        let _ = fs::remove_file(paths.vault_root().join(destination));
+    }
 }
 
 fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, AppError> {

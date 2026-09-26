@@ -8,11 +8,12 @@ use super::{
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
     build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
     build_tasks_list_report, build_tasks_next_report, build_tasks_view_list_report,
-    build_tasks_view_report, current_utc_date_string, process_due_tasknote_auto_archives,
-    write_ordinary_task_conversion, TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest,
-    TaskConvertRequest, TaskCreateRequest, TaskEvalRequest, TaskListRequest,
-    TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest,
-    TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
+    build_tasks_view_report, current_utc_date_string, move_ordinary_tasknote_if_unchanged,
+    process_due_tasknote_auto_archives, write_ordinary_task_conversion, TaskAddRequest,
+    TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
+    TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
+    TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest, TaskTrackStopRequest,
+    TaskTrackSummaryPeriod,
 };
 use crate::templates::render_note_from_parts;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -1044,6 +1045,46 @@ fn apply_task_archive_moves_completed_task_into_archive_folder() {
         .expect("archived task")
         .replace("\r\n", "\n");
     assert!(rendered.contains(&format!("- {}", config.tasknotes.field_mapping.archive_tag)));
+}
+
+#[test]
+fn ordinary_task_move_refuses_stale_source_and_late_destination_collision() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init");
+    fs::create_dir_all(temp_dir.path().join("Tasks")).expect("task folder");
+    fs::write(temp_dir.path().join("Tasks/Done.md"), "newer task\n").expect("seed task");
+
+    let error = move_ordinary_tasknote_if_unchanged(
+        &paths,
+        "Tasks/Done.md",
+        "old task\n",
+        "Archive/Done.md",
+        "archived task\n",
+    )
+    .expect_err("stale move must fail");
+    assert!(error.to_string().contains("source note changed"));
+    assert!(!temp_dir.path().join("Archive/Done.md").exists());
+
+    fs::create_dir_all(temp_dir.path().join("Archive")).expect("archive folder");
+    fs::write(temp_dir.path().join("Archive/Done.md"), "other task\n")
+        .expect("concurrent destination");
+    assert!(move_ordinary_tasknote_if_unchanged(
+        &paths,
+        "Tasks/Done.md",
+        "newer task\n",
+        "Archive/Done.md",
+        "archived task\n",
+    )
+    .is_err());
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Tasks/Done.md")).expect("source"),
+        "newer task\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Archive/Done.md")).expect("destination"),
+        "other task\n"
+    );
 }
 
 #[test]
