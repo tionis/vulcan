@@ -1576,6 +1576,34 @@ fn resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions() {
 
 #[cfg(feature = "oauth")]
 #[test]
+fn failed_resident_startup_cancels_and_joins_every_listener_thread() {
+    let stop = Arc::new(ShutdownSignal::new(false));
+    let listener_stop = Arc::clone(&stop);
+    let exited = Arc::new(AtomicBool::new(false));
+    let listener_exited = Arc::clone(&exited);
+    let (started_sender, started_receiver) = mpsc::channel();
+    let listener = thread::spawn(move || {
+        started_sender.send(()).expect("listener started");
+        assert!(listener_stop.wait_timeout(Duration::from_secs(5)));
+        listener_exited.store(true, Ordering::SeqCst);
+    });
+    started_receiver.recv().expect("listener startup");
+    let panicked = thread::spawn(|| panic!("simulated listener failure"));
+
+    let error = finish_failed_resident_mcp_startup(
+        &stop,
+        vec![panicked, listener],
+        "named MCP listener failed during startup".to_string(),
+    );
+
+    assert!(stop.is_cancelled());
+    assert!(exited.load(Ordering::SeqCst));
+    assert!(error.contains("failed during startup"));
+    assert!(error.contains("listener thread panicked"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 #[allow(clippy::too_many_lines)] // Builds a real competing hosted request and cancellation race.
 fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
     let temporary = tempfile::tempdir().expect("temporary vault");

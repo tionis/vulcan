@@ -998,8 +998,11 @@ pub(crate) fn resident_named_mcp_service(
                 }) {
                 Ok(handle) => handle,
                 Err(error) => {
-                    service.stop().cancel();
-                    return Err(format!("failed to spawn named MCP remote: {error}"));
+                    return Err(finish_failed_resident_mcp_startup(
+                        service.stop(),
+                        handles,
+                        format!("failed to spawn named MCP remote: {error}"),
+                    ));
                 }
             };
             handles.push(handle);
@@ -1012,23 +1015,32 @@ pub(crate) fn resident_named_mcp_service(
                     ready.insert(name);
                 }
                 Ok(ResidentMcpEvent::Exited(name, result)) => {
-                    service.stop().cancel();
-                    return Err(format!(
-                        "named MCP remote `{name}` stopped during startup: {}",
-                        result
-                            .err()
-                            .unwrap_or_else(|| "listener exited".to_string())
+                    return Err(finish_failed_resident_mcp_startup(
+                        service.stop(),
+                        handles,
+                        format!(
+                            "named MCP remote `{name}` stopped during startup: {}",
+                            result
+                                .err()
+                                .unwrap_or_else(|| "listener exited".to_string())
+                        ),
                     ));
                 }
                 Err(error) => {
-                    service.stop().cancel();
-                    return Err(format!("named MCP listener startup timed out: {error}"));
+                    return Err(finish_failed_resident_mcp_startup(
+                        service.stop(),
+                        handles,
+                        format!("named MCP listener startup timed out: {error}"),
+                    ));
                 }
             }
         }
         if let Err(error) = service.ready() {
-            service.stop().cancel();
-            return Err(error);
+            return Err(finish_failed_resident_mcp_startup(
+                service.stop(),
+                handles,
+                error,
+            ));
         }
         loop {
             if service.stop().wait_timeout(Duration::from_millis(50)) {
@@ -1050,13 +1062,27 @@ pub(crate) fn resident_named_mcp_service(
 }
 
 #[cfg(feature = "oauth")]
-fn join_resident_mcp_threads(handles: Vec<thread::JoinHandle<()>>) -> Result<(), String> {
-    for handle in handles {
-        handle
-            .join()
-            .map_err(|_| "named MCP listener thread panicked".to_string())?;
+fn finish_failed_resident_mcp_startup(
+    stop: &ShutdownSignal,
+    handles: Vec<thread::JoinHandle<()>>,
+    error: String,
+) -> String {
+    stop.cancel();
+    match join_resident_mcp_threads(handles) {
+        Ok(()) => error,
+        Err(join_error) => format!("{error}; {join_error}"),
     }
-    Ok(())
+}
+
+#[cfg(feature = "oauth")]
+fn join_resident_mcp_threads(handles: Vec<thread::JoinHandle<()>>) -> Result<(), String> {
+    let mut first_error = None;
+    for handle in handles {
+        if handle.join().is_err() && first_error.is_none() {
+            first_error = Some("named MCP listener thread panicked".to_string());
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 pub(crate) fn acquire_named_remote_runtime_lock(

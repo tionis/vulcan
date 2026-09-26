@@ -5559,6 +5559,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - Ordinary TaskNotes archive moves now hold the vault lock, recheck the source, and create the destination exclusively before deleting the source. A crash between those file operations still needs durable recovery.
   - Direct MCP now leaves the local OAuth subject unset unless explicitly requested, preserving its issuer fallback and allowing stdio and loopback HTTP in builds without `oauth`; an explicit OAuth subject still fails closed there. Targeted no-default stdio and HTTP tests pass. The broad no-default CLI smoke suite still has optional-feature cases that need feature gates.
   - The named consent lifecycle regression now rejects a valid token reused against another instance under the same issuer and against another public resource URL even when the issuers share signing material. Full live resident/foreground authenticated request parity remains open.
+  - Resident aggregate startup now cancels and joins every named listener thread if spawning, pre-readiness exit, readiness wait, or host-ready publication fails. Join waits for all listeners even if one panics, so a failed required service cannot leave an owned listener detached.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,
