@@ -445,6 +445,9 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 - [x] Pin scanner actions and test the checked-in workflow contract alongside supply-chain policy checks
 - [x] Triage the initial CodeQL backlog, remediate credential transport, and disposition proven false positives with audit comments
 
+### 6.8 Dependency maintenance follow-ups
+- [ ] Replace the archived, unmaintained `serde_yaml` crate with a maintained YAML parser behind the existing internal frontmatter/Bases/config wrappers. Acceptance gate: frontmatter raw-text round-trip, `broken-frontmatter` and `mixed-properties` fixtures, Bases `.base` parsing, and property type inference produce identical results before and after the swap; any intentional behavior difference ships with a parser-version bump and changelog entry.
+
 ---
 
 ## Phase 7: Post-v1 workflow features

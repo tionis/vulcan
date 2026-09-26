@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Incremental scans now re-resolve every note's links when a note's `aliases` change, and stale
+  resolutions from removed aliases or targets are cleared.
+- `%%` inside code, math, or frontmatter no longer opens an Obsidian comment, so prose after such
+  code is indexed and later comments stay out of search and embeddings.
+- Inline tags accept non-ASCII letters and reject all-digit bodies such as `#1984`; trailing
+  ` ^id` block IDs on paragraphs, quotes, and list items are recognised.
+- Tasks plugin markers follow upstream: `📅` due (`📆`/`🗓` still read), `❌` cancelled, `⌛`
+  scheduled, and `🔺` highest / `⏫` high. Task create and reschedule now write `📅`.
+  **Behavior change:** tasks previously written by Vulcan with `🔺` for "high" now index as
+  highest priority, matching the Tasks plugin.
+- With `newLinkFormat` set to `relative` or `absolute`, links that miss the exact path now fall
+  back to note-name and alias resolution as in Obsidian instead of being reported unresolved.
+- Embedding requests cap each chunk at the model's `max_input_tokens` estimate; `vectors index`
+  JSON output adds a `truncated` count.
+
+The parser version is bumped, so existing caches reindex on the next scan.
+
 ## 0.2.1 — 2026-09-06
 
 Vulcan 0.2.1 is the first published stable release after 0.1.0. It contains all changes described
