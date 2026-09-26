@@ -731,9 +731,14 @@ shell = "deny"
             None,
         );
         assert_eq!(query_js["ok"], false);
+        let expected_error = if cfg!(feature = "js_runtime") {
+            "does not allow execute access"
+        } else {
+            "js_runtime"
+        };
         assert!(query_js["error"]
             .as_str()
-            .is_some_and(|error| error.contains("does not allow execute access")));
+            .is_some_and(|error| error.contains(expected_error)));
 
         handle.shutdown().expect("server should shut down");
     }
