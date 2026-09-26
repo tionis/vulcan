@@ -21,7 +21,7 @@ use vulcan_core::expression::functions::{date_components, parse_date_like_string
 use vulcan_core::html::HtmlRenderOptions;
 use vulcan_core::mdbase::{is_mdbase_record_path, load_mdbase_collection};
 use vulcan_core::paths::{
-    normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
+    normalize_relative_input_path, secure_create, secure_read_to_string, secure_replace,
     RelativePathOptions,
 };
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
@@ -1198,7 +1198,7 @@ pub(crate) fn write_ordinary_note_if_unchanged(
                 "note changed during note {operation}; reread it before retrying"
             )));
         }
-        secure_write(paths.vault_root(), Path::new(path), after).map_err(AppError::operation)
+        secure_replace(paths.vault_root(), Path::new(path), after).map_err(AppError::operation)
     } else {
         secure_create(paths.vault_root(), Path::new(path), after).map_err(AppError::operation)
     }
@@ -2892,6 +2892,38 @@ folder_templates = [{ folder = "Projects", template = "project" }]
         .expect_err("stale replacement should fail");
         assert!(error.to_string().contains("note changed during note set"));
         assert_eq!(fs::read_to_string(note).expect("current note"), "newer\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_note_set_publishes_a_complete_replacement_file() {
+        use std::io::Read;
+
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let note = temporary.path().join("note.md");
+        fs::write(&note, "original\n").expect("original note");
+        let mut old_handle = fs::File::open(&note).expect("open original note");
+
+        super::write_ordinary_note_if_unchanged(
+            &paths,
+            "note.md",
+            Some("original\n"),
+            "updated\n",
+            "set",
+        )
+        .expect("atomic note set");
+
+        let mut old_contents = String::new();
+        old_handle
+            .read_to_string(&mut old_contents)
+            .expect("read old file handle");
+        assert_eq!(old_contents, "original\n");
+        assert_eq!(
+            fs::read_to_string(note).expect("published note"),
+            "updated\n"
+        );
     }
 
     #[test]

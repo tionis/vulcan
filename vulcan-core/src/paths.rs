@@ -502,6 +502,173 @@ pub fn secure_write(
     )
 }
 
+/// Atomically replace an existing regular file below `root` without following
+/// symlinks. The replacement is synced before publication; callers serialize
+/// cooperating writers and perform their own stale-content check first.
+pub fn secure_replace(
+    root: &Path,
+    relative_path: &Path,
+    contents: impl AsRef<[u8]>,
+) -> Result<(), std::io::Error> {
+    secure_replace_with_hook(root, relative_path, contents.as_ref(), || Ok(()))
+}
+
+#[cfg(unix)]
+fn secure_replace_with_hook<F>(
+    root: &Path,
+    relative_path: &Path,
+    contents: &[u8],
+    before_publish: F,
+) -> Result<(), std::io::Error>
+where
+    F: FnOnce() -> Result<(), std::io::Error>,
+{
+    use std::ffi::{CString, OsStr};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn c_string(value: &OsStr) -> Result<CString, std::io::Error> {
+        CString::new(value.as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL bytes")
+        })
+    }
+
+    let components = validated_components(relative_path)?;
+    let root = c_string(root.as_os_str())?;
+    // SAFETY: the path is NUL-terminated and the returned descriptor is owned below.
+    let root_fd = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if root_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `open` returned this unique descriptor.
+    let mut directory = unsafe { fs::File::from_raw_fd(root_fd) };
+    for component in &components[..components.len() - 1] {
+        let component = c_string(component)?;
+        // SAFETY: the descriptor is an opened directory and the component has no separator.
+        let next_fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if next_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `openat` returned this unique descriptor.
+        directory = unsafe { fs::File::from_raw_fd(next_fd) };
+    }
+    let target = c_string(components.last().expect("validated file name"))?;
+    // SAFETY: descriptor-relative O_NOFOLLOW open rejects a symlinked target.
+    let target_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            target.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if target_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `openat` returned this unique descriptor.
+    let target_file = unsafe { fs::File::from_raw_fd(target_fd) };
+    let metadata = target_file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "replacement target is not a regular file",
+        ));
+    }
+    let temporary_name = CString::new(format!(".vulcan-replace-{}", ulid::Ulid::new()))
+        .expect("generated name has no NUL");
+    // SAFETY: descriptor-relative exclusive open creates a new file in the pinned parent.
+    let temporary_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            temporary_name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if temporary_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `openat` returned this unique descriptor.
+    let mut temporary = unsafe { fs::File::from_raw_fd(temporary_fd) };
+    let result = (|| {
+        temporary.write_all(contents)?;
+        temporary.set_permissions(fs::Permissions::from_mode(metadata.permissions().mode()))?;
+        temporary.sync_all()?;
+        before_publish()?;
+        // SAFETY: both names are NUL-terminated and resolve under the same pinned directory.
+        if unsafe {
+            libc::renameat(
+                directory.as_raw_fd(),
+                temporary_name.as_ptr(),
+                directory.as_raw_fd(),
+                target.as_ptr(),
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        directory.sync_all()
+    })();
+    if result.is_err() {
+        // SAFETY: cleanup is constrained to the generated name in the pinned parent.
+        unsafe { libc::unlinkat(directory.as_raw_fd(), temporary_name.as_ptr(), 0) };
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn secure_replace_with_hook<F>(
+    root: &Path,
+    relative_path: &Path,
+    contents: &[u8],
+    before_publish: F,
+) -> Result<(), std::io::Error>
+where
+    F: FnOnce() -> Result<(), std::io::Error>,
+{
+    let components = validated_components(relative_path)?;
+    let root = root.canonicalize()?;
+    let mut parent = root;
+    for component in &components[..components.len() - 1] {
+        parent.push(component);
+        let metadata = fs::symlink_metadata(&parent)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "replacement parent is not a plain directory",
+            ));
+        }
+    }
+    let target = parent.join(components.last().expect("validated file name"));
+    let metadata = fs::symlink_metadata(&target)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "replacement target is not a plain file",
+        ));
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
+    temporary.write_all(contents)?;
+    temporary
+        .as_file()
+        .set_permissions(metadata.permissions())?;
+    temporary.as_file().sync_all()?;
+    before_publish()?;
+    temporary.persist(target).map_err(|error| error.error)?;
+    Ok(())
+}
+
 pub fn secure_create(
     root: &Path,
     relative_path: &Path,
@@ -1071,6 +1238,62 @@ mod tests {
                 .kind(),
             std::io::ErrorKind::AlreadyExists
         );
+    }
+
+    #[test]
+    fn secure_replace_keeps_original_visible_until_publish_and_cleans_failed_staging() {
+        let temporary = TempDir::new().expect("temporary root");
+        let relative = Path::new("notes/alpha.md");
+        secure_create(temporary.path(), relative, "original\n").expect("original note");
+        let original = fs::metadata(temporary.path().join(relative)).expect("original metadata");
+
+        secure_replace_with_hook(temporary.path(), relative, b"updated\n", || {
+            assert_eq!(
+                secure_read_to_string(temporary.path(), relative).expect("old note before publish"),
+                "original\n"
+            );
+            Err(std::io::Error::other(
+                "simulated interruption before publish",
+            ))
+        })
+        .expect_err("staging failure must not change the note");
+        assert_eq!(
+            secure_read_to_string(temporary.path(), relative).expect("note after failure"),
+            "original\n"
+        );
+        assert_eq!(
+            fs::read_dir(temporary.path().join("notes"))
+                .expect("notes directory")
+                .count(),
+            1,
+            "failed staging must remove its temporary file"
+        );
+
+        secure_replace(temporary.path(), relative, "updated\n").expect("atomic replacement");
+        assert_eq!(
+            secure_read_to_string(temporary.path(), relative).expect("published note"),
+            "updated\n"
+        );
+        assert_eq!(
+            fs::metadata(temporary.path().join(relative))
+                .expect("replacement metadata")
+                .permissions(),
+            original.permissions(),
+        );
+    }
+
+    #[test]
+    fn secure_replace_requires_an_existing_plain_file() {
+        let temporary = TempDir::new().expect("temporary root");
+        assert!(secure_replace(temporary.path(), Path::new("missing.md"), "new").is_err());
+        fs::create_dir(temporary.path().join("directory.md")).expect("directory");
+        assert!(secure_replace(temporary.path(), Path::new("directory.md"), "new").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("missing.md", temporary.path().join("linked.md"))
+                .expect("symlink");
+            assert!(secure_replace(temporary.path(), Path::new("linked.md"), "new").is_err());
+        }
     }
 
     #[test]
