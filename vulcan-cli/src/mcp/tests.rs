@@ -438,13 +438,21 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                         wiki_id: wiki_id.clone(),
                         ceiling_profile: "unrestricted".to_string(),
                         default_profile: "readonly".to_string(),
-                        tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                        tool_packs: vec![
+                            "notes-read".to_string(),
+                            "notes-write".to_string(),
+                            "notes-manage".to_string(),
+                        ],
                     },
                     vulcan_daemon::mcp_remote::McpRemoteVault {
                         wiki_id: team_id.clone(),
                         ceiling_profile: "unrestricted".to_string(),
                         default_profile: "readonly".to_string(),
-                        tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                        tool_packs: vec![
+                            "notes-read".to_string(),
+                            "notes-write".to_string(),
+                            "notes-manage".to_string(),
+                        ],
                     },
                 ],
             },
@@ -472,7 +480,11 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                     paths: paths.clone(),
                     ceiling_profile: "unrestricted".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                    eligible_tool_packs: vec![
+                        "notes-read".to_string(),
+                        "notes-write".to_string(),
+                        "notes-manage".to_string(),
+                    ],
                 },
             ),
             (
@@ -481,7 +493,11 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                     paths: team_paths.clone(),
                     ceiling_profile: "unrestricted".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec!["notes-read".to_string(), "notes-write".to_string()],
+                    eligible_tool_packs: vec![
+                        "notes-read".to_string(),
+                        "notes-write".to_string(),
+                        "notes-manage".to_string(),
+                    ],
                 },
             ),
         ]),
@@ -501,7 +517,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "unrestricted",
-        &["notes-write"],
+        &["notes-write", "notes-manage"],
     );
     let team_token = named_listener_test_token(
         &team_paths,
@@ -583,6 +599,41 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{foreground_write}"
     );
     assert!(paths.vault_root().join("Foreground.md").is_file());
+    let foreground_write_session = named_listener_session_id(&foreground_write_init);
+    let foreground_set = named_listener_call_tool(
+        address,
+        "parity",
+        &write_token,
+        &foreground_write_session,
+        "note_set",
+        serde_json::json!({
+            "note": "Foreground.md", "content": "Foreground replacement.\n",
+            "confirm": true, "no_commit": true
+        }),
+    );
+    assert!(
+        foreground_set.contains("\"isError\":false"),
+        "{foreground_set}"
+    );
+    assert_eq!(
+        fs::read_to_string(paths.vault_root().join("Foreground.md"))
+            .expect("replaced note")
+            .replace("\r\n", "\n"),
+        "Foreground replacement.\n"
+    );
+    let foreground_delete = named_listener_call_tool(
+        address,
+        "parity",
+        &write_token,
+        &foreground_write_session,
+        "note_delete",
+        serde_json::json!({"note": "Foreground.md", "confirm": true, "no_commit": true}),
+    );
+    assert!(
+        foreground_delete.contains("\"isError\":false"),
+        "{foreground_delete}"
+    );
+    assert!(!paths.vault_root().join("Foreground.md").exists());
     let foreground_team_init = named_listener_initialize(address, "parity", &team_token);
     assert!(
         foreground_team_init.starts_with("HTTP/1.1 200"),
@@ -747,11 +798,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         resident_write_init.starts_with("HTTP/1.1 200"),
         "{resident_write_init}"
     );
+    let resident_write_session = named_listener_session_id(&resident_write_init);
     let resident_write = named_listener_create_note(
         address,
         "parity",
         &write_token,
-        &named_listener_session_id(&resident_write_init),
+        &resident_write_session,
         "Resident.md",
     );
     assert!(
@@ -763,6 +815,37 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_write}"
     );
     assert!(paths.vault_root().join("Resident.md").is_file());
+    let resident_set = named_listener_call_tool(
+        address,
+        "parity",
+        &write_token,
+        &resident_write_session,
+        "note_set",
+        serde_json::json!({
+            "note": "Resident.md", "content": "Resident replacement.\n",
+            "confirm": true, "no_commit": true
+        }),
+    );
+    assert!(resident_set.contains("\"isError\":false"), "{resident_set}");
+    assert_eq!(
+        fs::read_to_string(paths.vault_root().join("Resident.md"))
+            .expect("replaced note")
+            .replace("\r\n", "\n"),
+        "Resident replacement.\n"
+    );
+    let resident_delete = named_listener_call_tool(
+        address,
+        "parity",
+        &write_token,
+        &resident_write_session,
+        "note_delete",
+        serde_json::json!({"note": "Resident.md", "confirm": true, "no_commit": true}),
+    );
+    assert!(
+        resident_delete.contains("\"isError\":false"),
+        "{resident_delete}"
+    );
+    assert!(!paths.vault_root().join("Resident.md").exists());
     let resident_team_init = named_listener_initialize(address, "parity", &team_token);
     assert!(
         resident_team_init.starts_with("HTTP/1.1 200"),
@@ -901,6 +984,25 @@ fn named_listener_create_note(
     session_id: &str,
     path: &str,
 ) -> String {
+    named_listener_call_tool(
+        address,
+        name,
+        token,
+        session_id,
+        "note_create",
+        serde_json::json!({"path": path, "body": "Named MCP write.\n", "no_commit": true}),
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_call_tool(
+    address: SocketAddr,
+    name: &str,
+    token: &str,
+    session_id: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -908,8 +1010,8 @@ fn named_listener_create_note(
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {
-            "name": "note_create",
-            "arguments": {"path": path, "body": "Named MCP write.\n", "no_commit": true}
+            "name": tool,
+            "arguments": arguments
         }
     })
     .to_string();
@@ -918,11 +1020,11 @@ fn named_listener_create_note(
         "POST /{name} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session_id}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len(),
     )
-    .expect("note-create request");
+    .expect("tool-call request");
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
-        .expect("note-create response");
+        .expect("tool-call response");
     response
 }
 
