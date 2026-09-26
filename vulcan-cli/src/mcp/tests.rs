@@ -1772,6 +1772,90 @@ fn failed_resident_startup_cancels_and_joins_every_listener_thread() {
 
 #[cfg(feature = "oauth")]
 #[test]
+fn resident_readiness_rejects_a_queued_exit_after_the_last_ready_event() {
+    let (sender, receiver) = mpsc::channel();
+    sender
+        .send(ResidentMcpEvent::Ready("first".to_string()))
+        .expect("ready event");
+    sender
+        .send(ResidentMcpEvent::Exited(
+            "first".to_string(),
+            Err("bind failed".to_string()),
+        ))
+        .expect("exit event");
+    let expected = BTreeSet::from(["first".to_string()]);
+
+    let error = await_resident_mcp_readiness(
+        &receiver,
+        &expected,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect_err("queued exit must prevent host readiness");
+    assert!(error.contains("stopped during startup"));
+    assert!(error.contains("bind failed"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn resident_readiness_uses_one_deadline_for_all_listeners() {
+    let (sender, receiver) = mpsc::channel();
+    sender
+        .send(ResidentMcpEvent::Ready("first".to_string()))
+        .expect("first ready event");
+    let expected = BTreeSet::from(["first".to_string(), "second".to_string()]);
+
+    let error = await_resident_mcp_readiness(
+        &receiver,
+        &expected,
+        Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("recent deadline"),
+    )
+    .expect_err("expired aggregate deadline must not reset for the second listener");
+    assert!(error.contains("timed out"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn resident_readiness_rejects_disconnected_listeners() {
+    let (sender, receiver) = mpsc::channel();
+    sender
+        .send(ResidentMcpEvent::Ready("first".to_string()))
+        .expect("ready event");
+    drop(sender);
+    let expected = BTreeSet::from(["first".to_string()]);
+
+    let error = await_resident_mcp_readiness(
+        &receiver,
+        &expected,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect_err("disconnected listener must not publish readiness");
+    assert!(error.contains("disconnected"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn panicking_resident_listener_reports_its_exit_while_other_listeners_remain_connected() {
+    let (sender, receiver) = mpsc::channel();
+    let other_listener_sender = sender.clone();
+    report_resident_mcp_listener_exit(&sender, "first".to_string(), || -> Result<(), CliError> {
+        panic!("simulated listener panic");
+    });
+    let expected = BTreeSet::from(["first".to_string(), "second".to_string()]);
+
+    let error = await_resident_mcp_readiness(
+        &receiver,
+        &expected,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect_err("listener panic must fail readiness even while the channel remains connected");
+    assert!(error.contains("listener panicked"));
+    drop(other_listener_sender);
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 #[allow(clippy::too_many_lines)] // Builds a real competing hosted request and cancellation race.
 fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
     let temporary = tempfile::tempdir().expect("temporary vault");

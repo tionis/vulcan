@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+#[cfg(feature = "oauth")]
+use std::time::Instant;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 #[cfg(feature = "oauth")]
@@ -986,15 +988,15 @@ pub(crate) fn resident_named_mcp_service(
                             .send(ResidentMcpEvent::Ready(name.clone()))
                             .map_err(CliError::operation)
                     };
-                    let result = run_named_mcp_remote_inner(
-                        &process,
-                        &remote,
-                        Some(&stop),
-                        Some(&on_ready),
-                        Some(hosted),
-                    )
-                    .map_err(|error| error.message);
-                    let _ = sender.send(ResidentMcpEvent::Exited(name, result));
+                    report_resident_mcp_listener_exit(&sender, name.clone(), || {
+                        run_named_mcp_remote_inner(
+                            &process,
+                            &remote,
+                            Some(&stop),
+                            Some(&on_ready),
+                            Some(hosted),
+                        )
+                    });
                 }) {
                 Ok(handle) => handle,
                 Err(error) => {
@@ -1008,32 +1010,17 @@ pub(crate) fn resident_named_mcp_service(
             handles.push(handle);
         }
         drop(sender);
-        let mut ready = BTreeSet::new();
-        while ready.len() < remotes.len() {
-            match receiver.recv_timeout(Duration::from_secs(8)) {
-                Ok(ResidentMcpEvent::Ready(name)) => {
-                    ready.insert(name);
-                }
-                Ok(ResidentMcpEvent::Exited(name, result)) => {
-                    return Err(finish_failed_resident_mcp_startup(
-                        service.stop(),
-                        handles,
-                        format!(
-                            "named MCP remote `{name}` stopped during startup: {}",
-                            result
-                                .err()
-                                .unwrap_or_else(|| "listener exited".to_string())
-                        ),
-                    ));
-                }
-                Err(error) => {
-                    return Err(finish_failed_resident_mcp_startup(
-                        service.stop(),
-                        handles,
-                        format!("named MCP listener startup timed out: {error}"),
-                    ));
-                }
-            }
+        let expected = remotes.iter().map(|remote| remote.id.to_string()).collect();
+        if let Err(error) = await_resident_mcp_readiness(
+            &receiver,
+            &expected,
+            Instant::now() + Duration::from_secs(8),
+        ) {
+            return Err(finish_failed_resident_mcp_startup(
+                service.stop(),
+                handles,
+                error,
+            ));
         }
         if let Err(error) = service.ready() {
             return Err(finish_failed_resident_mcp_startup(
@@ -1046,19 +1033,92 @@ pub(crate) fn resident_named_mcp_service(
             if service.stop().wait_timeout(Duration::from_millis(50)) {
                 break;
             }
-            if let Ok(ResidentMcpEvent::Exited(name, result)) = receiver.try_recv() {
-                service.stop().cancel();
-                join_resident_mcp_threads(handles)?;
+            match receiver.try_recv() {
+                Ok(ResidentMcpEvent::Exited(name, result)) => {
+                    return Err(finish_failed_resident_mcp_startup(
+                        service.stop(),
+                        handles,
+                        format!(
+                            "named MCP remote `{name}` stopped unexpectedly: {}",
+                            result
+                                .err()
+                                .unwrap_or_else(|| "listener exited".to_string())
+                        ),
+                    ));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(finish_failed_resident_mcp_startup(
+                        service.stop(),
+                        handles,
+                        "named MCP listeners disconnected unexpectedly".to_string(),
+                    ));
+                }
+                Ok(ResidentMcpEvent::Ready(_)) | Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        join_resident_mcp_threads(handles)
+    })))
+}
+
+#[cfg(feature = "oauth")]
+fn report_resident_mcp_listener_exit<F>(
+    sender: &mpsc::Sender<ResidentMcpEvent>,
+    name: String,
+    run: F,
+) where
+    F: FnOnce() -> Result<(), CliError>,
+{
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+        .map_err(|_| "listener panicked".to_string())
+        .and_then(|result| result.map_err(|error| error.message));
+    let _ = sender.send(ResidentMcpEvent::Exited(name, result));
+}
+
+#[cfg(feature = "oauth")]
+fn await_resident_mcp_readiness(
+    receiver: &mpsc::Receiver<ResidentMcpEvent>,
+    expected: &BTreeSet<String>,
+    deadline: Instant,
+) -> Result<(), String> {
+    let mut pending = expected.clone();
+    while !pending.is_empty() {
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(ResidentMcpEvent::Ready(name)) => {
+                if !expected.contains(&name) {
+                    return Err(format!(
+                        "unexpected named MCP remote `{name}` reported readiness"
+                    ));
+                }
+                pending.remove(&name);
+            }
+            Ok(ResidentMcpEvent::Exited(name, result)) => {
                 return Err(format!(
-                    "named MCP remote `{name}` stopped unexpectedly: {}",
+                    "named MCP remote `{name}` stopped during startup: {}",
                     result
                         .err()
                         .unwrap_or_else(|| "listener exited".to_string())
                 ));
             }
+            Err(error) => return Err(format!("named MCP listener startup timed out: {error}")),
         }
-        join_resident_mcp_threads(handles)
-    })))
+    }
+    loop {
+        match receiver.try_recv() {
+            Ok(ResidentMcpEvent::Exited(name, result)) => {
+                return Err(format!(
+                    "named MCP remote `{name}` stopped during startup: {}",
+                    result
+                        .err()
+                        .unwrap_or_else(|| "listener exited".to_string())
+                ));
+            }
+            Ok(ResidentMcpEvent::Ready(_)) => {}
+            Err(mpsc::TryRecvError::Empty) => return Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err("named MCP listeners disconnected during startup".to_string());
+            }
+        }
+    }
 }
 
 #[cfg(feature = "oauth")]
