@@ -849,6 +849,11 @@ fn apply_incremental_scan(
                 )?;
                 match &derived {
                     PreparedDerivedContent::Note(note) => {
+                        // Aliases are resolution targets for links in *other* notes, so an
+                        // alias change on an existing note invalidates the whole target pool.
+                        if !is_new && aliases_changed(transaction, &id, &note.parsed.aliases)? {
+                            result.target_pool_changed = true;
+                        }
                         replace_derived_rows(
                             transaction,
                             &id,
@@ -1617,6 +1622,22 @@ fn insert_links(
         ])?;
     }
     Ok(())
+}
+
+fn aliases_changed(
+    transaction: &Transaction<'_>,
+    document_id: &str,
+    aliases: &[String],
+) -> Result<bool, ScanError> {
+    let mut statement =
+        transaction.prepare_cached("SELECT alias_text FROM aliases WHERE document_id = ?1")?;
+    let mut cached = statement
+        .query_map([document_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut current = aliases.to_vec();
+    cached.sort();
+    current.sort();
+    Ok(cached != current)
 }
 
 fn insert_aliases(
@@ -2686,6 +2707,12 @@ fn resolve_all_links(
     mode: crate::LinkResolutionMode,
 ) -> Result<(), ScanError> {
     transaction.execute("DELETE FROM diagnostics WHERE kind = 'unresolved_link'", [])?;
+    // Links from unchanged documents keep their previous resolution until reset here;
+    // without this a removed alias or target would leave stale resolved targets behind.
+    transaction.execute(
+        "UPDATE links SET resolved_target_id = NULL WHERE resolved_target_id IS NOT NULL",
+        [],
+    )?;
 
     let documents = load_resolver_documents(transaction)?;
     let links = load_resolver_links(transaction)?;
@@ -2702,8 +2729,7 @@ fn resolve_all_links(
     let timestamp = current_timestamp()?;
     for link in &links {
         let resolution = index.resolve(&link.resolver_link, mode);
-        // Only UPDATE links that actually resolved — unresolved and external links
-        // already have NULL from the INSERT, so writing NULL again is wasted work.
+        // Only UPDATE links that actually resolved — every link was reset to NULL above.
         if resolution.resolved_target_id.is_some() {
             update_statement.execute(params![link.id, resolution.resolved_target_id])?;
         }
@@ -4522,6 +4548,49 @@ mod tests {
                     Some("Archive/Topic.md".to_string())
                 ),
                 ("Root.md".to_string(), "[[Topic]]".to_string(), None),
+            ]
+        );
+        assert_eq!(
+            diagnostic_kinds(database.connection()),
+            vec!["unresolved_link".to_string()]
+        );
+    }
+
+    #[test]
+    fn incremental_scan_reresolves_links_when_aliases_change() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(
+            vault_root.join("Target.md"),
+            "---\naliases:\n  - Old Name\n---\n# Target\n",
+        )
+        .expect("target should be written");
+        fs::write(
+            vault_root.join("Source.md"),
+            "See [[New Name]] and [[Old Name]].\n",
+        )
+        .expect("source should be written");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+
+        fs::write(
+            vault_root.join("Target.md"),
+            "---\naliases:\n  - New Name\n---\n# Target renamed alias\n",
+        )
+        .expect("target should be rewritten");
+        scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        assert_eq!(
+            resolved_links(database.connection()),
+            vec![
+                (
+                    "Source.md".to_string(),
+                    "[[New Name]]".to_string(),
+                    Some("Target.md".to_string())
+                ),
+                ("Source.md".to_string(), "[[Old Name]]".to_string(), None),
             ]
         );
         assert_eq!(
