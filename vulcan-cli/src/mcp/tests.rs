@@ -529,6 +529,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                             "notes-read".to_string(),
                             "notes-write".to_string(),
                             "notes-manage".to_string(),
+                            "tasks".to_string(),
                         ],
                     },
                     vulcan_daemon::mcp_remote::McpRemoteVault {
@@ -539,6 +540,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                             "notes-read".to_string(),
                             "notes-write".to_string(),
                             "notes-manage".to_string(),
+                            "tasks".to_string(),
                         ],
                     },
                 ],
@@ -571,6 +573,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                         "notes-read".to_string(),
                         "notes-write".to_string(),
                         "notes-manage".to_string(),
+                        "tasks".to_string(),
                     ],
                 },
             ),
@@ -584,6 +587,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                         "notes-read".to_string(),
                         "notes-write".to_string(),
                         "notes-manage".to_string(),
+                        "tasks".to_string(),
                     ],
                 },
             ),
@@ -596,7 +600,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "readonly",
-        &["notes-read"],
+        &["notes-read", "tasks"],
     );
     let write_token = named_listener_test_token(
         &paths,
@@ -604,7 +608,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "unrestricted",
-        &["notes-write", "notes-manage"],
+        &["notes-write", "notes-manage", "tasks"],
     );
     let team_token = named_listener_test_token(
         &team_paths,
@@ -653,6 +657,8 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         foreground_tools.starts_with("HTTP/1.1 200"),
         "{foreground_tools}"
     );
+    assert!(foreground_tools.contains("\"name\":\"task_list\""));
+    assert!(!foreground_tools.contains("\"name\":\"task_create\""));
     let denied_foreground = named_listener_create_note(
         address,
         "parity",
@@ -665,6 +671,21 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{denied_foreground}"
     );
     assert!(!paths.vault_root().join("DeniedForeground.md").exists());
+    let foreground_task_init = named_listener_initialize(address, "parity", &token);
+    assert!(foreground_task_init.starts_with("HTTP/1.1 200"));
+    let denied_foreground_task = named_listener_call_tool(
+        address,
+        "parity",
+        &token,
+        &named_listener_session_id(&foreground_task_init),
+        "task_create",
+        serde_json::json!({"text": "Denied", "note": "DeniedForegroundTasks.md"}),
+    );
+    assert!(
+        denied_foreground_task.contains("\"isError\":true"),
+        "{denied_foreground_task}"
+    );
+    assert!(!paths.vault_root().join("DeniedForegroundTasks.md").exists());
     let foreground_write_init = named_listener_initialize(address, "parity", &write_token);
     assert!(
         foreground_write_init.starts_with("HTTP/1.1 200"),
@@ -721,6 +742,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{foreground_delete}"
     );
     assert!(!paths.vault_root().join("Foreground.md").exists());
+    named_listener_task_lifecycle(
+        address,
+        &write_token,
+        &foreground_write_session,
+        &paths,
+        "Foreground",
+    );
     let foreground_team_init = named_listener_initialize(address, "parity", &team_token);
     assert!(
         foreground_team_init.starts_with("HTTP/1.1 200"),
@@ -853,7 +881,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_tools}"
     );
     assert!(resident_tools.contains("\"name\":\"note_get\""));
+    assert!(resident_tools.contains("\"name\":\"task_list\""));
     assert!(!resident_tools.contains("\"name\":\"note_create\""));
+    assert!(!resident_tools.contains("\"name\":\"task_create\""));
     let denied_resident = named_listener_create_note(
         address,
         "parity",
@@ -866,6 +896,21 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{denied_resident}"
     );
     assert!(!paths.vault_root().join("DeniedResident.md").exists());
+    let resident_task_init = named_listener_initialize(address, "parity", &token);
+    assert!(resident_task_init.starts_with("HTTP/1.1 200"));
+    let denied_resident_task = named_listener_call_tool(
+        address,
+        "parity",
+        &token,
+        &named_listener_session_id(&resident_task_init),
+        "task_create",
+        serde_json::json!({"text": "Denied", "note": "DeniedResidentTasks.md"}),
+    );
+    assert!(
+        denied_resident_task.contains("\"isError\":true"),
+        "{denied_resident_task}"
+    );
+    assert!(!paths.vault_root().join("DeniedResidentTasks.md").exists());
     assert_eq!(
         foreground_tools
             .split_once("\r\n\r\n")
@@ -933,6 +978,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_delete}"
     );
     assert!(!paths.vault_root().join("Resident.md").exists());
+    named_listener_task_lifecycle(
+        address,
+        &write_token,
+        &resident_write_session,
+        &paths,
+        "Resident",
+    );
     let resident_team_init = named_listener_initialize(address, "parity", &team_token);
     assert!(
         resident_team_init.starts_with("HTTP/1.1 200"),
@@ -1079,6 +1131,56 @@ fn named_listener_create_note(
         "note_create",
         serde_json::json!({"path": path, "body": "Named MCP write.\n", "no_commit": true}),
     )
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_task_lifecycle(
+    address: SocketAddr,
+    token: &str,
+    session_id: &str,
+    paths: &VaultPaths,
+    prefix: &str,
+) {
+    let note = format!("{prefix}Tasks.md");
+    let task = format!("{note}:1");
+    let created = named_listener_call_tool(
+        address,
+        "parity",
+        token,
+        session_id,
+        "task_create",
+        serde_json::json!({"text": "Prepare parity", "note": note, "no_commit": true}),
+    );
+    assert!(created.contains("\"isError\":false"), "{created}");
+    assert!(fs::read_to_string(paths.vault_root().join(&note))
+        .expect("created task note")
+        .contains("- [ ] Prepare parity"));
+
+    let rescheduled = named_listener_call_tool(
+        address,
+        "parity",
+        token,
+        session_id,
+        "task_reschedule",
+        serde_json::json!({"task": task, "due": "2026-05-12", "no_commit": true}),
+    );
+    assert!(rescheduled.contains("\"isError\":false"), "{rescheduled}");
+    assert!(fs::read_to_string(paths.vault_root().join(&note))
+        .expect("rescheduled task note")
+        .contains("2026-05-12"));
+
+    let completed = named_listener_call_tool(
+        address,
+        "parity",
+        token,
+        session_id,
+        "task_complete",
+        serde_json::json!({"task": task, "date": "2026-05-13", "no_commit": true}),
+    );
+    assert!(completed.contains("\"isError\":false"), "{completed}");
+    assert!(fs::read_to_string(paths.vault_root().join(note))
+        .expect("completed task note")
+        .contains("- [x]"));
 }
 
 #[cfg(feature = "oauth")]
