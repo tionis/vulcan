@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 36
+version: 37
 metadata:
   vulcan:
     managed: true
@@ -193,6 +193,17 @@ that keeps both histories reachable.
 - A safety-head publication failure stops canonical reconciliation. Do not delete the head or
   bypass this gate just to make sync green; restore remote write access or select the correct
   remote, then rerun.
+
+## Vaults nested in a larger repository
+
+A vault can be one directory of a bigger Git repository, such as the `docs/` directory of an
+MkDocs site; `vulcan status` shows `git_repository_root` and `git_vault_prefix`. Sync remains
+file-tree replication of the whole enclosing work tree: it captures uncommitted changes anywhere in
+the repository, applies remote changes anywhere in it, and runs the branch lane below for the
+checked-out branch. It reads sync configuration and takes the write lock from the vault, keys its
+journal, conflicts, and proposals on the repository root, and refreshes the vault cache after
+applying changes. Before syncing a code repository, confirm that the user wants the whole work tree
+replicated; for vault-only history, use `vulcan git commit` and ordinary Git instead.
 
 ## Branch lane
 

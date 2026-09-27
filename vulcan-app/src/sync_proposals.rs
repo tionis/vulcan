@@ -2688,7 +2688,7 @@ fn prepare_resolution_scope(
             .check_read_path(path)
             .map_err(AppError::operation)?;
     }
-    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = repository_state_key(&vault);
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     let record = conflict_store.get(&repository_key, conflict_id)?;
@@ -2962,7 +2962,7 @@ pub fn reject_resolution_proposal_with_state_store(
     dry_run: bool,
     state_store: &SyncStateStore,
 ) -> Result<RejectResolutionProposalReport, AppError> {
-    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = repository_state_key(&vault);
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     let conflict = conflict_store.get(&repository_key, conflict_id)?;
@@ -3046,7 +3046,7 @@ pub fn approve_resolution_proposal_with_state_store(
     state_store: &SyncStateStore,
 ) -> Result<ApproveResolutionProposalReport, AppError> {
     cancellation_check(cancellation)?;
-    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = repository_state_key(&vault);
     let store = SyncConflictStore::from_state_store(state_store);
     let record = store.get(&repository_key, conflict_id)?;

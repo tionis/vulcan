@@ -14,6 +14,7 @@ The numbered phases describe dependency order, not a requirement to implement ev
 - **Committed delivery path:** Phase 9's pre-daemon gate ends at 9.29 and is complete. Phase 10 is therefore the next architectural milestone; unfinished candidate integrations do not block it.
 - **Daemon consolidation:** Phase 10.7 stages the existing daemon, standalone HTTP/MCP servers, watchers, and automation into one supervised host with per-vault runtimes. Its first milestone reuses existing workers and the single-vault HTTP surface; later app integrations do not block that milestone or require completion of Phase 19.
 - **Completed optional additions:** 9.30 (Outline publishing) and 9.31 (folder-note normalization) landed as independently useful work after the Phase 9 gate. Their numbering records implementation history rather than extending the daemon prerequisite chain.
+- **Completed optional addition:** 9.39 makes vaults nested in larger repositories (MkDocs `docs/`, notes beside code) a first-class layout for discovery, indexing, links, Git commands, and sync state without changing sync's whole-work-tree semantics.
 - **Active optional addition:** 9.35 materializes large hierarchical Markdown documents as link-safe wiki trees. It builds on completed parser, refactor, attachment, and folder-note foundations without extending the Phase 10 gate.
 - **Committed hub direction:** Phase 12 owns device/file-tree synchronization and Phase 15 owns external document bindings, content routes, and knowledge-system connectors. SilverBullet, Outline, HedgeDoc, and Git wiki work should extend those shared layers rather than become parallel product architectures.
 - **Managed-directory extension:** 10.9 is in progress: its first independently usable slice adds explicit files-only/knowledge profiles to registered directories; 12.20 still owns sparse materialization, selective LFS transfer, partial clones, and separately gated shallow-history handling. These are follow-ons to the existing sync baseline, not retroactive completion claims or blockers for daemon consolidation. Keep implementation in Vulcan; reconsider product extraction only after concrete independent reuse.
@@ -8069,6 +8070,23 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add wiki-package inspect, validate, export, and dry-run/import workflows that preserve Markdown and asset bytes, exclude cache/device/credential/Git state, require a new destination, rebuild the cache, and roll back partial writes.
 - [x] Cover directory/ZIP parity, TextPack compatibility metadata, asset/reference rewrites, unknown metadata preservation, traversal/symlink/duplicate/collision failures, deterministic identities, rollback, CLI output, and installed agent guidance.
 - [x] Keep SQLite as a documented alternative serialization of the same wiki-package model. Do not implement a writable SQLite vault until a separate storage, revision, conflict, and interoperability design is approved.
+
+## Phase 9.39: Vaults nested in larger repositories (MkDocs and monorepo layouts)
+
+**Goal:** Treat a vault that is one directory of a larger Git repository, such as an MkDocs `docs/` directory or a notes folder beside source code, as a first-class layout across discovery, indexing, links, Git commands, sync, and agent guidance.
+
+**Boundary:** The vault root stays the unit Vulcan indexes, resolves links against, and mutates. The enclosing repository and MkDocs project are context. Sync keeps its whole-work-tree replication semantics; a vault-scoped sync lane is a separate future decision because it needs its own live-ref namespace.
+
+- [x] Discover the vault when `--vault` is omitted: nearest enclosing `.vulcan/`, then an enclosing MkDocs `docs_dir` from the project root or inside the docs directory, then the current directory. Never cross a Git work-tree root or adopt the home directory from below it; accept `VULCAN_VAULT`; keep `init` from adopting ancestor vaults while following MkDocs `docs_dir`.
+- [x] Read MkDocs `docs_dir` without deserializing the whole configuration, which commonly carries Python-specific YAML tags.
+- [x] Apply `.gitignore` rules between the enclosing work-tree root and a nested vault during scans, while still indexing a vault directory the repository ignores as a whole.
+- [x] Report relative links that climb above the vault root as `outside_vault` instead of clamping them to the vault root, where they could resolve to an unrelated note.
+- [x] Report repository root, vault prefix, MkDocs configuration, and layout hints (project-root vaults, MkDocs publishing `AGENTS.md`) from `status`, `init`, and `agent install`.
+- [x] Keep `vulcan git status/diff/log/blame/commit` and auto-commit vault-scoped with vault-relative paths, with regression coverage for code changes outside the vault.
+- [x] Read sync configuration and take the write lock from the nested vault, key journal/conflict/proposal state on the repository root for every sync workflow, and refresh the nested vault cache after applied changes.
+- [x] Update bundled `git-workflow` and `sync-workflow` skills and the vault `AGENTS.md` template for nested layouts.
+- [ ] Decide whether to offer an opt-in vault-scoped sync lane (vault-relative trees on a dedicated live-ref namespace, deterministic seed ancestry from `HEAD:<prefix>`, and apply limited to the vault prefix).
+- [ ] Consider MkDocs `nav` awareness for navigation-oriented commands and publication, and a diagnostic for links to repository files that MkDocs will not publish.
 
 ---
 
