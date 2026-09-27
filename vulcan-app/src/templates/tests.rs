@@ -1105,6 +1105,74 @@ fn creation_trigger_rejects_a_concurrent_edit_after_rendering() {
     );
 }
 
+#[test]
+fn creation_trigger_stages_companion_until_existing_note_update_succeeds() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        "[templates]\ntrigger_on_file_creation = true\ntrigger_on_file_creation_mode = \"folder\"\nfolder_templates = [{ folder = \"Projects\", template = \"project\" }]\n",
+    )
+    .expect("config");
+    fs::write(
+        root.join(".vulcan/templates/project.md"),
+        "<% tp.file.create_new('Side body', 'Side') %>Main body",
+    )
+    .expect("template");
+    fs::create_dir_all(root.join("Projects")).expect("projects dir");
+    fs::write(root.join("Projects/Alpha.md"), "").expect("source");
+    let paths = VaultPaths::new(root);
+    let lock = vulcan_core::write_lock::acquire_write_lock(&paths).expect("write lock");
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        done_tx
+            .send(apply_template_creation_trigger(
+                &paths,
+                "Projects/Alpha.md",
+                None,
+                true,
+                None,
+            ))
+            .expect("result");
+    });
+    assert!(done_rx.recv_timeout(Duration::from_millis(150)).is_err());
+    assert!(!root.join("Side.md").exists());
+    fs::write(root.join("Projects/Alpha.md"), "Concurrent edit\n").expect("edit");
+    drop(lock);
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker finished")
+        .expect_err("stale trigger");
+    worker.join().expect("worker join");
+    assert!(!root.join("Side.md").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("Projects/Alpha.md")).unwrap(),
+        "Concurrent edit\n"
+    );
+
+    fs::write(root.join("Projects/Alpha.md"), "").expect("reset source");
+    let report = apply_template_creation_trigger(
+        &VaultPaths::new(root),
+        "Projects/Alpha.md",
+        None,
+        true,
+        None,
+    )
+    .expect("trigger");
+    assert_eq!(report.changed_paths, vec!["Projects/Alpha.md", "Side.md"]);
+    assert_eq!(
+        fs::read_to_string(root.join("Side.md")).unwrap(),
+        "Side body"
+    );
+    assert!(fs::read_to_string(root.join("Projects/Alpha.md"))
+        .unwrap()
+        .ends_with("Main body"));
+}
+
 #[cfg(feature = "js_runtime")]
 #[test]
 fn creation_trigger_writes_to_a_template_moved_target() {

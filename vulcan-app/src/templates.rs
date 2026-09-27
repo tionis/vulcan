@@ -57,6 +57,7 @@ fn write_template_result_with_staged_creates(
     before: Option<&str>,
     after: &str,
     staged: &StagedTemplateCreates,
+    permission_profile: Option<&str>,
     operation: &str,
 ) -> Result<(), AppError> {
     let staged = staged_template_create_snapshot(staged)?;
@@ -84,6 +85,13 @@ fn write_template_result_with_staged_creates(
         after: Some(after.to_string()),
     });
     vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(paths, &changes, || {
+        let guard = permission_profile
+            .map(|profile| {
+                resolve_permission_profile(paths, Some(profile))
+                    .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
         for change in &changes {
             if note_path_is_mdbase_managed(paths, &change.path)
                 .map_err(|error| error.to_string())?
@@ -92,6 +100,11 @@ fn write_template_result_with_staged_creates(
                     "template write target became an mdbase-managed note: {}",
                     change.path
                 ));
+            }
+            if let Some(guard) = guard.as_ref() {
+                guard
+                    .check_write_path(&change.path)
+                    .map_err(|error| error.to_string())?;
             }
         }
         Ok(())
@@ -565,13 +578,15 @@ pub fn apply_template_creation_trigger(
                 .map_err(AppError::operation)
         })
         .transpose()?;
-    let Some(rendered) = render_creation_trigger_with_authority(
+    let staged = staged_template_creates();
+    let Some(rendered) = render_creation_trigger_with_staged_creates(
         paths,
         &config,
         &relative_path,
         &previous,
         read_filter,
         mutation_guard.as_ref(),
+        Some(staged.clone()),
     )?
     else {
         return Ok(TemplateCreationTriggerReport {
@@ -610,11 +625,13 @@ pub fn apply_template_creation_trigger(
         }),
         quiet,
     )?;
-    write_ordinary_note_if_unchanged(
+    write_template_result_with_staged_creates(
         paths,
         &rendered.target_path,
         Some(&expected_final),
         &rendered.content,
+        &staged,
+        permission_profile,
         "template trigger",
     )?;
 
@@ -631,25 +648,6 @@ pub fn apply_template_creation_trigger(
         diagnostics: rendered.diagnostics,
         changed_paths,
     })
-}
-
-pub(crate) fn render_creation_trigger_with_authority(
-    paths: &VaultPaths,
-    config: &VaultConfig,
-    relative_path: &str,
-    contents: &str,
-    read_filter: Option<&PermissionFilter>,
-    mutation_guard: Option<&ProfilePermissionGuard>,
-) -> Result<Option<RenderedCreationTrigger>, AppError> {
-    render_creation_trigger_with_staged_creates(
-        paths,
-        config,
-        relative_path,
-        contents,
-        read_filter,
-        mutation_guard,
-        None,
-    )
 }
 
 pub(crate) fn render_creation_trigger_with_staged_creates(
@@ -939,6 +937,7 @@ pub fn apply_template_create_with_filter(
         None,
         &rendered.content,
         &staged,
+        None,
         "template create",
     )?;
 
@@ -1015,6 +1014,7 @@ pub fn apply_template_insert_with_filter(
         Some(&expected_final),
         &updated,
         &staged,
+        None,
         "template insert",
     )?;
 
