@@ -43,7 +43,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - On Android, mdbase journals, staging, receipts, and outbox live in per-vault Termux-private state. A write returns `unsupported_storage` before changing records when shared storage cannot sync canonical directories; keep the worktree canonical and use a supported filesystem for that write workflow.
 - If a managed write reports `concurrent_modification`, reread the current note and rebuild the intended edit from its new revision. Never replay a stale whole-note replacement blindly.
 - If an ordinary `note set`, `note append`, `note patch`, or `note delete` reports that the note changed during editing, reread it and rebuild the edit; Vulcan leaves the newer content untouched. A create or periodic append also refuses to replace a file created concurrently.
-- If `note get` or `note outline` reports a pending ordinary-write journal through the CLI or MCP, stop reading that vault until `vulcan repair ordinary-write status` shows the transaction has recovered or been explicitly reconciled. These reads are blocked to avoid showing only one side of an interrupted task conversion or archive move.
+- If `note get`, `note outline`, or `note info` reports a pending ordinary-write journal through the CLI or MCP, stop reading that vault until `vulcan repair ordinary-write status` shows the transaction has recovered or been explicitly reconciled. These reads are blocked to avoid showing only one side of an interrupted task conversion or archive move.
 
 ## Example Moves
 

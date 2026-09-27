@@ -307,6 +307,8 @@ pub fn build_note_info_report(
     note: &str,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<NoteInfoReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let resolved = resolve_note_reference_with_filter(paths, note, read_filter)
         .map_err(AppError::operation)?;
     let absolute_path = paths.vault_root().join(&resolved.path);
@@ -2459,7 +2461,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_note_reads_refuse_pending_ordinary_write_journal() {
+    fn direct_note_reads_and_info_refuse_pending_ordinary_write_journal() {
         #[derive(Serialize)]
         struct JournalFixture<'a> {
             version: u32,
@@ -2472,6 +2474,7 @@ mod tests {
         let paths = VaultPaths::new(temporary.path());
         initialize_vulcan_dir(&paths).expect("initialize vault");
         fs::write(temporary.path().join("Read.md"), "# Read\nOriginal\n").expect("note");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan note");
         let directory = paths
             .operational_state_dir()
             .expect("operational state")
@@ -2530,6 +2533,12 @@ mod tests {
                 .code(),
             Some("ordinary_write_pending")
         );
+        assert_eq!(
+            build_note_info_report(&paths, "Read.md", None)
+                .expect_err("info must fail closed")
+                .code(),
+            Some("ordinary_write_pending")
+        );
         vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
             .expect("recover pending batch")
             .expect("pending batch");
@@ -2542,6 +2551,12 @@ mod tests {
                 .expect("outline after recovery")
                 .sections
                 .len(),
+            1
+        );
+        assert_eq!(
+            build_note_info_report(&paths, "Read.md", None)
+                .expect("info after recovery")
+                .heading_count,
             1
         );
     }

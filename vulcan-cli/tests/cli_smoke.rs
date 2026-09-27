@@ -15952,6 +15952,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("Never replay a stale whole-note replacement blindly"));
     assert!(note_operations.contains("pending ordinary-write journal"));
     assert!(note_operations.contains("through the CLI or MCP"));
+    assert!(note_operations.contains("`note info` reports a pending ordinary-write journal"));
     let js_api = fs::read_to_string(vault_root.join(".agents/skills/js-api-guide/SKILL.md"))
         .expect("JS API skill should be readable");
     assert!(js_api.contains("Use `--sandbox none` only for a trusted local script"));
