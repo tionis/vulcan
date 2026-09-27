@@ -130,9 +130,9 @@ use vulcan_daemon::mcp_http_codec::{
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_browser::{
-    begin_consent, begin_indieauth, consume_consent, take_indieauth,
-    BeginError as BrowserBeginError, ConsentError as BrowserConsentError,
-    PendingConsent as LocalOAuthPendingConsent, PendingConsentMap,
+    begin_consent, begin_indieauth, consume_consent, html_escape, render_consent_page,
+    take_indieauth, BeginError as BrowserBeginError, ConsentError as BrowserConsentError,
+    ConsentPage, PendingConsent as LocalOAuthPendingConsent, PendingConsentMap,
     PendingIndieAuth as LocalOAuthPendingIndieAuth, PendingIndieAuthMap,
     TakeError as BrowserTakeError,
 };
@@ -4125,85 +4125,15 @@ fn local_oauth_consent_form(
         .flatten()
         .and_then(|client| client.client_name)
         .unwrap_or_else(|| pending.client_id.clone());
-    let (vault_control, profile_control, pack_controls, expiry_control) =
-        context.named_runtime.as_ref().map_or_else(
-            || (
-                html_escape(&context.paths.vault_root().display().to_string()),
-                html_escape(&profile),
-                html_escape(&packs.join(", ")),
-                String::new(),
-            ),
-            |named| {
-                let multi = named.vaults.len() > 1;
-                let controls = named.vaults.iter().map(|(wiki_id, vault)| {
-                    let wiki = html_escape(wiki_id.as_str());
-                    let profile_field = if multi { format!("permission_profile_{wiki}") } else { "permission_profile".to_string() };
-                    let profile_control = format!(
-                        "<input name=\"{profile_field}\" value=\"{}\" list=\"profiles_{wiki}\" required><datalist id=\"profiles_{wiki}\"><option value=\"{}\"><option value=\"{}\"></datalist>",
-                        html_escape(&vault.default_profile),
-                        html_escape(&vault.default_profile),
-                        html_escape(&vault.ceiling_profile),
-                    );
-                    let pack_controls = vault.eligible_tool_packs.iter().map(|pack| {
-                        let field = if multi { format!("pack_{wiki}_{pack}") } else { format!("pack_{pack}") };
-                        format!("<label><input type=\"checkbox\" name=\"{}\" value=\"on\" checked> {}</label>", html_escape(&field), html_escape(pack))
-                    }).collect::<Vec<_>>().join(" ");
-                    let label = format!("{} ({})", wiki, html_escape(&vault.paths.vault_root().display().to_string()));
-                    (label, profile_control, pack_controls)
-                }).collect::<Vec<_>>();
-                let expiry = "<label>Expiry <select name=\"expiry_days\"><option value=\"1\">1 day</option><option value=\"7\">7 days</option><option value=\"30\" selected>30 days</option></select></label>".to_string();
-                if multi {
-                    use std::fmt::Write as _;
-                    let mut vaults = String::new();
-                    for ((wiki_id, _), (label, profile, packs)) in named.vaults.iter().zip(&controls) {
-                        write!(&mut vaults, "<fieldset><legend><label><input type=\"radio\" name=\"wiki_id\" value=\"{}\" required> {label}</label></legend><p>Permission profile: {profile}</p><p>Tool packs: {packs}</p></fieldset>", html_escape(wiki_id.as_str())).expect("writing to a String cannot fail");
-                    }
-                    (vaults, "Choose one vault below".to_string(), "Each vault has its own eligible packs".to_string(), expiry)
-                } else {
-                    let (label, profile, packs) = controls.into_iter().next().expect("named remote has a vault");
-                    (label, profile, packs, expiry)
-                }
-            },
-        );
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
-         <body><main><h1>Authorize this MCP connection?</h1>\
-         <form method=\"post\" action=\"/oauth/consent\">\
-         <dl><dt>Client</dt><dd>{}</dd><dt>Identity</dt><dd>{}</dd>\
-         <dt>Resource</dt><dd>{}</dd><dt>Vault</dt><dd>{}</dd>\
-         <dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd>{}</dd>\
-         <dt>OAuth scopes</dt><dd>{}</dd></dl>\
-         <p>Tool packs control discovery. The permission profile remains the authority ceiling.</p>\
-         <input type=\"hidden\" name=\"transaction\" value=\"{}\">\
-         <input type=\"hidden\" name=\"csrf_token\" value=\"{}\">\
-         {}<button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>\
-         <button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button>\
-         </form></main></body></html>",
-        html_escape(&client_name),
-        html_escape(&pending.subject),
-        html_escape(&pending.resource),
-        vault_control,
-        profile_control,
-        pack_controls,
-        html_escape(&pending.scopes.join(" ")),
-        html_escape(transaction_id),
-        html_escape(&pending.csrf_token),
-        expiry_control,
-    );
-    McpHttpResponse {
-        status: 200,
-        content_type: Some("text/html; charset=utf-8"),
-        body: body.into_bytes(),
-        extra_headers: vec![
-            ("Cache-Control".to_string(), "no-store".to_string()),
-            ("X-Frame-Options".to_string(), "DENY".to_string()),
-            (
-                "Content-Security-Policy".to_string(),
-                "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
-                    .to_string(),
-            ),
-        ],
-    }
+    render_consent_page(&ConsentPage {
+        transaction_id,
+        pending,
+        client_name: &client_name,
+        fallback_vault_root: &context.paths.vault_root().display().to_string(),
+        profile: &profile,
+        packs: &packs,
+        named_runtime: context.named_runtime.as_ref(),
+    })
 }
 
 #[cfg(feature = "oauth")]
@@ -4748,15 +4678,6 @@ const fn hex_value(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
-}
-
-#[cfg(feature = "oauth")]
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 fn parse_tool_pack_selection_args(names: &[String]) -> Result<Vec<McpToolPackArg>, McpMethodError> {
