@@ -268,7 +268,8 @@ cannot write outside the selected vault.
 The app MCP protocol module owns per-session list-change snapshot transitions and notification
 shaping; transport adapters supply their current tool, prompt, and resource fingerprints.
 It also owns ephemeral per-session tool-result resources, including link and read-response
-shaping; each transport session retains its own store.
+shaping; each transport session retains its own store. Built-in and custom-tool success-response
+shaping uses that store, including inline/structured-content limits and oversized result links.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

@@ -57,7 +57,7 @@ use vulcan_app::mcp_protocol::{
     McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
     McpToolPackMutationArgs, McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs,
     MCP_INLINE_TEXT_LIMIT, MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT,
-    MCP_RESOURCE_NOT_FOUND,
+    MCP_RESOURCE_NOT_FOUND, MCP_STRUCTURED_CONTENT_LIMIT,
 };
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
@@ -3653,42 +3653,11 @@ impl McpServerCore {
         let structured = serde_json::to_value(report).map_err(|error| {
             McpMethodError::internal(format!("failed to serialize `{tool_name}` report: {error}"))
         })?;
-        Ok(self.tool_success_response(tool_name, structured))
+        Ok(self.tool_resources.success_response(tool_name, structured))
     }
 
     fn tool_success_response(&mut self, tool_name: &str, structured: Value) -> Value {
-        let structured = if structured.is_object() {
-            structured
-        } else {
-            serde_json::json!({ "result": structured })
-        };
-        let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
-        let content = if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
-            vec![serde_json::json!({
-                "type": "text",
-                "text": serialized,
-            })]
-        } else {
-            let resource = self.tool_resources.store_json(tool_name, &serialized);
-            vec![
-                serde_json::json!({
-                    "type": "text",
-                    "text": tool_summary_text(tool_name, &structured),
-                }),
-                resource,
-            ]
-        };
-        let mut response = serde_json::json!({
-            "content": content,
-            "isError": false,
-        });
-        if serialized.len() <= MCP_STRUCTURED_CONTENT_LIMIT {
-            response
-                .as_object_mut()
-                .expect("tool response is an object")
-                .insert("structuredContent".to_string(), structured);
-        }
-        response
+        self.tool_resources.success_response(tool_name, structured)
     }
 
     fn custom_tool_success_response(
@@ -3697,54 +3666,8 @@ impl McpServerCore {
         structured: Value,
         text: Option<&str>,
     ) -> Value {
-        let structured = if structured.is_object() {
-            structured
-        } else {
-            serde_json::json!({ "result": structured })
-        };
-        let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
-        let mut content = Vec::new();
-        if let Some(text) = text {
-            if text.len() <= MCP_INLINE_TEXT_LIMIT {
-                content.push(serde_json::json!({
-                    "type": "text",
-                    "text": text,
-                }));
-            } else {
-                content.push(serde_json::json!({
-                    "type": "text",
-                    "text": format!("`{tool_name}` returned text too large to inline; read the linked resource."),
-                }));
-                content.push(self.tool_resources.store_text(tool_name, text));
-            }
-        }
-        if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
-            if text.is_none() {
-                content.push(serde_json::json!({
-                    "type": "text",
-                    "text": serialized,
-                }));
-            }
-        } else {
-            if text.is_none() {
-                content.push(serde_json::json!({
-                    "type": "text",
-                    "text": tool_summary_text(tool_name, &structured),
-                }));
-            }
-            content.push(self.tool_resources.store_json(tool_name, &serialized));
-        }
-        let mut response = serde_json::json!({
-            "content": content,
-            "isError": false,
-        });
-        if serialized.len() <= MCP_STRUCTURED_CONTENT_LIMIT {
-            response
-                .as_object_mut()
-                .expect("tool response is an object")
-                .insert("structuredContent".to_string(), structured);
-        }
-        response
+        self.tool_resources
+            .custom_success_response(tool_name, structured, text)
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
@@ -5933,18 +5856,6 @@ fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {
     vars.iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect()
-}
-
-const MCP_STRUCTURED_CONTENT_LIMIT: usize = 65_536;
-
-fn tool_summary_text(tool_name: &str, structured: &Value) -> String {
-    if let Some(path) = structured.get("path").and_then(Value::as_str) {
-        return format!("Tool `{tool_name}` completed for `{path}`. Read the linked resource for the full JSON payload.");
-    }
-    if let Some(query) = structured.get("query").and_then(Value::as_str) {
-        return format!("Tool `{tool_name}` completed for query `{query}`. Read the linked resource for the full JSON payload.");
-    }
-    format!("Tool `{tool_name}` completed. Read the linked resource for the full JSON payload.")
 }
 
 fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'static str {

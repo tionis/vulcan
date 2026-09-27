@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 pub const MCP_INLINE_TEXT_LIMIT: usize = 4_096;
+pub const MCP_STRUCTURED_CONTENT_LIMIT: usize = 65_536;
 pub const MCP_PAGE_SIZE: usize = 100;
 pub const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 pub const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
@@ -37,6 +38,61 @@ impl Default for McpToolResourceStore {
 }
 
 impl McpToolResourceStore {
+    /// Shape a built-in tool result, storing large JSON in this session.
+    pub fn success_response(&mut self, tool_name: &str, structured: Value) -> Value {
+        let structured = wrap_tool_result(structured);
+        let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
+        let content = if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
+            vec![serde_json::json!({"type": "text", "text": serialized})]
+        } else {
+            vec![
+                serde_json::json!({
+                    "type": "text",
+                    "text": tool_summary_text(tool_name, &structured),
+                }),
+                self.store_json(tool_name, &serialized),
+            ]
+        };
+        tool_success_content(content, structured, serialized.len())
+    }
+
+    /// Shape a custom tool result, preserving its optional display text.
+    pub fn custom_success_response(
+        &mut self,
+        tool_name: &str,
+        structured: Value,
+        text: Option<&str>,
+    ) -> Value {
+        let structured = wrap_tool_result(structured);
+        let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
+        let mut content = Vec::new();
+        if let Some(text) = text {
+            if text.len() <= MCP_INLINE_TEXT_LIMIT {
+                content.push(serde_json::json!({"type": "text", "text": text}));
+            } else {
+                content.push(serde_json::json!({
+                    "type": "text",
+                    "text": format!("`{tool_name}` returned text too large to inline; read the linked resource."),
+                }));
+                content.push(self.store_text(tool_name, text));
+            }
+        }
+        if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
+            if text.is_none() {
+                content.push(serde_json::json!({"type": "text", "text": serialized}));
+            }
+        } else {
+            if text.is_none() {
+                content.push(serde_json::json!({
+                    "type": "text",
+                    "text": tool_summary_text(tool_name, &structured),
+                }));
+            }
+            content.push(self.store_json(tool_name, &serialized));
+        }
+        tool_success_content(content, structured, serialized.len())
+    }
+
     #[must_use]
     pub fn read(&self, uri: &str) -> Option<Value> {
         let resource = self.resources.get(uri)?;
@@ -83,6 +139,39 @@ impl McpToolResourceStore {
             "mimeType": mime_type,
         })
     }
+}
+
+fn wrap_tool_result(structured: Value) -> Value {
+    if structured.is_object() {
+        structured
+    } else {
+        serde_json::json!({"result": structured})
+    }
+}
+
+fn tool_success_content(content: Vec<Value>, structured: Value, serialized_len: usize) -> Value {
+    let mut response = serde_json::json!({"isError": false});
+    response
+        .as_object_mut()
+        .expect("tool response is an object")
+        .insert("content".to_string(), Value::Array(content));
+    if serialized_len <= MCP_STRUCTURED_CONTENT_LIMIT {
+        response
+            .as_object_mut()
+            .expect("tool response is an object")
+            .insert("structuredContent".to_string(), structured);
+    }
+    response
+}
+
+fn tool_summary_text(tool_name: &str, structured: &Value) -> String {
+    if let Some(path) = structured.get("path").and_then(Value::as_str) {
+        return format!("Tool `{tool_name}` completed for `{path}`. Read the linked resource for the full JSON payload.");
+    }
+    if let Some(query) = structured.get("query").and_then(Value::as_str) {
+        return format!("Tool `{tool_name}` completed for query `{query}`. Read the linked resource for the full JSON payload.");
+    }
+    format!("Tool `{tool_name}` completed. Read the linked resource for the full JSON payload.")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -768,5 +857,47 @@ mod tests {
             second.store_json("other", "{}")["uri"],
             "vulcan://tool-results/1.json"
         );
+    }
+
+    #[test]
+    fn tool_success_responses_preserve_inline_and_resource_limits() {
+        let mut store = McpToolResourceStore::default();
+        let small = store.success_response("count", json!(3));
+        assert_eq!(small["structuredContent"], json!({"result": 3}));
+        assert_eq!(small["content"][0]["text"], "{\n  \"result\": 3\n}");
+
+        let large = store.success_response(
+            "note_get",
+            json!({
+                "path": "Large.md",
+                "content": "x".repeat(MCP_STRUCTURED_CONTENT_LIMIT),
+            }),
+        );
+        assert!(large.get("structuredContent").is_none());
+        assert_eq!(large["content"][0]["text"], "Tool `note_get` completed for `Large.md`. Read the linked resource for the full JSON payload.");
+        assert_eq!(large["content"][1]["uri"], "vulcan://tool-results/1.json");
+        assert!(store.read("vulcan://tool-results/1.json").is_some());
+    }
+
+    #[test]
+    fn custom_success_response_preserves_display_text_and_large_links() {
+        let mut store = McpToolResourceStore::default();
+        let response = store.custom_success_response(
+            "custom",
+            json!({"query": "large", "value": "x".repeat(MCP_STRUCTURED_CONTENT_LIMIT)}),
+            Some(&"y".repeat(MCP_INLINE_TEXT_LIMIT + 1)),
+        );
+        assert!(response.get("structuredContent").is_none());
+        assert_eq!(
+            response["content"][0]["text"],
+            "`custom` returned text too large to inline; read the linked resource."
+        );
+        assert_eq!(response["content"][1]["uri"], "vulcan://tool-results/1.txt");
+        assert_eq!(
+            response["content"][2]["uri"],
+            "vulcan://tool-results/2.json"
+        );
+        assert!(store.read("vulcan://tool-results/1.txt").is_some());
+        assert!(store.read("vulcan://tool-results/2.json").is_some());
     }
 }
