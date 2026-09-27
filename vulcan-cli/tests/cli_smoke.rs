@@ -30394,6 +30394,17 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected(
     assert!(result["content"][0]["text"]
         .as_str()
         .is_some_and(|text| text.contains("Projects/Alpha.md")));
+
+    let unknown = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": { "name": "not_a_registered_custom_tool", "arguments": {} }
+    }));
+    assert_eq!(
+        unknown.last().expect("unknown custom tool response")["error"]["code"],
+        -32602
+    );
     assert!(session.finish().is_empty());
 
     let mut default_session = start_mcp_session_with_xdg(&vault_root, &config_home_str, &[]);

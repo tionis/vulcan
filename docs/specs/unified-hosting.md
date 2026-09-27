@@ -247,6 +247,8 @@ dispatch. Proxies must forward a single length-delimited request to this listene
 The shared auto-commit policy now lives in `vulcan-app::commit`. Both CLI mutations and MCP
 mutations use its configuration/trigger and Git checks and its plugin pre/post-commit workflow;
 the CLI retains a compatibility re-export until its remaining command dependencies move.
+MCP custom-tool lookup, listing, and execution call `vulcan-app::tools` directly; the host still
+supplies its CLI-derived reserved-name registry until registry construction is shared.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

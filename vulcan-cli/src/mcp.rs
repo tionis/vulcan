@@ -84,6 +84,7 @@ use vulcan_app::tasks::{
     TaskListRequest, TaskRescheduleRequest,
 };
 use vulcan_app::templates::parse_template_var_bindings;
+use vulcan_app::tools::{self as app_tools, CustomToolDescriptor, CustomToolRunOptions};
 #[cfg(feature = "web")]
 use vulcan_app::web::{
     apply_web_fetch_report_with_permissions, build_web_search_report_with_permissions,
@@ -2618,9 +2619,7 @@ impl McpServerCore {
         visible_tool_catalog(&self.selected_tool_packs, &self.selection.profile)
     }
 
-    fn visible_custom_tools(
-        &self,
-    ) -> Result<Vec<crate::tools::CustomToolDescriptor>, McpMethodError> {
+    fn visible_custom_tools(&self) -> Result<Vec<CustomToolDescriptor>, McpMethodError> {
         let selected_pack_names = pack_name_list(&self.selected_tool_packs)
             .into_iter()
             .collect::<BTreeSet<_>>();
@@ -3545,7 +3544,7 @@ impl McpServerCore {
                 "Unknown tool: {name}"
             )));
         }
-        let report = crate::tools::show_custom_tool(
+        let report = app_tools::show_custom_tool(
             &self.paths,
             Some(self.selection.name.as_str()),
             name,
@@ -3569,17 +3568,17 @@ impl McpServerCore {
                 self.selection.name
             )));
         }
-        let report = crate::tools::run_custom_tool(
+        let report = app_tools::run_custom_tool(
             &self.paths,
             Some(self.selection.name.as_str()),
             name,
             &Value::Object(arguments.clone()),
             &crate::custom_tool_registry_options(),
-            &crate::tools::CustomToolRunOptions {
+            &CustomToolRunOptions {
                 surface: "mcp".to_string(),
             },
         )
-        .map_err(cli_tool_error)?;
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
         Ok(self.custom_tool_success_response(&report.name, report.result, report.text.as_deref()))
     }
 
@@ -5834,18 +5833,19 @@ fn visible_custom_tools(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     selected_tool_packs: &BTreeSet<McpToolPack>,
-) -> Result<Vec<crate::tools::CustomToolDescriptor>, CliError> {
+) -> Result<Vec<CustomToolDescriptor>, CliError> {
     if !selected_tool_packs.contains(&McpToolPack::Custom) {
         return Ok(Vec::new());
     }
     let selected_pack_names = pack_name_list(selected_tool_packs)
         .into_iter()
         .collect::<BTreeSet<_>>();
-    Ok(crate::tools::list_custom_tools(
+    Ok(app_tools::list_custom_tools(
         paths,
         active_permission_profile,
         &crate::custom_tool_registry_options(),
-    )?
+    )
+    .map_err(CliError::operation)?
     .into_iter()
     .filter(|tool| tool.callable)
     .filter(|tool| {
@@ -5858,7 +5858,7 @@ fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
     mcp_tool_registry_entry(tool).to_mcp_list_item()
 }
 
-fn custom_tool_list_item(tool: &crate::tools::CustomToolDescriptor) -> Value {
+fn custom_tool_list_item(tool: &CustomToolDescriptor) -> Value {
     custom_tool_registry_entry(tool).to_mcp_list_item()
 }
 
