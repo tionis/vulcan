@@ -4136,14 +4136,27 @@ fn handle_local_oauth_refresh(
     {
         return oauth_json_error_response(400, "invalid_grant", "grant exceeds remote policy");
     }
-    let valid_profile = resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
-        .and_then(|current| {
-            resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile)).map(|ceiling| {
+    let current_profile = resolve_permission_profile(&vault.paths, Some(&grant.permission_profile));
+    let valid_profile = current_profile.as_ref().is_ok_and(|current| {
+        resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile)).is_ok_and(
+            |ceiling| {
                 current.grant.is_subset_of(&grant.approved_permissions)
                     && current.grant.is_subset_of(&ceiling.grant)
-            })
-        });
-    if !matches!(valid_profile, Ok(true)) {
+            },
+        )
+    });
+    if !valid_profile {
+        return oauth_json_error_response(400, "invalid_grant", "grant policy is no longer valid");
+    }
+    if named
+        .authorization_store
+        .attenuate_grant_permissions(
+            grant.id,
+            &current_profile.expect("validated current profile").grant,
+            now,
+        )
+        .is_err()
+    {
         return oauth_json_error_response(400, "invalid_grant", "grant policy is no longer valid");
     }
     let scopes = match params.get("scope") {

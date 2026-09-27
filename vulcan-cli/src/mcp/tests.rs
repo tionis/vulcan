@@ -2951,6 +2951,12 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
 fn named_consent_persists_and_enforces_a_revocable_grant() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+    )
+    .expect("approved profile");
     let issuer = Arc::new(
         LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: "https://mcp.example.test/personal".to_string(),
@@ -2974,8 +2980,8 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
             vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
             NamedMcpVaultRuntime {
                 paths: paths.clone(),
-                ceiling_profile: "readonly".to_string(),
-                default_profile: "readonly".to_string(),
+                ceiling_profile: "agent".to_string(),
+                default_profile: "agent".to_string(),
                 eligible_tool_packs: vec!["notes-read".to_string(), "search".to_string()],
             },
         )]),
@@ -3005,7 +3011,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         path: "/oauth/consent".to_string(),
         query: String::new(),
         headers: BTreeMap::new(),
-        body: b"transaction=named-transaction&csrf_token=csrf-secret&decision=approve&permission_profile=readonly&pack_notes-read=on&expiry_days=7".to_vec(),
+        body: b"transaction=named-transaction&csrf_token=csrf-secret&decision=approve&permission_profile=agent&pack_notes-read=on&expiry_days=7".to_vec(),
     };
     assert_eq!(
         handle_local_oauth_consent(&context, &issuer, &approval).status,
@@ -3100,8 +3106,29 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         .into_bytes(),
     }
     };
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"none\"\n",
+    )
+    .expect("narrow profile before refresh");
     let rotated = handle_local_oauth_token(&context, &issuer, &refresh(&refresh_token));
     assert_eq!(rotated.status, 200);
+    assert!(store
+        .show_grant(grants[0].id)
+        .expect("attenuated grant")
+        .approved_permissions
+        .write
+        .allow
+        .is_empty());
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+    )
+    .expect("widen profile after refresh");
+    assert!(
+        authenticate_mcp_http_request(&context, &request).is_err(),
+        "refresh-time narrowing must survive later profile widening"
+    );
     let rotated: Value = serde_json::from_slice(&rotated.body).expect("rotated token JSON");
     let replacement = rotated["refresh_token"]
         .as_str()

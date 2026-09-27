@@ -16201,6 +16201,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("template-created files, template moves/renames"));
     assert!(mcp_skill.contains("one recoverable batch"));
     assert!(mcp_skill.contains("obtain fresh consent"));
+    assert!(
+        mcp_skill.contains("used or refreshed while its profile is narrower is durably narrowed")
+    );
     assert!(mcp_skill.contains("`task_create`, `task_complete`, and `task_reschedule` recheck"));
     assert!(mcp_skill.contains("final canonical HTTPS URL"));
     assert!(

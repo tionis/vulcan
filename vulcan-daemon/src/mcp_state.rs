@@ -379,6 +379,38 @@ impl McpAuthorizationStore {
         }
     }
 
+    /// Persist a narrower effective permission boundary for an existing grant.
+    /// A later profile edit cannot restore authority without a new consent grant.
+    pub fn attenuate_grant_permissions(
+        &self,
+        id: Ulid,
+        current_permissions: &PermissionGrant,
+        now: u64,
+    ) -> Result<ConnectionGrantReport, McpStateError> {
+        let _lock = StateLock::acquire(&self.path)?;
+        let mut state = self.load()?;
+        let grant = state
+            .grants
+            .iter_mut()
+            .find(|grant| grant.id == id)
+            .ok_or(McpStateError::UnknownGrant(id))?;
+        if !grant.is_active_at(now) {
+            return Err(McpStateError::InactiveGrant(id));
+        }
+        if !current_permissions.is_subset_of(&grant.approved_permissions) {
+            return Err(McpStateError::GrantPermissionWidening(id));
+        }
+        if current_permissions == &grant.approved_permissions {
+            Ok(grant.report())
+        } else {
+            grant.approved_permissions = current_permissions.clone();
+            let report = grant.report();
+            validate_state(&state)?;
+            save_state(&self.path, &state)?;
+            Ok(report)
+        }
+    }
+
     pub fn revoke_remote_grants(
         &self,
         remote: &McpRemoteId,
@@ -856,6 +888,7 @@ pub enum McpStateError {
     UnknownGrant(Ulid),
     InactiveGrant(Ulid),
     GrantBindingMismatch(Ulid),
+    GrantPermissionWidening(Ulid),
     UnknownTokenFamily(Ulid),
     InactiveTokenFamily(Ulid),
     InvalidRefreshToken,
@@ -876,6 +909,12 @@ impl Display for McpStateError {
                 write!(
                     formatter,
                     "connection grant `{id}` does not match this authority"
+                )
+            }
+            Self::GrantPermissionWidening(id) => {
+                write!(
+                    formatter,
+                    "connection grant `{id}` cannot regain narrowed permissions"
                 )
             }
             Self::UnknownTokenFamily(id) => write!(formatter, "unknown token family `{id}`"),
@@ -990,6 +1029,48 @@ mod tests {
         assert!(!json.contains("refresh_token"));
         let reloaded = McpAuthorizationStore::at(temporary.path());
         assert_eq!(reloaded.show_grant(report.id).expect("reloaded"), report);
+    }
+
+    #[test]
+    fn grant_permissions_only_attenuate_and_survive_restart() {
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let original = permission_grant();
+        let grant = store
+            .create_grant(
+                grant_request(
+                    "personal",
+                    "https://client.example.test/metadata.json",
+                    "https://identity.example.test/alice",
+                ),
+                false,
+            )
+            .expect("grant");
+        let mut narrowed = original.clone();
+        narrowed.read = PathPermission::default();
+        let updated = store
+            .attenuate_grant_permissions(grant.id, &narrowed, 2_000)
+            .expect("narrow grant");
+        assert_eq!(updated.approved_permissions, narrowed);
+        let reloaded = McpAuthorizationStore::at(temporary.path());
+        assert_eq!(
+            reloaded
+                .show_grant(grant.id)
+                .expect("reloaded")
+                .approved_permissions,
+            narrowed
+        );
+        assert!(matches!(
+            reloaded.attenuate_grant_permissions(grant.id, &original, 2_001),
+            Err(McpStateError::GrantPermissionWidening(_))
+        ));
+        assert_eq!(
+            reloaded
+                .show_grant(grant.id)
+                .expect("unchanged")
+                .approved_permissions,
+            narrowed
+        );
     }
 
     #[test]

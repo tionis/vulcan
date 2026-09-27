@@ -116,6 +116,9 @@ impl NamedMcpRuntime {
             );
         }
         self.authorization_store
+            .attenuate_grant_permissions(grant.id, &current_profile.grant, request.now)
+            .map_err(|error| error.to_string())?;
+        self.authorization_store
             .mark_grant_used(grant.id, request.now)
             .map_err(|error| error.to_string())?;
         Ok(McpSessionAuthority::granted(
@@ -375,6 +378,65 @@ mod tests {
             runtime.authorize_token(&token).expect_err("removed vault"),
             "connection grant vault is no longer exposed"
         );
+    }
+
+    #[test]
+    fn narrowing_a_profile_durably_prevents_later_re_expansion() {
+        let (_temporary, mut runtime) = runtime();
+        let vault = runtime
+            .vaults
+            .get_mut(&WikiId::parse("personal").expect("wiki ID"))
+            .expect("vault");
+        vault.ceiling_profile = "agent".to_string();
+        vault.default_profile = "agent".to_string();
+        let config_file = vault.paths.config_file().to_path_buf();
+        fs::write(
+            &config_file,
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+        )
+        .expect("wide profile");
+        let instance_id = Ulid::new();
+        let scopes = vec!["mcp:tools".to_string()];
+        let form = BTreeMap::from([
+            ("pack_notes-read".to_string(), "on".to_string()),
+            ("expiry_days".to_string(), "7".to_string()),
+        ]);
+        let grant_id = runtime
+            .create_connection_grant(&request(instance_id, &form, &scopes))
+            .expect("approved consent");
+        let token = NamedTokenRequest {
+            remote_instance_id: instance_id,
+            grant_id,
+            client_id: "https://client.example/app.json",
+            subject: Some("https://identity.example/alice"),
+            scopes: &scopes,
+            resource: "https://mcp.example/personal",
+            credential: "secret access token",
+            now: 1_700_000_001,
+        };
+        runtime.authorize_token(&token).expect("original approval");
+
+        fs::write(
+            &config_file,
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"none\"\n",
+        )
+        .expect("narrow profile");
+        runtime.authorize_token(&token).expect("narrowed approval");
+        assert!(runtime
+            .authorization_store
+            .show_grant(grant_id)
+            .expect("durable grant")
+            .approved_permissions
+            .write
+            .allow
+            .is_empty());
+
+        fs::write(
+            &config_file,
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+        )
+        .expect("re-expand profile");
+        assert!(runtime.authorize_token(&token).is_err());
     }
 
     #[test]
