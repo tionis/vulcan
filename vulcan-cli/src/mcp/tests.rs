@@ -882,7 +882,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     );
     assert!(team_paths.vault_root().join("TeamForeground.md").is_file());
     assert!(!paths.vault_root().join("TeamForeground.md").exists());
-    assert_named_listener_prompt_change_notifications(address, &token, &paths, "foreground");
+    assert_named_listener_prompt_change_notifications(
+        address,
+        &token,
+        &write_token,
+        &paths,
+        "foreground",
+    );
     stop.cancel();
     runner
         .join()
@@ -1237,7 +1243,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     );
     assert!(team_paths.vault_root().join("TeamResident.md").is_file());
     assert!(!paths.vault_root().join("TeamResident.md").exists());
-    assert_named_listener_prompt_change_notifications(address, &token, &paths, "resident");
+    assert_named_listener_prompt_change_notifications(
+        address,
+        &token,
+        &write_token,
+        &paths,
+        "resident",
+    );
     supervisor.shutdown().expect("resident shutdown");
 }
 
@@ -1460,12 +1472,13 @@ fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr,
 fn assert_named_listener_prompt_change_notifications(
     address: SocketAddr,
     token: &str,
+    tools_only_token: &str,
     paths: &VaultPaths,
     label: &str,
 ) {
     let owner = named_listener_session_id(&named_listener_initialize(address, "parity", token));
     let peer = named_listener_session_id(&named_listener_initialize(address, "parity", token));
-    let open_sse = |session: &str| {
+    let open_sse = |session: &str, token: &str| {
         let mut stream = TcpStream::connect(address).expect("named listener active");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1488,8 +1501,14 @@ fn assert_named_listener_prompt_change_notifications(
         assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
         client
     };
-    let mut owner_sse = open_sse(&owner);
-    let mut peer_sse = open_sse(&peer);
+    let mut owner_sse = open_sse(&owner, token);
+    let mut peer_sse = open_sse(&peer, token);
+    let tools_only = named_listener_session_id(&named_listener_initialize(
+        address,
+        "parity",
+        tools_only_token,
+    ));
+    let mut tools_only_sse = open_sse(&tools_only, tools_only_token);
 
     let prompt_path = paths
         .vault_root()
@@ -1499,26 +1518,21 @@ fn assert_named_listener_prompt_change_notifications(
         format!("---\nname: notify-{label}\nrole: user\n---\nNotify {label}.\n"),
     )
     .expect("new prompt");
-    let assert_events = |client: &mut io::BufReader<TcpStream>| {
-        let mut prompt_changed = false;
-        let mut resource_changed = false;
-        for _ in 0..24 {
-            let mut line = String::new();
-            assert!(client.read_line(&mut line).expect("SSE event") > 0);
-            if let Some(payload) = line.strip_prefix("data: ") {
-                let event: serde_json::Value = serde_json::from_str(payload).expect("SSE JSON");
-                prompt_changed |= event["method"] == "notifications/prompts/list_changed";
-                resource_changed |= event["method"] == "notifications/resources/list_changed";
-                if prompt_changed && resource_changed {
-                    break;
-                }
-            }
-        }
-        assert!(prompt_changed, "prompt change notification missing");
-        assert!(resource_changed, "resource change notification missing");
-    };
-    assert_events(&mut owner_sse);
-    assert_events(&mut peer_sse);
+    assert_named_listener_prompt_resource_events(&mut owner_sse);
+    assert_named_listener_prompt_resource_events(&mut peer_sse);
+    tools_only_sse
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(800)))
+        .expect("tools-only SSE timeout");
+    let mut unexpected = String::new();
+    let no_event = tools_only_sse.read_line(&mut unexpected);
+    assert!(
+        no_event.is_err_and(|error| matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        )),
+        "tools-only grant received a prompt/resource event: {unexpected}"
+    );
 
     let mut delete = TcpStream::connect(address).expect("named listener active");
     delete
@@ -1543,7 +1557,7 @@ fn assert_named_listener_prompt_change_notifications(
         format!("---\nname: notify-{label}-peer\nrole: user\n---\nPeer {label}.\n"),
     )
     .expect("second prompt");
-    assert_events(&mut peer_sse);
+    assert_named_listener_prompt_resource_events(&mut peer_sse);
     let peer_list = named_listener_method(address, "parity", token, &peer, "prompts/list");
     assert!(
         peer_list.contains(&format!("notify-{label}-peer")),
@@ -1551,6 +1565,26 @@ fn assert_named_listener_prompt_change_notifications(
     );
     fs::remove_file(prompt_path).expect("remove temporary prompt");
     fs::remove_file(second_prompt).expect("remove second prompt");
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_prompt_resource_events(client: &mut io::BufReader<TcpStream>) {
+    let mut prompt_changed = false;
+    let mut resource_changed = false;
+    for _ in 0..24 {
+        let mut line = String::new();
+        assert!(client.read_line(&mut line).expect("SSE event") > 0);
+        if let Some(payload) = line.strip_prefix("data: ") {
+            let event: serde_json::Value = serde_json::from_str(payload).expect("SSE JSON");
+            prompt_changed |= event["method"] == "notifications/prompts/list_changed";
+            resource_changed |= event["method"] == "notifications/resources/list_changed";
+            if prompt_changed && resource_changed {
+                break;
+            }
+        }
+    }
+    assert!(prompt_changed, "prompt change notification missing");
+    assert!(resource_changed, "resource change notification missing");
 }
 
 #[cfg(feature = "oauth")]
@@ -2361,6 +2395,43 @@ fn mcp_http_cancellation_tokens_are_request_and_session_local() {
     assert!(other_request.is_cancelled());
     assert!(!other_session.is_cancelled());
     assert!(!first.register_request(&serde_json::json!(3), ExecutionCancellationToken::default()));
+}
+
+#[test]
+fn mcp_http_broadcast_filters_list_changes_by_connection_scopes() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let core = McpServerCore::new(
+        &paths,
+        Some("readonly"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let session = McpHttpSession::new(
+        core,
+        McpSessionAuthority::direct(
+            Ulid::new(),
+            "credential",
+            None,
+            None,
+            Some("readonly".to_string()),
+            vec!["notes-read".to_string()],
+            vec!["mcp:tools".to_string()],
+        ),
+    );
+    let receiver = session.register_subscriber();
+    session.broadcast(&[
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}),
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/resources/list_changed"}),
+    ]);
+    assert_eq!(
+        receiver.try_recv().expect("visible tool notification")["method"],
+        "notifications/tools/list_changed"
+    );
+    assert!(receiver.try_recv().is_err());
 }
 
 #[cfg(feature = "oauth")]

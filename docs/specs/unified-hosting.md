@@ -276,6 +276,8 @@ Both named hosting modes also deliver prompt/resource list-change notifications 
 SSE stream after a vault prompt is added; other notification classes still require parity coverage.
 Live checks also verify that two authorized sessions independently receive those events and
 deleting one session does not interrupt the other's stream or prompt catalog.
+List-change notifications, including request-generated events and SSE polling, are filtered by
+the session's OAuth scopes; a tools-only connection receives no prompt or resource changes.
 HTTP cancellation notifications are handled against the authenticated session's active request
 tokens outside its busy executor lock. Queued hosted work can cancel before dispatch; cancellation
 of a dispatched write is not proof of rollback and retains the durable operation-status contract.

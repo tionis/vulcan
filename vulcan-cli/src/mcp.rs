@@ -257,14 +257,24 @@ impl McpHttpSession {
         if messages.is_empty() || self.closed.load(Ordering::SeqCst) {
             return;
         }
+        let visible = messages
+            .iter()
+            .filter(|message| {
+                mcp_notification_scope(message)
+                    .is_none_or(|scope| self.authority.allows_scope(scope))
+            })
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return;
+        }
         let mut subscribers = self
             .subscribers
             .lock()
             .expect("mcp subscribers lock should not be poisoned");
         subscribers.retain(|sender| {
-            messages
+            visible
                 .iter()
-                .all(|message| sender.send(message.clone()).is_ok())
+                .all(|message| sender.send((*message).clone()).is_ok())
         });
     }
 
@@ -1836,6 +1846,15 @@ fn required_mcp_scope(payload: &Value) -> Option<&'static str> {
     }
 }
 
+fn mcp_notification_scope(message: &Value) -> Option<&'static str> {
+    match message.get("method")?.as_str()? {
+        "notifications/tools/list_changed" => Some("mcp:tools"),
+        "notifications/resources/list_changed" => Some("mcp:resources"),
+        "notifications/prompts/list_changed" => Some("mcp:prompts"),
+        _ => None,
+    }
+}
+
 fn insufficient_scope_response(context: &McpHttpServerContext, required: &str) -> McpHttpResponse {
     let message = format!("OAuth token does not grant required scope `{required}`");
     #[cfg(feature = "oauth")]
@@ -2091,7 +2110,12 @@ fn handle_mcp_http_sse(
                     core.list_changed_notifications()
                 };
                 for notification in notifications {
-                    write_mcp_http_sse_event(stream, &notification).map_err(CliError::operation)?;
+                    if mcp_notification_scope(&notification)
+                        .is_none_or(|scope| session.authority.allows_scope(scope))
+                    {
+                        write_mcp_http_sse_event(stream, &notification)
+                            .map_err(CliError::operation)?;
+                    }
                 }
                 keepalive_elapsed += MCP_HTTP_POLL_INTERVAL;
                 if keepalive_elapsed >= MCP_HTTP_KEEPALIVE_INTERVAL {
