@@ -622,6 +622,27 @@ pub fn resolve_existing_markdown_target(
     Err(AppError::operation(format!("note not found: {note}")))
 }
 
+/// Check the authority for a Markdown source, including explicit paths outside the vault.
+pub fn check_read_markdown_source_access(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    note: &str,
+) -> Result<(), AppError> {
+    if guard.read_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
+        return Ok(());
+    }
+    let target = resolve_existing_markdown_target(paths, note)?;
+    let Some(relative_path) = target.vault_relative_path.as_deref() else {
+        return Err(AppError::operation(format!(
+            "permission profiles cannot read markdown files outside the selected vault root: {}",
+            target.display_path
+        )));
+    };
+    guard
+        .check_read_path(relative_path)
+        .map_err(AppError::operation)
+}
+
 fn note_argument_looks_like_path(note: &str) -> bool {
     let path = Path::new(note);
     path.is_absolute()
@@ -2442,12 +2463,12 @@ fn load_note_append_target(
 mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-        build_note_info_report, diagnose_note_contents, finish_note_append_report,
-        finish_note_create_report, finish_note_patch_report, finish_note_set_report,
-        json_properties_to_frontmatter, parse_note_frontmatter_bindings, read_note,
-        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
-        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest,
-        NoteReadMode, NoteSetRequest,
+        build_note_info_report, check_read_markdown_source_access, diagnose_note_contents,
+        finish_note_append_report, finish_note_create_report, finish_note_patch_report,
+        finish_note_set_report, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
+        read_note, read_note_outline, resolve_existing_markdown_target, MarkdownTarget,
+        NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions,
+        NotePatchRequest, NoteReadMode, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde::Serialize;
@@ -2456,7 +2477,10 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
-    use vulcan_core::{initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultPaths};
+    use vulcan_core::{
+        initialize_vulcan_dir, resolve_permission_profile, scan_vault_with_progress,
+        ProfilePermissionGuard, ScanMode, VaultPaths,
+    };
 
     #[test]
     fn note_info_report_preserves_metadata_and_word_count() {
@@ -2508,6 +2532,39 @@ mod tests {
         let non_markdown = temporary.path().join("Other.txt");
         fs::write(&non_markdown, "not markdown").unwrap();
         assert!(resolve_existing_markdown_target(&paths, non_markdown.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn markdown_source_read_guard_allows_unrestricted_external_but_rejects_scoped_external() {
+        let temporary = tempdir().expect("temporary vault");
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(vault.join(".vulcan")).expect("config directory");
+        fs::write(
+            vault.join(".vulcan/config.toml"),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .expect("permission config");
+        fs::write(vault.join("Home.md"), "# Home\n").expect("vault note");
+        let external = temporary.path().join("External.md");
+        fs::write(&external, "# External\n").expect("external note");
+        let paths = VaultPaths::new(&vault);
+        let unrestricted = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).expect("readonly profile"),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).expect("blind profile"),
+        );
+        let external_path = external.to_str().expect("utf-8 path");
+        assert!(check_read_markdown_source_access(&paths, &unrestricted, external_path).is_ok());
+        assert!(check_read_markdown_source_access(&paths, &blind, "Home.md").is_err());
+        assert!(
+            check_read_markdown_source_access(&paths, &blind, external_path)
+                .expect_err("scoped external read")
+                .to_string()
+                .contains("outside the selected vault root")
+        );
     }
 
     #[test]

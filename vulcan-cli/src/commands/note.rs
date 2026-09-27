@@ -20,9 +20,11 @@ use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-    build_note_info_report, diagnose_external_markdown_contents, diagnose_note_contents,
-    finish_note_append_report, finish_note_create_report, finish_note_patch_report,
-    finish_note_set_report, parse_note_frontmatter_bindings, read_note as app_read_note,
+    build_note_info_report,
+    check_read_markdown_source_access as app_check_read_markdown_source_access,
+    diagnose_external_markdown_contents, diagnose_note_contents, finish_note_append_report,
+    finish_note_create_report, finish_note_patch_report, finish_note_set_report,
+    parse_note_frontmatter_bindings, read_note as app_read_note,
     read_note_outline as app_read_note_outline,
     resolve_existing_markdown_target as app_resolve_existing_markdown_target,
     MarkdownTarget as AppMarkdownTarget, NoteAppendCommandReport as NoteAppendReport,
@@ -87,20 +89,7 @@ fn check_read_markdown_source_access(
     note: &str,
 ) -> Result<(), CliError> {
     let guard = selected_permission_guard(cli, paths)?;
-    if guard.read_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
-        return Ok(());
-    }
-
-    let target = resolve_existing_markdown_target(paths, note)?;
-    let Some(relative_path) = target.vault_relative_path.as_deref() else {
-        return Err(CliError::operation(format!(
-            "permission profiles cannot read markdown files outside the selected vault root: {}",
-            target.display_path
-        )));
-    };
-    guard
-        .check_read_path(relative_path)
-        .map_err(CliError::operation)
+    app_check_read_markdown_source_access(paths, &guard, note).map_err(CliError::operation)
 }
 
 fn check_write_markdown_source_access(

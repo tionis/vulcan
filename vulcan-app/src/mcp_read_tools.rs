@@ -12,7 +12,7 @@ use vulcan_core::{
 };
 
 use crate::mcp_protocol::{McpMethodError, McpQueryArgs, McpSearchArgs};
-use crate::notes::resolve_existing_markdown_target;
+use crate::notes::check_read_markdown_source_access as app_check_read_markdown_source_access;
 use crate::periodic::DailyNoteReadReport;
 
 const MCP_QUERY_SOFT_MAX: usize = 200;
@@ -119,19 +119,7 @@ pub fn check_read_markdown_source_access(
     guard: &ProfilePermissionGuard,
     note: &str,
 ) -> Result<(), McpMethodError> {
-    if guard.read_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
-        return Ok(());
-    }
-    let target = resolve_existing_markdown_target(paths, note)
-        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    let Some(relative_path) = target.vault_relative_path.as_deref() else {
-        return Err(McpMethodError::tool(format!(
-            "permission profiles cannot read markdown files outside the selected vault root: {}",
-            target.display_path
-        )));
-    };
-    guard
-        .check_read_path(relative_path)
+    app_check_read_markdown_source_access(paths, guard, note)
         .map_err(|error| McpMethodError::tool(error.to_string()))
 }
 

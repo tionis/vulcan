@@ -259,6 +259,9 @@ while MCP returns the shared scan summary.
 MCP note-reference and path preflight uses `vulcan-app::mcp_access` so local and future hosted
 executors share the same permission-filter and outside-vault Markdown rules. Mutations still
 recheck authority at application time.
+The app Markdown target resolver also owns the scoped source-read check used by direct CLI note
+reads and MCP reads. Unrestricted local reads retain explicit outside-vault Markdown support;
+scoped profiles reject those paths consistently.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
