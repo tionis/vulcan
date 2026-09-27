@@ -11,9 +11,15 @@ use vulcan_core::{
     QueryReport, SearchQuery, SearchSort, TasksQueryResult, VaultPaths,
 };
 
-use crate::mcp_protocol::{McpMethodError, McpQueryArgs, McpSearchArgs};
+use crate::mcp_access;
+use crate::mcp_protocol::{
+    McpDailyArgs, McpDailyListArgs, McpDailyShowArgs, McpMethodError, McpQueryArgs, McpSearchArgs,
+};
 use crate::notes::check_read_markdown_source_access as app_check_read_markdown_source_access;
-use crate::periodic::DailyNoteReadReport;
+use crate::periodic::{
+    current_utc_date_string, list_daily_notes, normalize_date_argument, read_daily_note,
+    read_latest_daily_note_where, show_periodic_note, DailyNoteReadReport, DailyReadTarget,
+};
 
 const MCP_QUERY_SOFT_MAX: usize = 200;
 pub const MCP_QUERY_HARD_MAX: usize = 1_000;
@@ -111,6 +117,107 @@ pub fn bounded_daily_list<T: serde::Serialize>(
             "next_offset": (end < total_count).then_some(end),
         }
     }))
+}
+
+/// Execute the compact daily MCP tool with the caller's read boundary.
+pub fn daily(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: McpDailyArgs,
+) -> Result<Value, McpMethodError> {
+    match args.operation.as_str() {
+        "latest" => {
+            let mut report = read_latest_daily_note_where(paths, false, |path| {
+                guard.check_read_path(path).is_ok()
+            })
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+            include_daily_content_after_access(paths, guard, &mut report, args.include_content)?;
+            serde_json::to_value(report)
+                .map_err(|error| McpMethodError::internal(error.to_string()))
+        }
+        "today" | "show" => {
+            let date = if args.operation == "today" {
+                current_utc_date_string()
+            } else {
+                let raw = args.date.as_deref().ok_or_else(|| {
+                    McpMethodError::invalid_params("daily operation `show` requires `date`")
+                })?;
+                normalize_date_argument(Some(raw))
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?
+            };
+            let mut report = read_daily_note(paths, DailyReadTarget::Date(&date), false)
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+            report.operation.clone_from(&args.operation);
+            include_daily_content_after_access(paths, guard, &mut report, args.include_content)?;
+            serde_json::to_value(report)
+                .map_err(|error| McpMethodError::internal(error.to_string()))
+        }
+        "list" | "range" => {
+            let items = list_daily_notes(
+                paths,
+                args.from.as_deref(),
+                args.to.as_deref(),
+                args.week,
+                args.month,
+            )
+            .map_err(|error| McpMethodError::tool(error.to_string()))?
+            .into_iter()
+            .filter(|item| guard.check_read_path(&item.path).is_ok())
+            .collect::<Vec<_>>();
+            let mut page = bounded_daily_list(
+                items,
+                args.limit,
+                args.offset,
+                args.order.as_deref(),
+                args.include_events,
+            )?;
+            page.as_object_mut()
+                .expect("daily list page is an object")
+                .insert("operation".to_string(), Value::String(args.operation));
+            Ok(page)
+        }
+        other => Err(McpMethodError::invalid_params(format!(
+            "unsupported `daily.operation`: {other}"
+        ))),
+    }
+}
+
+/// Read a single daily note through the same scoped MCP access check.
+pub fn daily_show(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: &McpDailyShowArgs,
+) -> Result<Value, McpMethodError> {
+    let report = show_periodic_note(paths, args.date.as_deref(), "daily")
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    mcp_access::check_read_note_access(paths, guard, &report.path)?;
+    serde_json::to_value(report).map_err(|error| McpMethodError::internal(error.to_string()))
+}
+
+/// List readable daily notes with the legacy MCP pagination contract.
+pub fn daily_list(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: &McpDailyListArgs,
+) -> Result<Value, McpMethodError> {
+    let items = list_daily_notes(
+        paths,
+        args.from.as_deref(),
+        args.to.as_deref(),
+        args.week,
+        args.month,
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))?
+    .into_iter()
+    .filter(|item| guard.check_read_path(&item.path).is_ok())
+    .collect::<Vec<_>>();
+    bounded_daily_list(
+        items,
+        args.limit,
+        args.offset,
+        args.order.as_deref(),
+        args.include_events,
+    )
 }
 
 /// Apply the note-source permission boundary before any MCP note read.
@@ -468,7 +575,61 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
+    use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::{resolve_permission_profile, scan_vault, ScanMode, TasksQueryGroup};
+
+    #[test]
+    fn daily_workflows_filter_lists_and_deny_hidden_content_free_reads() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::create_dir_all(temporary.path().join("Journal/Daily")).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[periodic.daily]\nschedule_heading = \"Schedule\"\n[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(
+            temporary.path().join("Journal/Daily/2026-04-03.md"),
+            "# Friday\n\n## Schedule\n- 09:00 Team standup\n",
+        )
+        .unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let readable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+        let show_args = || {
+            serde_json::from_value::<McpDailyArgs>(
+                json!({"operation": "show", "date": "2026-04-03", "include_content": false}),
+            )
+            .unwrap()
+        };
+        let shown = daily(&paths, &readable, show_args()).unwrap();
+        assert_eq!(shown["path"], "Journal/Daily/2026-04-03.md");
+        assert!(shown["content"].is_null());
+        assert!(daily(&paths, &blind, show_args()).is_err());
+        let list_args =
+            || serde_json::from_value::<McpDailyListArgs>(json!({"from": "2026-04-03"})).unwrap();
+        assert_eq!(
+            daily_list(&paths, &readable, &list_args()).unwrap()["page"]["total_count"],
+            1
+        );
+        assert_eq!(
+            daily_list(&paths, &blind, &list_args()).unwrap()["page"]["total_count"],
+            0
+        );
+        let legacy_show =
+            serde_json::from_value::<McpDailyShowArgs>(json!({"date": "2026-04-03"})).unwrap();
+        assert_eq!(
+            daily_show(&paths, &readable, &legacy_show).unwrap()["path"],
+            shown["path"]
+        );
+    }
 
     #[test]
     fn task_query_filter_removes_unreadable_flat_and_grouped_rows() {

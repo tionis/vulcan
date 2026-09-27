@@ -76,9 +76,6 @@ use vulcan_app::notes::{
     read_note_outline, resolve_existing_markdown_target, NoteAppendRequest, NoteCreateRequest,
     NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode, NoteSetRequest,
 };
-use vulcan_app::periodic::{
-    current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
-};
 use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::tasks::{
     apply_task_complete, apply_task_complete_with_guard, apply_task_create,
@@ -2652,111 +2649,17 @@ impl McpServerCore {
             }
             McpToolId::Daily => {
                 let args: McpDailyArgs = parse_tool_arguments(arguments)?;
-                let structured = match args.operation.as_str() {
-                    "latest" => {
-                        let mut report = vulcan_app::periodic::read_latest_daily_note_where(
-                            &self.paths,
-                            false,
-                            |path| self.guard.check_read_path(path).is_ok(),
-                        )
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                        mcp_read_tools::include_daily_content_after_access(
-                            &self.paths,
-                            &self.guard,
-                            &mut report,
-                            args.include_content,
-                        )?;
-                        serde_json::to_value(report)
-                            .map_err(|error| McpMethodError::internal(error.to_string()))?
-                    }
-                    "today" | "show" => {
-                        let date = if args.operation == "today" {
-                            current_utc_date_string()
-                        } else {
-                            let raw = args.date.as_deref().ok_or_else(|| {
-                                McpMethodError::invalid_params(
-                                    "daily operation `show` requires `date`",
-                                )
-                            })?;
-                            normalize_date_argument(Some(raw))
-                                .map_err(|error| McpMethodError::tool(error.to_string()))?
-                        };
-                        let mut report = vulcan_app::periodic::read_daily_note(
-                            &self.paths,
-                            vulcan_app::periodic::DailyReadTarget::Date(&date),
-                            false,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                        report.operation.clone_from(&args.operation);
-                        mcp_read_tools::include_daily_content_after_access(
-                            &self.paths,
-                            &self.guard,
-                            &mut report,
-                            args.include_content,
-                        )?;
-                        serde_json::to_value(report)
-                            .map_err(|error| McpMethodError::internal(error.to_string()))?
-                    }
-                    "list" | "range" => {
-                        let items = list_daily_notes(
-                            &self.paths,
-                            args.from.as_deref(),
-                            args.to.as_deref(),
-                            args.week,
-                            args.month,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?
-                        .into_iter()
-                        .filter(|item| self.guard.check_read_path(&item.path).is_ok())
-                        .collect::<Vec<_>>();
-                        let mut page = mcp_read_tools::bounded_daily_list(
-                            items,
-                            args.limit,
-                            args.offset,
-                            args.order.as_deref(),
-                            args.include_events,
-                        )?;
-                        page.as_object_mut()
-                            .expect("daily list page is an object")
-                            .insert("operation".to_string(), Value::String(args.operation));
-                        page
-                    }
-                    other => {
-                        return Err(McpMethodError::invalid_params(format!(
-                            "unsupported `daily.operation`: {other}"
-                        )));
-                    }
-                };
+                let structured = mcp_read_tools::daily(&self.paths, &self.guard, args)?;
                 Ok(self.tool_success_response(tool.name, structured))
             }
             McpToolId::DailyShow => {
                 let args: McpDailyShowArgs = parse_tool_arguments(arguments)?;
-                let report = show_periodic_note(&self.paths, args.date.as_deref(), "daily")
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                mcp_access::check_read_note_access(&self.paths, &self.guard, &report.path)?;
-                self.serialize_tool_report(tool.name, &report)
+                let report = mcp_read_tools::daily_show(&self.paths, &self.guard, &args)?;
+                Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::DailyList => {
                 let args: McpDailyListArgs = parse_tool_arguments(arguments)?;
-                let report = list_daily_notes(
-                    &self.paths,
-                    args.from.as_deref(),
-                    args.to.as_deref(),
-                    args.week,
-                    args.month,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let filtered = report
-                    .into_iter()
-                    .filter(|item| self.guard.check_read_path(&item.path).is_ok())
-                    .collect::<Vec<_>>();
-                let structured = mcp_read_tools::bounded_daily_list(
-                    filtered,
-                    args.limit,
-                    args.offset,
-                    args.order.as_deref(),
-                    args.include_events,
-                )?;
+                let structured = mcp_read_tools::daily_list(&self.paths, &self.guard, &args)?;
                 Ok(self.tool_success_response(tool.name, structured))
             }
             McpToolId::GraphCommunities => {
