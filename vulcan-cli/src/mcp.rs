@@ -63,6 +63,7 @@ use vulcan_app::mcp_protocol::{
     MCP_RESOURCE_NOT_FOUND, MCP_STRUCTURED_CONTENT_LIMIT,
 };
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
+use vulcan_app::mcp_sync;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
@@ -76,11 +77,6 @@ use vulcan_app::periodic::{
 };
 use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::scan::scan_vault_with_automation;
-use vulcan_app::sync::{
-    doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
-    GitSyncOptions,
-};
-use vulcan_app::sync_conflicts::{get_sync_conflict, list_sync_conflicts};
 use vulcan_app::tasks::{
     apply_task_complete, apply_task_complete_with_guard, apply_task_create,
     apply_task_create_with_guard, apply_task_reschedule, apply_task_reschedule_with_guard,
@@ -167,20 +163,6 @@ const SUPPORTED_MCP_OAUTH_SCOPES: &[&str] = &[
     "mcp:resources",
     "mcp:prompts",
 ];
-
-fn mcp_git_sync_options(args: &McpSyncTargetArgs) -> Result<GitSyncOptions, McpMethodError> {
-    let mut options = GitSyncOptions::default();
-    if let Some(remote) = args.remote.as_deref() {
-        options.remote = GitRemote::parse(remote)
-            .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
-    }
-    if let Some(live_ref) = args.live_ref.as_deref() {
-        options.live_ref = GitRefName::parse(live_ref)
-            .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
-    }
-    options.dry_run = true;
-    Ok(options)
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct McpHttpOptions {
@@ -3024,48 +3006,18 @@ impl McpServerCore {
             )),
             McpToolId::SyncStatus | McpToolId::SyncPlan => {
                 let args: McpSyncTargetArgs = parse_tool_arguments(arguments)?;
-                self.guard
-                    .check_git()
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let options = mcp_git_sync_options(&args)?;
-                let report = sync_git_vault(&self.paths, &options)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                self.serialize_tool_report(tool.name, &report)
+                let report = mcp_sync::sync_preview(&self.paths, &self.guard, &args)?;
+                Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::SyncDoctor => {
                 let args: McpSyncDoctorArgs = parse_tool_arguments(arguments)?;
-                self.guard
-                    .check_git()
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let target = McpSyncTargetArgs {
-                    remote: args.remote,
-                    live_ref: args.live_ref,
-                };
-                let options = mcp_git_sync_options(&target)?;
-                let platform = args
-                    .platform
-                    .as_deref()
-                    .map(GitPlatformProfile::parse)
-                    .transpose()
-                    .map_err(|error| McpMethodError::invalid_params(error.to_string()))?
-                    .unwrap_or_else(GitPlatformProfile::native);
-                let report = doctor_git_vault_for_platform(&self.paths, &options, platform);
-                self.serialize_tool_report(tool.name, &report)
+                let report = mcp_sync::sync_doctor(&self.paths, &self.guard, &args)?;
+                Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::SyncConflicts => {
                 let args: McpSyncConflictsArgs = parse_tool_arguments(arguments)?;
-                self.guard
-                    .check_git()
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if let Some(conflict_id) = args.conflict_id.as_deref() {
-                    let report = get_sync_conflict(&self.paths, conflict_id)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    self.serialize_tool_report(tool.name, &report)
-                } else {
-                    let report = list_sync_conflicts(&self.paths)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    self.serialize_tool_report(tool.name, &report)
-                }
+                let report = mcp_sync::sync_conflicts(&self.paths, &self.guard, &args)?;
+                Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::Daily => {
                 let args: McpDailyArgs = parse_tool_arguments(arguments)?;

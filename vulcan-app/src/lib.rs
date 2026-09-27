@@ -55,6 +55,7 @@ pub mod mcp_help;
 pub mod mcp_protocol;
 pub mod mcp_read_tools;
 pub mod mcp_schemas;
+pub mod mcp_sync;
 pub mod mdbase;
 pub mod mdbase_conformance;
 pub mod notes;
