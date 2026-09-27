@@ -2426,23 +2426,7 @@ fn direct_local_oauth_preserves_registered_redirect_query() {
 #[test]
 fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
     let temporary = tempfile::tempdir().expect("temporary vault");
-    let context = consent_test_context(
-        &VaultPaths::new(temporary.path()),
-        Arc::new(
-            LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
-                public_url: "https://mcp.example.test/personal".to_string(),
-                client_id: "static-client".to_string(),
-                client_secret: "client-secret".to_string(),
-                signing_key: "distinct-signing-key".to_string(),
-                approval_token: String::new(),
-                subject: "https://identity.example.test/alice".to_string(),
-                email: None,
-                users: Vec::new(),
-                dcr_enabled: true,
-            })
-            .expect("issuer"),
-        ),
-    );
+    let context = dcr_test_context(&VaultPaths::new(temporary.path()));
     assert_eq!(
         oauth_authorization_server_metadata(&context, context.oauth.as_ref().expect("OAuth"))
             ["grant_types_supported"],
@@ -2499,6 +2483,62 @@ fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
             "{payload}"
         );
         assert!(context.oauth_clients.lock().expect("clients").is_empty());
+    }
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn failed_registration_save_does_not_publish_a_client() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let mut context = dcr_test_context(&VaultPaths::new(temporary.path()));
+    let registry = temporary.path().join("oauth-clients.json");
+    fs::create_dir(&registry).expect("block registry replacement with a directory");
+    context.oauth_clients_path = Some(registry);
+    let response = handle_local_oauth_register(&context, &dcr_test_request("failure"));
+    assert_eq!(response.status, 500);
+    assert!(context.oauth_clients.lock().expect("clients").is_empty());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn concurrent_registrations_persist_every_client() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let mut context = dcr_test_context(&VaultPaths::new(temporary.path()));
+    let registry = temporary.path().join("oauth-clients.json");
+    context.oauth_clients_path = Some(registry.clone());
+    thread::scope(|scope| {
+        for index in 0..8 {
+            let context = &context;
+            scope.spawn(move || {
+                let response = handle_local_oauth_register(
+                    context,
+                    &dcr_test_request(&format!("client-{index}")),
+                );
+                assert_eq!(response.status, 201, "{index}");
+            });
+        }
+    });
+    assert_eq!(context.oauth_clients.lock().expect("clients").len(), 8);
+    assert_eq!(
+        load_oauth_registered_clients(&registry)
+            .expect("durable registrations")
+            .len(),
+        8
+    );
+}
+
+#[cfg(feature = "oauth")]
+fn dcr_test_request(client_name: &str) -> McpHttpRequest {
+    McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/oauth/register".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: serde_json::to_vec(&serde_json::json!({
+            "redirect_uris": ["https://client.example.test/callback"],
+            "client_name": client_name,
+        }))
+        .expect("registration JSON"),
     }
 }
 
@@ -2684,7 +2724,11 @@ fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
             client_id_issued_at: 1,
         },
     );
-    save_oauth_registered_clients(&context).expect("save registry");
+    save_oauth_registered_clients(
+        context.oauth_clients_path.as_deref(),
+        &context.oauth_clients.lock().expect("clients"),
+    )
+    .expect("save registry");
     assert_eq!(
         fs::metadata(&registry)
             .expect("metadata")
@@ -2965,6 +3009,25 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         named_runtime: None,
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     }
+}
+
+#[cfg(feature = "oauth")]
+fn dcr_test_context(paths: &VaultPaths) -> McpHttpServerContext {
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    consent_test_context(paths, issuer)
 }
 
 #[cfg(feature = "oauth")]

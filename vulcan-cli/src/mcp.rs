@@ -3905,14 +3905,18 @@ fn handle_local_oauth_register(
         token_endpoint_auth_method: registration.token_endpoint_auth_method,
         client_id_issued_at: current_unix_timestamp(),
     };
-    context
+    let mut clients = context
         .oauth_clients
         .lock()
-        .expect("oauth clients lock should not be poisoned")
-        .insert(client.client_id.clone(), client.clone());
-    if let Err(error) = save_oauth_registered_clients(context) {
+        .expect("oauth clients lock should not be poisoned");
+    clients.insert(client.client_id.clone(), client.clone());
+    if let Err(error) =
+        save_oauth_registered_clients(context.oauth_clients_path.as_deref(), &clients)
+    {
+        clients.remove(&client.client_id);
         return oauth_json_error_response(500, "server_error", error.to_string());
     }
+    drop(clients);
     let grant_types = if context.named_runtime.is_some() {
         vec!["authorization_code", "refresh_token"]
     } else {
@@ -4751,21 +4755,18 @@ fn load_oauth_registered_clients(
 }
 
 #[cfg(feature = "oauth")]
-fn save_oauth_registered_clients(context: &McpHttpServerContext) -> Result<(), CliError> {
-    let Some(path) = context.oauth_clients_path.as_ref() else {
+fn save_oauth_registered_clients(
+    path: Option<&Path>,
+    clients: &BTreeMap<String, LocalOAuthRegisteredClient>,
+) -> Result<(), CliError> {
+    let Some(path) = path else {
         return Ok(());
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
-    let clients = context
-        .oauth_clients
-        .lock()
-        .expect("oauth clients lock should not be poisoned")
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    let serialized = serde_json::to_vec_pretty(&clients).map_err(CliError::operation)?;
+    let serialized = serde_json::to_vec_pretty(&clients.values().collect::<Vec<_>>())
+        .map_err(CliError::operation)?;
     let mut temporary = tempfile::NamedTempFile::new_in(
         path.parent()
             .ok_or_else(|| CliError::operation("OAuth client registry path has no parent"))?,
