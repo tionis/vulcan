@@ -63,6 +63,7 @@ use vulcan_app::mcp_protocol::{
     MCP_RESOURCE_NOT_FOUND, MCP_STRUCTURED_CONTENT_LIMIT,
 };
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
+use vulcan_app::mcp_scan;
 use vulcan_app::mcp_sync;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
@@ -76,7 +77,6 @@ use vulcan_app::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
-use vulcan_app::scan::scan_vault_with_automation;
 use vulcan_app::tasks::{
     apply_task_complete, apply_task_complete_with_guard, apply_task_create,
     apply_task_create_with_guard, apply_task_reschedule, apply_task_reschedule_with_guard,
@@ -98,8 +98,8 @@ use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::SearchBackendKind;
 use vulcan_core::{
     assistant_prompts_root, assistant_skills_root, load_vault_config, resolve_permission_profile,
-    watch_vault, PermissionGuard, PermissionProfile, ProfilePermissionGuard, ScanMode, ScanSummary,
-    VaultPaths, WatchOptions,
+    watch_vault, PermissionGuard, PermissionProfile, ProfilePermissionGuard, VaultPaths,
+    WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -921,7 +921,7 @@ fn run_named_mcp_remote_with_endpoints(
                 .map_err(CliError::operation)?
                 .is_some()
         {
-            vulcan_core::scan_vault(&vault.paths, ScanMode::Incremental)
+            vulcan_core::scan_vault(&vault.paths, vulcan_core::ScanMode::Incremental)
                 .map_err(CliError::operation)?;
         }
     }
@@ -3538,11 +3538,13 @@ impl McpServerCore {
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::IndexScan => {
-                self.guard
-                    .check_index()
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 let args: McpIndexScanArgs = parse_tool_arguments(arguments)?;
-                let summary = self.run_index_scan(args.full, args.no_commit)?;
+                let summary = mcp_scan::index_scan(
+                    &self.paths,
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    &args,
+                )?;
                 self.serialize_tool_report(tool.name, &summary)
             }
             McpToolId::ToolPacks => {
@@ -3629,23 +3631,6 @@ impl McpServerCore {
         )
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
         Ok(self.custom_tool_success_response(&report.name, report.result, report.text.as_deref()))
-    }
-
-    fn run_index_scan(&self, full: bool, no_commit: bool) -> Result<ScanSummary, McpMethodError> {
-        let auto_commit = AutoCommitPolicy::for_scan(&self.paths, no_commit);
-        scan_vault_with_automation(
-            &self.paths,
-            if full {
-                ScanMode::Full
-            } else {
-                ScanMode::Incremental
-            },
-            &auto_commit,
-            Some(self.selection.name.as_str()),
-            true,
-            |_| {},
-        )
-        .map_err(|error| McpMethodError::tool(error.to_string()))
     }
 
     fn ensure_adaptive_tool_pack_mode(&self) -> Result<(), McpMethodError> {
