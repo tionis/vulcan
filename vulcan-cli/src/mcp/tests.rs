@@ -2436,6 +2436,52 @@ fn mcp_http_broadcast_filters_list_changes_by_connection_scopes() {
     assert!(receiver.try_recv().is_err());
 }
 
+#[test]
+fn mcp_http_broadcast_drops_a_lagging_subscriber_without_blocking_another() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let core = McpServerCore::new(
+        &paths,
+        Some("readonly"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let session = McpHttpSession::new(
+        core,
+        McpSessionAuthority::direct(
+            Ulid::new(),
+            "credential",
+            None,
+            None,
+            Some("readonly".to_string()),
+            vec!["notes-read".to_string()],
+            vec!["mcp:tools".to_string()],
+        ),
+    );
+    let lagging = session.register_subscriber();
+    let notification =
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"});
+    session.broadcast(&vec![notification.clone(); MAX_MCP_SSE_PENDING_EVENTS]);
+    let healthy = session.register_subscriber();
+    session.broadcast(&[notification.clone()]);
+    assert_eq!(
+        healthy.try_recv().expect("healthy notification"),
+        notification
+    );
+    for _ in 0..MAX_MCP_SSE_PENDING_EVENTS {
+        assert_eq!(
+            lagging.try_recv().expect("queued notification"),
+            notification
+        );
+    }
+    assert!(matches!(
+        lagging.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
+}
+
 #[cfg(feature = "oauth")]
 #[test]
 #[allow(clippy::too_many_lines)] // Exercises authority rejection, validation, and lock-free cancellation in one fixture.

@@ -16180,6 +16180,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         mcp_skill.contains("a tools-only grant does not receive prompt or resource list changes")
     );
     assert!(mcp_skill.contains("An HTTP 503 with `Retry-After: 1`"));
+    assert!(mcp_skill.contains("reconnect and relist the catalogs"));
     assert!(mcp_skill.contains("remote set <name> --add-wiki <id> --dry-run"));
     assert!(mcp_skill.contains("remote set <name> --remove-wiki <id>"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));

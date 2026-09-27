@@ -143,6 +143,7 @@ use vulcan_daemon::process::DaemonProcessContext;
 use vulcan_daemon::shutdown::ShutdownSignal;
 
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const MAX_MCP_SSE_PENDING_EVENTS: usize = 32;
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -229,7 +230,7 @@ struct McpHttpSession {
     authority: McpSessionAuthority,
     core: Mutex<McpServerCore>,
     active_requests: Mutex<BTreeMap<String, ExecutionCancellationToken>>,
-    subscribers: Mutex<Vec<mpsc::Sender<Value>>>,
+    subscribers: Mutex<Vec<mpsc::SyncSender<Value>>>,
     closed: AtomicBool,
 }
 
@@ -245,7 +246,7 @@ impl McpHttpSession {
     }
 
     fn register_subscriber(&self) -> mpsc::Receiver<Value> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(MAX_MCP_SSE_PENDING_EVENTS);
         self.subscribers
             .lock()
             .expect("mcp subscribers lock should not be poisoned")
@@ -274,7 +275,7 @@ impl McpHttpSession {
         subscribers.retain(|sender| {
             visible
                 .iter()
-                .all(|message| sender.send((*message).clone()).is_ok())
+                .all(|message| sender.try_send((*message).clone()).is_ok())
         });
     }
 

@@ -250,6 +250,8 @@ Parsing has a five-second total deadline for headers and body, rather than a tim
 each arriving byte. This bounds slow clients before an SSE stream or route handler starts.
 Connection workers also have a five-second socket write timeout, including SSE frames, so a client
 that stops reading cannot hold a worker through a blocked response write indefinitely.
+An SSE subscriber has at most 32 pending notification events. On overflow its stream closes after
+queued events drain; clients must reconnect and relist the catalogs available to their grant.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or
