@@ -1,0 +1,97 @@
+{
+  "format": "dev.tionis.markdown-wiki-package",
+  "version": 2,
+  "title": "Synthetic sourced wiki",
+  "root": "content/Home.md",
+  "producer": {
+    "name": "renwiki",
+    "version": "0.3.0"
+  },
+  "members": [
+    {
+      "path": "content/Characters/Alice.md",
+      "role": "note",
+      "media_type": "text/markdown",
+      "size": 110,
+      "digest": "blake3:af4c1623876e3e36f0510654782833242570ffbd36ede9fd6fd4ec3355a42297",
+      "created_by": "render",
+      "document_id": "doc-alice"
+    },
+    {
+      "path": "content/Home.md",
+      "role": "note",
+      "media_type": "text/markdown",
+      "size": 78,
+      "digest": "blake3:0a8ac80530fb8903ec40c5e95d2133982f6336776b1f5e90ac2d357733ae8561",
+      "created_by": "render",
+      "document_id": "doc-home"
+    },
+    {
+      "path": "content/Places/Harbor.md",
+      "role": "note",
+      "media_type": "text/markdown",
+      "size": 41,
+      "digest": "blake3:8c4e95def2124ca0f241ef5e16f374e8ac7607a812b2db7f8b0336d72d162a55",
+      "created_by": "render",
+      "document_id": "doc-harbor"
+    },
+    {
+      "path": "content/assets/map.txt",
+      "role": "asset",
+      "media_type": "text/plain",
+      "size": 13,
+      "digest": "blake3:8e932482f56b9b535e949d9a497ae434853ecf44b7977959b71f558137ccee99",
+      "created_by": "render"
+    },
+    {
+      "path": "extensions/dev.tionis.renwiki/snapshot.json",
+      "role": "extension",
+      "media_type": "application/json",
+      "size": 23,
+      "digest": "blake3:45f5c742f6b5057710fb06bc9d0e05e73f180b472d6e7829aadeab9fbda28e42",
+      "created_by": "extract",
+      "namespace": "dev.tionis.renwiki"
+    },
+    {
+      "path": "knowledge.jsonl",
+      "role": "knowledge",
+      "media_type": "application/jsonl",
+      "size": 1287,
+      "digest": "blake3:4af2ef3d85112863f2fef93e405aaa2bc24a9fb3f460a27c72284c1ac459d34e",
+      "created_by": "analyze"
+    },
+    {
+      "path": "provenance.json",
+      "role": "provenance",
+      "media_type": "application/json",
+      "size": 2032,
+      "digest": "blake3:67db967ed90ac3dd1f7c1c2c72a81e12f1b96f26d0980d16ca2e48c084847e76",
+      "created_by": "render"
+    },
+    {
+      "path": "source-map.jsonl",
+      "role": "source-map",
+      "media_type": "application/jsonl",
+      "size": 846,
+      "digest": "blake3:e98a06455abba4d0eae379ef62e524908b4ccdb647dd3d3d3ec060f3ebebcf28",
+      "created_by": "render"
+    },
+    {
+      "path": "sources/script.rpy",
+      "role": "source",
+      "media_type": "text/x-renpy",
+      "size": 116,
+      "digest": "blake3:e265de188aba4618d4cd8bcad3453b36c0cd2fbe82d7ad8d9755033acb9a4851",
+      "created_by": "extract"
+    }
+  ],
+  "sources": [
+    {
+      "id": "script",
+      "media_type": "text/x-renpy",
+      "digest": "blake3:e265de188aba4618d4cd8bcad3453b36c0cd2fbe82d7ad8d9755033acb9a4851",
+      "name": "script.rpy",
+      "embedded_path": "sources/script.rpy"
+    }
+  ]
+}

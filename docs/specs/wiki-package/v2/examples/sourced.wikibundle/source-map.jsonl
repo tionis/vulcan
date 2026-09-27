@@ -1,0 +1,4 @@
+{"record":"header","format":"dev.tionis.wiki-source-map","version":1}
+{"record":"mapping","note":"content/Characters/Alice.md","document":{"start":30,"end":75},"source":{"source_id":"script","selectors":[{"type":"interval","unit":"line","start":2,"end":3,"origin":1}]},"confidence":0.9,"method":"dev.tionis.renwiki/dialogue"}
+{"record":"reference","note":"content/Places/Harbor.md","document":{"start":2,"end":8},"target":{"source_id":"script","selectors":[{"type":"fragment","value":"harbor","conforms_to":"urn:renwiki:label"}]},"kind":"label"}
+{"record":"mapping","note":"content/Places/Harbor.md","document":{"start":10,"end":40},"source":{"source_id":"script","selectors":[{"type":"interval","unit":"line","start":1,"end":2,"origin":1},{"type":"text-quote","exact":"The harbor bells ring at dawn."}]},"method":"dev.tionis.renwiki/narration"}

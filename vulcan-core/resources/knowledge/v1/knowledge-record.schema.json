@@ -1,0 +1,576 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulcan.tionis.dev/schemas/knowledge/v1/knowledge-record.schema.json",
+  "title": "Knowledge v1 JSON Lines record",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/header"
+    },
+    {
+      "$ref": "#/$defs/entity"
+    },
+    {
+      "$ref": "#/$defs/claim"
+    }
+  ],
+  "$defs": {
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "selectors"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/selector"
+          }
+        }
+      }
+    },
+    "selector": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/interval"
+        },
+        {
+          "$ref": "#/$defs/rectangle"
+        },
+        {
+          "$ref": "#/$defs/polygon"
+        },
+        {
+          "$ref": "#/$defs/grid"
+        },
+        {
+          "$ref": "#/$defs/text_quote"
+        },
+        {
+          "$ref": "#/$defs/fragment"
+        },
+        {
+          "$ref": "#/$defs/extension"
+        }
+      ]
+    },
+    "interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "unit",
+        "start",
+        "end"
+      ],
+      "properties": {
+        "type": {
+          "const": "interval"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "origin": {
+          "type": "number"
+        },
+        "label_start": {
+          "type": "string"
+        },
+        "label_end": {
+          "type": "string"
+        }
+      }
+    },
+    "rectangle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "unit",
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "type": {
+          "const": "rectangle"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "x": {
+          "type": "number",
+          "minimum": 0
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "polygon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "unit",
+        "points"
+      ],
+      "properties": {
+        "type": {
+          "const": "polygon"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "points": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "$ref": "#/$defs/point"
+          }
+        }
+      }
+    },
+    "grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "row_start",
+        "row_end",
+        "column_start",
+        "column_end"
+      ],
+      "properties": {
+        "type": {
+          "const": "grid"
+        },
+        "sheet": {
+          "type": "string"
+        },
+        "row_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "column_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column_end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "text_quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "exact"
+      ],
+      "properties": {
+        "type": {
+          "const": "text-quote"
+        },
+        "exact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "suffix": {
+          "type": "string"
+        }
+      }
+    },
+    "fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "value"
+      ],
+      "properties": {
+        "type": {
+          "const": "fragment"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conforms_to": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "namespace",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "extension"
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+/.+$"
+        },
+        "data": true
+      }
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "review": {
+      "enum": [
+        "accepted",
+        "unreviewed"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "note_path": {
+      "type": "string",
+      "pattern": "^content/.+\\.[mM][dD]$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "locator"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "support",
+            "contradict",
+            "context"
+          ]
+        },
+        "locator": {
+          "$ref": "#/$defs/locator"
+        }
+      }
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "format",
+        "version"
+      ],
+      "properties": {
+        "record": {
+          "const": "header"
+        },
+        "format": {
+          "const": "dev.tionis.knowledge"
+        },
+        "version": {
+          "const": 1
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "id",
+        "name",
+        "type",
+        "review",
+        "evidence"
+      ],
+      "properties": {
+        "record": {
+          "const": "entity"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "anyOf": [
+            {
+              "enum": [
+                "character",
+                "faction",
+                "location",
+                "organization",
+                "event",
+                "item",
+                "technology",
+                "species",
+                "culture",
+                "religion",
+                "concept",
+                "rule",
+                "other"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+/.+$"
+            }
+          ]
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "$ref": "#/$defs/note_path"
+        },
+        "review": {
+          "$ref": "#/$defs/review"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "id",
+        "subject",
+        "predicate",
+        "object",
+        "assertion",
+        "polarity",
+        "review",
+        "evidence"
+      ],
+      "properties": {
+        "record": {
+          "const": "claim"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "subject": {
+          "$ref": "#/$defs/id"
+        },
+        "predicate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "object": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "entity"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "entity"
+                },
+                "entity": {
+                  "$ref": "#/$defs/id"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "value"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "text"
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "assertion": {
+          "enum": [
+            "attributed",
+            "narrated",
+            "inferred",
+            "interpretation",
+            "uncertain"
+          ]
+        },
+        "attributed_to": {
+          "$ref": "#/$defs/id"
+        },
+        "polarity": {
+          "enum": [
+            "positive",
+            "negative"
+          ]
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "dimension",
+              "value"
+            ],
+            "properties": {
+              "dimension": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "route",
+                      "timeline",
+                      "edition",
+                      "condition"
+                    ]
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+/.+$"
+                  }
+                ]
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "uniqueItems": true
+        },
+        "review": {
+          "$ref": "#/$defs/review"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "note"
+            ],
+            "properties": {
+              "note": {
+                "$ref": "#/$defs/note_path"
+              },
+              "document": {
+                "$ref": "#/$defs/span"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

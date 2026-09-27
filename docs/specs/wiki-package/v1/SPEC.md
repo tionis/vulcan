@@ -1,5 +1,7 @@
 # Markdown Wiki Package v1
 
+> **Superseded for writing by [version 2](../v2/SPEC.md).** Vulcan still inspects, validates, and imports version 1 packages with the rules below, but `vulcan exchange wiki export` writes version 2. Version 2 adopts [Container Core](../../container-core/v1/SPEC.md) identity, requires provenance, and adds source maps and knowledge.
+
 Markdown Wiki Package is an extractor-neutral, immutable snapshot of a Markdown wiki. A package is either a directory ending in `.wikibundle` or a ZIP file ending in `.wikipack`.
 
 ## Layout

@@ -65,7 +65,7 @@ pub(crate) fn handle_wiki_package_command(
                 OutputFormat::Json => print_json(&report),
                 OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
-                        "{} wiki {} into {} ({} notes, {} assets)",
+                        "{} wiki {} into {} ({} notes, {} assets, {} with source locators)",
                         if report.dry_run {
                             "Would import"
                         } else {
@@ -74,7 +74,8 @@ pub(crate) fn handle_wiki_package_command(
                         report.package_identity,
                         report.destination_root,
                         report.notes,
-                        report.assets
+                        report.assets,
+                        report.annotated_notes.len()
                     );
                     Ok(())
                 }
@@ -123,14 +124,39 @@ fn print_inspection(output: OutputFormat, package: &WikiPackage) -> Result<(), C
     match output {
         OutputFormat::Json => print_json(package),
         OutputFormat::Human | OutputFormat::Markdown => {
+            let summary = &package.summary;
             println!("Wiki package: {}", package.package_path.display());
+            if let Some(version) = package.version {
+                println!("Format version: {version}");
+            }
             println!("Identity: {}", package.identity);
             println!("Valid: {}", package.valid);
-            if let Some(manifest) = &package.manifest {
-                println!("Members: {}", manifest.members.len());
+            if package.manifest.is_some() {
+                println!("Notes: {}, assets: {}", summary.notes, summary.assets);
+            }
+            if package.version.is_some_and(|version| version >= 2) {
+                println!(
+                    "Sources: {}, provenance activities: {}",
+                    summary.sources, summary.provenance_activities
+                );
+                println!(
+                    "Source map: {} mappings, {} references",
+                    summary.source_mappings, summary.source_references
+                );
+                println!(
+                    "Knowledge: {} entities ({} accepted), {} claims ({} accepted)",
+                    summary.entities,
+                    summary.accepted_entities,
+                    summary.claims,
+                    summary.accepted_claims
+                );
             }
             for diagnostic in &package.diagnostics {
-                println!("{}: {}", diagnostic.code, diagnostic.message);
+                let path = diagnostic
+                    .path
+                    .as_deref()
+                    .map_or_else(String::new, |path| format!(" [{path}]"));
+                println!("{}{path}: {}", diagnostic.code, diagnostic.message);
             }
             Ok(())
         }

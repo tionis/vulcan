@@ -8077,6 +8077,18 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Cover directory/ZIP parity, TextPack compatibility metadata, asset/reference rewrites, unknown metadata preservation, traversal/symlink/duplicate/collision failures, deterministic identities, rollback, CLI output, and installed agent guidance.
 - [x] Keep SQLite as a documented alternative serialization of the same wiki-package model. Do not implement a writable SQLite vault until a separate storage, revision, conflict, and interoperability design is approved.
 
+### 9.38.1 Container Core, Knowledge v1, and Wiki Package v2
+
+**Boundary:** Source capture stays source-specific (MDAF for text-like media, or native producer databases declared as sources). Knowledge and wiki delivery are shared. Vulcan specifies and validates the formats and imports the note tree. It does not run extraction or analysis, render entity pages, or treat a validated claim as verified.
+
+- [x] Extract the shared MDAF rules into Container Core v1: path and archive safety, member declarations, manifest-inclusive logical identity, sources, locators and selectors, provenance, lineage, and extensions. Restructure the MDAF v1 specification without changing its schemas or identities, and move the implementation to `vulcan-core::exchange` with MDAF type aliases.
+- [x] Specify Knowledge v1: an ordered JSON Lines snapshot of entities and claims with assertion mode, attribution, polarity, scope, review status, confidence, and evidence locators, bound to a host's sources and notes.
+- [x] Specify Markdown Wiki Package v2 with Container Core identity, required provenance, a declared source table, a JSON Lines note-to-source map, a hosted Knowledge v1 snapshot, embedded sources, and namespaced extensions. Keep v1 readable and importable.
+- [x] Validate v2 packages and knowledge snapshots, write v2 on export, and annotate imported notes that have source-map mappings with MDAF-compatible `vulcan.source` locators. Fail closed on existing annotations.
+- [x] Cover schema drift between the published specifications, the bundled resources, and the shared `$defs`, plus the synthetic v2 example and identity vector, v1 compatibility, and installed agent guidance.
+- [ ] Add a derived knowledge index (entities, claims, and evidence by imported note and source segment) that can be rebuilt from the recorded packages, with query surfaces, once a consumer workflow needs it.
+- [ ] Update producers (renwiki, BlobForge-derived wiki recipes) to emit v2 packages, and validate real outputs end to end.
+
 ---
 
 ## Capability tracks and connector appendices

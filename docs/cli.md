@@ -619,7 +619,20 @@ vulcan --output json exchange wiki import ./knowledge.wikipack \
   --destination Imported/Knowledge --dry-run
 ```
 
-`.wikibundle` is the directory serialization and `.wikipack` is the ZIP serialization. Both contain `wiki.json` plus byte-preserved files below `content/` and have the same BLAKE3 logical identity. Export excludes Vulcan, Git, Obsidian, trash, synchronization, and common operating-system metadata state and rejects symbolic or special files. Import requires a new destination, validates every declared digest, refreshes the cache, and rolls back partial output. The package is an immutable exchange snapshot; materialized Markdown remains canonical. The specification, schema, test vector, and synthetic example live in [`docs/specs/wiki-package/v1/`](specs/wiki-package/v1/).
+`.wikibundle` is the directory serialization and `.wikipack` is the ZIP serialization; both have the same BLAKE3 logical identity. Export writes [Wiki Package v2](specs/wiki-package/v2/SPEC.md): `wiki.json`, byte-preserved vault files below `content/`, and a `provenance.json` that records the export. It excludes Vulcan, Git, Obsidian, trash, synchronization, and common operating-system metadata state, and it rejects symbolic or special files.
+
+`inspect` and `validate` accept version 1 and version 2 packages. For version 2 they report:
+
+- notes, assets, and declared sources;
+- provenance activities;
+- source-map mappings and references;
+- knowledge entities and claims, with their accepted counts.
+
+Validation checks every digest, the provenance graph, source-map spans and locators, and the rules of any hosted [Knowledge v1](specs/knowledge/v1/SPEC.md) snapshot.
+
+Import requires a new destination, refreshes the cache, and rolls back partial output. Notes are copied byte for byte, except that a note with source-map mappings receives a `vulcan.source` frontmatter entry. The entry holds the package identity, member path, byte spans, and source locators, in the same shape as MDAF import. The report lists these notes as `annotated_notes`. An existing `vulcan.source` entry fails the import before anything is written. Provenance, knowledge, embedded sources, and extensions stay in the package, which remains external evidence; the materialized Markdown remains canonical.
+
+The shared container rules are in [`docs/specs/container-core/v1/`](specs/container-core/v1/), and the format specifications, schemas, test vectors, and synthetic examples are in [`docs/specs/wiki-package/`](specs/wiki-package/).
 
 ## Searching with `search`
 
