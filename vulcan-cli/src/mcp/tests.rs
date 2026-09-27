@@ -348,8 +348,15 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
             "shared-test-signing-key",
         )
         .expect("shared signing key");
-        let token =
-            named_listener_test_token(&paths, &named, &options, name, "readonly", &["notes-read"]);
+        let token = named_listener_test_token(
+            &paths,
+            &named,
+            &options,
+            name,
+            "readonly",
+            &["notes-read"],
+            &["mcp:tools"],
+        );
         let hosted = named_listener_hosted_execution(
             &scheduler,
             runtime.handle(),
@@ -601,6 +608,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "personal",
         "readonly",
         &["notes-read", "tasks"],
+        &["mcp:tools", "mcp:resources", "mcp:prompts"],
     );
     let write_token = named_listener_test_token(
         &paths,
@@ -609,6 +617,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "personal",
         "unrestricted",
         &["notes-write", "notes-manage", "tasks"],
+        &["mcp:tools"],
     );
     let team_token = named_listener_test_token(
         &team_paths,
@@ -617,6 +626,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "team",
         "unrestricted",
         &["notes-write"],
+        &["mcp:tools"],
     );
     let endpoints = (
         "https://identity.example.test/authorize".to_string(),
@@ -659,6 +669,28 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     );
     assert!(foreground_tools.contains("\"name\":\"task_list\""));
     assert!(!foreground_tools.contains("\"name\":\"task_create\""));
+    let foreground_resources = named_listener_method(
+        address,
+        "parity",
+        &token,
+        &foreground_session,
+        "resources/list",
+    );
+    assert!(
+        foreground_resources.starts_with("HTTP/1.1 200"),
+        "{foreground_resources}"
+    );
+    let foreground_prompts = named_listener_method(
+        address,
+        "parity",
+        &token,
+        &foreground_session,
+        "prompts/list",
+    );
+    assert!(
+        foreground_prompts.starts_with("HTTP/1.1 200"),
+        "{foreground_prompts}"
+    );
     let denied_foreground = named_listener_create_note(
         address,
         "parity",
@@ -708,6 +740,19 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     );
     assert!(paths.vault_root().join("Foreground.md").is_file());
     let foreground_write_session = named_listener_session_id(&foreground_write_init);
+    let foreground_write_tools =
+        named_listener_tools(address, "parity", &write_token, &foreground_write_session);
+    assert!(foreground_write_tools.contains("\"name\":\"note_create\""));
+    assert!(foreground_write_tools.contains("\"name\":\"task_create\""));
+    assert!(!foreground_write_tools.contains("\"name\":\"note_get\""));
+    assert!(named_listener_method(
+        address,
+        "parity",
+        &write_token,
+        &foreground_write_session,
+        "resources/list"
+    )
+    .starts_with("HTTP/1.1 403"));
     named_listener_append_and_patch_note(
         address,
         &write_token,
@@ -928,6 +973,43 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             .expect("resident body")
             .1,
     );
+    let resident_resource_session =
+        named_listener_session_id(&named_listener_initialize(address, "parity", &token));
+    for (method, foreground) in [
+        ("resources/list", &foreground_resources),
+        ("prompts/list", &foreground_prompts),
+    ] {
+        let resident_response = named_listener_method(
+            address,
+            "parity",
+            &token,
+            &resident_resource_session,
+            method,
+        );
+        assert!(
+            resident_response.starts_with("HTTP/1.1 200"),
+            "{resident_response}"
+        );
+        assert_eq!(
+            foreground
+                .split_once("\r\n\r\n")
+                .expect("foreground body")
+                .1,
+            resident_response
+                .split_once("\r\n\r\n")
+                .expect("resident body")
+                .1,
+            "{method} changed between foreground and resident hosting"
+        );
+    }
+    assert!(named_listener_method(
+        address,
+        "parity",
+        &write_token,
+        &resident_resource_session,
+        "resources/list"
+    )
+    .starts_with("HTTP/1.1 403"));
     assert!(
         named_listener_tools(address, "parity", &token, &foreground_session)
             .starts_with("HTTP/1.1 404")
@@ -938,6 +1020,18 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_write_init}"
     );
     let resident_write_session = named_listener_session_id(&resident_write_init);
+    let resident_write_tools =
+        named_listener_tools(address, "parity", &write_token, &resident_write_session);
+    assert_eq!(
+        foreground_write_tools
+            .split_once("\r\n\r\n")
+            .expect("foreground write tools")
+            .1,
+        resident_write_tools
+            .split_once("\r\n\r\n")
+            .expect("resident write tools")
+            .1,
+    );
     let resident_write = named_listener_create_note(
         address,
         "parity",
@@ -1033,6 +1127,7 @@ fn named_listener_test_token(
     name: &str,
     profile: &str,
     packs: &[&str],
+    scopes: &[&str],
 ) -> String {
     let store = &named.authorization_store;
     let now = current_unix_timestamp();
@@ -1050,7 +1145,7 @@ fn named_listener_test_token(
                     .expect("permission profile")
                     .grant,
                 tool_packs: packs.iter().map(|pack| (*pack).to_string()).collect(),
-                scopes: vec!["mcp:tools".to_string()],
+                scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
                 audience: options.public_url.clone().expect("public URL"),
                 created_at: now,
                 expires_at: now + 86400,
@@ -1079,7 +1174,10 @@ fn named_listener_test_token(
     .issue_access_token_for_authorization(
         subject,
         "vulcan-mcp",
-        &["mcp:tools".to_string()],
+        &scopes
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect::<Vec<_>>(),
         Some(grant.id.to_string()),
     )
     .expect("access token")
@@ -1111,21 +1209,32 @@ fn named_listener_initialize(address: SocketAddr, name: &str, token: &str) -> St
 
 #[cfg(feature = "oauth")]
 fn named_listener_tools(address: SocketAddr, name: &str, token: &str, session_id: &str) -> String {
+    named_listener_method(address, name, token, session_id, "tools/list")
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_method(
+    address: SocketAddr,
+    name: &str,
+    token: &str,
+    session_id: &str,
+    method: &str,
+) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("response timeout");
-    let body = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string();
+    let body = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": method}).to_string();
     write!(
         stream,
         "POST /{name} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session_id}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len(),
     )
-    .expect("tool-list request");
+    .expect("MCP method request");
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
-        .expect("tool-list response");
+        .expect("MCP method response");
     response
 }
 
