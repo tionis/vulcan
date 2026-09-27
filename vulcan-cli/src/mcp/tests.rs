@@ -471,6 +471,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     fs::create_dir_all(&vault).expect("vault root");
     let paths = VaultPaths::new(&vault);
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::create_dir_all(vault.join("AI/Prompts")).expect("prompt directory");
+    fs::write(
+        vault.join("AI/Prompts/summary.md"),
+        "---\nname: summary\ntitle: Summarize Note\ndescription: Summarize a note\nversion: 1\nrole: user\narguments:\n  - name: note\n    required: true\n---\nSummarize {{note}}.\n",
+    )
+    .expect("prompt fixture");
     let process = DaemonProcessContext {
         registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
         state_root: temporary.path().join("state"),
@@ -691,6 +697,38 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         foreground_prompts.starts_with("HTTP/1.1 200"),
         "{foreground_prompts}"
     );
+    assert!(foreground_prompts.contains("\"name\":\"summary\""));
+    let foreground_prompt = named_listener_method_with_params(
+        address,
+        "parity",
+        &token,
+        &foreground_session,
+        "prompts/get",
+        Some(serde_json::json!({"name": "summary", "arguments": {"note": "Alpha.md"}})),
+    );
+    assert!(
+        foreground_prompt.contains("Summarize Alpha.md."),
+        "{foreground_prompt}"
+    );
+    let foreground_resource = named_listener_method_with_params(
+        address,
+        "parity",
+        &token,
+        &foreground_session,
+        "resources/read",
+        Some(serde_json::json!({"uri": "vulcan://assistant/prompts/index"})),
+    );
+    let resource_json: serde_json::Value = serde_json::from_str(
+        foreground_resource
+            .split_once("\r\n\r\n")
+            .expect("resource response body")
+            .1,
+    )
+    .expect("resource response JSON");
+    assert!(resource_json["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("resource text")
+        .contains("\"summary\""));
     let denied_foreground = named_listener_create_note(
         address,
         "parity",
@@ -1002,6 +1040,42 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             "{method} changed between foreground and resident hosting"
         );
     }
+    for (method, params, foreground) in [
+        (
+            "prompts/get",
+            serde_json::json!({"name": "summary", "arguments": {"note": "Alpha.md"}}),
+            &foreground_prompt,
+        ),
+        (
+            "resources/read",
+            serde_json::json!({"uri": "vulcan://assistant/prompts/index"}),
+            &foreground_resource,
+        ),
+    ] {
+        let resident_response = named_listener_method_with_params(
+            address,
+            "parity",
+            &token,
+            &resident_resource_session,
+            method,
+            Some(params),
+        );
+        assert!(
+            resident_response.starts_with("HTTP/1.1 200"),
+            "{resident_response}"
+        );
+        assert_eq!(
+            foreground
+                .split_once("\r\n\r\n")
+                .expect("foreground body")
+                .1,
+            resident_response
+                .split_once("\r\n\r\n")
+                .expect("resident body")
+                .1,
+            "{method} changed between foreground and resident hosting"
+        );
+    }
     assert!(named_listener_method(
         address,
         "parity",
@@ -1220,11 +1294,27 @@ fn named_listener_method(
     session_id: &str,
     method: &str,
 ) -> String {
+    named_listener_method_with_params(address, name, token, session_id, method, None)
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_method_with_params(
+    address: SocketAddr,
+    name: &str,
+    token: &str,
+    session_id: &str,
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("response timeout");
-    let body = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": method}).to_string();
+    let mut body = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": method});
+    if let Some(params) = params {
+        body["params"] = params;
+    }
+    let body = body.to_string();
     write!(
         stream,
         "POST /{name} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session_id}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
