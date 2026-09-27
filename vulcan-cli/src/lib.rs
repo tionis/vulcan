@@ -297,16 +297,6 @@ mod app_config {
         vulcan_app::config::config_descriptor_catalog()
     }
 
-    pub(crate) fn plan_config_set_report(
-        paths: &VaultPaths,
-        key: &str,
-        raw_value: &str,
-        dry_run: bool,
-    ) -> Result<ConfigSetReport, CliError> {
-        vulcan_app::config::plan_config_set_report(paths, key, raw_value, dry_run)
-            .map_err(CliError::operation)
-    }
-
     pub(crate) fn plan_config_set_report_for_target(
         paths: &VaultPaths,
         key: &str,

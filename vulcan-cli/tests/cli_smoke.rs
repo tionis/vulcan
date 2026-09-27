@@ -32707,6 +32707,56 @@ fn mcp_structured_outputs_match_cli_json_reports() {
 }
 
 #[test]
+fn mcp_config_tools_share_app_reports_with_cli() {
+    let temp_dir = TempDir::new().expect("temporary vault");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    let mut session = McpSession::start(&vault_root, &["--tool-pack", "config"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let shown = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "config_show", "arguments": { "section": "git" } }
+    }));
+    let mcp_report = &shown.last().expect("config_show response")["result"]["structuredContent"];
+    let cli_report: Value = serde_json::from_slice(
+        &Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root.to_str().expect("utf-8 vault path"),
+                "--output",
+                "json",
+                "config",
+                "show",
+                "git",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("CLI config JSON");
+    assert_eq!(mcp_report, &cli_report);
+
+    let planned = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "config_set", "arguments": {
+            "key": "git.auto_commit", "value": "true", "dry_run": true
+        } }
+    }));
+    let planned = &planned.last().expect("config_set response")["result"]["structuredContent"];
+    assert_eq!(planned["dry_run"], true);
+    assert_eq!(planned["updated"], true);
+    assert!(!vault_root.join(".vulcan/config.toml").exists());
+    assert!(session.finish().is_empty());
+}
+
+#[test]
 fn note_get_html_uses_shared_html_renderer() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

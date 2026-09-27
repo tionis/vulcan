@@ -2,7 +2,6 @@
 
 mod catalog;
 
-use crate::app_config;
 use crate::plugins;
 use crate::{
     cli_command_tree, collect_help_command_topics, config_set_changed_files,
@@ -34,6 +33,7 @@ use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_app::commit::AutoCommitPolicy;
+use vulcan_app::config as app_config;
 #[cfg(feature = "oauth")]
 use vulcan_app::execution::{
     ExecutionAuthority, ExecutionCancellationToken, ExecutionContext, ExecutionDeadline,
@@ -3457,7 +3457,7 @@ impl McpServerCore {
                     args.section.as_deref(),
                     Some(self.selection.name.as_str()),
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::ConfigSet => {
@@ -3472,10 +3472,10 @@ impl McpServerCore {
                     &args.value,
                     args.dry_run,
                 )
-                .map_err(cli_tool_error)?;
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 if !args.dry_run && report.updated {
                     report = app_config::apply_config_set_report(&self.paths, report)
-                        .map_err(cli_tool_error)?;
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
                         .commit(
                             &self.paths,
