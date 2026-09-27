@@ -32,7 +32,6 @@ use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_app::commit::AutoCommitPolicy;
-use vulcan_app::config as app_config;
 use vulcan_app::execution::ExecutionCancellationToken;
 #[cfg(feature = "oauth")]
 use vulcan_app::execution::{
@@ -43,6 +42,7 @@ use vulcan_app::mcp_access;
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::json_value_to_string;
 use vulcan_app::mcp_completion;
+use vulcan_app::mcp_config;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
@@ -3518,44 +3518,23 @@ impl McpServerCore {
                 Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::ConfigShow => {
-                self.guard
-                    .check_config_read()
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 let args: McpConfigShowArgs = parse_tool_arguments(arguments)?;
-                let report = app_config::build_config_show_report(
+                let report = mcp_config::config_show(
                     &self.paths,
-                    args.section.as_deref(),
-                    Some(self.selection.name.as_str()),
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    &args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::ConfigSet => {
-                self.guard
-                    .check_config_write()
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 let args: McpConfigSetArgs = parse_tool_arguments(arguments)?;
-                let had_gitignore = self.paths.gitignore_file().exists();
-                let mut report = app_config::plan_config_set_report(
+                let report = mcp_config::config_set(
                     &self.paths,
-                    &args.key,
-                    &args.value,
-                    args.dry_run,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if !args.dry_run && report.updated {
-                    report = app_config::apply_config_set_report(&self.paths, report)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                        .commit(
-                            &self.paths,
-                            "config-set",
-                            &app_config::config_set_changed_files(&self.paths, had_gitignore),
-                            Some(self.selection.name.as_str()),
-                            true,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.clone()))?;
-                }
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    &args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::IndexScan => {

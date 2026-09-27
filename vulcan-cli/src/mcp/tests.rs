@@ -4272,3 +4272,53 @@ fn daily_wiki_agent_can_use_index_scan_when_index_pack_is_selected() {
     assert_eq!(result["isError"].as_bool(), Some(false));
     assert_eq!(result["structuredContent"]["added"].as_u64(), Some(1));
 }
+
+#[test]
+fn mcp_config_tools_preserve_dry_run_apply_and_show_report_shapes() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let mut core = McpServerCore::new(
+        &paths,
+        Some("unrestricted"),
+        &[McpToolPackArg::Config],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let mut set = Map::from_iter([
+        (
+            "key".to_string(),
+            Value::String("periodic.daily.template".to_string()),
+        ),
+        (
+            "value".to_string(),
+            Value::String("Templates/Daily".to_string()),
+        ),
+        ("dry_run".to_string(), Value::Bool(true)),
+        ("no_commit".to_string(), Value::Bool(true)),
+    ]);
+    let preview = core.call_tool("config_set", &set).expect("config preview");
+    assert_eq!(preview["isError"], false);
+    assert_eq!(preview["structuredContent"]["dry_run"], true);
+    assert!(!paths.config_file().exists());
+
+    set.insert("dry_run".to_string(), Value::Bool(false));
+    let applied = core.call_tool("config_set", &set).expect("config apply");
+    assert_eq!(applied["isError"], false);
+    assert_eq!(applied["structuredContent"]["updated"], true);
+    assert!(paths.config_file().exists());
+    let show = core
+        .call_tool(
+            "config_show",
+            &Map::from_iter([(
+                "section".to_string(),
+                Value::String("periodic.daily".to_string()),
+            )]),
+        )
+        .expect("config show");
+    assert_eq!(show["isError"], false);
+    assert_eq!(
+        show["structuredContent"]["config"]["template"],
+        "Templates/Daily"
+    );
+}

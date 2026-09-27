@@ -272,6 +272,9 @@ authentication or route dispatch.
 The MCP sync pack's permission checks, dry-run target selection, doctor platform choice, and
 conflict report selection are shared app workflows. The CLI transport retains argument decoding and
 MCP presentation; moving these workflows does not grant Git access or enable sync mutation.
+The MCP config pack likewise uses shared app workflows for permission checks, show, dry-run plan,
+apply, changed-file selection, and optional auto-commit. The CLI transport retains argument decoding
+and response presentation; the per-vault config file and trust rules remain unchanged.
 The shared auto-commit policy now lives in `vulcan-app::commit`. Both CLI mutations and MCP
 mutations use its configuration/trigger and Git checks and its plugin pre/post-commit workflow;
 the CLI retains a compatibility re-export until its remaining command dependencies move.
