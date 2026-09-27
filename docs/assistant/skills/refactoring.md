@@ -46,6 +46,7 @@ Use this skill for coordinated vault-wide rewrites where link safety matters.
 - A note move or move preview refuses a pending ordinary-write journal. Inspect it with `vulcan repair ordinary-write status` and recover or explicitly reconcile the interrupted batch before retrying; a move must not rewrite links against partially published files.
 - Alias, heading, block-ref, property, and tag refactors likewise refuse a pending ordinary-write journal before planning or changing files, including dry runs. Recover or explicitly reconcile the interrupted batch before retrying the structural edit.
 - `split-note` preview and apply also refuse a pending ordinary-write journal before reading source spans or publishing generated notes. Resolve that journal first; the split's own multi-file publication is not yet crash-atomic.
+- Folder-note conversion checks for a pending ordinary-write journal before planning paths or shared config changes; each move rechecks through the core move workflow. Recover or explicitly reconcile the batch before previewing or applying a conversion.
 - Large refactors should be reviewed before commit, especially when many backlinks change.
 - If the task is really metadata cleanup, use `update`, `unset`, or `merge-tags` instead of forcing it through a rewrite.
 

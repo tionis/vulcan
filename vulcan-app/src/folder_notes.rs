@@ -41,37 +41,42 @@ pub fn convert_folder_notes(
     paths: &VaultPaths,
     request: &FolderNoteConversionRequest,
 ) -> Result<FolderNoteConversionReport, AppError> {
-    let current = load_vault_config(paths).config.folder_notes;
-    let source = request.source.clone().unwrap_or(current);
-    source.validate().map_err(AppError::operation)?;
-    request
-        .destination
-        .validate()
-        .map_err(AppError::operation)?;
+    let (source, planned, config_plan) = {
+        let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+        let current = load_vault_config(paths).config.folder_notes;
+        let source = request.source.clone().unwrap_or(current);
+        source.validate().map_err(AppError::operation)?;
+        request
+            .destination
+            .validate()
+            .map_err(AppError::operation)?;
 
-    let planned = plan_conversion_paths(paths, &source, &request.destination)?;
+        let planned = plan_conversion_paths(paths, &source, &request.destination)?;
 
-    let config_plan = plan_config_batch_report(
-        paths,
-        &[
-            ConfigMutationOperation::Set {
-                key: "folder_notes.placement".to_string(),
-                value: TomlValue::String(
-                    match request.destination.placement {
-                        vulcan_core::FolderNotePlacement::Inside => "inside",
-                        vulcan_core::FolderNotePlacement::Outside => "outside",
-                    }
-                    .to_string(),
-                ),
-            },
-            ConfigMutationOperation::Set {
-                key: "folder_notes.name".to_string(),
-                value: TomlValue::String(request.destination.name.clone()),
-            },
-        ],
-        ConfigTarget::Shared,
-        request.dry_run,
-    )?;
+        let config_plan = plan_config_batch_report(
+            paths,
+            &[
+                ConfigMutationOperation::Set {
+                    key: "folder_notes.placement".to_string(),
+                    value: TomlValue::String(
+                        match request.destination.placement {
+                            vulcan_core::FolderNotePlacement::Inside => "inside",
+                            vulcan_core::FolderNotePlacement::Outside => "outside",
+                        }
+                        .to_string(),
+                    ),
+                },
+                ConfigMutationOperation::Set {
+                    key: "folder_notes.name".to_string(),
+                    value: TomlValue::String(request.destination.name.clone()),
+                },
+            ],
+            ConfigTarget::Shared,
+            request.dry_run,
+        )?;
+        (source, planned, config_plan)
+    };
 
     // Validate every move before writing the first file. The applied pass is
     // still retryable: shared config changes only after all moves complete.
@@ -227,6 +232,7 @@ fn reject_destination_collision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
     use std::fs;
     use tempfile::tempdir;
     use vulcan_core::{scan_vault, FolderNotePlacement, ScanMode};
@@ -243,6 +249,84 @@ mod tests {
         fs::create_dir_all(temp.path().join(".vulcan")).expect("vulcan dir");
         let paths = VaultPaths::new(temp.path());
         (temp, paths)
+    }
+
+    #[test]
+    fn folder_note_preview_and_apply_refuse_pending_ordinary_write_journal() {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        let (temporary, paths) = initialized_vault();
+        fs::create_dir_all(temporary.path().join("Projects")).expect("folder");
+        fs::write(
+            temporary.path().join("Projects/Projects.md"),
+            "# Projects\n",
+        )
+        .expect("folder note");
+        fs::write(temporary.path().join("Inbox.md"), "old\n").expect("inbox");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path: "Inbox.md".to_string(),
+                before: Some("old\n".to_string()),
+                after: Some("new\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
+
+        for dry_run in [true, false] {
+            let error = convert_folder_notes(
+                &paths,
+                &FolderNoteConversionRequest {
+                    source: None,
+                    destination: convention(FolderNotePlacement::Inside, "index"),
+                    dry_run,
+                },
+            )
+            .expect_err("folder-note conversion must fail closed");
+            assert_eq!(error.code(), Some("ordinary_write_pending"));
+        }
+        assert!(temporary.path().join("Projects/Projects.md").is_file());
+        assert!(!temporary.path().join("Projects/index.md").exists());
+        vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
+            .expect("recover pending batch")
+            .expect("pending batch");
+        assert!(convert_folder_notes(
+            &paths,
+            &FolderNoteConversionRequest {
+                source: None,
+                destination: convention(FolderNotePlacement::Inside, "index"),
+                dry_run: true,
+            }
+        )
+        .is_ok());
     }
 
     #[test]

@@ -5583,6 +5583,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - The shared core note-move workflow now refuses a pending ordinary-write journal under its vault lock before dry-run planning or live link rewrites. This covers direct moves and Templater `tp.file.move`/`rename` callers; it does not make a multi-effect template or multi-file move crash-atomic.
   - Core alias, heading, block-ref, property, tag, and bulk property refactors now reject a pending ordinary-write journal under their write locks before either dry-run planning or live rewrites. This prevents those direct workflows from observing or changing a partially published vault; their own multi-file writes are not yet crash-atomic.
   - `split-note` now rejects a pending ordinary-write journal under its vault write lock before dry-run planning or live tree publication. It does not yet make the split's own multi-file output crash-atomic.
+  - Folder-note conversion now holds a shared vault lock while planning paths and shared configuration, refusing a pending ordinary-write journal before preview or apply. Each subsequent note move rechecks under its write lock. The full conversion is still multi-step rather than one crash-atomic transaction.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,
