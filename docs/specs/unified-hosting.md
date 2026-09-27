@@ -251,6 +251,8 @@ MCP custom-tool lookup, listing, and execution call `vulcan-app::tools` directly
 supplies its CLI-derived reserved-name registry until registry construction is shared.
 MCP config show/set use `vulcan-app::config` directly. Their profile checks, dry-run planning,
 apply step, and optional auto-commit remain transport-level composition around the app reports.
+The app config workflow also supplies the auto-commit file list, including a newly created
+`.vulcan/.gitignore` only when the config write created it.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

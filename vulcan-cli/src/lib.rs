@@ -8216,10 +8216,6 @@ fn config_changed_files(
     changed
 }
 
-fn config_set_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
-    config_changed_files(paths, Path::new(".vulcan/config.toml"), had_gitignore)
-}
-
 fn config_target(target: ConfigTargetArg) -> app_config::ConfigTarget {
     match target {
         ConfigTargetArg::Shared => app_config::ConfigTarget::Shared,

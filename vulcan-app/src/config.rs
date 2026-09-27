@@ -13,6 +13,16 @@ use vulcan_core::{
     VaultConfig, VaultPaths,
 };
 
+/// Files touched by a shared config update, including a newly created ignore file.
+#[must_use]
+pub fn config_set_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
+    let mut changed = vec![".vulcan/config.toml".to_string()];
+    if !had_gitignore && paths.gitignore_file().exists() {
+        changed.push(".vulcan/.gitignore".to_string());
+    }
+    changed
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ConfigShowReport {
     pub section: Option<String>,
@@ -2623,9 +2633,10 @@ mod tests {
         apply_config_document_save, apply_config_set_report, build_config_get_report,
         build_config_list_report, build_config_list_report_from_overrides,
         build_config_show_report, build_config_show_report_from_overrides,
-        config_descriptor_catalog, config_toml_path_exists, default_config_value_map,
-        load_config_file_toml, plan_config_document_save, plan_config_set_report,
-        remove_config_toml_value, set_config_toml_value, ConfigTargetSupport, ConfigValueKind,
+        config_descriptor_catalog, config_set_changed_files, config_toml_path_exists,
+        default_config_value_map, load_config_file_toml, plan_config_document_save,
+        plan_config_set_report, remove_config_toml_value, set_config_toml_value,
+        ConfigTargetSupport, ConfigValueKind,
     };
     use std::collections::BTreeSet;
     use std::fs;
@@ -2641,6 +2652,26 @@ mod tests {
         let paths = VaultPaths::new(&vault_root);
         initialize_vulcan_dir(&paths).expect("vulcan dir should be initialized");
         (dir, paths)
+    }
+
+    #[test]
+    fn config_set_changed_files_includes_only_new_ignore_file() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir_all(paths.vulcan_dir()).expect("config directory");
+        assert_eq!(
+            config_set_changed_files(&paths, false),
+            vec![".vulcan/config.toml"]
+        );
+        fs::write(paths.gitignore_file(), "cache.db\n").expect("ignore file");
+        assert_eq!(
+            config_set_changed_files(&paths, false),
+            vec![".vulcan/config.toml", ".vulcan/.gitignore"]
+        );
+        assert_eq!(
+            config_set_changed_files(&paths, true),
+            vec![".vulcan/config.toml"]
+        );
     }
 
     #[test]

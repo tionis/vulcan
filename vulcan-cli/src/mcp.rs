@@ -4,10 +4,9 @@ mod catalog;
 
 use crate::plugins;
 use crate::{
-    cli_command_tree, collect_help_command_topics, config_set_changed_files,
-    custom_tool_registry_entry, permission_error_to_cli, resolve_help_topic, CliError,
-    McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg, NoteAppendMode,
-    ToolRegistryEntry,
+    cli_command_tree, collect_help_command_topics, custom_tool_registry_entry,
+    permission_error_to_cli, resolve_help_topic, CliError, McpToolPackArg, McpToolPackModeArg,
+    McpToolsReport, McpTransportArg, NoteAppendMode, ToolRegistryEntry,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -3480,7 +3479,7 @@ impl McpServerCore {
                         .commit(
                             &self.paths,
                             "config-set",
-                            &config_set_changed_files(&self.paths, had_gitignore),
+                            &app_config::config_set_changed_files(&self.paths, had_gitignore),
                             Some(self.selection.name.as_str()),
                             true,
                         )
