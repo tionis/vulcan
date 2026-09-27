@@ -1,4 +1,5 @@
 use crate::graph::{resolve_note_reference, GraphQueryError};
+use crate::ordinary_write::{ensure_no_pending_ordinary_write_batch, OrdinaryWriteError};
 use crate::parser::{parse_document, RawBlockRef, RawHeading, RawLink};
 use crate::paths::{
     normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
@@ -32,6 +33,7 @@ pub enum RefactorError {
         path: String,
     },
     Io(std::io::Error),
+    OrdinaryWrite(OrdinaryWriteError),
     MissingLinkSpan {
         path: String,
         byte_offset: usize,
@@ -66,6 +68,7 @@ impl Display for RefactorError {
                 )
             }
             Self::Io(error) => write!(formatter, "{error}"),
+            Self::OrdinaryWrite(error) => write!(formatter, "{error}"),
             Self::MissingLinkSpan { path, byte_offset } => write!(
                 formatter,
                 "failed to locate cached link at byte offset {byte_offset} in {path}"
@@ -85,6 +88,7 @@ impl Error for RefactorError {
         match self {
             Self::Graph(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::OrdinaryWrite(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
             Self::Yaml(error) => Some(error),
@@ -106,6 +110,12 @@ impl From<GraphQueryError> for RefactorError {
 impl From<std::io::Error> for RefactorError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<OrdinaryWriteError> for RefactorError {
+    fn from(error: OrdinaryWriteError) -> Self {
+        Self::OrdinaryWrite(error)
     }
 }
 
@@ -182,6 +192,7 @@ pub fn rename_property(
     dry_run: bool,
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let mut plans = Vec::new();
 
     for path in markdown_note_paths(paths)? {
@@ -233,6 +244,7 @@ pub fn merge_tags(
     dry_run: bool,
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let source_tag = normalize_tag_name(source_tag);
     let destination_tag = normalize_tag_name(destination_tag);
     let config = load_vault_config(paths).config;
@@ -299,6 +311,7 @@ pub fn rename_alias(
     dry_run: bool,
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let note = resolve_note_reference(paths, note_identifier)?;
     let path = note.path;
     let source = fs::read_to_string(paths.vault_root().join(&path))?;
@@ -345,6 +358,7 @@ pub fn set_note_property(
     dry_run: bool,
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let note = resolve_note_reference(paths, note_identifier)?;
     let path = note.path;
     let source = fs::read_to_string(paths.vault_root().join(&path))?;
@@ -378,6 +392,7 @@ pub fn bulk_set_property(
     dry_run: bool,
 ) -> Result<BulkMutationReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
 
     let matching_paths = query_matching_paths(paths, filters)?;
     let desired_value = parse_property_value(value)?;
@@ -419,6 +434,7 @@ pub fn bulk_set_property_on_paths(
     dry_run: bool,
 ) -> Result<BulkMutationReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let planned = plan_property_mutations_on_paths(paths, note_paths, key, value)?;
     let plans = planned
         .into_iter()
@@ -531,6 +547,7 @@ pub fn rename_heading(
     dry_run: bool,
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let config = load_vault_config(paths).config;
     let note = resolve_note_reference(paths, note_identifier)?;
     let note_source = fs::read_to_string(paths.vault_root().join(&note.path))?;
@@ -573,6 +590,7 @@ pub fn rename_block_ref(
     dry_run: bool,
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let config = load_vault_config(paths).config;
     let note = resolve_note_reference(paths, note_identifier)?;
     let note_source = fs::read_to_string(paths.vault_root().join(&note.path))?;
@@ -1643,8 +1661,114 @@ fn normalize_tag_name(tag: &str) -> String {
 mod tests {
     use super::*;
     use crate::{doctor_vault, query_notes, resolve_note_reference, scan_vault, NoteQuery};
+    use serde::Serialize;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Each public refactor path must reject the same pending journal.
+    fn direct_refactors_refuse_a_pending_ordinary_write_journal() {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<crate::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        fn assert_pending<T: std::fmt::Debug>(result: Result<T, RefactorError>) {
+            assert!(matches!(
+                result.expect_err("refactor must fail closed"),
+                RefactorError::OrdinaryWrite(ref error) if error.code == "ordinary_write_pending"
+            ));
+        }
+
+        let temporary = TempDir::new().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        crate::initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(
+            temporary.path().join("Source.md"),
+            "---\naliases: [Old]\nstatus: old\ntags: [a]\n---\n# Heading\nBody ^block\n",
+        )
+        .expect("source");
+        fs::write(temporary.path().join("Inbox.md"), "old\n").expect("inbox");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![crate::ordinary_write::OrdinaryWriteChange {
+                path: "Inbox.md".to_string(),
+                before: Some("old\n".to_string()),
+                after: Some("new\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
+
+        assert_pending(rename_property(&paths, "status", "state", true));
+        assert_pending(rename_property(&paths, "status", "state", false));
+        assert_pending(merge_tags(&paths, "a", "b", true));
+        assert_pending(rename_alias(&paths, "Source.md", "Old", "New", true));
+        assert_pending(set_note_property(
+            &paths,
+            "Source.md",
+            "status",
+            Some("new"),
+            true,
+        ));
+        assert_pending(bulk_set_property(&paths, &[], "status", Some("new"), true));
+        assert_pending(bulk_set_property_on_paths(
+            &paths,
+            &["Source.md".to_string()],
+            "status",
+            Some("new"),
+            true,
+        ));
+        assert_pending(rename_heading(
+            &paths,
+            "Source.md",
+            "Heading",
+            "Renamed",
+            true,
+        ));
+        assert_pending(rename_block_ref(
+            &paths,
+            "Source.md",
+            "block",
+            "renamed",
+            true,
+        ));
+        assert!(fs::read_to_string(temporary.path().join("Source.md"))
+            .expect("untouched source")
+            .contains("status: old"));
+
+        crate::ordinary_write::recover_ordinary_write_batch(&paths)
+            .expect("recover pending batch")
+            .expect("pending batch");
+        let report = rename_property(&paths, "status", "state", true)
+            .expect("refactor preview after recovery");
+        assert_eq!(report.files.len(), 1);
+    }
 
     #[test]
     fn bulk_set_property_rejects_absolute_and_parent_paths() {

@@ -15977,6 +15977,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(properties.contains("preflight every selected mdbase record"));
     assert!(properties.contains("one validated journal batch"));
     assert!(properties.contains("never implies raw repair"));
+    assert!(properties
+        .contains("Ordinary `update`, `unset`, property rename, and tag merge workflows refuse"));
     let task_management =
         fs::read_to_string(vault_root.join(".agents/skills/task-management/SKILL.md"))
             .expect("task management skill should be readable");
@@ -16636,6 +16638,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(refactoring.contains("--preserve-missing-fragments"));
     assert!(refactoring
         .contains("A note move or move preview refuses a pending ordinary-write journal"));
+    assert!(refactoring
+        .contains("Alias, heading, block-ref, property, and tag refactors likewise refuse"));
 
     let artifact_import = fs::read_to_string(installed_skills.join("artifact-import/SKILL.md"))
         .expect("artifact import skill should be installed");
