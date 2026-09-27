@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Added Container Core v1, the rules shared by MDAF and wiki packages. The rules moved from
+  MDAF v1 without changes, so existing artifacts stay valid.
+- Added Knowledge v1, a source-neutral snapshot of cited entities and claims.
+- Added Markdown Wiki Package v2, with required provenance, a note-to-source map, and a hosted
+  knowledge snapshot. `exchange wiki export` now writes v2. `inspect`, `validate`, and `import`
+  accept v1 and v2. Import records source locators in `vulcan.source` frontmatter.
+
 ## 0.2.1 — 2026-09-06
 
 Vulcan 0.2.1 is the first published stable release after 0.1.0. It contains all changes described
