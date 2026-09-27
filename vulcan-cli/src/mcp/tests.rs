@@ -708,6 +708,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     );
     assert!(paths.vault_root().join("Foreground.md").is_file());
     let foreground_write_session = named_listener_session_id(&foreground_write_init);
+    named_listener_append_and_patch_note(
+        address,
+        &write_token,
+        &foreground_write_session,
+        &paths,
+        "Foreground.md",
+    );
     let foreground_set = named_listener_call_tool(
         address,
         "parity",
@@ -947,6 +954,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_write}"
     );
     assert!(paths.vault_root().join("Resident.md").is_file());
+    named_listener_append_and_patch_note(
+        address,
+        &write_token,
+        &resident_write_session,
+        &paths,
+        "Resident.md",
+    );
     let resident_set = named_listener_call_tool(
         address,
         "parity",
@@ -1181,6 +1195,44 @@ fn named_listener_task_lifecycle(
     assert!(fs::read_to_string(paths.vault_root().join(note))
         .expect("completed task note")
         .contains("- [x]"));
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_append_and_patch_note(
+    address: SocketAddr,
+    token: &str,
+    session_id: &str,
+    paths: &VaultPaths,
+    note: &str,
+) {
+    let appended = named_listener_call_tool(
+        address,
+        "parity",
+        token,
+        session_id,
+        "note_append",
+        serde_json::json!({"note": note, "text": "Additional detail.\n", "no_commit": true}),
+    );
+    assert!(appended.contains("\"isError\":false"), "{appended}");
+    assert!(fs::read_to_string(paths.vault_root().join(note))
+        .expect("appended note")
+        .contains("Additional detail."));
+
+    let patched = named_listener_call_tool(
+        address,
+        "parity",
+        token,
+        session_id,
+        "note_patch",
+        serde_json::json!({
+            "note": note, "find": "Additional detail.",
+            "replace": "Reviewed detail.", "no_commit": true
+        }),
+    );
+    assert!(patched.contains("\"isError\":false"), "{patched}");
+    let content = fs::read_to_string(paths.vault_root().join(note)).expect("patched note");
+    assert!(content.contains("Reviewed detail."));
+    assert!(!content.contains("Additional detail."));
 }
 
 #[cfg(feature = "oauth")]
