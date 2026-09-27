@@ -8,6 +8,7 @@ use super::{
     TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode, TemplateSession,
     TemplateTimestamp, TemplateValue, TrimMode,
 };
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 #[cfg(feature = "js_runtime")]
@@ -791,6 +792,88 @@ fn build_template_preview_report_renders_named_template() {
     assert_eq!(report.path, "Projects/Alpha.md");
     assert_eq!(report.engine, "native");
     assert_eq!(report.content, "# Alpha\n");
+}
+
+#[test]
+fn direct_template_reads_refuse_pending_ordinary_write_journal() {
+    #[derive(Serialize)]
+    struct JournalFixture<'a> {
+        version: u32,
+        transaction_id: &'a str,
+        changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+        digest: String,
+    }
+
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    let paths = VaultPaths::new(root);
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(root.join(".vulcan/templates/daily.md"), "# {{title}}\n").expect("template");
+    fs::write(root.join("Inbox.md"), "Original\n").expect("note");
+    let directory = paths
+        .operational_state_dir()
+        .expect("operational state")
+        .join("ordinary-write");
+    fs::create_dir_all(&directory).expect("journal directory");
+    let mut journal = JournalFixture {
+        version: 1,
+        transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: "Inbox.md".to_string(),
+            before: Some("Original\n".to_string()),
+            after: Some("Updated\n".to_string()),
+        }],
+        digest: String::new(),
+    };
+    journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+        .to_hex()
+        .to_string();
+    let journal_path = directory.join("journal.json");
+    fs::write(
+        &journal_path,
+        serde_json::to_vec(&journal).expect("sealed journal"),
+    )
+    .expect("pending journal");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+            .expect("owner-only journal");
+    }
+
+    let preview = TemplatePreviewRequest {
+        template: "daily".to_string(),
+        output_path: Some("Projects/Alpha".to_string()),
+        engine: TemplateEngineKind::Auto,
+        vars: HashMap::new(),
+    };
+    assert_eq!(
+        build_template_list_report(&paths)
+            .expect_err("list must fail closed")
+            .code(),
+        Some("ordinary_write_pending")
+    );
+    assert_eq!(
+        build_template_show_report(&paths, "daily")
+            .expect_err("show must fail closed")
+            .code(),
+        Some("ordinary_write_pending")
+    );
+    assert_eq!(
+        build_template_preview_report(&paths, &preview)
+            .expect_err("preview must fail closed")
+            .code(),
+        Some("ordinary_write_pending")
+    );
+    vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
+        .expect("recover pending batch")
+        .expect("pending batch");
+    assert_eq!(
+        build_template_preview_report(&paths, &preview)
+            .expect("preview after recovery")
+            .content,
+        "# Alpha\n"
+    );
 }
 
 #[test]

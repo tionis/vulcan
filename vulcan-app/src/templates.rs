@@ -337,6 +337,8 @@ fn guarded_template_move(
 }
 
 pub fn build_template_list_report(paths: &VaultPaths) -> Result<TemplateListReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let config = load_vault_config(paths).config;
     let templates = discover_templates(
         paths,
@@ -701,6 +703,8 @@ pub fn build_template_show_report(
     paths: &VaultPaths,
     name: &str,
 ) -> Result<TemplateShowReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let config = load_vault_config(paths).config;
     let loaded = load_named_template(paths, &config, name)?;
     Ok(TemplateShowReport {
@@ -723,6 +727,8 @@ pub fn build_template_preview_report_with_filter(
     request: &TemplatePreviewRequest,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplatePreviewReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let config = load_vault_config(paths).config;
     let loaded = load_named_template(paths, &config, &request.template)?;
     let output_path = template_output_path(

@@ -35,6 +35,7 @@ compatibility matter.
 
 - Do not overwrite an existing note when insertion or append is the intended workflow.
 - Preview templates that include JS, dates, or user variables.
+- If `template list`, `template show`, or `template preview` reports a pending ordinary-write journal, inspect it with `vulcan repair ordinary-write status` before reading further. Direct CLI and MCP template reports refuse a partially published multi-note change until recovery or explicit reconciliation.
 - Keep capture append-only unless the user explicitly asks to reorganize captured material.
 - Mutating Templater helpers may require sandbox/permission checks and should not be assumed safe.
 - For profile-scoped `note create`, check every path a template may create, move, rename, or rewrite; the connection grant is enforced on those side effects and on the final note path.
