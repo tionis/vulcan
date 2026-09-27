@@ -244,6 +244,9 @@ origin may pass, including bracketed IPv6 loopback. It remains distinct from bea
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or
 ambiguous `Content-Length`, and unsupported chunked request encoding before authentication or
 dispatch. Proxies must forward a single length-delimited request to this listener.
+The shared auto-commit policy now lives in `vulcan-app::commit`. Both CLI mutations and MCP
+mutations use its configuration/trigger and Git checks and its plugin pre/post-commit workflow;
+the CLI retains a compatibility re-export until its remaining command dependencies move.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

@@ -3,7 +3,6 @@
 mod catalog;
 
 use crate::app_config;
-use crate::commit::AutoCommitPolicy;
 use crate::plugins;
 use crate::{
     cli_command_tree, collect_help_command_topics, config_set_changed_files,
@@ -34,6 +33,7 @@ use std::time::Instant;
 #[cfg(feature = "oauth")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
+use vulcan_app::commit::AutoCommitPolicy;
 #[cfg(feature = "oauth")]
 use vulcan_app::execution::{
     ExecutionAuthority, ExecutionCancellationToken, ExecutionContext, ExecutionDeadline,
