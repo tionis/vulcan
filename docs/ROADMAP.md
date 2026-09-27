@@ -5585,6 +5585,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - `split-note` now rejects a pending ordinary-write journal under its vault write lock before dry-run planning or live tree publication. It does not yet make the split's own multi-file output crash-atomic.
    - Folder-note conversion now holds a shared vault lock while planning paths and shared configuration, refusing a pending ordinary-write journal before preview or apply. Each subsequent note move rechecks under its write lock. The full conversion is still multi-step rather than one crash-atomic transaction.
    - Direct vault status reports now hold that shared read lock and refuse a pending ordinary-write journal before combining cache metadata, Git state, and graph confidence. Other direct non-MCP read surfaces and multi-effect template writes remain open.
+   - Browse and note-picker identity lists, plus browse tag/tagged-note lists, now use the same consistent-read barrier and fail closed while an ordinary-write batch awaits recovery. Other direct non-MCP read surfaces and multi-effect template writes remain open.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,

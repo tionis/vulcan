@@ -102,6 +102,8 @@ pub fn refresh_browse_cache(paths: &VaultPaths) -> Result<ScanSummary, AppError>
 }
 
 pub fn list_note_identities(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     core_list_note_identities(paths).map_err(AppError::operation)
 }
 
@@ -114,6 +116,8 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
 }
 
 pub fn list_tags(paths: &VaultPaths) -> Result<Vec<NamedCount>, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     core_list_tags(paths).map_err(AppError::operation)
 }
 
@@ -121,6 +125,8 @@ pub fn list_tagged_note_identities(
     paths: &VaultPaths,
     tag: &str,
 ) -> Result<Vec<NoteIdentity>, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     core_list_tagged_note_identities(paths, tag).map_err(AppError::operation)
 }
 
@@ -655,8 +661,8 @@ fn dedupe_strings_preserve_order(values: Vec<String>) -> Vec<String> {
 mod tests {
     use super::{
         build_dataview_eval_report, build_dataview_inline_report, build_periodic_list_report,
-        build_vault_status_report, collect_complete_candidates, list_note_identities, move_note,
-        prepare_browse_refresh,
+        build_vault_status_report, collect_complete_candidates, list_note_identities,
+        list_tagged_note_identities, list_tags, move_note, prepare_browse_refresh,
     };
     use serde::Serialize;
     use std::fs;
@@ -668,6 +674,47 @@ mod tests {
         let paths = VaultPaths::new(dir.path());
         initialize_vulcan_dir(&paths).expect("init should succeed");
         (dir, paths)
+    }
+
+    fn write_pending_journal(paths: &VaultPaths) {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path: "Inbox.md".to_string(),
+                before: Some("# Original\n".to_string()),
+                after: Some("# Updated\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
     }
 
     #[test]
@@ -751,47 +798,10 @@ mod tests {
 
     #[test]
     fn build_vault_status_report_refuses_pending_ordinary_write_journal() {
-        #[derive(Serialize)]
-        struct JournalFixture<'a> {
-            version: u32,
-            transaction_id: &'a str,
-            changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
-            digest: String,
-        }
-
         let (_dir, paths) = test_paths();
         fs::write(paths.vault_root().join("Inbox.md"), "# Original\n").expect("seed note");
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
-        let directory = paths
-            .operational_state_dir()
-            .expect("operational state")
-            .join("ordinary-write");
-        fs::create_dir_all(&directory).expect("journal directory");
-        let mut journal = JournalFixture {
-            version: 1,
-            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
-                path: "Inbox.md".to_string(),
-                before: Some("# Original\n".to_string()),
-                after: Some("# Updated\n".to_string()),
-            }],
-            digest: String::new(),
-        };
-        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
-            .to_hex()
-            .to_string();
-        let journal_path = directory.join("journal.json");
-        fs::write(
-            &journal_path,
-            serde_json::to_vec(&journal).expect("sealed journal"),
-        )
-        .expect("pending journal");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
-                .expect("owner-only journal");
-        }
+        write_pending_journal(&paths);
 
         assert_eq!(
             build_vault_status_report(&paths)
@@ -799,6 +809,22 @@ mod tests {
                 .code(),
             Some("ordinary_write_pending")
         );
+    }
+
+    #[test]
+    fn browse_identity_and_tag_lists_refuse_pending_ordinary_write_journal() {
+        let (_dir, paths) = test_paths();
+        fs::write(paths.vault_root().join("Inbox.md"), "# Original\n").expect("seed note");
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        write_pending_journal(&paths);
+
+        for error in [
+            list_note_identities(&paths).expect_err("identities must fail closed"),
+            list_tags(&paths).expect_err("tags must fail closed"),
+            list_tagged_note_identities(&paths, "work").expect_err("tagged notes must fail closed"),
+        ] {
+            assert_eq!(error.code(), Some("ordinary_write_pending"));
+        }
     }
 
     #[test]
