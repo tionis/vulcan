@@ -1,6 +1,8 @@
 use super::*;
 use crate::McpToolPackModeArg;
+use std::io::Read;
 use vulcan_core::{PermissionProfile, TasksQueryResult};
+use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
 
 #[test]
 fn stdio_and_http_reads_refuse_a_pending_ordinary_write_journal() {

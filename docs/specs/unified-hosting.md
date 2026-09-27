@@ -235,6 +235,9 @@ built-in tool metadata, pack selection, and permission visibility in `vulcan-app
 existing stdio and HTTP notification, error, and timeout shapes. CLI stdio and foreground HTTP
 consume these shared contracts. `vulcan-app::mcp_assistant` provides permission-filtered prompt
 and skill discovery, prompt rendering, resource discovery/templates, vault-owned assistant reads, and pack-filtered custom-tool resource reads to both transports.
+The bounded HTTP/1.1 request and response codec now lives in `vulcan-daemon::mcp_http_codec` and
+is used by the foreground and resident named listeners. This moves transport framing out of the
+CLI without moving OAuth policy, session lifecycle, or the method dispatcher yet.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
