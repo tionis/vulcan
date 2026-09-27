@@ -33,6 +33,8 @@ pub mod mcp_oauth_consent;
 pub mod mcp_oauth_policy;
 pub mod mcp_oauth_registration;
 #[cfg(feature = "oauth")]
+pub mod mcp_oauth_routes;
+#[cfg(feature = "oauth")]
 pub mod mcp_oauth_token;
 pub mod mcp_remote;
 pub mod mcp_remote_runtime;

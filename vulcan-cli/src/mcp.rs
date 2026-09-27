@@ -160,12 +160,10 @@ use vulcan_daemon::mcp_oauth_policy::parse_mcp_oauth_scopes as parse_mcp_oauth_s
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::McpOAuthPolicyError;
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
-#[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_policy::SUPPORTED_MCP_OAUTH_SCOPES;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::{McpTokenAuthMethod, McpTokenClientCredentials};
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_registration::register_mcp_oauth_client;
+use vulcan_daemon::mcp_oauth_routes::{McpLocalOAuthRoutes, McpOAuthRoutes};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_token::McpLocalTokenEndpoint;
 #[cfg(feature = "oauth")]
@@ -3678,96 +3676,78 @@ fn handle_mcp_oauth_route(
     request: &McpHttpRequest,
     route: McpHttpRoute<'_>,
 ) -> McpHttpResponse {
-    let oauth = context.oauth.as_ref().expect("OAuth route requires issuer");
-    let local = || match oauth {
-        McpOAuthMode::Local(local) => local,
-        McpOAuthMode::External(_) => unreachable!("local OAuth route requires local issuer"),
-    };
-    match route {
-        McpHttpRoute::LocalOAuthRegister => handle_local_oauth_register(context, request),
-        McpHttpRoute::LocalOAuthAuthorize => {
-            handle_local_oauth_authorize(context, local(), request)
+    match context.oauth.as_ref().expect("OAuth route requires issuer") {
+        McpOAuthMode::External(external) => {
+            McpOAuthRoutes::External(external).handle(request, route)
         }
-        McpHttpRoute::LocalOAuthToken => handle_local_oauth_token(context, local(), request),
-        McpHttpRoute::LocalOAuthIndieAuthCallback => {
-            handle_local_oauth_indieauth_callback(context, local(), request)
-        }
-        McpHttpRoute::LocalOAuthConsent => handle_local_oauth_consent(context, local(), request),
-        McpHttpRoute::AuthorizationServerMetadata => McpHttpResponse {
-            status: 200,
-            content_type: Some("application/json"),
-            body: serde_json::to_vec(&oauth_authorization_server_metadata(context, oauth))
-                .expect("json should serialize"),
-            extra_headers: Vec::new(),
-        },
-        McpHttpRoute::ProtectedResourceMetadata => oauth_protected_resource_response(oauth),
-        _ => unreachable!("non-OAuth route passed to OAuth handler"),
+        McpOAuthMode::Local(local) => McpOAuthRoutes::Local(Box::new(McpLocalOAuthRoutes {
+            issuer: local,
+            authorize: local_authorize_endpoint(context, local),
+            consent: local_consent_endpoint(context, local),
+            token: local_token_endpoint(context, local),
+            dcr_enabled: context.oauth_dcr_enabled,
+            allowed_redirect_hosts: &context.oauth_dcr_allowed_redirect_hosts,
+            refresh_supported: context.named_runtime.is_some(),
+        }))
+        .handle(request, route),
     }
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
+fn parse_query_params(query: &str) -> BTreeMap<String, String> {
+    vulcan_daemon::mcp_oauth_routes::parse_oauth_params(query)
+}
+
+#[cfg(all(test, feature = "oauth"))]
 fn oauth_authorization_server_metadata(
     context: &McpHttpServerContext,
-    oauth: &McpOAuthMode,
+    _oauth: &McpOAuthMode,
 ) -> Value {
-    match oauth {
-        McpOAuthMode::External(external) => external.authorization_server_metadata().clone(),
-        McpOAuthMode::Local(local) => {
-            let mut metadata = local.authorization_server_metadata().clone();
-            if context.named_runtime.is_none() {
-                metadata["grant_types_supported"] = serde_json::json!(["authorization_code"]);
-            }
-            metadata
-        }
-    }
-}
-
-#[cfg(feature = "oauth")]
-fn oauth_protected_resource_response(oauth: &McpOAuthMode) -> McpHttpResponse {
-    let body = match oauth {
-        McpOAuthMode::External(external) => serde_json::json!({
-            "resource": external.public_url(),
-            "authorization_servers": [external.authorization_server_issuer()],
-            "bearer_methods_supported": ["header"],
-            "scopes_supported": SUPPORTED_MCP_OAUTH_SCOPES,
-        }),
-        McpOAuthMode::Local(local) => serde_json::json!({
-            "resource": local.public_url(),
-            "authorization_servers": [local.public_url()],
-            "bearer_methods_supported": ["header"],
-            "scopes_supported": SUPPORTED_MCP_OAUTH_SCOPES,
-        }),
+    let request = McpHttpRequest {
+        method: "GET".to_string(),
+        path: "/.well-known/oauth-authorization-server".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
     };
-    McpHttpResponse {
-        status: 200,
-        content_type: Some("application/json"),
-        body: serde_json::to_vec(&body).expect("json should serialize"),
-        extra_headers: Vec::new(),
-    }
+    let response =
+        handle_mcp_oauth_route(context, &request, McpHttpRoute::AuthorizationServerMetadata);
+    serde_json::from_slice(&response.body).expect("OAuth metadata JSON")
 }
 
-#[cfg(feature = "oauth")]
-fn handle_local_oauth_authorize(
-    context: &McpHttpServerContext,
-    issuer: &LocalOAuthIssuer,
-    request: &McpHttpRequest,
-) -> McpHttpResponse {
-    local_authorize_endpoint(context, issuer)
-        .authorize(&request.method, &parse_query_params(&request.query))
-}
-
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn handle_local_oauth_register(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> McpHttpResponse {
-    register_mcp_oauth_client(
-        request,
-        &context.oauth_clients,
-        context.oauth_dcr_enabled,
-        &context.oauth_dcr_allowed_redirect_hosts,
-        context.named_runtime.is_some(),
-    )
+    handle_mcp_oauth_route(context, request, McpHttpRoute::LocalOAuthRegister)
+}
+
+#[cfg(all(test, feature = "oauth"))]
+fn handle_local_oauth_authorize(
+    context: &McpHttpServerContext,
+    _issuer: &LocalOAuthIssuer,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    handle_mcp_oauth_route(context, request, McpHttpRoute::LocalOAuthAuthorize)
+}
+
+#[cfg(all(test, feature = "oauth"))]
+fn handle_local_oauth_token(
+    context: &McpHttpServerContext,
+    _issuer: &LocalOAuthIssuer,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    handle_mcp_oauth_route(context, request, McpHttpRoute::LocalOAuthToken)
+}
+
+#[cfg(all(test, feature = "oauth"))]
+fn handle_local_oauth_consent(
+    context: &McpHttpServerContext,
+    _issuer: &LocalOAuthIssuer,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    handle_mcp_oauth_route(context, request, McpHttpRoute::LocalOAuthConsent)
 }
 
 #[cfg(feature = "oauth")]
@@ -3785,15 +3765,6 @@ fn local_token_endpoint<'a>(
     }
 }
 
-#[cfg(feature = "oauth")]
-fn handle_local_oauth_token(
-    context: &McpHttpServerContext,
-    issuer: &LocalOAuthIssuer,
-    request: &McpHttpRequest,
-) -> McpHttpResponse {
-    local_token_endpoint(context, issuer).handle(request, &parse_form_params(&request.body))
-}
-
 #[cfg(all(test, feature = "oauth"))]
 fn handle_local_oauth_refresh(
     context: &McpHttpServerContext,
@@ -3802,16 +3773,6 @@ fn handle_local_oauth_refresh(
     params: &BTreeMap<String, String>,
 ) -> McpHttpResponse {
     local_token_endpoint(context, issuer).refresh(client_id, params)
-}
-
-#[cfg(feature = "oauth")]
-fn handle_local_oauth_indieauth_callback(
-    context: &McpHttpServerContext,
-    issuer: &LocalOAuthIssuer,
-    request: &McpHttpRequest,
-) -> McpHttpResponse {
-    local_authorize_endpoint(context, issuer)
-        .callback(&request.method, &parse_query_params(&request.query))
 }
 
 #[cfg(feature = "oauth")]
@@ -3843,16 +3804,6 @@ fn local_authorize_endpoint<'a>(
         allowed_redirect_hosts: &context.oauth_dcr_allowed_redirect_hosts,
         exchange,
     }
-}
-
-#[cfg(feature = "oauth")]
-fn handle_local_oauth_consent(
-    context: &McpHttpServerContext,
-    issuer: &LocalOAuthIssuer,
-    request: &McpHttpRequest,
-) -> McpHttpResponse {
-    local_consent_endpoint(context, issuer)
-        .handle(&request.method, &parse_form_params(&request.body))
 }
 
 #[cfg(feature = "oauth")]
@@ -4253,60 +4204,6 @@ fn mcp_oauth_policy_error_response(error: McpOAuthPolicyError) -> McpHttpRespons
         McpOAuthPolicyError::InvalidAuthorizationRequest => {
             oauth_plain_response(400, "invalid OAuth authorization request")
         }
-    }
-}
-
-#[cfg(feature = "oauth")]
-fn parse_query_params(query: &str) -> BTreeMap<String, String> {
-    query
-        .split('&')
-        .filter(|part| !part.is_empty())
-        .filter_map(|part| {
-            let (key, value) = part.split_once('=').unwrap_or((part, ""));
-            Some((percent_decode(key)?, percent_decode(value)?))
-        })
-        .collect()
-}
-
-#[cfg(feature = "oauth")]
-fn parse_form_params(body: &[u8]) -> BTreeMap<String, String> {
-    std::str::from_utf8(body).map_or_else(|_| BTreeMap::new(), parse_query_params)
-}
-
-#[cfg(feature = "oauth")]
-fn percent_decode(value: &str) -> Option<String> {
-    let mut output = Vec::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                output.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                let high = hex_value(bytes[index + 1])?;
-                let low = hex_value(bytes[index + 2])?;
-                output.push(high * 16 + low);
-                index += 3;
-            }
-            b'%' => return None,
-            byte => {
-                output.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8(output).ok()
-}
-
-#[cfg(feature = "oauth")]
-const fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
     }
 }
 
