@@ -56,6 +56,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 
 ## Guardrails
 
+- For a blocked ordinary TaskNotes conversion or archive, run `vulcan --output json repair ordinary-write status` with a full-vault read/write profile and inspect every listed path. A `recoverable: true` batch can use `repair ordinary-write roll-forward --dry-run` followed by `roll-forward`. For a diverged batch, manually reconcile both paths, then use `repair ordinary-write accept-current <transaction-id> --review-token <review-token> --confirm --dry-run` and rerun without `--dry-run` only after review. The review token is bound to observed file bytes; stale reviews are rejected. Accepting current files retires the pending plan without changing note bytes and refreshes the index. Never delete the journal as a cache repair.
 - Do not "fix" diagnostics by deleting content unless the user explicitly wants deletion.
 - Parser unsupported-syntax diagnostics are not always data loss; preserve source where possible.
 - Cache/index repair should not edit notes.

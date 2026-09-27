@@ -1,7 +1,13 @@
 use crate::commit::AutoCommitPolicy;
+use crate::output::print_json;
 use crate::{
-    selected_permission_guard, serve_forever, warn_auto_commit_if_needed, Cli, CliError,
-    IndexCommand, PermissionGuard, RepairCommand, ServeOptions,
+    selected_permission_guard, selected_permission_profile, serve_forever,
+    warn_auto_commit_if_needed, Cli, CliError, IndexCommand, OrdinaryWriteRepairCommand,
+    OutputFormat, PermissionGuard, RepairCommand, ServeOptions,
+};
+use serde_json::json;
+use vulcan_core::ordinary_write::{
+    accept_current_ordinary_write_batch, inspect_ordinary_write_batch, recover_ordinary_write_batch,
 };
 use vulcan_core::{
     rebuild_vault_with_progress, repair_fts, scan_vault, scan_vault_with_progress, watch_vault,
@@ -76,13 +82,7 @@ pub(crate) fn handle_index_command(
                 .map_err(CliError::operation)?;
             crate::print_rebuild_report(cli.output, &report, use_stdout_color)
         }
-        IndexCommand::Repair { command } => match command {
-            RepairCommand::Fts { dry_run } => {
-                let report = repair_fts(paths, &RepairFtsQuery { dry_run: *dry_run })
-                    .map_err(CliError::operation)?;
-                crate::print_repair_fts_report(cli.output, &report)
-            }
-        },
+        IndexCommand::Repair { command } => handle_repair_command(cli, paths, command),
         IndexCommand::Watch {
             debounce_ms,
             no_commit,
@@ -164,5 +164,133 @@ pub(crate) fn handle_index_command(
                 permissions: cli.permissions.clone(),
             },
         ),
+    }
+}
+
+pub(crate) fn handle_repair_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &RepairCommand,
+) -> Result<(), CliError> {
+    selected_permission_guard(cli, paths)?
+        .check_index()
+        .map_err(CliError::operation)?;
+    match command {
+        RepairCommand::Fts { dry_run } => {
+            let report = repair_fts(paths, &RepairFtsQuery { dry_run: *dry_run })
+                .map_err(CliError::operation)?;
+            crate::print_repair_fts_report(cli.output, &report)
+        }
+        RepairCommand::OrdinaryWrite { command } => {
+            let grant = selected_permission_profile(cli, paths)?.grant;
+            if !grant.read.is_unrestricted() || !grant.write.is_unrestricted() {
+                return Err(CliError::operation(
+                    "ordinary write recovery requires full-vault read and write authority",
+                ));
+            }
+            handle_ordinary_write_repair(cli.output, paths, command)
+        }
+    }
+}
+
+fn handle_ordinary_write_repair(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    command: &OrdinaryWriteRepairCommand,
+) -> Result<(), CliError> {
+    match command {
+        OrdinaryWriteRepairCommand::Status => {
+            let review = inspect_ordinary_write_batch(paths).map_err(CliError::operation)?;
+            match output {
+                OutputFormat::Json => {
+                    print_json(&json!({"pending": review.is_some(), "review": review}))?;
+                }
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if let Some(review) = review {
+                        println!("Pending ordinary write: {}", review.transaction_id);
+                        println!("Recoverable: {}", review.recoverable);
+                        println!("Review token: {}", review.review_token);
+                        for change in review.changes {
+                            println!("  {}: {}", change.path, change.state);
+                        }
+                    } else {
+                        println!("No pending ordinary write journal");
+                    }
+                }
+            }
+            Ok(())
+        }
+        OrdinaryWriteRepairCommand::RollForward { dry_run } => {
+            if *dry_run {
+                let review = inspect_ordinary_write_batch(paths).map_err(CliError::operation)?;
+                match output {
+                    OutputFormat::Json => print_json(&json!({"dry_run": true, "review": review}))?,
+                    OutputFormat::Human | OutputFormat::Markdown => {
+                        println!(
+                            "{}",
+                            if review.is_some() {
+                                "Pending batch inspected; no files changed"
+                            } else {
+                                "No pending ordinary write journal"
+                            }
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            let recovered = recover_ordinary_write_batch(paths).map_err(CliError::operation)?;
+            let scan = recovered
+                .as_ref()
+                .map(|_| scan_vault(paths, ScanMode::Incremental))
+                .transpose()
+                .map_err(CliError::operation)?;
+            match output {
+                OutputFormat::Json => print_json(&json!({"recovered": recovered, "scan": scan}))?,
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "{}",
+                        if recovered.is_some() {
+                            "Ordinary write recovered and vault index refreshed"
+                        } else {
+                            "No pending ordinary write journal"
+                        }
+                    );
+                }
+            }
+            Ok(())
+        }
+        OrdinaryWriteRepairCommand::AcceptCurrent {
+            transaction_id,
+            review_token,
+            confirm,
+            dry_run,
+        } => {
+            if !confirm {
+                return Err(CliError::operation(
+                    "accept-current requires --confirm after reviewing every affected file",
+                ));
+            }
+            let accepted =
+                accept_current_ordinary_write_batch(paths, transaction_id, review_token, *dry_run)
+                    .map_err(CliError::operation)?;
+            let scan = (!dry_run)
+                .then(|| scan_vault(paths, ScanMode::Incremental))
+                .transpose()
+                .map_err(CliError::operation)?;
+            match output {
+                OutputFormat::Json => print_json(&json!({"accepted": accepted, "scan": scan}))?,
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "{}",
+                        if *dry_run {
+                            "Current files reviewed; journal remains pending"
+                        } else {
+                            "Current files accepted; journal retired and vault index refreshed"
+                        }
+                    );
+                }
+            }
+            Ok(())
+        }
     }
 }

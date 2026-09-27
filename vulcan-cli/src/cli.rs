@@ -1528,6 +1528,33 @@ pub enum RepairCommand {
         #[arg(long, help = "Report the repair scope without mutating the cache")]
         dry_run: bool,
     },
+    #[command(about = "Inspect or resolve a pending ordinary Markdown write journal")]
+    OrdinaryWrite {
+        #[command(subcommand)]
+        command: OrdinaryWriteRepairCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum OrdinaryWriteRepairCommand {
+    #[command(about = "Inspect a pending journal and compare its planned and current bytes")]
+    Status,
+    #[command(about = "Roll a recoverable journal forward and refresh the vault index")]
+    RollForward {
+        #[arg(long, help = "Inspect the pending batch without mutating it")]
+        dry_run: bool,
+    },
+    #[command(about = "Retire a conflicted journal after manually reconciling its files")]
+    AcceptCurrent {
+        #[arg(help = "Transaction ID shown by ordinary-write status")]
+        transaction_id: String,
+        #[arg(long, help = "Review token shown by ordinary-write status")]
+        review_token: String,
+        #[arg(long, help = "Confirm that every affected file was manually reviewed")]
+        confirm: bool,
+        #[arg(long, help = "Check the review token without retiring the journal")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

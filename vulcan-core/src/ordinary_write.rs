@@ -34,11 +34,35 @@ pub struct OrdinaryWriteChange {
     pub after: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OrdinaryWriteOutcome {
     pub transaction_id: String,
     pub changed_paths: Vec<String>,
     pub recovered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrdinaryWriteReview {
+    pub transaction_id: String,
+    pub changes: Vec<OrdinaryWriteReviewChange>,
+    pub recoverable: bool,
+    pub review_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrdinaryWriteReviewChange {
+    pub path: String,
+    pub state: &'static str,
+    pub before_digest: Option<String>,
+    pub after_digest: Option<String>,
+    pub current_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrdinaryWriteAcceptCurrentOutcome {
+    pub transaction_id: String,
+    pub changed_paths: Vec<String>,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +210,108 @@ pub fn recover_ordinary_write_batch(
     recover_locked(paths)
 }
 
+/// Inspect a pending batch without exposing note contents or changing files.
+/// The review token binds an explicit repair decision to the observed bytes.
+pub fn inspect_ordinary_write_batch(
+    paths: &VaultPaths,
+) -> Result<Option<OrdinaryWriteReview>, OrdinaryWriteError> {
+    let Some(directory) = existing_state_directory(paths)? else {
+        return Ok(None);
+    };
+    let Some(journal) = load_journal(&directory)? else {
+        return Ok(None);
+    };
+    inspect_journal(paths, &journal).map(Some)
+}
+
+/// Retire a conflicted journal only after a human has reconciled its files.
+/// This does not alter note bytes. A stale review token or recoverable batch
+/// cannot be accepted as current state.
+pub fn accept_current_ordinary_write_batch(
+    paths: &VaultPaths,
+    transaction_id: &str,
+    review_token: &str,
+    dry_run: bool,
+) -> Result<OrdinaryWriteAcceptCurrentOutcome, OrdinaryWriteError> {
+    let _lock = acquire_write_lock(paths)
+        .map_err(|error| OrdinaryWriteError::io("acquire vault write lock", error))?;
+    let directory = ensure_state_directory(paths)?;
+    let journal = load_journal(&directory)?.ok_or_else(|| {
+        OrdinaryWriteError::new(
+            "ordinary_write_not_found",
+            "ordinary write journal is no longer pending",
+            None,
+        )
+    })?;
+    let review = inspect_journal(paths, &journal)?;
+    if review.transaction_id != transaction_id || review.review_token != review_token {
+        return Err(OrdinaryWriteError::new(
+            "ordinary_write_review_changed",
+            "ordinary write journal or files changed since review; inspect them again",
+            None,
+        ));
+    }
+    if review.recoverable {
+        return Err(OrdinaryWriteError::new(
+            "ordinary_write_recoverable",
+            "ordinary write batch can still roll forward; use normal recovery instead",
+            None,
+        ));
+    }
+    if !dry_run {
+        remove_journal(&directory)?;
+    }
+    Ok(OrdinaryWriteAcceptCurrentOutcome {
+        transaction_id: journal.transaction_id,
+        changed_paths: journal
+            .changes
+            .into_iter()
+            .map(|change| change.path)
+            .collect(),
+        dry_run,
+    })
+}
+
+fn inspect_journal(
+    paths: &VaultPaths,
+    journal: &Journal,
+) -> Result<OrdinaryWriteReview, OrdinaryWriteError> {
+    let mut changes = Vec::with_capacity(journal.changes.len());
+    let mut recoverable = true;
+    for change in &journal.changes {
+        let current = current_bytes(paths, &change.path)?;
+        let state = if current.as_deref() == change.before.as_deref().map(str::as_bytes) {
+            "before"
+        } else if current.as_deref() == change.after.as_deref().map(str::as_bytes) {
+            "after"
+        } else {
+            recoverable = false;
+            "diverged"
+        };
+        changes.push(OrdinaryWriteReviewChange {
+            path: change.path.clone(),
+            state,
+            before_digest: change.before.as_deref().map(content_digest),
+            after_digest: change.after.as_deref().map(content_digest),
+            current_digest: current
+                .as_deref()
+                .map(|bytes| blake3::hash(bytes).to_hex().to_string()),
+        });
+    }
+    let review_bytes = serde_json::to_vec(&(&journal.digest, &changes))
+        .map_err(|error| OrdinaryWriteError::io("serialize ordinary write review", error))?;
+    Ok(OrdinaryWriteReview {
+        transaction_id: journal.transaction_id.clone(),
+        changes,
+        recoverable,
+        review_token: blake3::hash(&review_bytes).to_hex().to_string(),
+    })
+}
+
+fn content_digest(content: &str) -> String {
+    blake3::hash(content.as_bytes()).to_hex().to_string()
+}
+
 fn recover_locked(paths: &VaultPaths) -> Result<Option<OrdinaryWriteOutcome>, OrdinaryWriteError> {
     let directory = ensure_state_directory(paths)?;
     let Some(journal) = load_journal(&directory)? else {
@@ -229,6 +355,20 @@ fn apply_one(paths: &VaultPaths, change: &OrdinaryWriteChange) -> Result<(), Ord
 }
 
 fn current_content(paths: &VaultPaths, path: &str) -> Result<Option<String>, OrdinaryWriteError> {
+    current_bytes(paths, path)?
+        .map(|bytes| {
+            String::from_utf8(bytes).map_err(|error| {
+                OrdinaryWriteError::new(
+                    "ordinary_write_invalid_utf8",
+                    format!("ordinary write target is not UTF-8: {error}"),
+                    Some(path.to_string()),
+                )
+            })
+        })
+        .transpose()
+}
+
+fn current_bytes(paths: &VaultPaths, path: &str) -> Result<Option<Vec<u8>>, OrdinaryWriteError> {
     let file = match secure_open_read(paths.vault_root(), Path::new(path)) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -245,13 +385,7 @@ fn current_content(paths: &VaultPaths, path: &str) -> Result<Option<String>, Ord
             Some(path.to_string()),
         ));
     }
-    String::from_utf8(bytes).map(Some).map_err(|error| {
-        OrdinaryWriteError::new(
-            "ordinary_write_invalid_utf8",
-            format!("ordinary write target is not UTF-8: {error}"),
-            Some(path.to_string()),
-        )
-    })
+    Ok(Some(bytes))
 }
 
 fn validate_changes(changes: &[OrdinaryWriteChange]) -> Result<(), OrdinaryWriteError> {
@@ -342,6 +476,31 @@ fn ensure_state_directory(paths: &VaultPaths) -> Result<PathBuf, OrdinaryWriteEr
             .map_err(|error| OrdinaryWriteError::io("protect ordinary write state", error))?;
     }
     Ok(directory)
+}
+
+fn existing_state_directory(paths: &VaultPaths) -> Result<Option<PathBuf>, OrdinaryWriteError> {
+    let directory = paths
+        .operational_state_dir()
+        .map_err(|error| OrdinaryWriteError::io("resolve ordinary write state", error))?
+        .join(STATE_DIR);
+    let metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(OrdinaryWriteError::io(
+                "inspect ordinary write state",
+                error,
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(OrdinaryWriteError::new(
+            "ordinary_write_state_invalid",
+            "ordinary write state is not a plain directory",
+            None,
+        ));
+    }
+    Ok(Some(directory))
 }
 
 fn journal_path(directory: &Path) -> PathBuf {
@@ -519,6 +678,128 @@ mod tests {
             "external edit\n"
         );
         assert!(temporary.path().join("Archive/Task.md").exists());
+    }
+
+    #[test]
+    fn conflicted_batch_requires_exact_review_before_accepting_current_files() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+        apply_with_hook(&paths, &changes(), |_| {
+            Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+        })
+        .expect_err("simulated interruption");
+        fs::write(temporary.path().join("Inbox.md"), "manual reconciliation\n")
+            .expect("external edit");
+
+        let review = inspect_ordinary_write_batch(&paths)
+            .expect("inspect")
+            .expect("pending batch");
+        assert!(!review.recoverable);
+        assert_eq!(review.changes[0].state, "after");
+        assert_eq!(review.changes[1].state, "diverged");
+        assert!(!review.review_token.is_empty());
+        assert!(
+            accept_current_ordinary_write_batch(
+                &paths,
+                &review.transaction_id,
+                &review.review_token,
+                true,
+            )
+            .expect("dry-run acceptance")
+            .dry_run
+        );
+        assert!(inspect_ordinary_write_batch(&paths)
+            .expect("still pending")
+            .is_some());
+        fs::write(temporary.path().join("Inbox.md"), "later edit\n").expect("later edit");
+        assert_eq!(
+            accept_current_ordinary_write_batch(
+                &paths,
+                &review.transaction_id,
+                &review.review_token,
+                false,
+            )
+            .expect_err("stale review")
+            .code,
+            "ordinary_write_review_changed"
+        );
+        let updated = inspect_ordinary_write_batch(&paths)
+            .expect("reinspect")
+            .expect("pending batch");
+        accept_current_ordinary_write_batch(
+            &paths,
+            &updated.transaction_id,
+            &updated.review_token,
+            false,
+        )
+        .expect("accept reconciled files");
+        assert!(inspect_ordinary_write_batch(&paths)
+            .expect("retired")
+            .is_none());
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Inbox.md")).expect("source"),
+            "later edit\n"
+        );
+    }
+
+    #[test]
+    fn recoverable_batch_cannot_be_discarded_as_current() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+        apply_with_hook(&paths, &changes(), |_| {
+            Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+        })
+        .expect_err("simulated interruption");
+        let review = inspect_ordinary_write_batch(&paths)
+            .expect("inspect")
+            .expect("pending batch");
+        assert!(review.recoverable);
+        assert_eq!(
+            accept_current_ordinary_write_batch(
+                &paths,
+                &review.transaction_id,
+                &review.review_token,
+                false,
+            )
+            .expect_err("roll-forward required")
+            .code,
+            "ordinary_write_recoverable"
+        );
+        assert!(inspect_ordinary_write_batch(&paths)
+            .expect("still pending")
+            .is_some());
+    }
+
+    #[test]
+    fn binary_external_edit_can_be_reviewed_without_reading_or_replacing_it() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+        apply_with_hook(&paths, &changes(), |_| {
+            Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+        })
+        .expect_err("simulated interruption");
+        fs::write(temporary.path().join("Inbox.md"), [0xff, 0x00]).expect("binary external edit");
+        let review = inspect_ordinary_write_batch(&paths)
+            .expect("inspect")
+            .expect("pending batch");
+        assert_eq!(review.changes[1].state, "diverged");
+        accept_current_ordinary_write_batch(
+            &paths,
+            &review.transaction_id,
+            &review.review_token,
+            false,
+        )
+        .expect("accept current binary bytes without altering them");
+        assert_eq!(
+            fs::read(temporary.path().join("Inbox.md")).expect("source"),
+            [0xff, 0x00]
+        );
     }
 
     #[test]

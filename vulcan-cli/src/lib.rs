@@ -421,20 +421,21 @@ pub use cli::{
     GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, IntegrationCommand,
     KanbanCommand, McpCommand, McpConnectionsCommand, McpRemoteCommand, McpToolPackArg,
     McpToolPackModeArg, McpTransportArg, MdbaseCommand, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg,
-    OutlineCollectionsCommand, OutlineCommand, OutlineExcludedTargetPolicyArg,
-    OutlinePullConflictOperationArg, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
-    PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand,
-    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode,
-    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
-    SemanticGroupingArg, SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg,
-    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncDeviceCommand,
-    SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg,
-    TextBundleCommand, ToolCommand, ToolInitTemplateArg, TrustCommand, UpdateChannelArg,
-    UpdateChannelArgs, UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand,
-    VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    NoteCommand, NoteGetMode, OrdinaryWriteRepairCommand, OutlineBlockReferencePolicyArg,
+    OutlineCollectionPermissionArg, OutlineCollectionsCommand, OutlineCommand,
+    OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
+    PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
+    PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
+    RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SemanticGroupingArg, SiteCommand, SkillCommand,
+    SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg,
+    SyncDeviceCommand, SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs, TagSortArg,
+    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
+    TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateNetworkArg,
+    UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand, VectorQueueCommand, VectorsCommand,
+    WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 #[must_use]
@@ -5430,16 +5431,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Cache { ref command } => {
             commands::cache::handle_cache_command(&paths, cli.output, command)
         }
-        Command::Repair { ref command } => match command {
-            RepairCommand::Fts { dry_run } => {
-                selected_permission_guard(cli, &paths)?
-                    .check_index()
-                    .map_err(CliError::operation)?;
-                let report = repair_fts(&paths, &RepairFtsQuery { dry_run: *dry_run })
-                    .map_err(CliError::operation)?;
-                print_repair_fts_report(cli.output, &report)
-            }
-        },
+        Command::Repair { ref command } => {
+            commands::index::handle_repair_command(cli, &paths, command)
+        }
         Command::Serve {
             ref bind,
             no_watch,

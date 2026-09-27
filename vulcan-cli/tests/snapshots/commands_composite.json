@@ -372,6 +372,97 @@
                   }
                 ],
                 "subcommands": []
+              },
+              {
+                "about": "Inspect or resolve a pending ordinary Markdown write journal",
+                "name": "ordinary-write",
+                "options": [],
+                "subcommands": [
+                  {
+                    "about": "Inspect a pending journal and compare its planned and current bytes",
+                    "name": "status",
+                    "options": [],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Roll a recoverable journal forward and refresh the vault index",
+                    "name": "roll-forward",
+                    "options": [
+                      {
+                        "help": "Inspect the pending batch without mutating it",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Retire a conflicted journal after manually reconciling its files",
+                    "name": "accept-current",
+                    "options": [
+                      {
+                        "help": "Transaction ID shown by ordinary-write status",
+                        "id": "transaction_id",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "TRANSACTION_ID"
+                        ]
+                      },
+                      {
+                        "help": "Review token shown by ordinary-write status",
+                        "id": "review_token",
+                        "long": "review-token",
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "REVIEW_TOKEN"
+                        ]
+                      },
+                      {
+                        "help": "Confirm that every affected file was manually reviewed",
+                        "id": "confirm",
+                        "long": "confirm",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "CONFIRM"
+                        ]
+                      },
+                      {
+                        "help": "Check the review token without retiring the journal",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  }
+                ]
               }
             ]
           },

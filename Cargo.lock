@@ -4663,6 +4663,7 @@ version = "0.2.1"
 dependencies = [
  "assert_cmd",
  "base64",
+ "blake3",
  "clap",
  "clap_complete",
  "crossterm 0.28.1",

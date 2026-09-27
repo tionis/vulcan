@@ -15979,6 +15979,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("preserve the journal for explicit repair"));
     assert!(task_management.contains("archive moves reject a changed source"));
     assert!(task_management.contains("ordinary-write journal to finish the move"));
+    assert!(task_management.contains("vulcan repair ordinary-write status"));
+    assert!(task_management.contains("exact transaction ID and review token"));
     assert!(task_management.contains("do not bypass it with a direct Markdown edit"));
     assert!(task_management.contains("serialized with other Vulcan vault writes"));
     assert!(task_management.contains("reread the task and its source note"));
@@ -16141,6 +16143,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("retry_after_unix_ms"));
     assert!(diagnostics_skill.contains("no pending conflict groups met the"));
     assert!(diagnostics_skill.contains("sync reject <conflict-id> <proposal-id> --dry-run"));
+    assert!(diagnostics_skill.contains("repair ordinary-write roll-forward --dry-run"));
+    assert!(diagnostics_skill.contains("repair ordinary-write accept-current"));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("`--tool-pack sync`"));
@@ -16163,7 +16167,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("After status expires, inspect the vault"));
     assert!(mcp_skill.contains("startup recovers an interrupted ordinary TaskNotes"));
     assert!(mcp_skill.contains("or archive move before accepting requests"));
-    assert!(mcp_skill.contains("preserve the ordinary-write journal"));
+    assert!(mcp_skill.contains("vulcan repair ordinary-write status"));
+    assert!(mcp_skill.contains("exact transaction ID and review token"));
     assert!(mcp_skill.contains("template-created files, template moves/renames"));
     assert!(mcp_skill.contains("obtain fresh consent"));
     assert!(mcp_skill.contains("`task_create`, `task_complete`, and `task_reschedule` recheck"));
@@ -24876,6 +24881,267 @@ fn rebuild_and_repair_json_output_support_dry_run() {
     assert_eq!(repair_json["dry_run"], true);
     assert_eq!(repair_json["indexed_documents"], 3);
     assert_eq!(repair_json["indexed_chunks"], 4);
+}
+
+#[test]
+fn ordinary_write_repair_cli_reports_empty_state_and_requires_confirmed_review() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let vault_root = temporary.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("UTF-8 vault path");
+
+    let status = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "repair",
+            "ordinary-write",
+            "status",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&status);
+    assert_eq!(json["pending"], false);
+    assert!(json["review"].is_null());
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--permissions",
+            "readonly",
+            "repair",
+            "ordinary-write",
+            "status",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not allow index access"));
+
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "index",
+            "repair",
+            "ordinary-write",
+            "roll-forward",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&dry_run);
+    assert_eq!(json["dry_run"], true);
+    assert!(json["review"].is_null());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "repair",
+            "ordinary-write",
+            "accept-current",
+            "missing",
+            "--review-token",
+            "stale",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --confirm"));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "repair",
+            "ordinary-write",
+            "accept-current",
+            "missing",
+            "--review-token",
+            "stale",
+            "--confirm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no longer pending"));
+}
+
+#[test]
+fn ordinary_write_repair_cli_requires_a_current_review_and_keeps_reconciled_bytes() {
+    #[derive(serde::Serialize)]
+    struct JournalFixture<'a> {
+        version: u32,
+        transaction_id: &'a str,
+        changes: &'a [vulcan_core::ordinary_write::OrdinaryWriteChange],
+        digest: String,
+    }
+
+    let temporary = TempDir::new().expect("temporary directory");
+    let vault_root = temporary.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let paths = VaultPaths::new(&vault_root);
+    let state = paths
+        .operational_state_dir()
+        .expect("operational state")
+        .join("ordinary-write");
+    fs::create_dir_all(&state).expect("journal directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))
+            .expect("private journal directory");
+    }
+    fs::write(vault_root.join("Task.md"), "new task\n").expect("published target");
+    fs::write(vault_root.join("Inbox.md"), "manual edit\n").expect("external edit");
+    let changes = vec![
+        vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: "Task.md".to_string(),
+            before: None,
+            after: Some("new task\n".to_string()),
+        },
+        vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: "Inbox.md".to_string(),
+            before: Some("old task\n".to_string()),
+            after: Some("[[Task]]\n".to_string()),
+        },
+    ];
+    let transaction_id = ulid::Ulid::new().to_string();
+    let mut journal = JournalFixture {
+        version: 1,
+        transaction_id: &transaction_id,
+        changes: &changes,
+        digest: String::new(),
+    };
+    journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+        .to_hex()
+        .to_string();
+    let journal_path = state.join("journal.json");
+    fs::write(
+        &journal_path,
+        serde_json::to_vec(&journal).expect("sealed journal"),
+    )
+    .expect("journal");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+            .expect("private journal");
+    }
+    let vault = vault_root.to_str().expect("UTF-8 vault path");
+
+    let status = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "repair",
+            "ordinary-write",
+            "status",
+        ])
+        .assert()
+        .success();
+    let review = parse_stdout_json(&status)["review"].clone();
+    assert_eq!(review["transaction_id"], transaction_id);
+    assert_eq!(review["recoverable"], false);
+    assert_eq!(review["changes"][1]["state"], "diverged");
+    assert!(review["changes"][1].get("content").is_none());
+    let token = review["review_token"].as_str().expect("review token");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["--vault", vault, "repair", "ordinary-write", "roll-forward"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("externally changed bytes"));
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "repair",
+            "ordinary-write",
+            "accept-current",
+            &transaction_id,
+            "--review-token",
+            token,
+            "--confirm",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&dry_run)["accepted"]["dry_run"], true);
+    assert!(journal_path.exists());
+
+    fs::write(vault_root.join("Inbox.md"), "later manual edit\n").expect("later edit");
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "repair",
+            "ordinary-write",
+            "accept-current",
+            &transaction_id,
+            "--review-token",
+            token,
+            "--confirm",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("changed since review"));
+    let status = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "repair",
+            "ordinary-write",
+            "status",
+        ])
+        .assert()
+        .success();
+    let updated = parse_stdout_json(&status);
+    let new_token = updated["review"]["review_token"]
+        .as_str()
+        .expect("new review token");
+    let accepted = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "repair",
+            "ordinary-write",
+            "accept-current",
+            &transaction_id,
+            "--review-token",
+            new_token,
+            "--confirm",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&accepted)["accepted"]["dry_run"], false);
+    assert!(!journal_path.exists());
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Inbox.md")).expect("source"),
+        "later manual edit\n"
+    );
 }
 
 #[test]
