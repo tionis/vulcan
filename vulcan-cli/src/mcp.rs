@@ -96,6 +96,8 @@ use vulcan_app::web::{
 use vulcan_core::config::TasksDefaultSource;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 #[cfg(all(test, feature = "oauth"))]
+use vulcan_core::pkce_s256_challenge;
+#[cfg(all(test, feature = "oauth"))]
 use vulcan_core::ClientIdMetadataDocument;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
@@ -103,8 +105,8 @@ use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::SearchBackendKind;
 #[cfg(feature = "oauth")]
 use vulcan_core::{
-    discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, LocalOAuthIssuer,
-    LocalOAuthIssuerConfig, OAuthResourceServer, OAuthResourceServerConfig,
+    discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthResourceServer,
+    OAuthResourceServerConfig,
 };
 use vulcan_core::{
     load_vault_config, resolve_permission_profile, watch_vault, PermissionGuard,
@@ -128,42 +130,44 @@ use vulcan_daemon::mcp_http_codec::{
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_authorize::subject_not_allowed_response as indieauth_subject_not_allowed_response;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_authorize::{
+    default_indieauth_exchange, IndieAuthExchange, McpAuthorizeEndpoint,
+};
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_browser::{
+    percent_encode, redirect_to_indieauth as local_oauth_redirect_to_indieauth,
+    PendingConsent as LocalOAuthPendingConsent,
+};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_browser::{
-    begin_consent, begin_indieauth, client_redirect as local_oauth_client_redirect, html_escape,
-    percent_encode, redirect_to_indieauth as local_oauth_redirect_to_indieauth,
-    render_consent_page, take_indieauth, BeginError as BrowserBeginError, ConsentPage,
-    IndieAuthConfig as LocalOAuthIndieAuthConfig, PendingConsent as LocalOAuthPendingConsent,
-    PendingConsentMap, PendingIndieAuth as LocalOAuthPendingIndieAuth, PendingIndieAuthMap,
-    TakeError as BrowserTakeError,
+    IndieAuthConfig as LocalOAuthIndieAuthConfig, PendingConsentMap, PendingIndieAuthMap,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_clients::OAuthClientRegistry;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient as LocalOAuthRegisteredClient;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_codes::McpAuthorizationCode as LocalOAuthCode;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_codes::{
-    issue_mcp_authorization_code, McpAuthorizationCode as LocalOAuthCode, McpAuthorizationCodeMap,
-    McpCodeIssueError,
-};
+use vulcan_daemon::mcp_oauth_codes::McpAuthorizationCodeMap;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_consent::McpConsentEndpoint;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_policy::McpOAuthPolicyError;
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_policy::{
-    validate_mcp_authorize_request, McpAuthorizeRequest, McpOAuthPolicyError,
-    SUPPORTED_MCP_OAUTH_SCOPES,
-};
+use vulcan_daemon::mcp_oauth_policy::SUPPORTED_MCP_OAUTH_SCOPES;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::{McpTokenAuthMethod, McpTokenClientCredentials};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_registration::register_mcp_oauth_client;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_token::{
-    client_id_metadata_valid as shared_client_id_metadata_valid, McpLocalTokenEndpoint,
-};
+use vulcan_daemon::mcp_oauth_token::McpLocalTokenEndpoint;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
@@ -202,9 +206,6 @@ struct McpHttpLifecycle<'a> {
     #[cfg(all(test, feature = "oauth"))]
     indieauth_exchange: Option<IndieAuthExchange>,
 }
-#[cfg(feature = "oauth")]
-type IndieAuthExchange =
-    fn(&str, &str, &str, &str, &str) -> Result<String, vulcan_core::OAuthError>;
 #[derive(Debug, Clone)]
 pub(crate) struct McpHttpOptions {
     pub bind: String,
@@ -3751,71 +3752,8 @@ fn handle_local_oauth_authorize(
     issuer: &LocalOAuthIssuer,
     request: &McpHttpRequest,
 ) -> McpHttpResponse {
-    if request.method != "GET" {
-        return oauth_plain_response(405, "method not allowed");
-    }
-    let params = parse_query_params(&request.query);
-    let McpAuthorizeRequest {
-        client_id,
-        redirect_uri,
-        code_challenge,
-        scopes,
-        resource,
-        state: client_state,
-    } = match validate_mcp_authorize_request(&params, issuer.public_url(), |client, redirect| {
-        local_oauth_client_redirect_allowed(context, issuer, client, redirect)
-    }) {
-        Ok(validated) => validated,
-        Err(error) => return mcp_oauth_policy_error_response(error),
-    };
-    if let Some(indieauth) = context.oauth_indieauth.as_ref() {
-        let indieauth_code_verifier = generate_pkce_verifier();
-        let indieauth_code_challenge = pkce_s256_challenge(&indieauth_code_verifier);
-        let state = match begin_indieauth(
-            &context.oauth_pending_indieauth,
-            LocalOAuthPendingIndieAuth {
-                client_id,
-                redirect_uri,
-                code_challenge,
-                scopes,
-                resource,
-                indieauth_code_verifier,
-                state: client_state,
-                expires_at: Instant::now(),
-            },
-        ) {
-            Ok(state) => state,
-            Err(error) => return browser_begin_error_response(error),
-        };
-        return local_oauth_redirect_to_indieauth(indieauth, &state, &indieauth_code_challenge);
-    }
-    let approval_token = params.get("approval_token").cloned().unwrap_or_default();
-    if !issuer.verify_approval_token(&approval_token) {
-        return local_oauth_approval_form(&params);
-    }
-    let user = issuer.default_user();
-    let code = match issue_local_oauth_code(
-        context,
-        LocalOAuthCode {
-            client_id,
-            redirect_uri: redirect_uri.clone(),
-            code_challenge,
-            subject: user.subject,
-            scopes,
-            resource,
-            grant_id: None,
-            grant_required: false,
-            expires_at: Instant::now(),
-        },
-    ) {
-        Ok(code) => code,
-        Err(response) => return response,
-    };
-    local_oauth_client_redirect(
-        &redirect_uri,
-        &format!("code={}", percent_encode(&code)),
-        client_state.as_deref(),
-    )
+    local_authorize_endpoint(context, issuer)
+        .authorize(&request.method, &parse_query_params(&request.query))
 }
 
 #[cfg(feature = "oauth")]
@@ -3830,23 +3768,6 @@ fn handle_local_oauth_register(
         &context.oauth_dcr_allowed_redirect_hosts,
         context.named_runtime.is_some(),
     )
-}
-
-#[cfg(feature = "oauth")]
-fn issue_local_oauth_code(
-    context: &McpHttpServerContext,
-    record: LocalOAuthCode,
-) -> Result<String, McpHttpResponse> {
-    issue_mcp_authorization_code(&context.oauth_codes, record).map_err(|error| match error {
-        McpCodeIssueError::Capacity => oauth_json_error_response(
-            503,
-            "temporarily_unavailable",
-            "too many pending authorization codes",
-        ),
-        McpCodeIssueError::Random => {
-            oauth_json_error_response(500, "server_error", "could not generate authorization code")
-        }
-    })
 }
 
 #[cfg(feature = "oauth")]
@@ -3889,91 +3810,38 @@ fn handle_local_oauth_indieauth_callback(
     issuer: &LocalOAuthIssuer,
     request: &McpHttpRequest,
 ) -> McpHttpResponse {
-    if request.method != "GET" {
-        return oauth_plain_response(405, "method not allowed");
-    }
-    let Some(indieauth) = context.oauth_indieauth.as_ref() else {
-        return oauth_plain_response(404, "not found");
-    };
-    let params = parse_query_params(&request.query);
-    if let Some(error) = params.get("error") {
-        return oauth_plain_response(400, &format!("IndieAuth failed: {error}"));
-    }
-    let Some(state) = params.get("state") else {
-        return oauth_plain_response(400, "missing IndieAuth state");
-    };
-    let pending = match take_indieauth(&context.oauth_pending_indieauth, state) {
-        Ok(pending) => pending,
-        Err(BrowserTakeError::Unknown) => {
-            return oauth_plain_response(400, "unknown IndieAuth state")
-        }
-        Err(BrowserTakeError::Expired) => {
-            return oauth_plain_response(400, "expired IndieAuth state")
-        }
-    };
-    let Some(code) = params.get("code") else {
-        return oauth_plain_response(400, "missing IndieAuth code");
-    };
+    local_authorize_endpoint(context, issuer)
+        .callback(&request.method, &parse_query_params(&request.query))
+}
+
+#[cfg(feature = "oauth")]
+fn local_authorize_endpoint<'a>(
+    context: &'a McpHttpServerContext,
+    issuer: &'a LocalOAuthIssuer,
+) -> McpAuthorizeEndpoint<'a> {
     #[cfg(test)]
     let exchange = context
         .indieauth_exchange
-        .unwrap_or(exchange_indieauth_code);
+        .unwrap_or(default_indieauth_exchange);
     #[cfg(not(test))]
-    let exchange = exchange_indieauth_code;
-    let subject = match exchange(
-        &indieauth.token_endpoint,
-        code,
-        &indieauth.redirect_uri,
-        &indieauth.client_id,
-        &pending.indieauth_code_verifier,
-    ) {
-        Ok(subject) => subject,
-        Err(error) => return oauth_plain_response(400, &error.to_string()),
-    };
-    let Some(user) = issuer.user_for_subject(&subject) else {
-        return indieauth_subject_not_allowed_response(&subject);
-    };
-    begin_local_oauth_consent(context, issuer, pending, user.subject)
-}
-
-#[cfg(feature = "oauth")]
-fn begin_local_oauth_consent(
-    context: &McpHttpServerContext,
-    issuer: &LocalOAuthIssuer,
-    pending: LocalOAuthPendingIndieAuth,
-    subject: String,
-) -> McpHttpResponse {
-    let consent = LocalOAuthPendingConsent {
-        client_id: pending.client_id,
-        redirect_uri: pending.redirect_uri,
-        code_challenge: pending.code_challenge,
-        subject,
-        scopes: pending.scopes,
-        resource: pending.resource,
-        state: pending.state,
-        csrf_token: String::new(),
-        expires_at: Instant::now(),
-    };
-    let (transaction_id, consent) = match begin_consent(&context.oauth_pending_consent, consent) {
-        Ok(transaction) => transaction,
-        Err(error) => return browser_begin_error_response(error),
-    };
-    local_oauth_consent_form(context, issuer, &transaction_id, &consent)
-}
-
-#[cfg(feature = "oauth")]
-fn browser_begin_error_response(error: BrowserBeginError) -> McpHttpResponse {
-    match error {
-        BrowserBeginError::Capacity => oauth_json_error_response(
-            503,
-            "temporarily_unavailable",
-            "too many pending browser authorization transactions",
-        ),
-        BrowserBeginError::Random => oauth_json_error_response(
-            500,
-            "server_error",
-            "could not create browser authorization transaction",
-        ),
+    let exchange = default_indieauth_exchange;
+    McpAuthorizeEndpoint {
+        issuer,
+        clients: &context.oauth_clients,
+        codes: &context.oauth_codes,
+        pending_indieauth: &context.oauth_pending_indieauth,
+        pending_consent: &context.oauth_pending_consent,
+        indieauth: context.oauth_indieauth.as_ref(),
+        named_runtime: context.named_runtime.as_ref(),
+        requested_profile: context.requested_profile.clone(),
+        selected_packs: pack_name_list(&resolve_selected_tool_packs(
+            &context.tool_pack_args,
+            McpToolPackMode::from(context.tool_pack_mode_arg),
+        )),
+        fallback_vault_root: context.paths.vault_root().display().to_string(),
+        local_redirect_uris: &context.oauth_local_redirect_uris,
+        allowed_redirect_hosts: &context.oauth_dcr_allowed_redirect_hosts,
+        exchange,
     }
 }
 
@@ -4014,114 +3882,24 @@ fn create_named_connection_grant(
     local_consent_endpoint(context, issuer).create_named_grant(pending, params)
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn local_oauth_consent_form(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
     transaction_id: &str,
     pending: &LocalOAuthPendingConsent,
 ) -> McpHttpResponse {
-    let profile = context
-        .requested_profile
-        .clone()
-        .or_else(|| {
-            issuer
-                .user_for_subject(&pending.subject)
-                .and_then(|user| user.permission_profile)
-        })
-        .unwrap_or_else(|| "unrestricted".to_string());
-    let packs = pack_name_list(&resolve_selected_tool_packs(
-        &context.tool_pack_args,
-        McpToolPackMode::from(context.tool_pack_mode_arg),
-    ));
-    let client_name = context
-        .oauth_clients
-        .get(&pending.client_id)
-        .ok()
-        .flatten()
-        .and_then(|client| client.client_name)
-        .unwrap_or_else(|| pending.client_id.clone());
-    render_consent_page(&ConsentPage {
-        transaction_id,
-        pending,
-        client_name: &client_name,
-        fallback_vault_root: &context.paths.vault_root().display().to_string(),
-        profile: &profile,
-        packs: &packs,
-        named_runtime: context.named_runtime.as_ref(),
-    })
+    local_authorize_endpoint(context, issuer).render_consent(transaction_id, pending)
 }
 
-#[cfg(feature = "oauth")]
-fn indieauth_subject_not_allowed_response(subject: &str) -> McpHttpResponse {
-    oauth_plain_response(
-        403,
-        &format!(
-            "IndieAuth returned subject {subject:?}, but it is not authorized. For a \
-             single-user server, use --oauth-indieauth-me {subject:?} with --permissions \
-             <profile>. For per-user access, add --oauth-local-user \
-             {subject:?}=<profile>."
-        ),
-    )
-}
-
-#[cfg(feature = "oauth")]
-fn local_oauth_approval_form(params: &BTreeMap<String, String>) -> McpHttpResponse {
-    let mut action = "/oauth/authorize?".to_string();
-    let mut first = true;
-    for (key, value) in params
-        .iter()
-        .filter(|(key, _)| key.as_str() != "approval_token")
-    {
-        if !first {
-            action.push('&');
-        }
-        first = false;
-        action.push_str(&percent_encode(key));
-        action.push('=');
-        action.push_str(&percent_encode(value));
-    }
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
-         <body><main><h1>Authorize Vulcan MCP</h1>\
-         <form method=\"get\" action=\"{}\">\
-         <label>Approval token <input name=\"approval_token\" type=\"password\" autocomplete=\"one-time-code\" autofocus></label>\
-         <button type=\"submit\">Authorize</button>\
-         </form></main></body></html>",
-        html_escape(&action)
-    );
-    McpHttpResponse {
-        status: 200,
-        content_type: Some("text/html; charset=utf-8"),
-        body: html.into_bytes(),
-        extra_headers: Vec::new(),
-    }
-}
-
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn local_oauth_client_redirect_allowed(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
     client_id: &str,
     redirect_uri: &str,
 ) -> bool {
-    if client_id == issuer.client_id() {
-        return context
-            .oauth_local_redirect_uris
-            .iter()
-            .any(|uri| uri == redirect_uri);
-    }
-    context
-        .oauth_clients
-        .get(client_id)
-        .ok()
-        .flatten()
-        .is_some_and(|client| client.redirect_uris.iter().any(|uri| uri == redirect_uri))
-        || shared_client_id_metadata_valid(
-            client_id,
-            Some(redirect_uri),
-            &context.oauth_dcr_allowed_redirect_hosts,
-        )
+    local_authorize_endpoint(context, issuer).client_redirect_allowed(client_id, redirect_uri)
 }
 
 #[cfg(feature = "oauth")]
@@ -4345,7 +4123,7 @@ fn current_unix_millis() -> u64 {
         })
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn oauth_plain_response(status: u16, message: &str) -> McpHttpResponse {
     McpHttpResponse {
         status,
@@ -4355,7 +4133,7 @@ fn oauth_plain_response(status: u16, message: &str) -> McpHttpResponse {
     }
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn oauth_json_error_response(
     status: u16,
     error: &str,
@@ -4464,7 +4242,7 @@ fn parse_mcp_oauth_scopes(scope: Option<&str>) -> Result<Vec<String>, McpHttpRes
     parse_mcp_oauth_scopes_policy(scope).map_err(mcp_oauth_policy_error_response)
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn mcp_oauth_policy_error_response(error: McpOAuthPolicyError) -> McpHttpResponse {
     match error {
         McpOAuthPolicyError::InvalidScope => oauth_json_error_response(
