@@ -45,6 +45,7 @@ pub mod execution;
 pub mod export;
 pub mod folder_notes;
 pub mod integrations;
+pub mod mcp_access;
 pub mod mcp_assistant;
 pub mod mcp_catalog;
 pub mod mcp_completion;

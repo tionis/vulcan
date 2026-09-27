@@ -256,6 +256,9 @@ The app config workflow also supplies the auto-commit file list, including a new
 Requested CLI and MCP scans now use one `vulcan-app::scan` workflow for scan execution,
 configured auto-commit, and scan-complete plugin dispatch. The CLI still owns progress display,
 while MCP returns the shared scan summary.
+MCP note-reference and path preflight uses `vulcan-app::mcp_access` so local and future hosted
+executors share the same permission-filter and outside-vault Markdown rules. Mutations still
+recheck authority at application time.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

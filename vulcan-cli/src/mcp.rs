@@ -37,6 +37,7 @@ use vulcan_app::execution::{
     ExecutionAuthority, ExecutionCancellationToken, ExecutionContext, ExecutionDeadline,
     ExecutionIdentity, ExecutionRetryClass, ExecutionVaultIdentity,
 };
+use vulcan_app::mcp_access;
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::json_value_to_string;
 use vulcan_app::mcp_completion;
@@ -2971,8 +2972,7 @@ impl McpServerCore {
                 let args: McpDailyShowArgs = parse_tool_arguments(arguments)?;
                 let report = show_periodic_note(&self.paths, args.date.as_deref(), "daily")
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                self.check_read_note_access(&report.path)
-                    .map_err(cli_tool_error)?;
+                mcp_access::check_read_note_access(&self.paths, &self.guard, &report.path)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::DailyList => {
@@ -3106,7 +3106,7 @@ impl McpServerCore {
                     let planned = apply_task_create(&self.paths, &request)
                         .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     for path in &planned.changed_paths {
-                        self.check_write_path_access(path).map_err(cli_tool_error)?;
+                        mcp_access::check_write_path_access(&self.guard, path)?;
                     }
                 }
                 request.dry_run = args.dry_run;
@@ -3140,7 +3140,7 @@ impl McpServerCore {
                     let planned = apply_task_complete(&self.paths, &request)
                         .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     for path in &planned.changed_paths {
-                        self.check_write_path_access(path).map_err(cli_tool_error)?;
+                        mcp_access::check_write_path_access(&self.guard, path)?;
                     }
                 }
                 request.dry_run = args.dry_run;
@@ -3175,7 +3175,7 @@ impl McpServerCore {
                     let planned = apply_task_reschedule(&self.paths, &request)
                         .map_err(|error| McpMethodError::tool(error.to_string()))?;
                     for path in &planned.changed_paths {
-                        self.check_write_path_access(path).map_err(cli_tool_error)?;
+                        mcp_access::check_write_path_access(&self.guard, path)?;
                     }
                 }
                 request.dry_run = args.dry_run;
@@ -3209,8 +3209,7 @@ impl McpServerCore {
                     },
                 )
                 .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                self.check_write_path_access(&normalized_path)
-                    .map_err(cli_tool_error)?;
+                mcp_access::check_write_path_access(&self.guard, &normalized_path)?;
                 let frontmatter =
                     parse_note_frontmatter_bindings(&frontmatter_bindings(&args.frontmatter))
                         .map_err(|error| McpMethodError::tool(error.to_string()))?;
@@ -3250,7 +3249,7 @@ impl McpServerCore {
                     ));
                 }
                 if let Some(note) = args.note.as_deref() {
-                    self.check_write_note_access(note).map_err(cli_tool_error)?;
+                    mcp_access::check_write_note_access(&self.paths, &self.guard, note)?;
                 } else if let Some(periodic) = periodic.as_deref() {
                     let config = load_vault_config(&self.paths).config;
                     let target = app_resolve_periodic_target(
@@ -3260,8 +3259,7 @@ impl McpServerCore {
                         true,
                     )
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    self.check_write_path_access(&target.path)
-                        .map_err(cli_tool_error)?;
+                    mcp_access::check_write_path_access(&self.guard, &target.path)?;
                 }
                 let vars = parse_template_var_bindings(&template_var_bindings(&args.vars))
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
@@ -3297,8 +3295,11 @@ impl McpServerCore {
             }
             McpToolId::NotePatch => {
                 let args: McpNotePatchArgs = parse_tool_arguments(arguments)?;
-                self.check_write_markdown_source_access(&args.note)
-                    .map_err(cli_tool_error)?;
+                mcp_access::check_write_markdown_source_access(
+                    &self.paths,
+                    &self.guard,
+                    &args.note,
+                )?;
                 let request = NotePatchRequest {
                     target: resolve_existing_markdown_target(&self.paths, &args.note)
                         .map_err(|error| McpMethodError::tool(error.to_string()))?,
@@ -3339,8 +3340,7 @@ impl McpServerCore {
             }
             McpToolId::NoteInfo => {
                 let args: McpNoteInfoArgs = parse_tool_arguments(arguments)?;
-                self.check_read_note_access(&args.note)
-                    .map_err(cli_tool_error)?;
+                mcp_access::check_read_note_access(&self.paths, &self.guard, &args.note)?;
                 let report = build_note_info_report(
                     &self.paths,
                     &args.note,
@@ -3356,8 +3356,7 @@ impl McpServerCore {
                         "`note_set.confirm` must be true because this replaces the full note body",
                     ));
                 }
-                self.check_write_note_access(&args.note)
-                    .map_err(cli_tool_error)?;
+                mcp_access::check_write_note_access(&self.paths, &self.guard, &args.note)?;
                 let applied = apply_note_set(
                     &self.paths,
                     &NoteSetRequest {
@@ -3391,8 +3390,7 @@ impl McpServerCore {
                         "`note_delete.confirm` must be true unless `dry_run` is true",
                     ));
                 }
-                self.check_write_note_access(&args.note)
-                    .map_err(cli_tool_error)?;
+                mcp_access::check_write_note_access(&self.paths, &self.guard, &args.note)?;
                 let mut report = apply_note_delete(
                     &self.paths,
                     &NoteDeleteRequest {
@@ -3845,74 +3843,6 @@ impl McpServerCore {
         }
         self.snapshot = current;
         notifications
-    }
-
-    fn check_read_note_access(&self, note: &str) -> Result<(), CliError> {
-        if self.guard.read_filter().path_permission().is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return Ok(());
-        }
-        let resolved =
-            vulcan_core::resolve_note_reference(&self.paths, note).map_err(CliError::operation)?;
-        self.guard
-            .check_read_path(&resolved.path)
-            .map_err(CliError::operation)
-    }
-
-    fn check_write_note_access(&self, note: &str) -> Result<(), CliError> {
-        if self
-            .guard
-            .write_filter()
-            .path_permission()
-            .is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return Ok(());
-        }
-        let resolved =
-            vulcan_core::resolve_note_reference(&self.paths, note).map_err(CliError::operation)?;
-        self.guard
-            .check_write_path(&resolved.path)
-            .map_err(CliError::operation)
-    }
-
-    fn check_write_path_access(&self, path: &str) -> Result<(), CliError> {
-        if self
-            .guard
-            .write_filter()
-            .path_permission()
-            .is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return Ok(());
-        }
-        self.guard
-            .check_write_path(path)
-            .map_err(CliError::operation)
-    }
-
-    fn check_write_markdown_source_access(&self, note: &str) -> Result<(), CliError> {
-        if self
-            .guard
-            .write_filter()
-            .path_permission()
-            .is_unrestricted()
-            && !self.guard.has_policy_hook()
-        {
-            return Ok(());
-        }
-        let target =
-            resolve_existing_markdown_target(&self.paths, note).map_err(CliError::operation)?;
-        let Some(relative_path) = target.vault_relative_path.as_deref() else {
-            return Err(CliError::operation(format!(
-                "permission profiles cannot write markdown files outside the selected vault root: {}",
-                target.display_path
-            )));
-        };
-        self.guard
-            .check_write_path(relative_path)
-            .map_err(CliError::operation)
     }
 }
 
@@ -6066,10 +5996,6 @@ fn paginated_result(
         result.insert("nextCursor".to_string(), Value::String(end.to_string()));
     }
     Ok(Value::Object(result))
-}
-
-fn cli_tool_error(error: CliError) -> McpMethodError {
-    McpMethodError::tool(error.message)
 }
 
 fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
