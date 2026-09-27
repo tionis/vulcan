@@ -30048,6 +30048,32 @@ fn mcp_http_rejects_explicit_oauth_subject_without_oauth_feature() {
 }
 
 #[test]
+fn mcp_http_transport_initializes_with_the_custom_pack() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let session =
+        McpHttpSession::start(&vault_root, "/custom-mcp", None, &["--tool-pack", "custom"]);
+    let initialized = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "custom-pack-test", "version": "1" }
+            }
+        }),
+        None,
+    );
+    assert_eq!(initialized.status_line, "HTTP/1.1 200 OK");
+    assert!(initialized.headers.contains_key("mcp-session-id"));
+}
+
+#[test]
 fn mcp_http_transport_enforces_auth_tokens() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

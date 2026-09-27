@@ -194,14 +194,28 @@ pub(crate) use commands::docs::{
     custom_tool_registry_entry, resolve_help_topic, McpToolsReport, ToolRegistryEntry,
 };
 pub(crate) fn custom_tool_registry_options() -> tools::CustomToolRegistryOptions {
-    let mut reserved_names = default_assistant_tool_reserved_names()
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    reserved_names.extend(collect_cli_leaf_tool_names(&cli_command_tree()));
-    tools::CustomToolRegistryOptions {
-        reserved_names: reserved_names.into_iter().collect(),
-        ..tools::CustomToolRegistryOptions::default()
-    }
+    static OPTIONS: std::sync::OnceLock<tools::CustomToolRegistryOptions> =
+        std::sync::OnceLock::new();
+    OPTIONS
+        .get_or_init(|| {
+            std::thread::Builder::new()
+                .name("vulcan-custom-tool-registry".to_string())
+                .stack_size(16 * 1024 * 1024)
+                .spawn(|| {
+                    let mut reserved_names = default_assistant_tool_reserved_names()
+                        .into_iter()
+                        .collect::<BTreeSet<_>>();
+                    reserved_names.extend(collect_cli_leaf_tool_names(&cli_command_tree()));
+                    tools::CustomToolRegistryOptions {
+                        reserved_names: reserved_names.into_iter().collect(),
+                        ..tools::CustomToolRegistryOptions::default()
+                    }
+                })
+                .expect("custom-tool registry builder should start")
+                .join()
+                .expect("custom-tool registry builder should complete")
+        })
+        .clone()
 }
 
 mod trust {
