@@ -673,6 +673,29 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             .expect("foreground readiness"),
         address
     );
+    let oauth_metadata_paths = [
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/parity",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/parity",
+    ];
+    let foreground_oauth_metadata =
+        oauth_metadata_paths.map(|path| named_listener_json_get(address, path));
+    assert_eq!(
+        foreground_oauth_metadata[0]["resource"],
+        "https://mcp.example.test/parity"
+    );
+    assert_eq!(
+        foreground_oauth_metadata[2]["authorization_endpoint"],
+        "https://mcp.example.test/oauth/authorize"
+    );
+    let foreground_invalid_authorize = named_listener_get(address, "/oauth/authorize");
+    assert!(foreground_invalid_authorize.starts_with("HTTP/1.1 400"));
+    assert!(foreground_invalid_authorize.contains("invalid OAuth authorization request"));
+    let foreground_invalid_consent = named_listener_get(address, "/oauth/consent");
+    assert!(foreground_invalid_consent.starts_with("HTTP/1.1 405"));
+    assert!(foreground_invalid_consent.contains("consent requires POST"));
+    let foreground_challenge = named_listener_auth_challenge(address, "parity");
     let foreground_init = named_listener_initialize(address, "parity", &token);
     assert!(
         foreground_init.starts_with("HTTP/1.1 200"),
@@ -1011,6 +1034,33 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     assert!(
         named_listener_operation_status(address, "parity", &token, &operation_id)
             .starts_with("HTTP/1.1 404")
+    );
+    for (path, expected) in oauth_metadata_paths.iter().zip(&foreground_oauth_metadata) {
+        assert_eq!(
+            named_listener_json_get(address, path),
+            *expected,
+            "OAuth metadata changed between foreground and resident hosting at {path}"
+        );
+    }
+    for (path, expected) in [
+        ("/oauth/authorize", &foreground_invalid_authorize),
+        ("/oauth/consent", &foreground_invalid_consent),
+    ] {
+        let resident_response = named_listener_get(address, path);
+        assert_eq!(
+            resident_response
+                .split_once("\r\n\r\n")
+                .expect("resident OAuth response"),
+            expected
+                .split_once("\r\n\r\n")
+                .expect("foreground OAuth response"),
+            "OAuth rejection changed between foreground and resident hosting at {path}"
+        );
+    }
+    assert_eq!(
+        named_listener_auth_challenge(address, "parity"),
+        foreground_challenge,
+        "OAuth bearer challenge changed between foreground and resident hosting"
     );
     let resident_init = named_listener_initialize(address, "parity", &token);
     assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
@@ -1947,23 +1997,36 @@ fn named_listener_hosted_execution(
 
 #[cfg(feature = "oauth")]
 fn named_listener_resource_metadata(address: SocketAddr, name: &str) -> Value {
+    named_listener_json_get(
+        address,
+        &format!("/.well-known/oauth-protected-resource/{name}"),
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_json_get(address: SocketAddr, path: &str) -> Value {
+    let response = named_listener_get(address, path);
+    let (headers, body) = response.split_once("\r\n\r\n").expect("HTTP response");
+    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+    serde_json::from_str(body).expect("OAuth metadata JSON")
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_get(address: SocketAddr, path: &str) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("response timeout");
     write!(
         stream,
-        "GET /.well-known/oauth-protected-resource/{name} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
     )
-    .expect("metadata request");
+    .expect("OAuth GET request");
     let mut response = Vec::new();
     stream
         .read_to_end(&mut response)
-        .expect("metadata response");
-    let response = String::from_utf8(response).expect("UTF-8 metadata response");
-    let (headers, body) = response.split_once("\r\n\r\n").expect("HTTP response");
-    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
-    serde_json::from_str(body).expect("resource metadata JSON")
+        .expect("OAuth GET response");
+    String::from_utf8(response).expect("UTF-8 OAuth response")
 }
 
 #[cfg(feature = "oauth")]
@@ -1977,6 +2040,16 @@ fn assert_named_listener_identity(address: SocketAddr, name: &str) {
 
 #[cfg(feature = "oauth")]
 fn assert_named_listener_auth_challenge(address: SocketAddr, name: &str) {
+    let response = named_listener_auth_challenge(address, name);
+    let (headers, _) = response.split_once("\r\n\r\n").expect("HTTP response");
+    assert!(headers.starts_with("HTTP/1.1 401"), "{headers}");
+    assert!(headers.contains(&format!(
+        "resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/{name}\""
+    )));
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_auth_challenge(address: SocketAddr, name: &str) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1988,11 +2061,7 @@ fn assert_named_listener_auth_challenge(address: SocketAddr, name: &str) {
     .expect("unauthenticated MCP request");
     let mut response = String::new();
     stream.read_to_string(&mut response).expect("auth response");
-    let (headers, _) = response.split_once("\r\n\r\n").expect("HTTP response");
-    assert!(headers.starts_with("HTTP/1.1 401"), "{headers}");
-    assert!(headers.contains(&format!(
-        "resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/{name}\""
-    )));
+    response
 }
 
 #[cfg(feature = "oauth")]
