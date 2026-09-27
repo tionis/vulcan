@@ -129,6 +129,14 @@ use vulcan_daemon::mcp_http_codec::{
 };
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_browser::{
+    begin_consent, begin_indieauth, consume_consent, take_indieauth,
+    BeginError as BrowserBeginError, ConsentError as BrowserConsentError,
+    PendingConsent as LocalOAuthPendingConsent, PendingConsentMap,
+    PendingIndieAuth as LocalOAuthPendingIndieAuth, PendingIndieAuthMap,
+    TakeError as BrowserTakeError,
+};
+#[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_clients::OAuthClientRegistry;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient as LocalOAuthRegisteredClient;
@@ -258,33 +266,6 @@ impl McpOAuthMode {
             Self::Local(issuer) => issuer.public_url(),
         }
     }
-}
-
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-struct LocalOAuthPendingIndieAuth {
-    client_id: String,
-    redirect_uri: String,
-    code_challenge: String,
-    scopes: Vec<String>,
-    resource: String,
-    indieauth_code_verifier: String,
-    state: Option<String>,
-    expires_at: std::time::Instant,
-}
-
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-struct LocalOAuthPendingConsent {
-    client_id: String,
-    redirect_uri: String,
-    code_challenge: String,
-    subject: String,
-    scopes: Vec<String>,
-    resource: String,
-    state: Option<String>,
-    csrf_token: String,
-    expires_at: std::time::Instant,
 }
 
 #[cfg(feature = "oauth")]
@@ -621,9 +602,9 @@ struct McpHttpServerContext {
     #[cfg(feature = "oauth")]
     oauth_clients: Arc<OAuthClientRegistry>,
     #[cfg(feature = "oauth")]
-    oauth_pending_indieauth: Arc<Mutex<BTreeMap<String, LocalOAuthPendingIndieAuth>>>,
+    oauth_pending_indieauth: Arc<PendingIndieAuthMap>,
     #[cfg(feature = "oauth")]
-    oauth_pending_consent: Arc<Mutex<BTreeMap<String, LocalOAuthPendingConsent>>>,
+    oauth_pending_consent: Arc<PendingConsentMap>,
     #[cfg(feature = "oauth")]
     oauth_dcr_enabled: bool,
     #[cfg(feature = "oauth")]
@@ -3796,26 +3777,24 @@ fn handle_local_oauth_authorize(
         Err(error) => return mcp_oauth_policy_error_response(error),
     };
     if let Some(indieauth) = context.oauth_indieauth.as_ref() {
-        let state = Ulid::new().to_string();
         let indieauth_code_verifier = generate_pkce_verifier();
         let indieauth_code_challenge = pkce_s256_challenge(&indieauth_code_verifier);
-        context
-            .oauth_pending_indieauth
-            .lock()
-            .expect("oauth pending indieauth lock should not be poisoned")
-            .insert(
-                state.clone(),
-                LocalOAuthPendingIndieAuth {
-                    client_id,
-                    redirect_uri,
-                    code_challenge,
-                    scopes,
-                    resource,
-                    indieauth_code_verifier,
-                    state: client_state,
-                    expires_at: std::time::Instant::now() + Duration::from_secs(600),
-                },
-            );
+        let state = match begin_indieauth(
+            &context.oauth_pending_indieauth,
+            LocalOAuthPendingIndieAuth {
+                client_id,
+                redirect_uri,
+                code_challenge,
+                scopes,
+                resource,
+                indieauth_code_verifier,
+                state: client_state,
+                expires_at: Instant::now(),
+            },
+        ) {
+            Ok(state) => state,
+            Err(error) => return browser_begin_error_response(error),
+        };
         return local_oauth_redirect_to_indieauth(indieauth, &state, &indieauth_code_challenge);
     }
     let approval_token = params.get("approval_token").cloned().unwrap_or_default();
@@ -3931,17 +3910,15 @@ fn handle_local_oauth_indieauth_callback(
     let Some(state) = params.get("state") else {
         return oauth_plain_response(400, "missing IndieAuth state");
     };
-    let pending = context
-        .oauth_pending_indieauth
-        .lock()
-        .expect("oauth pending indieauth lock should not be poisoned")
-        .remove(state);
-    let Some(pending) = pending else {
-        return oauth_plain_response(400, "unknown IndieAuth state");
+    let pending = match take_indieauth(&context.oauth_pending_indieauth, state) {
+        Ok(pending) => pending,
+        Err(BrowserTakeError::Unknown) => {
+            return oauth_plain_response(400, "unknown IndieAuth state")
+        }
+        Err(BrowserTakeError::Expired) => {
+            return oauth_plain_response(400, "expired IndieAuth state")
+        }
     };
-    if pending.expires_at < std::time::Instant::now() {
-        return oauth_plain_response(400, "expired IndieAuth state");
-    }
     let Some(code) = params.get("code") else {
         return oauth_plain_response(400, "missing IndieAuth code");
     };
@@ -3974,8 +3951,6 @@ fn begin_local_oauth_consent(
     pending: LocalOAuthPendingIndieAuth,
     subject: String,
 ) -> McpHttpResponse {
-    let transaction_id = Ulid::new().to_string();
-    let csrf_token = generate_pkce_verifier();
     let consent = LocalOAuthPendingConsent {
         client_id: pending.client_id,
         redirect_uri: pending.redirect_uri,
@@ -3984,15 +3959,30 @@ fn begin_local_oauth_consent(
         scopes: pending.scopes,
         resource: pending.resource,
         state: pending.state,
-        csrf_token,
-        expires_at: std::time::Instant::now() + Duration::from_secs(600),
+        csrf_token: String::new(),
+        expires_at: Instant::now(),
     };
-    context
-        .oauth_pending_consent
-        .lock()
-        .expect("oauth pending consent lock should not be poisoned")
-        .insert(transaction_id.clone(), consent.clone());
+    let (transaction_id, consent) = match begin_consent(&context.oauth_pending_consent, consent) {
+        Ok(transaction) => transaction,
+        Err(error) => return browser_begin_error_response(error),
+    };
     local_oauth_consent_form(context, issuer, &transaction_id, &consent)
+}
+
+#[cfg(feature = "oauth")]
+fn browser_begin_error_response(error: BrowserBeginError) -> McpHttpResponse {
+    match error {
+        BrowserBeginError::Capacity => oauth_json_error_response(
+            503,
+            "temporarily_unavailable",
+            "too many pending browser authorization transactions",
+        ),
+        BrowserBeginError::Random => oauth_json_error_response(
+            500,
+            "server_error",
+            "could not create browser authorization transaction",
+        ),
+    }
 }
 
 #[cfg(feature = "oauth")]
@@ -4008,34 +3998,26 @@ fn handle_local_oauth_consent(
     let transaction_id = params.get("transaction").cloned().unwrap_or_default();
     let csrf_token = params.get("csrf_token").cloned().unwrap_or_default();
     let decision = params.get("decision").map_or("", String::as_str);
-    let pending = context
-        .oauth_pending_consent
-        .lock()
-        .expect("oauth pending consent lock should not be poisoned")
-        .get(&transaction_id)
-        .cloned();
-    let Some(pending) = pending else {
-        return oauth_plain_response(400, "unknown consent transaction");
+    let pending = match consume_consent(
+        &context.oauth_pending_consent,
+        &transaction_id,
+        &csrf_token,
+        decision,
+    ) {
+        Ok(pending) => pending,
+        Err(BrowserConsentError::Unknown) => {
+            return oauth_plain_response(400, "unknown consent transaction")
+        }
+        Err(BrowserConsentError::Expired) => {
+            return oauth_plain_response(400, "expired consent transaction")
+        }
+        Err(BrowserConsentError::InvalidCsrf) => {
+            return oauth_plain_response(403, "invalid consent CSRF token")
+        }
+        Err(BrowserConsentError::InvalidDecision) => {
+            return oauth_plain_response(400, "consent decision must be approve or deny")
+        }
     };
-    if pending.expires_at < std::time::Instant::now() {
-        context
-            .oauth_pending_consent
-            .lock()
-            .expect("oauth pending consent lock should not be poisoned")
-            .remove(&transaction_id);
-        return oauth_plain_response(400, "expired consent transaction");
-    }
-    if csrf_token != pending.csrf_token {
-        return oauth_plain_response(403, "invalid consent CSRF token");
-    }
-    if !matches!(decision, "approve" | "deny") {
-        return oauth_plain_response(400, "consent decision must be approve or deny");
-    }
-    context
-        .oauth_pending_consent
-        .lock()
-        .expect("oauth pending consent lock should not be poisoned")
-        .remove(&transaction_id);
     if decision == "deny" {
         return local_oauth_client_redirect(
             &pending.redirect_uri,

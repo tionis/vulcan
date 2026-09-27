@@ -16178,6 +16178,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("do not retry a consumed code"));
     assert!(mcp_skill.contains("HTTP 503 `temporarily_unavailable`"));
     assert!(mcp_skill.contains("restart authorization and consent"));
+    assert!(mcp_skill.contains("pending-login or pending-consent limit"));
+    assert!(mcp_skill.contains("A submitted consent transaction is single-use"));
     assert!(mcp_skill.contains("without credentials or fragments"));
     assert!(mcp_skill.contains("use the exact registered URI during code exchange"));
     assert!(mcp_skill.contains(
