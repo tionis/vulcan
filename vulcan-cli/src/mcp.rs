@@ -95,15 +95,16 @@ use vulcan_app::web::{
 };
 use vulcan_core::config::TasksDefaultSource;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_core::ClientIdMetadataDocument;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
 #[cfg(feature = "web")]
 use vulcan_core::SearchBackendKind;
 #[cfg(feature = "oauth")]
 use vulcan_core::{
-    discover_indieauth_endpoints, exchange_indieauth_code, fetch_client_id_metadata,
-    pkce_s256_challenge, ClientIdMetadataDocument, LocalOAuthIssuer, LocalOAuthIssuerConfig,
-    OAuthResourceServer, OAuthResourceServerConfig,
+    discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, LocalOAuthIssuer,
+    LocalOAuthIssuerConfig, OAuthResourceServer, OAuthResourceServerConfig,
 };
 use vulcan_core::{
     load_vault_config, resolve_permission_profile, watch_vault, PermissionGuard,
@@ -119,9 +120,9 @@ use vulcan_daemon::hosted_executor::{
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
-use vulcan_daemon::http_policy::mcp_origin_allowed;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::http_policy::{mcp_oauth_redirect_uri_allowed, mcp_oauth_redirect_uri_valid};
+use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
+use vulcan_daemon::http_policy::mcp_origin_allowed;
 use vulcan_daemon::mcp_http_codec::{
     write_mcp_http_response, write_mcp_http_sse_event, write_mcp_http_sse_headers,
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
@@ -134,25 +135,31 @@ use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient as LocalOAuthRegiste
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_codes::{
     bind_mcp_authorization_code_grant, discard_mcp_authorization_code,
-    issue_mcp_authorization_code, redeem_mcp_authorization_code,
-    McpAuthorizationCode as LocalOAuthCode, McpAuthorizationCodeMap, McpCodeIssueError,
+    issue_mcp_authorization_code, McpAuthorizationCode as LocalOAuthCode, McpAuthorizationCodeMap,
+    McpCodeIssueError,
 };
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_policy::parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy;
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_policy::{
-    parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy, parse_mcp_token_client_credentials,
-    registered_mcp_client_credentials_valid, validate_mcp_authorize_request, McpAuthorizeRequest,
-    McpOAuthPolicyError, McpTokenAuthMethod, McpTokenClientCredentials, SUPPORTED_MCP_OAUTH_SCOPES,
+    validate_mcp_authorize_request, McpAuthorizeRequest, McpOAuthPolicyError,
+    SUPPORTED_MCP_OAUTH_SCOPES,
 };
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_policy::{McpTokenAuthMethod, McpTokenClientCredentials};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_registration::register_mcp_oauth_client;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_token::{
+    client_id_metadata_valid as shared_client_id_metadata_valid, McpLocalTokenEndpoint,
+};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote_runtime::{
-    NamedConsentRequest, NamedInitialTokenRequest, NamedMcpRuntime, NamedMcpVaultRuntime,
-    NamedRefreshRequest, NamedTokenRequest,
+    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime, NamedTokenRequest,
 };
 #[cfg(test)]
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
@@ -3872,187 +3879,37 @@ fn issue_local_oauth_code(
 }
 
 #[cfg(feature = "oauth")]
-#[allow(clippy::too_many_lines)]
+fn local_token_endpoint<'a>(
+    context: &'a McpHttpServerContext,
+    issuer: &'a LocalOAuthIssuer,
+) -> McpLocalTokenEndpoint<'a> {
+    McpLocalTokenEndpoint {
+        issuer,
+        clients: &context.oauth_clients,
+        codes: &context.oauth_codes,
+        named_runtime: context.named_runtime.as_ref(),
+        instance_id: context.instance_id,
+        allowed_redirect_hosts: &context.oauth_dcr_allowed_redirect_hosts,
+    }
+}
+
+#[cfg(feature = "oauth")]
 fn handle_local_oauth_token(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
     request: &McpHttpRequest,
 ) -> McpHttpResponse {
-    if request.method != "POST" {
-        return oauth_json_error_response(405, "invalid_request", "method not allowed");
-    }
-    let params = parse_form_params(&request.body);
-    let Some(credentials) = parse_mcp_token_client_credentials(
-        request.headers.get("authorization").map(String::as_str),
-        &params,
-    ) else {
-        return oauth_json_error_response(
-            401,
-            "invalid_client",
-            "missing OAuth client credentials",
-        );
-    };
-    let client_id = &credentials.client_id;
-    if !((credentials.method != McpTokenAuthMethod::None
-        && issuer.verify_client(client_id, &credentials.client_secret))
-        || local_oauth_registered_client_valid(context, &credentials)
-        || (credentials.method == McpTokenAuthMethod::None
-            && client_id_metadata_valid(context, client_id, None)))
-    {
-        return oauth_json_error_response(
-            401,
-            "invalid_client",
-            "invalid OAuth client credentials",
-        );
-    }
-    if params.get("grant_type").map(String::as_str) == Some("refresh_token") {
-        return handle_local_oauth_refresh(context, issuer, client_id, &params);
-    }
-    if params.get("grant_type").map(String::as_str) != Some("authorization_code") {
-        return oauth_json_error_response(400, "unsupported_grant_type", "unsupported grant type");
-    }
-    let Some(code) = params.get("code") else {
-        return oauth_json_error_response(400, "invalid_request", "missing authorization code");
-    };
-    let Some(code_verifier) = params.get("code_verifier") else {
-        return oauth_json_error_response(400, "invalid_request", "missing PKCE verifier");
-    };
-    let code_record = match redeem_mcp_authorization_code(
-        &context.oauth_codes,
-        code,
-        client_id,
-        params.get("redirect_uri").map(String::as_str),
-        code_verifier,
-    ) {
-        Ok(record) => record,
-        Err(error) => return oauth_json_error_response(400, "invalid_grant", error.description()),
-    };
-    match issuer.issue_access_token_for_authorization(
-        &code_record.subject,
-        &code_record.client_id,
-        &code_record.scopes,
-        code_record.grant_id.clone(),
-    ) {
-        Ok(access_token) => {
-            let refresh_token = match (&context.named_runtime, &code_record.grant_id) {
-                (Some(named), Some(grant_id)) => {
-                    let Ok(grant_id) = grant_id.parse::<Ulid>() else {
-                        return oauth_json_error_response(
-                            500,
-                            "server_error",
-                            "invalid stored connection grant ID",
-                        );
-                    };
-                    match named.issue_initial_refresh_token(&NamedInitialTokenRequest {
-                        remote_instance_id: context.instance_id,
-                        grant_id,
-                        client_id: &code_record.client_id,
-                        subject: &code_record.subject,
-                        scopes: &code_record.scopes,
-                        resource: &code_record.resource,
-                        now: current_unix_timestamp(),
-                    }) {
-                        Ok(token) => Some(format!("{}.{}", token.family_id, token.secret.expose())),
-                        Err(error) => {
-                            return oauth_json_error_response(
-                                400,
-                                "invalid_grant",
-                                error.to_string(),
-                            )
-                        }
-                    }
-                }
-                _ => None,
-            };
-            let mut body = serde_json::json!({
-                "access_token": access_token,
-                "token_type": "Bearer",
-                "expires_in": 900,
-                "scope": code_record.scopes.join(" "),
-                "resource": code_record.resource,
-            });
-            if let Some(refresh_token) = refresh_token {
-                body["refresh_token"] = Value::String(refresh_token);
-            }
-            McpHttpResponse {
-                status: 200,
-                content_type: Some("application/json"),
-                body: serde_json::to_vec(&body).expect("json should serialize"),
-                extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
-            }
-        }
-        Err(error) => oauth_json_error_response(500, "server_error", error.to_string()),
-    }
+    local_token_endpoint(context, issuer).handle(request, &parse_form_params(&request.body))
 }
 
-#[cfg(feature = "oauth")]
-#[allow(clippy::too_many_lines)]
+#[cfg(all(test, feature = "oauth"))]
 fn handle_local_oauth_refresh(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
     client_id: &str,
     params: &BTreeMap<String, String>,
 ) -> McpHttpResponse {
-    let Some(named) = context.named_runtime.as_ref() else {
-        return oauth_json_error_response(
-            400,
-            "unsupported_grant_type",
-            "refresh tokens are only available for named remotes",
-        );
-    };
-    let Some((family, secret)) = params
-        .get("refresh_token")
-        .and_then(|token| token.split_once('.'))
-    else {
-        return oauth_json_error_response(400, "invalid_grant", "invalid refresh token");
-    };
-    let Ok(family_id) = family.parse::<Ulid>() else {
-        return oauth_json_error_response(400, "invalid_grant", "invalid refresh token");
-    };
-    let requested_scopes = match params.get("scope") {
-        Some(scope) => match parse_mcp_oauth_scopes(Some(scope)) {
-            Ok(scopes) => Some(scopes),
-            Err(response) => return response,
-        },
-        None => None,
-    };
-    let refreshed = match named.refresh_connection(&NamedRefreshRequest {
-        remote_instance_id: context.instance_id,
-        family_id,
-        secret,
-        client_id,
-        resource: issuer.public_url(),
-        requested_resource: params.get("resource").map(String::as_str),
-        requested_scopes: requested_scopes.as_deref(),
-        now: current_unix_timestamp(),
-    }) {
-        Ok(refreshed) => refreshed,
-        Err(error) => return oauth_json_error_response(400, error.code, error.message),
-    };
-    match issuer.issue_access_token_for_authorization(
-        &refreshed.subject,
-        &refreshed.client_id,
-        &refreshed.scopes,
-        Some(refreshed.grant_id.to_string()),
-    ) {
-        Ok(access_token) => {
-            let body = serde_json::json!({
-                "access_token": access_token,
-                "refresh_token": format!("{}.{}", refreshed.refresh_token.family_id, refreshed.refresh_token.secret.expose()),
-                "token_type": "Bearer",
-                "expires_in": 900,
-                "scope": refreshed.scopes.join(" "),
-                "resource": refreshed.audience,
-            });
-            McpHttpResponse {
-                status: 200,
-                content_type: Some("application/json"),
-                body: serde_json::to_vec(&body).expect("json should serialize"),
-                extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
-            }
-        }
-        Err(error) => oauth_json_error_response(500, "server_error", error.to_string()),
-    }
+    local_token_endpoint(context, issuer).refresh(client_id, params)
 }
 
 #[cfg(feature = "oauth")]
@@ -4481,60 +4338,11 @@ fn local_oauth_client_redirect_allowed(
         .ok()
         .flatten()
         .is_some_and(|client| client.redirect_uris.iter().any(|uri| uri == redirect_uri))
-        || client_id_metadata_valid(context, client_id, Some(redirect_uri))
-}
-
-#[cfg(feature = "oauth")]
-fn local_oauth_registered_client_valid(
-    context: &McpHttpServerContext,
-    credentials: &McpTokenClientCredentials,
-) -> bool {
-    context
-        .oauth_clients
-        .get(&credentials.client_id)
-        .ok()
-        .flatten()
-        .is_some_and(|client| {
-            registered_mcp_client_credentials_valid(
-                credentials,
-                &client.token_endpoint_auth_method,
-                &client.client_secret,
-            )
-        })
-}
-
-#[cfg(feature = "oauth")]
-fn client_id_metadata_valid(
-    context: &McpHttpServerContext,
-    client_id: &str,
-    redirect_uri: Option<&str>,
-) -> bool {
-    fetch_client_id_metadata(client_id).is_ok_and(|metadata| {
-        validate_client_id_metadata(context, client_id, redirect_uri, &metadata)
-    })
-}
-
-#[cfg(feature = "oauth")]
-fn validate_client_id_metadata(
-    context: &McpHttpServerContext,
-    client_id: &str,
-    redirect_uri: Option<&str>,
-    metadata: &ClientIdMetadataDocument,
-) -> bool {
-    metadata.client_id == client_id
-        && metadata.token_endpoint_auth_method == "none"
-        && !metadata.redirect_uris.is_empty()
-        && metadata
-            .redirect_uris
-            .iter()
-            .all(|uri| local_oauth_redirect_host_allowed(context, uri))
-        && redirect_uri
-            .is_none_or(|redirect| metadata.redirect_uris.iter().any(|uri| uri == redirect))
-}
-
-#[cfg(feature = "oauth")]
-fn local_oauth_redirect_host_allowed(context: &McpHttpServerContext, redirect_uri: &str) -> bool {
-    mcp_oauth_redirect_uri_allowed(redirect_uri, &context.oauth_dcr_allowed_redirect_hosts)
+        || shared_client_id_metadata_valid(
+            client_id,
+            Some(redirect_uri),
+            &context.oauth_dcr_allowed_redirect_hosts,
+        )
 }
 
 #[cfg(feature = "oauth")]
@@ -4872,7 +4680,7 @@ fn mcp_http_json_error_response(
     }
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn parse_mcp_oauth_scopes(scope: Option<&str>) -> Result<Vec<String>, McpHttpResponse> {
     parse_mcp_oauth_scopes_policy(scope).map_err(mcp_oauth_policy_error_response)
 }

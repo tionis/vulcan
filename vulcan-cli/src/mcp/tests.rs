@@ -2646,17 +2646,16 @@ fn separate_http_contexts_use_fresh_durable_client_registration() {
         client_id,
         "https://client.example.test/other"
     ));
-    assert!(local_oauth_registered_client_valid(
-        &second,
-        &McpTokenClientCredentials {
+    assert!(
+        local_token_endpoint(&second, issuer).client_valid(&McpTokenClientCredentials {
             client_id: client_id.to_string(),
             client_secret: registered["client_secret"]
                 .as_str()
                 .expect("client secret")
                 .to_string(),
             method: McpTokenAuthMethod::ClientSecretBasic,
-        }
-    ));
+        })
+    );
 }
 
 #[cfg(feature = "oauth")]
@@ -2789,32 +2788,36 @@ fn client_id_metadata_documents_require_exact_public_client_metadata() {
         redirect_uris: vec!["https://client.example.test/callback".to_string()],
         token_endpoint_auth_method: "none".to_string(),
     };
-    assert!(validate_client_id_metadata(
-        &context,
+    assert!(vulcan_daemon::mcp_oauth_token::validate_client_id_metadata(
         client_id,
         Some("https://client.example.test/callback"),
         &metadata,
+        &context.oauth_dcr_allowed_redirect_hosts,
     ));
     let mismatched = ClientIdMetadataDocument {
         client_id: "https://attacker.example.test/client.json".to_string(),
         ..metadata.clone()
     };
-    assert!(!validate_client_id_metadata(
-        &context,
-        client_id,
-        Some("https://client.example.test/callback"),
-        &mismatched,
-    ));
+    assert!(
+        !vulcan_daemon::mcp_oauth_token::validate_client_id_metadata(
+            client_id,
+            Some("https://client.example.test/callback"),
+            &mismatched,
+            &context.oauth_dcr_allowed_redirect_hosts,
+        )
+    );
     let confidential = ClientIdMetadataDocument {
         token_endpoint_auth_method: "client_secret_post".to_string(),
         ..metadata
     };
-    assert!(!validate_client_id_metadata(
-        &context,
-        client_id,
-        Some("https://client.example.test/callback"),
-        &confidential,
-    ));
+    assert!(
+        !vulcan_daemon::mcp_oauth_token::validate_client_id_metadata(
+            client_id,
+            Some("https://client.example.test/callback"),
+            &confidential,
+            &context.oauth_dcr_allowed_redirect_hosts,
+        )
+    );
 }
 
 #[cfg(all(feature = "oauth", unix))]

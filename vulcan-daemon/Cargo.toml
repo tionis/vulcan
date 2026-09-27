@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 js_runtime = ["vulcan-app/js_runtime"]
+oauth = ["vulcan-core/oauth"]
 vectors = ["vulcan-app/vectors"]
 web = ["vulcan-app/web"]
 

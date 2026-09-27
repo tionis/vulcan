@@ -92,7 +92,11 @@ pub fn register_mcp_oauth_client(
     }
 }
 
-fn json_error(status: u16, error: &str, description: impl Into<String>) -> McpHttpResponse {
+pub(crate) fn json_error(
+    status: u16,
+    error: &str,
+    description: impl Into<String>,
+) -> McpHttpResponse {
     McpHttpResponse {
         status,
         content_type: Some("application/json"),

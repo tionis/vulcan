@@ -26,6 +26,8 @@ pub mod mcp_oauth_clients;
 pub mod mcp_oauth_codes;
 pub mod mcp_oauth_policy;
 pub mod mcp_oauth_registration;
+#[cfg(feature = "oauth")]
+pub mod mcp_oauth_token;
 pub mod mcp_remote;
 pub mod mcp_remote_runtime;
 pub mod mcp_session;
