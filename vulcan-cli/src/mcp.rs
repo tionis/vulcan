@@ -119,7 +119,8 @@ use vulcan_daemon::hosted_executor::{
 #[cfg(feature = "oauth")]
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
 use vulcan_daemon::mcp_http_codec::{
-    read_mcp_http_request, write_mcp_http_response, McpHttpRequest, McpHttpResponse,
+    read_mcp_http_request, write_mcp_http_response, write_mcp_http_sse_event,
+    write_mcp_http_sse_headers, write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
@@ -5679,26 +5680,6 @@ fn origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
     } else {
         host == bind_addr.ip().to_string()
     }
-}
-
-fn write_mcp_http_sse_headers(stream: &mut TcpStream) -> Result<(), io::Error> {
-    stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-    )?;
-    stream.flush()
-}
-
-fn write_mcp_http_sse_event(stream: &mut TcpStream, message: &Value) -> Result<(), io::Error> {
-    let payload = serde_json::to_string(message).expect("sse payload should serialize");
-    let event_id = Ulid::new().to_string();
-    let frame = format!("id: {event_id}\nevent: message\ndata: {payload}\n\n");
-    stream.write_all(frame.as_bytes())?;
-    stream.flush()
-}
-
-fn write_mcp_http_sse_keepalive(stream: &mut TcpStream) -> Result<(), io::Error> {
-    stream.write_all(b": keepalive\n\n")?;
-    stream.flush()
 }
 
 fn mcp_http_json_error_response(

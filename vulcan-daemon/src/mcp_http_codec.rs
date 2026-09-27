@@ -1,8 +1,10 @@
 //! Bounded HTTP/1.1 framing for the foreground and resident MCP listener.
 //! This transport codec is independent of CLI command dispatch and OAuth policy.
 
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
+use ulid::Ulid;
 
 pub const MAX_MCP_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
@@ -188,6 +190,26 @@ pub fn write_mcp_http_response(
     stream.flush()
 }
 
+pub fn write_mcp_http_sse_headers(stream: &mut impl Write) -> Result<(), io::Error> {
+    stream.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+    )?;
+    stream.flush()
+}
+
+pub fn write_mcp_http_sse_event(stream: &mut impl Write, message: &Value) -> Result<(), io::Error> {
+    let payload = serde_json::to_string(message).expect("sse payload should serialize");
+    let event_id = Ulid::new().to_string();
+    let frame = format!("id: {event_id}\nevent: message\ndata: {payload}\n\n");
+    stream.write_all(frame.as_bytes())?;
+    stream.flush()
+}
+
+pub fn write_mcp_http_sse_keepalive(stream: &mut impl Write) -> Result<(), io::Error> {
+    stream.write_all(b": keepalive\n\n")?;
+    stream.flush()
+}
+
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
@@ -248,5 +270,26 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn sse_codec_writes_bounded_protocol_frames() {
+        let mut output = Vec::new();
+        write_mcp_http_sse_headers(&mut output).expect("headers");
+        write_mcp_http_sse_event(&mut output, &serde_json::json!({"method": "ping"}))
+            .expect("event");
+        write_mcp_http_sse_keepalive(&mut output).expect("keepalive");
+        let text = String::from_utf8(output).expect("UTF-8 frames");
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"));
+        let event = text.split("\r\n\r\n").nth(1).expect("event section");
+        let id = event
+            .lines()
+            .next()
+            .expect("event ID")
+            .strip_prefix("id: ")
+            .expect("ID prefix");
+        assert!(id.parse::<Ulid>().is_ok());
+        assert!(event.contains("event: message\ndata: {\"method\":\"ping\"}\n\n"));
+        assert!(text.ends_with(": keepalive\n\n"));
     }
 }
