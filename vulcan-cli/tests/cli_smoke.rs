@@ -16197,6 +16197,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(
         mcp_skill.contains("For browser-based local HTTP harnesses, send a valid `Origin` header")
     );
+    assert!(mcp_skill.contains("one unambiguous `Content-Length`"));
     assert!(mcp_skill.contains(
         "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"
     ));
@@ -30113,6 +30114,18 @@ fn mcp_http_transport_enforces_auth_tokens() {
             "{origin} must be rejected"
         );
     }
+    let duplicate_length = session.request(
+        "POST",
+        &[("Content-Length".to_string(), "0".to_string())],
+        Some(&origin_body),
+    );
+    assert_eq!(duplicate_length.status_line, "HTTP/1.1 400 Bad Request");
+    let transfer_encoded = session.request(
+        "POST",
+        &[("Transfer-Encoding".to_string(), "chunked".to_string())],
+        Some(&origin_body),
+    );
+    assert_eq!(transfer_encoded.status_line, "HTTP/1.1 400 Bad Request");
 
     let oversized = session.post_oversized_unauthenticated();
     assert_eq!(oversized.status_line, "HTTP/1.1 413 Payload Too Large");

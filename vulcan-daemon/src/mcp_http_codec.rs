@@ -93,24 +93,18 @@ pub fn read_mcp_http_request(stream: &mut impl Read) -> Result<McpHttpRequest, M
         .split_once('?')
         .map_or((target, ""), |(path, query)| (path, query));
 
-    let headers = lines
-        .take_while(|line| !line.trim().is_empty())
-        .filter_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let content_length = headers
-        .get("content-length")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > MAX_MCP_HTTP_BODY_BYTES {
-        return Err(McpHttpReadError::payload_too_large());
+    if header_end > 64 * 1024 {
+        return Err(McpHttpReadError::bad_request(
+            "request headers exceed 64 KiB",
+        ));
     }
+    let (headers, content_length) = parse_request_headers(lines)?;
 
     let mut body = buffer[header_end..].to_vec();
-    if body.len() > MAX_MCP_HTTP_BODY_BYTES {
-        return Err(McpHttpReadError::payload_too_large());
+    if body.len() > content_length {
+        return Err(McpHttpReadError::bad_request(
+            "request body exceeds declared Content-Length",
+        ));
     }
     while body.len() < content_length {
         let mut chunk = [0_u8; 8192];
@@ -138,6 +132,62 @@ pub fn read_mcp_http_request(stream: &mut impl Read) -> Result<McpHttpRequest, M
         headers,
         body,
     })
+}
+
+fn parse_request_headers<'a>(
+    lines: impl Iterator<Item = &'a str>,
+) -> Result<(BTreeMap<String, String>, usize), McpHttpReadError> {
+    let mut headers = BTreeMap::new();
+    for line in lines.take_while(|line| !line.trim().is_empty()) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| McpHttpReadError::bad_request("malformed HTTP request header"))?;
+        let name = name.trim().to_ascii_lowercase();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+        {
+            return Err(McpHttpReadError::bad_request(
+                "invalid HTTP request header name",
+            ));
+        }
+        if name == "transfer-encoding" {
+            return Err(McpHttpReadError::bad_request(
+                "Transfer-Encoding is not supported by the MCP HTTP listener",
+            ));
+        }
+        if headers.contains_key(&name)
+            && matches!(
+                name.as_str(),
+                "content-length"
+                    | "authorization"
+                    | "origin"
+                    | "host"
+                    | "mcp-session-id"
+                    | "mcp-protocol-version"
+                    | "x-vulcan-token"
+            )
+        {
+            return Err(McpHttpReadError::bad_request(format!(
+                "duplicate HTTP request header: {name}"
+            )));
+        }
+        headers.insert(name, value.trim().to_string());
+    }
+    let content_length = match headers.get("content-length") {
+        Some(value) if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            value
+                .parse::<usize>()
+                .map_err(|_| McpHttpReadError::bad_request("invalid Content-Length"))?
+        }
+        Some(_) => return Err(McpHttpReadError::bad_request("invalid Content-Length")),
+        None => 0,
+    };
+    if content_length > MAX_MCP_HTTP_BODY_BYTES {
+        return Err(McpHttpReadError::payload_too_large());
+    }
+    Ok((headers, content_length))
 }
 
 pub fn write_mcp_http_response(
@@ -252,6 +302,22 @@ mod tests {
                 .status,
             400
         );
+    }
+
+    #[test]
+    fn request_codec_rejects_ambiguous_framing_and_auth_headers() {
+        for request in [
+            "POST /mcp HTTP/1.1\r\nContent-Length: 4\r\ncontent-length: 4\r\n\r\ntest",
+            "POST /mcp HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "POST /mcp HTTP/1.1\r\nContent-Length: +4\r\n\r\ntest",
+            "POST /mcp HTTP/1.1\r\nContent-Length: 0\r\n\r\ntest",
+            "POST /mcp HTTP/1.1\r\nAuthorization: Bearer one\r\nauthorization: Bearer two\r\n\r\n",
+            "POST /mcp HTTP/1.1\r\nMalformed\r\n\r\n",
+        ] {
+            let error = read_mcp_http_request(&mut io::Cursor::new(request))
+                .expect_err("ambiguous request must fail before dispatch");
+            assert_eq!(error.status, 400, "{request}");
+        }
     }
 
     #[test]

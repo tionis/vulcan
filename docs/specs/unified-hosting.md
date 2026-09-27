@@ -241,6 +241,9 @@ This moves wire framing out of the CLI without moving OAuth policy, session life
 method dispatcher yet.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
+The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or
+ambiguous `Content-Length`, and unsupported chunked request encoding before authentication or
+dispatch. Proxies must forward a single length-delimited request to this listener.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
