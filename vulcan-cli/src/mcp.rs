@@ -128,17 +128,18 @@ use vulcan_daemon::mcp_http_codec::{
 };
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_clients::{
-    OAuthClientRegistry, RegisteredOAuthClient as LocalOAuthRegisteredClient,
-};
+use vulcan_daemon::mcp_oauth_clients::OAuthClientRegistry;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient as LocalOAuthRegisteredClient;
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_policy::{
     parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy, parse_mcp_token_client_credentials,
-    registered_mcp_client_credentials_valid, validate_mcp_authorize_request,
-    validate_mcp_dcr_registration, McpAuthorizeRequest, McpDcrError, McpOAuthPolicyError,
-    McpTokenAuthMethod, McpTokenClientCredentials, SUPPORTED_MCP_OAUTH_SCOPES,
+    registered_mcp_client_credentials_valid, validate_mcp_authorize_request, McpAuthorizeRequest,
+    McpOAuthPolicyError, McpTokenAuthMethod, McpTokenClientCredentials, SUPPORTED_MCP_OAUTH_SCOPES,
 };
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_registration::register_mcp_oauth_client;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
@@ -3852,77 +3853,13 @@ fn handle_local_oauth_register(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> McpHttpResponse {
-    if !context.oauth_dcr_enabled {
-        return oauth_json_error_response(404, "invalid_request", "DCR is not enabled");
-    }
-    if request.method != "POST" {
-        return oauth_json_error_response(405, "invalid_request", "method not allowed");
-    }
-    let Ok(payload) = serde_json::from_slice::<Value>(&request.body) else {
-        return oauth_json_error_response(400, "invalid_client_metadata", "invalid JSON");
-    };
-    let registration = match validate_mcp_dcr_registration(
-        &payload,
+    register_mcp_oauth_client(
+        request,
+        &context.oauth_clients,
+        context.oauth_dcr_enabled,
         &context.oauth_dcr_allowed_redirect_hosts,
         context.named_runtime.is_some(),
-    ) {
-        Ok(registration) => registration,
-        Err(McpDcrError::InvalidRedirectUri) => {
-            return oauth_json_error_response(
-                400,
-                "invalid_redirect_uri",
-                "redirect URI is not allowed",
-            )
-        }
-        Err(error) => {
-            let message = match error {
-                McpDcrError::InvalidAuthMethod => "unsupported token endpoint auth method",
-                McpDcrError::InvalidClientName => "invalid client name",
-                McpDcrError::InvalidGrantTypes => "unsupported grant types",
-                McpDcrError::InvalidResponseTypes => "unsupported response types",
-                McpDcrError::InvalidRedirectUri => unreachable!(),
-            };
-            return oauth_json_error_response(400, "invalid_client_metadata", message);
-        }
-    };
-    let client = LocalOAuthRegisteredClient {
-        client_id: format!("vulcan-dcr-{}", Ulid::new()),
-        client_secret: if registration.token_endpoint_auth_method == "none" {
-            String::new()
-        } else {
-            Ulid::new().to_string()
-        },
-        redirect_uris: registration.redirect_uris,
-        client_name: registration.client_name,
-        token_endpoint_auth_method: registration.token_endpoint_auth_method,
-        client_id_issued_at: current_unix_timestamp(),
-    };
-    if let Err(error) = context.oauth_clients.register(client.clone()) {
-        return oauth_json_error_response(500, "server_error", error.to_string());
-    }
-    let grant_types = if context.named_runtime.is_some() {
-        vec!["authorization_code", "refresh_token"]
-    } else {
-        vec!["authorization_code"]
-    };
-    let mut body = serde_json::json!({
-        "client_id": client.client_id,
-        "client_id_issued_at": client.client_id_issued_at,
-        "redirect_uris": client.redirect_uris,
-        "grant_types": grant_types,
-        "response_types": ["code"],
-        "token_endpoint_auth_method": client.token_endpoint_auth_method,
-    });
-    if !client.client_secret.is_empty() {
-        body["client_secret"] = Value::String(client.client_secret);
-        body["client_secret_expires_at"] = Value::from(0);
-    }
-    McpHttpResponse {
-        status: 201,
-        content_type: Some("application/json"),
-        body: serde_json::to_vec(&body).expect("json should serialize"),
-        extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
-    }
+    )
 }
 
 #[cfg(feature = "oauth")]
