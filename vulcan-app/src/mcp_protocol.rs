@@ -13,6 +13,43 @@ pub const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 pub const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
 const MCP_DAILY_LIST_DEFAULT_LIMIT: usize = 20;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpListSnapshot {
+    pub tools: String,
+    pub prompts: String,
+    pub resources: String,
+}
+
+impl McpListSnapshot {
+    /// Return list-change notifications and advance this session's snapshot.
+    pub fn changed_notifications(&mut self, current: Self) -> Vec<Value> {
+        let mut notifications = Vec::new();
+        for (changed, method) in [
+            (
+                self.tools != current.tools,
+                "notifications/tools/list_changed",
+            ),
+            (
+                self.prompts != current.prompts,
+                "notifications/prompts/list_changed",
+            ),
+            (
+                self.resources != current.resources,
+                "notifications/resources/list_changed",
+            ),
+        ] {
+            if changed {
+                notifications.push(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                }));
+            }
+        }
+        *self = current;
+        notifications
+    }
+}
+
 #[derive(Debug)]
 pub enum McpMethodError {
     JsonRpc {
@@ -605,5 +642,27 @@ mod tests {
             "unexpected": true
         }))
         .is_err());
+    }
+
+    #[test]
+    fn list_snapshot_emits_only_changed_namespaces_and_advances_once() {
+        let mut snapshot = McpListSnapshot {
+            tools: "a".to_string(),
+            prompts: "b".to_string(),
+            resources: "c".to_string(),
+        };
+        let next = McpListSnapshot {
+            tools: "new".to_string(),
+            prompts: "b".to_string(),
+            resources: "new".to_string(),
+        };
+        assert_eq!(
+            snapshot.changed_notifications(next.clone()),
+            vec![
+                json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                json!({"jsonrpc": "2.0", "method": "notifications/resources/list_changed"}),
+            ]
+        );
+        assert!(snapshot.changed_notifications(next).is_empty());
     }
 }

@@ -265,6 +265,8 @@ scoped profiles reject those paths consistently.
 The same app target boundary supplies write preflight for direct CLI and MCP Markdown edits:
 unrestricted local edits can target explicit external Markdown files, while scoped profiles
 cannot write outside the selected vault.
+The app MCP protocol module owns per-session list-change snapshot transitions and notification
+shaping; transport adapters supply their current tool, prompt, and resource fingerprints.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

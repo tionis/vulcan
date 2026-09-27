@@ -49,14 +49,14 @@ use vulcan_app::mcp_dispatch::{
 };
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs,
-    McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams, McpMethodError,
-    McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteGetArgs,
-    McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs, McpPromptGetParams,
-    McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs, McpSyncConflictsArgs,
-    McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskListArgs,
-    McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams, McpToolPackMutationArgs,
-    McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION,
-    MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
+    McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams, McpListSnapshot,
+    McpMethodError, McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs,
+    McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs,
+    McpPromptGetParams, McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs,
+    McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
+    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
+    McpToolPackMutationArgs, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
+    MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
 };
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
@@ -218,13 +218,6 @@ pub(crate) struct McpHttpOptions {
     pub request_timeout: Duration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct McpServerSnapshot {
-    tools: String,
-    prompts: String,
-    resources: String,
-}
-
 #[derive(Debug, Clone)]
 struct McpStoredResource {
     uri: String,
@@ -242,7 +235,7 @@ struct McpServerCore {
     selected_tool_packs: BTreeSet<McpToolPack>,
     stored_resources: BTreeMap<String, McpStoredResource>,
     next_resource_id: u64,
-    snapshot: McpServerSnapshot,
+    snapshot: McpListSnapshot,
 }
 
 #[derive(Debug)]
@@ -2248,7 +2241,7 @@ impl McpServerCore {
             .filter(|pack| *pack != McpToolPack::ToolPacks)
             .collect();
         let guard = ProfilePermissionGuard::new(paths, selection.clone());
-        let snapshot = McpServerSnapshot {
+        let snapshot = McpListSnapshot {
             tools: tool_fingerprint(
                 paths,
                 Some(selection.name.as_str()),
@@ -3812,7 +3805,7 @@ impl McpServerCore {
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
-        let current = McpServerSnapshot {
+        let current = McpListSnapshot {
             tools: tool_fingerprint(
                 &self.paths,
                 Some(self.selection.name.as_str()),
@@ -3822,27 +3815,7 @@ impl McpServerCore {
             prompts: prompt_files_fingerprint(&self.paths),
             resources: resource_files_fingerprint(&self.paths),
         };
-        let mut notifications = Vec::new();
-        if current.tools != self.snapshot.tools {
-            notifications.push(serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/tools/list_changed",
-            }));
-        }
-        if current.prompts != self.snapshot.prompts {
-            notifications.push(serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/prompts/list_changed",
-            }));
-        }
-        if current.resources != self.snapshot.resources {
-            notifications.push(serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/resources/list_changed",
-            }));
-        }
-        self.snapshot = current;
-        notifications
+        self.snapshot.changed_notifications(current)
     }
 }
 
