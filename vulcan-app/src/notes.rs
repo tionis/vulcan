@@ -1354,7 +1354,10 @@ fn delete_ordinary_note_if_unchanged(
     fs::remove_file(paths.vault_root().join(path)).map_err(AppError::operation)
 }
 
-fn note_path_is_mdbase_managed(paths: &VaultPaths, path: &str) -> Result<bool, AppError> {
+pub(crate) fn note_path_is_mdbase_managed(
+    paths: &VaultPaths,
+    path: &str,
+) -> Result<bool, AppError> {
     load_mdbase_collection(paths.vault_root())
         .map_err(AppError::operation)?
         .map(|collection| is_mdbase_record_path(&collection, path))

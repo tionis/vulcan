@@ -1,4 +1,4 @@
-use crate::notes::write_ordinary_note_if_unchanged;
+use crate::notes::{note_path_is_mdbase_managed, write_ordinary_note_if_unchanged};
 use crate::AppError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,55 @@ pub(crate) fn staged_template_create_snapshot(
         .lock()
         .map(|changes| changes.clone())
         .map_err(|_| AppError::operation("template create staging lock poisoned"))
+}
+
+fn write_template_result_with_staged_creates(
+    paths: &VaultPaths,
+    path: &str,
+    before: Option<&str>,
+    after: &str,
+    staged: &StagedTemplateCreates,
+    operation: &str,
+) -> Result<(), AppError> {
+    let staged = staged_template_create_snapshot(staged)?;
+    if staged.is_empty() {
+        return write_ordinary_note_if_unchanged(paths, path, before, after, operation);
+    }
+    if staged.contains_key(path) {
+        return Err(AppError::operation(format!(
+            "template side effect conflicts with final note path: {path}"
+        )));
+    }
+    let mut changes = staged
+        .into_iter()
+        .map(
+            |(path, content)| vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path,
+                before: None,
+                after: Some(content),
+            },
+        )
+        .collect::<Vec<_>>();
+    changes.push(vulcan_core::ordinary_write::OrdinaryWriteChange {
+        path: path.to_string(),
+        before: before.map(str::to_string),
+        after: Some(after.to_string()),
+    });
+    vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(paths, &changes, || {
+        for change in &changes {
+            if note_path_is_mdbase_managed(paths, &change.path)
+                .map_err(|error| error.to_string())?
+            {
+                return Err(format!(
+                    "template write target became an mdbase-managed note: {}",
+                    change.path
+                ));
+            }
+        }
+        Ok(())
+    })
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    Ok(())
 }
 
 fn stage_template_create(
@@ -866,7 +915,8 @@ pub fn apply_template_create_with_filter(
         request.output_path.as_deref(),
         &TemplateTimestamp::current(),
     )?;
-    let rendered = render_loaded_template_with_filter(
+    let staged = staged_template_creates();
+    let rendered = render_loaded_template_with_staged_creates(
         paths,
         &config,
         &loaded,
@@ -879,13 +929,16 @@ pub fn apply_template_create_with_filter(
             run_mode: TemplateRunMode::Create,
         },
         read_filter,
+        None,
+        Some(staged.clone()),
     )?;
     let absolute_output = paths.vault_root().join(&rendered.target_path);
-    write_ordinary_note_if_unchanged(
+    write_template_result_with_staged_creates(
         paths,
         &rendered.target_path,
         None,
         &rendered.content,
+        &staged,
         "template create",
     )?;
 
@@ -929,7 +982,8 @@ pub fn apply_template_insert_with_filter(
     let target_path = resolved.path;
     let target_absolute = paths.vault_root().join(&target_path);
     let target_source = fs::read_to_string(&target_absolute).map_err(AppError::operation)?;
-    let rendered = render_loaded_template_with_filter(
+    let staged = staged_template_creates();
+    let rendered = render_loaded_template_with_staged_creates(
         paths,
         &config,
         &loaded,
@@ -942,6 +996,8 @@ pub fn apply_template_insert_with_filter(
             run_mode: TemplateRunMode::Append,
         },
         read_filter,
+        None,
+        Some(staged.clone()),
     )?;
     let expected_final = if rendered.target_path == target_path {
         target_source.clone()
@@ -953,11 +1009,12 @@ pub fn apply_template_insert_with_filter(
         .map_err(AppError::operation)?;
     let updated =
         apply_template_insertion_mode(&prepared, request.mode).map_err(AppError::operation)?;
-    write_ordinary_note_if_unchanged(
+    write_template_result_with_staged_creates(
         paths,
         &rendered.target_path,
         Some(&expected_final),
         &updated,
+        &staged,
         "template insert",
     )?;
 

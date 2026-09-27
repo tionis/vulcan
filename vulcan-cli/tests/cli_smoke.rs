@@ -16205,8 +16205,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(template_skill.contains("reread the note before retrying"));
     assert!(template_skill.contains("`template insert` rejects a note edited since it was read"));
     assert!(template_skill.contains("Direct CLI and MCP template reports refuse"));
-    assert!(template_skill.contains("companions from an explicit template or creation trigger"));
-    assert!(template_skill.contains("Direct `template create`/`insert`"));
+    assert!(template_skill.contains("during direct `template create`/`insert`"));
+    assert!(template_skill
+        .contains("companions publish with the final ordinary note in one recoverable batch"));
     assert!(template_skill.contains("Templater `tp.file.move` and `tp.file.rename` also refuse"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),

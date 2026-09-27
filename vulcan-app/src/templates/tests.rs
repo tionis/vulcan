@@ -905,6 +905,42 @@ fn apply_template_create_writes_note_and_reports_changed_paths() {
 }
 
 #[test]
+fn template_create_commits_companion_with_final_note_and_leaves_none_on_collision() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(
+        root.join(".vulcan/templates/daily.md"),
+        "<% tp.file.create_new('Side body', 'Side') %>Main body",
+    )
+    .expect("template");
+    let paths = VaultPaths::new(root);
+    let request = TemplateCreateRequest {
+        template: "daily".to_string(),
+        output_path: Some("Main".to_string()),
+        engine: TemplateEngineKind::Templater,
+        vars: HashMap::new(),
+    };
+    fs::write(root.join("Main.md"), "Existing\n").expect("collision");
+    apply_template_create(&paths, &request).expect_err("final collision");
+    assert!(!root.join("Side.md").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("Main.md")).unwrap(),
+        "Existing\n"
+    );
+    fs::remove_file(root.join("Main.md")).expect("clear collision");
+    let report = apply_template_create(&paths, &request).expect("create");
+    assert_eq!(
+        fs::read_to_string(root.join("Side.md")).unwrap(),
+        "Side body"
+    );
+    assert!(fs::read_to_string(root.join("Main.md"))
+        .unwrap()
+        .ends_with("Main body"));
+    assert_eq!(report.changed_paths, vec!["Main.md", "Side.md"]);
+}
+
+#[test]
 fn template_create_rejects_a_destination_created_while_waiting_for_the_lock() {
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1227,4 +1263,86 @@ fn template_insert_rejects_a_concurrent_note_edit() {
         fs::read_to_string(root.join("Home.md")).expect("current note"),
         "Concurrent edit\n"
     );
+}
+
+#[test]
+fn template_insert_does_not_publish_companion_when_final_note_changes() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(
+        root.join(".vulcan/templates/daily.md"),
+        "<% tp.file.create_new('Side body', 'Side') %>Inserted\n",
+    )
+    .expect("template");
+    fs::write(root.join("Home.md"), "Original\n").expect("source");
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+    let lock = vulcan_core::write_lock::acquire_write_lock(&paths).expect("write lock");
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        done_tx
+            .send(apply_template_insert(
+                &paths,
+                &TemplateInsertRequest {
+                    template: "daily".to_string(),
+                    note: "Home".to_string(),
+                    mode: TemplateInsertMode::Append,
+                    engine: TemplateEngineKind::Templater,
+                    vars: HashMap::new(),
+                },
+            ))
+            .expect("result");
+    });
+    assert!(done_rx.recv_timeout(Duration::from_millis(150)).is_err());
+    fs::write(root.join("Home.md"), "Concurrent edit\n").expect("concurrent edit");
+    drop(lock);
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker finished")
+        .expect_err("stale insert");
+    worker.join().expect("worker join");
+    assert!(!root.join("Side.md").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("Home.md")).unwrap(),
+        "Concurrent edit\n"
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn template_insert_commits_js_companion_with_final_note() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::write(
+        root.join(".vulcan/templates/side.md"),
+        "<%* await tp.file.create_new('Side body', 'Side'); %>Inserted\n",
+    )
+    .expect("template");
+    fs::write(root.join("Home.md"), "Original\n").expect("source");
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+    let report = apply_template_insert(
+        &paths,
+        &TemplateInsertRequest {
+            template: "side".to_string(),
+            note: "Home".to_string(),
+            mode: TemplateInsertMode::Append,
+            engine: TemplateEngineKind::Templater,
+            vars: HashMap::new(),
+        },
+    )
+    .expect("insert");
+    assert_eq!(report.changed_paths, vec!["Home.md", "Side.md"]);
+    assert_eq!(
+        fs::read_to_string(root.join("Side.md")).unwrap(),
+        "Side body"
+    );
+    assert!(fs::read_to_string(root.join("Home.md"))
+        .unwrap()
+        .contains("Inserted\n"));
 }
