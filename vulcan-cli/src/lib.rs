@@ -563,6 +563,7 @@ use vulcan_core::config::{
     ExportProfileConfig, ExportProfileFormat,
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::vault_discovery::{discover_init_root, discover_vault_root, VaultRootDiscovery};
 use vulcan_core::{
     bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
     doctor_fix, doctor_vault, evaluate_base_file, evaluate_base_file_with_filter,
@@ -4684,7 +4685,11 @@ fn extract_vault_root_from_args(args: &[OsString]) -> PathBuf {
         }
         index += 1;
     }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    if let Some(path) = std::env::var_os("VULCAN_VAULT").filter(|path| !path.is_empty()) {
+        return PathBuf::from(path);
+    }
+    let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    discover_vault_root(&current).root
 }
 
 fn split_alias_words(source: &str) -> Option<Vec<OsString>> {
@@ -4808,7 +4813,8 @@ where
 
 #[allow(clippy::too_many_lines)]
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
-    require_registered_knowledge_profile(&cli.vault, &cli.command)?;
+    let vault_discovery = cli.vault_discovery()?;
+    require_registered_knowledge_profile(&vault_discovery.root, &cli.command)?;
     // Handle `complete` before vault resolution: vault-independent contexts (e.g.
     // daily-date) must work when invoked from outside a vault by shell completion
     // hooks.  Vault-dependent contexts silently return empty output rather than
@@ -4827,7 +4833,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     println!("{candidate}");
                 }
             }
-            if let Ok(paths) = resolve_vault_root(&cli.vault).map(VaultPaths::new) {
+            if let Ok(paths) = cli.vault_root().map(VaultPaths::new) {
                 for candidate in collect_complete_candidates(&paths, context, prefix.as_deref()) {
                     if seen.insert(candidate.clone()) {
                         println!("{candidate}");
@@ -4837,7 +4843,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Ok(());
         }
         // All other contexts need a vault; if we can't find one, return empty.
-        let Ok(paths) = resolve_vault_root(&cli.vault).map(VaultPaths::new) else {
+        let Ok(paths) = cli.vault_root().map(VaultPaths::new) else {
             return Ok(());
         };
         run_complete_command(&paths, context, prefix.as_deref());
@@ -4847,7 +4853,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     if let Command::Render(RenderArgs { ref file, mode }) = cli.command {
         let stdout_is_tty = io::stdout().is_terminal();
         let use_stdout_color = resolve_use_color(cli.color, stdout_is_tty);
-        let render_paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
+        let render_paths = VaultPaths::new(vault_discovery.root.clone());
         let report = commands::render::run_render_command(&render_paths, file.as_ref(), mode)?;
         return commands::render::print_render_report(
             cli.output,
@@ -4869,7 +4875,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return commands::devices::handle_devices_command(cli, command);
     }
 
-    let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
+    let paths = VaultPaths::new(vault_discovery.root.clone());
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
     let stderr_is_tty = io::stderr().is_terminal();
@@ -5152,7 +5158,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             selected_permission_guard(cli, &paths)?
                 .check_index()
                 .map_err(CliError::operation)?;
-            let report = run_init_command(&paths, args)?;
+            let report = run_init_command(&paths, args, &vault_discovery)?;
             print_init_summary(cli.output, &paths, &report)?;
             Ok(())
         }
@@ -10018,6 +10024,33 @@ fn print_automation_run_report(
             Ok(())
         }
         OutputFormat::Json => print_json(report),
+    }
+}
+
+impl Cli {
+    /// Resolves the vault root for this invocation: the explicit `--vault` /
+    /// `VULCAN_VAULT` value, otherwise discovery from the current directory.
+    pub(crate) fn vault_discovery(&self) -> Result<VaultRootDiscovery, CliError> {
+        if let Some(vault) = &self.vault {
+            return resolve_vault_root(vault).map(VaultRootDiscovery::explicit);
+        }
+        let current = std::env::current_dir().map_err(|error| CliError::io(&error))?;
+        let initializing = matches!(
+            self.command,
+            Command::Init(_)
+                | Command::Index {
+                    command: IndexCommand::Init(_)
+                }
+        );
+        Ok(if initializing {
+            discover_init_root(&current)
+        } else {
+            discover_vault_root(&current)
+        })
+    }
+
+    pub(crate) fn vault_root(&self) -> Result<PathBuf, CliError> {
+        self.vault_discovery().map(|discovery| discovery.root)
     }
 }
 

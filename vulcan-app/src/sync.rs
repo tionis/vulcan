@@ -2215,6 +2215,7 @@ fn resolve_document_links(
                 problem: match problem {
                     LinkResolutionProblem::Unresolved => "unresolved",
                     LinkResolutionProblem::Ambiguous(_) => "ambiguous",
+                    LinkResolutionProblem::OutsideVault => "outside_vault",
                 },
             });
         }
@@ -2247,6 +2248,7 @@ fn resolve_canvas_links(
             problem: match problem {
                 LinkResolutionProblem::Unresolved => "unresolved",
                 LinkResolutionProblem::Ambiguous(_) => "ambiguous",
+                LinkResolutionProblem::OutsideVault => "outside_vault",
             },
         });
     }

@@ -8064,10 +8064,14 @@ pub struct Cli {
     #[arg(
         long,
         global = true,
-        default_value = ".",
-        help = "Vault root directory"
+        env = "VULCAN_VAULT",
+        help = "Vault root directory [default: discovered from the current directory]",
+        long_help = "Vault root directory. When omitted, Vulcan uses the nearest enclosing \
+directory that contains `.vulcan/` (without leaving the current Git work tree or climbing \
+into your home directory), then the `docs_dir` of an enclosing MkDocs project, then the \
+current directory. `vulcan init` does not adopt an ancestor vault."
     )]
-    pub vault: PathBuf,
+    pub vault: Option<PathBuf>,
 
     #[arg(
         long,

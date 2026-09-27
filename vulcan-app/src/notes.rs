@@ -2017,6 +2017,22 @@ fn dataview_parse_diagnostics(
         .collect()
 }
 
+fn link_diagnostic(
+    relative_path: &str,
+    byte_offset: usize,
+    raw_text: &str,
+    message: String,
+) -> DoctorDiagnosticIssue {
+    DoctorDiagnosticIssue {
+        document_path: Some(relative_path.to_string()),
+        message,
+        byte_range: Some(DoctorByteRange {
+            start: byte_offset,
+            end: byte_offset + raw_text.len(),
+        }),
+    }
+}
+
 fn link_resolution_diagnostics(
     paths: &VaultPaths,
     relative_path: &str,
@@ -2039,27 +2055,29 @@ fn link_resolution_diagnostics(
             config.link_resolution,
         );
         match resolution.problem {
-            Some(LinkResolutionProblem::Unresolved) => diagnostics.push(DoctorDiagnosticIssue {
-                document_path: Some(relative_path.to_string()),
-                message: format!("Unresolved link target `{}`", link.raw_text),
-                byte_range: Some(DoctorByteRange {
-                    start: link.byte_offset,
-                    end: link.byte_offset + link.raw_text.len(),
-                }),
-            }),
+            Some(
+                problem @ (LinkResolutionProblem::Unresolved | LinkResolutionProblem::OutsideVault),
+            ) => diagnostics.push(link_diagnostic(
+                relative_path,
+                link.byte_offset,
+                &link.raw_text,
+                if problem == LinkResolutionProblem::OutsideVault {
+                    format!("Link target `{}` leaves the vault root", link.raw_text)
+                } else {
+                    format!("Unresolved link target `{}`", link.raw_text)
+                },
+            )),
             Some(LinkResolutionProblem::Ambiguous(matches)) => {
-                diagnostics.push(DoctorDiagnosticIssue {
-                    document_path: Some(relative_path.to_string()),
-                    message: format!(
+                diagnostics.push(link_diagnostic(
+                    relative_path,
+                    link.byte_offset,
+                    &link.raw_text,
+                    format!(
                         "Ambiguous link target `{}` matched {}",
                         link.raw_text,
                         matches.join(", ")
                     ),
-                    byte_range: Some(DoctorByteRange {
-                        start: link.byte_offset,
-                        end: link.byte_offset + link.raw_text.len(),
-                    }),
-                });
+                ));
             }
             None => {
                 let Some(target_path) = resolution.resolved_target_id else {
@@ -2079,17 +2097,10 @@ fn link_resolution_diagnostics(
                         .iter()
                         .any(|heading| heading.text == target_heading)
                     {
-                        diagnostics.push(DoctorDiagnosticIssue {
-                            document_path: Some(relative_path.to_string()),
-                            message: format!(
+                        diagnostics.push(link_diagnostic(relative_path, link.byte_offset, &link.raw_text, format!(
                                 "Broken heading link `{}`: heading `{target_heading}` was not found in {target_path}",
                                 link.raw_text
-                            ),
-                            byte_range: Some(DoctorByteRange {
-                                start: link.byte_offset,
-                                end: link.byte_offset + link.raw_text.len(),
-                            }),
-                        });
+                            )));
                     }
                 }
                 if let Some(target_block) = link.target_block.as_deref() {
@@ -2106,17 +2117,10 @@ fn link_resolution_diagnostics(
                         .iter()
                         .any(|block_ref| block_ref.block_id_text == target_block)
                     {
-                        diagnostics.push(DoctorDiagnosticIssue {
-                            document_path: Some(relative_path.to_string()),
-                            message: format!(
+                        diagnostics.push(link_diagnostic(relative_path, link.byte_offset, &link.raw_text, format!(
                                 "Broken block link `{}`: block `^{target_block}` was not found in {target_path}",
                                 link.raw_text
-                            ),
-                            byte_range: Some(DoctorByteRange {
-                                start: link.byte_offset,
-                                end: link.byte_offset + link.raw_text.len(),
-                            }),
-                        });
+                            )));
                     }
                 }
             }

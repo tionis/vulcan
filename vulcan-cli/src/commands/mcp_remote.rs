@@ -399,7 +399,7 @@ fn resolve_registration(
             .map_err(CliError::operation),
         None => context
             .registry
-            .find_by_path(&cli.vault)
+            .find_by_path(&cli.vault_root()?)
             .map_err(|_| {
                 CliError::operation(
                     "the current vault is not registered; run `vulcan vault add <id> <path>` or pass --wiki",

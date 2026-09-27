@@ -137,6 +137,12 @@ impl ResolverIndex {
 
     fn resolve_relative_indexed(&self, source_path: &str, target: &str) -> LinkResolutionResult {
         let source_dir = source_directory(source_path);
+        if escapes_vault_root(&source_dir, target) {
+            return LinkResolutionResult {
+                resolved_target_id: None,
+                problem: Some(LinkResolutionProblem::OutsideVault),
+            };
+        }
         let normalized = normalize_joined_path(&source_dir, target);
         if let Some(&idx) = self.by_path.get(&normalized) {
             return LinkResolutionResult {
@@ -277,6 +283,9 @@ pub struct ResolverLink {
 pub enum LinkResolutionProblem {
     Unresolved,
     Ambiguous(Vec<String>),
+    /// A relative target climbs above the vault root, for example a link from
+    /// an MkDocs `docs/` vault to the repository's `../README.md`.
+    OutsideVault,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +338,12 @@ fn resolve_relative(
     target: &str,
 ) -> LinkResolutionResult {
     let source_dir = source_directory(source_path);
+    if escapes_vault_root(&source_dir, target) {
+        return LinkResolutionResult {
+            resolved_target_id: None,
+            problem: Some(LinkResolutionProblem::OutsideVault),
+        };
+    }
     let normalized = normalize_joined_path(&source_dir, target);
     let matches = documents
         .iter()
@@ -445,6 +460,24 @@ fn source_directory(path: &str) -> String {
     normalize_path(path)
         .rsplit_once('/')
         .map_or_else(String::new, |(dir, _)| dir.to_string())
+}
+
+/// Whether joining `target` onto `base_dir` climbs above the vault root.
+fn escapes_vault_root(base_dir: &str, target: &str) -> bool {
+    let mut depth = 0_usize;
+    for component in Path::new(base_dir).join(target).components() {
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            Component::CurDir | Component::Prefix(_) | Component::RootDir => {}
+        }
+    }
+    false
 }
 
 fn normalize_joined_path(base_dir: &str, target: &str) -> String {
@@ -614,6 +647,49 @@ mod tests {
                         .is_none()
                         .then_some(LinkResolutionProblem::Unresolved)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn relative_targets_above_the_vault_root_are_not_clamped() {
+        // `../Topic.md` from `projects/` stays inside the vault, but one more
+        // `..` would previously clamp to the vault root and match `Topic.md`.
+        let mut documents = fixture_documents();
+        documents.push(ResolverDocument {
+            id: "root-readme".to_string(),
+            path: "README.md".to_string(),
+            filename: "README".to_string(),
+            aliases: Vec::new(),
+        });
+        let index = ResolverIndex::build(&documents);
+        for mode in [LinkResolutionMode::Relative, LinkResolutionMode::Shortest] {
+            for (source, target, expected) in [
+                ("index.md", "../README.md", None),
+                ("projects/source.md", "../../README.md", None),
+                ("projects/source.md", "../README.md", Some("root-readme")),
+                (
+                    "projects/source.md",
+                    "./../x/../README.md",
+                    Some("root-readme"),
+                ),
+            ] {
+                let link = ResolverLink {
+                    source_document_id: "source".into(),
+                    source_path: source.into(),
+                    target_path_candidate: Some(target.into()),
+                    link_kind: LinkKind::Markdown,
+                };
+                let scanned = resolve_link(&documents, &link, mode);
+                assert_eq!(scanned, index.resolve(&link, mode), "{source} -> {target}");
+                assert_eq!(
+                    scanned.resolved_target_id.as_deref(),
+                    expected,
+                    "{source} -> {target}"
+                );
+                if expected.is_none() {
+                    assert_eq!(scanned.problem, Some(LinkResolutionProblem::OutsideVault));
+                }
             }
         }
     }

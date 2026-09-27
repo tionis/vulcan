@@ -175,7 +175,7 @@ fn outline_publish_progress_counters_are_compact_and_bounded() {
 fn parses_defaults_for_doctor_command() {
     let cli = Cli::try_parse_from(["vulcan", "doctor"]).expect("cli should parse");
 
-    assert_eq!(cli.vault, PathBuf::from("."));
+    assert_eq!(cli.vault, None);
     assert_eq!(cli.output, OutputFormat::Human);
     assert_eq!(cli.fields, None);
     assert_eq!(cli.limit, None);
@@ -6130,7 +6130,7 @@ fn parses_global_flags_and_scan_options() {
     ])
     .expect("cli should parse");
 
-    assert_eq!(cli.vault, PathBuf::from("/tmp/vault"));
+    assert_eq!(cli.vault, Some(PathBuf::from("/tmp/vault")));
     assert_eq!(cli.output, OutputFormat::Json);
     assert_eq!(
         cli.fields,

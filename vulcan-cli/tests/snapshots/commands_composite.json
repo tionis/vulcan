@@ -18962,7 +18962,7 @@
     ],
     "global_options": [
       {
-        "help": "Vault root directory",
+        "help": "Vault root directory [default: discovered from the current directory]",
         "id": "vault",
         "long": "vault",
         "possible_values": [],

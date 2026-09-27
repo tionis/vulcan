@@ -1101,6 +1101,177 @@ function main(event, ctx) {
     }
 }
 
+fn mkdocs_site_fixture(root: &Path) -> PathBuf {
+    let site = root.join("site");
+    fs::create_dir_all(site.join("docs/guide")).expect("docs directory");
+    fs::create_dir_all(site.join("src")).expect("source directory");
+    init_git_repo(&site);
+    fs::write(
+        site.join("mkdocs.yml"),
+        "site_name: Demo\nmarkdown_extensions:\n  - pymdownx.emoji:\n      emoji_index: !!python/name:material.extensions.emoji.twemoji\n",
+    )
+    .expect("mkdocs config");
+    fs::write(site.join(".gitignore"), "site/\n*.tmp\n").expect("repository gitignore");
+    fs::write(site.join("README.md"), "# Readme\n").expect("readme");
+    fs::write(site.join("src/main.rs"), "fn main() {}\n").expect("source");
+    fs::write(
+        site.join("docs/index.md"),
+        "# Home\n\nSee [setup](guide/setup.md) and the [readme](../README.md).\n",
+    )
+    .expect("home");
+    fs::write(site.join("docs/guide/setup.md"), "# Setup\n").expect("setup");
+    fs::write(site.join("docs/scratch.tmp"), "ignored\n").expect("scratch");
+    commit_all(&site, "Initial site");
+    site
+}
+
+fn vulcan_in(directory: &Path) -> Command {
+    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+    command.current_dir(directory).env_remove("VULCAN_VAULT");
+    command
+}
+
+#[test]
+fn mkdocs_project_root_initializes_and_discovers_the_docs_vault() {
+    let temp = TempDir::new().expect("temporary directory");
+    let site = mkdocs_site_fixture(temp.path());
+    let docs = fs::canonicalize(site.join("docs")).expect("docs path");
+
+    let init = parse_stdout_json(
+        &vulcan_in(&site)
+            .args(["--output", "json", "init", "--no-import"])
+            .assert()
+            .success(),
+    );
+    assert!(site.join("docs/.vulcan").is_dir());
+    assert!(!site.join(".vulcan").exists());
+    assert_eq!(init["discovered_from"], "mkdocs");
+    assert_eq!(init["layout"]["repository"]["vault_prefix"], "docs");
+    assert_eq!(init["layout"]["mkdocs"]["vault_is_docs_dir"], true);
+
+    vulcan_in(&site).args(["scan"]).assert().success();
+
+    // Commands from the project root, the vault root, and a vault subfolder
+    // all resolve the same vault.
+    for directory in [site.clone(), site.join("docs"), site.join("docs/guide")] {
+        let status = parse_stdout_json(
+            &vulcan_in(&directory)
+                .args(["--output", "json", "status"])
+                .assert()
+                .success(),
+        );
+        assert_eq!(
+            fs::canonicalize(status["vault_root"].as_str().expect("vault root"))
+                .expect("status vault"),
+            docs,
+            "from {}",
+            directory.display()
+        );
+        assert_eq!(status["note_count"], 2, "repository ignore rules apply");
+        assert_eq!(status["attachment_count"], 0);
+        assert_eq!(status["git_vault_prefix"], "docs");
+        assert!(status["mkdocs_config"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("mkdocs.yml")));
+    }
+
+    let doctor = parse_stdout_json(
+        &vulcan_in(&site.join("docs/guide"))
+            .args(["--output", "json", "doctor"])
+            .assert(),
+    );
+    let unresolved = doctor["unresolved_links"]
+        .as_array()
+        .expect("unresolved links");
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(
+        unresolved[0]["message"],
+        "Link target leaves the vault root: ../README.md"
+    );
+}
+
+#[test]
+fn vault_discovery_prefers_explicit_vaults_and_nearest_vulcan_directory() {
+    let temp = TempDir::new().expect("temporary directory");
+    let vault = temp.path().join("notes");
+    fs::create_dir_all(vault.join("Projects/Deep")).expect("vault folders");
+    fs::write(vault.join("Home.md"), "# Home\n").expect("home");
+    vulcan_in(&vault)
+        .args(["init", "--no-import"])
+        .assert()
+        .success();
+    let canonical = fs::canonicalize(&vault).expect("vault path");
+
+    let from_subfolder = parse_stdout_json(
+        &vulcan_in(&vault.join("Projects/Deep"))
+            .args(["--output", "json", "status"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(
+        fs::canonicalize(from_subfolder["vault_root"].as_str().expect("root")).expect("root"),
+        canonical
+    );
+
+    let other = temp.path().join("other");
+    fs::create_dir_all(&other).expect("other directory");
+    let from_environment = parse_stdout_json(
+        &vulcan_in(&other)
+            .env("VULCAN_VAULT", &vault)
+            .args(["--output", "json", "status"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(
+        fs::canonicalize(from_environment["vault_root"].as_str().expect("root")).expect("root"),
+        canonical
+    );
+
+    // `init` never adopts an ancestor vault.
+    vulcan_in(&vault.join("Projects/Deep"))
+        .args(["init", "--no-import"])
+        .assert()
+        .success();
+    assert!(vault.join("Projects/Deep/.vulcan").is_dir());
+}
+
+#[test]
+fn nested_vault_git_commands_stay_scoped_to_the_vault() {
+    let temp = TempDir::new().expect("temporary directory");
+    let site = mkdocs_site_fixture(temp.path());
+    let docs = site.join("docs");
+    vulcan_in(&docs)
+        .args(["init", "--no-import"])
+        .assert()
+        .success();
+    run_git_ok(&site, &["add", "docs/.vulcan"]);
+    run_git_ok(&site, &["commit", "-m", "Track vault config"]);
+
+    fs::write(docs.join("guide/setup.md"), "# Setup\n\nUpdated.\n").expect("edit note");
+    fs::write(site.join("src/main.rs"), "fn main() { println!(); }\n").expect("edit code");
+
+    let status = parse_stdout_json(
+        &vulcan_in(&docs)
+            .args(["--output", "json", "git", "status"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(status["unstaged"], serde_json::json!(["guide/setup.md"]));
+
+    let commit = parse_stdout_json(
+        &vulcan_in(&docs)
+            .args(["--output", "json", "git", "commit", "-m", "Docs"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(commit["files"], serde_json::json!(["guide/setup.md"]));
+    assert_eq!(
+        run_git_stdout(&site, &["status", "--short"]),
+        "M src/main.rs",
+        "code outside the vault stays uncommitted"
+    );
+}
+
 #[test]
 fn global_options_without_a_subcommand_show_root_help() {
     let temp = TempDir::new().expect("temporary directory");
