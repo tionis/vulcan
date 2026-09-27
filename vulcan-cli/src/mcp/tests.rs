@@ -701,7 +701,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     let foreground_invalid_consent = named_listener_get(address, "/oauth/consent");
     assert!(foreground_invalid_consent.starts_with("HTTP/1.1 405"));
     assert!(foreground_invalid_consent.contains("consent requires POST"));
-    let client = named_listener_register_client(address);
+    let client = named_listener_register_client(address, "client_secret_post");
+    let public_client = named_listener_register_client(address, "none");
+    assert!(public_client["client_secret"].is_null());
     let (foreground_consent_token, foreground_refresh_token) =
         named_listener_complete_browser_consent(address, &client);
     let foreground_consent_grant = named
@@ -711,6 +713,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .last()
         .expect("foreground consent grant")
         .id;
+    let (public_foreground_token, public_foreground_refresh) =
+        named_listener_complete_browser_consent(address, &public_client);
+    named_listener_assert_consented_tools(address, &public_foreground_token);
     named_listener_assert_consented_tools(address, &foreground_consent_token);
     let foreground_challenge = named_listener_auth_challenge(address, "parity");
     let foreground_init = named_listener_initialize(address, "parity", &token);
@@ -1081,6 +1086,15 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "OAuth bearer challenge changed between foreground and resident hosting"
     );
     named_listener_assert_consented_tools(address, &foreground_consent_token);
+    named_listener_assert_consented_tools(address, &public_foreground_token);
+    let public_refreshed =
+        named_listener_refresh_token(address, &public_client, &public_foreground_refresh);
+    named_listener_assert_consented_tools(
+        address,
+        public_refreshed["access_token"]
+            .as_str()
+            .expect("public refreshed access token"),
+    );
     let refreshed_foreground =
         named_listener_refresh_token(address, &client, &foreground_refresh_token);
     let refreshed_foreground_access = refreshed_foreground["access_token"]
@@ -1089,6 +1103,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     named_listener_assert_consented_tools(address, refreshed_foreground_access);
     let (resident_consent_token, _) = named_listener_complete_browser_consent(address, &client);
     named_listener_assert_consented_tools(address, &resident_consent_token);
+    let (public_resident_token, _) =
+        named_listener_complete_browser_consent(address, &public_client);
+    named_listener_assert_consented_tools(address, &public_resident_token);
     let resident_init = named_listener_initialize(address, "parity", &token);
     assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
     let resident_session = named_listener_session_id(&resident_init);
@@ -2111,12 +2128,17 @@ fn named_listener_header(response: &str, name: &str) -> String {
 }
 
 #[cfg(feature = "oauth")]
-fn named_listener_register_client(address: SocketAddr) -> Value {
+fn named_listener_register_client(address: SocketAddr, auth_method: &str) -> Value {
+    let registration = serde_json::json!({
+        "redirect_uris": ["https://chatgpt.com/callback"],
+        "client_name": "Live consent test",
+        "token_endpoint_auth_method": auth_method,
+    });
     let response = named_listener_post(
         address,
         "/oauth/register",
         "application/json",
-        r#"{"redirect_uris":["https://chatgpt.com/callback"],"client_name":"Live consent test","token_endpoint_auth_method":"client_secret_post"}"#,
+        &registration.to_string(),
     );
     assert!(response.starts_with("HTTP/1.1 201"), "{response}");
     serde_json::from_str(response.split_once("\r\n\r\n").expect("response").1)
@@ -2161,7 +2183,6 @@ fn named_listener_complete_browser_consent(
     client: &Value,
 ) -> (String, String) {
     let client_id = client["client_id"].as_str().expect("client ID");
-    let client_secret = client["client_secret"].as_str().expect("client secret");
     let verifier = generate_pkce_verifier();
     let challenge = pkce_s256_challenge(&verifier);
     let authorize = named_listener_get(
@@ -2214,14 +2235,17 @@ fn named_listener_complete_browser_consent(
     assert!(redirect.starts_with("https://chatgpt.com/callback?"));
     let params = parse_query_params(redirect.split_once('?').expect("client query").1);
     assert_eq!(params["state"], "client-state");
-    let token_form = format!(
-        "grant_type=authorization_code&client_id={}&client_secret={}&code={}&redirect_uri={}&code_verifier={}",
+    let mut token_form = format!(
+        "grant_type=authorization_code&client_id={}&code={}&redirect_uri={}&code_verifier={}",
         percent_encode(client_id),
-        percent_encode(client_secret),
         percent_encode(&params["code"]),
         percent_encode("https://chatgpt.com/callback"),
         percent_encode(&verifier),
     );
+    if let Some(secret) = client["client_secret"].as_str() {
+        token_form.push_str("&client_secret=");
+        token_form.push_str(&percent_encode(secret));
+    }
     let token = named_listener_post(
         address,
         "/oauth/token",
@@ -2247,12 +2271,15 @@ fn named_listener_complete_browser_consent(
 
 #[cfg(feature = "oauth")]
 fn named_listener_refresh_response(address: SocketAddr, client: &Value, refresh: &str) -> String {
-    let body = format!(
-        "grant_type=refresh_token&client_id={}&client_secret={}&refresh_token={}",
+    let mut body = format!(
+        "grant_type=refresh_token&client_id={}&refresh_token={}",
         percent_encode(client["client_id"].as_str().expect("client ID")),
-        percent_encode(client["client_secret"].as_str().expect("client secret")),
         percent_encode(refresh),
     );
+    if let Some(secret) = client["client_secret"].as_str() {
+        body.push_str("&client_secret=");
+        body.push_str(&percent_encode(secret));
+    }
     named_listener_post(
         address,
         "/oauth/token",
