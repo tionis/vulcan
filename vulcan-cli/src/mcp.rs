@@ -55,8 +55,9 @@ use vulcan_app::mcp_protocol::{
     McpPromptGetParams, McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs,
     McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
     McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
-    McpToolPackMutationArgs, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
-    MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT, MCP_RESOURCE_NOT_FOUND,
+    McpToolPackMutationArgs, McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs,
+    MCP_INLINE_TEXT_LIMIT, MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT,
+    MCP_RESOURCE_NOT_FOUND,
 };
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
@@ -219,13 +220,6 @@ pub(crate) struct McpHttpOptions {
 }
 
 #[derive(Debug, Clone)]
-struct McpStoredResource {
-    uri: String,
-    mime_type: String,
-    text: String,
-}
-
-#[derive(Debug, Clone)]
 struct McpServerCore {
     paths: VaultPaths,
     selection: vulcan_core::ResolvedPermissionProfile,
@@ -233,8 +227,7 @@ struct McpServerCore {
     tool_pack_mode: McpToolPackMode,
     pinned_tool_packs: BTreeSet<McpToolPack>,
     selected_tool_packs: BTreeSet<McpToolPack>,
-    stored_resources: BTreeMap<String, McpStoredResource>,
-    next_resource_id: u64,
+    tool_resources: McpToolResourceStore,
     snapshot: McpListSnapshot,
 }
 
@@ -2259,8 +2252,7 @@ impl McpServerCore {
             tool_pack_mode,
             pinned_tool_packs,
             selected_tool_packs,
-            stored_resources: BTreeMap::new(),
-            next_resource_id: 1,
+            tool_resources: McpToolResourceStore::default(),
             snapshot,
         })
     }
@@ -2670,14 +2662,8 @@ impl McpServerCore {
 
     #[allow(clippy::too_many_lines)]
     fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
-        if let Some(stored) = self.stored_resources.get(uri) {
-            return Ok(serde_json::json!({
-                "contents": [{
-                    "uri": stored.uri,
-                    "mimeType": stored.mime_type,
-                    "text": stored.text,
-                }]
-            }));
+        if let Some(stored) = self.tool_resources.read(uri) {
+            return Ok(stored);
         }
 
         if let Some(result) = mcp_assistant::read_resource(&self.paths, &self.guard, uri) {
@@ -3683,7 +3669,7 @@ impl McpServerCore {
                 "text": serialized,
             })]
         } else {
-            let resource = self.store_tool_result_resource(tool_name, &serialized);
+            let resource = self.tool_resources.store_json(tool_name, &serialized);
             vec![
                 serde_json::json!({
                     "type": "text",
@@ -3729,7 +3715,7 @@ impl McpServerCore {
                     "type": "text",
                     "text": format!("`{tool_name}` returned text too large to inline; read the linked resource."),
                 }));
-                content.push(self.store_tool_text_resource(tool_name, text));
+                content.push(self.tool_resources.store_text(tool_name, text));
             }
         }
         if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
@@ -3746,7 +3732,7 @@ impl McpServerCore {
                     "text": tool_summary_text(tool_name, &structured),
                 }));
             }
-            content.push(self.store_tool_result_resource(tool_name, &serialized));
+            content.push(self.tool_resources.store_json(tool_name, &serialized));
         }
         let mut response = serde_json::json!({
             "content": content,
@@ -3759,49 +3745,6 @@ impl McpServerCore {
                 .insert("structuredContent".to_string(), structured);
         }
         response
-    }
-
-    fn store_tool_result_resource(&mut self, tool_name: &str, serialized: &str) -> Value {
-        let uri = format!("vulcan://tool-results/{}.json", self.next_resource_id);
-        self.next_resource_id += 1;
-        let name = format!("{tool_name}-result.json");
-        let description = format!("Full structured result for `{tool_name}`");
-        self.stored_resources.insert(
-            uri.clone(),
-            McpStoredResource {
-                uri: uri.clone(),
-                mime_type: "application/json".to_string(),
-                text: serialized.to_string(),
-            },
-        );
-        serde_json::json!({
-            "type": "resource_link",
-            "uri": uri,
-            "name": name,
-            "description": description,
-            "mimeType": "application/json",
-        })
-    }
-
-    fn store_tool_text_resource(&mut self, tool_name: &str, text: &str) -> Value {
-        let uri = format!("vulcan://tool-results/{}.txt", self.next_resource_id);
-        self.next_resource_id += 1;
-        let name = format!("{tool_name}-result.txt");
-        self.stored_resources.insert(
-            uri.clone(),
-            McpStoredResource {
-                uri: uri.clone(),
-                mime_type: "text/plain".to_string(),
-                text: text.to_string(),
-            },
-        );
-        serde_json::json!({
-            "type": "resource_link",
-            "uri": uri,
-            "name": name,
-            "description": format!("Full text result for `{tool_name}`"),
-            "mimeType": "text/plain",
-        })
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {

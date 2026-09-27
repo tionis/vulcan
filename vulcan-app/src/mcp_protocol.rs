@@ -13,6 +13,78 @@ pub const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 pub const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
 const MCP_DAILY_LIST_DEFAULT_LIMIT: usize = 20;
 
+#[derive(Debug, Clone)]
+struct McpStoredResource {
+    uri: String,
+    mime_type: &'static str,
+    text: String,
+}
+
+/// Ephemeral large tool results owned by a single MCP session.
+#[derive(Debug, Clone)]
+pub struct McpToolResourceStore {
+    resources: BTreeMap<String, McpStoredResource>,
+    next_id: u64,
+}
+
+impl Default for McpToolResourceStore {
+    fn default() -> Self {
+        Self {
+            resources: BTreeMap::new(),
+            next_id: 1,
+        }
+    }
+}
+
+impl McpToolResourceStore {
+    #[must_use]
+    pub fn read(&self, uri: &str) -> Option<Value> {
+        let resource = self.resources.get(uri)?;
+        Some(serde_json::json!({
+            "contents": [{
+                "uri": resource.uri,
+                "mimeType": resource.mime_type,
+                "text": resource.text,
+            }]
+        }))
+    }
+
+    pub fn store_json(&mut self, tool_name: &str, text: &str) -> Value {
+        self.store(tool_name, text, "json", "application/json", "structured")
+    }
+
+    pub fn store_text(&mut self, tool_name: &str, text: &str) -> Value {
+        self.store(tool_name, text, "txt", "text/plain", "text")
+    }
+
+    fn store(
+        &mut self,
+        tool_name: &str,
+        text: &str,
+        extension: &str,
+        mime_type: &'static str,
+        kind: &str,
+    ) -> Value {
+        let uri = format!("vulcan://tool-results/{}.{}", self.next_id, extension);
+        self.next_id += 1;
+        self.resources.insert(
+            uri.clone(),
+            McpStoredResource {
+                uri: uri.clone(),
+                mime_type,
+                text: text.to_string(),
+            },
+        );
+        serde_json::json!({
+            "type": "resource_link",
+            "uri": uri,
+            "name": format!("{tool_name}-result.{extension}"),
+            "description": format!("Full {kind} result for `{tool_name}`"),
+            "mimeType": mime_type,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpListSnapshot {
     pub tools: String,
@@ -664,5 +736,37 @@ mod tests {
             ]
         );
         assert!(snapshot.changed_notifications(next).is_empty());
+    }
+
+    #[test]
+    fn tool_resource_store_is_session_local_and_preserves_link_contract() {
+        let mut first = McpToolResourceStore::default();
+        let mut second = McpToolResourceStore::default();
+        let json_link = first.store_json("note_get", "{\"content\":1}");
+        assert_eq!(json_link["uri"], "vulcan://tool-results/1.json");
+        assert_eq!(json_link["name"], "note_get-result.json");
+        assert_eq!(
+            json_link["description"],
+            "Full structured result for `note_get`"
+        );
+        assert_eq!(json_link["mimeType"], "application/json");
+        assert_eq!(
+            first.read("vulcan://tool-results/1.json").unwrap()["contents"][0]["text"],
+            "{\"content\":1}"
+        );
+        assert!(second.read("vulcan://tool-results/1.json").is_none());
+        let text_link = first.store_text("custom", "large text");
+        assert_eq!(text_link["uri"], "vulcan://tool-results/2.txt");
+        assert_eq!(text_link["name"], "custom-result.txt");
+        assert_eq!(text_link["description"], "Full text result for `custom`");
+        assert_eq!(text_link["mimeType"], "text/plain");
+        assert_eq!(
+            first.read("vulcan://tool-results/2.txt").unwrap()["contents"][0]["text"],
+            "large text"
+        );
+        assert_eq!(
+            second.store_json("other", "{}")["uri"],
+            "vulcan://tool-results/1.json"
+        );
     }
 }
