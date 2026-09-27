@@ -3,6 +3,7 @@ use crate::McpToolPackModeArg;
 use std::io::Read;
 use std::net::TcpListener;
 use vulcan_core::{PermissionProfile, TasksQueryResult};
+use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
 use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
 
 #[test]

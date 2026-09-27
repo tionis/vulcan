@@ -243,6 +243,9 @@ live in the CLI host; a daemon-owned HTTP route remains to be extracted.
 Each named or direct HTTP listener has a 64-connection admission ceiling, counting SSE streams.
 Excess connections receive HTTP 503 with `Retry-After: 1` before a worker is spawned; completed
 connections release admission capacity.
+The daemon listener parses bounded requests before calling the CLI's OAuth/MCP route handler and
+returns the existing JSON-RPC invalid-request shape for malformed HTTP framing. The host callback
+only receives successfully parsed requests.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or

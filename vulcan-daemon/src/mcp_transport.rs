@@ -4,14 +4,18 @@
 //! handler. This boundary lets foreground and resident hosts use the same
 //! bind, accept, shutdown, and per-connection timeout behavior.
 
-use crate::mcp_http_codec::{write_mcp_http_response, McpHttpResponse};
+use crate::mcp_http_codec::{
+    read_mcp_http_request, write_mcp_http_response, McpHttpRequest, McpHttpResponse,
+};
 use crate::shutdown::ShutdownSignal;
+use serde_json::Value;
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use vulcan_app::mcp_dispatch::jsonrpc_error;
 
 const MCP_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MCP_CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -48,7 +52,7 @@ impl McpHttpListener {
 
     pub fn serve<F>(&self, stop: Option<&ShutdownSignal>, handler: F) -> io::Result<()>
     where
-        F: Fn(&mut TcpStream) + Send + Sync + 'static,
+        F: Fn(&McpHttpRequest, &mut TcpStream) + Send + Sync + 'static,
     {
         let handler = Arc::new(handler);
         loop {
@@ -84,7 +88,23 @@ impl McpHttpListener {
                             let _slot = slot;
                             let _ = stream.set_nonblocking(false);
                             let _ = stream.set_read_timeout(Some(MCP_CONNECTION_READ_TIMEOUT));
-                            handler(&mut stream);
+                            match read_mcp_http_request(&mut stream) {
+                                Ok(request) => handler(&request, &mut stream),
+                                Err(error) => {
+                                    let body =
+                                        jsonrpc_error(Value::Null, -32600, error.message, None);
+                                    let _ = write_mcp_http_response(
+                                        &mut stream,
+                                        &McpHttpResponse {
+                                            status: error.status,
+                                            content_type: Some("application/json"),
+                                            body: serde_json::to_vec(&body)
+                                                .expect("JSON-RPC error should serialize"),
+                                            extra_headers: Vec::new(),
+                                        },
+                                    );
+                                }
+                            }
                         })?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -115,6 +135,9 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::Mutex;
 
+    const TEST_REQUEST: &[u8] =
+        b"GET /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n";
+
     #[test]
     fn listener_dispatches_connections_and_stops_on_signal() {
         let listener =
@@ -124,15 +147,13 @@ mod tests {
         let runner_stop = Arc::clone(&stop);
         let (sender, receiver) = mpsc::channel();
         let runner = thread::spawn(move || {
-            listener.serve(Some(&runner_stop), move |stream| {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).expect("request byte");
-                sender.send(byte[0]).expect("request receiver");
+            listener.serve(Some(&runner_stop), move |request, stream| {
+                sender.send(request.path.clone()).expect("request receiver");
                 stream.write_all(b"R").expect("response byte");
             })
         });
         let mut client = TcpStream::connect(address).expect("connect");
-        client.write_all(b"Q").expect("send request");
+        client.write_all(TEST_REQUEST).expect("send request");
         let mut response = [0];
         client.read_exact(&mut response).expect("response");
         assert_eq!(response, *b"R");
@@ -140,11 +161,47 @@ mod tests {
             receiver
                 .recv_timeout(Duration::from_secs(2))
                 .expect("dispatch"),
-            b'Q'
+            "/mcp"
         );
         stop.cancel();
         runner.join().expect("listener thread").expect("shutdown");
         assert!(TcpStream::connect(address).is_err());
+    }
+
+    #[test]
+    fn malformed_request_is_rejected_before_the_route_handler() {
+        let listener =
+            McpHttpListener::bind("127.0.0.1:0".parse().expect("address")).expect("listener");
+        let address = listener.local_addr();
+        let stop = Arc::new(ShutdownSignal::new(false));
+        let runner_stop = Arc::clone(&stop);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner_calls = Arc::clone(&calls);
+        let runner = thread::spawn(move || {
+            listener.serve(Some(&runner_stop), move |_request, _stream| {
+                runner_calls.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        client
+            .write_all(b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: nope\r\n\r\n")
+            .expect("malformed request");
+        let mut response = String::new();
+        client
+            .read_to_string(&mut response)
+            .expect("error response");
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        let body: Value =
+            serde_json::from_str(response.split_once("\r\n\r\n").expect("response body").1)
+                .expect("JSON-RPC response");
+        assert_eq!(body["error"]["code"], -32600);
+        assert_eq!(body["id"], Value::Null);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        stop.cancel();
+        runner.join().expect("listener thread").expect("shutdown");
     }
 
     #[test]
@@ -161,7 +218,7 @@ mod tests {
         let (release_sender, release_receiver) = mpsc::channel();
         let release_receiver = Arc::new(Mutex::new(release_receiver));
         let runner = thread::spawn(move || {
-            listener.serve(Some(&runner_stop), move |stream| {
+            listener.serve(Some(&runner_stop), move |_request, stream| {
                 if runner_calls.fetch_add(1, Ordering::SeqCst) == 0 {
                     started_sender.send(()).expect("started receiver");
                     release_receiver
@@ -174,6 +231,7 @@ mod tests {
             })
         });
         let mut first = TcpStream::connect(address).expect("first connection");
+        first.write_all(TEST_REQUEST).expect("first request");
         started_receiver
             .recv_timeout(Duration::from_secs(2))
             .expect("first handler started");
@@ -201,6 +259,7 @@ mod tests {
         }
         assert_eq!(active.load(Ordering::Acquire), 0);
         let mut third = TcpStream::connect(address).expect("third connection");
+        third.write_all(TEST_REQUEST).expect("third request");
         third.read_exact(&mut response).expect("third response");
         assert_eq!(response, *b"R");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -219,7 +278,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let runner_calls = Arc::clone(&calls);
         let runner = thread::spawn(move || {
-            listener.serve(Some(&runner_stop), move |stream| {
+            listener.serve(Some(&runner_stop), move |_request, stream| {
                 assert_ne!(
                     runner_calls.fetch_add(1, Ordering::SeqCst),
                     0,
@@ -228,7 +287,8 @@ mod tests {
                 stream.write_all(b"R").expect("response");
             })
         });
-        let _first = TcpStream::connect(address).expect("first connection");
+        let mut first = TcpStream::connect(address).expect("first connection");
+        first.write_all(TEST_REQUEST).expect("first request");
         for _ in 0..100 {
             if calls.load(Ordering::SeqCst) == 1 && active.load(Ordering::Acquire) == 0 {
                 break;
@@ -238,6 +298,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(active.load(Ordering::Acquire), 0);
         let mut second = TcpStream::connect(address).expect("second connection");
+        second.write_all(TEST_REQUEST).expect("second request");
         let mut response = [0];
         second.read_exact(&mut response).expect("second response");
         assert_eq!(response, *b"R");

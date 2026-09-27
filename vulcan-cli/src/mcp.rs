@@ -124,8 +124,8 @@ use vulcan_daemon::hosted_executor::{
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
 use vulcan_daemon::mcp_http_codec::{
-    read_mcp_http_request, write_mcp_http_response, write_mcp_http_sse_event,
-    write_mcp_http_sse_headers, write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
+    write_mcp_http_response, write_mcp_http_sse_event, write_mcp_http_sse_headers,
+    write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
@@ -1465,8 +1465,8 @@ fn run_mcp_http_server_inner(
         ready(addr)?;
     }
     let handler_context = context.clone();
-    let result = listener.serve(lifecycle.stop, move |stream| {
-        if let Err(error) = handle_mcp_http_connection(&handler_context, stream) {
+    let result = listener.serve(lifecycle.stop, move |request, stream| {
+        if let Err(error) = handle_mcp_http_connection(&handler_context, request, stream) {
             let response = mcp_http_json_error_response(500, error.to_string(), Value::Null);
             let _ = write_mcp_http_response(stream, &response);
         }
@@ -1514,26 +1514,18 @@ fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
 
 fn handle_mcp_http_connection(
     context: &McpHttpServerContext,
+    request: &McpHttpRequest,
     stream: &mut TcpStream,
 ) -> Result<(), CliError> {
-    let request = match read_mcp_http_request(stream) {
-        Ok(request) => request,
-        Err(error) => {
-            let response = mcp_http_json_error_response(error.status, error.message, Value::Null);
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-            return Ok(());
-        }
-    };
-
     #[cfg(feature = "oauth")]
     {
-        if let Some(response) = handle_mcp_oauth_metadata(context, &request) {
+        if let Some(response) = handle_mcp_oauth_metadata(context, request) {
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
             return Ok(());
         }
-        if let Some(operation_id) = named_mcp_operation_id(context, &request) {
+        if let Some(operation_id) = named_mcp_operation_id(context, request) {
             let response = if request.method == "GET" {
-                match authenticate_mcp_http_request(context, &request) {
+                match authenticate_mcp_http_request(context, request) {
                     Ok(authority) => {
                         handle_named_mcp_operation_status(context, &authority, operation_id)
                     }
@@ -1552,7 +1544,7 @@ fn handle_mcp_http_connection(
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
     }
-    let authority = match authenticate_mcp_http_request(context, &request) {
+    let authority = match authenticate_mcp_http_request(context, request) {
         Ok(authority) => authority,
         Err(response) => {
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
@@ -1562,12 +1554,12 @@ fn handle_mcp_http_connection(
 
     match request.method.as_str() {
         "POST" => {
-            let response = handle_mcp_http_post(context, &request, &authority);
+            let response = handle_mcp_http_post(context, request, &authority);
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         }
-        "GET" => handle_mcp_http_sse(context, &request, &authority, stream)?,
+        "GET" => handle_mcp_http_sse(context, request, &authority, stream)?,
         "DELETE" => {
-            let response = handle_mcp_http_delete(context, &request, &authority);
+            let response = handle_mcp_http_delete(context, request, &authority);
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         }
         _ => {
