@@ -4,7 +4,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tempfile::NamedTempFile;
@@ -167,8 +167,20 @@ fn load_clients(
             path.display()
         )));
     }
-    require_owner_only(path, &metadata)?;
-    let bytes = fs::read(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    set_no_follow(&mut options);
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() || opened.len() > MAX_REGISTRY_BYTES {
+        return Err(OAuthClientRegistryError::Invalid(format!(
+            "{} must be a regular file no larger than 1 MiB",
+            path.display()
+        )));
+    }
+    require_owner_only(path, &opened)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_REGISTRY_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_REGISTRY_BYTES {
         return Err(OAuthClientRegistryError::Invalid(
             "registry exceeds the 1 MiB limit".to_string(),
@@ -223,7 +235,7 @@ fn save_clients(
     let mut temporary = NamedTempFile::new_in(parent)?;
     temporary.write_all(&serialized)?;
     temporary.as_file().sync_all()?;
-    set_owner_only(temporary.path())?;
+    set_owner_only(temporary.as_file())?;
     temporary
         .persist(path)
         .map_err(|error| OAuthClientRegistryError::Io(error.error))?;
@@ -259,11 +271,35 @@ impl RegistryLock {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
+        set_no_follow(&mut options);
         let file = options.open(&lock_path)?;
-        set_owner_only(&lock_path)?;
+        let opened = file.metadata()?;
+        if !opened.is_file() {
+            return Err(OAuthClientRegistryError::Invalid(format!(
+                "{} must be a regular lock file",
+                lock_path.display()
+            )));
+        }
+        require_owner_only(&lock_path, &opened)?;
         file.lock_exclusive()?;
         Ok(Self { _file: file })
     }
+}
+
+fn set_no_follow(options: &mut OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = options;
 }
 
 #[cfg(unix)]
@@ -290,14 +326,14 @@ fn require_owner_only(
 }
 
 #[cfg(unix)]
-fn set_owner_only(path: &Path) -> Result<(), OAuthClientRegistryError> {
+fn set_owner_only(file: &File) -> Result<(), OAuthClientRegistryError> {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn set_owner_only(_path: &Path) -> Result<(), OAuthClientRegistryError> {
+fn set_owner_only(_file: &File) -> Result<(), OAuthClientRegistryError> {
     Ok(())
 }
 
@@ -358,7 +394,8 @@ mod tests {
             serde_json::to_vec(&vec![client("legacy")]).expect("legacy JSON"),
         )
         .expect("legacy file");
-        set_owner_only(&path).expect("owner-only legacy file");
+        set_owner_only(&File::open(&path).expect("legacy file handle"))
+            .expect("owner-only legacy file");
         let registry = OAuthClientRegistry::at(path.clone()).expect("legacy store");
         assert_eq!(
             registry.get("legacy").expect("legacy lookup"),
@@ -385,5 +422,38 @@ mod tests {
             .get("unpublished")
             .expect("empty registry")
             .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_registry_and_lock_files_are_rejected_without_touching_targets() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let temporary = tempfile::tempdir().expect("temporary state");
+        let target = temporary.path().join("unrelated");
+        fs::write(&target, "unrelated contents").expect("target");
+        let original_mode = fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode();
+        let path = temporary.path().join("oauth-clients.json");
+        symlink(&target, &path).expect("registry symlink");
+        assert!(OAuthClientRegistry::at(path.clone()).is_err());
+        fs::remove_file(&path).expect("remove registry symlink");
+        let lock_path = path.with_extension("lock");
+        fs::remove_file(&lock_path).expect("remove created lock file");
+        symlink(&target, &lock_path).expect("lock symlink");
+        assert!(OAuthClientRegistry::at(path).is_err());
+        assert_eq!(
+            fs::read_to_string(&target).expect("target"),
+            "unrelated contents"
+        );
+        assert_eq!(
+            fs::metadata(&target)
+                .expect("target metadata")
+                .permissions()
+                .mode(),
+            original_mode
+        );
     }
 }

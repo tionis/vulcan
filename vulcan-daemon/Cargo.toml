@@ -14,6 +14,7 @@ web = ["vulcan-app/web"]
 [dependencies]
 axum.workspace = true
 fs2.workspace = true
+libc.workspace = true
 base64.workspace = true
 blake3.workspace = true
 getrandom.workspace = true

@@ -4742,6 +4742,7 @@ dependencies = [
  "blake3",
  "fs2",
  "getrandom 0.3.4",
+ "libc",
  "notify",
  "reqwest",
  "serde",
