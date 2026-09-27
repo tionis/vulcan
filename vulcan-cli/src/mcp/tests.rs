@@ -290,6 +290,7 @@ fn mcp_http_listener_reports_bound_address_and_stops_on_supervisor_signal() {
                 stop: Some(&runner_stop),
                 ready: Some(&on_ready),
                 hosted: None,
+                indieauth_exchange: None,
             },
         );
         done_sender.send(result).expect("completion receiver");
@@ -384,6 +385,7 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
                     stop: Some(&runner_stop),
                     ready: Some(&on_ready),
                     hosted: Some(hosted),
+                    indieauth_exchange: None,
                 },
             );
             done_sender.send(result).expect("completion receiver");
@@ -665,6 +667,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             None,
             Some(&runner_endpoints),
             Some(runner_scheduler),
+            Some(named_listener_fake_indieauth_exchange),
         )
     });
     assert_eq!(
@@ -695,6 +698,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     let foreground_invalid_consent = named_listener_get(address, "/oauth/consent");
     assert!(foreground_invalid_consent.starts_with("HTTP/1.1 405"));
     assert!(foreground_invalid_consent.contains("consent requires POST"));
+    let client = named_listener_register_client(address);
+    let foreground_consent_token = named_listener_complete_browser_consent(address, &client);
+    named_listener_assert_consented_tools(address, &foreground_consent_token);
     let foreground_challenge = named_listener_auth_challenge(address, "parity");
     let foreground_init = named_listener_initialize(address, "parity", &token);
     assert!(
@@ -990,6 +996,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         scheduler,
         runtime.handle().clone(),
         Some(endpoints),
+        Some(named_listener_fake_indieauth_exchange),
     )
     .expect("resident registration")
     .expect("resident service");
@@ -1062,6 +1069,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         foreground_challenge,
         "OAuth bearer challenge changed between foreground and resident hosting"
     );
+    named_listener_assert_consented_tools(address, &foreground_consent_token);
+    let resident_consent_token = named_listener_complete_browser_consent(address, &client);
+    named_listener_assert_consented_tools(address, &resident_consent_token);
     let resident_init = named_listener_initialize(address, "parity", &token);
     assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
     let resident_session = named_listener_session_id(&resident_init);
@@ -2030,6 +2040,176 @@ fn named_listener_get(address: SocketAddr, path: &str) -> String {
 }
 
 #[cfg(feature = "oauth")]
+fn named_listener_post(address: SocketAddr, path: &str, content_type: &str, body: &str) -> String {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("OAuth POST request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("OAuth POST response");
+    response
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_header(response: &str, name: &str) -> String {
+    response
+        .split_once("\r\n\r\n")
+        .expect("HTTP response")
+        .0
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+        .unwrap_or_else(|| panic!("missing {name} header in {response}"))
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_register_client(address: SocketAddr) -> Value {
+    let response = named_listener_post(
+        address,
+        "/oauth/register",
+        "application/json",
+        r#"{"redirect_uris":["https://chatgpt.com/callback"],"client_name":"Live consent test","token_endpoint_auth_method":"client_secret_post"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    serde_json::from_str(response.split_once("\r\n\r\n").expect("response").1)
+        .expect("DCR response")
+}
+
+#[cfg(feature = "oauth")]
+#[allow(clippy::unnecessary_wraps)] // Matches the production exchange callback signature.
+fn named_listener_fake_indieauth_exchange(
+    token_endpoint: &str,
+    code: &str,
+    redirect_uri: &str,
+    client_id: &str,
+    code_verifier: &str,
+) -> Result<String, vulcan_core::OAuthError> {
+    assert_eq!(token_endpoint, "https://identity.example.test/token");
+    assert_eq!(code, "upstream-code");
+    assert_eq!(
+        redirect_uri,
+        "https://mcp.example.test/oauth/indieauth/callback"
+    );
+    assert_eq!(client_id, "https://mcp.example.test");
+    assert!(!code_verifier.is_empty());
+    Ok("https://identity.example.test/alice".to_string())
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_hidden_value(html: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" value=\"");
+    html.split_once(&marker)
+        .expect("consent hidden field")
+        .1
+        .split_once('"')
+        .expect("hidden field value")
+        .0
+        .to_string()
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_complete_browser_consent(address: SocketAddr, client: &Value) -> String {
+    let client_id = client["client_id"].as_str().expect("client ID");
+    let client_secret = client["client_secret"].as_str().expect("client secret");
+    let verifier = generate_pkce_verifier();
+    let challenge = pkce_s256_challenge(&verifier);
+    let authorize = named_listener_get(
+        address,
+        &format!(
+            "/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&code_challenge={challenge}&code_challenge_method=S256&resource={}&scope=mcp%3Atools&state=client-state",
+            percent_encode(client_id),
+            percent_encode("https://chatgpt.com/callback"),
+            percent_encode("https://mcp.example.test/parity"),
+        ),
+    );
+    assert!(authorize.starts_with("HTTP/1.1 302"), "{authorize}");
+    let upstream = named_listener_header(&authorize, "Location");
+    assert!(upstream.starts_with("https://identity.example.test/authorize?"));
+    let upstream_params = parse_query_params(upstream.split_once('?').expect("upstream query").1);
+    assert_eq!(upstream_params["code_challenge_method"], "S256");
+    assert!(!upstream_params["code_challenge"].is_empty());
+    let callback = named_listener_get(
+        address,
+        &format!(
+            "/oauth/indieauth/callback?state={}&code=upstream-code",
+            percent_encode(&upstream_params["state"]),
+        ),
+    );
+    assert!(callback.starts_with("HTTP/1.1 200"), "{callback}");
+    assert!(callback.contains("Cache-Control: no-store"), "{callback}");
+    assert!(callback.contains("X-Frame-Options: DENY"), "{callback}");
+    assert!(callback.contains("personal"), "{callback}");
+    assert!(callback.contains("team"), "{callback}");
+    let transaction = named_listener_hidden_value(&callback, "transaction");
+    let csrf = named_listener_hidden_value(&callback, "csrf_token");
+    let form = format!(
+        "transaction={transaction}&csrf_token={csrf}&decision=approve&wiki_id=personal&permission_profile_personal=readonly&pack_personal_notes-read=on&expiry_days=7"
+    );
+    let bad_csrf = named_listener_post(
+        address,
+        "/oauth/consent",
+        "application/x-www-form-urlencoded",
+        &form.replace(&format!("csrf_token={csrf}"), "csrf_token=wrong"),
+    );
+    assert!(bad_csrf.starts_with("HTTP/1.1 403"), "{bad_csrf}");
+    let consent = named_listener_post(
+        address,
+        "/oauth/consent",
+        "application/x-www-form-urlencoded",
+        &form,
+    );
+    assert!(consent.starts_with("HTTP/1.1 302"), "{consent}");
+    let redirect = named_listener_header(&consent, "Location");
+    assert!(redirect.starts_with("https://chatgpt.com/callback?"));
+    let params = parse_query_params(redirect.split_once('?').expect("client query").1);
+    assert_eq!(params["state"], "client-state");
+    let token_form = format!(
+        "grant_type=authorization_code&client_id={}&client_secret={}&code={}&redirect_uri={}&code_verifier={}",
+        percent_encode(client_id),
+        percent_encode(client_secret),
+        percent_encode(&params["code"]),
+        percent_encode("https://chatgpt.com/callback"),
+        percent_encode(&verifier),
+    );
+    let token = named_listener_post(
+        address,
+        "/oauth/token",
+        "application/x-www-form-urlencoded",
+        &token_form,
+    );
+    assert!(token.starts_with("HTTP/1.1 200"), "{token}");
+    let payload: Value = serde_json::from_str(token.split_once("\r\n\r\n").expect("token").1)
+        .expect("OAuth token response");
+    assert!(payload["refresh_token"].as_str().is_some());
+    assert_eq!(payload["scope"], "mcp:tools");
+    payload["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string()
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_assert_consented_tools(address: SocketAddr, token: &str) {
+    let response = named_listener_initialize(address, "parity", token);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let session = named_listener_session_id(&response);
+    let tools = named_listener_tools(address, "parity", token, &session);
+    assert!(tools.contains("\"name\":\"note_get\""), "{tools}");
+    assert!(!tools.contains("\"name\":\"note_create\""), "{tools}");
+}
+
+#[cfg(feature = "oauth")]
 fn assert_named_listener_identity(address: SocketAddr, name: &str) {
     assert_eq!(
         named_listener_resource_metadata(address, name)["resource"],
@@ -2456,6 +2636,7 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         oauth_dcr_allowed_redirect_hosts: vec!["client.example.test".to_string()],
         oauth_local_redirect_uris: Vec::new(),
         oauth_indieauth: None,
+        indieauth_exchange: None,
         oauth_clients_path: None,
         named_runtime: None,
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,

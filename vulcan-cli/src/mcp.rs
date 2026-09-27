@@ -163,7 +163,12 @@ struct McpHttpLifecycle<'a> {
     ready: Option<&'a dyn Fn(SocketAddr) -> Result<(), CliError>>,
     #[cfg(feature = "oauth")]
     hosted: Option<HostedMcpExecution>,
+    #[cfg(all(test, feature = "oauth"))]
+    indieauth_exchange: Option<IndieAuthExchange>,
 }
+#[cfg(feature = "oauth")]
+type IndieAuthExchange =
+    fn(&str, &str, &str, &str, &str) -> Result<String, vulcan_core::OAuthError>;
 const DEFAULT_MCP_OAUTH_SCOPES: &[&str] = &["mcp:prompts", "mcp:resources", "mcp:tools"];
 #[cfg(feature = "oauth")]
 const SUPPORTED_MCP_OAUTH_SCOPES: &[&str] = &[
@@ -634,6 +639,8 @@ struct McpHttpServerContext {
     oauth_local_redirect_uris: Vec<String>,
     #[cfg(feature = "oauth")]
     oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
+    #[cfg(all(test, feature = "oauth"))]
+    indieauth_exchange: Option<IndieAuthExchange>,
     #[cfg(feature = "oauth")]
     oauth_clients_path: Option<std::path::PathBuf>,
     #[cfg(feature = "oauth")]
@@ -721,11 +728,12 @@ fn run_named_mcp_remote_inner(
     ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
     resident: Option<ResidentMcpScheduling>,
 ) -> Result<(), CliError> {
-    run_named_mcp_remote_with_endpoints(process, remote, stop, ready, resident, None, None)
+    run_named_mcp_remote_with_endpoints(process, remote, stop, ready, resident, None, None, None)
 }
 
 #[cfg(feature = "oauth")]
 #[allow(clippy::too_many_lines)] // Keeps the validated named definition and shared listener startup together.
+#[allow(clippy::too_many_arguments)] // Test-only IndieAuth exchange seam extends the existing startup inputs.
 fn run_named_mcp_remote_with_endpoints(
     process: &DaemonProcessContext,
     remote: &McpRemoteDefinition,
@@ -734,7 +742,10 @@ fn run_named_mcp_remote_with_endpoints(
     resident: Option<ResidentMcpScheduling>,
     indieauth_endpoints: Option<&(String, String)>,
     foreground_scheduler: Option<Arc<MutationScheduler>>,
+    indieauth_exchange: Option<IndieAuthExchange>,
 ) -> Result<(), CliError> {
+    #[cfg(not(test))]
+    let _ = indieauth_exchange;
     let mut vaults = BTreeMap::new();
     for vault in &remote.vaults {
         let registration = process
@@ -868,6 +879,8 @@ fn run_named_mcp_remote_with_endpoints(
             stop,
             ready,
             hosted: Some(hosted),
+            #[cfg(test)]
+            indieauth_exchange,
         },
     )
 }
@@ -887,7 +900,7 @@ pub(crate) fn resident_named_mcp_service(
     scheduler: Arc<MutationScheduler>,
     runtime: tokio::runtime::Handle,
 ) -> Result<Option<ServiceRegistration>, CliError> {
-    resident_named_mcp_service_with_endpoints(process, remotes, scheduler, runtime, None)
+    resident_named_mcp_service_with_endpoints(process, remotes, scheduler, runtime, None, None)
 }
 
 #[cfg(feature = "oauth")]
@@ -898,6 +911,7 @@ fn resident_named_mcp_service_with_endpoints(
     scheduler: Arc<MutationScheduler>,
     runtime: tokio::runtime::Handle,
     indieauth_endpoints: Option<(String, String)>,
+    indieauth_exchange: Option<IndieAuthExchange>,
 ) -> Result<Option<ServiceRegistration>, CliError> {
     if remotes.is_empty() {
         return Ok(None);
@@ -943,6 +957,7 @@ fn resident_named_mcp_service_with_endpoints(
                             Some(hosted),
                             indieauth_endpoints.as_ref(),
                             None,
+                            indieauth_exchange,
                         )
                     });
                 }) {
@@ -1323,6 +1338,8 @@ fn run_mcp_http_server_inner(
         oauth_local_redirect_uris: options.oauth_local_redirect_uri.clone(),
         #[cfg(feature = "oauth")]
         oauth_indieauth: build_indieauth_config(options)?,
+        #[cfg(all(test, feature = "oauth"))]
+        indieauth_exchange: lifecycle.indieauth_exchange,
         #[cfg(feature = "oauth")]
         oauth_clients_path: Some(oauth_clients_path(paths, options)),
         #[cfg(feature = "oauth")]
@@ -4174,7 +4191,13 @@ fn handle_local_oauth_indieauth_callback(
     let Some(code) = params.get("code") else {
         return oauth_plain_response(400, "missing IndieAuth code");
     };
-    let subject = match exchange_indieauth_code(
+    #[cfg(test)]
+    let exchange = context
+        .indieauth_exchange
+        .unwrap_or(exchange_indieauth_code);
+    #[cfg(not(test))]
+    let exchange = exchange_indieauth_code;
+    let subject = match exchange(
         &indieauth.token_endpoint,
         code,
         &indieauth.redirect_uri,
