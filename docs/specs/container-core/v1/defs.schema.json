@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulcan.tionis.dev/schemas/container-core/v1/defs.schema.json",
+  "title": "Container Core v1 shared definitions",
+  "description": "Normative shared definitions. Format schemas embed exact copies of these $defs so each schema stays self-contained.",
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "alternate_digest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*:[0-9a-f]+$"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "media_type",
+        "digest"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "alternate_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/alternate_digest"
+          },
+          "uniqueItems": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "embedded_path": {
+          "type": "string"
+        }
+      }
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "selectors"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/selector"
+          }
+        }
+      }
+    },
+    "selector": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/interval"
+        },
+        {
+          "$ref": "#/$defs/rectangle"
+        },
+        {
+          "$ref": "#/$defs/polygon"
+        },
+        {
+          "$ref": "#/$defs/grid"
+        },
+        {
+          "$ref": "#/$defs/text_quote"
+        },
+        {
+          "$ref": "#/$defs/fragment"
+        },
+        {
+          "$ref": "#/$defs/extension"
+        }
+      ]
+    },
+    "interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "unit",
+        "start",
+        "end"
+      ],
+      "properties": {
+        "type": {
+          "const": "interval"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "origin": {
+          "type": "number"
+        },
+        "label_start": {
+          "type": "string"
+        },
+        "label_end": {
+          "type": "string"
+        }
+      }
+    },
+    "rectangle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "unit",
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "type": {
+          "const": "rectangle"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "x": {
+          "type": "number",
+          "minimum": 0
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "polygon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "unit",
+        "points"
+      ],
+      "properties": {
+        "type": {
+          "const": "polygon"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "points": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "$ref": "#/$defs/point"
+          }
+        }
+      }
+    },
+    "grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "row_start",
+        "row_end",
+        "column_start",
+        "column_end"
+      ],
+      "properties": {
+        "type": {
+          "const": "grid"
+        },
+        "sheet": {
+          "type": "string"
+        },
+        "row_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "column_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column_end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "text_quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "exact"
+      ],
+      "properties": {
+        "type": {
+          "const": "text-quote"
+        },
+        "exact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "suffix": {
+          "type": "string"
+        }
+      }
+    },
+    "fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "value"
+      ],
+      "properties": {
+        "type": {
+          "const": "fragment"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conforms_to": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "namespace",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "extension"
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+/.+$"
+        },
+        "data": true
+      }
+    }
+  }
+}

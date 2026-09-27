@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulcan.tionis.dev/schemas/wiki-package/v2/wiki.schema.json",
+  "title": "Markdown Wiki Package v2 manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "version",
+    "producer",
+    "members",
+    "sources"
+  ],
+  "properties": {
+    "format": {
+      "const": "dev.tionis.markdown-wiki-package"
+    },
+    "version": {
+      "const": 2
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "root": {
+      "type": "string",
+      "pattern": "^content/.+\\.[mM][dD]$"
+    },
+    "producer": {
+      "$ref": "#/$defs/producer"
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/member"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/digest"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "alternate_digest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*:[0-9a-f]+$"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "media_type",
+        "digest"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "alternate_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/alternate_digest"
+          },
+          "uniqueItems": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "embedded_path": {
+          "type": "string"
+        }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "role",
+        "media_type",
+        "size",
+        "digest",
+        "created_by"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": [
+            "note",
+            "asset",
+            "provenance",
+            "source-map",
+            "knowledge",
+            "source",
+            "environment",
+            "extension"
+          ]
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "created_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$"
+        }
+      }
+    }
+  }
+}

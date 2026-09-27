@@ -4,6 +4,8 @@ MDAF is an immutable, extractor- and source-format-neutral package for one prima
 
 MDAF deliberately does not define OCR, PDF conversion, table extraction, or a universal document-block ontology. Producers normalize only the information consumers share today and retain complete native responses as opaque declared members. Consumers must never select behavior from a producer, tool, model, asset filename, or extension namespace.
 
+MDAF v1 is a [Container Core v1](../../container-core/v1/SPEC.md) format with manifest `info.json` and suffix `.mdaf` for both the directory and the ZIP form. Container Core defines the shared path, archive-safety, digest, logical-identity, source, locator, selector, and provenance rules. This document states only what MDAF adds. The rules were moved there unchanged, so existing artifacts and their identities remain valid. Use a [Markdown Wiki Package v2](../../wiki-package/v2/SPEC.md) for a wiki tree built from MDAF or other sources.
+
 ## Root layout
 
 ```text
@@ -23,9 +25,7 @@ Every regular file except `info.json` must appear exactly once in `info.json.mem
 
 ## Paths and archive safety
 
-Member paths use UTF-8, `/` separators, Unicode NFC, and relative POSIX syntax. Empty components, `.`, `..`, absolute paths, backslashes, control characters, Windows drive/UNC prefixes, case-fold-equivalent duplicates, and Unicode-normalization-equivalent duplicates are invalid. Directory readers reject symlinks and special files. ZIP readers reject encrypted members, symlink modes, duplicate normalized paths, more than 100,000 entries, any non-asset member larger than 512 MiB, any asset larger than 2 GiB, total declared or expanded content above 8 GiB, or an expansion ratio above 1,000:1.
-
-Readers validate declared sizes before extraction, stream bytes through bounded readers, and do not write outside an isolated staging directory. ZIP timestamps, compression method, ordering, and permissions do not affect logical identity.
+Container Core [member paths](../../container-core/v1/SPEC.md#member-paths) and [archive safety](../../container-core/v1/SPEC.md#archive-safety) apply. Non-asset members are limited to 512 MiB, and MDAF control JSON is limited to 32 MiB.
 
 ## Manifest and member roles
 
@@ -41,13 +41,7 @@ The primary Markdown media type is `text/markdown`. `markdown.variant` and `mark
 
 ## Logical identity
 
-The logical artifact identity is independent of directory versus ZIP serialization. MDAF v1 uses the default 256-bit BLAKE3 output for all canonical digests. Digest values are lowercase hexadecimal prefixed by `blake3:`. For every regular member including `info.json`, compute its canonical digest. Sort records by normalized UTF-8 path bytes. Serialize each record as compact JSON with keys in this exact order and a trailing LF:
-
-```json
-{"path":"text.md","size":123,"digest":"blake3:<64 lowercase hex>"}
-```
-
-The artifact identity is the canonical BLAKE3 digest of the concatenated UTF-8 records. Strings use JSON escaping with no ASCII-only conversion. The specification fixtures provide a test vector. `info.json.derived_from` contains canonical logical identities of immutable parents; it is lineage, not an instruction to fetch them. A derivative remains self-contained and carries forward evidence needed for future processing.
+The logical identity is the Container Core [logical identity](../../container-core/v1/SPEC.md#logical-identity) over every regular member, including `info.json`. The specification fixtures provide a test vector. `info.json.derived_from` contains canonical logical identities of immutable parents; it is lineage, not an instruction to fetch them. A derivative remains self-contained and carries forward the evidence needed for future processing.
 
 ## Normalized source map
 
@@ -55,19 +49,7 @@ The artifact identity is the canonical BLAKE3 digest of the concatenated UTF-8 r
 
 A mapping connects a Markdown span to a source locator and may carry confidence and a namespaced method. A reference connects authored Markdown text to a target locator. Mappings may overlap, may be partial, and may repeat the same Markdown span for multiple sources. Producers decide which inferred records are reliable enough to publish; consumers preserve confidence and method but do not rerun extraction.
 
-A locator names exactly one declared source and contains an ordered list of selectors. An empty selector list denotes the complete source. Otherwise selectors are conjunctive refinements: an `interval` selecting page 12 followed by a `rectangle` selects that rectangle on page 12. Order records the natural outside-in refinement and is preserved, but does not change the selected segment. Half-open ranges include their start and exclude their end.
-
-MDAF v1 defines these normalized selectors:
-
-- `interval`: an ordered numeric range with an open unit such as `byte`, `unicode-scalar`, `line`, `page`, `slide`, `frame`, `sample`, `millisecond`, or `second`; optional origin and display labels preserve numbering conventions without changing the numeric range;
-- `rectangle`: an `x`, `y`, `width`, and `height` region in an open unit; `pixel`, `percent`, and `normalized` have their ordinary top-left-origin media meaning, with percent bounded by 100 and normalized values bounded by 1;
-- `polygon`: three or more non-degenerate points in an open spatial unit, for regions that a rectangle cannot represent accurately;
-- `grid`: zero-based, half-open row and column ranges plus an optional sheet name, for spreadsheets, tables, matrices, and similar media;
-- `text-quote`: exact text with optional prefix and suffix context, providing a content-stable complement to positional intervals;
-- `fragment`: a media-defined fragment value and optional public `conforms_to` specification identifier, for HTML IDs, EPUB CFI, CSV fragments, track identifiers, or another established addressing scheme;
-- `extension`: reverse-domain-namespaced opaque JSON for a selector that cannot be represented without loss in the normalized core.
-
-Numbers must be finite. Intervals, rectangles, grids, and polygons must be non-empty. Consumers validate normalized selectors but never infer their meaning from a source media type. Unknown future source formats therefore require neither a new MDAF version nor a Vulcan code branch; they use the closest lossless normalized selectors and retain any richer native locator in an extension or rendition.
+Locators and selectors follow Container Core [locators and selectors](../../container-core/v1/SPEC.md#locators-and-selectors): `interval`, `rectangle`, `polygon`, `grid`, `text-quote`, `fragment`, and namespaced `extension`. Unknown future source formats therefore require neither a new MDAF version nor a Vulcan code branch. They use the closest lossless normalized selectors and keep any richer native locator in an extension selector or rendition.
 
 Source-reference resolution is conservative. A target selector must be matched by a compatible mapping selector for the same declared source; all target selectors must overlap or identify the same segment. Ambiguous or unsupported matches remain authored Markdown and produce a diagnostic rather than an inferred link.
 
@@ -95,13 +77,7 @@ Native responses are retained byte-for-byte after mandatory secret filtering. A 
 
 ## Provenance
 
-`provenance.json` conforms to `provenance.schema.json`. It is an activity DAG. Every generated member names one producing activity. Each activity records inputs, outputs, dependencies, sanitized output-affecting parameters and their digest, and every directly participating transformation tool and model.
-
-Tools require name and version; build revisions are included when available. Models record provider, identifier, returned identifier, and revision or checksum when exposed. A mutable or unresolved model alias is explicitly marked and produces a reproducibility warning, never invented provenance. Full dependency locks, runtime descriptions, hardware inventories, SPDX documents, or CycloneDX documents are optional environment members.
-
-`parameters_digest` is the canonical BLAKE3 digest of `parameters` serialized as compact UTF-8 JSON: object keys are sorted recursively by Unicode scalar value, arrays retain their order, strings use normal JSON escaping without ASCII-only conversion, numbers use their JSON lexical representation, and no whitespace or trailing newline is emitted. Producers should prefer strings for values whose numeric lexical form is itself significant.
-
-Transport secrets, credentials, signed URLs, and private endpoint topology are forbidden. Unknown exact versions or revisions remain explicit `unavailable` values with diagnostics.
+`provenance.json` is a Container Core [provenance](../../container-core/v1/SPEC.md#provenance) activity graph. The bundled `provenance.schema.json` is identical to Container Core's apart from its `$id` and `title`. Every generated member names the one activity that produced it. Full dependency locks, runtime descriptions, hardware inventories, SPDX documents, or CycloneDX documents are optional environment members. Unknown exact versions or revisions remain explicit `unavailable` values with diagnostics.
 
 ## Consumer behavior
 

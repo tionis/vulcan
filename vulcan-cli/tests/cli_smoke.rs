@@ -11896,6 +11896,7 @@ fn wiki_exchange_exports_validates_and_imports_a_complete_snapshot() {
     let exported = parse_stdout_json(&exported);
     assert_eq!(exported["notes"], 1);
     assert_eq!(exported["assets"], 1);
+    assert_eq!(exported["format_version"], 2);
     assert!(exported["identity"]
         .as_str()
         .is_some_and(|value| value.starts_with("blake3:")));
@@ -11947,6 +11948,94 @@ fn wiki_exchange_exports_validates_and_imports_a_complete_snapshot() {
         fs::read(vault_root.join("assets/a.txt")).expect("source asset"),
         fs::read(vault_root.join("Imported/assets/a.txt")).expect("imported asset")
     );
+}
+
+#[test]
+fn wiki_exchange_validates_and_imports_sourced_v2_example() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo")
+        .join("docs/specs/wiki-package/v2/examples/sourced.wikibundle");
+    let example_path = example.to_str().expect("example");
+    let inspected = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--output",
+            "json",
+            "exchange",
+            "wiki",
+            "inspect",
+            example_path,
+        ])
+        .assert()
+        .success();
+    let inspected = parse_stdout_json(&inspected);
+    assert_eq!(inspected["valid"], true);
+    assert_eq!(inspected["version"], 2);
+    assert_eq!(inspected["summary"]["source_mappings"], 2);
+    assert_eq!(inspected["summary"]["entities"], 2);
+    assert_eq!(inspected["summary"]["claims"], 1);
+    assert_eq!(inspected["summary"]["accepted_claims"], 0);
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["exchange", "wiki", "validate", example_path])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Format version: 2"))
+        .stdout(predicate::str::contains(
+            "Knowledge: 2 entities (2 accepted), 1 claims (0 accepted)",
+        ));
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault");
+    let vault = vault_root.to_str().expect("vault");
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["--vault", vault, "index", "init"])
+        .assert()
+        .success();
+    let imported = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "exchange",
+            "wiki",
+            "import",
+            example_path,
+            "--destination",
+            "Lore",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let imported = parse_stdout_json(&imported);
+    assert_eq!(imported["package_identity"], inspected["identity"]);
+    assert_eq!(
+        imported["annotated_notes"].as_array().map(Vec::len),
+        Some(2)
+    );
+    let alice = fs::read_to_string(vault_root.join("Lore/Characters/Alice.md")).expect("alice");
+    assert!(alice.contains("source_id: script"), "{alice}");
+
+    let tampered = temp_dir.path().join("tampered.wikibundle");
+    copy_dir_recursive(&example, &tampered);
+    fs::write(tampered.join("knowledge.jsonl"), "{}\n").expect("tamper");
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "exchange",
+            "wiki",
+            "validate",
+            tampered.to_str().expect("tampered"),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("member_size_mismatch"))
+        .stdout(predicate::str::contains("knowledge_header_missing"));
 }
 
 #[test]
@@ -16701,6 +16790,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(portable_exchange.contains("exchange wiki export"));
     assert!(portable_exchange.contains("exchange wiki import"));
     assert!(portable_exchange.contains("--dry-run"));
+    assert!(portable_exchange.contains("annotated_notes"));
+    assert!(portable_exchange.contains("`unreviewed` claims"));
 
     let configuration =
         fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))

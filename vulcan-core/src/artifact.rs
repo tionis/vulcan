@@ -11,6 +11,15 @@ use std::path::{Component, Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 use zip::ZipArchive;
 
+use crate::exchange::{
+    blake3_digest, error_diag, has_errors, sort_diagnostics, tagged_blake3, validate_locator,
+    validate_provenance, validate_schema, validate_sources, validate_span, ExchangeActivity,
+    ExchangeByteSpan, ExchangeDiagnostic, ExchangeDiagnosticSeverity, ExchangeModel,
+    ExchangeModelResolution, ExchangePoint, ExchangeProducer, ExchangeProvenance,
+    ExchangeRedaction, ExchangeSelector, ExchangeSource, ExchangeSourceLocator, ExchangeTool,
+    ProvenanceMember,
+};
+
 const INFO_SCHEMA: &str = include_str!("../resources/mdaf/v1/info.schema.json");
 const SOURCE_MAP_SCHEMA: &str = include_str!("../resources/mdaf/v1/source-map.schema.json");
 const OUTLINE_SCHEMA: &str = include_str!("../resources/mdaf/v1/outline.schema.json");
@@ -23,6 +32,21 @@ pub const MDAF_MAX_NON_ASSET_BYTES: u64 = 512 * 1024 * 1024;
 pub const MDAF_MAX_COMPRESSION_RATIO: u64 = 1_000;
 const MDAF_MAX_CONTROL_BYTES: u64 = 32 * 1024 * 1024;
 const MDAF_MAX_MARKDOWN_BYTES: u64 = 512 * 1024 * 1024;
+
+pub type MdafProducer = ExchangeProducer;
+pub type MdafSource = ExchangeSource;
+pub type MdafByteSpan = ExchangeByteSpan;
+pub type MdafSelector = ExchangeSelector;
+pub type MdafPoint = ExchangePoint;
+pub type MdafSourceLocator = ExchangeSourceLocator;
+pub type MdafTool = ExchangeTool;
+pub type MdafModelResolution = ExchangeModelResolution;
+pub type MdafModel = ExchangeModel;
+pub type MdafActivity = ExchangeActivity;
+pub type MdafRedaction = ExchangeRedaction;
+pub type MdafProvenance = ExchangeProvenance;
+pub type MdafDiagnosticSeverity = ExchangeDiagnosticSeverity;
+pub type MdafDiagnostic = ExchangeDiagnostic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -59,15 +83,6 @@ pub struct MdafMarkdownBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MdafProducer {
-    pub name: String,
-    pub version: String,
-    #[serde(default)]
-    pub revision: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MdafMember {
     pub path: String,
     pub role: MdafMemberRole,
@@ -79,20 +94,6 @@ pub struct MdafMember {
     pub schema: Option<String>,
     #[serde(default)]
     pub namespace: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafSource {
-    pub id: String,
-    pub media_type: String,
-    pub digest: String,
-    #[serde(default)]
-    pub alternate_digests: Vec<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub embedded_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,93 +111,6 @@ pub struct MdafManifest {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub derived_from: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafByteSpan {
-    pub start: usize,
-    pub end: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum MdafSelector {
-    Interval {
-        unit: String,
-        start: f64,
-        end: f64,
-        #[serde(default)]
-        origin: Option<f64>,
-        #[serde(default)]
-        label_start: Option<String>,
-        #[serde(default)]
-        label_end: Option<String>,
-    },
-    Rectangle {
-        unit: String,
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    },
-    Polygon {
-        unit: String,
-        points: Vec<MdafPoint>,
-    },
-    Grid {
-        #[serde(default)]
-        sheet: Option<String>,
-        row_start: u64,
-        row_end: u64,
-        column_start: u64,
-        column_end: u64,
-    },
-    TextQuote {
-        exact: String,
-        #[serde(default)]
-        prefix: Option<String>,
-        #[serde(default)]
-        suffix: Option<String>,
-    },
-    Fragment {
-        value: String,
-        #[serde(default)]
-        conforms_to: Option<String>,
-    },
-    Extension {
-        namespace: String,
-        data: serde_json::Value,
-    },
-}
-
-impl MdafSelector {
-    #[must_use]
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Interval { .. } => "interval",
-            Self::Rectangle { .. } => "rectangle",
-            Self::Polygon { .. } => "polygon",
-            Self::Grid { .. } => "grid",
-            Self::TextQuote { .. } => "text-quote",
-            Self::Fragment { .. } => "fragment",
-            Self::Extension { .. } => "extension",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafPoint {
-    pub x: f64,
-    pub y: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafSourceLocator {
-    pub source_id: String,
-    pub selectors: Vec<MdafSelector>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,92 +164,6 @@ pub struct MdafOutline {
     #[serde(default)]
     pub title: Option<String>,
     pub nodes: Vec<MdafOutlineNode>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafTool {
-    pub name: String,
-    pub version: String,
-    #[serde(default)]
-    pub revision: Option<String>,
-    #[serde(default)]
-    pub package_url: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MdafModelResolution {
-    Pinned,
-    MutableAlias,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafModel {
-    pub provider: String,
-    pub identifier: String,
-    #[serde(default)]
-    pub returned_identifier: Option<String>,
-    #[serde(default)]
-    pub revision: Option<String>,
-    #[serde(default)]
-    pub checksum: Option<String>,
-    pub resolution: MdafModelResolution,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafActivity {
-    pub id: String,
-    pub kind: String,
-    #[serde(default)]
-    pub started_at: Option<String>,
-    #[serde(default)]
-    pub ended_at: Option<String>,
-    pub tools: Vec<MdafTool>,
-    pub models: Vec<MdafModel>,
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
-    pub depends_on: Vec<String>,
-    pub parameters: serde_json::Map<String, Value>,
-    pub parameters_digest: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafRedaction {
-    pub member: String,
-    pub location: String,
-    pub reason: String,
-    #[serde(default)]
-    pub original_digest: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafProvenance {
-    pub version: u32,
-    pub activities: Vec<MdafActivity>,
-    #[serde(default)]
-    pub redactions: Vec<MdafRedaction>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MdafDiagnosticSeverity {
-    Error,
-    Warning,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct MdafDiagnostic {
-    pub severity: MdafDiagnosticSeverity,
-    pub code: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -489,15 +317,8 @@ pub fn inspect_mdaf(path: &Path) -> Result<MdafArtifact, MdafError> {
             &mut diagnostics,
         );
     }
-    diagnostics.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.code.cmp(&right.code))
-            .then_with(|| left.message.cmp(&right.message))
-    });
-    let valid = !diagnostics
-        .iter()
-        .any(|item| item.severity == MdafDiagnosticSeverity::Error);
+    sort_diagnostics(&mut diagnostics);
+    let valid = !has_errors(&diagnostics);
 
     Ok(MdafArtifact {
         artifact_path: path.to_path_buf(),
@@ -888,27 +709,6 @@ fn parse_control<T: for<'de> Deserialize<'de>>(
     }
 }
 
-fn validate_schema(
-    member: &str,
-    schema_text: &str,
-    value: &Value,
-    diagnostics: &mut Vec<MdafDiagnostic>,
-) {
-    let schema: Value = serde_json::from_str(schema_text).expect("bundled MDAF schema is valid");
-    let validator = jsonschema::draft202012::options()
-        .should_validate_formats(true)
-        .build(&schema)
-        .expect("bundled MDAF schema compiles");
-    for error in validator.iter_errors(value) {
-        error_diag(
-            diagnostics,
-            "schema_violation",
-            format!("{}: {error}", error.instance_path()),
-            member,
-        );
-    }
-}
-
 fn validate_manifest(
     manifest: &MdafManifest,
     observed: &BTreeMap<String, MdafObservedMember>,
@@ -1073,28 +873,20 @@ fn validate_semantics(
         .iter()
         .map(|source| source.id.as_str())
         .collect::<BTreeSet<_>>();
-    if source_ids.len() != manifest.sources.len() {
-        error_diag(
-            diagnostics,
-            "source_id_duplicate",
-            "source ids must be unique",
-            "info.json",
-        );
-    }
-    for source in &manifest.sources {
-        if let Some(path) = source.embedded_path.as_deref() {
-            match manifest.members.iter().find(|member| member.path == path) {
-                Some(member)
-                    if member.role == MdafMemberRole::Source && member.digest == source.digest => {}
-                _ => error_diag(
-                    diagnostics,
-                    "embedded_source_invalid",
-                    "embedded source must be declared with matching digest",
-                    path,
+    let member_digests = manifest
+        .members
+        .iter()
+        .map(|member| {
+            (
+                member.path.as_str(),
+                (
+                    member.digest.as_str(),
+                    member.role == MdafMemberRole::Source,
                 ),
-            }
-        }
-    }
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    validate_sources(&manifest.sources, &member_digests, "info.json", diagnostics);
     let Some(markdown) = markdown else { return };
     let markdown_digest = blake3_digest(markdown.as_bytes());
     if manifest.markdown.path != "text.md"
@@ -1127,7 +919,21 @@ fn validate_semantics(
         );
     }
     if let Some(provenance) = provenance {
-        validate_provenance(provenance, manifest, &source_ids, diagnostics);
+        let members = manifest
+            .members
+            .iter()
+            .map(|member| ProvenanceMember {
+                path: &member.path,
+                created_by: &member.created_by,
+            })
+            .collect::<Vec<_>>();
+        validate_provenance(
+            provenance,
+            &members,
+            &source_ids,
+            "provenance.json",
+            diagnostics,
+        );
     }
     validate_capability(manifest, "source-map", source_map.is_some(), diagnostics);
     validate_capability(manifest, "outline", outline.is_some(), diagnostics);
@@ -1222,116 +1028,6 @@ fn validate_source_map(
     }
 }
 
-fn validate_locator(
-    locator: &MdafSourceLocator,
-    source_ids: &BTreeSet<&str>,
-    path: &str,
-    diagnostics: &mut Vec<MdafDiagnostic>,
-) {
-    if !source_ids.contains(locator.source_id.as_str()) {
-        error_diag(
-            diagnostics,
-            "locator_source_unknown",
-            format!("unknown source {}", locator.source_id),
-            path,
-        );
-    }
-    for selector in &locator.selectors {
-        let valid = match selector {
-            MdafSelector::Interval {
-                unit,
-                start,
-                end,
-                origin,
-                ..
-            } => {
-                !unit.is_empty()
-                    && start.is_finite()
-                    && end.is_finite()
-                    && *start >= 0.0
-                    && start < end
-                    && origin.is_none_or(f64::is_finite)
-            }
-            MdafSelector::Rectangle {
-                unit,
-                x,
-                y,
-                width,
-                height,
-            } => {
-                let finite = [x, y, width, height]
-                    .into_iter()
-                    .all(|value| value.is_finite());
-                let bounded = match unit.as_str() {
-                    "percent" => *x + *width <= 100.0 && *y + *height <= 100.0,
-                    "normalized" => *x + *width <= 1.0 && *y + *height <= 1.0,
-                    _ => true,
-                };
-                !unit.is_empty()
-                    && finite
-                    && *x >= 0.0
-                    && *y >= 0.0
-                    && *width > 0.0
-                    && *height > 0.0
-                    && bounded
-            }
-            MdafSelector::Polygon { unit, points } => {
-                !unit.is_empty()
-                    && points.len() >= 3
-                    && points
-                        .iter()
-                        .all(|point| point.x.is_finite() && point.y.is_finite())
-                    && polygon_area(points).abs() > f64::EPSILON
-                    && match unit.as_str() {
-                        "percent" => points.iter().all(|point| {
-                            (0.0..=100.0).contains(&point.x) && (0.0..=100.0).contains(&point.y)
-                        }),
-                        "normalized" => points.iter().all(|point| {
-                            (0.0..=1.0).contains(&point.x) && (0.0..=1.0).contains(&point.y)
-                        }),
-                        _ => true,
-                    }
-            }
-            MdafSelector::Grid {
-                row_start,
-                row_end,
-                column_start,
-                column_end,
-                ..
-            } => row_start < row_end && column_start < column_end,
-            MdafSelector::TextQuote { exact, .. } => !exact.is_empty(),
-            MdafSelector::Fragment { value, conforms_to } => {
-                !value.is_empty() && conforms_to.as_deref().is_none_or(|value| !value.is_empty())
-            }
-            MdafSelector::Extension { namespace, .. } => valid_namespace(namespace),
-        };
-        if !valid {
-            error_diag(
-                diagnostics,
-                "source_selector_invalid",
-                "source selector is empty, non-finite, degenerate, out of bounds, or not namespaced",
-                path,
-            );
-        }
-    }
-}
-
-fn polygon_area(points: &[MdafPoint]) -> f64 {
-    points
-        .iter()
-        .zip(points.iter().cycle().skip(1))
-        .take(points.len())
-        .map(|(left, right)| left.x * right.y - right.x * left.y)
-        .sum::<f64>()
-        / 2.0
-}
-
-fn valid_namespace(namespace: &str) -> bool {
-    namespace
-        .split_once('/')
-        .is_some_and(|(authority, name)| authority.contains('.') && !name.is_empty())
-}
-
 fn validate_outline(
     outline: &MdafOutline,
     markdown: &str,
@@ -1416,217 +1112,10 @@ fn validate_outline(
     }
 }
 
-fn validate_span(
-    span: MdafByteSpan,
-    markdown: &str,
-    path: &str,
-    diagnostics: &mut Vec<MdafDiagnostic>,
-) {
-    if span.start >= span.end
-        || span.end > markdown.len()
-        || !markdown.is_char_boundary(span.start)
-        || !markdown.is_char_boundary(span.end)
-    {
-        error_diag(
-            diagnostics,
-            "document_span_invalid",
-            format!("invalid UTF-8 byte span {}..{}", span.start, span.end),
-            path,
-        );
-    }
-}
-
-fn validate_provenance(
-    provenance: &MdafProvenance,
-    manifest: &MdafManifest,
-    source_ids: &BTreeSet<&str>,
-    diagnostics: &mut Vec<MdafDiagnostic>,
-) {
-    let member_paths = manifest
-        .members
-        .iter()
-        .map(|member| member.path.as_str())
-        .collect::<BTreeSet<_>>();
-    let activity_ids = provenance
-        .activities
-        .iter()
-        .map(|activity| activity.id.as_str())
-        .collect::<BTreeSet<_>>();
-    if activity_ids.len() != provenance.activities.len() {
-        error_diag(
-            diagnostics,
-            "activity_id_duplicate",
-            "activity ids must be unique",
-            "provenance.json",
-        );
-    }
-    for activity in &provenance.activities {
-        let expected = blake3_digest(&canonical_json(&Value::Object(activity.parameters.clone())));
-        if expected != activity.parameters_digest {
-            error_diag(
-                diagnostics,
-                "parameters_digest_mismatch",
-                format!("parameter digest mismatch for {}", activity.id),
-                "provenance.json",
-            );
-        }
-        for dependency in &activity.depends_on {
-            if !activity_ids.contains(dependency.as_str()) || dependency == &activity.id {
-                error_diag(
-                    diagnostics,
-                    "activity_dependency_invalid",
-                    format!("invalid dependency {dependency}"),
-                    "provenance.json",
-                );
-            }
-        }
-        for output in &activity.outputs {
-            if !member_paths.contains(output.as_str()) {
-                error_diag(
-                    diagnostics,
-                    "activity_output_unknown",
-                    format!("unknown output {output}"),
-                    "provenance.json",
-                );
-            }
-        }
-        for input in &activity.inputs {
-            let source = input.strip_prefix("source:").unwrap_or(input);
-            if !member_paths.contains(input.as_str()) && !source_ids.contains(source) {
-                error_diag(
-                    diagnostics,
-                    "activity_input_unknown",
-                    format!("unknown input {input}"),
-                    "provenance.json",
-                );
-            }
-        }
-        for model in &activity.models {
-            if model.resolution != MdafModelResolution::Pinned {
-                warning_diag(
-                    diagnostics,
-                    "model_not_pinned",
-                    format!("model {} is not pinned", model.identifier),
-                    "provenance.json",
-                );
-            }
-        }
-    }
-    for member in &manifest.members {
-        match provenance
-            .activities
-            .iter()
-            .find(|activity| activity.id == member.created_by)
-        {
-            Some(activity) if activity.outputs.contains(&member.path) => {}
-            _ => error_diag(
-                diagnostics,
-                "member_provenance_invalid",
-                format!("{} is not emitted by {}", member.path, member.created_by),
-                "provenance.json",
-            ),
-        }
-    }
-    if has_activity_cycle(&provenance.activities) {
-        error_diag(
-            diagnostics,
-            "activity_cycle",
-            "activity dependencies contain a cycle",
-            "provenance.json",
-        );
-    }
-}
-
-fn has_activity_cycle(activities: &[MdafActivity]) -> bool {
-    fn visit<'a>(
-        id: &'a str,
-        graph: &BTreeMap<&'a str, &'a [String]>,
-        visiting: &mut BTreeSet<&'a str>,
-        visited: &mut BTreeSet<&'a str>,
-    ) -> bool {
-        if visited.contains(id) {
-            return false;
-        }
-        if !visiting.insert(id) {
-            return true;
-        }
-        if graph.get(id).is_some_and(|dependencies| {
-            dependencies
-                .iter()
-                .any(|dependency| visit(dependency, graph, visiting, visited))
-        }) {
-            return true;
-        }
-        visiting.remove(id);
-        visited.insert(id);
-        false
-    }
-    let graph = activities
-        .iter()
-        .map(|activity| (activity.id.as_str(), activity.depends_on.as_slice()))
-        .collect::<BTreeMap<_, _>>();
-    let mut visiting = BTreeSet::new();
-    let mut visited = BTreeSet::new();
-    graph
-        .keys()
-        .any(|id| visit(id, &graph, &mut visiting, &mut visited))
-}
-
-fn canonical_json(value: &Value) -> Vec<u8> {
-    fn sort(value: &Value) -> Value {
-        match value {
-            Value::Object(object) => Value::Object(
-                object
-                    .iter()
-                    .map(|(key, value)| (key.clone(), sort(value)))
-                    .collect(),
-            ),
-            Value::Array(array) => Value::Array(array.iter().map(sort).collect()),
-            _ => value.clone(),
-        }
-    }
-    serde_json::to_vec(&sort(value)).expect("JSON value serializes")
-}
-
-fn blake3_digest(bytes: &[u8]) -> String {
-    tagged_blake3(blake3::hash(bytes))
-}
-
-fn tagged_blake3(hash: blake3::Hash) -> String {
-    format!("blake3:{hash}")
-}
-
-fn error_diag(
-    diagnostics: &mut Vec<MdafDiagnostic>,
-    code: impl Into<String>,
-    message: impl Into<String>,
-    path: impl Into<String>,
-) {
-    diagnostics.push(MdafDiagnostic {
-        severity: MdafDiagnosticSeverity::Error,
-        code: code.into(),
-        message: message.into(),
-        path: Some(path.into()),
-    });
-}
-
-fn warning_diag(
-    diagnostics: &mut Vec<MdafDiagnostic>,
-    code: impl Into<String>,
-    message: impl Into<String>,
-    path: impl Into<String>,
-) {
-    diagnostics.push(MdafDiagnostic {
-        severity: MdafDiagnosticSeverity::Warning,
-        code: code.into(),
-        message: message.into(),
-        path: Some(path.into()),
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exchange::canonical_json;
     use std::io::Cursor;
     use tempfile::TempDir;
     use zip::write::FileOptions;

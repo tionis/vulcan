@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "activities": [
+    {
+      "id": "extract",
+      "kind": "dev.tionis.renwiki/extract",
+      "tools": [
+        {
+          "name": "renwiki",
+          "version": "0.3.0"
+        }
+      ],
+      "models": [],
+      "inputs": [
+        "source:script"
+      ],
+      "outputs": [
+        "extensions/dev.tionis.renwiki/snapshot.json",
+        "sources/script.rpy"
+      ],
+      "depends_on": [],
+      "parameters": {
+        "profile": "v1.7"
+      },
+      "parameters_digest": "blake3:454d8124b5aa885e62035f6ac07a709e8885ec7bff77e7d2e5d67534c1bba1b6"
+    },
+    {
+      "id": "analyze",
+      "kind": "dev.tionis.renwiki/analyze",
+      "tools": [
+        {
+          "name": "renwiki",
+          "version": "0.3.0"
+        }
+      ],
+      "models": [
+        {
+          "provider": "example",
+          "identifier": "example-model",
+          "revision": "2026-01-01",
+          "resolution": "pinned"
+        }
+      ],
+      "inputs": [
+        "sources/script.rpy"
+      ],
+      "outputs": [
+        "knowledge.jsonl"
+      ],
+      "depends_on": [
+        "extract"
+      ],
+      "parameters": {
+        "prompt": "entities-v1",
+        "temperature": "0"
+      },
+      "parameters_digest": "blake3:22379e66d14d1b60d1016ba013aa0260ec6e5f09b187b326bfd261ca6eebedbd"
+    },
+    {
+      "id": "render",
+      "kind": "dev.tionis.renwiki/render",
+      "tools": [
+        {
+          "name": "renwiki",
+          "version": "0.3.0"
+        }
+      ],
+      "models": [],
+      "inputs": [
+        "knowledge.jsonl",
+        "sources/script.rpy"
+      ],
+      "outputs": [
+        "content/Characters/Alice.md",
+        "content/Home.md",
+        "content/Places/Harbor.md",
+        "content/assets/map.txt",
+        "provenance.json",
+        "source-map.jsonl"
+      ],
+      "depends_on": [
+        "analyze"
+      ],
+      "parameters": {
+        "layout": "entity-pages"
+      },
+      "parameters_digest": "blake3:cdd5ceb62b9bb1501fd788113a71504b1f8edcec6eaa7f4a23a0370ab07abf5d"
+    }
+  ]
+}
