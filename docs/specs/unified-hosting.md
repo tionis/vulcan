@@ -272,6 +272,8 @@ shaping; each transport session retains its own store. Built-in and custom-tool 
 shaping uses that store, including inline/structured-content limits and oversized result links.
 Live foreground/resident conformance checks same-URI resource isolation between two sessions and
 confirms deleting one session does not delete the other's stored result.
+Both named hosting modes also deliver prompt/resource list-change notifications on an authenticated
+SSE stream after a vault prompt is added; other notification classes still require parity coverage.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

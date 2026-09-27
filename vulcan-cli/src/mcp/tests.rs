@@ -882,6 +882,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     );
     assert!(team_paths.vault_root().join("TeamForeground.md").is_file());
     assert!(!paths.vault_root().join("TeamForeground.md").exists());
+    assert_named_listener_prompt_change_notifications(address, &token, &paths, "foreground");
     stop.cancel();
     runner
         .join()
@@ -1236,6 +1237,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     );
     assert!(team_paths.vault_root().join("TeamResident.md").is_file());
     assert!(!paths.vault_root().join("TeamResident.md").exists());
+    assert_named_listener_prompt_change_notifications(address, &token, &paths, "resident");
     supervisor.shutdown().expect("resident shutdown");
 }
 
@@ -1452,6 +1454,62 @@ fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr,
     assert!(read(&peer, &peer_uri)["result"]["contents"][0]["text"]
         .as_str()
         .is_some_and(|text| text.contains(&"y".repeat(70_000))));
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_prompt_change_notifications(
+    address: SocketAddr,
+    token: &str,
+    paths: &VaultPaths,
+    label: &str,
+) {
+    let session = named_listener_session_id(&named_listener_initialize(address, "parity", token));
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("SSE read timeout");
+    write!(
+        stream,
+        "GET /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+    )
+    .expect("SSE request");
+    let mut client = io::BufReader::new(stream);
+    let mut headers = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(client.read_line(&mut line).expect("SSE headers") > 0);
+        headers.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+    }
+    assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
+
+    let prompt_path = paths
+        .vault_root()
+        .join(format!("AI/Prompts/notify-{label}.md"));
+    fs::write(
+        &prompt_path,
+        format!("---\nname: notify-{label}\nrole: user\n---\nNotify {label}.\n"),
+    )
+    .expect("new prompt");
+    let mut prompt_changed = false;
+    let mut resource_changed = false;
+    for _ in 0..24 {
+        let mut line = String::new();
+        assert!(client.read_line(&mut line).expect("SSE event") > 0);
+        if let Some(payload) = line.strip_prefix("data: ") {
+            let event: serde_json::Value = serde_json::from_str(payload).expect("SSE JSON");
+            prompt_changed |= event["method"] == "notifications/prompts/list_changed";
+            resource_changed |= event["method"] == "notifications/resources/list_changed";
+            if prompt_changed && resource_changed {
+                break;
+            }
+        }
+    }
+    assert!(prompt_changed, "prompt change notification missing");
+    assert!(resource_changed, "resource change notification missing");
+    fs::remove_file(prompt_path).expect("remove temporary prompt");
 }
 
 #[cfg(feature = "oauth")]
