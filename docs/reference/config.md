@@ -252,7 +252,7 @@ Link formatting, resolution rules, attachment paths, and Markdown compatibility.
   Override the preferred folder for new attachments.
   Example: `vulcan config set attachment_folder <value>`
 - `link_resolution` — type: `string`; target: `shared|local`; default: `shortest`
-  Choose whether new links resolve relative to the current file or the vault root.
+  Choose whether path-qualified links are interpreted relative to the current file or the vault root; unmatched links still resolve by note name and alias.
   Example: `vulcan config set link_resolution <value>`
 - `link_style` — type: `string`; target: `shared|local`; default: `wikilink`
   Select wikilink or Markdown link formatting for generated links.

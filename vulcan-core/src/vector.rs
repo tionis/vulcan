@@ -160,6 +160,9 @@ pub struct VectorIndexReport {
     pub rate_per_second: f64,
     /// Per-failure details: (path, chunk ID, error message).
     pub failure_details: Vec<(String, String, String)>,
+    /// Chunks whose text exceeded the model's `max_input_tokens` estimate and were embedded from
+    /// a truncated prefix rather than being sent whole to the provider.
+    pub truncated: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -408,6 +411,7 @@ where
         elapsed_seconds: 0.0,
         rate_per_second: 0.0,
         failure_details: Vec::new(),
+        truncated: 0,
     };
     let batch_size = report.batch_size;
     let max_concurrency = report.max_concurrency;
@@ -530,9 +534,14 @@ where
         report.batches += 1;
         let inputs = pending_chunks
             .iter()
-            .map(|chunk| EmbeddingInput {
-                id: Ulid::new(),
-                text: chunk.content.clone(),
+            .map(|chunk| {
+                let (text, truncated) =
+                    bounded_embedding_text(&chunk.content, provider_metadata.max_input_tokens);
+                report.truncated += usize::from(truncated);
+                EmbeddingInput {
+                    id: Ulid::new(),
+                    text,
+                }
             })
             .collect::<Vec<_>>();
         let results = provider.embed_batch(&inputs);
@@ -832,6 +841,7 @@ where
             elapsed_seconds: 0.0,
             rate_per_second: 0.0,
             failure_details: Vec::new(),
+            truncated: 0,
         });
     }
 
@@ -983,7 +993,7 @@ pub fn query_vector_neighbors_with_filter(
 
     let embedding = provider.embed_batch(&[EmbeddingInput {
         id: Ulid::new(),
-        text: query_text.clone(),
+        text: bounded_embedding_text(&query_text, provider.metadata().max_input_tokens).0,
     }]);
     let vector = embedding
         .into_iter()
@@ -1498,6 +1508,22 @@ fn validate_requested_provider(
     }
 
     Ok(())
+}
+
+/// Character-per-token estimate shared with chunk sizing; see the design document §7.
+const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
+
+/// Caps embedding input at the model's `max_input_tokens` estimate. Chunking never splits a
+/// single oversized block, so without this bound a large code block or table would be sent whole
+/// and rejected (or silently truncated) by the provider. Returns whether truncation occurred.
+fn bounded_embedding_text(text: &str, max_input_tokens: usize) -> (String, bool) {
+    let limit = max_input_tokens
+        .max(1)
+        .saturating_mul(CHARS_PER_TOKEN_ESTIMATE);
+    match text.char_indices().nth(limit) {
+        Some((byte_index, _)) => (text[..byte_index].to_string(), true),
+        None => (text.to_string(), false),
+    }
 }
 
 fn resolve_api_key(config: &EmbeddingProviderConfig) -> Result<Option<String>, VectorError> {
@@ -2083,6 +2109,18 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
+
+    #[test]
+    fn embedding_text_is_capped_at_the_model_input_estimate() {
+        assert_eq!(
+            bounded_embedding_text("short", 8),
+            ("short".to_string(), false)
+        );
+
+        let (text, truncated) = bounded_embedding_text(&"é".repeat(10), 2);
+        assert!(truncated);
+        assert_eq!(text, "é".repeat(2 * CHARS_PER_TOKEN_ESTIMATE));
+    }
 
     #[test]
     fn embedding_provider_rejects_untrusted_shared_network_config_before_request() {

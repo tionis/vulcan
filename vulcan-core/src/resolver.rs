@@ -110,14 +110,22 @@ impl ResolverIndex {
             };
         };
 
-        match mode {
+        // `absolute` and `relative` only choose which exact path interpretation wins. Obsidian
+        // resolves every link by name and alias regardless of its `newLinkFormat`, so an exact
+        // miss falls back to the shortest-path matcher.
+        let exact = match mode {
             LinkResolutionMode::Absolute => self.resolve_absolute_indexed(target),
             LinkResolutionMode::Relative => {
                 self.resolve_relative_indexed(&link.source_path, target)
             }
             LinkResolutionMode::Shortest => {
-                self.resolve_shortest_indexed(&link.source_path, target)
+                return self.resolve_shortest_indexed(&link.source_path, target)
             }
+        };
+        if exact.resolved_target_id.is_some() || is_explicit_relative(target) {
+            exact
+        } else {
+            self.resolve_shortest_indexed(&link.source_path, target)
         }
     }
 
@@ -305,10 +313,17 @@ pub fn resolve_link(
         };
     };
 
-    match mode {
+    let exact = match mode {
         LinkResolutionMode::Absolute => resolve_absolute(documents, target),
         LinkResolutionMode::Relative => resolve_relative(documents, &link.source_path, target),
-        LinkResolutionMode::Shortest => resolve_shortest(documents, &link.source_path, target),
+        LinkResolutionMode::Shortest => {
+            return resolve_shortest(documents, &link.source_path, target)
+        }
+    };
+    if exact.resolved_target_id.is_some() || is_explicit_relative(target) {
+        exact
+    } else {
+        resolve_shortest(documents, &link.source_path, target)
     }
 }
 
@@ -613,6 +628,35 @@ mod tests {
                     expected
                         .is_none()
                         .then_some(LinkResolutionProblem::Unresolved)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_and_relative_modes_fall_back_to_name_and_alias_matching() {
+        let documents = fixture_documents();
+        let index = ResolverIndex::build(&documents);
+        for mode in [LinkResolutionMode::Absolute, LinkResolutionMode::Relative] {
+            for (target, expected) in [
+                ("Target", Some("alias-target")),
+                ("Second Name", Some("alias-target")),
+                ("Topic", Some("projects-topic")),
+                ("../missing/Target.md", None),
+            ] {
+                let link = ResolverLink {
+                    source_document_id: "source".into(),
+                    source_path: "projects/source.md".into(),
+                    target_path_candidate: Some(target.into()),
+                    link_kind: LinkKind::Wikilink,
+                };
+                let scanned = resolve_link(&documents, &link, mode);
+                let indexed = index.resolve(&link, mode);
+                assert_eq!(scanned, indexed, "{mode:?} {target}");
+                assert_eq!(
+                    scanned.resolved_target_id.as_deref(),
+                    expected,
+                    "{mode:?} {target}"
                 );
             }
         }

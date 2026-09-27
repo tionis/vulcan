@@ -19349,7 +19349,8 @@
     "provider_name": "openai-compatible",
     "rate_per_second": 0.0,
     "rebuilt_index": false,
-    "skipped": 0
+    "skipped": 0,
+    "truncated": 0
   },
   "vectors_neighbors": [
     {

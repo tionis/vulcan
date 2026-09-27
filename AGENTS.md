@@ -6,6 +6,7 @@ Local-first Markdown information hub for Obsidian vaults and plain Markdown dire
 
 - `docs/design_document.md` — Full architecture and design decisions. Read this first for any non-trivial work.
 - `docs/ROADMAP.md` — Phased task breakdown with checkboxes. Update task status as you complete work.
+- `docs/specs/` — Normative contracts too detailed for the design document, including `git-sync-architecture.md` for Git sync, the daemon runtime, services, and packaging.
 - `docs/investigations/` — Dependency research (pulldown-cmark gaps, sqlite-vec build, parser comparison).
 - `references/` — Plugin source repos and documentation (obsidian-dataview, Templater, obsidian-kanban, quickadd, tasknotes, obsidian-skills). Use these as authoritative references when implementing plugin compatibility.
 - `docs/assistant/` — AGENTS.md template for user vaults and default skills shipped with Vulcan (relevant for 9.12 and 9.18.7 work).
@@ -30,8 +31,8 @@ Cargo workspace with crates:
 - `vulcan-app` — Reusable synchronous application workflows that compose `vulcan-core` with filesystem mutation, plugin dispatch, config edits, scan refresh, and other non-UI orchestration
 - `vulcan-embed` — Embedding provider trait, OpenAI-compatible provider, vector store abstraction
 - `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI), JS REPL, and transport/presentation adapters over shared services
-- `vulcan-daemon` (planned) — axum-based HTTP daemon, multi-vault registry, middleware
-- `vulcan-sync` — Initial synchronous Git-engine boundary and planned sync backend contracts/implementations
+- `vulcan-daemon` — axum-based device-local daemon (`vulcan daemon start/install`): sync supervisor and job ledger, per-wiki watchers, companion HTTP/WebSocket transport, and notification sinks. The multi-vault REST API and unified hosting (Phase 10) are in progress
+- `vulcan-sync` — Synchronous sync backend contracts and the Git CLI engine (hidden-ref snapshots, merge policy, conflict preservation); the Phase 12 Git baseline is implemented
 
 Contributor boundary rule: new reusable business logic must not land in `vulcan-cli` unless it is clearly CLI/TUI-only. Prefer `vulcan-core` for reusable semantics and `vulcan-app` for reusable synchronous workflow orchestration.
 
@@ -50,7 +51,7 @@ Contributor boundary rule: new reusable business logic must not land in `vulcan-
 - Device/file-tree synchronization and logical document exchange are separate abstractions. Sync backends replicate vault files; external connectors pull or publish selected documents through explicit routes.
 - External knowledge exchange is hub-and-spoke: external systems import into the local vault and publish from the local vault. Do not relay one remote system directly into another or silently introduce bidirectional last-writer-wins behavior.
 - Durable remote identity and reconciliation state belongs outside the rebuildable SQLite cache. Never add synchronization markers to note content or frontmatter solely as an implementation shortcut.
-- **JS sandbox tiers** (from most to least restrictive): `strict` (pure computation only, no I/O), `fs` (adds read-only vault file access), `net` (adds `web.search()` and `web.fetch()`), `none` (unrestricted). Default is `strict`. Scripts and DataviewJS blocks inherit the configured tier; web tools require `net` or higher.
+- **JS sandbox tiers** (from most to least restrictive): `strict` (computation plus cache-backed reads such as `dv.pages()` and queries; no raw file reads, writes, network, or host processes), `fs` (adds raw vault file reads such as `dv.io.load()` **and** vault write APIs such as `vault.create()`, `vault.patch()`, and `vault.transaction()`), `net` (adds `web.search()` and `web.fetch()`), `none` (removes runtime limits and exposes permission-gated host execution). Default is `strict`. Scripts and DataviewJS blocks inherit the configured tier; web tools require `net` or higher. Permission profiles still restrict paths, network origins, and execution at every tier. `docs/guide/sandbox.md` is the user-facing reference.
 
 ## Tech stack
 
@@ -62,11 +63,11 @@ Contributor boundary rule: new reusable business logic must not land in `vulcan-
 - `rquickjs` for DataviewJS/Templater JS sandbox (behind `js_runtime` feature flag)
 - `reqwest` for web search/fetch (blocking client, gated on `net` sandbox tier)
 - **Feature flag:** `js_runtime` (default on). Disables rquickjs, DataviewJS, Templater JS execution, and `web.*` JS APIs when off. Build without it via `cargo build --no-default-features`. All JS-dependent code must be gated with `#[cfg(feature = "js_runtime")]`.
-- Planned: `axum` + `tokio` for daemon, `automerge` for collaborative editing
+- `axum` + `tokio` in `vulcan-daemon` only; planned: `automerge` for collaborative editing
 
 ## Current implementation status
 
-Phases 1–8 and the Phase 9 pre-daemon gate through 9.29 are complete, including the re-scoped external-agent integration and CLI polish. Optional follow-ons 9.30 (Outline publication) and 9.31 (folder notes) are complete. The mdbase candidate track has implemented discovery, bundled schemas, and schema validation; broader typed-collection interoperability remains candidate work. The codebase has:
+Phases 1–8 and the Phase 9 pre-daemon gate through 9.29 are complete, including the re-scoped external-agent integration and CLI polish. Optional follow-ons 9.30 (Outline publication) and 9.31 (folder notes) are complete. The mdbase candidate track has implemented discovery, bundled schemas, and schema validation; broader typed-collection interoperability remains candidate work. Phase 10 (daemon) is in progress, and the Phase 12 Git synchronization baseline (12.1–12.14) is implemented with identity, key-management, and selective-materialization follow-ons outstanding. The codebase has:
 - Full vault indexing with incremental scan, link resolution, graph queries, FTS5 search, vector search
 - Bases evaluator with full expression language, formulas, and interactive TUI
 - Canonical query AST shared across CLI, Bases, and API surfaces
@@ -90,9 +91,9 @@ Phases 1–8 and the Phase 9 pre-daemon gate through 9.29 are complete, includin
 
 See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
-**Phase 10 — multi-vault daemon:** Add the long-running axum service, vault registry, REST API, authentication, watching, jobs, and CLI client mode while preserving direct local CLI operation.
+**Phase 10 — multi-vault daemon (in progress):** The device-local daemon, sync supervision, watchers, and companion transport exist. Remaining work is unified hosting (10.7), the full vault registry, REST API, authentication, and CLI client mode, all while preserving direct local CLI operation.
 
-**Phase 12 — device and file-tree synchronization:** Add pluggable backends for replicating canonical vault files across devices and storage providers. This phase does not define logical wiki import/publication semantics.
+**Phase 12 — device and file-tree synchronization:** The Git backend baseline is implemented (see `docs/specs/git-sync-architecture.md`). Remaining work covers cryptographic device identity, key custody and management, synced secrets, deterministic artifact mergers, and selective materialization (12.15–12.20). This phase does not define logical wiki import/publication semantics.
 
 **Phase 15 — external knowledge hub:** Add typed external-document bindings, explicit pull/push routes, durable reconciliation state, scheduling, and first-party connectors for Outline, HedgeDoc/HedgeSync, simple Git-backed wikis, and SilverBullet. All remote-to-remote flow passes through the canonical local vault.
 
@@ -102,7 +103,7 @@ See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
 - `vulcan-core/src/expression/` — Bases expression evaluator (tokenizer, parser, evaluator). Shared with Dataview expressions.
 - `vulcan-core/src/bases.rs` — Bases file parsing, evaluation, view management.
-- `vulcan-core/src/query.rs` — Canonical query AST. DQL compiles to this.
+- `vulcan-core/src/query.rs` — Canonical query AST for CLI flags, JSON payloads, and Bases. DQL compiles to its own pipeline plan (`dql/compile.rs`) over the shared expression and filter engine.
 - `vulcan-core/src/dql/` — DQL parser and evaluator.
 - `vulcan-core/src/parser/` — Markdown parser pipeline, inline field extraction, list item/task extraction.
 - `vulcan-core/src/dataview_js.rs` — DataviewJS rquickjs sandbox, `dv.*` and `web.*` JS APIs.

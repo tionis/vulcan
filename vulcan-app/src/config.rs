@@ -1919,7 +1919,7 @@ fn integration_routes_category_descriptor() -> CategoryDescriptor {
 
 fn config_path_description(path: &str) -> String {
     match path {
-        "link_resolution" => "Choose whether new links resolve relative to the current file or the vault root.".to_string(),
+        "link_resolution" => "Choose whether path-qualified links are interpreted relative to the current file or the vault root; unmatched links still resolve by note name and alias.".to_string(),
         "link_style" => "Select wikilink or Markdown link formatting for generated links.".to_string(),
         "attachment_folder" => "Override the preferred folder for new attachments.".to_string(),
         "strict_line_breaks" => "Mirror Obsidian's strict line break behavior when rendering Markdown.".to_string(),
