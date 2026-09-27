@@ -878,7 +878,7 @@ fn run_named_mcp_remote_inner(
     ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
     resident: Option<ResidentMcpScheduling>,
 ) -> Result<(), CliError> {
-    run_named_mcp_remote_with_endpoints(process, remote, stop, ready, resident, None)
+    run_named_mcp_remote_with_endpoints(process, remote, stop, ready, resident, None, None)
 }
 
 #[cfg(feature = "oauth")]
@@ -890,6 +890,7 @@ fn run_named_mcp_remote_with_endpoints(
     ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
     resident: Option<ResidentMcpScheduling>,
     indieauth_endpoints: Option<&(String, String)>,
+    foreground_scheduler: Option<Arc<MutationScheduler>>,
 ) -> Result<(), CliError> {
     let mut vaults = BTreeMap::new();
     for vault in &remote.vaults {
@@ -954,6 +955,8 @@ fn run_named_mcp_remote_with_endpoints(
     };
     let scheduler = if let Some(resident) = resident.as_ref() {
         Arc::clone(&resident.scheduler)
+    } else if let Some(scheduler) = foreground_scheduler {
+        scheduler
     } else {
         Arc::new(
             MutationScheduler::new(MutationSchedulerConfig::default())
@@ -1096,6 +1099,7 @@ fn resident_named_mcp_service_with_endpoints(
                             Some(&on_ready),
                             Some(hosted),
                             indieauth_endpoints.as_ref(),
+                            None,
                         )
                     });
                 }) {

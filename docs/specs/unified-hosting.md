@@ -257,6 +257,10 @@ Each HTTP listener admits at most 256 MCP sessions. Sessions expire after 30 min
 authenticated request, and live SSE streams close on expiry. Initialization first reclaims expired
 sessions, then returns HTTP 503 with `Retry-After: 60` if the registry is still full; an expired
 session ID returns 404 and its client must initialize again.
+Both foreground and resident named listeners accept authenticated `notifications/cancelled` while a
+write waits in the shared per-vault mutation lane. Cancellation before dispatch leaves a durable
+never-dispatched operation record and does not publish the note; after dispatch the client must use
+the operation-status path to determine the outcome.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or

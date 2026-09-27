@@ -650,6 +650,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     let runner_process = process.clone();
     let runner_remote = remote.clone();
     let runner_endpoints = endpoints.clone();
+    let foreground_scheduler =
+        Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
+    let runner_scheduler = Arc::clone(&foreground_scheduler);
     let (ready_sender, ready_receiver) = mpsc::channel();
     let runner = thread::spawn(move || {
         let on_ready = |bound| ready_sender.send(bound).map_err(CliError::operation);
@@ -660,6 +663,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             Some(&on_ready),
             None,
             Some(&runner_endpoints),
+            Some(runner_scheduler),
         )
     });
     assert_eq!(
@@ -799,6 +803,21 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{foreground_write}"
     );
     assert!(paths.vault_root().join("Foreground.md").is_file());
+    let operation_dir = process
+        .state_root
+        .join("mcp-remotes")
+        .join(remote.id.as_str())
+        .join("operations");
+    let cancellation_runtime = tokio::runtime::Runtime::new().expect("cancellation runtime");
+    assert_named_listener_queued_cancellation(
+        address,
+        &write_token,
+        &foreground_scheduler,
+        &cancellation_runtime,
+        &paths,
+        &operation_dir,
+        "Foreground",
+    );
     let foreground_write_session = named_listener_session_id(&foreground_write_init);
     let foreground_write_tools =
         named_listener_tools(address, "parity", &write_token, &foreground_write_session);
@@ -940,6 +959,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     let runtime = tokio::runtime::Runtime::new().expect("resident runtime");
     let scheduler =
         Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
+    let resident_scheduler = Arc::clone(&scheduler);
     let resident = resident_named_mcp_service_with_endpoints(
         &process,
         &[remote],
@@ -1177,6 +1197,15 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_write}"
     );
     assert!(paths.vault_root().join("Resident.md").is_file());
+    assert_named_listener_queued_cancellation(
+        address,
+        &write_token,
+        &resident_scheduler,
+        &runtime,
+        &paths,
+        &operation_dir,
+        "Resident",
+    );
     named_listener_append_and_patch_note(
         address,
         &write_token,
@@ -1605,6 +1634,141 @@ fn named_listener_create_note(
         "note_create",
         serde_json::json!({"path": path, "body": "Named MCP write.\n", "no_commit": true}),
     )
+}
+
+#[cfg(feature = "oauth")]
+#[allow(clippy::too_many_lines)] // Exercises the full queued HTTP request and cancellation boundary.
+fn assert_named_listener_queued_cancellation(
+    address: SocketAddr,
+    token: &str,
+    scheduler: &MutationScheduler,
+    runtime: &tokio::runtime::Runtime,
+    paths: &VaultPaths,
+    operation_dir: &Path,
+    suffix: &str,
+) {
+    let session = named_listener_session_id(&named_listener_initialize(address, "parity", token));
+    let grant = resolve_permission_profile(paths, Some("unrestricted"))
+        .expect("blocking profile")
+        .grant;
+    let blocker = ExecutionContext::new(
+        ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
+        ExecutionAuthority::Caller {
+            principal_id: "cancellation-blocker".to_string(),
+            credential_id: None,
+            permission_ceiling: grant.clone(),
+        },
+        grant,
+        ExecutionIdentity::new("test:cancellation-blocker"),
+        None,
+        ExecutionRetryClass::IndeterminateAfterDispatch,
+        ExecutionCancellationToken::default(),
+        None,
+    )
+    .expect("blocking context");
+    let held = runtime
+        .block_on(scheduler.acquire(&blocker, ScheduledOperation::Mutation, |_| Ok(())))
+        .expect("hold mutation lane");
+    let existing = named_listener_operation_ids(operation_dir);
+    let path = format!("Cancelled{suffix}.md");
+    let write_token = token.to_string();
+    let write_session = session.clone();
+    let write_path = path.clone();
+    let write = thread::spawn(move || {
+        named_listener_post_payload(
+            address,
+            "parity",
+            &write_token,
+            &write_session,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+                "params": {"name": "note_create", "arguments": {
+                    "path": write_path, "body": "must not appear", "no_commit": true
+                }}
+            }),
+        )
+    });
+    let mut operation_id = None;
+    for _ in 0..300 {
+        operation_id = named_listener_operation_ids(operation_dir)
+            .difference(&existing)
+            .next()
+            .cloned();
+        if operation_id.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = operation_id.expect("queued HTTP write registered durably");
+    let cancelled = named_listener_post_payload(
+        address,
+        "parity",
+        token,
+        &session,
+        serde_json::json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 41, "reason": "parity test"}
+        }),
+    );
+    assert!(cancelled.starts_with("HTTP/1.1 202"), "{cancelled}");
+    drop(held);
+    let response = write.join().expect("write response thread");
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    let body: serde_json::Value =
+        serde_json::from_str(response.split_once("\r\n\r\n").expect("write body").1)
+            .expect("write JSON");
+    assert_eq!(body["error"]["data"]["dispatched"], false);
+    assert_eq!(body["error"]["data"]["operation_id"], operation_id);
+    let ledger = HostedJobLedger::at(operation_dir.to_path_buf());
+    let mut record = ledger.load(&operation_id).expect("operation record");
+    for _ in 0..100 {
+        if record.state.is_terminal() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+        record = ledger.load(&operation_id).expect("operation record");
+    }
+    assert!(record.state.is_terminal());
+    assert!(!record.dispatched);
+    assert!(!paths.vault_root().join(path).exists());
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_operation_ids(directory: &Path) -> BTreeSet<String> {
+    fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| name.strip_suffix(".json").map(str::to_string))
+        .collect()
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_post_payload(
+    address: SocketAddr,
+    name: &str,
+    token: &str,
+    session_id: &str,
+    payload: serde_json::Value,
+) -> String {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    let body = payload.to_string();
+    write!(
+        stream,
+        "POST /{name} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session_id}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    )
+    .expect("MCP payload request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("MCP payload response");
+    response
 }
 
 #[cfg(feature = "oauth")]
