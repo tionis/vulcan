@@ -2,6 +2,7 @@ use super::*;
 use crate::McpToolPackModeArg;
 use std::io::Read;
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use vulcan_core::{PermissionProfile, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
 use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
@@ -2629,8 +2630,8 @@ fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
         .expect("issuer"),
     );
     let context = consent_test_context(&paths, issuer);
-    let make_session = || {
-        Arc::new(McpHttpSession::new(
+    let make_session = |idle_timeout| {
+        Arc::new(McpHttpSession::new_with_idle_timeout(
             McpServerCore::new(
                 &paths,
                 Some("readonly"),
@@ -2647,33 +2648,35 @@ fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
                 vec!["notes-read".to_string()],
                 Vec::new(),
             ),
+            idle_timeout,
         ))
     };
-    let shared = make_session();
+    let shared = make_session(MCP_HTTP_SESSION_IDLE_TIMEOUT);
     {
         let mut sessions = context.sessions.lock().expect("sessions lock");
         for number in 0..MAX_MCP_HTTP_SESSIONS {
             sessions.insert(number.to_string(), Arc::clone(&shared));
         }
     }
-    let rejected = admit_mcp_http_session(&context, "new".to_string(), make_session())
-        .expect_err("full session registry should reject initialization");
+    let rejected = admit_mcp_http_session(
+        &context,
+        "new".to_string(),
+        make_session(MCP_HTTP_SESSION_IDLE_TIMEOUT),
+    )
+    .expect_err("full session registry should reject initialization");
     assert_eq!(rejected.status, 503);
     assert!(rejected
         .extra_headers
         .contains(&("Retry-After".to_string(), "60".to_string())));
     assert_eq!(context.sessions.lock().expect("sessions lock").len(), 256);
 
-    let expired = make_session();
-    *expired.idle_deadline.lock().expect("deadline lock") = Instant::now()
-        .checked_sub(Duration::from_secs(1))
-        .expect("monotonic clock is at least one second old");
+    let expired = make_session(Duration::ZERO);
     context
         .sessions
         .lock()
         .expect("sessions lock")
         .insert("0".to_string(), Arc::clone(&expired));
-    let admitted = make_session();
+    let admitted = make_session(MCP_HTTP_SESSION_IDLE_TIMEOUT);
     admit_mcp_http_session(&context, "new".to_string(), Arc::clone(&admitted))
         .expect("expired session should free capacity");
     assert!(expired.is_closed());

@@ -23,10 +23,10 @@ use std::io::Write;
 use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+#[cfg(feature = "oauth")]
 use std::time::Instant;
 #[cfg(feature = "oauth")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -126,7 +126,12 @@ use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
-use vulcan_daemon::mcp_session::McpSessionAuthority;
+use vulcan_daemon::mcp_session::{
+    mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
+    McpSessionAuthority,
+};
+#[cfg(test)]
+use vulcan_daemon::mcp_session::{MAX_MCP_SSE_PENDING_EVENTS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
 #[cfg(feature = "oauth")]
@@ -139,9 +144,7 @@ use vulcan_daemon::process::DaemonProcessContext;
 use vulcan_daemon::shutdown::ShutdownSignal;
 
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const MAX_MCP_SSE_PENDING_EVENTS: usize = 32;
 const MAX_MCP_HTTP_SESSIONS: usize = 256;
-const MCP_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -209,144 +212,7 @@ struct McpServerCore {
     snapshot: McpListSnapshot,
 }
 
-#[derive(Debug)]
-struct McpHttpSession {
-    authority: McpSessionAuthority,
-    core: Mutex<McpServerCore>,
-    active_requests: Mutex<BTreeMap<String, ExecutionCancellationToken>>,
-    subscribers: Mutex<Vec<mpsc::SyncSender<Value>>>,
-    idle_deadline: Mutex<Instant>,
-    closed: AtomicBool,
-}
-
-impl McpHttpSession {
-    fn new(core: McpServerCore, authority: McpSessionAuthority) -> Self {
-        Self {
-            authority,
-            core: Mutex::new(core),
-            active_requests: Mutex::new(BTreeMap::new()),
-            subscribers: Mutex::new(Vec::new()),
-            idle_deadline: Mutex::new(Instant::now() + MCP_HTTP_SESSION_IDLE_TIMEOUT),
-            closed: AtomicBool::new(false),
-        }
-    }
-
-    fn touch(&self) {
-        *self
-            .idle_deadline
-            .lock()
-            .expect("mcp session deadline lock should not be poisoned") =
-            Instant::now() + MCP_HTTP_SESSION_IDLE_TIMEOUT;
-    }
-
-    fn is_idle_expired(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
-            || *self
-                .idle_deadline
-                .lock()
-                .expect("mcp session deadline lock should not be poisoned")
-                <= Instant::now()
-    }
-
-    fn register_subscriber(&self) -> mpsc::Receiver<Value> {
-        let (tx, rx) = mpsc::sync_channel(MAX_MCP_SSE_PENDING_EVENTS);
-        self.subscribers
-            .lock()
-            .expect("mcp subscribers lock should not be poisoned")
-            .push(tx);
-        rx
-    }
-
-    fn broadcast(&self, messages: &[Value]) {
-        if messages.is_empty() || self.closed.load(Ordering::SeqCst) {
-            return;
-        }
-        let visible = messages
-            .iter()
-            .filter(|message| {
-                mcp_notification_scope(message)
-                    .is_none_or(|scope| self.authority.allows_scope(scope))
-            })
-            .collect::<Vec<_>>();
-        if visible.is_empty() {
-            return;
-        }
-        let mut subscribers = self
-            .subscribers
-            .lock()
-            .expect("mcp subscribers lock should not be poisoned");
-        subscribers.retain(|sender| {
-            visible
-                .iter()
-                .all(|message| sender.try_send((*message).clone()).is_ok())
-        });
-    }
-
-    fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
-        let mut active = self
-            .active_requests
-            .lock()
-            .expect("mcp active requests lock should not be poisoned");
-        for cancellation in active.values() {
-            cancellation.cancel();
-        }
-        active.clear();
-        self.subscribers
-            .lock()
-            .expect("mcp subscribers lock should not be poisoned")
-            .clear();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
-    }
-
-    fn register_request(&self, id: &Value, cancellation: ExecutionCancellationToken) -> bool {
-        let Some(key) = mcp_request_key(id) else {
-            return false;
-        };
-        let mut active = self
-            .active_requests
-            .lock()
-            .expect("mcp active requests lock should not be poisoned");
-        if self.is_closed() || active.contains_key(&key) {
-            return false;
-        }
-        active.insert(key, cancellation);
-        true
-    }
-
-    fn finish_request(&self, id: &Value) {
-        if let Some(key) = mcp_request_key(id) {
-            self.active_requests
-                .lock()
-                .expect("mcp active requests lock should not be poisoned")
-                .remove(&key);
-        }
-    }
-
-    fn cancel_request(&self, id: &Value) {
-        if let Some(key) = mcp_request_key(id) {
-            if let Some(cancellation) = self
-                .active_requests
-                .lock()
-                .expect("mcp active requests lock should not be poisoned")
-                .get(&key)
-            {
-                cancellation.cancel();
-            }
-        }
-    }
-}
-
-fn mcp_request_key(id: &Value) -> Option<String> {
-    match id {
-        Value::String(_) | Value::Number(_) => serde_json::to_string(id).ok(),
-        _ => None,
-    }
-}
-
+type McpHttpSession = HostedMcpHttpSession<McpServerCore>;
 #[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 enum McpOAuthMode {
@@ -1887,15 +1753,6 @@ fn required_mcp_scope(payload: &Value) -> Option<&'static str> {
         Some("mcp:prompts")
     } else {
         None
-    }
-}
-
-fn mcp_notification_scope(message: &Value) -> Option<&'static str> {
-    match message.get("method")?.as_str()? {
-        "notifications/tools/list_changed" => Some("mcp:tools"),
-        "notifications/resources/list_changed" => Some("mcp:resources"),
-        "notifications/prompts/list_changed" => Some("mcp:prompts"),
-        _ => None,
     }
 }
 

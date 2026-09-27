@@ -3,12 +3,184 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use ulid::Ulid;
+use vulcan_app::execution::ExecutionCancellationToken;
 
 use crate::mcp_remote::McpRemoteId;
 use crate::registry::WikiId;
+
+pub const MAX_MCP_SSE_PENDING_EVENTS: usize = 32;
+pub const MCP_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Transport-owned lifecycle state; the protocol handler remains host supplied.
+#[derive(Debug)]
+pub struct McpHttpSession<C> {
+    pub authority: McpSessionAuthority,
+    pub core: Mutex<C>,
+    active_requests: Mutex<BTreeMap<String, ExecutionCancellationToken>>,
+    subscribers: Mutex<Vec<mpsc::SyncSender<Value>>>,
+    idle_deadline: Mutex<Instant>,
+    idle_timeout: Duration,
+    closed: AtomicBool,
+}
+
+impl<C> McpHttpSession<C> {
+    pub fn new(core: C, authority: McpSessionAuthority) -> Self {
+        Self::new_with_idle_timeout(core, authority, MCP_HTTP_SESSION_IDLE_TIMEOUT)
+    }
+
+    pub fn new_with_idle_timeout(
+        core: C,
+        authority: McpSessionAuthority,
+        idle_timeout: Duration,
+    ) -> Self {
+        Self {
+            authority,
+            core: Mutex::new(core),
+            active_requests: Mutex::new(BTreeMap::new()),
+            subscribers: Mutex::new(Vec::new()),
+            idle_deadline: Mutex::new(Instant::now() + idle_timeout),
+            idle_timeout,
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    pub fn touch(&self) {
+        *self
+            .idle_deadline
+            .lock()
+            .expect("mcp session deadline lock should not be poisoned") =
+            Instant::now() + self.idle_timeout;
+    }
+
+    #[must_use]
+    pub fn is_idle_expired(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+            || *self
+                .idle_deadline
+                .lock()
+                .expect("mcp session deadline lock should not be poisoned")
+                <= Instant::now()
+    }
+
+    #[must_use]
+    pub fn register_subscriber(&self) -> mpsc::Receiver<Value> {
+        let (tx, rx) = mpsc::sync_channel(MAX_MCP_SSE_PENDING_EVENTS);
+        self.subscribers
+            .lock()
+            .expect("mcp subscribers lock should not be poisoned")
+            .push(tx);
+        rx
+    }
+
+    pub fn broadcast(&self, messages: &[Value]) {
+        if messages.is_empty() || self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        let visible = messages
+            .iter()
+            .filter(|message| {
+                mcp_notification_scope(message)
+                    .is_none_or(|scope| self.authority.allows_scope(scope))
+            })
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return;
+        }
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .expect("mcp subscribers lock should not be poisoned");
+        subscribers.retain(|sender| {
+            visible
+                .iter()
+                .all(|message| sender.try_send((*message).clone()).is_ok())
+        });
+    }
+
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let mut active = self
+            .active_requests
+            .lock()
+            .expect("mcp active requests lock should not be poisoned");
+        for cancellation in active.values() {
+            cancellation.cancel();
+        }
+        active.clear();
+        self.subscribers
+            .lock()
+            .expect("mcp subscribers lock should not be poisoned")
+            .clear();
+    }
+
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    pub fn register_request(&self, id: &Value, cancellation: ExecutionCancellationToken) -> bool {
+        let Some(key) = mcp_request_key(id) else {
+            return false;
+        };
+        let mut active = self
+            .active_requests
+            .lock()
+            .expect("mcp active requests lock should not be poisoned");
+        if self.is_closed() || active.contains_key(&key) {
+            return false;
+        }
+        active.insert(key, cancellation);
+        true
+    }
+
+    pub fn finish_request(&self, id: &Value) {
+        if let Some(key) = mcp_request_key(id) {
+            self.active_requests
+                .lock()
+                .expect("mcp active requests lock should not be poisoned")
+                .remove(&key);
+        }
+    }
+
+    pub fn cancel_request(&self, id: &Value) {
+        if let Some(key) = mcp_request_key(id) {
+            if let Some(cancellation) = self
+                .active_requests
+                .lock()
+                .expect("mcp active requests lock should not be poisoned")
+                .get(&key)
+            {
+                cancellation.cancel();
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn mcp_request_key(id: &Value) -> Option<String> {
+    match id {
+        Value::String(_) | Value::Number(_) => serde_json::to_string(id).ok(),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn mcp_notification_scope(message: &Value) -> Option<&'static str> {
+    match message.get("method")?.as_str()? {
+        "notifications/tools/list_changed" => Some("mcp:tools"),
+        "notifications/resources/list_changed" => Some("mcp:resources"),
+        "notifications/prompts/list_changed" => Some("mcp:prompts"),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Eq, Serialize)]
 pub struct McpSessionAuthority {
@@ -209,5 +381,41 @@ mod tests {
         .expect("serialize");
         assert!(!value.contains("raw-secret"));
         assert!(!value.contains("credential_fingerprint"));
+    }
+
+    #[test]
+    fn hosted_session_filters_notifications_and_cancels_registered_requests() {
+        let session = McpHttpSession::new(
+            (),
+            authority(
+                Ulid::new(),
+                "https://id.example/alice",
+                Ulid::new(),
+                "token",
+            ),
+        );
+        let receiver = session.register_subscriber();
+        session.broadcast(&[
+            serde_json::json!({"method": "notifications/tools/list_changed"}),
+            serde_json::json!({"method": "notifications/resources/list_changed"}),
+        ]);
+        assert_eq!(
+            receiver.try_recv().expect("tool notification")["method"],
+            "notifications/tools/list_changed"
+        );
+        assert!(receiver.try_recv().is_err());
+
+        let cancellation = ExecutionCancellationToken::default();
+        let id = serde_json::json!(17);
+        assert!(session.register_request(&id, cancellation.clone()));
+        assert!(!session.register_request(&id, ExecutionCancellationToken::default()));
+        session.cancel_request(&id);
+        assert!(cancellation.is_cancelled());
+        session.finish_request(&id);
+        assert!(session.register_request(&id, ExecutionCancellationToken::default()));
+        session.close();
+        assert!(session.is_closed());
+        assert!(session.is_idle_expired());
+        assert!(!session.register_request(&id, ExecutionCancellationToken::default()));
     }
 }
