@@ -6,7 +6,9 @@ use vulcan_core::{resolve_permission_profile, VaultPaths};
 
 use crate::mcp_remote::McpRemoteId;
 use crate::mcp_session::McpSessionAuthority;
-use crate::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
+use crate::mcp_state::{
+    CreateConnectionGrant, IssuedRefreshToken, McpAuthorizationStore, McpStateError,
+};
 use crate::registry::WikiId;
 
 #[derive(Debug, Clone)]
@@ -52,6 +54,42 @@ pub struct NamedMcpSessionConfig {
     pub tool_packs: Vec<String>,
 }
 
+pub struct NamedRefreshRequest<'a> {
+    pub remote_instance_id: Ulid,
+    pub family_id: Ulid,
+    pub secret: &'a str,
+    pub client_id: &'a str,
+    pub resource: &'a str,
+    pub requested_resource: Option<&'a str>,
+    pub requested_scopes: Option<&'a [String]>,
+    pub now: u64,
+}
+
+#[derive(Debug)]
+pub struct NamedRefreshGrant {
+    pub grant_id: Ulid,
+    pub subject: String,
+    pub client_id: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    pub refresh_token: IssuedRefreshToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedRefreshError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl NamedRefreshError {
+    fn invalid_grant(message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid_grant",
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedConsentError {
     pub status: u16,
@@ -75,6 +113,102 @@ impl NamedConsentError {
 }
 
 impl NamedMcpRuntime {
+    /// Revalidate current named policy and rotate a grant-bound refresh family.
+    pub fn refresh_connection(
+        &self,
+        request: &NamedRefreshRequest<'_>,
+    ) -> Result<NamedRefreshGrant, NamedRefreshError> {
+        let family = self
+            .authorization_store
+            .list_token_families(None)
+            .and_then(|families| {
+                families
+                    .into_iter()
+                    .find(|family| family.id == request.family_id)
+                    .ok_or(McpStateError::UnknownTokenFamily(request.family_id))
+            })
+            .map_err(|error| NamedRefreshError::invalid_grant(error.to_string()))?;
+        if family.client_id != request.client_id || family.audience != request.resource {
+            return Err(NamedRefreshError::invalid_grant(
+                "refresh token client or resource mismatch",
+            ));
+        }
+        let grant = self
+            .authorization_store
+            .resolve_active_grant(
+                family.grant_id,
+                request.remote_instance_id,
+                request.client_id,
+                request.resource,
+                request.now,
+            )
+            .map_err(|error| NamedRefreshError::invalid_grant(error.to_string()))?;
+        if request
+            .requested_resource
+            .is_some_and(|resource| resource != grant.audience)
+        {
+            return Err(NamedRefreshError {
+                code: "invalid_target",
+                message: "resource does not match grant".to_string(),
+            });
+        }
+        let vault = self
+            .vaults
+            .get(&grant.wiki_id)
+            .ok_or_else(|| NamedRefreshError::invalid_grant("grant vault is no longer exposed"))?;
+        if grant.remote_id != self.remote_id
+            || !grant
+                .tool_packs
+                .iter()
+                .all(|pack| vault.eligible_tool_packs.contains(pack))
+        {
+            return Err(NamedRefreshError::invalid_grant(
+                "grant exceeds remote policy",
+            ));
+        }
+        let current_profile =
+            resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
+                .map_err(|_| NamedRefreshError::invalid_grant("grant policy is no longer valid"))?;
+        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
+            .map_err(|_| NamedRefreshError::invalid_grant("grant policy is no longer valid"))?;
+        if !current_profile
+            .grant
+            .is_subset_of(&grant.approved_permissions)
+            || !current_profile.grant.is_subset_of(&ceiling.grant)
+        {
+            return Err(NamedRefreshError::invalid_grant(
+                "grant policy is no longer valid",
+            ));
+        }
+        let scopes = match request.requested_scopes {
+            Some(scopes) if scopes.iter().all(|scope| grant.scopes.contains(scope)) => {
+                scopes.to_vec()
+            }
+            Some(_) => {
+                return Err(NamedRefreshError {
+                    code: "invalid_scope",
+                    message: "refresh request widens the granted scopes".to_string(),
+                })
+            }
+            None => grant.scopes.clone(),
+        };
+        self.authorization_store
+            .attenuate_grant_permissions(grant.id, &current_profile.grant, request.now)
+            .map_err(|_| NamedRefreshError::invalid_grant("grant policy is no longer valid"))?;
+        let refresh_token = self
+            .authorization_store
+            .rotate_refresh_token(request.family_id, request.secret, request.now)
+            .map_err(|error| NamedRefreshError::invalid_grant(error.to_string()))?;
+        Ok(NamedRefreshGrant {
+            grant_id: grant.id,
+            subject: grant.subject,
+            client_id: grant.client_id,
+            audience: grant.audience,
+            scopes,
+            refresh_token,
+        })
+    }
+
     /// Select the grant-bound vault and startup capability set for an HTTP session.
     pub fn session_config(
         &self,
@@ -385,6 +519,76 @@ mod tests {
             .revoke_grant(grant_id, token.now, false)
             .expect("revoke grant");
         assert!(runtime.authorize_token(&token).is_err());
+    }
+
+    #[test]
+    fn refresh_policy_binds_client_resource_scopes_and_rotates_once() {
+        let (_temporary, runtime) = runtime();
+        let instance_id = Ulid::new();
+        let scopes = vec!["mcp:tools".to_string()];
+        let form = BTreeMap::from([
+            ("pack_notes-read".to_string(), "on".to_string()),
+            ("expiry_days".to_string(), "7".to_string()),
+        ]);
+        let grant_id = runtime
+            .create_connection_grant(&request(instance_id, &form, &scopes))
+            .expect("approved consent");
+        let grant = runtime
+            .authorization_store
+            .resolve_active_grant(
+                grant_id,
+                instance_id,
+                "https://client.example/app.json",
+                "https://mcp.example/personal",
+                1_700_000_001,
+            )
+            .expect("grant");
+        let issued = runtime
+            .authorization_store
+            .issue_refresh_token(grant_id, grant.expires_at, 1_700_000_001)
+            .expect("refresh family");
+        let mut refresh = NamedRefreshRequest {
+            remote_instance_id: instance_id,
+            family_id: issued.family_id,
+            secret: issued.secret.expose(),
+            client_id: "https://client.example/app.json",
+            resource: "https://mcp.example/personal",
+            requested_resource: None,
+            requested_scopes: None,
+            now: 1_700_000_002,
+        };
+        refresh.client_id = "https://other.example/app.json";
+        assert_eq!(
+            runtime.refresh_connection(&refresh).unwrap_err().code,
+            "invalid_grant"
+        );
+        refresh.client_id = "https://client.example/app.json";
+        refresh.requested_resource = Some("https://other.example/mcp");
+        assert_eq!(
+            runtime.refresh_connection(&refresh).unwrap_err().code,
+            "invalid_target"
+        );
+        refresh.requested_resource = None;
+        let widened = vec!["mcp:tools".to_string(), "mcp:resources".to_string()];
+        refresh.requested_scopes = Some(&widened);
+        assert_eq!(
+            runtime.refresh_connection(&refresh).unwrap_err().code,
+            "invalid_scope"
+        );
+        refresh.requested_scopes = None;
+
+        let rotated = runtime.refresh_connection(&refresh).expect("valid refresh");
+        assert_eq!(rotated.grant_id, grant_id);
+        assert_eq!(rotated.scopes, scopes);
+        assert_eq!(rotated.audience, "https://mcp.example/personal");
+        assert_ne!(
+            rotated.refresh_token.secret.expose(),
+            issued.secret.expose()
+        );
+        assert_eq!(
+            runtime.refresh_connection(&refresh).unwrap_err().code,
+            "invalid_grant"
+        );
     }
 
     #[test]

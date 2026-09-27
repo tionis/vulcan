@@ -130,7 +130,8 @@ use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote_runtime::{
-    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime, NamedTokenRequest,
+    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime, NamedRefreshRequest,
+    NamedTokenRequest,
 };
 use vulcan_daemon::mcp_session::{
     mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
@@ -4101,115 +4102,40 @@ fn handle_local_oauth_refresh(
     let Ok(family_id) = family.parse::<Ulid>() else {
         return oauth_json_error_response(400, "invalid_grant", "invalid refresh token");
     };
-    let family = match named
-        .authorization_store
-        .list_token_families(None)
-        .and_then(|families| {
-            families
-                .into_iter()
-                .find(|family| family.id == family_id)
-                .ok_or(vulcan_daemon::mcp_state::McpStateError::UnknownTokenFamily(
-                    family_id,
-                ))
-        }) {
-        Ok(family) => family,
-        Err(error) => return oauth_json_error_response(400, "invalid_grant", error.to_string()),
-    };
-    if family.client_id != client_id || family.audience != issuer.public_url() {
-        return oauth_json_error_response(
-            400,
-            "invalid_grant",
-            "refresh token client or resource mismatch",
-        );
-    }
-    let now = current_unix_timestamp();
-    let grant = match named.authorization_store.resolve_active_grant(
-        family.grant_id,
-        context.instance_id,
-        client_id,
-        issuer.public_url(),
-        now,
-    ) {
-        Ok(grant) => grant,
-        Err(error) => return oauth_json_error_response(400, "invalid_grant", error.to_string()),
-    };
-    if params
-        .get("resource")
-        .is_some_and(|resource| resource != &grant.audience)
-    {
-        return oauth_json_error_response(400, "invalid_target", "resource does not match grant");
-    }
-    let Some(vault) = named.vaults.get(&grant.wiki_id) else {
-        return oauth_json_error_response(400, "invalid_grant", "grant vault is no longer exposed");
-    };
-    if grant.remote_id != named.remote_id
-        || !grant
-            .tool_packs
-            .iter()
-            .all(|pack| vault.eligible_tool_packs.contains(pack))
-    {
-        return oauth_json_error_response(400, "invalid_grant", "grant exceeds remote policy");
-    }
-    let current_profile = resolve_permission_profile(&vault.paths, Some(&grant.permission_profile));
-    let valid_profile = current_profile.as_ref().is_ok_and(|current| {
-        resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile)).is_ok_and(
-            |ceiling| {
-                current.grant.is_subset_of(&grant.approved_permissions)
-                    && current.grant.is_subset_of(&ceiling.grant)
-            },
-        )
-    });
-    if !valid_profile {
-        return oauth_json_error_response(400, "invalid_grant", "grant policy is no longer valid");
-    }
-    if named
-        .authorization_store
-        .attenuate_grant_permissions(
-            grant.id,
-            &current_profile.expect("validated current profile").grant,
-            now,
-        )
-        .is_err()
-    {
-        return oauth_json_error_response(400, "invalid_grant", "grant policy is no longer valid");
-    }
-    let scopes = match params.get("scope") {
+    let requested_scopes = match params.get("scope") {
         Some(scope) => match parse_mcp_oauth_scopes(Some(scope)) {
-            Ok(scopes) if scopes.iter().all(|scope| grant.scopes.contains(scope)) => scopes,
-            Ok(_) => {
-                return oauth_json_error_response(
-                    400,
-                    "invalid_scope",
-                    "refresh request widens the granted scopes",
-                )
-            }
+            Ok(scopes) => Some(scopes),
             Err(response) => return response,
         },
-        None => grant.scopes.clone(),
+        None => None,
     };
-    let replacement = match named
-        .authorization_store
-        .rotate_refresh_token(family_id, secret, now)
-    {
-        Ok(token) => token,
-        Err(error) => {
-            return oauth_json_error_response(400, "invalid_grant", error.to_string());
-        }
+    let refreshed = match named.refresh_connection(&NamedRefreshRequest {
+        remote_instance_id: context.instance_id,
+        family_id,
+        secret,
+        client_id,
+        resource: issuer.public_url(),
+        requested_resource: params.get("resource").map(String::as_str),
+        requested_scopes: requested_scopes.as_deref(),
+        now: current_unix_timestamp(),
+    }) {
+        Ok(refreshed) => refreshed,
+        Err(error) => return oauth_json_error_response(400, error.code, error.message),
     };
     match issuer.issue_access_token_for_authorization(
-        &grant.subject,
-        &grant.client_id,
-        &scopes,
-        Some(grant.id.to_string()),
+        &refreshed.subject,
+        &refreshed.client_id,
+        &refreshed.scopes,
+        Some(refreshed.grant_id.to_string()),
     ) {
         Ok(access_token) => {
             let body = serde_json::json!({
                 "access_token": access_token,
-                "refresh_token": format!("{}.{}", replacement.family_id, replacement.secret.expose()),
+                "refresh_token": format!("{}.{}", refreshed.refresh_token.family_id, refreshed.refresh_token.secret.expose()),
                 "token_type": "Bearer",
                 "expires_in": 900,
-                "scope": scopes.join(" "),
-                "resource": grant.audience,
+                "scope": refreshed.scopes.join(" "),
+                "resource": refreshed.audience,
             });
             McpHttpResponse {
                 status: 200,
