@@ -22,6 +22,7 @@ pub mod http;
 pub mod http_policy;
 pub mod mcp_http_codec;
 pub mod mcp_http_routes;
+pub mod mcp_oauth_policy;
 pub mod mcp_remote;
 pub mod mcp_remote_runtime;
 pub mod mcp_session;

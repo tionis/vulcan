@@ -127,6 +127,12 @@ use vulcan_daemon::mcp_http_codec::{
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
+use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_policy::{
+    parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy, validate_mcp_authorize_request,
+    McpAuthorizeRequest, McpOAuthPolicyError, SUPPORTED_MCP_OAUTH_SCOPES,
+};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
@@ -171,17 +177,6 @@ struct McpHttpLifecycle<'a> {
 #[cfg(feature = "oauth")]
 type IndieAuthExchange =
     fn(&str, &str, &str, &str, &str) -> Result<String, vulcan_core::OAuthError>;
-const DEFAULT_MCP_OAUTH_SCOPES: &[&str] = &["mcp:prompts", "mcp:resources", "mcp:tools"];
-#[cfg(feature = "oauth")]
-const SUPPORTED_MCP_OAUTH_SCOPES: &[&str] = &[
-    "openid",
-    "email",
-    "profile",
-    "mcp:tools",
-    "mcp:resources",
-    "mcp:prompts",
-];
-
 #[derive(Debug, Clone)]
 pub(crate) struct McpHttpOptions {
     pub bind: String,
@@ -3783,30 +3778,19 @@ fn handle_local_oauth_authorize(
         return oauth_plain_response(405, "method not allowed");
     }
     let params = parse_query_params(&request.query);
-    let client_id = params.get("client_id").cloned().unwrap_or_default();
-    let redirect_uri = params.get("redirect_uri").cloned().unwrap_or_default();
-    let response_type = params.get("response_type").cloned().unwrap_or_default();
-    let code_challenge = params.get("code_challenge").cloned().unwrap_or_default();
-    let code_challenge_method = params
-        .get("code_challenge_method")
-        .cloned()
-        .unwrap_or_default();
-    let resource = params
-        .get("resource")
-        .cloned()
-        .unwrap_or_else(|| issuer.public_url().to_string());
-    let scopes = match parse_mcp_oauth_scopes(params.get("scope").map(String::as_str)) {
-        Ok(scopes) => scopes,
-        Err(response) => return response,
+    let McpAuthorizeRequest {
+        client_id,
+        redirect_uri,
+        code_challenge,
+        scopes,
+        resource,
+        state: client_state,
+    } = match validate_mcp_authorize_request(&params, issuer.public_url(), |client, redirect| {
+        local_oauth_client_redirect_allowed(context, issuer, client, redirect)
+    }) {
+        Ok(validated) => validated,
+        Err(error) => return mcp_oauth_policy_error_response(error),
     };
-    if !local_oauth_client_redirect_allowed(context, issuer, &client_id, &redirect_uri)
-        || response_type != "code"
-        || code_challenge.is_empty()
-        || code_challenge_method != "S256"
-        || resource != issuer.public_url()
-    {
-        return oauth_plain_response(400, "invalid OAuth authorization request");
-    }
     if let Some(indieauth) = context.oauth_indieauth.as_ref() {
         let state = Ulid::new().to_string();
         let indieauth_code_verifier = generate_pkce_verifier();
@@ -3824,7 +3808,7 @@ fn handle_local_oauth_authorize(
                     scopes,
                     resource,
                     indieauth_code_verifier,
-                    state: params.get("state").cloned(),
+                    state: client_state,
                     expires_at: std::time::Instant::now() + Duration::from_secs(600),
                 },
             );
@@ -3856,7 +3840,7 @@ fn handle_local_oauth_authorize(
     local_oauth_client_redirect(
         &redirect_uri,
         &format!("code={}", percent_encode(&code)),
-        params.get("state").map(String::as_str),
+        client_state.as_deref(),
     )
 }
 
@@ -5062,37 +5046,21 @@ fn mcp_http_json_error_response(
 
 #[cfg(feature = "oauth")]
 fn parse_mcp_oauth_scopes(scope: Option<&str>) -> Result<Vec<String>, McpHttpResponse> {
-    let values = scope.map_or_else(
-        || {
-            DEFAULT_MCP_OAUTH_SCOPES
-                .iter()
-                .map(|scope| (*scope).to_string())
-                .collect::<Vec<_>>()
-        },
-        |scope| {
-            scope
-                .split_ascii_whitespace()
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        },
-    );
-    if values.is_empty()
-        || values.len() > 16
-        || values
-            .iter()
-            .any(|scope| !SUPPORTED_MCP_OAUTH_SCOPES.contains(&scope.as_str()))
-    {
-        return Err(oauth_json_error_response(
+    parse_mcp_oauth_scopes_policy(scope).map_err(mcp_oauth_policy_error_response)
+}
+
+#[cfg(feature = "oauth")]
+fn mcp_oauth_policy_error_response(error: McpOAuthPolicyError) -> McpHttpResponse {
+    match error {
+        McpOAuthPolicyError::InvalidScope => oauth_json_error_response(
             400,
             "invalid_scope",
             "requested OAuth scope is empty, unsupported, or too large",
-        ));
+        ),
+        McpOAuthPolicyError::InvalidAuthorizationRequest => {
+            oauth_plain_response(400, "invalid OAuth authorization request")
+        }
     }
-    Ok(values
-        .into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect())
 }
 
 #[cfg(feature = "oauth")]
