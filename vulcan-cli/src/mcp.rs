@@ -118,6 +118,7 @@ use vulcan_daemon::hosted_executor::{
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
+use vulcan_daemon::http_policy::mcp_origin_allowed;
 use vulcan_daemon::mcp_http_codec::{
     read_mcp_http_request, write_mcp_http_response, write_mcp_http_sse_event,
     write_mcp_http_sse_headers, write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
@@ -2092,7 +2093,7 @@ fn authenticate_mcp_http_request(
         credential = actual_token.expect("validated token should be present");
     }
     if let Some(origin) = request.headers.get("origin") {
-        if !origin_allowed(origin, context.bind_addr) {
+        if !mcp_origin_allowed(origin, context.bind_addr) {
             return Err(mcp_http_json_error_response(
                 403,
                 "invalid Origin header",
@@ -5665,21 +5666,6 @@ fn bearer_token(headers: &BTreeMap<String, String>) -> Option<String> {
         }
     }
     None
-}
-
-fn origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
-    let origin = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-        .unwrap_or(origin);
-    let host = origin.split('/').next().unwrap_or_default();
-    let host = host.trim_matches(|ch| ch == '[' || ch == ']');
-    let host = host.split(':').next().unwrap_or(host);
-    if bind_addr.ip().is_loopback() {
-        matches!(host, "127.0.0.1" | "localhost" | "::1")
-    } else {
-        host == bind_addr.ip().to_string()
-    }
 }
 
 fn mcp_http_json_error_response(

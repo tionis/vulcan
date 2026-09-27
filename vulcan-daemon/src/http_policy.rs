@@ -10,8 +10,10 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::Response;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
+use url::{Host, Url};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeaderText<'a> {
@@ -65,6 +67,33 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+/// Accept only a syntactically valid browser Origin whose host is local to the
+/// listener. The port may differ (for a local harness), but paths, credentials,
+/// and opaque origins are never valid Origins for this boundary.
+#[must_use]
+pub fn mcp_origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
+    let Ok(parsed) = Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return false;
+    }
+    match parsed.host() {
+        Some(Host::Domain("localhost")) => bind_addr.ip().is_loopback(),
+        Some(Host::Ipv4(ip)) if bind_addr.ip().is_loopback() => ip == Ipv4Addr::LOCALHOST,
+        Some(Host::Ipv6(ip)) if bind_addr.ip().is_loopback() => ip == Ipv6Addr::LOCALHOST,
+        Some(Host::Ipv4(ip)) => bind_addr.ip() == IpAddr::V4(ip),
+        Some(Host::Ipv6(ip)) => bind_addr.ip() == IpAddr::V6(ip),
+        _ => false,
+    }
 }
 
 pub fn apply_cors_headers(
@@ -193,6 +222,34 @@ mod tests {
             &HeaderName::from_static("x-secret"),
             b"wrong"
         ));
+    }
+
+    #[test]
+    fn mcp_origin_check_handles_ipv6_and_rejects_malformed_origins() {
+        let bind = SocketAddr::from(([127, 0, 0, 1], 8765));
+        for origin in [
+            "http://localhost:3000",
+            "https://127.0.0.1",
+            "http://[::1]:3000",
+        ] {
+            assert!(mcp_origin_allowed(origin, bind), "{origin}");
+        }
+        for origin in [
+            "null",
+            "localhost",
+            "http://localhost.evil",
+            "http://user@localhost",
+            "http://localhost/path",
+            "http://localhost?query=1",
+            "http://localhost#fragment",
+            "javascript://localhost",
+        ] {
+            assert!(!mcp_origin_allowed(origin, bind), "{origin}");
+        }
+        let remote = SocketAddr::from(([192, 0, 2, 10], 8765));
+        assert!(mcp_origin_allowed("https://192.0.2.10", remote));
+        assert!(!mcp_origin_allowed("https://localhost", remote));
+        assert!(!mcp_origin_allowed("https://192.0.2.11", remote));
     }
 
     #[test]

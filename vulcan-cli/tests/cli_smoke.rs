@@ -16194,6 +16194,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("obtain fresh consent"));
     assert!(mcp_skill.contains("`task_create`, `task_complete`, and `task_reschedule` recheck"));
     assert!(mcp_skill.contains("final canonical HTTPS URL"));
+    assert!(
+        mcp_skill.contains("For browser-based local HTTP harnesses, send a valid `Origin` header")
+    );
     assert!(mcp_skill.contains(
         "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"
     ));
@@ -30069,6 +30072,47 @@ fn mcp_http_transport_enforces_auth_tokens() {
         authorized.headers.contains_key("mcp-session-id"),
         "authorized initialize should succeed and return a session id"
     );
+
+    let origin_body = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "origin-test", "version": "1"}
+        }
+    }))
+    .expect("origin request JSON");
+    let with_origin = |origin: &str| {
+        session.request(
+            "POST",
+            &[
+                (
+                    "Authorization".to_string(),
+                    "Bearer secret-token".to_string(),
+                ),
+                ("Content-Type".to_string(), "application/json".to_string()),
+                (
+                    "Accept".to_string(),
+                    "application/json, text/event-stream".to_string(),
+                ),
+                ("Origin".to_string(), origin.to_string()),
+            ],
+            Some(&origin_body),
+        )
+    };
+    assert_eq!(
+        with_origin("http://[::1]:3000").status_line,
+        "HTTP/1.1 200 OK"
+    );
+    for origin in ["http://localhost/path", "http://user@localhost"] {
+        assert_eq!(
+            with_origin(origin).status_line,
+            "HTTP/1.1 403 Forbidden",
+            "{origin} must be rejected"
+        );
+    }
 
     let oversized = session.post_oversized_unauthenticated();
     assert_eq!(oversized.status_line, "HTTP/1.1 413 Payload Too Large");

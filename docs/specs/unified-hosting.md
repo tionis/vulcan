@@ -239,6 +239,8 @@ The bounded HTTP/1.1 request/response and SSE frame codecs now live in
 `vulcan-daemon::mcp_http_codec` and are used by the foreground and resident named listeners.
 This moves wire framing out of the CLI without moving OAuth policy, session lifecycle, or the
 method dispatcher yet.
+The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
+origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
