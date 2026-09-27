@@ -586,6 +586,14 @@ fn mcp_request_is_read_only(payload: &Value) -> bool {
     else {
         return false;
     };
+    if name == "graph_communities" {
+        return payload
+            .get("params")
+            .and_then(|params| params.get("arguments"))
+            .and_then(|arguments| arguments.get("dry_run"))
+            .and_then(Value::as_bool)
+            == Some(true);
+    }
     if tool_by_name(name).is_some_and(|tool| tool.annotations.read_only_hint) {
         true
     } else {

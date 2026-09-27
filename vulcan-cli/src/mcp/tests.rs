@@ -4147,6 +4147,36 @@ fn hosted_mcp_scheduling_uses_catalog_read_hints_and_conservative_custom_mutatio
         ScheduledOperation::Mutation
     );
     assert_eq!(
+        mcp_scheduled_operation(&call("graph_communities")),
+        ScheduledOperation::Mutation,
+        "the default graph call persists derived clusters"
+    );
+    assert_eq!(
+        mcp_scheduled_operation(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "graph_communities",
+                "arguments": {"dry_run": true}
+            }
+        })),
+        ScheduledOperation::Read
+    );
+    assert_eq!(
+        mcp_scheduled_operation(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "graph_communities",
+                "arguments": {"dry_run": "true"}
+            }
+        })),
+        ScheduledOperation::Mutation,
+        "malformed dry-run values must stay on the conservative lane"
+    );
+    assert_eq!(
         mcp_scheduled_operation(&call("web_fetch")),
         ScheduledOperation::Read
     );

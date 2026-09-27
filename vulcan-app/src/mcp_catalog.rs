@@ -340,7 +340,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Compute note-graph communities, orphan placement hints, and bridge notes.",
         packs: PACK_GRAPH,
         visibility: McpVisibilityRequirement::Read,
-        annotations: mcp_annotations(true, false, false, false),
+        annotations: mcp_annotations(false, false, false, false),
         input_schema: graph_communities_input_schema,
         output_schema: Some(generic_report_output_schema),
         examples: &["vulcan graph communities --output json"],
@@ -758,5 +758,17 @@ mod tests {
             assert_eq!(input["type"], "object", "tool {}", tool.name);
             assert!(tool.output_schema.is_some(), "tool {}", tool.name);
         }
+    }
+
+    #[test]
+    fn persisting_graph_communities_is_not_advertised_as_read_only() {
+        let graph = tool_by_name("graph_communities").expect("graph tool");
+        assert!(!graph.annotations.read_only_hint);
+        assert!(
+            tool_by_name("note_get")
+                .expect("note read tool")
+                .annotations
+                .read_only_hint
+        );
     }
 }

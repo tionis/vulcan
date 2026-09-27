@@ -16175,6 +16175,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("vulcan daemon start --detach"));
     assert!(mcp_skill.contains("Stop the remote before `remote set` or `remote remove`"));
     assert!(mcp_skill.contains("A denied endpoint does not change suggestion state"));
+    assert!(mcp_skill.contains("set `dry_run: true` for a read-only calculation"));
     assert!(mcp_skill.contains("targets an in-flight request ID in the same MCP session"));
     assert!(
         mcp_skill.contains("a tools-only grant does not receive prompt or resource list changes")
