@@ -41,6 +41,87 @@ pub struct PendingConsent {
 pub type PendingIndieAuthMap = Mutex<BTreeMap<String, PendingIndieAuth>>;
 pub type PendingConsentMap = Mutex<BTreeMap<String, PendingConsent>>;
 
+#[derive(Debug, Clone)]
+pub struct IndieAuthConfig {
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub client_id: String,
+    pub redirect_uri: String,
+    pub me: Option<String>,
+}
+
+#[must_use]
+pub fn client_redirect(
+    redirect_uri: &str,
+    result_query: &str,
+    state: Option<&str>,
+) -> McpHttpResponse {
+    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
+    let mut location = format!("{redirect_uri}{separator}{result_query}");
+    if let Some(state) = state {
+        location.push_str("&state=");
+        location.push_str(&percent_encode(state));
+    }
+    McpHttpResponse {
+        status: 302,
+        content_type: None,
+        body: Vec::new(),
+        extra_headers: vec![
+            ("Location".to_string(), location),
+            ("Cache-Control".to_string(), "no-store".to_string()),
+        ],
+    }
+}
+
+#[must_use]
+pub fn redirect_to_indieauth(
+    indieauth: &IndieAuthConfig,
+    state: &str,
+    code_challenge: &str,
+) -> McpHttpResponse {
+    let separator = if indieauth.authorization_endpoint.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    let mut location = format!(
+        "{}{separator}response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
+        indieauth.authorization_endpoint,
+        percent_encode(&indieauth.client_id),
+        percent_encode(&indieauth.redirect_uri),
+        percent_encode(state),
+        percent_encode(code_challenge)
+    );
+    if let Some(me) = indieauth.me.as_ref() {
+        location.push_str("&me=");
+        location.push_str(&percent_encode(me));
+    }
+    McpHttpResponse {
+        status: 302,
+        content_type: None,
+        body: Vec::new(),
+        extra_headers: vec![
+            ("Location".to_string(), location),
+            ("Cache-Control".to_string(), "no-store".to_string()),
+        ],
+    }
+}
+
+#[must_use]
+pub fn percent_encode(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            write!(output, "%{byte:02X}").expect("writing to a String should not fail");
+        }
+    }
+    output
+}
+
 pub struct ConsentPage<'a> {
     pub transaction_id: &'a str,
     pub pending: &'a PendingConsent,
@@ -382,6 +463,46 @@ mod tests {
         assert!(html.contains("pack_personal_search"));
         assert!(html.contains("pack_work_search"));
         assert!(html.contains("name=\"expiry_days\""));
+    }
+
+    #[test]
+    fn browser_redirects_encode_state_and_preserve_registered_queries() {
+        let client = client_redirect(
+            "https://client.example/callback?existing=one",
+            "code=issued-code",
+            Some("a&b c"),
+        );
+        assert!(client.extra_headers.iter().any(|(name, value)| name == "Location" && value == "https://client.example/callback?existing=one&code=issued-code&state=a%26b%20c"));
+        assert!(client
+            .extra_headers
+            .iter()
+            .any(|(name, value)| name == "Cache-Control" && value == "no-store"));
+
+        let upstream = redirect_to_indieauth(
+            &IndieAuthConfig {
+                authorization_endpoint: "https://indie.example/authorize?existing=one".into(),
+                token_endpoint: "https://indie.example/token".into(),
+                client_id: "https://remote.example/".into(),
+                redirect_uri: "https://remote.example/oauth/indieauth/callback".into(),
+                me: Some("https://person.example/a?b=c&d=e".into()),
+            },
+            "state&value",
+            "challenge+value",
+        );
+        let location = upstream
+            .extra_headers
+            .iter()
+            .find_map(|(name, value)| (name == "Location").then_some(value.as_str()))
+            .unwrap();
+        assert!(location
+            .starts_with("https://indie.example/authorize?existing=one&response_type=code&"));
+        assert!(location.contains("state=state%26value"));
+        assert!(location.contains("code_challenge=challenge%2Bvalue"));
+        assert!(location.contains("me=https%3A%2F%2Fperson.example%2Fa%3Fb%3Dc%26d%3De"));
+        assert!(upstream
+            .extra_headers
+            .iter()
+            .any(|(name, value)| name == "Cache-Control" && value == "no-store"));
     }
 
     #[test]

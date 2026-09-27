@@ -130,9 +130,12 @@ use vulcan_daemon::mcp_http_codec::{
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_browser::{
-    begin_consent, begin_indieauth, consume_consent, html_escape, render_consent_page,
+    begin_consent, begin_indieauth, client_redirect as local_oauth_client_redirect,
+    consume_consent, html_escape, percent_encode,
+    redirect_to_indieauth as local_oauth_redirect_to_indieauth, render_consent_page,
     take_indieauth, BeginError as BrowserBeginError, ConsentError as BrowserConsentError,
-    ConsentPage, PendingConsent as LocalOAuthPendingConsent, PendingConsentMap,
+    ConsentPage, IndieAuthConfig as LocalOAuthIndieAuthConfig,
+    PendingConsent as LocalOAuthPendingConsent, PendingConsentMap,
     PendingIndieAuth as LocalOAuthPendingIndieAuth, PendingIndieAuthMap,
     TakeError as BrowserTakeError,
 };
@@ -266,16 +269,6 @@ impl McpOAuthMode {
             Self::Local(issuer) => issuer.public_url(),
         }
     }
-}
-
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-struct LocalOAuthIndieAuthConfig {
-    authorization_endpoint: String,
-    token_endpoint: String,
-    client_id: String,
-    redirect_uri: String,
-    me: Option<String>,
 }
 
 #[cfg(feature = "oauth")]
@@ -4139,29 +4132,6 @@ fn local_oauth_consent_form(
 }
 
 #[cfg(feature = "oauth")]
-fn local_oauth_client_redirect(
-    redirect_uri: &str,
-    result_query: &str,
-    state: Option<&str>,
-) -> McpHttpResponse {
-    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
-    let mut location = format!("{redirect_uri}{separator}{result_query}");
-    if let Some(state) = state {
-        location.push_str("&state=");
-        location.push_str(&percent_encode(state));
-    }
-    McpHttpResponse {
-        status: 302,
-        content_type: None,
-        body: Vec::new(),
-        extra_headers: vec![
-            ("Location".to_string(), location),
-            ("Cache-Control".to_string(), "no-store".to_string()),
-        ],
-    }
-}
-
-#[cfg(feature = "oauth")]
 fn indieauth_subject_not_allowed_response(subject: &str) -> McpHttpResponse {
     oauth_plain_response(
         403,
@@ -4172,32 +4142,6 @@ fn indieauth_subject_not_allowed_response(subject: &str) -> McpHttpResponse {
              {subject:?}=<profile>."
         ),
     )
-}
-
-#[cfg(feature = "oauth")]
-fn local_oauth_redirect_to_indieauth(
-    indieauth: &LocalOAuthIndieAuthConfig,
-    state: &str,
-    code_challenge: &str,
-) -> McpHttpResponse {
-    let mut location = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
-        indieauth.authorization_endpoint,
-        percent_encode(&indieauth.client_id),
-        percent_encode(&indieauth.redirect_uri),
-        percent_encode(state),
-        percent_encode(code_challenge)
-    );
-    if let Some(me) = indieauth.me.as_ref() {
-        location.push_str("&me=");
-        location.push_str(&percent_encode(me));
-    }
-    McpHttpResponse {
-        status: 302,
-        content_type: None,
-        body: Vec::new(),
-        extra_headers: vec![("Location".to_string(), location)],
-    }
 }
 
 #[cfg(feature = "oauth")]
@@ -4655,21 +4599,6 @@ fn percent_decode(value: &str) -> Option<String> {
         }
     }
     String::from_utf8(output).ok()
-}
-
-#[cfg(feature = "oauth")]
-fn percent_encode(value: &str) -> String {
-    use std::fmt::Write as _;
-
-    let mut output = String::new();
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            output.push(char::from(byte));
-        } else {
-            write!(output, "%{byte:02X}").expect("writing to a String should not fail");
-        }
-    }
-    output
 }
 
 #[cfg(feature = "oauth")]
