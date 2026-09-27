@@ -3,6 +3,93 @@ use crate::McpToolPackModeArg;
 use vulcan_core::{PermissionProfile, TasksQueryResult};
 
 #[test]
+fn stdio_and_http_reads_refuse_a_pending_ordinary_write_journal() {
+    #[derive(serde::Serialize)]
+    struct JournalFixture<'a> {
+        version: u32,
+        transaction_id: &'a str,
+        changes: &'a [vulcan_core::ordinary_write::OrdinaryWriteChange],
+        digest: String,
+    }
+
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+    fs::write(temporary.path().join("Task.md"), "new task\n").expect("published target");
+    let changes = vec![
+        vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: "Task.md".to_string(),
+            before: None,
+            after: Some("new task\n".to_string()),
+        },
+        vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: "Inbox.md".to_string(),
+            before: Some("old task\n".to_string()),
+            after: Some("[[Task]]\n".to_string()),
+        },
+    ];
+    let transaction_id = Ulid::new().to_string();
+    let mut journal = JournalFixture {
+        version: 1,
+        transaction_id: &transaction_id,
+        changes: &changes,
+        digest: String::new(),
+    };
+    journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+        .to_hex()
+        .to_string();
+    let state = paths
+        .operational_state_dir()
+        .expect("operational state")
+        .join("ordinary-write");
+    fs::create_dir_all(&state).expect("journal state");
+    let journal_path = state.join("journal.json");
+    fs::write(
+        &journal_path,
+        serde_json::to_vec(&journal).expect("sealed journal"),
+    )
+    .expect("journal");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+            .expect("owner-only journal");
+    }
+
+    let mut core = McpServerCore::new(
+        &paths,
+        Some("readonly"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let request = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+    let stdio = core.process_request(request.clone());
+    assert_eq!(stdio[0]["error"]["code"], -32603);
+    assert!(stdio[0]["error"]["message"]
+        .as_str()
+        .expect("error message")
+        .contains("ordinary write journal is pending"));
+    let http = core
+        .process_http_request(&request)
+        .expect_err("HTTP read must also be blocked");
+    assert_eq!(http["error"]["code"], -32603);
+    let notification = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+    assert!(core.process_request(notification.clone()).is_empty());
+    assert!(core
+        .process_http_request(&notification)
+        .expect("notification has no JSON-RPC error response")
+        .response
+        .is_none());
+    assert!(journal_path.exists());
+
+    vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths).expect("recovery");
+    assert!(!journal_path.exists());
+    assert!(core.process_http_request(&request).is_ok());
+}
+
+#[test]
 fn restricted_mcp_read_reports_exclude_denied_task_paths() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should create");
     let paths = VaultPaths::new(temp_dir.path());

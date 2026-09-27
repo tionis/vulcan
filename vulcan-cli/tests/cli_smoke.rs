@@ -15950,6 +15950,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("explicit repair is a separate workflow"));
     assert!(note_operations.contains("reports `concurrent_modification`"));
     assert!(note_operations.contains("Never replay a stale whole-note replacement blindly"));
+    assert!(note_operations.contains("pending ordinary-write journal"));
     let js_api = fs::read_to_string(vault_root.join(".agents/skills/js-api-guide/SKILL.md"))
         .expect("JS API skill should be readable");
     assert!(js_api.contains("Use `--sandbox none` only for a trusted local script"));
@@ -16169,6 +16170,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("startup recovers an interrupted ordinary TaskNotes"));
     assert!(mcp_skill.contains("or archive move before accepting requests"));
     assert!(mcp_skill.contains("vulcan repair ordinary-write status"));
+    assert!(mcp_skill.contains("live stdio or HTTP MCP request"));
     assert!(mcp_skill.contains("exact transaction ID and review token"));
     assert!(mcp_skill.contains("template-created files, template moves/renames"));
     assert!(mcp_skill.contains("obtain fresh consent"));

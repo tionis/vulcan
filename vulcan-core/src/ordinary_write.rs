@@ -224,6 +224,25 @@ pub fn inspect_ordinary_write_batch(
     inspect_journal(paths, &journal).map(Some)
 }
 
+/// Refuse a read while an ordinary multi-file transaction is pending.
+/// Callers needing a stable read hold the shared vault lock across this check
+/// and the read itself, so a cooperating writer cannot publish a journal mid-read.
+pub fn ensure_no_pending_ordinary_write_batch(
+    paths: &VaultPaths,
+) -> Result<(), OrdinaryWriteError> {
+    let Some(directory) = existing_state_directory(paths)? else {
+        return Ok(());
+    };
+    if load_journal(&directory)?.is_some() {
+        return Err(OrdinaryWriteError::new(
+            "ordinary_write_pending",
+            "ordinary write journal is pending; run `vulcan repair ordinary-write status` before reading or mutating this vault",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Retire a conflicted journal only after a human has reconciled its files.
 /// This does not alter note bytes. A stale review token or recoverable batch
 /// cannot be accepted as current state.

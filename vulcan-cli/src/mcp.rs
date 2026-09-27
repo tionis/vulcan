@@ -674,25 +674,33 @@ fn attenuate_mcp_core_profile(core: &mut McpServerCore) -> Result<(), String> {
 
 #[cfg(feature = "oauth")]
 fn mcp_scheduled_operation(payload: &Value) -> ScheduledOperation {
+    if mcp_request_is_read_only(payload) {
+        ScheduledOperation::Read
+    } else {
+        ScheduledOperation::Mutation
+    }
+}
+
+fn mcp_request_is_read_only(payload: &Value) -> bool {
     if payload.get("method").and_then(Value::as_str) != Some("tools/call") {
-        return ScheduledOperation::Read;
+        return true;
     }
     let Some(name) = payload
         .get("params")
         .and_then(|params| params.get("name"))
         .and_then(Value::as_str)
     else {
-        return ScheduledOperation::Mutation;
+        return false;
     };
     if name == "web_fetch" {
         // web_fetch is generally a read, but its save option can write a vault file.
-        return ScheduledOperation::Mutation;
+        return false;
     }
     if tool_by_name(name).is_some_and(|tool| tool.annotations.read_only_hint) {
-        ScheduledOperation::Read
+        true
     } else {
         // Custom tools and unknown aliases may mutate; never infer read-only from absence.
-        ScheduledOperation::Mutation
+        false
     }
 }
 
@@ -2320,11 +2328,51 @@ impl McpServerCore {
     }
 
     fn process_request(&mut self, request: Value) -> Vec<Value> {
+        let _read_guard = match self.ordinary_write_gate(&request) {
+            Ok(guard) => guard,
+            Err(message) => {
+                return request_id(&request)
+                    .map(|id| vec![jsonrpc_error(id, -32603, message, None)])
+                    .unwrap_or_default()
+            }
+        };
         process_stdio_request(self, request)
     }
 
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
+        let _read_guard = match self.ordinary_write_gate(request) {
+            Ok(guard) => guard,
+            Err(message) => {
+                return if let Some(id) = request_id(request) {
+                    Err(jsonrpc_error(id, -32603, message, None))
+                } else {
+                    Ok(McpHttpProcessResult {
+                        response: None,
+                        notifications: Vec::new(),
+                        accepted_notification: true,
+                        session_stale: false,
+                    })
+                };
+            }
+        };
         process_http_request(self, request)
+    }
+
+    fn ordinary_write_gate(
+        &self,
+        request: &Value,
+    ) -> Result<Option<vulcan_core::write_lock::ReadLockGuard>, String> {
+        let guard = if mcp_request_is_read_only(request) && self.paths.vulcan_dir().exists() {
+            Some(
+                vulcan_core::write_lock::acquire_read_lock(&self.paths)
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
+        vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(&self.paths)
+            .map_err(|error| error.to_string())?;
+        Ok(guard)
     }
 
     #[allow(clippy::too_many_lines)] // Registration must precede the worker, and all timeout branches share its ID.
