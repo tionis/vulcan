@@ -3,10 +3,11 @@ use crate::AppError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::sync::{Arc, Mutex};
 use vulcan_core::config::TemplatesConfig;
 use vulcan_core::expression::functions::{
     format_date, parse_date_like_string, parse_date_with_format,
@@ -34,6 +35,41 @@ pub use frontmatter::{
 pub type CliError = AppError;
 pub type YamlMapping = serde_yaml::Mapping;
 pub type YamlValue = serde_yaml::Value;
+
+pub(crate) type StagedTemplateCreates = Arc<Mutex<BTreeMap<String, String>>>;
+
+pub(crate) fn staged_template_creates() -> StagedTemplateCreates {
+    Arc::new(Mutex::new(BTreeMap::new()))
+}
+
+pub(crate) fn staged_template_create_snapshot(
+    staged: &StagedTemplateCreates,
+) -> Result<BTreeMap<String, String>, AppError> {
+    staged
+        .lock()
+        .map(|changes| changes.clone())
+        .map_err(|_| AppError::operation("template create staging lock poisoned"))
+}
+
+fn stage_template_create(
+    staged: &StagedTemplateCreates,
+    paths: &VaultPaths,
+    path: &str,
+    content: String,
+) -> Result<(), String> {
+    let mut changes = staged
+        .lock()
+        .map_err(|_| "template create staging lock poisoned".to_string())?;
+    if changes.contains_key(path) || paths.vault_root().join(path).exists() {
+        return Err(format!("destination note already exists: {path}"));
+    }
+    changes.insert(path.to_string(), content);
+    Ok(())
+}
+
+fn staged_template_content(staged: Option<&StagedTemplateCreates>, path: &str) -> Option<String> {
+    staged?.lock().ok()?.get(path).cloned()
+}
 
 const MAX_TEMPLATE_INCLUDE_DEPTH: usize = 10;
 const MAX_QUICKADD_EXPANSION_DEPTH: usize = 10;
@@ -281,17 +317,19 @@ pub fn render_template_request_with_filter(
     request: TemplateRenderRequest<'_>,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplateRenderOutput, CliError> {
-    render_template_request_with_authority(request, read_filter, None)
+    render_template_request_with_authority(request, read_filter, None, None)
 }
 
 fn render_template_request_with_authority(
     request: TemplateRenderRequest<'_>,
     read_filter: Option<&PermissionFilter>,
     mutation_guard: Option<&ProfilePermissionGuard>,
+    staged_creates: Option<StagedTemplateCreates>,
 ) -> Result<TemplateRenderOutput, CliError> {
     let engine = detect_template_engine(request.template_text, request.engine);
     let template_text = request.template_text;
-    let mut session = TemplateSession::new(request, engine, read_filter, mutation_guard);
+    let mut session =
+        TemplateSession::new(request, engine, read_filter, mutation_guard, staged_creates);
     let content = session.render_source(template_text, engine, 0)?;
     let content = session.merge_pending_frontmatter(&content)?;
     #[cfg(feature = "js_runtime")]
@@ -405,6 +443,26 @@ pub(crate) fn render_loaded_template_with_authority(
     read_filter: Option<&PermissionFilter>,
     mutation_guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TemplateRenderOutput, AppError> {
+    render_loaded_template_with_staged_creates(
+        paths,
+        vault_config,
+        loaded,
+        request,
+        read_filter,
+        mutation_guard,
+        None,
+    )
+}
+
+pub(crate) fn render_loaded_template_with_staged_creates(
+    paths: &VaultPaths,
+    vault_config: &VaultConfig,
+    loaded: &LoadedTemplateSource,
+    request: &LoadedTemplateRenderRequest<'_>,
+    read_filter: Option<&PermissionFilter>,
+    mutation_guard: Option<&ProfilePermissionGuard>,
+    staged_creates: Option<StagedTemplateCreates>,
+) -> Result<TemplateRenderOutput, AppError> {
     render_template_request_with_authority(
         TemplateRenderRequest {
             paths,
@@ -421,6 +479,7 @@ pub(crate) fn render_loaded_template_with_authority(
         },
         read_filter,
         mutation_guard,
+        staged_creates,
     )
 }
 
@@ -533,6 +592,26 @@ pub(crate) fn render_creation_trigger_with_authority(
     read_filter: Option<&PermissionFilter>,
     mutation_guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Option<RenderedCreationTrigger>, AppError> {
+    render_creation_trigger_with_staged_creates(
+        paths,
+        config,
+        relative_path,
+        contents,
+        read_filter,
+        mutation_guard,
+        None,
+    )
+}
+
+pub(crate) fn render_creation_trigger_with_staged_creates(
+    paths: &VaultPaths,
+    config: &VaultConfig,
+    relative_path: &str,
+    contents: &str,
+    read_filter: Option<&PermissionFilter>,
+    mutation_guard: Option<&ProfilePermissionGuard>,
+    staged_creates: Option<StagedTemplateCreates>,
+) -> Result<Option<RenderedCreationTrigger>, AppError> {
     if !config.templates.trigger_on_file_creation
         || creation_trigger_path_is_excluded(config, relative_path)
     {
@@ -552,7 +631,7 @@ pub(crate) fn render_creation_trigger_with_authority(
     if let Some(template_name) = template_name {
         let loaded = load_named_template(paths, config, template_name)?;
         let vars = HashMap::new();
-        let rendered = render_loaded_template_with_authority(
+        let rendered = render_loaded_template_with_staged_creates(
             paths,
             config,
             &loaded,
@@ -566,6 +645,7 @@ pub(crate) fn render_creation_trigger_with_authority(
             },
             read_filter,
             mutation_guard,
+            staged_creates,
         )?;
         let (target_frontmatter, _) =
             parse_frontmatter_document(contents, false).map_err(AppError::operation)?;
@@ -617,6 +697,7 @@ pub(crate) fn render_creation_trigger_with_authority(
         },
         read_filter,
         mutation_guard,
+        staged_creates,
     )?;
     Ok(Some(RenderedCreationTrigger {
         content: rendered.content,
@@ -917,6 +998,7 @@ struct TemplateSession<'a> {
     quickadd_date_vars: HashMap<String, i64>,
     read_filter: Option<PermissionFilter>,
     mutation_guard: Option<ProfilePermissionGuard>,
+    staged_creates: Option<StagedTemplateCreates>,
     #[cfg(feature = "js_runtime")]
     js_runtime: Option<JsTemplateRuntime>,
 }
@@ -927,6 +1009,7 @@ impl<'a> TemplateSession<'a> {
         _engine: TemplateEngineKind,
         read_filter: Option<&PermissionFilter>,
         mutation_guard: Option<&ProfilePermissionGuard>,
+        staged_creates: Option<StagedTemplateCreates>,
     ) -> Self {
         Self {
             target_path: request.target_path.to_string(),
@@ -943,6 +1026,7 @@ impl<'a> TemplateSession<'a> {
             quickadd_date_vars: HashMap::new(),
             read_filter: read_filter.cloned(),
             mutation_guard: mutation_guard.cloned(),
+            staged_creates,
             #[cfg(feature = "js_runtime")]
             js_runtime: None,
         }
@@ -1586,9 +1670,14 @@ impl<'a> TemplateSession<'a> {
             return Ok(TemplateValue::Null);
         };
         let include_path = self.resolve_include_target(&path)?;
-        let source =
+        let source = if let Some(content) =
+            staged_template_content(self.staged_creates.as_ref(), &include_path)
+        {
+            content
+        } else {
             secure_read_to_string(self.request.paths.vault_root(), Path::new(&include_path))
-                .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
+                .map_err(|error| NativeExpressionError::Message(error.to_string()))?
+        };
         let rendered = self
             .render_source(&source, TemplateEngineKind::Templater, include_depth + 1)
             .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
@@ -1640,14 +1729,19 @@ impl<'a> TemplateSession<'a> {
                 .check_write_path(&normalized)
                 .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         }
-        write_ordinary_note_if_unchanged(
-            self.request.paths,
-            &normalized,
-            None,
-            &content,
-            "template file create",
-        )
-        .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
+        if let Some(staged) = self.staged_creates.as_ref() {
+            stage_template_create(staged, self.request.paths, &normalized, content)
+                .map_err(NativeExpressionError::Message)?;
+        } else {
+            write_ordinary_note_if_unchanged(
+                self.request.paths,
+                &normalized,
+                None,
+                &content,
+                "template file create",
+            )
+            .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
+        }
         self.changed_paths.insert(normalized.clone());
         Ok(TemplateValue::Object(file_object_json(&normalized)))
     }
@@ -1810,7 +1904,9 @@ impl<'a> TemplateSession<'a> {
         self.include_path_is_allowed(&normalized)
             .then(|| normalized.clone())
             .filter(|path| {
-                secure_read_to_string(self.request.paths.vault_root(), Path::new(path)).is_ok()
+                staged_template_content(self.staged_creates.as_ref(), path).is_some()
+                    || secure_read_to_string(self.request.paths.vault_root(), Path::new(path))
+                        .is_ok()
             })
     }
 
@@ -2120,6 +2216,7 @@ struct JsTemplateState {
     diagnostics: Vec<String>,
     read_filter: Option<PermissionFilter>,
     mutation_guard: Option<ProfilePermissionGuard>,
+    staged_creates: Option<StagedTemplateCreates>,
 }
 
 #[cfg(feature = "js_runtime")]
@@ -2139,6 +2236,7 @@ impl JsTemplateState {
             diagnostics: session.diagnostics.clone(),
             read_filter: session.read_filter.clone(),
             mutation_guard: session.mutation_guard.clone(),
+            staged_creates: session.staged_creates.clone(),
         }
     }
 
@@ -2566,8 +2664,12 @@ fn js_file_include(state: &JsTemplateState, args: &[JsonValue]) -> Result<String
     {
         return Err(format!("File {path} doesn't exist"));
     }
-    secure_read_to_string(state.paths.vault_root(), Path::new(&target))
-        .map_err(|error| error.to_string())
+    if let Some(content) = staged_template_content(state.staged_creates.as_ref(), &target) {
+        Ok(content)
+    } else {
+        secure_read_to_string(state.paths.vault_root(), Path::new(&target))
+            .map_err(|error| error.to_string())
+    }
 }
 
 fn normalize_template_include_path(path: &str) -> Option<String> {
@@ -2612,14 +2714,18 @@ fn js_file_create_new(
             .check_write_path(&normalized)
             .map_err(|error| error.to_string())?;
     }
-    write_ordinary_note_if_unchanged(
-        &state.paths,
-        &normalized,
-        None,
-        &content,
-        "template file create",
-    )
-    .map_err(|error| error.to_string())?;
+    if let Some(staged) = state.staged_creates.as_ref() {
+        stage_template_create(staged, &state.paths, &normalized, content)?;
+    } else {
+        write_ordinary_note_if_unchanged(
+            &state.paths,
+            &normalized,
+            None,
+            &content,
+            "template file create",
+        )
+        .map_err(|error| error.to_string())?;
+    }
     state.changed_paths.insert(normalized.clone());
     Ok(JsonValue::Object(file_object_json(&normalized)))
 }
@@ -3971,9 +4077,9 @@ fn resolve_vault_path_from_state(state: &JsTemplateState, identifier: &str) -> O
         path.to_path_buf()
     };
     let normalized = normalize_template_include_path(&candidate.to_string_lossy())?;
-    secure_read_to_string(state.paths.vault_root(), Path::new(&normalized))
-        .is_ok()
-        .then_some(normalized)
+    (staged_template_content(state.staged_creates.as_ref(), &normalized).is_some()
+        || secure_read_to_string(state.paths.vault_root(), Path::new(&normalized)).is_ok())
+    .then_some(normalized)
 }
 
 #[cfg(feature = "js_runtime")]

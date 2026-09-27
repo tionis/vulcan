@@ -277,7 +277,7 @@ fn native_renderer_supports_quickadd_date_and_file_tokens() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session
@@ -316,7 +316,7 @@ fn native_renderer_supports_quickadd_value_and_vdate_tokens() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session
@@ -362,7 +362,7 @@ fn native_renderer_supports_quickadd_global_variables() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session

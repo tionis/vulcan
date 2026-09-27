@@ -16190,6 +16190,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("live stdio or HTTP MCP request"));
     assert!(mcp_skill.contains("exact transaction ID and review token"));
     assert!(mcp_skill.contains("template-created files, template moves/renames"));
+    assert!(mcp_skill.contains("one recoverable batch"));
     assert!(mcp_skill.contains("obtain fresh consent"));
     assert!(mcp_skill.contains("`task_create`, `task_complete`, and `task_reschedule` recheck"));
     assert!(mcp_skill.contains("final canonical HTTPS URL"));
@@ -16204,8 +16205,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(template_skill.contains("reread the note before retrying"));
     assert!(template_skill.contains("`template insert` rejects a note edited since it was read"));
     assert!(template_skill.contains("Direct CLI and MCP template reports refuse"));
-    assert!(template_skill
-        .contains("does not yet make a template's multiple side effects one transaction"));
+    assert!(template_skill.contains("companions from an explicit template or creation trigger"));
+    assert!(template_skill.contains("Direct `template create`/`insert`"));
     assert!(template_skill.contains("Templater `tp.file.move` and `tp.file.rename` also refuse"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
@@ -30969,6 +30970,60 @@ fn mcp_note_create_and_append_match_cli_reports() {
     assert!(fs::read_to_string(mcp_root.join("Dashboard.md"))
         .expect("appended note")
         .ends_with("-\n"));
+    assert!(session.finish().is_empty());
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn mcp_note_create_stages_template_companion_until_final_note_publishes() {
+    let temp = TempDir::new().expect("temp dir");
+    let vault_root = temp.path().join("vault");
+    let template_dir = vault_root.join(".vulcan/templates");
+    fs::create_dir_all(&template_dir).expect("template dir");
+    fs::write(
+        template_dir.join("side.md"),
+        "<%* await tp.file.create_new('Side body', 'Side'); %>Main body",
+    )
+    .expect("template");
+    fs::write(vault_root.join("Existing.md"), "Existing\n").expect("existing note");
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &["--tool-pack", "notes-write"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let denied = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "note_create",
+            "arguments": { "path": "Existing", "template": "side", "no_commit": true }
+        }
+    }));
+    assert_eq!(
+        denied.last().expect("collision response")["result"]["isError"],
+        true
+    );
+    assert!(!vault_root.join("Side.md").exists());
+
+    let created = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {
+            "name": "note_create",
+            "arguments": { "path": "Main", "template": "side", "no_commit": true }
+        }
+    }));
+    let result = &created.last().expect("create response")["result"];
+    assert_eq!(result["isError"], false);
+    assert_eq!(result["structuredContent"]["path"], "Main.md");
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Side.md")).expect("side note"),
+        "Side body"
+    );
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Main.md")).expect("main note"),
+        "Main body"
+    );
     assert!(session.finish().is_empty());
 }
 

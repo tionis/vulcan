@@ -5,9 +5,11 @@ use crate::mdbase::{
 use crate::plugins;
 use crate::templates::{
     find_frontmatter_block, load_named_template, parse_frontmatter_document,
-    render_creation_trigger_with_authority, render_loaded_template_with_authority,
-    render_note_from_parts, LoadedTemplateRenderRequest, TemplateEngineKind, TemplateRunMode,
-    TemplateTimestamp, YamlMapping, YamlValue,
+    render_creation_trigger_with_staged_creates, render_loaded_template_with_authority,
+    render_loaded_template_with_staged_creates, render_note_from_parts,
+    staged_template_create_snapshot, staged_template_creates, LoadedTemplateRenderRequest,
+    StagedTemplateCreates, TemplateEngineKind, TemplateRunMode, TemplateTimestamp, YamlMapping,
+    YamlValue,
 };
 use crate::AppError;
 use regex::Regex;
@@ -830,13 +832,7 @@ pub fn apply_note_create(
 ) -> Result<NoteCreateReport, AppError> {
     let requested_path = normalize_note_path(&request.path)?;
     let config = load_vault_config(paths).config;
-    let mutation_guard = permission_profile
-        .map(|profile| {
-            resolve_permission_profile(paths, Some(profile))
-                .map(|selection| ProfilePermissionGuard::new(paths, selection))
-                .map_err(AppError::operation)
-        })
-        .transpose()?;
+    let mutation_guard = note_create_mutation_guard(paths, permission_profile)?;
     let mut warnings = Vec::new();
     let mut frontmatter = request.frontmatter.clone();
     let mut body = request.body.clone();
@@ -845,11 +841,12 @@ pub fn apply_note_create(
     let mut engine = None;
     let mut changed_paths = Vec::new();
     let mut triggered_content = None;
+    let staged_creates = staged_template_creates();
 
     if let Some(template_name) = request.template.as_deref() {
         let loaded = load_named_template(paths, &config, template_name)?;
         let vars = HashMap::new();
-        let rendered = render_loaded_template_with_authority(
+        let rendered = render_loaded_template_with_staged_creates(
             paths,
             &config,
             &loaded,
@@ -863,6 +860,7 @@ pub fn apply_note_create(
             },
             None,
             mutation_guard.as_ref(),
+            Some(staged_creates.clone()),
         )?;
         let (template_frontmatter, template_body) =
             parse_frontmatter_document(&rendered.content, true).map_err(AppError::operation)?;
@@ -878,13 +876,14 @@ pub fn apply_note_create(
     } else {
         let initial_content =
             render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?;
-        if let Some(rendered) = render_creation_trigger_with_authority(
+        if let Some(rendered) = render_creation_trigger_with_staged_creates(
             paths,
             &config,
             &requested_path,
             &initial_content,
             None,
             mutation_guard.as_ref(),
+            Some(staged_creates.clone()),
         )? {
             final_path.clone_from(&rendered.target_path);
             template = rendered.template;
@@ -913,7 +912,14 @@ pub fn apply_note_create(
     } else {
         render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?
     };
-    persist_note_create_content(paths, &final_path, &content, permission_profile, quiet)?;
+    persist_note_create_with_template_effects(
+        paths,
+        &final_path,
+        &content,
+        &staged_creates,
+        permission_profile,
+        quiet,
+    )?;
     changed_paths.push(final_path.clone());
     changed_paths.sort();
     changed_paths.dedup();
@@ -926,6 +932,42 @@ pub fn apply_note_create(
         changed_paths,
         content,
     })
+}
+
+fn note_create_mutation_guard(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+) -> Result<Option<ProfilePermissionGuard>, AppError> {
+    permission_profile
+        .map(|profile| {
+            resolve_permission_profile(paths, Some(profile))
+                .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                .map_err(AppError::operation)
+        })
+        .transpose()
+}
+
+fn persist_note_create_with_template_effects(
+    paths: &VaultPaths,
+    path: &str,
+    content: &str,
+    staged_creates: &StagedTemplateCreates,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Result<(), AppError> {
+    let staged = staged_template_create_snapshot(staged_creates)?;
+    if staged.is_empty() {
+        persist_note_create_content(paths, path, content, permission_profile, quiet)
+    } else {
+        persist_note_create_with_staged_creates(
+            paths,
+            path,
+            content,
+            &staged,
+            permission_profile,
+            quiet,
+        )
+    }
 }
 
 fn persist_note_create_content(
@@ -966,6 +1008,80 @@ fn persist_note_create_content(
         write_ordinary_note_if_unchanged(paths, path, None, content, "create")?;
         dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, quiet);
     }
+    Ok(())
+}
+
+fn persist_note_create_with_staged_creates(
+    paths: &VaultPaths,
+    path: &str,
+    content: &str,
+    staged: &BTreeMap<String, String>,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Result<(), AppError> {
+    if staged.contains_key(path) {
+        return Err(AppError::operation(format!(
+            "template side effect conflicts with final note path: {path}"
+        )));
+    }
+    for side_path in staged.keys() {
+        if note_path_is_mdbase_managed(paths, side_path)? {
+            return Err(AppError::operation(format!(
+                "tp.file.create_new cannot create an mdbase-managed note: {side_path}"
+            )));
+        }
+    }
+    if note_path_is_mdbase_managed(paths, path)? {
+        return Err(AppError::operation(
+            "template side effects cannot be combined with an mdbase-managed note create",
+        ));
+    }
+    dispatch_note_write_plugin_hooks(
+        paths,
+        permission_profile,
+        path,
+        "create",
+        None,
+        content,
+        quiet,
+    )?;
+    let mut changes = staged
+        .iter()
+        .map(
+            |(side_path, side_content)| vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path: side_path.clone(),
+                before: None,
+                after: Some(side_content.clone()),
+            },
+        )
+        .collect::<Vec<_>>();
+    changes.push(vulcan_core::ordinary_write::OrdinaryWriteChange {
+        path: path.to_string(),
+        before: None,
+        after: Some(content.to_string()),
+    });
+    vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(paths, &changes, || {
+        let guard = note_create_mutation_guard(paths, permission_profile)
+            .map_err(|error| error.to_string())?;
+        for change in &changes {
+            if note_path_is_mdbase_managed(paths, &change.path)
+                .map_err(|error| error.to_string())?
+            {
+                return Err(format!(
+                    "template create target became an mdbase-managed note: {}",
+                    change.path
+                ));
+            }
+            if let Some(guard) = guard.as_ref() {
+                guard
+                    .check_write_path(&change.path)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    })
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, quiet);
     Ok(())
 }
 
@@ -2690,6 +2806,38 @@ mod tests {
         assert!(rendered.contains("Template body\n\nExtra details\n"));
     }
 
+    #[test]
+    fn native_template_create_new_is_committed_with_final_note() {
+        let temp = tempdir().expect("temp dir");
+        let root = temp.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/templates/native-side.md"),
+            "<% tp.file.create_new('Side body', 'Side') %>Main body",
+        )
+        .expect("template");
+
+        let report = apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Main".to_string(),
+                template: Some("native-side".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            None,
+            true,
+        )
+        .expect("native template create");
+
+        assert_eq!(report.changed_paths, vec!["Main.md", "Side.md"]);
+        assert_eq!(
+            fs::read_to_string(root.join("Side.md")).expect("side note"),
+            "Side body"
+        );
+        assert!(root.join("Main.md").is_file());
+    }
+
     #[cfg(feature = "js_runtime")]
     #[test]
     fn scoped_note_create_rejects_template_side_effect_outside_the_grant() {
@@ -2742,6 +2890,80 @@ mod tests {
         .expect("allowed side effect");
         assert!(root.join("Allowed/Child.md").exists());
         assert!(root.join("Allowed/Main.md").exists());
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn note_create_does_not_publish_template_side_effect_when_final_path_collides() {
+        let temp = tempdir().expect("temp dir");
+        let root = temp.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/templates/side.md"),
+            "<%* await tp.file.create_new('Side body', 'Side'); %>Main body",
+        )
+        .expect("template");
+        fs::write(root.join("Main.md"), "Existing main\n").expect("existing target");
+
+        apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Main".to_string(),
+                template: Some("side".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            None,
+            true,
+        )
+        .expect_err("final-path collision must fail the whole template create");
+
+        assert_eq!(
+            fs::read_to_string(root.join("Main.md")).expect("original main"),
+            "Existing main\n"
+        );
+        assert!(!root.join("Side.md").exists());
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn note_create_publishes_staged_template_side_effect_with_final_note() {
+        let temp = tempdir().expect("temp dir");
+        let root = temp.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/templates/side.md"),
+            "<%* await tp.file.create_new('Side body', 'Side'); tR += tp.file.exists('Side') ? 'found:' : 'missing:'; tR += tp.file.include('Side'); %>",
+        )
+        .expect("template");
+
+        let report = apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Main".to_string(),
+                template: Some("side".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            None,
+            true,
+        )
+        .expect("journaled template create");
+
+        assert_eq!(report.changed_paths, vec!["Main.md", "Side.md"]);
+        assert_eq!(
+            fs::read_to_string(root.join("Side.md")).expect("side effect"),
+            "Side body"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Main.md")).expect("main note"),
+            "found:Side body"
+        );
+        assert!(
+            vulcan_core::ordinary_write::inspect_ordinary_write_batch(&VaultPaths::new(root))
+                .expect("journal inspection")
+                .is_none()
+        );
     }
 
     #[cfg(feature = "js_runtime")]
@@ -2808,6 +3030,56 @@ mod tests {
         .expect_err("creation trigger side effect must be denied");
         assert!(!root.join("Denied/Leak.md").exists());
         assert!(!root.join("Allowed/Main.md").exists());
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn creation_trigger_stages_side_effect_until_final_note_can_publish() {
+        let temp = tempdir().expect("temp dir");
+        let root = temp.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/config.toml"),
+            "[templates]\ntrigger_on_file_creation = true\ntrigger_on_file_creation_mode = \"folder\"\nfolder_templates = [{ folder = \"Allowed\", template = \"side\" }]\n",
+        )
+        .expect("config");
+        fs::write(
+            root.join(".vulcan/templates/side.md"),
+            "<%* await tp.file.create_new('Side body', 'Child', false, 'Allowed'); %>Main body",
+        )
+        .expect("template");
+        fs::create_dir_all(root.join("Allowed")).expect("target dir");
+        fs::write(root.join("Allowed/Main.md"), "Existing\n").expect("existing target");
+        let request = NoteCreateRequest {
+            path: "Allowed/Main".to_string(),
+            template: None,
+            frontmatter: None,
+            body: String::new(),
+        };
+
+        apply_note_create(&VaultPaths::new(root), &request, None, true)
+            .expect_err("target collision must leave side effect unpublished");
+        assert!(!root.join("Allowed/Child.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("Allowed/Main.md")).expect("original target"),
+            "Existing\n"
+        );
+
+        fs::remove_file(root.join("Allowed/Main.md")).expect("remove test collision");
+        let report = apply_note_create(&VaultPaths::new(root), &request, None, true)
+            .expect("triggered create");
+        assert_eq!(
+            report.changed_paths,
+            vec!["Allowed/Child.md", "Allowed/Main.md"]
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Allowed/Child.md")).expect("side note"),
+            "Side body"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Allowed/Main.md")).expect("main note"),
+            "Main body"
+        );
     }
 
     #[test]

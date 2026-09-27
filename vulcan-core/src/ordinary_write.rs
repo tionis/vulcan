@@ -163,18 +163,43 @@ pub fn apply_ordinary_write_batch(
     apply_with_hook(paths, changes, |_| Ok(()))
 }
 
+/// Revalidate caller-specific authority and path classification after taking
+/// the vault write lock, immediately before publishing the durable journal.
+pub fn apply_ordinary_write_batch_with_preflight(
+    paths: &VaultPaths,
+    changes: &[OrdinaryWriteChange],
+    mut preflight: impl FnMut() -> Result<(), String>,
+) -> Result<OrdinaryWriteOutcome, OrdinaryWriteError> {
+    apply_with_hook_and_preflight(paths, changes, &mut preflight, |_| Ok(()))
+}
+
 fn apply_with_hook<F>(
     paths: &VaultPaths,
     changes: &[OrdinaryWriteChange],
+    after_publish: F,
+) -> Result<OrdinaryWriteOutcome, OrdinaryWriteError>
+where
+    F: FnMut(usize) -> Result<(), OrdinaryWriteError>,
+{
+    apply_with_hook_and_preflight(paths, changes, || Ok(()), after_publish)
+}
+
+fn apply_with_hook_and_preflight<P, F>(
+    paths: &VaultPaths,
+    changes: &[OrdinaryWriteChange],
+    mut preflight: P,
     mut after_publish: F,
 ) -> Result<OrdinaryWriteOutcome, OrdinaryWriteError>
 where
+    P: FnMut() -> Result<(), String>,
     F: FnMut(usize) -> Result<(), OrdinaryWriteError>,
 {
     validate_changes(changes)?;
     let _lock = acquire_write_lock(paths)
         .map_err(|error| OrdinaryWriteError::io("acquire vault write lock", error))?;
     recover_locked(paths)?;
+    preflight()
+        .map_err(|message| OrdinaryWriteError::new("ordinary_write_preflight", message, None))?;
     let directory = ensure_state_directory(paths)?;
     for change in changes {
         if current_content(paths, &change.path)? != change.before {
@@ -671,6 +696,28 @@ mod tests {
                 after: None,
             },
         ]
+    }
+
+    #[test]
+    fn locked_preflight_rejection_publishes_neither_journal_nor_files() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+
+        let error = apply_ordinary_write_batch_with_preflight(&paths, &changes(), || {
+            Err("permission or collection changed".to_string())
+        })
+        .expect_err("preflight must fail before journal publication");
+        assert_eq!(error.code, "ordinary_write_preflight");
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Inbox.md")).expect("source"),
+            "old task\n"
+        );
+        assert!(!temporary.path().join("Task.md").exists());
+        assert!(inspect_ordinary_write_batch(&paths)
+            .expect("no journal")
+            .is_none());
     }
 
     #[test]

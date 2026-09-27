@@ -1684,6 +1684,36 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn managed_note_template_rejects_side_effect_without_publishing_either_file() {
+        let (directory, paths) = fixture();
+        let template_dir = directory.path().join(".vulcan/templates");
+        fs::create_dir_all(&template_dir).expect("template dir");
+        let template_path = template_dir.join("task.md");
+        fs::write(
+            &template_path,
+            "<%* await tp.file.create_new('Side body', 'Side'); %>---\ntype: task\ntitle: New\n---\nBody\n",
+        )
+        .expect("template");
+
+        apply_note_create(
+            &paths,
+            &NoteCreateRequest {
+                path: "tasks/new.md".to_string(),
+                template: Some("task".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            None,
+            true,
+        )
+        .expect_err("managed side effect must remain forbidden");
+        assert!(!directory.path().join("Side.md").exists());
+        assert!(!directory.path().join("tasks/new.md").exists());
+        assert!(list_mdbase_write_outbox(&paths).expect("outbox").is_empty());
+    }
+
     #[test]
     fn generic_and_direct_validated_writes_reject_the_same_invalid_draft() {
         let (directory, paths) = fixture();

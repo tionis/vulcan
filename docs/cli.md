@@ -897,6 +897,7 @@ Behavior:
 - `note set --no-frontmatter` preserves the leading YAML block byte-for-byte and replaces only the note body.
 - `note create` creates an empty note when stdin is a TTY, or merges piped stdin content with an optional template body when provided.
 - `note create --frontmatter key=value` adds or overrides top-level frontmatter keys after template rendering.
+- For an ordinary note created through an explicit template or creation trigger, `tp.file.create_new` companion notes and the final note publish in one recoverable batch. Direct `template create`/`insert`, template moves, and plugin side effects are not part of that batch.
 - `note append` accepts literal text or `-` to read appended content from stdin.
 - `note patch` accepts literal strings or `/regex/` patterns. It fails when the pattern matches more than once unless `--all` is passed.
 - `note patch` can also be narrowed with `--section`, `--heading`, `--block-ref`, and `--lines`, reusing the same semantic selectors as `note get`.
