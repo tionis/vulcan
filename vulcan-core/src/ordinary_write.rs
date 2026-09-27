@@ -9,6 +9,7 @@ use crate::paths::{
     secure_replace, RelativePathOptions, VaultPaths,
 };
 use crate::write_lock::acquire_write_lock;
+use crate::write_lock::{acquire_read_lock, ReadLockGuard};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
@@ -241,6 +242,24 @@ pub fn ensure_no_pending_ordinary_write_batch(
         ));
     }
     Ok(())
+}
+
+/// Hold the shared vault lock while a direct read inspects canonical files.
+/// Uninitialized plain-Markdown directories have no ordinary-write journal
+/// and remain readable without creating `.vulcan` state.
+pub fn acquire_consistent_ordinary_read(
+    paths: &VaultPaths,
+) -> Result<Option<ReadLockGuard>, OrdinaryWriteError> {
+    let guard = if paths.vulcan_dir().exists() {
+        Some(
+            acquire_read_lock(paths)
+                .map_err(|error| OrdinaryWriteError::io("acquire vault read lock", error))?,
+        )
+    } else {
+        None
+    };
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    Ok(guard)
 }
 
 /// Retire a conflicted journal only after a human has reconciled its files.

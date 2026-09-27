@@ -2362,17 +2362,14 @@ impl McpServerCore {
         &self,
         request: &Value,
     ) -> Result<Option<vulcan_core::write_lock::ReadLockGuard>, String> {
-        let guard = if mcp_request_is_read_only(request) && self.paths.vulcan_dir().exists() {
-            Some(
-                vulcan_core::write_lock::acquire_read_lock(&self.paths)
-                    .map_err(|error| error.to_string())?,
-            )
+        if mcp_request_is_read_only(request) {
+            vulcan_core::ordinary_write::acquire_consistent_ordinary_read(&self.paths)
+                .map_err(|error| error.to_string())
         } else {
-            None
-        };
-        vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(&self.paths)
-            .map_err(|error| error.to_string())?;
-        Ok(guard)
+            vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(&self.paths)
+                .map_err(|error| error.to_string())?;
+            Ok(None)
+        }
     }
 
     #[allow(clippy::too_many_lines)] // Registration must precede the worker, and all timeout branches share its ID.

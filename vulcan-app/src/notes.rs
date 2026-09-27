@@ -454,6 +454,8 @@ pub fn read_note(
     paths: &VaultPaths,
     options: NoteGetOptions<'_>,
 ) -> Result<NoteGetReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let NoteGetOptions {
         note,
         mode,
@@ -563,6 +565,8 @@ pub fn read_note_outline(
     section_id: Option<&str>,
     depth: Option<usize>,
 ) -> Result<NoteOutlineReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     if matches!(depth, Some(0)) {
         return Err(AppError::operation(
             "`note outline --depth` must be at least 1",
@@ -2321,6 +2325,7 @@ mod tests {
         NoteReadMode, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
+    use serde::Serialize;
     use serde_json::Value as JsonValue;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
@@ -2451,6 +2456,94 @@ mod tests {
         .unwrap();
         assert_eq!(html.metadata.mode, "html");
         assert!(html.content.contains("<h1 id=\"first\">First</h1>"));
+    }
+
+    #[test]
+    fn direct_note_reads_refuse_pending_ordinary_write_journal() {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Read.md"), "# Read\nOriginal\n").expect("note");
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path: "Read.md".to_string(),
+                before: Some("# Read\nOriginal\n".to_string()),
+                after: Some("# Read\nUpdated\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
+
+        let get = || {
+            read_note(
+                &paths,
+                NoteGetOptions {
+                    note: "Read.md",
+                    mode: NoteReadMode::Markdown,
+                    section_id: None,
+                    heading: None,
+                    block_ref: None,
+                    lines: None,
+                    match_pattern: None,
+                    context: 0,
+                    no_frontmatter: false,
+                    raw: false,
+                },
+            )
+        };
+        assert_eq!(
+            get().expect_err("get must fail closed").code(),
+            Some("ordinary_write_pending")
+        );
+        assert_eq!(
+            read_note_outline(&paths, "Read.md", None, None)
+                .expect_err("outline must fail closed")
+                .code(),
+            Some("ordinary_write_pending")
+        );
+        vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
+            .expect("recover pending batch")
+            .expect("pending batch");
+        assert_eq!(
+            get().expect("get after recovery").content,
+            "# Read\nUpdated\n"
+        );
+        assert_eq!(
+            read_note_outline(&paths, "Read.md", None, None)
+                .expect("outline after recovery")
+                .sections
+                .len(),
+            1
+        );
     }
 
     #[test]
