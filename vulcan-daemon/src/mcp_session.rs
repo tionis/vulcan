@@ -171,6 +171,12 @@ pub enum SessionAdmissionError {
     DuplicateId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLookupError {
+    Missing,
+    AuthorityMismatch,
+}
+
 /// Per-listener session ownership and bounded admission for both hosting modes.
 #[derive(Debug)]
 pub struct McpSessionRegistry<C> {
@@ -233,6 +239,34 @@ impl<C> McpSessionRegistry<C> {
         } else {
             Some(session)
         }
+    }
+
+    pub fn authorized(
+        &self,
+        session_id: &str,
+        authority: &McpSessionAuthority,
+        touch: bool,
+    ) -> Result<Arc<McpHttpSession<C>>, SessionLookupError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned");
+        let session = sessions
+            .get(session_id)
+            .cloned()
+            .ok_or(SessionLookupError::Missing)?;
+        if session.is_idle_expired() {
+            sessions.remove(session_id);
+            session.close();
+            return Err(SessionLookupError::Missing);
+        }
+        if !session.authority.matches(authority) {
+            return Err(SessionLookupError::AuthorityMismatch);
+        }
+        if touch {
+            session.touch();
+        }
+        Ok(session)
     }
 
     pub fn retire(&self, session_id: &str) -> Option<Arc<McpHttpSession<C>>> {
@@ -558,7 +592,7 @@ mod tests {
         assert!(first.is_closed());
         let expiring = Arc::new(McpHttpSession::new_with_idle_timeout(
             (),
-            authority,
+            authority.clone(),
             Duration::ZERO,
         ));
         registry
@@ -570,6 +604,21 @@ mod tests {
         assert!(expiring.is_closed());
         assert!(registry.live("expiring").is_none());
         assert!(registry.live("second").is_some());
+        let other = self::authority(
+            Ulid::new(),
+            "https://id.example/bob",
+            Ulid::new(),
+            "other-token",
+        );
+        assert!(matches!(
+            registry.authorized("second", &other, true),
+            Err(SessionLookupError::AuthorityMismatch)
+        ));
+        assert!(registry.authorized("second", &authority, true).is_ok());
+        assert!(matches!(
+            registry.authorized("missing", &authority, true),
+            Err(SessionLookupError::Missing)
+        ));
         registry.close_all();
         assert!(second.is_closed());
         assert!(registry.is_empty());

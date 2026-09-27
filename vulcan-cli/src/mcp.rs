@@ -130,7 +130,7 @@ use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 use vulcan_daemon::mcp_session::{
     mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
-    McpSessionAuthority, McpSessionRegistry, SessionAdmissionError,
+    McpSessionAuthority, McpSessionRegistry, SessionAdmissionError, SessionLookupError,
 };
 #[cfg(test)]
 use vulcan_daemon::mcp_session::{
@@ -1378,11 +1378,33 @@ fn admit_mcp_http_session(
     }
 }
 
+#[cfg(test)]
 fn live_mcp_http_session(
     context: &McpHttpServerContext,
     session_id: &str,
 ) -> Option<Arc<McpHttpSession>> {
     context.sessions.live(session_id)
+}
+
+fn authorized_mcp_http_session(
+    context: &McpHttpServerContext,
+    session_id: &str,
+    authority: &McpSessionAuthority,
+    touch: bool,
+) -> Result<Arc<McpHttpSession>, McpHttpResponse> {
+    context
+        .sessions
+        .authorized(session_id, authority, touch)
+        .map_err(|error| match error {
+            SessionLookupError::Missing => {
+                mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null)
+            }
+            SessionLookupError::AuthorityMismatch => mcp_http_json_error_response(
+                403,
+                "MCP session authority does not match this request",
+                Value::Null,
+            ),
+        })
 }
 
 fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
@@ -1849,21 +1871,7 @@ fn resolve_mcp_http_session(
             Value::Null,
         ));
     };
-    let Some(session) = live_mcp_http_session(context, &session_id) else {
-        return Err(mcp_http_json_error_response(
-            404,
-            "unknown Mcp-Session-Id",
-            Value::Null,
-        ));
-    };
-    if !session.authority.matches(authority) {
-        return Err(mcp_http_json_error_response(
-            403,
-            "MCP session authority does not match this request",
-            Value::Null,
-        ));
-    }
-    session.touch();
+    let session = authorized_mcp_http_session(context, &session_id, authority, true)?;
     Ok((session_id, session, false))
 }
 
@@ -1875,16 +1883,8 @@ fn handle_mcp_http_delete(
     let Some(session_id) = request.headers.get("mcp-session-id") else {
         return mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null);
     };
-    let session = live_mcp_http_session(context, session_id);
-    let Some(session) = session else {
-        return mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null);
-    };
-    if !session.authority.matches(authority) {
-        return mcp_http_json_error_response(
-            403,
-            "MCP session authority does not match this request",
-            Value::Null,
-        );
+    if let Err(response) = authorized_mcp_http_session(context, session_id, authority, false) {
+        return response;
     }
     context.sessions.retire(session_id);
     McpHttpResponse {
@@ -1920,21 +1920,13 @@ fn handle_mcp_http_sse(
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
     };
-    let Some(session) = live_mcp_http_session(context, session_id) else {
-        let response = mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null);
-        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        return Ok(());
+    let session = match authorized_mcp_http_session(context, session_id, authority, true) {
+        Ok(session) => session,
+        Err(response) => {
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+            return Ok(());
+        }
     };
-    if !session.authority.matches(authority) {
-        let response = mcp_http_json_error_response(
-            403,
-            "MCP session authority does not match this request",
-            Value::Null,
-        );
-        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        return Ok(());
-    }
-    session.touch();
 
     write_mcp_http_sse_headers(stream).map_err(CliError::operation)?;
     let receiver = session.register_subscriber();
