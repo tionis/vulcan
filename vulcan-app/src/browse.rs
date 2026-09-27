@@ -327,6 +327,8 @@ pub fn is_git_repo(vault_root: &std::path::Path) -> bool {
 }
 
 pub fn build_vault_status_report(paths: &VaultPaths) -> Result<VaultStatusReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let cache = core_inspect_cache(paths).map_err(AppError::operation)?;
     let last_scan = CacheDatabase::open(paths).ok().and_then(|db| {
         db.connection()
@@ -656,6 +658,7 @@ mod tests {
         build_vault_status_report, collect_complete_candidates, list_note_identities, move_note,
         prepare_browse_refresh,
     };
+    use serde::Serialize;
     use std::fs;
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, scan_vault, AutoScanMode, ScanMode, VaultPaths};
@@ -744,6 +747,58 @@ mod tests {
         assert_eq!(report.attachment_count, 0);
         assert!(report.cache_bytes > 0);
         assert!(report.last_scan.is_some());
+    }
+
+    #[test]
+    fn build_vault_status_report_refuses_pending_ordinary_write_journal() {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        let (_dir, paths) = test_paths();
+        fs::write(paths.vault_root().join("Inbox.md"), "# Original\n").expect("seed note");
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path: "Inbox.md".to_string(),
+                before: Some("# Original\n".to_string()),
+                after: Some("# Updated\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
+
+        assert_eq!(
+            build_vault_status_report(&paths)
+                .expect_err("status must fail closed")
+                .code(),
+            Some("ordinary_write_pending")
+        );
     }
 
     #[test]
