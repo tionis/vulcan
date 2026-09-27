@@ -101,6 +101,8 @@ pub fn split_note(
     request: &SplitNoteRequest,
 ) -> Result<SplitNoteReport, AppError> {
     let _lock = vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     split_note_unlocked(paths, request)
 }
 
@@ -802,6 +804,7 @@ fn stale_link_error(path: &str, byte_offset: usize) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, scan_vault, ScanMode};
 
@@ -823,6 +826,81 @@ mod tests {
             navigation: true,
             dry_run: false,
         }
+    }
+
+    #[test]
+    fn split_preview_and_apply_refuse_pending_ordinary_write_journal() {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        let (temporary, paths) = setup_vault();
+        fs::write(
+            temporary.path().join("Rulebook.md"),
+            "# Rules\n\n## Combat\nText.\n",
+        )
+        .expect("source");
+        fs::write(temporary.path().join("Inbox.md"), "old\n").expect("inbox");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path: "Inbox.md".to_string(),
+                before: Some("old\n".to_string()),
+                after: Some("new\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
+
+        for dry_run in [true, false] {
+            let error = split_note(
+                &paths,
+                &SplitNoteRequest {
+                    dry_run,
+                    ..request()
+                },
+            )
+            .expect_err("split must fail closed");
+            assert_eq!(error.code(), Some("ordinary_write_pending"));
+        }
+        assert!(temporary.path().join("Rulebook.md").is_file());
+        assert!(!temporary.path().join("Rulebook").exists());
+        vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
+            .expect("recover pending batch")
+            .expect("pending batch");
+        assert!(split_note(
+            &paths,
+            &SplitNoteRequest {
+                dry_run: true,
+                ..request()
+            }
+        )
+        .is_ok());
     }
 
     #[test]

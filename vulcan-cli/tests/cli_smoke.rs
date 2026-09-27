@@ -16640,6 +16640,8 @@ fn skill_list_and_get_surface_bundled_skills() {
         .contains("A note move or move preview refuses a pending ordinary-write journal"));
     assert!(refactoring
         .contains("Alias, heading, block-ref, property, and tag refactors likewise refuse"));
+    assert!(refactoring
+        .contains("`split-note` preview and apply also refuse a pending ordinary-write journal"));
 
     let artifact_import = fs::read_to_string(installed_skills.join("artifact-import/SKILL.md"))
         .expect("artifact import skill should be installed");
