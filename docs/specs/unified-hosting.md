@@ -240,6 +240,9 @@ The bounded HTTP/1.1 request/response and SSE frame codecs now live in
 `vulcan-daemon::mcp_transport` also owns TCP bind, accept, per-connection read timeout, and
 wakeable listener shutdown for both modes. OAuth routing, MCP sessions, and method dispatch still
 live in the CLI host; a daemon-owned HTTP route remains to be extracted.
+Each named or direct HTTP listener has a 64-connection admission ceiling, counting SSE streams.
+Excess connections receive HTTP 503 with `Retry-After: 1` before a worker is spawned; completed
+connections release admission capacity.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or
