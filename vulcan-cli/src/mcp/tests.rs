@@ -695,6 +695,10 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         foreground_oauth_metadata[2]["authorization_endpoint"],
         "https://mcp.example.test/oauth/authorize"
     );
+    assert_eq!(
+        foreground_oauth_metadata[2]["grant_types_supported"],
+        serde_json::json!(["authorization_code", "refresh_token"])
+    );
     let foreground_invalid_authorize = named_listener_get(address, "/oauth/authorize");
     assert!(foreground_invalid_authorize.starts_with("HTTP/1.1 400"));
     assert!(foreground_invalid_authorize.contains("invalid OAuth authorization request"));
@@ -2420,7 +2424,7 @@ fn direct_local_oauth_preserves_registered_redirect_query() {
 
 #[cfg(feature = "oauth")]
 #[test]
-fn dynamic_registration_rejects_malformed_redirects_before_persisting_clients() {
+fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let context = consent_test_context(
         &VaultPaths::new(temporary.path()),
@@ -2439,6 +2443,11 @@ fn dynamic_registration_rejects_malformed_redirects_before_persisting_clients() 
             .expect("issuer"),
         ),
     );
+    assert_eq!(
+        oauth_authorization_server_metadata(&context, context.oauth.as_ref().expect("OAuth"))
+            ["grant_types_supported"],
+        serde_json::json!(["authorization_code"])
+    );
     for redirect_uri in [
         "https://client.example.test:bad/callback",
         "https://client.example.test/callback#fragment",
@@ -2454,6 +2463,41 @@ fn dynamic_registration_rejects_malformed_redirects_before_persisting_clients() 
         };
         let response = handle_local_oauth_register(&context, &request);
         assert_eq!(response.status, 400, "{redirect_uri}");
+        assert!(context.oauth_clients.lock().expect("clients").is_empty());
+    }
+    for (payload, expected_error) in [
+        (
+            serde_json::json!({"redirect_uris": ["https://client.example.test/callback", 7]}),
+            "invalid_redirect_uri",
+        ),
+        (
+            serde_json::json!({"redirect_uris": ["https://client.example.test/callback"], "token_endpoint_auth_method": 7}),
+            "invalid_client_metadata",
+        ),
+        (
+            serde_json::json!({"redirect_uris": ["https://client.example.test/callback"], "grant_types": ["refresh_token"]}),
+            "invalid_client_metadata",
+        ),
+        (
+            serde_json::json!({"redirect_uris": ["https://client.example.test/callback"], "response_types": ["token"]}),
+            "invalid_client_metadata",
+        ),
+    ] {
+        let request = McpHttpRequest {
+            method: "POST".to_string(),
+            path: "/oauth/register".to_string(),
+            query: String::new(),
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&payload).expect("registration JSON"),
+        };
+        let response = handle_local_oauth_register(&context, &request);
+        assert_eq!(response.status, 400, "{payload}");
+        assert!(
+            String::from_utf8(response.body)
+                .expect("error JSON")
+                .contains(expected_error),
+            "{payload}"
+        );
         assert!(context.oauth_clients.lock().expect("clients").is_empty());
     }
 }

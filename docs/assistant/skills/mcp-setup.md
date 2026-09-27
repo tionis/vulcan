@@ -70,6 +70,7 @@ debugging, tool pack selection, and permission-profile questions.
 - Client ID Metadata Documents are accepted only as public HTTPS clients with exact IDs and allowlisted redirect hosts. Dynamic registration remains available; do not work around failed client validation by weakening redirect checks.
 - OAuth redirect URIs must be complete HTTPS URLs on an allowed host, without credentials or fragments. An existing redirect query is preserved when Vulcan adds the authorization code; use the exact registered URI during code exchange.
 - A dynamically registered OAuth client must use its declared token-endpoint method: Basic header for `client_secret_basic`, form credentials for `client_secret_post`, or a client ID with no secret for `none`. Do not mix header and form credentials; a method mismatch returns `invalid_client` and is not fixed by changing vault permissions.
+- Dynamic registration rejects malformed or duplicate redirect URI entries, unsupported response/grant types, and non-string client metadata instead of silently ignoring them. If registration returns `invalid_client_metadata` or `invalid_redirect_uri`, correct the client's registration payload; do not widen the remote's vault ceiling.
 
 ## Example Moves
 

@@ -131,8 +131,9 @@ use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_policy::{
     parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy, parse_mcp_token_client_credentials,
-    registered_mcp_client_credentials_valid, validate_mcp_authorize_request, McpAuthorizeRequest,
-    McpOAuthPolicyError, McpTokenAuthMethod, McpTokenClientCredentials, SUPPORTED_MCP_OAUTH_SCOPES,
+    registered_mcp_client_credentials_valid, validate_mcp_authorize_request,
+    validate_mcp_dcr_registration, McpAuthorizeRequest, McpDcrError, McpOAuthPolicyError,
+    McpTokenAuthMethod, McpTokenClientCredentials, SUPPORTED_MCP_OAUTH_SCOPES,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
@@ -3728,7 +3729,7 @@ fn handle_mcp_oauth_route(
         McpHttpRoute::AuthorizationServerMetadata => McpHttpResponse {
             status: 200,
             content_type: Some("application/json"),
-            body: serde_json::to_vec(oauth_authorization_server_metadata(oauth))
+            body: serde_json::to_vec(&oauth_authorization_server_metadata(context, oauth))
                 .expect("json should serialize"),
             extra_headers: Vec::new(),
         },
@@ -3738,10 +3739,19 @@ fn handle_mcp_oauth_route(
 }
 
 #[cfg(feature = "oauth")]
-fn oauth_authorization_server_metadata(oauth: &McpOAuthMode) -> &Value {
+fn oauth_authorization_server_metadata(
+    context: &McpHttpServerContext,
+    oauth: &McpOAuthMode,
+) -> Value {
     match oauth {
-        McpOAuthMode::External(external) => external.authorization_server_metadata(),
-        McpOAuthMode::Local(local) => local.authorization_server_metadata(),
+        McpOAuthMode::External(external) => external.authorization_server_metadata().clone(),
+        McpOAuthMode::Local(local) => {
+            let mut metadata = local.authorization_server_metadata().clone();
+            if context.named_runtime.is_none() {
+                metadata["grant_types_supported"] = serde_json::json!(["authorization_code"]);
+            }
+            metadata
+        }
     }
 }
 
@@ -3859,55 +3869,40 @@ fn handle_local_oauth_register(
     let Ok(payload) = serde_json::from_slice::<Value>(&request.body) else {
         return oauth_json_error_response(400, "invalid_client_metadata", "invalid JSON");
     };
-    let redirect_uris = payload
-        .get("redirect_uris")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if redirect_uris.is_empty()
-        || !redirect_uris
-            .iter()
-            .all(|uri| local_oauth_redirect_host_allowed(context, uri))
-    {
-        return oauth_json_error_response(
-            400,
-            "invalid_redirect_uri",
-            "redirect URI is not allowed",
-        );
-    }
-    let auth_method = payload
-        .get("token_endpoint_auth_method")
-        .and_then(Value::as_str)
-        .unwrap_or("client_secret_basic");
-    if !matches!(
-        auth_method,
-        "none" | "client_secret_basic" | "client_secret_post"
+    let registration = match validate_mcp_dcr_registration(
+        &payload,
+        &context.oauth_dcr_allowed_redirect_hosts,
+        context.named_runtime.is_some(),
     ) {
-        return oauth_json_error_response(
-            400,
-            "invalid_client_metadata",
-            "unsupported token endpoint auth method",
-        );
-    }
+        Ok(registration) => registration,
+        Err(McpDcrError::InvalidRedirectUri) => {
+            return oauth_json_error_response(
+                400,
+                "invalid_redirect_uri",
+                "redirect URI is not allowed",
+            )
+        }
+        Err(error) => {
+            let message = match error {
+                McpDcrError::InvalidAuthMethod => "unsupported token endpoint auth method",
+                McpDcrError::InvalidClientName => "invalid client name",
+                McpDcrError::InvalidGrantTypes => "unsupported grant types",
+                McpDcrError::InvalidResponseTypes => "unsupported response types",
+                McpDcrError::InvalidRedirectUri => unreachable!(),
+            };
+            return oauth_json_error_response(400, "invalid_client_metadata", message);
+        }
+    };
     let client = LocalOAuthRegisteredClient {
         client_id: format!("vulcan-dcr-{}", Ulid::new()),
-        client_secret: if auth_method == "none" {
+        client_secret: if registration.token_endpoint_auth_method == "none" {
             String::new()
         } else {
             Ulid::new().to_string()
         },
-        redirect_uris,
-        client_name: payload
-            .get("client_name")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        token_endpoint_auth_method: auth_method.to_string(),
+        redirect_uris: registration.redirect_uris,
+        client_name: registration.client_name,
+        token_endpoint_auth_method: registration.token_endpoint_auth_method,
         client_id_issued_at: current_unix_timestamp(),
     };
     context

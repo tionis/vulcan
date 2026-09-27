@@ -1,6 +1,8 @@
 //! Transport-neutral policy for the local MCP OAuth authorization server.
 
+use crate::http_policy::mcp_oauth_redirect_uri_allowed;
 use base64::prelude::{Engine, BASE64_STANDARD};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DEFAULT_MCP_OAUTH_SCOPES: &[&str] = &["mcp:prompts", "mcp:resources", "mcp:tools"];
@@ -52,6 +54,105 @@ pub struct McpTokenClientCredentials {
     pub client_id: String,
     pub client_secret: String,
     pub method: McpTokenAuthMethod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpDcrError {
+    InvalidRedirectUri,
+    InvalidAuthMethod,
+    InvalidClientName,
+    InvalidGrantTypes,
+    InvalidResponseTypes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpDcrRegistration {
+    pub redirect_uris: Vec<String>,
+    pub client_name: Option<String>,
+    pub token_endpoint_auth_method: String,
+}
+
+pub fn validate_mcp_dcr_registration(
+    payload: &Value,
+    allowed_redirect_hosts: &[String],
+    allow_refresh: bool,
+) -> Result<McpDcrRegistration, McpDcrError> {
+    let uris = payload
+        .get("redirect_uris")
+        .and_then(Value::as_array)
+        .ok_or(McpDcrError::InvalidRedirectUri)?;
+    if uris.is_empty() || uris.len() > 16 {
+        return Err(McpDcrError::InvalidRedirectUri);
+    }
+    let mut redirect_uris = Vec::with_capacity(uris.len());
+    let mut unique = BTreeSet::new();
+    for value in uris {
+        let uri = value.as_str().ok_or(McpDcrError::InvalidRedirectUri)?;
+        if !mcp_oauth_redirect_uri_allowed(uri, allowed_redirect_hosts) || !unique.insert(uri) {
+            return Err(McpDcrError::InvalidRedirectUri);
+        }
+        redirect_uris.push(uri.to_string());
+    }
+    let auth_method = match payload.get("token_endpoint_auth_method") {
+        Some(value) => value.as_str().ok_or(McpDcrError::InvalidAuthMethod)?,
+        None => "client_secret_basic",
+    };
+    if !matches!(
+        auth_method,
+        "none" | "client_secret_basic" | "client_secret_post"
+    ) {
+        return Err(McpDcrError::InvalidAuthMethod);
+    }
+    let client_name = match payload.get("client_name") {
+        Some(value) => {
+            let name = value.as_str().ok_or(McpDcrError::InvalidClientName)?;
+            if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+                return Err(McpDcrError::InvalidClientName);
+            }
+            Some(name.to_string())
+        }
+        None => None,
+    };
+    validate_dcr_string_array(payload, "response_types", &["code"], false)
+        .map_err(|()| McpDcrError::InvalidResponseTypes)?;
+    let allowed_grants = if allow_refresh {
+        &["authorization_code", "refresh_token"][..]
+    } else {
+        &["authorization_code"][..]
+    };
+    validate_dcr_string_array(payload, "grant_types", allowed_grants, true)
+        .map_err(|()| McpDcrError::InvalidGrantTypes)?;
+    Ok(McpDcrRegistration {
+        redirect_uris,
+        client_name,
+        token_endpoint_auth_method: auth_method.to_string(),
+    })
+}
+
+fn validate_dcr_string_array(
+    payload: &Value,
+    field: &str,
+    supported: &[&str],
+    require_authorization_code: bool,
+) -> Result<(), ()> {
+    let Some(value) = payload.get(field) else {
+        return Ok(());
+    };
+    let values = value.as_array().ok_or(())?;
+    if values.is_empty() || values.len() > supported.len() {
+        return Err(());
+    }
+    let mut seen = BTreeSet::new();
+    for value in values {
+        let item = value.as_str().ok_or(())?;
+        if !supported.contains(&item) || !seen.insert(item) {
+            return Err(());
+        }
+    }
+    if require_authorization_code && !seen.contains("authorization_code") {
+        return Err(());
+    }
+    Ok(())
 }
 
 /// A token request uses exactly one client authentication method. A malformed
@@ -174,6 +275,68 @@ pub fn validate_mcp_authorize_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dcr_metadata_rejects_partial_or_unsupported_registration() {
+        let hosts = vec!["chatgpt.com".to_string()];
+        let valid = serde_json::json!({
+            "redirect_uris": ["https://chatgpt.com/callback"],
+            "client_name": "Example client",
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        });
+        let registration =
+            validate_mcp_dcr_registration(&valid, &hosts, true).expect("valid public registration");
+        assert_eq!(registration.token_endpoint_auth_method, "none");
+        for (field, invalid, error) in [
+            (
+                "redirect_uris",
+                serde_json::json!(["https://chatgpt.com/callback", 7]),
+                McpDcrError::InvalidRedirectUri,
+            ),
+            (
+                "redirect_uris",
+                serde_json::json!([
+                    "https://chatgpt.com/callback",
+                    "https://chatgpt.com/callback"
+                ]),
+                McpDcrError::InvalidRedirectUri,
+            ),
+            (
+                "token_endpoint_auth_method",
+                serde_json::json!(7),
+                McpDcrError::InvalidAuthMethod,
+            ),
+            (
+                "client_name",
+                serde_json::json!(7),
+                McpDcrError::InvalidClientName,
+            ),
+            (
+                "grant_types",
+                serde_json::json!(["implicit"]),
+                McpDcrError::InvalidGrantTypes,
+            ),
+            (
+                "response_types",
+                serde_json::json!(["token"]),
+                McpDcrError::InvalidResponseTypes,
+            ),
+        ] {
+            let mut payload = valid.clone();
+            payload[field] = invalid;
+            assert_eq!(
+                validate_mcp_dcr_registration(&payload, &hosts, true),
+                Err(error),
+                "{field}"
+            );
+        }
+        assert_eq!(
+            validate_mcp_dcr_registration(&valid, &hosts, false),
+            Err(McpDcrError::InvalidGrantTypes)
+        );
+    }
 
     #[test]
     fn token_client_authentication_rejects_mixed_and_mismatched_methods() {
