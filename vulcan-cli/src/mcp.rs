@@ -47,6 +47,7 @@ use vulcan_app::mcp_dispatch::{
     jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler,
 };
+use vulcan_app::mcp_graph;
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs,
     McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams, McpListSnapshot,
@@ -98,10 +99,9 @@ use vulcan_core::LocalOAuthUserConfig;
 #[cfg(feature = "web")]
 use vulcan_core::SearchBackendKind;
 use vulcan_core::{
-    accept_link_suggestion, assistant_prompts_root, assistant_skills_root, load_vault_config,
-    query_graph_communities_with_filter, reject_link_suggestion, resolve_permission_profile,
-    suggest_links, watch_vault, LinkSuggestionStatus, PermissionGuard, PermissionProfile,
-    ProfilePermissionGuard, ScanMode, ScanSummary, VaultPaths, WatchOptions,
+    assistant_prompts_root, assistant_skills_root, load_vault_config, resolve_permission_profile,
+    watch_vault, PermissionGuard, PermissionProfile, ProfilePermissionGuard, ScanMode, ScanSummary,
+    VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -174,16 +174,6 @@ fn mcp_git_sync_options(args: &McpSyncTargetArgs) -> Result<GitSyncOptions, McpM
     }
     options.dry_run = true;
     Ok(options)
-}
-
-fn filter_link_suggestions_report(
-    guard: &ProfilePermissionGuard,
-    report: &mut vulcan_core::LinkSuggestionsReport,
-) {
-    report.suggestions.retain(|suggestion| {
-        guard.check_read_path(&suggestion.source_path).is_ok()
-            && guard.check_read_path(&suggestion.target_path).is_ok()
-    });
 }
 
 #[derive(Debug, Clone)]
@@ -2979,68 +2969,12 @@ impl McpServerCore {
             }
             McpToolId::GraphCommunities => {
                 let args: McpGraphCommunitiesArgs = parse_tool_arguments(arguments)?;
-                let report = query_graph_communities_with_filter(
-                    &self.paths,
-                    Some(&self.guard.read_filter()),
-                    !args.dry_run,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let mut value = serde_json::to_value(report)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if let Value::Object(object) = &mut value {
-                    object.insert("selected_community".to_string(), args.community.into());
-                    object.insert("include_orphans".to_string(), args.orphans.into());
-                    object.insert("include_bridges".to_string(), args.bridges.into());
-                }
+                let value = mcp_graph::graph_communities(&self.paths, &self.guard, &args)?;
                 Ok(self.tool_success_response(tool.name, value))
             }
             McpToolId::SuggestLinks => {
                 let args: McpSuggestLinksArgs = parse_tool_arguments(arguments)?;
-                if args.accept.is_some() && args.reject.is_some() {
-                    return Err(McpMethodError::invalid_params(
-                        "`suggest_links` accepts either `accept` or `reject`, not both",
-                    ));
-                }
-                if let Some(id) = args.accept.as_deref() {
-                    self.guard
-                        .check_write_path(".vulcan/cache.db")
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    let suggestion = accept_link_suggestion(&self.paths, id)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    return self.serialize_tool_report(
-                        tool.name,
-                        &vulcan_core::LinkSuggestionsReport {
-                            suggestions: vec![suggestion],
-                        },
-                    );
-                }
-                if let Some(id) = args.reject.as_deref() {
-                    self.guard
-                        .check_write_path(".vulcan/cache.db")
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    let suggestion = reject_link_suggestion(&self.paths, id)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    return self.serialize_tool_report(
-                        tool.name,
-                        &vulcan_core::LinkSuggestionsReport {
-                            suggestions: vec![suggestion],
-                        },
-                    );
-                }
-                let status = args
-                    .status
-                    .as_deref()
-                    .map(parse_link_suggestion_status)
-                    .transpose()?;
-                let mut report = suggest_links(
-                    &self.paths,
-                    args.note.as_deref(),
-                    args.limit,
-                    args.min_score,
-                    status,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                filter_link_suggestions_report(&self.guard, &mut report);
+                let report = mcp_graph::link_suggestions(&self.paths, &self.guard, &args)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskList => {
@@ -5646,17 +5580,6 @@ fn parse_note_get_mode(mode: Option<String>) -> Result<NoteReadMode, McpMethodEr
         "html" => Ok(NoteReadMode::Html),
         other => Err(McpMethodError::invalid_params(format!(
             "unsupported `note_get.mode`: {other}"
-        ))),
-    }
-}
-
-fn parse_link_suggestion_status(value: &str) -> Result<LinkSuggestionStatus, McpMethodError> {
-    match value {
-        "pending" => Ok(LinkSuggestionStatus::Pending),
-        "accepted" => Ok(LinkSuggestionStatus::Accepted),
-        "rejected" => Ok(LinkSuggestionStatus::Rejected),
-        other => Err(McpMethodError::invalid_params(format!(
-            "unsupported `suggest_links.status`: {other}"
         ))),
     }
 }

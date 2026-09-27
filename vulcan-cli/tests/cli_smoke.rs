@@ -30739,6 +30739,23 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
         );
     }
 
+    let graph = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 200, "method": "tools/call",
+        "params": {"name": "graph_communities", "arguments": {"dry_run": true, "orphans": true}}
+    }));
+    let graph = &graph.last().expect("graph response")["result"];
+    assert_eq!(graph["isError"], false);
+    assert_eq!(graph["structuredContent"]["include_orphans"], true);
+    assert_eq!(graph["structuredContent"]["persisted"], false);
+
+    let suggestions = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 201, "method": "tools/call",
+        "params": {"name": "suggest_links", "arguments": {"status": "pending", "limit": 5}}
+    }));
+    let suggestions = &suggestions.last().expect("suggestions response")["result"];
+    assert_eq!(suggestions["isError"], false);
+    assert!(suggestions["structuredContent"]["suggestions"].is_array());
+
     let note_info = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 3,

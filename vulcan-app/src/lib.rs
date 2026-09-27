@@ -50,6 +50,7 @@ pub mod mcp_assistant;
 pub mod mcp_catalog;
 pub mod mcp_completion;
 pub mod mcp_dispatch;
+pub mod mcp_graph;
 pub mod mcp_help;
 pub mod mcp_protocol;
 pub mod mcp_read_tools;

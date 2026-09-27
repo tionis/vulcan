@@ -278,6 +278,8 @@ including read-filtered results and bounded query projection, plus the note-sour
 guarded daily-content access, bounded daily-list response shaping, and permission-filtered task-query reports. MCP task list/query and create/complete/reschedule invoke app task workflows directly, preserving their write preflight and cache refresh. `vulcan-app::periodic`
 owns date/target resolution and daily list/show reports shared by CLI and MCP. MCP status uses the existing
 `vulcan-app::browse` report directly.
+`vulcan-app::mcp_graph` owns permission-filtered graph-community and link-suggestion workflows,
+including suggestion state validation and write checks for accept/reject operations.
 `vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline`,
 `note_get`, and `note_info` reports for CLI and MCP. Core graph queries provide
 permission-filtered note-link confidence, so MCP note-info counts exclude unreadable backlink
