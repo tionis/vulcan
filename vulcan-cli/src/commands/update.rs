@@ -25,6 +25,7 @@ use vulcan_app::update::{
 use vulcan_daemon::process::DaemonProcessContext;
 #[cfg(feature = "web")]
 use vulcan_daemon::process::{daemon_status, request_daemon_shutdown};
+#[cfg(feature = "web")]
 use vulcan_daemon::service::{
     inspect_daemon_service, plan_daemon_service, DaemonServiceAction, DaemonServicePlatform,
     DaemonServiceUser,
@@ -436,6 +437,7 @@ fn deferred_update(
     }
 }
 
+#[cfg(any(feature = "web", test))]
 fn coordinate_daemon_replacement<T, E>(
     daemon_running: bool,
     mut stop: impl FnMut() -> Result<(), E>,
@@ -508,6 +510,7 @@ fn print_unattended_report(
     Ok(())
 }
 
+#[cfg(feature = "web")]
 fn daemon_service_is_installed(
     context: &DaemonProcessContext,
     executable: &std::path::Path,
@@ -537,6 +540,7 @@ fn daemon_service_is_installed(
         .is_some_and(|service| service.installed))
 }
 
+#[cfg(feature = "web")]
 fn restore_daemon(executable: &std::path::Path, service_installed: bool) -> Result<(), CliError> {
     let mut command = Command::new(executable);
     if service_installed {

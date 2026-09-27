@@ -305,9 +305,9 @@ pub(crate) fn handle_web_command(
     #[cfg(not(feature = "web"))]
     {
         let _ = (cli, paths, command, stdout_is_tty, use_stdout_color);
-        return Err(CliError::operation(
+        Err(CliError::operation(
             "the `web` command requires a build with the `web` feature enabled",
-        ));
+        ))
     }
 
     #[cfg(feature = "web")]

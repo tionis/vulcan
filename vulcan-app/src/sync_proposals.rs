@@ -4912,6 +4912,7 @@ mod tests {
         cancel: bool,
     }
 
+    #[cfg(feature = "web")]
     struct NoopTools;
 
     #[cfg(feature = "web")]
@@ -4920,6 +4921,7 @@ mod tests {
         calls: Vec<(String, String)>,
     }
 
+    #[cfg(feature = "web")]
     impl ResolutionAgentTools for NoopTools {
         fn call(&mut self, name: &str, _arguments: &str) -> Result<String, AppError> {
             Err(AppError::operation(format!(

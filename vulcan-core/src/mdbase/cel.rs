@@ -1760,7 +1760,7 @@ mod tests {
                 .value,
             true
         );
-        assert!(MdbaseCelClock::new(Utc::now(), "+02:00").is_err());
+        assert!(MdbaseCelClock::new(fixed_clock().now_utc(), "+02:00").is_err());
     }
 
     #[test]

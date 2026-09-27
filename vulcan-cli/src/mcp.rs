@@ -28,9 +28,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 #[cfg(feature = "oauth")]
 use std::time::Instant;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "oauth")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 #[cfg(feature = "oauth")]
 use vulcan_app::execution::{
@@ -191,6 +193,7 @@ pub(crate) struct McpHttpOptions {
     pub oauth_allowed_sub: Vec<String>,
     pub oauth_allowed_email: Vec<String>,
     pub oauth_local_client_id: Option<String>,
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_local_redirect_uri: Vec<String>,
     pub oauth_local_client_secret: Option<String>,
     pub oauth_local_approval_token: Option<String>,
@@ -205,6 +208,7 @@ pub(crate) struct McpHttpOptions {
     pub oauth_indieauth_me: Option<String>,
     pub oauth_local_user: Vec<String>,
     pub instance_id: Option<Ulid>,
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_storage_dir: Option<PathBuf>,
     pub request_timeout: Duration,
 }
@@ -1248,6 +1252,7 @@ pub(crate) fn run_named_mcp_remote(
     ))
 }
 
+#[cfg(feature = "oauth")]
 fn public_url_path(public_url: &str) -> Result<String, CliError> {
     let (_, rest) = public_url
         .split_once("://")
@@ -1261,6 +1266,7 @@ fn public_url_path(public_url: &str) -> Result<String, CliError> {
     Ok(normalize_mcp_http_endpoint(path))
 }
 
+#[cfg(feature = "oauth")]
 fn unix_timestamp_for_mcp() -> Result<u64, CliError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

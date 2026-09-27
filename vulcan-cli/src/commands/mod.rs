@@ -45,6 +45,7 @@ pub(crate) mod vectors {
 
     use crate::{Cli, CliError, ListOutputControls, VectorsCommand};
 
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub(crate) fn handle_vectors_command(
         _cli: &Cli,
         _paths: &VaultPaths,
