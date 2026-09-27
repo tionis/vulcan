@@ -16,6 +16,7 @@ use super::{
     TaskTrackSummaryPeriod,
 };
 use crate::templates::render_note_from_parts;
+use serde::Serialize;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::fs;
 use std::sync::mpsc;
@@ -27,6 +28,89 @@ use vulcan_core::{
     initialize_vulcan_dir, load_vault_config, resolve_permission_profile, scan_vault_with_progress,
     ProfilePermissionGuard, RefactorChange, ScanMode, VaultPaths,
 };
+
+#[test]
+fn direct_task_reports_refuse_pending_ordinary_write_journal() {
+    #[derive(Serialize)]
+    struct JournalFixture<'a> {
+        version: u32,
+        transaction_id: &'a str,
+        changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+        digest: String,
+    }
+
+    fn assert_pending<T: std::fmt::Debug>(result: Result<T, AppError>) {
+        assert_eq!(
+            result.expect_err("task read must fail closed").code(),
+            Some("ordinary_write_pending")
+        );
+    }
+
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::write(temp_dir.path().join("Inbox.md"), "Original\n").expect("note");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+    let directory = paths
+        .operational_state_dir()
+        .expect("operational state")
+        .join("ordinary-write");
+    fs::create_dir_all(&directory).expect("journal directory");
+    let mut journal = JournalFixture {
+        version: 1,
+        transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: "Inbox.md".to_string(),
+            before: Some("Original\n".to_string()),
+            after: Some("Updated\n".to_string()),
+        }],
+        digest: String::new(),
+    };
+    journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+        .to_hex()
+        .to_string();
+    let journal_path = directory.join("journal.json");
+    fs::write(
+        &journal_path,
+        serde_json::to_vec(&journal).expect("sealed journal"),
+    )
+    .expect("pending journal");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+            .expect("owner-only journal");
+    }
+
+    assert_pending(build_task_show_report(&paths, "Missing"));
+    assert_pending(build_task_track_status_report(&paths));
+    assert_pending(build_task_due_report(&paths, "1d"));
+    assert_pending(build_task_reminders_report(&paths, "1d"));
+    assert_pending(super::build_tasks_query_result(&paths, ""));
+    assert_pending(build_tasks_eval_report(
+        &paths,
+        &TaskEvalRequest {
+            file: "Missing".to_string(),
+            block: None,
+        },
+    ));
+    assert_pending(build_tasks_list_report(&paths, &TaskListRequest::default()));
+    assert_pending(build_tasks_view_list_report(&paths));
+    assert_pending(build_tasks_view_report(&paths, "Missing"));
+    assert_pending(build_tasks_next_report(&paths, 1, None));
+    assert_pending(build_tasks_blocked_report(&paths));
+    assert_pending(build_tasks_graph_report(&paths));
+    assert_pending(build_task_track_log_report(&paths, "Missing"));
+    assert_pending(build_task_track_summary_report(
+        &paths,
+        TaskTrackSummaryPeriod::All,
+    ));
+
+    vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
+        .expect("recover pending batch")
+        .expect("pending batch");
+    assert!(build_tasks_list_report(&paths, &TaskListRequest::default()).is_ok());
+}
 
 #[test]
 fn task_note_frontmatter_mutation_rejects_a_source_changed_after_loading() {

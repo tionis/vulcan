@@ -15986,6 +15986,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("archive moves reject a changed source"));
     assert!(task_management.contains("ordinary-write journal to finish the move"));
     assert!(task_management.contains("vulcan repair ordinary-write status"));
+    assert!(task_management.contains("Direct CLI and MCP task show, query, list, view"));
     assert!(task_management.contains("exact transaction ID and review token"));
     assert!(task_management.contains("do not bypass it with a direct Markdown edit"));
     assert!(task_management.contains("serialized with other Vulcan vault writes"));

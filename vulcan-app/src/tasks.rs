@@ -997,6 +997,7 @@ pub fn apply_task_convert(
 }
 
 pub fn build_task_show_report(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let loaded = load_tasknote_note(paths, task)?;
     let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
     let now_ms = current_utc_timestamp_ms();
@@ -1235,6 +1236,7 @@ pub fn apply_task_track_stop(
 pub fn build_task_track_status_report(
     paths: &VaultPaths,
 ) -> Result<TaskTrackStatusReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let now_ms = current_utc_timestamp_ms();
     let mut active_sessions = load_tasknote_records(paths)?
         .into_iter()
@@ -1268,6 +1270,7 @@ pub fn build_task_track_status_report(
 }
 
 pub fn build_task_due_report(paths: &VaultPaths, within: &str) -> Result<TaskDueReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let window_ms = parse_duration_string(within).ok_or_else(|| {
         AppError::operation(format!("failed to parse due window duration: {within}"))
     })?;
@@ -1308,6 +1311,7 @@ pub fn build_task_reminders_report(
     paths: &VaultPaths,
     upcoming: &str,
 ) -> Result<TaskRemindersReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let window_ms = parse_duration_string(upcoming).ok_or_else(|| {
         AppError::operation(format!(
             "failed to parse reminder window duration: {upcoming}"
@@ -1363,13 +1367,22 @@ pub fn build_tasks_query_result(
     paths: &VaultPaths,
     source: &str,
 ) -> Result<TasksQueryResult, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     build_tasks_query_result_with_options(paths, source, false)
+}
+
+fn consistent_task_read(
+    paths: &VaultPaths,
+) -> Result<Option<vulcan_core::write_lock::ReadLockGuard>, AppError> {
+    vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))
 }
 
 pub fn build_tasks_eval_report(
     paths: &VaultPaths,
     request: &TaskEvalRequest,
 ) -> Result<TasksEvalReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let blocks =
         load_tasks_blocks(paths, &request.file, request.block).map_err(AppError::operation)?;
     let file = blocks
@@ -1410,6 +1423,7 @@ pub fn build_tasks_list_report(
     paths: &VaultPaths,
     request: &TaskListRequest,
 ) -> Result<TasksQueryResult, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let config = load_vault_config(paths).config.tasks;
     let filter = request
         .filter
@@ -1452,6 +1466,7 @@ pub fn build_tasks_list_report(
 pub fn build_tasks_view_list_report(
     paths: &VaultPaths,
 ) -> Result<TaskNotesViewListReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let config = load_vault_config(paths).config;
     let mut files = Vec::new();
     let root = paths.vault_root().join("TaskNotes/Views");
@@ -1503,6 +1518,7 @@ pub fn build_tasks_view_report(
     paths: &VaultPaths,
     name: &str,
 ) -> Result<BasesEvalReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let target = resolve_tasknotes_view_target(paths, name)?;
     if let Some(saved_view) = target.saved_view.as_ref() {
         let tasknotes = load_vault_config(paths).config.tasknotes;
@@ -1531,6 +1547,7 @@ pub fn build_tasks_next_report(
     count: usize,
     from: Option<&str>,
 ) -> Result<TasksNextReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let (reference_date, reference_ms) = resolve_tasks_reference_date(from)?;
     let result = build_tasks_query_result(paths, "is recurring")?;
     let mut occurrences = Vec::new();
@@ -1568,6 +1585,7 @@ pub fn build_tasks_next_report(
 }
 
 pub fn build_tasks_blocked_report(paths: &VaultPaths) -> Result<TasksBlockedReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let graph = build_tasks_graph_report(paths)?;
     let task_result = build_tasks_query_result(paths, "")?;
     let tasks_by_key = task_result
@@ -1601,6 +1619,7 @@ pub fn build_tasks_blocked_report(paths: &VaultPaths) -> Result<TasksBlockedRepo
 }
 
 pub fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let result = build_tasks_query_result(paths, "")?;
     let mut tasks = result
         .tasks
@@ -2800,6 +2819,7 @@ pub fn build_task_track_log_report(
     paths: &VaultPaths,
     task: &str,
 ) -> Result<TaskTrackLogReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let loaded = load_tasknote_note(paths, task)?;
     let now_ms = current_utc_timestamp_ms();
     let entries = parse_tasknote_time_entries(&loaded.indexed.time_entries, now_ms)
@@ -2824,6 +2844,7 @@ pub fn build_task_track_summary_report(
     paths: &VaultPaths,
     period: TaskTrackSummaryPeriod,
 ) -> Result<TaskTrackSummaryReport, AppError> {
+    let _read_guard = consistent_task_read(paths)?;
     let config = load_vault_config(paths).config;
     let (from, to, from_ms, now_ms) = resolve_task_track_summary_window(&config, period)?;
     let mut total_minutes = 0_i64;
