@@ -3811,24 +3811,22 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         authorization_store: store.clone(),
     });
     let verifier = "named-consent-pkce-verifier";
+    let pending_consent = LocalOAuthPendingConsent {
+        client_id: "static-client".to_string(),
+        redirect_uri: "https://client.example.test/callback".to_string(),
+        code_challenge: pkce_s256_challenge(verifier),
+        subject: "https://identity.example.test/alice".to_string(),
+        scopes: vec!["mcp:tools".to_string()],
+        resource: "https://mcp.example.test/personal".to_string(),
+        state: Some("client-state".to_string()),
+        csrf_token: "csrf-secret".to_string(),
+        expires_at: std::time::Instant::now() + Duration::from_secs(60),
+    };
     context
         .oauth_pending_consent
         .lock()
         .expect("consent lock")
-        .insert(
-            "named-transaction".to_string(),
-            LocalOAuthPendingConsent {
-                client_id: "static-client".to_string(),
-                redirect_uri: "https://client.example.test/callback".to_string(),
-                code_challenge: pkce_s256_challenge(verifier),
-                subject: "https://identity.example.test/alice".to_string(),
-                scopes: vec!["mcp:tools".to_string()],
-                resource: "https://mcp.example.test/personal".to_string(),
-                state: Some("client-state".to_string()),
-                csrf_token: "csrf-secret".to_string(),
-                expires_at: std::time::Instant::now() + Duration::from_secs(60),
-            },
-        );
+        .insert("named-transaction".to_string(), pending_consent.clone());
     let approval = McpHttpRequest {
         method: "POST".to_string(),
         path: "/oauth/consent".to_string(),
@@ -3836,6 +3834,41 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         headers: BTreeMap::new(),
         body: b"transaction=named-transaction&csrf_token=csrf-secret&decision=approve&permission_profile=agent&pack_notes-read=on&expiry_days=7".to_vec(),
     };
+    {
+        let mut codes = context.oauth_codes.lock().expect("codes");
+        for index in 0..vulcan_daemon::mcp_oauth_codes::MAX_PENDING_OAUTH_CODES {
+            codes.insert(
+                format!("unredeemed-{index}"),
+                LocalOAuthCode {
+                    client_id: "static-client".to_string(),
+                    redirect_uri: pending_consent.redirect_uri.clone(),
+                    code_challenge: pending_consent.code_challenge.clone(),
+                    subject: pending_consent.subject.clone(),
+                    scopes: pending_consent.scopes.clone(),
+                    resource: pending_consent.resource.clone(),
+                    grant_id: None,
+                    grant_required: false,
+                    expires_at: Instant::now() + Duration::from_secs(60),
+                },
+            );
+        }
+    }
+    let full = handle_local_oauth_consent(&context, &issuer, &approval);
+    assert_eq!(full.status, 503);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&full.body).expect("OAuth error")["error"],
+        "temporarily_unavailable"
+    );
+    assert!(store
+        .list_grants(None)
+        .expect("no orphan grants")
+        .is_empty());
+    context.oauth_codes.lock().expect("codes").clear();
+    context
+        .oauth_pending_consent
+        .lock()
+        .expect("consent lock")
+        .insert("named-transaction".to_string(), pending_consent);
     assert_eq!(
         handle_local_oauth_consent(&context, &issuer, &approval).status,
         302

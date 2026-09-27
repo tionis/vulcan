@@ -23,6 +23,7 @@ pub mod http_policy;
 pub mod mcp_http_codec;
 pub mod mcp_http_routes;
 pub mod mcp_oauth_clients;
+pub mod mcp_oauth_codes;
 pub mod mcp_oauth_policy;
 pub mod mcp_oauth_registration;
 pub mod mcp_remote;

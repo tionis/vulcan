@@ -131,6 +131,12 @@ use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 use vulcan_daemon::mcp_oauth_clients::OAuthClientRegistry;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient as LocalOAuthRegisteredClient;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_codes::{
+    bind_mcp_authorization_code_grant, discard_mcp_authorization_code,
+    issue_mcp_authorization_code, redeem_mcp_authorization_code,
+    McpAuthorizationCode as LocalOAuthCode, McpAuthorizationCodeMap, McpCodeIssueError,
+};
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_policy::{
@@ -245,19 +251,6 @@ impl McpOAuthMode {
             Self::Local(issuer) => issuer.public_url(),
         }
     }
-}
-
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-struct LocalOAuthCode {
-    client_id: String,
-    redirect_uri: String,
-    code_challenge: String,
-    subject: String,
-    scopes: Vec<String>,
-    resource: String,
-    grant_id: Option<String>,
-    expires_at: std::time::Instant,
 }
 
 #[cfg(feature = "oauth")]
@@ -617,7 +610,7 @@ struct McpHttpServerContext {
     instance_id: Ulid,
     sessions: Arc<McpSessionRegistry<McpServerCore>>,
     #[cfg(feature = "oauth")]
-    oauth_codes: Arc<Mutex<BTreeMap<String, LocalOAuthCode>>>,
+    oauth_codes: Arc<McpAuthorizationCodeMap>,
     #[cfg(feature = "oauth")]
     oauth_clients: Arc<OAuthClientRegistry>,
     #[cfg(feature = "oauth")]
@@ -1308,7 +1301,7 @@ fn run_mcp_http_server_inner(
         },
         sessions: Arc::new(McpSessionRegistry::new()),
         #[cfg(feature = "oauth")]
-        oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_codes: Arc::new(McpAuthorizationCodeMap::default()),
         #[cfg(feature = "oauth")]
         oauth_clients: Arc::new(
             OAuthClientRegistry::at(oauth_clients_path(paths, options))
@@ -3822,25 +3815,24 @@ fn handle_local_oauth_authorize(
     if !issuer.verify_approval_token(&approval_token) {
         return local_oauth_approval_form(&params);
     }
-    let code = Ulid::new().to_string();
     let user = issuer.default_user();
-    context
-        .oauth_codes
-        .lock()
-        .expect("oauth code lock should not be poisoned")
-        .insert(
-            code.clone(),
-            LocalOAuthCode {
-                client_id,
-                redirect_uri: redirect_uri.clone(),
-                code_challenge,
-                subject: user.subject,
-                scopes,
-                resource,
-                grant_id: None,
-                expires_at: std::time::Instant::now() + Duration::from_secs(300),
-            },
-        );
+    let code = match issue_local_oauth_code(
+        context,
+        LocalOAuthCode {
+            client_id,
+            redirect_uri: redirect_uri.clone(),
+            code_challenge,
+            subject: user.subject,
+            scopes,
+            resource,
+            grant_id: None,
+            grant_required: false,
+            expires_at: Instant::now(),
+        },
+    ) {
+        Ok(code) => code,
+        Err(response) => return response,
+    };
     local_oauth_client_redirect(
         &redirect_uri,
         &format!("code={}", percent_encode(&code)),
@@ -3860,6 +3852,23 @@ fn handle_local_oauth_register(
         &context.oauth_dcr_allowed_redirect_hosts,
         context.named_runtime.is_some(),
     )
+}
+
+#[cfg(feature = "oauth")]
+fn issue_local_oauth_code(
+    context: &McpHttpServerContext,
+    record: LocalOAuthCode,
+) -> Result<String, McpHttpResponse> {
+    issue_mcp_authorization_code(&context.oauth_codes, record).map_err(|error| match error {
+        McpCodeIssueError::Capacity => oauth_json_error_response(
+            503,
+            "temporarily_unavailable",
+            "too many pending authorization codes",
+        ),
+        McpCodeIssueError::Random => {
+            oauth_json_error_response(500, "server_error", "could not generate authorization code")
+        }
+    })
 }
 
 #[cfg(feature = "oauth")]
@@ -3908,34 +3917,16 @@ fn handle_local_oauth_token(
     let Some(code_verifier) = params.get("code_verifier") else {
         return oauth_json_error_response(400, "invalid_request", "missing PKCE verifier");
     };
-    let code_record = context
-        .oauth_codes
-        .lock()
-        .expect("oauth code lock should not be poisoned")
-        .remove(code);
-    let Some(code_record) = code_record else {
-        return oauth_json_error_response(400, "invalid_grant", "unknown authorization code");
+    let code_record = match redeem_mcp_authorization_code(
+        &context.oauth_codes,
+        code,
+        client_id,
+        params.get("redirect_uri").map(String::as_str),
+        code_verifier,
+    ) {
+        Ok(record) => record,
+        Err(error) => return oauth_json_error_response(400, "invalid_grant", error.description()),
     };
-    if code_record.expires_at < std::time::Instant::now() {
-        return oauth_json_error_response(400, "invalid_grant", "expired authorization code");
-    }
-    if code_record.client_id != client_id.as_str() {
-        return oauth_json_error_response(
-            400,
-            "invalid_grant",
-            "authorization code client mismatch",
-        );
-    }
-    if params.get("redirect_uri") != Some(&code_record.redirect_uri) {
-        return oauth_json_error_response(
-            400,
-            "invalid_grant",
-            "authorization code redirect mismatch",
-        );
-    }
-    if !issuer.verify_pkce_s256(code_verifier, &code_record.code_challenge) {
-        return oauth_json_error_response(400, "invalid_grant", "invalid PKCE verifier");
-    }
     match issuer.issue_access_token_for_authorization(
         &code_record.subject,
         &code_record.client_id,
@@ -4198,28 +4189,44 @@ fn handle_local_oauth_consent(
     let Some(user) = issuer.user_for_subject(&pending.subject) else {
         return oauth_plain_response(403, "consent subject is no longer authorized");
     };
-    let grant_id = match create_named_connection_grant(context, &pending, &params) {
-        Ok(grant_id) => grant_id,
+    let code = match issue_local_oauth_code(
+        context,
+        LocalOAuthCode {
+            client_id: pending.client_id.clone(),
+            redirect_uri: pending.redirect_uri.clone(),
+            code_challenge: pending.code_challenge.clone(),
+            subject: user.subject,
+            scopes: pending.scopes.clone(),
+            resource: pending.resource.clone(),
+            grant_id: None,
+            grant_required: context.named_runtime.is_some(),
+            expires_at: Instant::now(),
+        },
+    ) {
+        Ok(code) => code,
         Err(response) => return response,
     };
-    let code = Ulid::new().to_string();
-    context
-        .oauth_codes
-        .lock()
-        .expect("oauth code lock should not be poisoned")
-        .insert(
-            code.clone(),
-            LocalOAuthCode {
-                client_id: pending.client_id,
-                redirect_uri: pending.redirect_uri.clone(),
-                code_challenge: pending.code_challenge,
-                subject: user.subject,
-                scopes: pending.scopes,
-                resource: pending.resource,
-                grant_id,
-                expires_at: std::time::Instant::now() + Duration::from_secs(300),
-            },
-        );
+    let grant_id = match create_named_connection_grant(context, &pending, &params) {
+        Ok(grant_id) => grant_id,
+        Err(response) => {
+            discard_mcp_authorization_code(&context.oauth_codes, &code);
+            return response;
+        }
+    };
+    if let Some(grant_id) = grant_id {
+        if !bind_mcp_authorization_code_grant(&context.oauth_codes, &code, grant_id.clone()) {
+            if let (Some(named), Ok(id)) = (context.named_runtime.as_ref(), grant_id.parse()) {
+                let _ = named
+                    .authorization_store
+                    .revoke_grant(id, current_unix_timestamp(), false);
+            }
+            return oauth_json_error_response(
+                500,
+                "server_error",
+                "authorization code expired before consent completed",
+            );
+        }
+    }
     local_oauth_client_redirect(
         &pending.redirect_uri,
         &format!("code={}", percent_encode(&code)),
