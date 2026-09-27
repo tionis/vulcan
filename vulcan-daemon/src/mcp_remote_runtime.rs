@@ -5,6 +5,7 @@ use ulid::Ulid;
 use vulcan_core::{resolve_permission_profile, VaultPaths};
 
 use crate::mcp_remote::McpRemoteId;
+use crate::mcp_session::McpSessionAuthority;
 use crate::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
 use crate::registry::WikiId;
 
@@ -33,6 +34,17 @@ pub struct NamedConsentRequest<'a> {
     pub now: u64,
 }
 
+pub struct NamedTokenRequest<'a> {
+    pub remote_instance_id: Ulid,
+    pub grant_id: Ulid,
+    pub client_id: &'a str,
+    pub subject: Option<&'a str>,
+    pub scopes: &'a [String],
+    pub resource: &'a str,
+    pub credential: &'a str,
+    pub now: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedConsentError {
     pub status: u16,
@@ -56,6 +68,71 @@ impl NamedConsentError {
 }
 
 impl NamedMcpRuntime {
+    /// Revalidate a named access token against durable consent and current vault policy.
+    pub fn authorize_token(
+        &self,
+        request: &NamedTokenRequest<'_>,
+    ) -> Result<McpSessionAuthority, String> {
+        let grant = self
+            .authorization_store
+            .resolve_active_grant(
+                request.grant_id,
+                request.remote_instance_id,
+                request.client_id,
+                request.resource,
+                request.now,
+            )
+            .map_err(|error| error.to_string())?;
+        let vault = self
+            .vaults
+            .get(&grant.wiki_id)
+            .ok_or("connection grant vault is no longer exposed")?;
+        if grant.remote_id != self.remote_id
+            || request.subject != Some(grant.subject.as_str())
+            || !request
+                .scopes
+                .iter()
+                .all(|scope| grant.scopes.contains(scope))
+            || !grant
+                .tool_packs
+                .iter()
+                .all(|pack| vault.eligible_tool_packs.contains(pack))
+        {
+            return Err("connection grant does not match this token authority".to_string());
+        }
+        let current_profile =
+            resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
+                .map_err(|error| error.to_string())?;
+        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
+            .map_err(|error| error.to_string())?;
+        if !current_profile
+            .grant
+            .is_subset_of(&grant.approved_permissions)
+            || !current_profile.grant.is_subset_of(&ceiling.grant)
+        {
+            return Err(
+                "current permission policy is not a safe attenuation of the approved grant"
+                    .to_string(),
+            );
+        }
+        self.authorization_store
+            .mark_grant_used(grant.id, request.now)
+            .map_err(|error| error.to_string())?;
+        Ok(McpSessionAuthority::granted(
+            self.remote_id.clone(),
+            request.remote_instance_id,
+            grant.id,
+            request.client_id.to_string(),
+            grant.subject,
+            grant.wiki_id,
+            grant.audience,
+            current_profile.name,
+            grant.tool_packs,
+            request.scopes.to_vec(),
+            request.credential,
+        ))
+    }
+
     pub fn create_connection_grant(
         &self,
         request: &NamedConsentRequest<'_>,
@@ -213,6 +290,91 @@ mod tests {
         assert_eq!(grant.tool_packs, vec!["notes-read"]);
         assert_eq!(grant.scopes, scopes);
         assert_eq!(grant.expires_at, 1_700_000_000 + 7 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn token_authority_revalidates_consent_binding_and_revocation() {
+        let (_temporary, runtime) = runtime();
+        let instance_id = Ulid::new();
+        let scopes = vec!["mcp:tools".to_string()];
+        let form = BTreeMap::from([
+            ("pack_notes-read".to_string(), "on".to_string()),
+            ("expiry_days".to_string(), "7".to_string()),
+        ]);
+        let grant_id = runtime
+            .create_connection_grant(&request(instance_id, &form, &scopes))
+            .expect("approved consent");
+        let mut token = NamedTokenRequest {
+            remote_instance_id: instance_id,
+            grant_id,
+            client_id: "https://client.example/app.json",
+            subject: Some("https://identity.example/alice"),
+            scopes: &scopes,
+            resource: "https://mcp.example/personal",
+            credential: "secret access token",
+            now: 1_700_000_001,
+        };
+        let authority = runtime.authorize_token(&token).expect("bound authority");
+        assert_eq!(authority.grant_id, Some(grant_id));
+        assert_eq!(authority.tool_packs, vec!["notes-read"]);
+        assert_eq!(authority.scopes, scopes);
+        assert_eq!(authority.permission_profile.as_deref(), Some("readonly"));
+
+        token.subject = Some("https://identity.example/bob");
+        assert!(runtime.authorize_token(&token).is_err());
+        token.subject = Some("https://identity.example/alice");
+        token.client_id = "https://other.example/app.json";
+        assert!(runtime.authorize_token(&token).is_err());
+        token.client_id = "https://client.example/app.json";
+        token.resource = "https://other.example/mcp";
+        assert!(runtime.authorize_token(&token).is_err());
+        token.resource = "https://mcp.example/personal";
+        let widened = vec!["mcp:tools".to_string(), "mcp:prompts".to_string()];
+        token.scopes = &widened;
+        assert!(runtime.authorize_token(&token).is_err());
+        token.scopes = &scopes;
+
+        runtime
+            .authorization_store
+            .revoke_grant(grant_id, token.now, false)
+            .expect("revoke grant");
+        assert!(runtime.authorize_token(&token).is_err());
+    }
+
+    #[test]
+    fn token_authority_rejects_removed_vault_or_eligible_pack() {
+        let (_temporary, mut runtime) = runtime();
+        let instance_id = Ulid::new();
+        let scopes = vec!["mcp:tools".to_string()];
+        let form = BTreeMap::from([
+            ("pack_notes-read".to_string(), "on".to_string()),
+            ("expiry_days".to_string(), "7".to_string()),
+        ]);
+        let grant_id = runtime
+            .create_connection_grant(&request(instance_id, &form, &scopes))
+            .expect("approved consent");
+        let token = NamedTokenRequest {
+            remote_instance_id: instance_id,
+            grant_id,
+            client_id: "https://client.example/app.json",
+            subject: Some("https://identity.example/alice"),
+            scopes: &scopes,
+            resource: "https://mcp.example/personal",
+            credential: "secret access token",
+            now: 1_700_000_001,
+        };
+        runtime
+            .vaults
+            .get_mut(&WikiId::parse("personal").expect("wiki ID"))
+            .expect("vault")
+            .eligible_tool_packs
+            .clear();
+        assert!(runtime.authorize_token(&token).is_err());
+        runtime.vaults.clear();
+        assert_eq!(
+            runtime.authorize_token(&token).expect_err("removed vault"),
+            "connection grant vault is no longer exposed"
+        );
     }
 
     #[test]

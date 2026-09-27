@@ -130,7 +130,7 @@ use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote_runtime::{
-    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime,
+    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime, NamedTokenRequest,
 };
 use vulcan_daemon::mcp_session::{
     mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
@@ -2064,99 +2064,28 @@ fn authenticate_mcp_http_request(
         })?;
         let now = unix_timestamp_for_mcp()
             .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
-        let grant = named
-            .authorization_store
-            .resolve_active_grant(
+        return named
+            .authorize_token(&NamedTokenRequest {
+                remote_instance_id: context.instance_id,
                 grant_id,
-                context.instance_id,
-                &client_id,
-                context
+                client_id: &client_id,
+                subject: subject.as_deref(),
+                scopes: &scopes,
+                resource: context
                     .oauth
                     .as_ref()
-                    .map(McpOAuthMode::public_url)
-                    .unwrap_or_default(),
+                    .expect("named runtime has OAuth")
+                    .public_url(),
+                credential: &credential,
                 now,
-            )
+            })
             .map_err(|error| {
                 oauth_error_response(
                     context.oauth.as_ref().expect("named runtime has OAuth"),
-                    error.to_string(),
+                    error,
                     "invalid_token",
                 )
-            })?;
-        let vault = named.vaults.get(&grant.wiki_id).ok_or_else(|| {
-            oauth_error_response(
-                context.oauth.as_ref().expect("named runtime has OAuth"),
-                "connection grant vault is no longer exposed",
-                "invalid_token",
-            )
-        })?;
-        if grant.remote_id != named.remote_id
-            || subject.as_deref() != Some(grant.subject.as_str())
-            || !scopes.iter().all(|scope| grant.scopes.contains(scope))
-            || !grant
-                .tool_packs
-                .iter()
-                .all(|pack| vault.eligible_tool_packs.contains(pack))
-        {
-            return Err(oauth_error_response(
-                context.oauth.as_ref().expect("named runtime has OAuth"),
-                "connection grant does not match this token authority",
-                "invalid_token",
-            ));
-        }
-        let current_profile =
-            resolve_permission_profile(&vault.paths, Some(&grant.permission_profile)).map_err(
-                |error| {
-                    oauth_error_response(
-                        context.oauth.as_ref().expect("named runtime has OAuth"),
-                        error.to_string(),
-                        "invalid_token",
-                    )
-                },
-            )?;
-        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
-            .map_err(|error| {
-                oauth_error_response(
-                    context.oauth.as_ref().expect("named runtime has OAuth"),
-                    error.to_string(),
-                    "invalid_token",
-                )
-            })?;
-        if !current_profile
-            .grant
-            .is_subset_of(&grant.approved_permissions)
-            || !current_profile.grant.is_subset_of(&ceiling.grant)
-        {
-            return Err(oauth_error_response(
-                context.oauth.as_ref().expect("named runtime has OAuth"),
-                "current permission policy is not a safe attenuation of the approved grant",
-                "invalid_token",
-            ));
-        }
-        named
-            .authorization_store
-            .mark_grant_used(grant.id, now)
-            .map_err(|error| {
-                oauth_error_response(
-                    context.oauth.as_ref().expect("named runtime has OAuth"),
-                    error.to_string(),
-                    "invalid_token",
-                )
-            })?;
-        return Ok(McpSessionAuthority::granted(
-            named.remote_id.clone(),
-            context.instance_id,
-            grant.id,
-            client_id,
-            grant.subject,
-            grant.wiki_id,
-            grant.audience,
-            current_profile.name,
-            grant.tool_packs,
-            scopes,
-            &credential,
-        ));
+            });
     }
     let packs = pack_name_list(&resolve_selected_tool_packs(
         &context.tool_pack_args,
