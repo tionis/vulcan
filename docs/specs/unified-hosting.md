@@ -277,6 +277,8 @@ SSE stream after a vault prompt is added; other notification classes still requi
 HTTP cancellation notifications are handled against the authenticated session's active request
 tokens outside its busy executor lock. Queued hosted work can cancel before dispatch; cancellation
 of a dispatched write is not proof of rollback and retains the durable operation-status contract.
+A live hosted-queue regression confirms a same-session HTTP cancellation yields a terminal
+non-dispatched operation record and leaves the requested note absent.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

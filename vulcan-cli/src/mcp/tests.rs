@@ -3360,6 +3360,161 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
 
 #[cfg(feature = "oauth")]
 #[test]
+#[allow(clippy::too_many_lines)] // Runs a real hosted queue and a second HTTP cancellation request.
+fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let core = McpServerCore::new(
+        &paths,
+        Some("unrestricted"),
+        &[McpToolPackArg::NotesWrite],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let mut http = consent_test_context(&paths, issuer);
+    http.oauth = None;
+    http.requested_profile = Some("unrestricted".to_string());
+    http.tool_pack_args = vec![McpToolPackArg::NotesWrite];
+    http.request_timeout = Duration::from_secs(5);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let scheduler =
+        Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
+    let grant = core.selection.grant.clone();
+    let blocker = ExecutionContext::new(
+        ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
+        ExecutionAuthority::Caller {
+            principal_id: "blocker".to_string(),
+            credential_id: None,
+            permission_ceiling: grant.clone(),
+        },
+        grant,
+        ExecutionIdentity::new("test:blocker"),
+        None,
+        ExecutionRetryClass::IndeterminateAfterDispatch,
+        ExecutionCancellationToken::default(),
+        None,
+    )
+    .expect("blocking context");
+    let held = runtime
+        .block_on(scheduler.acquire(&blocker, ScheduledOperation::Mutation, |_| Ok(())))
+        .expect("hold vault mutation lane");
+    let operation_dir = temporary.path().join("operations");
+    let hosted = HostedMcpExecution {
+        executor: Arc::new(HostedExecutor::new(
+            Arc::clone(&scheduler),
+            Arc::new(HostedJobLedger::at(operation_dir.clone())),
+        )),
+        scheduler,
+        runtime: runtime.handle().clone(),
+    };
+    let ledger = hosted.executor.ledger();
+    http.hosted = Some(hosted);
+    let authority_request = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
+    };
+    let authority =
+        authenticate_mcp_http_request(&http, &authority_request).expect("direct authority");
+    let session = Arc::new(McpHttpSession::new(core, authority.clone()));
+    let session_id = Ulid::new().to_string();
+    http.sessions
+        .lock()
+        .expect("sessions lock")
+        .insert(session_id.clone(), session);
+    let request = |payload: serde_json::Value| McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query: String::new(),
+        headers: BTreeMap::from([
+            ("content-type".to_string(), "application/json".to_string()),
+            (
+                "accept".to_string(),
+                "application/json, text/event-stream".to_string(),
+            ),
+            ("mcp-session-id".to_string(), session_id.clone()),
+        ]),
+        body: serde_json::to_vec(&payload).expect("request JSON"),
+    };
+    let write_request = request(serde_json::json!({
+        "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+        "params": {"name": "note_create", "arguments": {
+            "path": "Blocked.md", "body": "must not appear"
+        }}
+    }));
+    let worker_http = http.clone();
+    let worker_authority = authority.clone();
+    let worker = thread::spawn(move || {
+        handle_mcp_http_post(&worker_http, &write_request, &worker_authority)
+    });
+    let mut operation_id = None;
+    for _ in 0..100 {
+        if let Ok(entries) = std::fs::read_dir(&operation_dir) {
+            operation_id = entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .find_map(|name| name.strip_suffix(".json").map(str::to_string));
+        }
+        if operation_id.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let operation_id = operation_id.expect("hosted request must register before cancellation");
+    let cancel_request = request(serde_json::json!({
+        "jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"requestId": 41, "reason": "test cancellation"}
+    }));
+    assert_eq!(
+        handle_mcp_http_post(&http, &cancel_request, &authority).status,
+        202
+    );
+    drop(held);
+    let response = worker.join().expect("write request thread");
+    assert_eq!(response.status, 400);
+    let result: serde_json::Value =
+        serde_json::from_slice(&response.body).expect("cancellation result JSON");
+    assert_eq!(result["error"]["data"]["dispatched"], false);
+    assert_eq!(result["error"]["data"]["operation_id"], operation_id);
+    let mut record = ledger
+        .load(&operation_id)
+        .expect("durable operation record");
+    for _ in 0..100 {
+        if record.state.is_terminal() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+        record = ledger
+            .load(&operation_id)
+            .expect("durable operation record");
+    }
+    assert!(record.state.is_terminal());
+    assert!(!record.dispatched);
+    assert!(!paths.vault_root().join("Blocked.md").exists());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 #[allow(clippy::too_many_lines)] // Exercises caller, grant, audience, and scope isolation in one fixture.
 fn named_mcp_operation_status_is_bound_to_grant_subject_and_audience() {
     let temporary = tempfile::tempdir().expect("temporary vault");
