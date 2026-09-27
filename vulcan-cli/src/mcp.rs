@@ -49,20 +49,20 @@ use vulcan_app::mcp_config;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
-    jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
-    timeout_response_for_request, McpHttpProcessResult, McpMethodHandler,
+    dispatch_protocol_method, jsonrpc_error, process_http_request, process_stdio_request,
+    request_id, timeout_http_result, timeout_response_for_request, McpHttpProcessResult,
+    McpMethodHandler, McpProtocolMethods,
 };
 use vulcan_app::mcp_graph;
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs,
-    McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListParams, McpListSnapshot,
-    McpMethodError, McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs,
-    McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs,
-    McpPromptGetParams, McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs,
-    McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
-    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
-    McpToolPackMutationArgs, McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs,
-    MCP_INLINE_TEXT_LIMIT, MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT,
+    McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListSnapshot, McpMethodError,
+    McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteGetArgs,
+    McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs, McpQueryArgs,
+    McpSearchArgs, McpSuggestLinksArgs, McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs,
+    McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs,
+    McpTaskRescheduleArgs, McpToolPackMutationArgs, McpToolResourceStore, McpWebFetchArgs,
+    McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT,
     MCP_RESOURCE_NOT_FOUND, MCP_STRUCTURED_CONTENT_LIMIT,
 };
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
@@ -2390,98 +2390,7 @@ impl McpServerCore {
         method: &str,
         params: Option<&Value>,
     ) -> Result<McpMethodOutcome, McpMethodError> {
-        match method {
-            "initialize" => Ok(McpMethodOutcome {
-                response: Some(self.initialize_result()),
-                emit_list_notifications: false,
-            }),
-            "ping" => Ok(McpMethodOutcome {
-                response: Some(Value::Object(Map::new())),
-                emit_list_notifications: true,
-            }),
-            "notifications/initialized" | "notifications/cancelled" => Ok(McpMethodOutcome {
-                response: None,
-                emit_list_notifications: false,
-            }),
-            "tools/list" => {
-                let params: McpListParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(paginated_result(
-                        "tools",
-                        self.visible_tool_items()?,
-                        params.cursor,
-                    )?),
-                    emit_list_notifications: true,
-                })
-            }
-            "tools/call" => {
-                let params: McpToolCallParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(self.call_tool(&params.name, &params.arguments)?),
-                    emit_list_notifications: true,
-                })
-            }
-            "prompts/list" => {
-                let params: McpListParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(paginated_result(
-                        "prompts",
-                        self.visible_prompts()?
-                            .into_iter()
-                            .map(prompt_list_item)
-                            .collect::<Vec<_>>(),
-                        params.cursor,
-                    )?),
-                    emit_list_notifications: true,
-                })
-            }
-            "prompts/get" => {
-                let params: McpPromptGetParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(self.get_prompt(&params.name, &params.arguments)?),
-                    emit_list_notifications: true,
-                })
-            }
-            "resources/list" => {
-                let params: McpListParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(paginated_result(
-                        "resources",
-                        self.visible_resources()?,
-                        params.cursor,
-                    )?),
-                    emit_list_notifications: true,
-                })
-            }
-            "resources/templates/list" => {
-                let params: McpListParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(paginated_result(
-                        "resourceTemplates",
-                        self.visible_resource_templates(),
-                        params.cursor,
-                    )?),
-                    emit_list_notifications: true,
-                })
-            }
-            "resources/read" => {
-                let params: McpResourceReadParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(self.read_resource(&params.uri)?),
-                    emit_list_notifications: true,
-                })
-            }
-            "completion/complete" => {
-                let params: McpCompletionParams = parse_method_params(params)?;
-                Ok(McpMethodOutcome {
-                    response: Some(self.complete(&params)?),
-                    emit_list_notifications: true,
-                })
-            }
-            _ => Err(McpMethodError::method_not_found(format!(
-                "Method not found: {method}"
-            ))),
-        }
+        dispatch_protocol_method(self, method, params)
     }
 
     fn initialize_result(&self) -> Value {
@@ -3467,6 +3376,55 @@ impl McpServerCore {
     }
 }
 
+impl McpProtocolMethods for McpServerCore {
+    fn initialize_result(&self) -> Value {
+        McpServerCore::initialize_result(self)
+    }
+
+    fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
+        McpServerCore::visible_tool_items(self)
+    }
+
+    fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, McpMethodError> {
+        McpServerCore::call_tool(self, name, arguments)
+    }
+
+    fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
+        Ok(McpServerCore::visible_prompts(self)?
+            .into_iter()
+            .map(prompt_list_item)
+            .collect())
+    }
+
+    fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, McpMethodError> {
+        McpServerCore::get_prompt(self, name, arguments)
+    }
+
+    fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
+        McpServerCore::visible_resources(self)
+    }
+
+    fn visible_resource_templates(&self) -> Vec<Value> {
+        McpServerCore::visible_resource_templates(self)
+    }
+
+    fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
+        McpServerCore::read_resource(self, uri)
+    }
+
+    fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
+        McpServerCore::complete(self, params)
+    }
+}
+
 impl McpMethodHandler for McpServerCore {
     fn handle_method(
         &mut self,
@@ -4284,21 +4242,6 @@ fn prompt_list_item(prompt: vulcan_core::AssistantPromptSummary) -> Value {
     })
 }
 
-fn parse_method_params<T: for<'de> Deserialize<'de>>(
-    params: Option<&Value>,
-) -> Result<T, McpMethodError> {
-    let mut params = params.cloned().unwrap_or_else(|| Value::Object(Map::new()));
-    strip_reserved_method_params(&mut params);
-    serde_json::from_value(params)
-        .map_err(|error| McpMethodError::invalid_params(error.to_string()))
-}
-
-fn strip_reserved_method_params(params: &mut Value) {
-    if let Value::Object(object) = params {
-        object.remove("_meta");
-    }
-}
-
 fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
     arguments: &Map<String, Value>,
 ) -> Result<T, McpMethodError> {
@@ -4465,31 +4408,6 @@ fn parse_tasks_default_source(
             "unsupported `task_list.source`: {other}"
         ))),
     }
-}
-
-fn paginated_result(
-    key: &str,
-    items: Vec<Value>,
-    cursor: Option<String>,
-) -> Result<Value, McpMethodError> {
-    let start = match cursor {
-        Some(cursor) if !cursor.is_empty() => cursor.parse::<usize>().map_err(|_| {
-            McpMethodError::invalid_params(format!("invalid pagination cursor `{cursor}`"))
-        })?,
-        _ => 0,
-    };
-    if start > items.len() {
-        return Err(McpMethodError::invalid_params(format!(
-            "pagination cursor `{start}` is out of range"
-        )));
-    }
-    let end = usize::min(start + MCP_PAGE_SIZE, items.len());
-    let mut result = Map::new();
-    result.insert(key.to_string(), Value::Array(items[start..end].to_vec()));
-    if end < items.len() {
-        result.insert("nextCursor".to_string(), Value::String(end.to_string()));
-    }
-    Ok(Value::Object(result))
 }
 
 fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {

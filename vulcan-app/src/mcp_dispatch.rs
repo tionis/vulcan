@@ -2,10 +2,14 @@
 
 #![allow(clippy::must_use_candidate, clippy::needless_pass_by_value)]
 
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use std::time::Duration;
 
-use crate::mcp_protocol::{McpMethodError, McpMethodOutcome};
+use crate::mcp_protocol::{
+    McpCompletionParams, McpListParams, McpMethodError, McpMethodOutcome, McpPromptGetParams,
+    McpResourceReadParams, McpToolCallParams, MCP_PAGE_SIZE,
+};
 
 pub trait McpMethodHandler {
     fn handle_method(
@@ -14,6 +18,134 @@ pub trait McpMethodHandler {
         params: Option<&Value>,
     ) -> Result<McpMethodOutcome, McpMethodError>;
     fn list_changed_notifications(&mut self) -> Vec<Value>;
+}
+
+/// Vault-specific operations needed by the shared MCP method router.
+pub trait McpProtocolMethods {
+    fn initialize_result(&self) -> Value;
+    fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError>;
+    fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, McpMethodError>;
+    fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError>;
+    fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, McpMethodError>;
+    fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError>;
+    fn visible_resource_templates(&self) -> Vec<Value>;
+    fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError>;
+    fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError>;
+}
+
+/// Decode and route protocol methods independently of stdio or HTTP hosting.
+pub fn dispatch_protocol_method<H: McpProtocolMethods>(
+    handler: &mut H,
+    method: &str,
+    params: Option<&Value>,
+) -> Result<McpMethodOutcome, McpMethodError> {
+    let response = match method {
+        "initialize" => Some(handler.initialize_result()),
+        "ping" => Some(Value::Object(Map::new())),
+        "notifications/initialized" | "notifications/cancelled" => None,
+        "tools/list" => {
+            let params: McpListParams = parse_method_params(params)?;
+            Some(paginated_result(
+                "tools",
+                handler.visible_tool_items()?,
+                params.cursor,
+            )?)
+        }
+        "tools/call" => {
+            let params: McpToolCallParams = parse_method_params(params)?;
+            Some(handler.call_tool(&params.name, &params.arguments)?)
+        }
+        "prompts/list" => {
+            let params: McpListParams = parse_method_params(params)?;
+            Some(paginated_result(
+                "prompts",
+                handler.visible_prompt_items()?,
+                params.cursor,
+            )?)
+        }
+        "prompts/get" => {
+            let params: McpPromptGetParams = parse_method_params(params)?;
+            Some(handler.get_prompt(&params.name, &params.arguments)?)
+        }
+        "resources/list" => {
+            let params: McpListParams = parse_method_params(params)?;
+            Some(paginated_result(
+                "resources",
+                handler.visible_resources()?,
+                params.cursor,
+            )?)
+        }
+        "resources/templates/list" => {
+            let params: McpListParams = parse_method_params(params)?;
+            Some(paginated_result(
+                "resourceTemplates",
+                handler.visible_resource_templates(),
+                params.cursor,
+            )?)
+        }
+        "resources/read" => {
+            let params: McpResourceReadParams = parse_method_params(params)?;
+            Some(handler.read_resource(&params.uri)?)
+        }
+        "completion/complete" => {
+            let params: McpCompletionParams = parse_method_params(params)?;
+            Some(handler.complete(&params)?)
+        }
+        _ => {
+            return Err(McpMethodError::method_not_found(format!(
+                "Method not found: {method}"
+            )));
+        }
+    };
+    Ok(McpMethodOutcome {
+        response,
+        emit_list_notifications: !matches!(
+            method,
+            "initialize" | "notifications/initialized" | "notifications/cancelled"
+        ),
+    })
+}
+
+fn parse_method_params<T: DeserializeOwned>(params: Option<&Value>) -> Result<T, McpMethodError> {
+    let mut params = params.cloned().unwrap_or_else(|| Value::Object(Map::new()));
+    if let Value::Object(object) = &mut params {
+        object.remove("_meta");
+    }
+    serde_json::from_value(params)
+        .map_err(|error| McpMethodError::invalid_params(error.to_string()))
+}
+
+fn paginated_result(
+    key: &str,
+    items: Vec<Value>,
+    cursor: Option<String>,
+) -> Result<Value, McpMethodError> {
+    let start = match cursor {
+        Some(cursor) if !cursor.is_empty() => cursor.parse::<usize>().map_err(|_| {
+            McpMethodError::invalid_params(format!("invalid pagination cursor `{cursor}`"))
+        })?,
+        _ => 0,
+    };
+    if start > items.len() {
+        return Err(McpMethodError::invalid_params(format!(
+            "pagination cursor `{start}` is out of range"
+        )));
+    }
+    let end = usize::min(start + MCP_PAGE_SIZE, items.len());
+    let mut result = Map::new();
+    result.insert(key.to_string(), Value::Array(items[start..end].to_vec()));
+    if end < items.len() {
+        result.insert("nextCursor".to_string(), Value::String(end.to_string()));
+    }
+    Ok(Value::Object(result))
 }
 
 #[derive(Debug)]
@@ -286,6 +418,109 @@ fn request_method(request: &Value) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    struct ProtocolHandler;
+
+    impl McpProtocolMethods for ProtocolHandler {
+        fn initialize_result(&self) -> Value {
+            json!({"protocolVersion": "test"})
+        }
+
+        fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
+            Ok((0..=MCP_PAGE_SIZE)
+                .map(|index| json!({"name": index}))
+                .collect())
+        }
+
+        fn call_tool(
+            &mut self,
+            name: &str,
+            arguments: &Map<String, Value>,
+        ) -> Result<Value, McpMethodError> {
+            Ok(json!({"name": name, "arguments": arguments}))
+        }
+
+        fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
+            Ok(vec![json!({"name": "welcome"})])
+        }
+
+        fn get_prompt(
+            &self,
+            name: &str,
+            _arguments: &Map<String, Value>,
+        ) -> Result<Value, McpMethodError> {
+            Ok(json!({"name": name}))
+        }
+
+        fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
+            Ok(vec![json!({"uri": "vulcan://test"})])
+        }
+
+        fn visible_resource_templates(&self) -> Vec<Value> {
+            vec![json!({"uriTemplate": "vulcan://{name}"})]
+        }
+
+        fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
+            Ok(json!({"uri": uri}))
+        }
+
+        fn complete(&self, _params: &McpCompletionParams) -> Result<Value, McpMethodError> {
+            Ok(json!({"completion": {"values": []}}))
+        }
+    }
+
+    #[test]
+    fn shared_protocol_router_preserves_methods_pagination_and_reserved_metadata() {
+        let mut handler = ProtocolHandler;
+        let initial = dispatch_protocol_method(&mut handler, "initialize", None).unwrap();
+        assert_eq!(initial.response.unwrap()["protocolVersion"], "test");
+        assert!(!initial.emit_list_notifications);
+        let first = dispatch_protocol_method(&mut handler, "tools/list", None).unwrap();
+        let first = first.response.unwrap();
+        assert_eq!(first["tools"].as_array().unwrap().len(), MCP_PAGE_SIZE);
+        assert_eq!(first["nextCursor"], MCP_PAGE_SIZE.to_string());
+        let second = dispatch_protocol_method(
+            &mut handler,
+            "tools/list",
+            Some(&json!({"cursor": MCP_PAGE_SIZE.to_string(), "_meta": {"trace": 1}})),
+        )
+        .unwrap()
+        .response
+        .unwrap();
+        assert_eq!(second["tools"].as_array().unwrap().len(), 1);
+        assert!(second.get("nextCursor").is_none());
+        assert_eq!(
+            dispatch_protocol_method(
+                &mut handler,
+                "tools/call",
+                Some(&json!({"name": "example", "arguments": {"x": 1}})),
+            )
+            .unwrap()
+            .response
+            .unwrap()["name"],
+            "example"
+        );
+        assert_eq!(
+            dispatch_protocol_method(&mut handler, "resources/read", Some(&json!({"uri": "x"})))
+                .unwrap()
+                .response
+                .unwrap()["uri"],
+            "x"
+        );
+        assert!(
+            dispatch_protocol_method(&mut handler, "notifications/initialized", None,)
+                .unwrap()
+                .response
+                .is_none()
+        );
+        assert!(dispatch_protocol_method(&mut handler, "missing", None).is_err());
+        assert!(dispatch_protocol_method(
+            &mut handler,
+            "tools/list",
+            Some(&json!({"cursor": "not-an-offset"})),
+        )
+        .is_err());
+    }
 
     #[derive(Default)]
     struct Handler {
