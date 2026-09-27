@@ -1463,27 +1463,33 @@ fn assert_named_listener_prompt_change_notifications(
     paths: &VaultPaths,
     label: &str,
 ) {
-    let session = named_listener_session_id(&named_listener_initialize(address, "parity", token));
-    let mut stream = TcpStream::connect(address).expect("named listener active");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("SSE read timeout");
-    write!(
+    let owner = named_listener_session_id(&named_listener_initialize(address, "parity", token));
+    let peer = named_listener_session_id(&named_listener_initialize(address, "parity", token));
+    let open_sse = |session: &str| {
+        let mut stream = TcpStream::connect(address).expect("named listener active");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("SSE read timeout");
+        write!(
         stream,
         "GET /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
     )
     .expect("SSE request");
-    let mut client = io::BufReader::new(stream);
-    let mut headers = String::new();
-    loop {
-        let mut line = String::new();
-        assert!(client.read_line(&mut line).expect("SSE headers") > 0);
-        headers.push_str(&line);
-        if line == "\r\n" {
-            break;
+        let mut client = io::BufReader::new(stream);
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            assert!(client.read_line(&mut line).expect("SSE headers") > 0);
+            headers.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
         }
-    }
-    assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
+        assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
+        client
+    };
+    let mut owner_sse = open_sse(&owner);
+    let mut peer_sse = open_sse(&peer);
 
     let prompt_path = paths
         .vault_root()
@@ -1493,23 +1499,58 @@ fn assert_named_listener_prompt_change_notifications(
         format!("---\nname: notify-{label}\nrole: user\n---\nNotify {label}.\n"),
     )
     .expect("new prompt");
-    let mut prompt_changed = false;
-    let mut resource_changed = false;
-    for _ in 0..24 {
-        let mut line = String::new();
-        assert!(client.read_line(&mut line).expect("SSE event") > 0);
-        if let Some(payload) = line.strip_prefix("data: ") {
-            let event: serde_json::Value = serde_json::from_str(payload).expect("SSE JSON");
-            prompt_changed |= event["method"] == "notifications/prompts/list_changed";
-            resource_changed |= event["method"] == "notifications/resources/list_changed";
-            if prompt_changed && resource_changed {
-                break;
+    let assert_events = |client: &mut io::BufReader<TcpStream>| {
+        let mut prompt_changed = false;
+        let mut resource_changed = false;
+        for _ in 0..24 {
+            let mut line = String::new();
+            assert!(client.read_line(&mut line).expect("SSE event") > 0);
+            if let Some(payload) = line.strip_prefix("data: ") {
+                let event: serde_json::Value = serde_json::from_str(payload).expect("SSE JSON");
+                prompt_changed |= event["method"] == "notifications/prompts/list_changed";
+                resource_changed |= event["method"] == "notifications/resources/list_changed";
+                if prompt_changed && resource_changed {
+                    break;
+                }
             }
         }
-    }
-    assert!(prompt_changed, "prompt change notification missing");
-    assert!(resource_changed, "resource change notification missing");
+        assert!(prompt_changed, "prompt change notification missing");
+        assert!(resource_changed, "resource change notification missing");
+    };
+    assert_events(&mut owner_sse);
+    assert_events(&mut peer_sse);
+
+    let mut delete = TcpStream::connect(address).expect("named listener active");
+    delete
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("delete timeout");
+    write!(
+        delete,
+        "DELETE /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {owner}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("delete owner session");
+    let mut response = String::new();
+    delete
+        .read_to_string(&mut response)
+        .expect("delete response");
+    assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+    assert!(named_listener_tools(address, "parity", token, &owner).starts_with("HTTP/1.1 404"));
+    let second_prompt = paths
+        .vault_root()
+        .join(format!("AI/Prompts/notify-{label}-peer.md"));
+    fs::write(
+        &second_prompt,
+        format!("---\nname: notify-{label}-peer\nrole: user\n---\nPeer {label}.\n"),
+    )
+    .expect("second prompt");
+    assert_events(&mut peer_sse);
+    let peer_list = named_listener_method(address, "parity", token, &peer, "prompts/list");
+    assert!(
+        peer_list.contains(&format!("notify-{label}-peer")),
+        "{peer_list}"
+    );
     fs::remove_file(prompt_path).expect("remove temporary prompt");
+    fs::remove_file(second_prompt).expect("remove second prompt");
 }
 
 #[cfg(feature = "oauth")]
