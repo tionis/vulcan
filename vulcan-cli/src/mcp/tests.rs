@@ -1,7 +1,10 @@
 use super::*;
 use crate::McpToolPackModeArg;
+#[cfg(feature = "oauth")]
 use std::io::Read;
+use std::io::Write;
 use std::net::TcpListener;
+#[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use vulcan_core::{PermissionProfile, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;

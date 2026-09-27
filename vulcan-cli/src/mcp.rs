@@ -142,14 +142,14 @@ use vulcan_daemon::mcp_remote_runtime::{
     NamedConsentRequest, NamedInitialTokenRequest, NamedMcpRuntime, NamedMcpVaultRuntime,
     NamedRefreshRequest, NamedTokenRequest,
 };
+#[cfg(test)]
+use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
 use vulcan_daemon::mcp_session::{
     mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
     McpSessionAuthority, McpSessionRegistry, SessionAdmissionError, SessionLookupError,
 };
-#[cfg(test)]
-use vulcan_daemon::mcp_session::{
-    MAX_MCP_HTTP_SESSIONS, MAX_MCP_SSE_PENDING_EVENTS, MCP_HTTP_SESSION_IDLE_TIMEOUT,
-};
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::McpAuthorizationStore;
 #[cfg(feature = "oauth")]
@@ -1389,7 +1389,7 @@ fn admit_mcp_http_session(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "oauth"))]
 fn live_mcp_http_session(
     context: &McpHttpServerContext,
     session_id: &str,
