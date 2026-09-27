@@ -37,6 +37,7 @@ compatibility matter.
 - Preview templates that include JS, dates, or user variables.
 - If `template list`, `template show`, or `template preview` reports a pending ordinary-write journal, inspect it with `vulcan repair ordinary-write status` before reading further. Direct CLI and MCP template reports refuse a partially published multi-note change until recovery or explicit reconciliation.
 - Template-created ordinary notes and final ordinary note writes refuse a pending ordinary-write journal through the shared note-write boundary. Repair the journal before retrying; this does not yet make a template's multiple side effects one transaction.
+- Templater `tp.file.move` and `tp.file.rename` also refuse a pending ordinary-write journal through the shared move workflow, including a dry-run move preview. Repair the batch first; multiple template side effects are still not one transaction.
 - Keep capture append-only unless the user explicitly asks to reorganize captured material.
 - Mutating Templater helpers may require sandbox/permission checks and should not be assumed safe.
 - For profile-scoped `note create`, check every path a template may create, move, rename, or rewrite; the connection grant is enforced on those side effects and on the final note path.

@@ -16199,6 +16199,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(template_skill.contains("Direct CLI and MCP template reports refuse"));
     assert!(template_skill
         .contains("does not yet make a template's multiple side effects one transaction"));
+    assert!(template_skill.contains("Templater `tp.file.move` and `tp.file.rename` also refuse"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
@@ -16633,6 +16634,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(refactoring.contains("vulcan refactor split-note <source>"));
     assert!(refactoring.contains("preserves asset files in place"));
     assert!(refactoring.contains("--preserve-missing-fragments"));
+    assert!(refactoring
+        .contains("A note move or move preview refuses a pending ordinary-write journal"));
 
     let artifact_import = fs::read_to_string(installed_skills.join("artifact-import/SKILL.md"))
         .expect("artifact import skill should be installed");

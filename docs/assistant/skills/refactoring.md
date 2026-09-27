@@ -43,6 +43,7 @@ Use this skill for coordinated vault-wide rewrites where link safety matters.
 - Footnotes and reference-style definitions currently fail closed because their definitions are file-local. Convert them to inline links or keep the affected material within one note before splitting.
 - Folder-note conversion is an exact configured-layout migration, not automatic convention detection. Supply explicit `--from-*` values when the effective repository config does not describe the source layout.
 - A folder-note dry run must not change notes or configuration. Resolve every preflight conflict before applying it.
+- A note move or move preview refuses a pending ordinary-write journal. Inspect it with `vulcan repair ordinary-write status` and recover or explicitly reconcile the interrupted batch before retrying; a move must not rewrite links against partially published files.
 - Large refactors should be reviewed before commit, especially when many backlinks change.
 - If the task is really metadata cleanup, use `update`, `unset`, or `merge-tags` instead of forcing it through a rewrite.
 

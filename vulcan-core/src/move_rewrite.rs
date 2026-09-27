@@ -1,4 +1,5 @@
 use crate::graph::resolve_note_reference;
+use crate::ordinary_write::{ensure_no_pending_ordinary_write_batch, OrdinaryWriteError};
 use crate::parser::{parse_document, RawLink};
 use crate::paths::{
     normalize_relative_input_path, secure_create, secure_read, secure_write, RelativePathError,
@@ -24,6 +25,7 @@ pub enum MoveError {
     Graph(GraphQueryError),
     InvalidDestination(RelativePathError),
     Io(std::io::Error),
+    OrdinaryWrite(OrdinaryWriteError),
     MissingLinkSpan { path: String, byte_offset: usize },
     Scan(ScanError),
     Sqlite(rusqlite::Error),
@@ -40,6 +42,7 @@ impl Display for MoveError {
                 write!(formatter, "invalid destination path: {error}")
             }
             Self::Io(error) => write!(formatter, "{error}"),
+            Self::OrdinaryWrite(error) => write!(formatter, "{error}"),
             Self::MissingLinkSpan { path, byte_offset } => {
                 write!(
                     formatter,
@@ -58,6 +61,7 @@ impl Error for MoveError {
             Self::Graph(error) => Some(error),
             Self::InvalidDestination(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::OrdinaryWrite(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
             Self::DestinationExists(_) | Self::MissingLinkSpan { .. } => None,
@@ -74,6 +78,12 @@ impl From<GraphQueryError> for MoveError {
 impl From<std::io::Error> for MoveError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<OrdinaryWriteError> for MoveError {
+    fn from(error: OrdinaryWriteError) -> Self {
+        Self::OrdinaryWrite(error)
     }
 }
 
@@ -158,6 +168,7 @@ pub fn move_note_unlocked(
     destination: &str,
     dry_run: bool,
 ) -> Result<MoveSummary, MoveError> {
+    ensure_no_pending_ordinary_write_batch(paths)?;
     let connection = open_existing_cache(paths)?;
     let source = resolve_move_source(paths, &connection, source_identifier)?;
     let destination_path = normalize_destination_path(destination, &source.extension)?;
@@ -760,10 +771,82 @@ fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
 mod tests {
     use super::*;
     use crate::{doctor_vault, scan_vault};
+    use serde::Serialize;
     use std::path::Path;
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tempfile::TempDir;
+
+    #[test]
+    fn move_and_preview_refuse_a_pending_ordinary_write_journal() {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<crate::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        let temporary = TempDir::new().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        crate::initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Source.md"), "# Source\n").expect("source");
+        fs::write(temporary.path().join("Backlink.md"), "[[Source]]\n").expect("backlink");
+        fs::write(temporary.path().join("Inbox.md"), "old\n").expect("inbox");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![crate::ordinary_write::OrdinaryWriteChange {
+                path: "Inbox.md".to_string(),
+                before: Some("old\n".to_string()),
+                after: Some("new\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
+
+        for dry_run in [true, false] {
+            let error = move_note(&paths, "Source.md", "Moved.md", dry_run)
+                .expect_err("move must fail closed");
+            assert!(matches!(
+                error,
+                MoveError::OrdinaryWrite(ref pending) if pending.code == "ordinary_write_pending"
+            ));
+        }
+        assert!(temporary.path().join("Source.md").is_file());
+        assert!(!temporary.path().join("Moved.md").exists());
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Backlink.md")).expect("untouched backlink"),
+            "[[Source]]\n"
+        );
+
+        crate::ordinary_write::recover_ordinary_write_batch(&paths)
+            .expect("recover pending batch")
+            .expect("pending batch");
+        move_note(&paths, "Source.md", "Moved.md", false).expect("move after recovery");
+        assert!(temporary.path().join("Moved.md").is_file());
+    }
 
     #[test]
     fn reusable_link_rewrite_supports_new_note_roots_and_local_fragments() {
