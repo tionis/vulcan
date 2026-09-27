@@ -6,12 +6,13 @@ use crate::{
     OutputFormat, PermissionGuard, RepairCommand, ServeOptions,
 };
 use serde_json::json;
+use vulcan_app::scan::scan_vault_with_automation;
 use vulcan_core::ordinary_write::{
     accept_current_ordinary_write_batch, inspect_ordinary_write_batch, recover_ordinary_write_batch,
 };
 use vulcan_core::{
-    rebuild_vault_with_progress, repair_fts, scan_vault, scan_vault_with_progress, watch_vault,
-    PluginEvent, RebuildQuery, RepairFtsQuery, ScanMode, VaultPaths, WatchOptions,
+    rebuild_vault_with_progress, repair_fts, scan_vault, watch_vault, PluginEvent, RebuildQuery,
+    RepairFtsQuery, ScanMode, VaultPaths, WatchOptions,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -37,13 +38,16 @@ pub(crate) fn handle_index_command(
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let mut progress = (cli.output == crate::OutputFormat::Human)
                 .then(|| crate::ScanProgressReporter::new(use_stderr_color));
-            let summary = scan_vault_with_progress(
+            let summary = scan_vault_with_automation(
                 paths,
                 if *full {
                     ScanMode::Full
                 } else {
                     ScanMode::Incremental
                 },
+                &auto_commit,
+                cli.permissions.as_deref(),
+                cli.quiet,
                 |event| {
                     if let Some(progress) = progress.as_mut() {
                         progress.record(&event);
@@ -51,22 +55,6 @@ pub(crate) fn handle_index_command(
                 },
             )
             .map_err(CliError::operation)?;
-            if summary.added + summary.updated + summary.deleted > 0 {
-                auto_commit
-                    .commit(paths, "scan", &[], cli.permissions.as_deref(), cli.quiet)
-                    .map_err(CliError::operation)?;
-            }
-            let _ = crate::plugins::dispatch_plugin_event(
-                paths,
-                cli.permissions.as_deref(),
-                PluginEvent::OnScanComplete,
-                &serde_json::json!({
-                    "kind": PluginEvent::OnScanComplete,
-                    "mode": if *full { "full" } else { "incremental" },
-                    "summary": &summary,
-                }),
-                cli.quiet,
-            );
             crate::print_scan_summary(cli.output, &summary, use_stdout_color);
             Ok(())
         }

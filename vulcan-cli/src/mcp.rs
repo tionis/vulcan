@@ -2,7 +2,6 @@
 
 mod catalog;
 
-use crate::plugins;
 use crate::{
     cli_command_tree, collect_help_command_topics, custom_tool_registry_entry,
     permission_error_to_cli, resolve_help_topic, CliError, McpToolPackArg, McpToolPackModeArg,
@@ -71,6 +70,7 @@ use vulcan_app::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, show_periodic_note,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
+use vulcan_app::scan::scan_vault_with_automation;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
     GitSyncOptions,
@@ -98,9 +98,8 @@ use vulcan_core::SearchBackendKind;
 use vulcan_core::{
     accept_link_suggestion, assistant_prompts_root, assistant_skills_root, load_vault_config,
     query_graph_communities_with_filter, reject_link_suggestion, resolve_permission_profile,
-    scan_vault_with_progress, suggest_links, watch_vault, LinkSuggestionStatus, PermissionGuard,
-    PermissionProfile, PluginEvent, ProfilePermissionGuard, ScanMode, ScanSummary, VaultPaths,
-    WatchOptions,
+    suggest_links, watch_vault, LinkSuggestionStatus, PermissionGuard, PermissionProfile,
+    ProfilePermissionGuard, ScanMode, ScanSummary, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -3583,39 +3582,19 @@ impl McpServerCore {
 
     fn run_index_scan(&self, full: bool, no_commit: bool) -> Result<ScanSummary, McpMethodError> {
         let auto_commit = AutoCommitPolicy::for_scan(&self.paths, no_commit);
-        let summary = scan_vault_with_progress(
+        scan_vault_with_automation(
             &self.paths,
             if full {
                 ScanMode::Full
             } else {
                 ScanMode::Incremental
             },
+            &auto_commit,
+            Some(self.selection.name.as_str()),
+            true,
             |_| {},
         )
-        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        if summary.added + summary.updated + summary.deleted > 0 {
-            auto_commit
-                .commit(
-                    &self.paths,
-                    "scan",
-                    &[],
-                    Some(self.selection.name.as_str()),
-                    true,
-                )
-                .map_err(|error| McpMethodError::tool(error.clone()))?;
-        }
-        let _ = plugins::dispatch_plugin_event(
-            &self.paths,
-            Some(self.selection.name.as_str()),
-            PluginEvent::OnScanComplete,
-            &serde_json::json!({
-                "kind": PluginEvent::OnScanComplete,
-                "mode": if full { "full" } else { "incremental" },
-                "summary": &summary,
-            }),
-            true,
-        );
-        Ok(summary)
+        .map_err(|error| McpMethodError::tool(error.to_string()))
     }
 
     fn ensure_adaptive_tool_pack_mode(&self) -> Result<(), McpMethodError> {

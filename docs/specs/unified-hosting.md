@@ -253,6 +253,9 @@ MCP config show/set use `vulcan-app::config` directly. Their profile checks, dry
 apply step, and optional auto-commit remain transport-level composition around the app reports.
 The app config workflow also supplies the auto-commit file list, including a newly created
 `.vulcan/.gitignore` only when the config write created it.
+Requested CLI and MCP scans now use one `vulcan-app::scan` workflow for scan execution,
+configured auto-commit, and scan-complete plugin dispatch. The CLI still owns progress display,
+while MCP returns the shared scan summary.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

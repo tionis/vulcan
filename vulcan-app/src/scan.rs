@@ -1,5 +1,42 @@
+use crate::commit::AutoCommitPolicy;
 use crate::AppError;
-use vulcan_core::{scan_vault_with_progress, ScanMode, ScanProgress, ScanSummary, VaultPaths};
+use serde_json::json;
+use vulcan_core::{
+    scan_vault_with_progress, PluginEvent, ScanMode, ScanProgress, ScanSummary, VaultPaths,
+};
+
+/// Run a user-requested scan and its configured post-scan automation.
+pub fn scan_vault_with_automation<F>(
+    paths: &VaultPaths,
+    mode: ScanMode,
+    auto_commit: &AutoCommitPolicy,
+    active_permission_profile: Option<&str>,
+    quiet: bool,
+    on_progress: F,
+) -> Result<ScanSummary, AppError>
+where
+    F: FnMut(ScanProgress),
+{
+    let summary =
+        scan_vault_with_progress(paths, mode, on_progress).map_err(AppError::operation)?;
+    if summary.added + summary.updated + summary.deleted > 0 {
+        auto_commit
+            .commit(paths, "scan", &[], active_permission_profile, quiet)
+            .map_err(AppError::operation)?;
+    }
+    let _ = crate::plugins::dispatch_plugin_event(
+        paths,
+        active_permission_profile,
+        PluginEvent::OnScanComplete,
+        &json!({
+            "kind": PluginEvent::OnScanComplete,
+            "mode": if mode == ScanMode::Full { "full" } else { "incremental" },
+            "summary": &summary,
+        }),
+        quiet,
+    );
+    Ok(summary)
+}
 
 pub fn refresh_cache_incrementally(paths: &VaultPaths) -> Result<ScanSummary, AppError> {
     refresh_cache_incrementally_with_progress(paths, |_| {})
@@ -26,7 +63,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{refresh_cache_incrementally, refresh_cache_incrementally_with_progress};
+    use super::{
+        refresh_cache_incrementally, refresh_cache_incrementally_with_progress,
+        scan_vault_with_automation,
+    };
+    use crate::commit::AutoCommitPolicy;
     use std::fs;
     use tempfile::tempdir;
     use vulcan_core::properties::load_note_index;
@@ -82,5 +123,40 @@ mod tests {
         assert_eq!(summary.updated, 0);
         assert_eq!(summary.deleted, 0);
         assert_eq!(summary.unchanged, 1);
+    }
+
+    #[test]
+    fn requested_scan_reports_changes_and_progress_without_auto_commit() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "# Inbox\n").expect("seed note");
+        let mut events = Vec::new();
+        let summary = scan_vault_with_automation(
+            &paths,
+            ScanMode::Full,
+            &AutoCommitPolicy::for_scan(&paths, false),
+            None,
+            true,
+            |event| events.push(event),
+        )
+        .expect("requested scan");
+
+        assert_eq!(summary.added, 1);
+        assert_eq!(summary.mode, ScanMode::Full);
+        assert_eq!(
+            events.last().map(|event| event.phase),
+            Some(ScanPhase::Completed)
+        );
+        let second = scan_vault_with_automation(
+            &paths,
+            ScanMode::Incremental,
+            &AutoCommitPolicy::for_scan(&paths, false),
+            None,
+            true,
+            |_| {},
+        )
+        .expect("unchanged scan");
+        assert_eq!(second.unchanged, 1);
     }
 }

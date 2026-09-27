@@ -32757,6 +32757,45 @@ fn mcp_config_tools_share_app_reports_with_cli() {
 }
 
 #[test]
+fn mcp_index_scan_matches_cli_scan_summary() {
+    let temporary = TempDir::new().expect("temporary vault");
+    let vault_root = temporary.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let mut session = McpSession::start(&vault_root, &["--tool-pack", "index"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let scanned = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "index_scan", "arguments": { "full": true, "no_commit": true } }
+    }));
+    let mcp_report = &scanned.last().expect("index_scan response")["result"]["structuredContent"];
+    let cli_report: Value = serde_json::from_slice(
+        &Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root.to_str().expect("utf-8 vault path"),
+                "--output",
+                "json",
+                "scan",
+                "--full",
+                "--no-commit",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("CLI scan JSON");
+    assert_eq!(mcp_report, &cli_report);
+    assert!(session.finish().is_empty());
+}
+
+#[test]
 fn note_get_html_uses_shared_html_renderer() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
