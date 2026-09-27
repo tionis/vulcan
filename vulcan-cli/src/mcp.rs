@@ -130,8 +130,9 @@ use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_policy::{
-    parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy, validate_mcp_authorize_request,
-    McpAuthorizeRequest, McpOAuthPolicyError, SUPPORTED_MCP_OAUTH_SCOPES,
+    parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy, parse_mcp_token_client_credentials,
+    registered_mcp_client_credentials_valid, validate_mcp_authorize_request, McpAuthorizeRequest,
+    McpOAuthPolicyError, McpTokenAuthMethod, McpTokenClientCredentials, SUPPORTED_MCP_OAUTH_SCOPES,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
@@ -3953,16 +3954,22 @@ fn handle_local_oauth_token(
         return oauth_json_error_response(405, "invalid_request", "method not allowed");
     }
     let params = parse_form_params(&request.body);
-    let Some((client_id, client_secret)) = oauth_client_credentials(request, &params) else {
+    let Some(credentials) = parse_mcp_token_client_credentials(
+        request.headers.get("authorization").map(String::as_str),
+        &params,
+    ) else {
         return oauth_json_error_response(
             401,
             "invalid_client",
             "missing OAuth client credentials",
         );
     };
-    if !issuer.verify_client(&client_id, &client_secret)
-        && !local_oauth_registered_client_valid(context, &client_id, &client_secret)
-        && !client_id_metadata_valid(context, &client_id, None)
+    let client_id = &credentials.client_id;
+    if !((credentials.method != McpTokenAuthMethod::None
+        && issuer.verify_client(client_id, &credentials.client_secret))
+        || local_oauth_registered_client_valid(context, &credentials)
+        || (credentials.method == McpTokenAuthMethod::None
+            && client_id_metadata_valid(context, client_id, None)))
     {
         return oauth_json_error_response(
             401,
@@ -3971,7 +3978,7 @@ fn handle_local_oauth_token(
         );
     }
     if params.get("grant_type").map(String::as_str) == Some("refresh_token") {
-        return handle_local_oauth_refresh(context, issuer, &client_id, &params);
+        return handle_local_oauth_refresh(context, issuer, client_id, &params);
     }
     if params.get("grant_type").map(String::as_str) != Some("authorization_code") {
         return oauth_json_error_response(400, "unsupported_grant_type", "unsupported grant type");
@@ -3993,7 +4000,7 @@ fn handle_local_oauth_token(
     if code_record.expires_at < std::time::Instant::now() {
         return oauth_json_error_response(400, "invalid_grant", "expired authorization code");
     }
-    if code_record.client_id != client_id {
+    if code_record.client_id != client_id.as_str() {
         return oauth_json_error_response(
             400,
             "invalid_grant",
@@ -4555,20 +4562,19 @@ fn local_oauth_client_redirect_allowed(
 #[cfg(feature = "oauth")]
 fn local_oauth_registered_client_valid(
     context: &McpHttpServerContext,
-    client_id: &str,
-    client_secret: &str,
+    credentials: &McpTokenClientCredentials,
 ) -> bool {
     context
         .oauth_clients
         .lock()
         .expect("oauth clients lock should not be poisoned")
-        .get(client_id)
+        .get(&credentials.client_id)
         .is_some_and(|client| {
-            if client.token_endpoint_auth_method == "none" {
-                client_secret.is_empty()
-            } else {
-                !client_secret.is_empty() && client.client_secret == client_secret
-            }
+            registered_mcp_client_credentials_valid(
+                credentials,
+                &client.token_endpoint_auth_method,
+                &client.client_secret,
+            )
         })
 }
 
@@ -4900,34 +4906,6 @@ fn current_unix_millis() -> u64 {
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         })
-}
-
-#[cfg(feature = "oauth")]
-fn oauth_client_credentials(
-    request: &McpHttpRequest,
-    params: &BTreeMap<String, String>,
-) -> Option<(String, String)> {
-    if let Some(credentials) = request
-        .headers
-        .get("authorization")
-        .and_then(|value| value.strip_prefix("Basic "))
-        .and_then(decode_basic_credentials)
-    {
-        return Some(credentials);
-    }
-    let client_id = params.get("client_id")?.clone();
-    let client_secret = params.get("client_secret").cloned().unwrap_or_default();
-    Some((client_id, client_secret))
-}
-
-#[cfg(feature = "oauth")]
-fn decode_basic_credentials(value: &str) -> Option<(String, String)> {
-    use base64::prelude::{Engine, BASE64_STANDARD};
-
-    let decoded = BASE64_STANDARD.decode(value).ok()?;
-    let decoded = String::from_utf8(decoded).ok()?;
-    let (client_id, client_secret) = decoded.split_once(':')?;
-    Some((client_id.to_string(), client_secret.to_string()))
 }
 
 #[cfg(feature = "oauth")]

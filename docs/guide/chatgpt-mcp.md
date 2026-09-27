@@ -61,6 +61,9 @@ token-family revocation, and bearer-token validation. The upstream IndieAuth hop
 IndieAuth authenticates the human; it does not itself grant vault access.
 Registered OAuth redirect URIs must be valid HTTPS URLs on an allowed host, without credentials or
 fragments. Existing query parameters are preserved when Vulcan redirects with an authorization code.
+At the token endpoint, dynamically registered clients must use their declared authentication method:
+`client_secret_basic`, `client_secret_post`, or public-client `none`. The authorization-server metadata
+advertises all three; mixed header/form credentials are rejected.
 
 Named definitions are device-global in Vulcan's user configuration, not in synced
 `.vulcan/config.toml`. They reference registered wikis and vault-defined permission profiles. Grant,

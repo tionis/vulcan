@@ -2430,6 +2430,99 @@ fn dynamic_registration_rejects_malformed_redirects_before_persisting_clients() 
 
 #[cfg(feature = "oauth")]
 #[test]
+fn token_endpoint_enforces_registered_client_authentication_method() {
+    use base64::prelude::{Engine, BASE64_STANDARD};
+
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "static-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let context = consent_test_context(&paths, Arc::clone(&issuer));
+    for (client_id, method, secret) in [
+        ("client-basic", "client_secret_basic", "secret"),
+        ("client-post", "client_secret_post", "secret"),
+        ("client-public", "none", ""),
+    ] {
+        context
+            .oauth_clients
+            .lock()
+            .expect("client registry")
+            .insert(
+                client_id.to_string(),
+                LocalOAuthRegisteredClient {
+                    client_id: client_id.to_string(),
+                    client_secret: secret.to_string(),
+                    redirect_uris: vec!["https://client.example.test/callback".to_string()],
+                    client_name: None,
+                    token_endpoint_auth_method: method.to_string(),
+                    client_id_issued_at: 0,
+                },
+            );
+    }
+    let basic = format!("Basic {}", BASE64_STANDARD.encode("client-basic:secret"));
+    let post_basic = format!("Basic {}", BASE64_STANDARD.encode("client-post:secret"));
+    let post = |authorization: Option<&str>, body: &str| {
+        let request = McpHttpRequest {
+            method: "POST".to_string(),
+            path: "/oauth/token".to_string(),
+            query: String::new(),
+            headers: authorization.map_or_else(BTreeMap::new, |value| {
+                BTreeMap::from([("authorization".to_string(), value.to_string())])
+            }),
+            body: body.as_bytes().to_vec(),
+        };
+        handle_local_oauth_token(&context, &issuer, &request)
+    };
+    for (authorization, body) in [
+        (Some(basic.as_str()), "grant_type=authorization_code"),
+        (
+            None,
+            "grant_type=authorization_code&client_id=client-post&client_secret=secret",
+        ),
+        (
+            None,
+            "grant_type=authorization_code&client_id=client-public",
+        ),
+    ] {
+        assert_eq!(post(authorization, body).status, 400, "{body}");
+    }
+    for (authorization, body) in [
+        (
+            Some(basic.as_str()),
+            "grant_type=authorization_code&client_id=client-basic",
+        ),
+        (
+            None,
+            "grant_type=authorization_code&client_id=client-basic&client_secret=secret",
+        ),
+        (Some(post_basic.as_str()), "grant_type=authorization_code"),
+        (
+            None,
+            "grant_type=authorization_code&client_id=client-public&client_secret=secret",
+        ),
+    ] {
+        let response = post(authorization, body);
+        assert_eq!(response.status, 401, "{body}");
+        assert!(String::from_utf8(response.body)
+            .expect("error JSON")
+            .contains("invalid_client"));
+    }
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 fn client_id_metadata_documents_require_exact_public_client_metadata() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());

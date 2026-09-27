@@ -16178,6 +16178,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("do not retry a consumed code"));
     assert!(mcp_skill.contains("without credentials or fragments"));
     assert!(mcp_skill.contains("use the exact registered URI during code exchange"));
+    assert!(mcp_skill.contains(
+        "A dynamically registered OAuth client must use its declared token-endpoint method"
+    ));
     assert!(mcp_skill.contains("set `dry_run: true` for a read-only calculation"));
     assert!(mcp_skill.contains("targets an in-flight request ID in the same MCP session"));
     assert!(

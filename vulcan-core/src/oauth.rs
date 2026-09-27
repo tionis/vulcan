@@ -336,7 +336,7 @@ impl LocalOAuthIssuer {
             "token_endpoint": format!("{origin}/oauth/token"),
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
-            "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+            "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
             "code_challenge_methods_supported": ["S256"],
             "scopes_supported": ["openid", "email", "profile", "mcp:tools", "mcp:resources", "mcp:prompts"],
         });
@@ -1200,6 +1200,12 @@ mod tests {
         })
         .unwrap();
         assert!(issuer.authorization_server_metadata()["registration_endpoint"].is_string());
+        assert!(
+            issuer.authorization_server_metadata()["token_endpoint_auth_methods_supported"]
+                .as_array()
+                .expect("token auth methods")
+                .contains(&Value::String("none".to_string()))
+        );
         let user = issuer.user_for_subject("https://tionis.dev/").unwrap();
         let token = issuer.issue_access_token_for(&user.subject).unwrap();
         let identity = issuer.validate_bearer_token(&token).unwrap();
