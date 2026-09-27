@@ -473,6 +473,8 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     fs::create_dir_all(&vault).expect("vault root");
     let paths = VaultPaths::new(&vault);
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::write(vault.join("LargeOwner.md"), "x".repeat(70_000)).expect("owner large-result fixture");
+    fs::write(vault.join("LargePeer.md"), "y".repeat(70_000)).expect("peer large-result fixture");
     fs::create_dir_all(vault.join("AI/Prompts")).expect("prompt directory");
     fs::write(
         vault.join("AI/Prompts/summary.md"),
@@ -746,6 +748,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .as_str()
         .expect("resource text")
         .contains("\"summary\""));
+    assert_named_listener_large_resources_are_session_scoped(address, &token);
     let denied_foreground = named_listener_create_note(
         address,
         "parity",
@@ -1118,6 +1121,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             "{method} changed between foreground and resident hosting"
         );
     }
+    assert_named_listener_large_resources_are_session_scoped(address, &token);
     assert!(named_listener_method(
         address,
         "parity",
@@ -1368,6 +1372,86 @@ fn named_listener_method_with_params(
         .read_to_string(&mut response)
         .expect("MCP method response");
     response
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr, token: &str) {
+    let owner = named_listener_session_id(&named_listener_initialize(address, "parity", token));
+    let peer = named_listener_session_id(&named_listener_initialize(address, "parity", token));
+    assert_ne!(owner, peer);
+
+    let tool_result = |session: &str, note: &str| {
+        let response = named_listener_call_tool(
+            address,
+            "parity",
+            token,
+            session,
+            "note_get",
+            serde_json::json!({"note": note}),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body: serde_json::Value =
+            serde_json::from_str(response.split_once("\r\n\r\n").expect("tool body").1)
+                .expect("tool JSON");
+        assert!(body["result"].get("structuredContent").is_none());
+        body["result"]["content"]
+            .as_array()
+            .expect("tool content")
+            .iter()
+            .find(|item| item["type"] == "resource_link")
+            .and_then(|item| item["uri"].as_str())
+            .expect("large-result resource URI")
+            .to_string()
+    };
+    let read = |session: &str, uri: &str| {
+        let response = named_listener_method_with_params(
+            address,
+            "parity",
+            token,
+            session,
+            "resources/read",
+            Some(serde_json::json!({"uri": uri})),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        serde_json::from_str::<serde_json::Value>(
+            response.split_once("\r\n\r\n").expect("resource body").1,
+        )
+        .expect("resource JSON")
+    };
+
+    let owner_uri = tool_result(&owner, "LargeOwner.md");
+    assert_eq!(owner_uri, "vulcan://tool-results/1.json");
+    assert_eq!(
+        read(&peer, &owner_uri)["error"]["code"],
+        MCP_RESOURCE_NOT_FOUND
+    );
+    let peer_uri = tool_result(&peer, "LargePeer.md");
+    assert_eq!(peer_uri, owner_uri);
+    assert!(read(&owner, &owner_uri)["result"]["contents"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains(&"x".repeat(70_000))));
+    assert!(read(&peer, &peer_uri)["result"]["contents"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains(&"y".repeat(70_000))));
+
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("response timeout");
+    write!(
+        stream,
+        "DELETE /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {owner}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("delete session request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("delete response");
+    assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+    assert!(named_listener_tools(address, "parity", token, &owner).starts_with("HTTP/1.1 404"));
+    assert!(read(&peer, &peer_uri)["result"]["contents"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains(&"y".repeat(70_000))));
 }
 
 #[cfg(feature = "oauth")]
