@@ -19,6 +19,7 @@ use vulcan_app::mcp_dispatch::jsonrpc_error;
 
 const MCP_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MCP_CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const MCP_CONNECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_MCP_HTTP_CONNECTIONS: usize = 64;
 
 pub struct McpHttpListener {
@@ -87,6 +88,12 @@ impl McpHttpListener {
                         .spawn(move || {
                             let _slot = slot;
                             let _ = stream.set_nonblocking(false);
+                            if stream
+                                .set_write_timeout(Some(MCP_CONNECTION_WRITE_TIMEOUT))
+                                .is_err()
+                            {
+                                return;
+                            }
                             let mut reader = RequestDeadlineReader::new(
                                 &mut stream,
                                 MCP_CONNECTION_READ_TIMEOUT,
@@ -213,7 +220,12 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let runner = thread::spawn(move || {
             listener.serve(Some(&runner_stop), move |request, stream| {
-                sender.send(request.path.clone()).expect("request receiver");
+                sender
+                    .send((
+                        request.path.clone(),
+                        stream.write_timeout().expect("write timeout"),
+                    ))
+                    .expect("request receiver");
                 stream.write_all(b"R").expect("response byte");
             })
         });
@@ -226,7 +238,7 @@ mod tests {
             receiver
                 .recv_timeout(Duration::from_secs(2))
                 .expect("dispatch"),
-            "/mcp"
+            ("/mcp".to_string(), Some(MCP_CONNECTION_WRITE_TIMEOUT))
         );
         stop.cancel();
         runner.join().expect("listener thread").expect("shutdown");
