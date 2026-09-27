@@ -130,13 +130,11 @@ use vulcan_daemon::mcp_http_codec::{
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_browser::{
-    begin_consent, begin_indieauth, client_redirect as local_oauth_client_redirect,
-    consume_consent, html_escape, percent_encode,
-    redirect_to_indieauth as local_oauth_redirect_to_indieauth, render_consent_page,
-    take_indieauth, BeginError as BrowserBeginError, ConsentError as BrowserConsentError,
-    ConsentPage, IndieAuthConfig as LocalOAuthIndieAuthConfig,
-    PendingConsent as LocalOAuthPendingConsent, PendingConsentMap,
-    PendingIndieAuth as LocalOAuthPendingIndieAuth, PendingIndieAuthMap,
+    begin_consent, begin_indieauth, client_redirect as local_oauth_client_redirect, html_escape,
+    percent_encode, redirect_to_indieauth as local_oauth_redirect_to_indieauth,
+    render_consent_page, take_indieauth, BeginError as BrowserBeginError, ConsentPage,
+    IndieAuthConfig as LocalOAuthIndieAuthConfig, PendingConsent as LocalOAuthPendingConsent,
+    PendingConsentMap, PendingIndieAuth as LocalOAuthPendingIndieAuth, PendingIndieAuthMap,
     TakeError as BrowserTakeError,
 };
 #[cfg(feature = "oauth")]
@@ -145,10 +143,11 @@ use vulcan_daemon::mcp_oauth_clients::OAuthClientRegistry;
 use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient as LocalOAuthRegisteredClient;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_codes::{
-    bind_mcp_authorization_code_grant, discard_mcp_authorization_code,
     issue_mcp_authorization_code, McpAuthorizationCode as LocalOAuthCode, McpAuthorizationCodeMap,
     McpCodeIssueError,
 };
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_consent::McpConsentEndpoint;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy;
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
@@ -169,9 +168,7 @@ use vulcan_daemon::mcp_oauth_token::{
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_remote_runtime::{
-    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime, NamedTokenRequest,
-};
+use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime, NamedTokenRequest};
 #[cfg(test)]
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
 use vulcan_daemon::mcp_session::{
@@ -3986,111 +3983,35 @@ fn handle_local_oauth_consent(
     issuer: &LocalOAuthIssuer,
     request: &McpHttpRequest,
 ) -> McpHttpResponse {
-    if request.method != "POST" {
-        return oauth_plain_response(405, "consent requires POST");
-    }
-    let params = parse_form_params(&request.body);
-    let transaction_id = params.get("transaction").cloned().unwrap_or_default();
-    let csrf_token = params.get("csrf_token").cloned().unwrap_or_default();
-    let decision = params.get("decision").map_or("", String::as_str);
-    let pending = match consume_consent(
-        &context.oauth_pending_consent,
-        &transaction_id,
-        &csrf_token,
-        decision,
-    ) {
-        Ok(pending) => pending,
-        Err(BrowserConsentError::Unknown) => {
-            return oauth_plain_response(400, "unknown consent transaction")
-        }
-        Err(BrowserConsentError::Expired) => {
-            return oauth_plain_response(400, "expired consent transaction")
-        }
-        Err(BrowserConsentError::InvalidCsrf) => {
-            return oauth_plain_response(403, "invalid consent CSRF token")
-        }
-        Err(BrowserConsentError::InvalidDecision) => {
-            return oauth_plain_response(400, "consent decision must be approve or deny")
-        }
-    };
-    if decision == "deny" {
-        return local_oauth_client_redirect(
-            &pending.redirect_uri,
-            "error=access_denied",
-            pending.state.as_deref(),
-        );
-    }
-    let Some(user) = issuer.user_for_subject(&pending.subject) else {
-        return oauth_plain_response(403, "consent subject is no longer authorized");
-    };
-    let code = match issue_local_oauth_code(
-        context,
-        LocalOAuthCode {
-            client_id: pending.client_id.clone(),
-            redirect_uri: pending.redirect_uri.clone(),
-            code_challenge: pending.code_challenge.clone(),
-            subject: user.subject,
-            scopes: pending.scopes.clone(),
-            resource: pending.resource.clone(),
-            grant_id: None,
-            grant_required: context.named_runtime.is_some(),
-            expires_at: Instant::now(),
-        },
-    ) {
-        Ok(code) => code,
-        Err(response) => return response,
-    };
-    let grant_id = match create_named_connection_grant(context, &pending, &params) {
-        Ok(grant_id) => grant_id,
-        Err(response) => {
-            discard_mcp_authorization_code(&context.oauth_codes, &code);
-            return response;
-        }
-    };
-    if let Some(grant_id) = grant_id {
-        if !bind_mcp_authorization_code_grant(&context.oauth_codes, &code, grant_id.clone()) {
-            if let (Some(named), Ok(id)) = (context.named_runtime.as_ref(), grant_id.parse()) {
-                let _ = named
-                    .authorization_store
-                    .revoke_grant(id, current_unix_timestamp(), false);
-            }
-            return oauth_json_error_response(
-                500,
-                "server_error",
-                "authorization code expired before consent completed",
-            );
-        }
-    }
-    local_oauth_client_redirect(
-        &pending.redirect_uri,
-        &format!("code={}", percent_encode(&code)),
-        pending.state.as_deref(),
-    )
+    local_consent_endpoint(context, issuer)
+        .handle(&request.method, &parse_form_params(&request.body))
 }
 
 #[cfg(feature = "oauth")]
+fn local_consent_endpoint<'a>(
+    context: &'a McpHttpServerContext,
+    issuer: &'a LocalOAuthIssuer,
+) -> McpConsentEndpoint<'a> {
+    McpConsentEndpoint {
+        issuer,
+        pending: &context.oauth_pending_consent,
+        codes: &context.oauth_codes,
+        named_runtime: context.named_runtime.as_ref(),
+        instance_id: context.instance_id,
+    }
+}
+
+#[cfg(all(test, feature = "oauth"))]
 fn create_named_connection_grant(
     context: &McpHttpServerContext,
     pending: &LocalOAuthPendingConsent,
     params: &BTreeMap<String, String>,
 ) -> Result<Option<String>, McpHttpResponse> {
-    let Some(named) = context.named_runtime.as_ref() else {
-        return Ok(None);
+    let issuer = match context.oauth.as_ref().expect("OAuth test context") {
+        McpOAuthMode::Local(issuer) => issuer,
+        McpOAuthMode::External(_) => unreachable!("named grants require local issuer"),
     };
-    let now =
-        unix_timestamp_for_mcp().map_err(|error| oauth_plain_response(500, &error.to_string()))?;
-    let id = named
-        .create_connection_grant(&NamedConsentRequest {
-            remote_instance_id: context.instance_id,
-            client_id: &pending.client_id,
-            subject: &pending.subject,
-            scopes: &pending.scopes,
-            resource: &pending.resource,
-            form: params,
-            now,
-        })
-        .map_err(|error| oauth_plain_response(error.status, &error.message))?;
-    Ok(Some(id.to_string()))
+    local_consent_endpoint(context, issuer).create_named_grant(pending, params)
 }
 
 #[cfg(feature = "oauth")]
@@ -4408,7 +4329,7 @@ fn parse_local_oauth_users(users: &[String]) -> Result<Vec<LocalOAuthUserConfig>
         .collect()
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn current_unix_timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

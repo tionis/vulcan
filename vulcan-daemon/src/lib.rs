@@ -26,6 +26,8 @@ pub mod mcp_http_routes;
 pub mod mcp_oauth_browser;
 pub mod mcp_oauth_clients;
 pub mod mcp_oauth_codes;
+#[cfg(feature = "oauth")]
+pub mod mcp_oauth_consent;
 pub mod mcp_oauth_policy;
 pub mod mcp_oauth_registration;
 #[cfg(feature = "oauth")]
