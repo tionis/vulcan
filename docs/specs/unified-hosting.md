@@ -245,6 +245,9 @@ The same daemon module owns each listener's bounded session registry, expiry rec
 authority-bound lookup, and shutdown closure. The CLI host still supplies the protocol core,
 initialization, OAuth validation, and method handlers; those dispatch workflows remain to be
 extracted.
+Named consent grant selection and persistence now live in `vulcan-daemon::mcp_remote_runtime`:
+the selected vault must be exposed by the instance, the selected profile must fit its ceiling,
+and only checked eligible packs enter the durable grant. The CLI still renders the consent form.
 Each named or direct HTTP listener has a 64-connection admission ceiling, counting SSE streams.
 Excess connections receive HTTP 503 with `Retry-After: 1` before a worker is spawned; completed
 connections release admission capacity.

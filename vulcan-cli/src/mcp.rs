@@ -128,6 +128,10 @@ use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_remote_runtime::{
+    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime,
+};
 use vulcan_daemon::mcp_session::{
     mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
     McpSessionAuthority, McpSessionRegistry, SessionAdmissionError, SessionLookupError,
@@ -137,7 +141,7 @@ use vulcan_daemon::mcp_session::{
     MAX_MCP_HTTP_SESSIONS, MAX_MCP_SSE_PENDING_EVENTS, MCP_HTTP_SESSION_IDLE_TIMEOUT,
 };
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
+use vulcan_daemon::mcp_state::McpAuthorizationStore;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mutation_scheduler::MutationSchedulerConfig;
 #[cfg(feature = "oauth")]
@@ -292,23 +296,6 @@ struct LocalOAuthIndieAuthConfig {
     client_id: String,
     redirect_uri: String,
     me: Option<String>,
-}
-
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-struct NamedMcpRuntime {
-    remote_id: vulcan_daemon::mcp_remote::McpRemoteId,
-    vaults: BTreeMap<vulcan_daemon::registry::WikiId, NamedMcpVaultRuntime>,
-    authorization_store: McpAuthorizationStore,
-}
-
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-struct NamedMcpVaultRuntime {
-    paths: VaultPaths,
-    ceiling_profile: String,
-    default_profile: String,
-    eligible_tool_packs: Vec<String>,
 }
 
 #[cfg(feature = "oauth")]
@@ -4445,84 +4432,20 @@ fn create_named_connection_grant(
     let Some(named) = context.named_runtime.as_ref() else {
         return Ok(None);
     };
-    let (wiki_id, vault) = match params.get("wiki_id") {
-        Some(value) => named
-            .vaults
-            .iter()
-            .find(|(wiki_id, _)| wiki_id.as_str() == value)
-            .ok_or_else(|| oauth_plain_response(400, "selected vault is not exposed"))?,
-        None if named.vaults.len() == 1 => named.vaults.iter().next().expect("one vault"),
-        None => {
-            return Err(oauth_plain_response(
-                400,
-                "select a vault for this connection",
-            ))
-        }
-    };
-    let profile_field = if named.vaults.len() == 1 {
-        "permission_profile".to_string()
-    } else {
-        format!("permission_profile_{wiki_id}")
-    };
-    let profile_name = params
-        .get(&profile_field)
-        .filter(|value| !value.is_empty())
-        .map_or(vault.default_profile.as_str(), String::as_str);
-    let selected = resolve_permission_profile(&vault.paths, Some(profile_name))
-        .map_err(|error| oauth_plain_response(400, &error.to_string()))?;
-    let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
-        .map_err(|error| oauth_plain_response(500, &error.to_string()))?;
-    if !selected.grant.is_subset_of(&ceiling.grant) {
-        return Err(oauth_plain_response(
-            400,
-            "selected permission profile exceeds this remote's ceiling",
-        ));
-    }
-    let pack_prefix = if named.vaults.len() == 1 {
-        "pack_".to_string()
-    } else {
-        format!("pack_{wiki_id}_")
-    };
-    let tool_packs = vault
-        .eligible_tool_packs
-        .iter()
-        .filter(|pack| params.contains_key(&format!("{pack_prefix}{pack}")))
-        .cloned()
-        .collect::<Vec<_>>();
-    if tool_packs.is_empty() {
-        return Err(oauth_plain_response(
-            400,
-            "select at least one eligible tool pack",
-        ));
-    }
-    let lifetime_days = params
-        .get("expiry_days")
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|days| matches!(days, 1 | 7 | 30))
-        .ok_or_else(|| oauth_plain_response(400, "expiry must be 1, 7, or 30 days"))?;
     let now =
         unix_timestamp_for_mcp().map_err(|error| oauth_plain_response(500, &error.to_string()))?;
-    let report = named
-        .authorization_store
-        .create_grant(
-            CreateConnectionGrant {
-                remote_id: named.remote_id.clone(),
-                remote_instance_id: context.instance_id,
-                client_id: pending.client_id.clone(),
-                subject: pending.subject.clone(),
-                wiki_id: wiki_id.clone(),
-                permission_profile: selected.name,
-                approved_permissions: selected.grant,
-                tool_packs,
-                scopes: pending.scopes.clone(),
-                audience: pending.resource.clone(),
-                created_at: now,
-                expires_at: now + lifetime_days * 24 * 60 * 60,
-            },
-            false,
-        )
-        .map_err(|error| oauth_plain_response(500, &error.to_string()))?;
-    Ok(Some(report.id.to_string()))
+    let id = named
+        .create_connection_grant(&NamedConsentRequest {
+            remote_instance_id: context.instance_id,
+            client_id: &pending.client_id,
+            subject: &pending.subject,
+            scopes: &pending.scopes,
+            resource: &pending.resource,
+            form: params,
+            now,
+        })
+        .map_err(|error| oauth_plain_response(error.status, &error.message))?;
+    Ok(Some(id.to_string()))
 }
 
 #[cfg(feature = "oauth")]
