@@ -280,6 +280,8 @@ owns date/target resolution and daily list/show reports shared by CLI and MCP. M
 `vulcan-app::browse` report directly.
 `vulcan-app::mcp_graph` owns permission-filtered graph-community and link-suggestion workflows,
 including suggestion state validation and write checks for accept/reject operations.
+Guarded suggestion accept/reject checks read authority for both endpoint notes under the vault
+write lock before cache mutation, without revealing a denied path or altering suggestion state.
 `vulcan-app::notes` resolves vault and direct Markdown targets and owns `note_outline`,
 `note_get`, and `note_info` reports for CLI and MCP. Core graph queries provide
 permission-filtered note-link confidence, so MCP note-info counts exclude unreadable backlink

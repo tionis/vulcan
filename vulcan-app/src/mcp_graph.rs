@@ -2,9 +2,9 @@
 
 use serde_json::Value;
 use vulcan_core::{
-    accept_link_suggestion, query_graph_communities_with_filter, reject_link_suggestion,
-    suggest_links, LinkSuggestionStatus, LinkSuggestionsReport, PermissionGuard,
-    ProfilePermissionGuard, VaultPaths,
+    accept_link_suggestion_with_guard, query_graph_communities_with_filter,
+    reject_link_suggestion_with_guard, suggest_links, LinkSuggestionStatus, LinkSuggestionsReport,
+    PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 
 use crate::mcp_protocol::{McpGraphCommunitiesArgs, McpMethodError, McpSuggestLinksArgs};
@@ -43,7 +43,7 @@ pub fn link_suggestions(
         guard
             .check_write_path(".vulcan/cache.db")
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        let suggestion = accept_link_suggestion(paths, id)
+        let suggestion = accept_link_suggestion_with_guard(paths, id, guard)
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
         return Ok(LinkSuggestionsReport {
             suggestions: vec![suggestion],
@@ -53,7 +53,7 @@ pub fn link_suggestions(
         guard
             .check_write_path(".vulcan/cache.db")
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        let suggestion = reject_link_suggestion(paths, id)
+        let suggestion = reject_link_suggestion_with_guard(paths, id, guard)
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
         return Ok(LinkSuggestionsReport {
             suggestions: vec![suggestion],

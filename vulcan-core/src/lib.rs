@@ -310,11 +310,11 @@ pub use selection::{
     SelectionProvenance, SelectionReport, DEFAULT_SELECTION_MAX_NODES,
 };
 pub use suggestions::{
-    accept_link_suggestion, bulk_replace, bulk_replace_on_paths, link_mentions,
-    reject_link_suggestion, suggest_duplicates, suggest_links, suggest_mentions, DuplicateGroup,
-    DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionSignals, LinkSuggestionStatus,
-    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    SuggestionError,
+    accept_link_suggestion, accept_link_suggestion_with_guard, bulk_replace, bulk_replace_on_paths,
+    link_mentions, reject_link_suggestion, reject_link_suggestion_with_guard, suggest_duplicates,
+    suggest_links, suggest_mentions, DuplicateGroup, DuplicateSuggestionsReport, LinkSuggestion,
+    LinkSuggestionSignals, LinkSuggestionStatus, LinkSuggestionsReport, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, SuggestionError,
 };
 pub use tasknotes::{
     active_tasknote_time_entry, extract_tasknote, is_tasknote_document, parse_iso8601_duration_ms,

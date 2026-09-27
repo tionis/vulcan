@@ -15974,6 +15974,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         fs::read_to_string(vault_root.join(".agents/skills/graph-exploration/SKILL.md"))
             .expect("graph exploration skill should be readable");
     assert!(graph_exploration.contains("direct CLI graph read"));
+    assert!(graph_exploration.contains("read authority for both endpoint notes"));
     let properties =
         fs::read_to_string(vault_root.join(".agents/skills/properties-and-tags/SKILL.md"))
             .expect("properties skill should be readable");
@@ -16173,6 +16174,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("leave that flag unset to use the authenticated identity"));
     assert!(mcp_skill.contains("vulcan daemon start --detach"));
     assert!(mcp_skill.contains("Stop the remote before `remote set` or `remote remove`"));
+    assert!(mcp_skill.contains("A denied endpoint does not change suggestion state"));
     assert!(mcp_skill.contains("remote set <name> --add-wiki <id> --dry-run"));
     assert!(mcp_skill.contains("remote set <name> --remove-wiki <id>"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));

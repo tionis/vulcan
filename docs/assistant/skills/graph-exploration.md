@@ -36,6 +36,7 @@ Use this skill when note relationships matter more than raw content matching.
 - Avoid traversing the whole graph when a small neighborhood answers the question.
 - Graph tools describe resolved note relationships, not arbitrary text mentions.
 - If the target note is ambiguous, resolve that first or the graph result will be misleading.
+- MCP `suggest_links` accept/reject requires write authority for the suggestion cache and read authority for both endpoint notes. If either endpoint is outside the connection grant, the suggestion stays unchanged; review the grant instead of retrying with a guessed ID.
 - If a direct CLI graph read reports a pending ordinary-write journal, inspect it with `vulcan repair ordinary-write status`; do not bypass the recovery check with a different graph view.
 
 ## Example Moves

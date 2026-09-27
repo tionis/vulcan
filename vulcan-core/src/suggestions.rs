@@ -8,7 +8,7 @@ use crate::scan::{scan_vault_unlocked, ScanError, ScanMode};
 use crate::write_lock::acquire_write_lock;
 use crate::{
     load_vault_config, query_notes, CacheError, LinkConfidence, LinkResolutionMode,
-    LinkStylePreference, NoteQuery, VaultPaths,
+    LinkStylePreference, NoteQuery, PermissionGuard, VaultPaths,
 };
 use aho_corasick::AhoCorasick;
 use rusqlite::{params, Connection};
@@ -29,6 +29,7 @@ pub enum SuggestionError {
     CacheMissing,
     Graph(GraphQueryError),
     InvalidRewrite(String),
+    PermissionDenied,
     Io(std::io::Error),
     Scan(ScanError),
     Sqlite(rusqlite::Error),
@@ -43,6 +44,8 @@ impl Display for SuggestionError {
             }
             Self::Graph(error) => write!(formatter, "{error}"),
             Self::InvalidRewrite(error) => write!(formatter, "{error}"),
+            Self::PermissionDenied => formatter
+                .write_str("permission denied: suggestion is not readable under this profile"),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Scan(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
@@ -58,7 +61,7 @@ impl Error for SuggestionError {
             Self::Io(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
-            Self::CacheMissing | Self::InvalidRewrite(_) => None,
+            Self::CacheMissing | Self::InvalidRewrite(_) | Self::PermissionDenied => None,
         }
     }
 }
@@ -358,14 +361,32 @@ pub fn accept_link_suggestion(
     paths: &VaultPaths,
     id: &str,
 ) -> Result<LinkSuggestion, SuggestionError> {
-    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Accepted)
+    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Accepted, None)
+}
+
+/// Accept only when the current authority can read both endpoints at mutation time.
+pub fn accept_link_suggestion_with_guard(
+    paths: &VaultPaths,
+    id: &str,
+    guard: &dyn PermissionGuard,
+) -> Result<LinkSuggestion, SuggestionError> {
+    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Accepted, Some(guard))
 }
 
 pub fn reject_link_suggestion(
     paths: &VaultPaths,
     id: &str,
 ) -> Result<LinkSuggestion, SuggestionError> {
-    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Rejected)
+    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Rejected, None)
+}
+
+/// Reject only when the current authority can read both endpoints at mutation time.
+pub fn reject_link_suggestion_with_guard(
+    paths: &VaultPaths,
+    id: &str,
+    guard: &dyn PermissionGuard,
+) -> Result<LinkSuggestion, SuggestionError> {
+    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Rejected, Some(guard))
 }
 
 fn compute_and_persist_link_suggestions(
@@ -570,7 +591,9 @@ fn update_link_suggestion_status(
     paths: &VaultPaths,
     id: &str,
     status: LinkSuggestionStatus,
+    guard: Option<&dyn PermissionGuard>,
 ) -> Result<LinkSuggestion, SuggestionError> {
+    let _lock = acquire_write_lock(paths)?;
     let connection = open_existing_cache(paths)?;
     let notes = load_note_identities(&connection)?;
     let (source_id, target_id, score) = connection.query_row(
@@ -584,6 +607,19 @@ fn update_link_suggestion_status(
             ))
         },
     )?;
+    if let Some(guard) = guard {
+        for document_id in [&source_id, &target_id] {
+            let path = notes
+                .iter()
+                .find(|note| &note.id == document_id)
+                .ok_or(SuggestionError::PermissionDenied)?
+                .path
+                .as_str();
+            guard
+                .check_read_path(path)
+                .map_err(|_| SuggestionError::PermissionDenied)?;
+        }
+    }
     match status {
         LinkSuggestionStatus::Accepted => {
             connection.execute(
@@ -1691,7 +1727,7 @@ fn levenshtein(left: &str, right: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{scan_vault, ScanMode};
+    use crate::{resolve_permission_profile, scan_vault, ProfilePermissionGuard, ScanMode};
     use std::path::Path;
     use std::time::Instant;
     use tempfile::TempDir;
@@ -1791,6 +1827,11 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .expect("profile config");
         fs::write(vault_root.join("A.md"), "# A\n\n[[B]]\n").expect("write A");
         fs::write(vault_root.join("B.md"), "# B\n\n[[Charlie]]\n").expect("write B");
         fs::write(vault_root.join("Charlie.md"), "# Charlie\n").expect("write Charlie");
@@ -1822,11 +1863,47 @@ mod tests {
             .expect("D -> Charlie should be suggested through mention text");
         assert!(mention_suggestion.signals.mention_score > 0.0);
 
-        let accepted =
-            accept_link_suggestion(&paths, &graph_suggestion.id).expect("accept should succeed");
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).expect("blind profile"),
+        );
+        for denied in [
+            accept_link_suggestion_with_guard(&paths, &graph_suggestion.id, &blind),
+            reject_link_suggestion_with_guard(&paths, &mention_suggestion.id, &blind),
+        ] {
+            assert!(matches!(denied, Err(SuggestionError::PermissionDenied)));
+        }
+        let pending = suggest_links(&paths, None, None, 0.0, Some(LinkSuggestionStatus::Pending))
+            .expect("denied updates should leave both suggestions pending");
+        assert!(pending
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion.id == graph_suggestion.id));
+        assert!(pending
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion.id == mention_suggestion.id));
+        let connection = Connection::open(paths.cache_db()).expect("cache should open");
+        let inferred_before: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM links WHERE confidence = 'INFERRED'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inferred link count");
+        assert_eq!(inferred_before, 0);
+        drop(connection);
+
+        let readable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).expect("readonly profile"),
+        );
+
+        let accepted = accept_link_suggestion_with_guard(&paths, &graph_suggestion.id, &readable)
+            .expect("accept should succeed");
         assert_eq!(accepted.status, LinkSuggestionStatus::Accepted);
-        let rejected =
-            reject_link_suggestion(&paths, &mention_suggestion.id).expect("reject should succeed");
+        let rejected = reject_link_suggestion_with_guard(&paths, &mention_suggestion.id, &readable)
+            .expect("reject should succeed");
         assert_eq!(rejected.status, LinkSuggestionStatus::Rejected);
 
         let connection = Connection::open(paths.cache_db()).expect("cache should open");
