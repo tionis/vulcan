@@ -18,7 +18,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, BufRead, Write};
+#[cfg(feature = "oauth")]
+use std::io::Write;
+use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,10 +34,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_app::commit::AutoCommitPolicy;
 use vulcan_app::config as app_config;
+use vulcan_app::execution::ExecutionCancellationToken;
 #[cfg(feature = "oauth")]
 use vulcan_app::execution::{
-    ExecutionAuthority, ExecutionCancellationToken, ExecutionContext, ExecutionDeadline,
-    ExecutionIdentity, ExecutionRetryClass, ExecutionVaultIdentity,
+    ExecutionAuthority, ExecutionContext, ExecutionDeadline, ExecutionIdentity,
+    ExecutionRetryClass, ExecutionVaultIdentity,
 };
 use vulcan_app::mcp_access;
 use vulcan_app::mcp_assistant;
@@ -225,6 +228,7 @@ struct McpServerCore {
 struct McpHttpSession {
     authority: McpSessionAuthority,
     core: Mutex<McpServerCore>,
+    active_requests: Mutex<BTreeMap<String, ExecutionCancellationToken>>,
     subscribers: Mutex<Vec<mpsc::Sender<Value>>>,
     closed: AtomicBool,
 }
@@ -234,6 +238,7 @@ impl McpHttpSession {
         Self {
             authority,
             core: Mutex::new(core),
+            active_requests: Mutex::new(BTreeMap::new()),
             subscribers: Mutex::new(Vec::new()),
             closed: AtomicBool::new(false),
         }
@@ -265,6 +270,14 @@ impl McpHttpSession {
 
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        let mut active = self
+            .active_requests
+            .lock()
+            .expect("mcp active requests lock should not be poisoned");
+        for cancellation in active.values() {
+            cancellation.cancel();
+        }
+        active.clear();
         self.subscribers
             .lock()
             .expect("mcp subscribers lock should not be poisoned")
@@ -273,6 +286,50 @@ impl McpHttpSession {
 
     fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
+    }
+
+    fn register_request(&self, id: &Value, cancellation: ExecutionCancellationToken) -> bool {
+        let Some(key) = mcp_request_key(id) else {
+            return false;
+        };
+        let mut active = self
+            .active_requests
+            .lock()
+            .expect("mcp active requests lock should not be poisoned");
+        if self.is_closed() || active.contains_key(&key) {
+            return false;
+        }
+        active.insert(key, cancellation);
+        true
+    }
+
+    fn finish_request(&self, id: &Value) {
+        if let Some(key) = mcp_request_key(id) {
+            self.active_requests
+                .lock()
+                .expect("mcp active requests lock should not be poisoned")
+                .remove(&key);
+        }
+    }
+
+    fn cancel_request(&self, id: &Value) {
+        if let Some(key) = mcp_request_key(id) {
+            if let Some(cancellation) = self
+                .active_requests
+                .lock()
+                .expect("mcp active requests lock should not be poisoned")
+                .get(&key)
+            {
+                cancellation.cancel();
+            }
+        }
+    }
+}
+
+fn mcp_request_key(id: &Value) -> Option<String> {
+    match id {
+        Value::String(_) | Value::Number(_) => serde_json::to_string(id).ok(),
+        _ => None,
     }
 }
 
@@ -1643,6 +1700,20 @@ fn handle_mcp_http_post(
             Err(response) => return response,
         };
 
+    if payload.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
+        return handle_mcp_cancellation_notification(&payload, &session);
+    }
+
+    let active_id = request_id(&payload);
+    let cancellation = ExecutionCancellationToken::default();
+    if !register_mcp_http_request(&session, active_id.as_ref(), &cancellation) {
+        return mcp_http_json_error_response(
+            409,
+            "MCP request ID is already active in this session",
+            Value::Null,
+        );
+    }
+
     let result = {
         let mut core = session
             .core
@@ -1654,9 +1725,13 @@ fn handle_mcp_http_post(
             context,
             request,
             authority,
+            cancellation,
         ) {
             Ok(result) => result,
             Err(error_response) => {
+                if let Some(id) = active_id.as_ref() {
+                    session.finish_request(id);
+                }
                 if created_session {
                     context
                         .sessions
@@ -1673,6 +1748,10 @@ fn handle_mcp_http_post(
             }
         }
     };
+
+    if let Some(id) = active_id.as_ref() {
+        session.finish_request(id);
+    }
 
     if result.session_stale {
         context
@@ -1707,6 +1786,41 @@ fn handle_mcp_http_post(
         body: serde_json::to_vec(&response_body).expect("json should serialize"),
         extra_headers,
     }
+}
+
+fn handle_mcp_cancellation_notification(
+    payload: &Value,
+    session: &McpHttpSession,
+) -> McpHttpResponse {
+    let Some(target) = payload.pointer("/params/requestId") else {
+        return mcp_http_json_error_response(
+            400,
+            "MCP cancellation requires params.requestId",
+            Value::Null,
+        );
+    };
+    if mcp_request_key(target).is_none() {
+        return mcp_http_json_error_response(
+            400,
+            "MCP cancellation requestId must be a string or number",
+            Value::Null,
+        );
+    }
+    session.cancel_request(target);
+    McpHttpResponse {
+        status: 202,
+        content_type: None,
+        body: Vec::new(),
+        extra_headers: Vec::new(),
+    }
+}
+
+fn register_mcp_http_request(
+    session: &McpHttpSession,
+    id: Option<&Value>,
+    cancellation: &ExecutionCancellationToken,
+) -> bool {
+    id.is_none_or(|id| session.register_request(id, cancellation.clone()))
 }
 
 fn required_mcp_scope(payload: &Value) -> Option<&'static str> {
@@ -2348,7 +2462,16 @@ impl McpServerCore {
         http_context: &McpHttpServerContext,
         inbound: &McpHttpRequest,
         authority: &McpSessionAuthority,
+        cancellation: ExecutionCancellationToken,
     ) -> Result<McpHttpProcessResult, Value> {
+        if cancellation.is_cancelled() {
+            return Err(jsonrpc_error(
+                request_id(&request).unwrap_or(Value::Null),
+                -32800,
+                "MCP request cancelled before dispatch".to_string(),
+                None,
+            ));
+        }
         if timeout.is_zero() {
             return Ok(timeout_http_result(&request, timeout));
         }
@@ -2357,8 +2480,6 @@ impl McpServerCore {
         let (sender, receiver) = mpsc::channel();
         #[cfg(feature = "oauth")]
         let hosted = http_context.hosted.clone();
-        #[cfg(feature = "oauth")]
-        let cancellation = ExecutionCancellationToken::default();
         #[cfg(feature = "oauth")]
         let dispatch = hosted
             .as_ref()
@@ -2390,12 +2511,20 @@ impl McpServerCore {
         let named_runtime = http_context.named_runtime.is_some();
         #[cfg(not(feature = "oauth"))]
         let _ = (http_context, inbound, authority);
+        let worker_cancellation = cancellation.clone();
         if thread::Builder::new()
             .name("vulcan-mcp-http-request".to_string())
             .stack_size(MCP_REQUEST_WORKER_STACK_SIZE)
             .spawn(move || {
                 #[cfg(feature = "oauth")]
-                let result = if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
+                let result = if worker_cancellation.is_cancelled() {
+                    Err(jsonrpc_error(
+                        request_id(&request).unwrap_or(Value::Null),
+                        -32800,
+                        "MCP request cancelled before dispatch".to_string(),
+                        None,
+                    ))
+                } else if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
                     hosted.execute(&mut worker, &request, &dispatch)
                 } else if named_runtime {
                     attenuate_mcp_core_profile(&mut worker)
@@ -2412,7 +2541,16 @@ impl McpServerCore {
                     worker.process_http_request(&request)
                 };
                 #[cfg(not(feature = "oauth"))]
-                let result = worker.process_http_request(&request);
+                let result = if worker_cancellation.is_cancelled() {
+                    Err(jsonrpc_error(
+                        request_id(&request).unwrap_or(Value::Null),
+                        -32800,
+                        "MCP request cancelled before dispatch".to_string(),
+                        None,
+                    ))
+                } else {
+                    worker.process_http_request(&request)
+                };
                 let _ = sender.send((worker, result));
             })
             .is_err()
@@ -2439,7 +2577,6 @@ impl McpServerCore {
                 result
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                #[cfg(feature = "oauth")]
                 cancellation.cancel();
                 #[cfg(feature = "oauth")]
                 if let Some(operation_id) = operation_id.as_deref() {

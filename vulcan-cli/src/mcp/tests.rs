@@ -2276,6 +2276,167 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
     assert!(context.sessions.lock().expect("sessions lock").is_empty());
 }
 
+#[test]
+fn mcp_http_cancellation_tokens_are_request_and_session_local() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let make_session = || {
+        let core = McpServerCore::new(
+            &paths,
+            Some("readonly"),
+            &[McpToolPackArg::NotesRead],
+            McpToolPackModeArg::Static,
+        )
+        .expect("MCP core");
+        McpHttpSession::new(
+            core,
+            McpSessionAuthority::direct(
+                Ulid::new(),
+                "credential",
+                None,
+                None,
+                Some("readonly".to_string()),
+                vec!["notes-read".to_string()],
+                Vec::new(),
+            ),
+        )
+    };
+    let first = make_session();
+    let second = make_session();
+    let first_request = ExecutionCancellationToken::default();
+    let other_request = ExecutionCancellationToken::default();
+    let other_session = ExecutionCancellationToken::default();
+    assert!(first.register_request(&serde_json::json!(1), first_request.clone()));
+    assert!(!first.register_request(&serde_json::json!(1), ExecutionCancellationToken::default()));
+    assert!(first.register_request(&serde_json::json!(2), other_request.clone()));
+    assert!(second.register_request(&serde_json::json!(1), other_session.clone()));
+    first.cancel_request(&serde_json::json!(1));
+    assert!(first_request.is_cancelled());
+    assert!(!other_request.is_cancelled());
+    assert!(!other_session.is_cancelled());
+    first.finish_request(&serde_json::json!(1));
+    first.close();
+    assert!(other_request.is_cancelled());
+    assert!(!other_session.is_cancelled());
+    assert!(!first.register_request(&serde_json::json!(3), ExecutionCancellationToken::default()));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+#[allow(clippy::too_many_lines)] // Exercises authority rejection, validation, and lock-free cancellation in one fixture.
+fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let context = consent_test_context(&paths, issuer);
+    let authority = McpSessionAuthority::direct(
+        context.instance_id,
+        "credential",
+        None,
+        None,
+        Some("readonly".to_string()),
+        vec!["notes-read".to_string()],
+        Vec::new(),
+    );
+    let other_authority = McpSessionAuthority::direct(
+        context.instance_id,
+        "other-credential",
+        None,
+        None,
+        Some("readonly".to_string()),
+        vec!["notes-read".to_string()],
+        Vec::new(),
+    );
+    let core = McpServerCore::new(
+        &paths,
+        Some("readonly"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core");
+    let session = Arc::new(McpHttpSession::new(core, authority.clone()));
+    let session_id = Ulid::new().to_string();
+    context
+        .sessions
+        .lock()
+        .expect("sessions lock")
+        .insert(session_id.clone(), Arc::clone(&session));
+    let cancellation = ExecutionCancellationToken::default();
+    assert!(session.register_request(&serde_json::json!(17), cancellation.clone()));
+    let request = |params: serde_json::Value| McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query: String::new(),
+        headers: BTreeMap::from([
+            ("content-type".to_string(), "application/json".to_string()),
+            (
+                "accept".to_string(),
+                "application/json, text/event-stream".to_string(),
+            ),
+            ("mcp-session-id".to_string(), session_id.clone()),
+        ]),
+        body: serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled", "params": params
+        }))
+        .expect("cancellation JSON"),
+    };
+    assert_eq!(
+        handle_mcp_http_post(
+            &context,
+            &request(serde_json::json!({"requestId": 17})),
+            &other_authority,
+        )
+        .status,
+        403
+    );
+    assert!(!cancellation.is_cancelled());
+    assert_eq!(
+        handle_mcp_http_post(&context, &request(serde_json::json!({})), &authority).status,
+        400
+    );
+    assert!(!cancellation.is_cancelled());
+
+    let busy_core = session.core.lock().expect("core lock");
+    let worker_context = context.clone();
+    let worker_authority = authority.clone();
+    let worker_request = request(serde_json::json!({"requestId": 17}));
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        sender
+            .send(handle_mcp_http_post(
+                &worker_context,
+                &worker_request,
+                &worker_authority,
+            ))
+            .expect("response receiver");
+    });
+    let response = receiver.recv_timeout(Duration::from_secs(2));
+    drop(busy_core);
+    worker.join().expect("cancellation worker");
+    assert_eq!(
+        response
+            .expect("cancellation must not wait for core")
+            .status,
+        202
+    );
+    assert!(cancellation.is_cancelled());
+}
+
 #[cfg(feature = "oauth")]
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -3154,6 +3315,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
         &http,
         &inbound,
         &authority,
+        ExecutionCancellationToken::default(),
     );
     let operation_id = match outcome {
         Ok(result) => {

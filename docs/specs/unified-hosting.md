@@ -274,6 +274,9 @@ Live foreground/resident conformance checks same-URI resource isolation between 
 confirms deleting one session does not delete the other's stored result.
 Both named hosting modes also deliver prompt/resource list-change notifications on an authenticated
 SSE stream after a vault prompt is added; other notification classes still require parity coverage.
+HTTP cancellation notifications are handled against the authenticated session's active request
+tokens outside its busy executor lock. Queued hosted work can cancel before dispatch; cancellation
+of a dispatched write is not proof of rollback and retains the durable operation-status contract.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
