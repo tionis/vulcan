@@ -65,6 +65,16 @@ pub struct NamedRefreshRequest<'a> {
     pub now: u64,
 }
 
+pub struct NamedInitialTokenRequest<'a> {
+    pub remote_instance_id: Ulid,
+    pub grant_id: Ulid,
+    pub client_id: &'a str,
+    pub subject: &'a str,
+    pub scopes: &'a [String],
+    pub resource: &'a str,
+    pub now: u64,
+}
+
 #[derive(Debug)]
 pub struct NamedRefreshGrant {
     pub grant_id: Ulid,
@@ -113,6 +123,59 @@ impl NamedConsentError {
 }
 
 impl NamedMcpRuntime {
+    /// Validate the consent still applies when an authorization code is redeemed.
+    /// Only then create the initial refresh family for that connection.
+    pub fn issue_initial_refresh_token(
+        &self,
+        request: &NamedInitialTokenRequest<'_>,
+    ) -> Result<IssuedRefreshToken, String> {
+        let grant = self
+            .authorization_store
+            .resolve_active_grant(
+                request.grant_id,
+                request.remote_instance_id,
+                request.client_id,
+                request.resource,
+                request.now,
+            )
+            .map_err(|error| error.to_string())?;
+        let vault = self
+            .vaults
+            .get(&grant.wiki_id)
+            .ok_or("grant vault is no longer exposed")?;
+        if grant.remote_id != self.remote_id
+            || grant.subject != request.subject
+            || !request
+                .scopes
+                .iter()
+                .all(|scope| grant.scopes.contains(scope))
+            || !grant
+                .tool_packs
+                .iter()
+                .all(|pack| vault.eligible_tool_packs.contains(pack))
+        {
+            return Err("authorization code does not match the connection grant".to_string());
+        }
+        let current_profile =
+            resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
+                .map_err(|error| error.to_string())?;
+        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
+            .map_err(|error| error.to_string())?;
+        if !current_profile
+            .grant
+            .is_subset_of(&grant.approved_permissions)
+            || !current_profile.grant.is_subset_of(&ceiling.grant)
+        {
+            return Err("grant policy is no longer valid".to_string());
+        }
+        self.authorization_store
+            .attenuate_grant_permissions(grant.id, &current_profile.grant, request.now)
+            .map_err(|error| error.to_string())?;
+        self.authorization_store
+            .issue_refresh_token(grant.id, grant.expires_at, request.now)
+            .map_err(|error| error.to_string())
+    }
+
     /// Revalidate current named policy and rotate a grant-bound refresh family.
     pub fn refresh_connection(
         &self,
@@ -588,6 +651,63 @@ mod tests {
         assert_eq!(
             runtime.refresh_connection(&refresh).unwrap_err().code,
             "invalid_grant"
+        );
+    }
+
+    #[test]
+    fn code_redemption_revalidates_the_grant_before_issuing_refresh() {
+        let (_temporary, mut runtime) = runtime();
+        let instance_id = Ulid::new();
+        let scopes = vec!["mcp:tools".to_string()];
+        let form = BTreeMap::from([
+            ("pack_notes-read".to_string(), "on".to_string()),
+            ("expiry_days".to_string(), "7".to_string()),
+        ]);
+        let grant_id = runtime
+            .create_connection_grant(&request(instance_id, &form, &scopes))
+            .expect("approved consent");
+        let mut redemption = NamedInitialTokenRequest {
+            remote_instance_id: instance_id,
+            grant_id,
+            client_id: "https://client.example/app.json",
+            subject: "https://identity.example/alice",
+            scopes: &scopes,
+            resource: "https://mcp.example/personal",
+            now: 1_700_000_001,
+        };
+        redemption.subject = "https://identity.example/bob";
+        assert!(runtime.issue_initial_refresh_token(&redemption).is_err());
+        redemption.subject = "https://identity.example/alice";
+        let widened = vec!["mcp:tools".to_string(), "mcp:resources".to_string()];
+        redemption.scopes = &widened;
+        assert!(runtime.issue_initial_refresh_token(&redemption).is_err());
+        redemption.scopes = &scopes;
+        let exposed_vaults = runtime.vaults.clone();
+        runtime.vaults.clear();
+        assert_eq!(
+            runtime
+                .issue_initial_refresh_token(&redemption)
+                .unwrap_err(),
+            "grant vault is no longer exposed"
+        );
+        assert!(runtime
+            .authorization_store
+            .list_token_families(None)
+            .expect("families")
+            .is_empty());
+
+        runtime.vaults = exposed_vaults;
+        let issued = runtime
+            .issue_initial_refresh_token(&redemption)
+            .expect("valid code grant");
+        assert!(!issued.secret.expose().is_empty());
+        assert_eq!(
+            runtime
+                .authorization_store
+                .list_token_families(Some(grant_id))
+                .expect("family")
+                .len(),
+            1
         );
     }
 

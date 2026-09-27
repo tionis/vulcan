@@ -3038,6 +3038,35 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         )
         .into_bytes(),
     };
+    let code_record = context
+        .oauth_codes
+        .lock()
+        .expect("codes")
+        .get(&code)
+        .expect("code record")
+        .clone();
+    let mut unavailable = context.clone();
+    unavailable
+        .named_runtime
+        .as_mut()
+        .expect("named runtime")
+        .vaults
+        .clear();
+    let rejected = handle_local_oauth_token(&unavailable, &issuer, &token_request);
+    assert_eq!(rejected.status, 400, "code exchange rechecks exposed vault");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&rejected.body).expect("OAuth error")["error"],
+        "invalid_grant"
+    );
+    assert!(store
+        .list_token_families(None)
+        .expect("refresh families")
+        .is_empty());
+    context
+        .oauth_codes
+        .lock()
+        .expect("codes")
+        .insert(code.clone(), code_record);
     let token_response = handle_local_oauth_token(&context, &issuer, &token_request);
     assert_eq!(token_response.status, 200);
     let tokens: Value = serde_json::from_slice(&token_response.body).expect("token JSON");

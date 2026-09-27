@@ -130,8 +130,8 @@ use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote_runtime::{
-    NamedConsentRequest, NamedMcpRuntime, NamedMcpVaultRuntime, NamedRefreshRequest,
-    NamedTokenRequest,
+    NamedConsentRequest, NamedInitialTokenRequest, NamedMcpRuntime, NamedMcpVaultRuntime,
+    NamedRefreshRequest, NamedTokenRequest,
 };
 use vulcan_daemon::mcp_session::{
     mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
@@ -4029,22 +4029,15 @@ fn handle_local_oauth_token(
                             "invalid stored connection grant ID",
                         );
                     };
-                    let grant = match named.authorization_store.show_grant(grant_id) {
-                        Ok(grant) => grant,
-                        Err(error) => {
-                            return oauth_json_error_response(
-                                400,
-                                "invalid_grant",
-                                error.to_string(),
-                            )
-                        }
-                    };
-                    let now = current_unix_timestamp();
-                    match named.authorization_store.issue_refresh_token(
+                    match named.issue_initial_refresh_token(&NamedInitialTokenRequest {
+                        remote_instance_id: context.instance_id,
                         grant_id,
-                        grant.expires_at,
-                        now,
-                    ) {
+                        client_id: &code_record.client_id,
+                        subject: &code_record.subject,
+                        scopes: &code_record.scopes,
+                        resource: &code_record.resource,
+                        now: current_unix_timestamp(),
+                    }) {
                         Ok(token) => Some(format!("{}.{}", token.family_id, token.secret.expose())),
                         Err(error) => {
                             return oauth_json_error_response(
