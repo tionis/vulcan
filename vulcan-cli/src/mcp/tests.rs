@@ -2331,11 +2331,101 @@ fn static_local_oauth_requires_registered_safe_redirects() {
 
     options.oauth_local_redirect_uri = vec!["https://client.example/callback".to_string()];
     assert!(build_mcp_oauth_validator(&paths, None, &options).is_ok());
-    assert!(valid_oauth_redirect_uri("https://client.example/callback"));
-    assert!(!valid_oauth_redirect_uri(
+    assert!(mcp_oauth_redirect_uri_valid(
+        "https://client.example/callback"
+    ));
+    assert!(!mcp_oauth_redirect_uri_valid(
         "https://client.example/callback\r\nX-Injected: yes"
     ));
-    assert!(!valid_oauth_redirect_uri("http://client.example/callback"));
+    assert!(!mcp_oauth_redirect_uri_valid(
+        "http://client.example/callback"
+    ));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn direct_local_oauth_preserves_registered_redirect_query() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: "approval".to_string(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: false,
+        })
+        .expect("issuer"),
+    );
+    let mut context = consent_test_context(&paths, Arc::clone(&issuer));
+    context.oauth_local_redirect_uris =
+        vec!["https://client.example.test/callback?source=vulcan".to_string()];
+    let request = McpHttpRequest {
+        method: "GET".to_string(),
+        path: "/oauth/authorize".to_string(),
+        query: format!(
+            "client_id=static-client&redirect_uri={}&response_type=code&code_challenge=challenge&code_challenge_method=S256&approval_token=approval&state=client-state",
+            percent_encode(&context.oauth_local_redirect_uris[0]),
+        ),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
+    };
+    let response = handle_local_oauth_authorize(&context, &issuer, &request);
+    assert_eq!(response.status, 302);
+    let location = response
+        .extra_headers
+        .iter()
+        .find_map(|(name, value)| (name == "Location").then_some(value))
+        .expect("redirect Location");
+    assert!(
+        location.starts_with("https://client.example.test/callback?source=vulcan&code="),
+        "{location}"
+    );
+    assert!(location.ends_with("&state=client-state"), "{location}");
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn dynamic_registration_rejects_malformed_redirects_before_persisting_clients() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let context = consent_test_context(
+        &VaultPaths::new(temporary.path()),
+        Arc::new(
+            LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+                public_url: "https://mcp.example.test/personal".to_string(),
+                client_id: "static-client".to_string(),
+                client_secret: "client-secret".to_string(),
+                signing_key: "distinct-signing-key".to_string(),
+                approval_token: String::new(),
+                subject: "https://identity.example.test/alice".to_string(),
+                email: None,
+                users: Vec::new(),
+                dcr_enabled: true,
+            })
+            .expect("issuer"),
+        ),
+    );
+    for redirect_uri in [
+        "https://client.example.test:bad/callback",
+        "https://client.example.test/callback#fragment",
+        "https://user@client.example.test/callback",
+    ] {
+        let request = McpHttpRequest {
+            method: "POST".to_string(),
+            path: "/oauth/register".to_string(),
+            query: String::new(),
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&serde_json::json!({"redirect_uris": [redirect_uri]}))
+                .expect("registration JSON"),
+        };
+        let response = handle_local_oauth_register(&context, &request);
+        assert_eq!(response.status, 400, "{redirect_uri}");
+        assert!(context.oauth_clients.lock().expect("clients").is_empty());
+    }
 }
 
 #[cfg(feature = "oauth")]

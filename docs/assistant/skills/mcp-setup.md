@@ -68,6 +68,7 @@ debugging, tool pack selection, and permission-profile questions.
 - Named MCP startup recovers an interrupted ordinary TaskNotes line-to-note conversion or archive move before accepting requests and refreshes that vault's index. If recovery finds externally edited bytes, startup fails closed: inspect both affected notes with `vulcan repair ordinary-write status` and reconcile them before using the exact transaction ID and review token with `accept-current`. Do not remove the journal or replay the operation blindly.
 - A live stdio or HTTP MCP request also refuses a newly pending ordinary-write journal instead of reading a partial conversion or archive. Read requests hold Vulcan's shared vault lock through the response. If the client receives the pending-journal error, use the direct `vulcan repair ordinary-write` commands outside MCP; do not retry the MCP write until recovery or reviewed repair completes.
 - Client ID Metadata Documents are accepted only as public HTTPS clients with exact IDs and allowlisted redirect hosts. Dynamic registration remains available; do not work around failed client validation by weakening redirect checks.
+- OAuth redirect URIs must be complete HTTPS URLs on an allowed host, without credentials or fragments. An existing redirect query is preserved when Vulcan adds the authorization code; use the exact registered URI during code exchange.
 
 ## Example Moves
 

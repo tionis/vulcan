@@ -120,6 +120,8 @@ use vulcan_daemon::hosted_executor::{
 #[cfg(feature = "oauth")]
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::http_policy::{mcp_oauth_redirect_uri_allowed, mcp_oauth_redirect_uri_valid};
 use vulcan_daemon::mcp_http_codec::{
     write_mcp_http_response, write_mcp_http_sse_event, write_mcp_http_sse_headers,
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
@@ -3562,7 +3564,7 @@ fn build_mcp_oauth_validator(
                 || !options
                     .oauth_local_redirect_uri
                     .iter()
-                    .all(|uri| valid_oauth_redirect_uri(uri)))
+                    .all(|uri| mcp_oauth_redirect_uri_valid(uri)))
         {
             return Err(CliError::operation(
                 "static local OAuth clients require at least one valid --oauth-local-redirect-uri",
@@ -3851,17 +3853,11 @@ fn handle_local_oauth_authorize(
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
-    let mut location = format!("{}?code={}", redirect_uri, percent_encode(&code));
-    if let Some(state) = params.get("state") {
-        location.push_str("&state=");
-        location.push_str(&percent_encode(state));
-    }
-    McpHttpResponse {
-        status: 302,
-        content_type: None,
-        body: Vec::new(),
-        extra_headers: vec![("Location".to_string(), location)],
-    }
+    local_oauth_client_redirect(
+        &redirect_uri,
+        &format!("code={}", percent_encode(&code)),
+        params.get("state").map(String::as_str),
+    )
 }
 
 #[cfg(feature = "oauth")]
@@ -4623,38 +4619,7 @@ fn validate_client_id_metadata(
 
 #[cfg(feature = "oauth")]
 fn local_oauth_redirect_host_allowed(context: &McpHttpServerContext, redirect_uri: &str) -> bool {
-    if !valid_oauth_redirect_uri(redirect_uri) {
-        return false;
-    }
-    let Some(host) = oauth_redirect_host(redirect_uri) else {
-        return false;
-    };
-    context
-        .oauth_dcr_allowed_redirect_hosts
-        .iter()
-        .any(|allowed| host == allowed || host.ends_with(&format!(".{allowed}")))
-}
-
-#[cfg(feature = "oauth")]
-fn valid_oauth_redirect_uri(redirect_uri: &str) -> bool {
-    oauth_redirect_host(redirect_uri).is_some()
-}
-
-#[cfg(feature = "oauth")]
-fn oauth_redirect_host(redirect_uri: &str) -> Option<&str> {
-    if redirect_uri
-        .chars()
-        .any(|character| character.is_control() || character.is_whitespace())
-    {
-        return None;
-    }
-    let rest = redirect_uri.strip_prefix("https://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    if authority.is_empty() || authority.contains('@') {
-        return None;
-    }
-    let host = authority.split(':').next().unwrap_or_default();
-    (!host.is_empty()).then_some(host)
+    mcp_oauth_redirect_uri_allowed(redirect_uri, &context.oauth_dcr_allowed_redirect_hosts)
 }
 
 #[cfg(feature = "oauth")]

@@ -96,6 +96,46 @@ pub fn mcp_origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
     }
 }
 
+/// OAuth redirect targets for the MCP issuer must be complete HTTPS URLs with
+/// an unambiguous authority. Fragments cannot receive an authorization code.
+#[must_use]
+pub fn mcp_oauth_redirect_uri_valid(redirect_uri: &str) -> bool {
+    mcp_oauth_redirect_host(redirect_uri).is_some()
+}
+
+#[must_use]
+pub fn mcp_oauth_redirect_uri_allowed(redirect_uri: &str, allowed_hosts: &[String]) -> bool {
+    let Some(host) = mcp_oauth_redirect_host(redirect_uri) else {
+        return false;
+    };
+    allowed_hosts
+        .iter()
+        .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+}
+
+fn mcp_oauth_redirect_host(redirect_uri: &str) -> Option<String> {
+    if redirect_uri
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace() || character == '\\')
+    {
+        return None;
+    }
+    let parsed = Url::parse(redirect_uri).ok()?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    // Preserve the domain-only redirect contract; numeric IP targets have no
+    // place in the hosted-client allowlist.
+    let Host::Domain(host) = parsed.host()? else {
+        return None;
+    };
+    Some(host.to_string())
+}
+
 pub fn apply_cors_headers(
     response: &mut Response,
     origin: Option<&str>,
@@ -200,6 +240,32 @@ impl Display for HttpAccessRecord<'_> {
 mod tests {
     use super::*;
     use axum::http::Request;
+
+    #[test]
+    fn mcp_oauth_redirects_require_valid_https_domain_urls_without_fragments() {
+        let allowed = vec!["chatgpt.com".to_string()];
+        for uri in [
+            "https://chatgpt.com/callback",
+            "https://sub.chatgpt.com/callback?source=vulcan",
+        ] {
+            assert!(mcp_oauth_redirect_uri_valid(uri), "{uri}");
+            assert!(mcp_oauth_redirect_uri_allowed(uri, &allowed), "{uri}");
+        }
+        for uri in [
+            "http://chatgpt.com/callback",
+            "https://chatgpt.com:bad/callback",
+            "https://chatgpt.com/callback#fragment",
+            "https://user@chatgpt.com/callback",
+            "https://chatgpt.com\\@attacker.example/callback",
+            "https://chatgpt.com.evil.example/callback",
+            "https://127.0.0.1/callback",
+        ] {
+            assert!(!mcp_oauth_redirect_uri_allowed(uri, &allowed), "{uri}");
+        }
+        assert!(!mcp_oauth_redirect_uri_valid(
+            "https://chatgpt.com:bad/callback"
+        ));
+    }
 
     #[test]
     fn exact_origin_and_secret_helpers_fail_closed() {
