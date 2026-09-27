@@ -5577,6 +5577,7 @@ session authority -> PermissionGuard -> PermissionFilter
   - Direct daily list/show/latest and periodic show app workflows now hold that read lock and refuse a pending ordinary-write journal, including content-free latest queries. Other direct non-MCP reads and multi-effect template writes remain open.
   - Direct template list/show/preview reports now hold the same read lock and refuse a pending ordinary-write journal before template discovery or rendering. Other direct non-MCP reads and multi-effect template writes remain open.
   - Direct task show/query/list/eval/view/due/reminder/dependency/time-tracking reports now hold the same read lock and refuse a pending ordinary-write journal. Pomodoro status is mutation-capable and remains outside this read-only slice. Other direct non-MCP reads and multi-effect template writes remain open.
+  - The shared ordinary note create/replace/delete write boundary now refuses a pending ordinary-write journal while holding the vault write lock, including ordinary template and task writes that use it. This prevents a new cooperating single-note mutation from complicating an interrupted multi-file recovery; it does not coordinate a template's multiple side effects or cover every other write path.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,

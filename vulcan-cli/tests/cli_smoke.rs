@@ -15953,6 +15953,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("pending ordinary-write journal"));
     assert!(note_operations.contains("through the CLI or MCP"));
     assert!(note_operations.contains("`note info` reports a pending ordinary-write journal"));
+    assert!(note_operations
+        .contains("Ordinary note create, replacement, append, patch, and delete also refuse"));
     let daily_notes = fs::read_to_string(vault_root.join(".agents/skills/daily-notes/SKILL.md"))
         .expect("daily notes skill should be readable");
     assert!(daily_notes.contains("Direct CLI and MCP daily list, show, and latest reads refuse"));
@@ -15987,6 +15989,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("ordinary-write journal to finish the move"));
     assert!(task_management.contains("vulcan repair ordinary-write status"));
     assert!(task_management.contains("Direct CLI and MCP task show, query, list, view"));
+    assert!(task_management
+        .contains("Ordinary task edits that use the shared note-write boundary also refuse"));
     assert!(task_management.contains("exact transaction ID and review token"));
     assert!(task_management.contains("do not bypass it with a direct Markdown edit"));
     assert!(task_management.contains("serialized with other Vulcan vault writes"));
@@ -16193,6 +16197,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(template_skill.contains("reread the note before retrying"));
     assert!(template_skill.contains("`template insert` rejects a note edited since it was read"));
     assert!(template_skill.contains("Direct CLI and MCP template reports refuse"));
+    assert!(template_skill
+        .contains("does not yet make a template's multiple side effects one transaction"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )

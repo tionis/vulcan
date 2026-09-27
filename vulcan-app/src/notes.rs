@@ -1191,6 +1191,8 @@ pub(crate) fn write_ordinary_note_if_unchanged(
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
     let _write_lock =
         vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     if note_path_is_mdbase_managed(paths, path)? {
         return Err(AppError::operation(format!(
             "mdbase collection changed during note {operation}; retry the operation"
@@ -1219,6 +1221,8 @@ fn delete_ordinary_note_if_unchanged(
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
     let _write_lock =
         vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     if note_path_is_mdbase_managed(paths, path)? {
         return Err(AppError::operation(
             "mdbase collection changed during note delete; retry the operation",
@@ -2461,7 +2465,8 @@ mod tests {
     }
 
     #[test]
-    fn direct_note_reads_and_info_refuse_pending_ordinary_write_journal() {
+    #[allow(clippy::too_many_lines)] // One pending journal is exercised across reads, writes, and recovery.
+    fn direct_note_reads_and_writes_refuse_pending_ordinary_write_journal() {
         #[derive(Serialize)]
         struct JournalFixture<'a> {
             version: u32,
@@ -2539,6 +2544,41 @@ mod tests {
                 .code(),
             Some("ordinary_write_pending")
         );
+        assert_eq!(
+            super::write_ordinary_note_if_unchanged(
+                &paths,
+                "Other.md",
+                None,
+                "unrelated\n",
+                "create",
+            )
+            .expect_err("create must fail closed")
+            .code(),
+            Some("ordinary_write_pending")
+        );
+        assert!(!temporary.path().join("Other.md").exists());
+        assert_eq!(
+            super::write_ordinary_note_if_unchanged(
+                &paths,
+                "Read.md",
+                Some("# Read\nOriginal\n"),
+                "replacement\n",
+                "set",
+            )
+            .expect_err("replacement must fail closed")
+            .code(),
+            Some("ordinary_write_pending")
+        );
+        assert_eq!(
+            super::delete_ordinary_note_if_unchanged(&paths, "Read.md", "# Read\nOriginal\n")
+                .expect_err("delete must fail closed")
+                .code(),
+            Some("ordinary_write_pending")
+        );
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Read.md")).expect("untouched note"),
+            "# Read\nOriginal\n"
+        );
         vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
             .expect("recover pending batch")
             .expect("pending batch");
@@ -2559,6 +2599,8 @@ mod tests {
                 .heading_count,
             1
         );
+        super::write_ordinary_note_if_unchanged(&paths, "Other.md", None, "created\n", "create")
+            .expect("create after recovery");
     }
 
     #[test]
