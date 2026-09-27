@@ -643,6 +643,27 @@ pub fn check_read_markdown_source_access(
         .map_err(AppError::operation)
 }
 
+/// Check the authority for editing an existing Markdown source.
+pub fn check_write_markdown_source_access(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    note: &str,
+) -> Result<(), AppError> {
+    if guard.write_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
+        return Ok(());
+    }
+    let target = resolve_existing_markdown_target(paths, note)?;
+    let Some(relative_path) = target.vault_relative_path.as_deref() else {
+        return Err(AppError::operation(format!(
+            "permission profiles cannot write markdown files outside the selected vault root: {}",
+            target.display_path
+        )));
+    };
+    guard
+        .check_write_path(relative_path)
+        .map_err(AppError::operation)
+}
+
 fn note_argument_looks_like_path(note: &str) -> bool {
     let path = Path::new(note);
     path.is_absolute()
@@ -2463,12 +2484,13 @@ fn load_note_append_target(
 mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-        build_note_info_report, check_read_markdown_source_access, diagnose_note_contents,
-        finish_note_append_report, finish_note_create_report, finish_note_patch_report,
-        finish_note_set_report, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
-        read_note, read_note_outline, resolve_existing_markdown_target, MarkdownTarget,
-        NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions,
-        NotePatchRequest, NoteReadMode, NoteSetRequest,
+        build_note_info_report, check_read_markdown_source_access,
+        check_write_markdown_source_access, diagnose_note_contents, finish_note_append_report,
+        finish_note_create_report, finish_note_patch_report, finish_note_set_report,
+        json_properties_to_frontmatter, parse_note_frontmatter_bindings, read_note,
+        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
+        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest,
+        NoteReadMode, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde::Serialize;
@@ -2535,7 +2557,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_source_read_guard_allows_unrestricted_external_but_rejects_scoped_external() {
+    fn markdown_source_guards_allow_unrestricted_external_but_reject_scoped_external() {
         let temporary = tempdir().expect("temporary vault");
         let vault = temporary.path().join("vault");
         fs::create_dir_all(vault.join(".vulcan")).expect("config directory");
@@ -2556,12 +2578,26 @@ mod tests {
             &paths,
             resolve_permission_profile(&paths, Some("blind")).expect("blind profile"),
         );
+        let write_unrestricted = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("unrestricted")).expect("unrestricted profile"),
+        );
         let external_path = external.to_str().expect("utf-8 path");
         assert!(check_read_markdown_source_access(&paths, &unrestricted, external_path).is_ok());
         assert!(check_read_markdown_source_access(&paths, &blind, "Home.md").is_err());
         assert!(
             check_read_markdown_source_access(&paths, &blind, external_path)
                 .expect_err("scoped external read")
+                .to_string()
+                .contains("outside the selected vault root")
+        );
+        assert!(
+            check_write_markdown_source_access(&paths, &write_unrestricted, external_path).is_ok()
+        );
+        assert!(check_write_markdown_source_access(&paths, &unrestricted, "Home.md").is_err());
+        assert!(
+            check_write_markdown_source_access(&paths, &unrestricted, external_path)
+                .expect_err("scoped external write")
                 .to_string()
                 .contains("outside the selected vault root")
         );
