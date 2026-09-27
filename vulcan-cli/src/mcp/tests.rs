@@ -699,7 +699,15 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     assert!(foreground_invalid_consent.starts_with("HTTP/1.1 405"));
     assert!(foreground_invalid_consent.contains("consent requires POST"));
     let client = named_listener_register_client(address);
-    let foreground_consent_token = named_listener_complete_browser_consent(address, &client);
+    let (foreground_consent_token, foreground_refresh_token) =
+        named_listener_complete_browser_consent(address, &client);
+    let foreground_consent_grant = named
+        .authorization_store
+        .list_grants(Some(&remote.id))
+        .expect("named grants")
+        .last()
+        .expect("foreground consent grant")
+        .id;
     named_listener_assert_consented_tools(address, &foreground_consent_token);
     let foreground_challenge = named_listener_auth_challenge(address, "parity");
     let foreground_init = named_listener_initialize(address, "parity", &token);
@@ -1070,7 +1078,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "OAuth bearer challenge changed between foreground and resident hosting"
     );
     named_listener_assert_consented_tools(address, &foreground_consent_token);
-    let resident_consent_token = named_listener_complete_browser_consent(address, &client);
+    let refreshed_foreground =
+        named_listener_refresh_token(address, &client, &foreground_refresh_token);
+    let refreshed_foreground_access = refreshed_foreground["access_token"]
+        .as_str()
+        .expect("refreshed access token");
+    named_listener_assert_consented_tools(address, refreshed_foreground_access);
+    let (resident_consent_token, _) = named_listener_complete_browser_consent(address, &client);
     named_listener_assert_consented_tools(address, &resident_consent_token);
     let resident_init = named_listener_initialize(address, "parity", &token);
     assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
@@ -1342,6 +1356,26 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &paths,
         "resident",
     );
+    named
+        .authorization_store
+        .revoke_grant(foreground_consent_grant, current_unix_timestamp(), false)
+        .expect("revoke foreground consent grant");
+    assert!(
+        named_listener_initialize(address, "parity", refreshed_foreground_access)
+            .starts_with("HTTP/1.1 401")
+    );
+    let revoked_refresh = named_listener_refresh_response(
+        address,
+        &client,
+        refreshed_foreground["refresh_token"]
+            .as_str()
+            .expect("rotated refresh token"),
+    );
+    assert!(
+        revoked_refresh.starts_with("HTTP/1.1 400"),
+        "{revoked_refresh}"
+    );
+    named_listener_assert_consented_tools(address, &resident_consent_token);
     supervisor.shutdown().expect("resident shutdown");
 }
 
@@ -2119,7 +2153,10 @@ fn named_listener_hidden_value(html: &str, name: &str) -> String {
 }
 
 #[cfg(feature = "oauth")]
-fn named_listener_complete_browser_consent(address: SocketAddr, client: &Value) -> String {
+fn named_listener_complete_browser_consent(
+    address: SocketAddr,
+    client: &Value,
+) -> (String, String) {
     let client_id = client["client_id"].as_str().expect("client ID");
     let client_secret = client["client_secret"].as_str().expect("client secret");
     let verifier = generate_pkce_verifier();
@@ -2193,10 +2230,40 @@ fn named_listener_complete_browser_consent(address: SocketAddr, client: &Value) 
         .expect("OAuth token response");
     assert!(payload["refresh_token"].as_str().is_some());
     assert_eq!(payload["scope"], "mcp:tools");
-    payload["access_token"]
-        .as_str()
-        .expect("access token")
-        .to_string()
+    (
+        payload["access_token"]
+            .as_str()
+            .expect("access token")
+            .to_string(),
+        payload["refresh_token"]
+            .as_str()
+            .expect("refresh token")
+            .to_string(),
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_refresh_response(address: SocketAddr, client: &Value, refresh: &str) -> String {
+    let body = format!(
+        "grant_type=refresh_token&client_id={}&client_secret={}&refresh_token={}",
+        percent_encode(client["client_id"].as_str().expect("client ID")),
+        percent_encode(client["client_secret"].as_str().expect("client secret")),
+        percent_encode(refresh),
+    );
+    named_listener_post(
+        address,
+        "/oauth/token",
+        "application/x-www-form-urlencoded",
+        &body,
+    )
+}
+
+#[cfg(feature = "oauth")]
+fn named_listener_refresh_token(address: SocketAddr, client: &Value, refresh: &str) -> Value {
+    let response = named_listener_refresh_response(address, client, refresh);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    serde_json::from_str(response.split_once("\r\n\r\n").expect("refresh response").1)
+        .expect("refreshed token JSON")
 }
 
 #[cfg(feature = "oauth")]
