@@ -77,7 +77,15 @@ pub fn read_mcp_http_request(stream: &mut impl Read) -> Result<McpHttpRequest, M
         header_end.ok_or_else(|| McpHttpReadError::bad_request("incomplete HTTP request"))?;
     let header_text = String::from_utf8(buffer[..header_end].to_vec())
         .map_err(|_| McpHttpReadError::bad_request("request headers are not valid UTF-8"))?;
-    let mut lines = header_text.lines();
+    if header_text
+        .split("\r\n")
+        .any(|line| line.bytes().any(|byte| matches!(byte, b'\r' | b'\n')))
+    {
+        return Err(McpHttpReadError::bad_request(
+            "request headers require CRLF line endings",
+        ));
+    }
+    let mut lines = header_text.split("\r\n");
     let request_line = lines
         .next()
         .ok_or_else(|| McpHttpReadError::bad_request("missing HTTP request line"))?;
@@ -89,6 +97,16 @@ pub fn read_mcp_http_request(stream: &mut impl Read) -> Result<McpHttpRequest, M
     let target = request_parts
         .next()
         .ok_or_else(|| McpHttpReadError::bad_request("missing HTTP request target"))?;
+    if request_parts.next() != Some("HTTP/1.1") || request_parts.next().is_some() {
+        return Err(McpHttpReadError::bad_request(
+            "MCP listener requires an HTTP/1.1 request line",
+        ));
+    }
+    if !target.starts_with('/') || target.contains('#') {
+        return Err(McpHttpReadError::bad_request(
+            "MCP listener requires an origin-form request target",
+        ));
+    }
     let (path, query) = target
         .split_once('?')
         .map_or((target, ""), |(path, query)| (path, query));
@@ -282,6 +300,27 @@ mod tests {
         assert_eq!(request.query, "ticket=one");
         assert_eq!(request.headers["x-test"], "yes");
         assert_eq!(request.body, b"test");
+    }
+
+    #[test]
+    fn request_codec_rejects_invalid_request_lines_and_mixed_line_endings() {
+        for request in [
+            "POST /mcp HTTP/1.0\r\n\r\n",
+            "POST /mcp\r\n\r\n",
+            "POST /mcp HTTP/1.1 extra\r\n\r\n",
+            "POST https://example.test/mcp HTTP/1.1\r\n\r\n",
+            "POST /mcp#fragment HTTP/1.1\r\n\r\n",
+            "POST /mcp HTTP/1.1\nHost: localhost\r\n\r\n",
+            "POST /mcp HTTP/1.1\r\nX-Test: a\rb\r\n\r\n",
+        ] {
+            assert_eq!(
+                read_mcp_http_request(&mut io::Cursor::new(request))
+                    .expect_err(request)
+                    .status,
+                400,
+                "{request:?}"
+            );
+        }
     }
 
     #[test]

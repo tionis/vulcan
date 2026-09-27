@@ -261,6 +261,9 @@ origin may pass, including bracketed IPv6 loopback. It remains distinct from bea
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or
 ambiguous `Content-Length`, and unsupported chunked request encoding before authentication or
 dispatch. Proxies must forward a single length-delimited request to this listener.
+The listener accepts HTTP/1.1 origin-form request targets with CRLF-delimited headers. It rejects
+HTTP/1.0, absolute-form targets, fragments, extra request-line fields, and mixed line endings before
+authentication or route dispatch.
 The shared auto-commit policy now lives in `vulcan-app::commit`. Both CLI mutations and MCP
 mutations use its configuration/trigger and Git checks and its plugin pre/post-commit workflow;
 the CLI retains a compatibility re-export until its remaining command dependencies move.
