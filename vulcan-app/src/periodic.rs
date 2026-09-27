@@ -145,6 +145,8 @@ pub fn list_daily_notes(
     week: bool,
     month: bool,
 ) -> Result<Vec<DailyListItem>, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let config = load_vault_config(paths).config;
     let (start, end) = resolve_daily_list_window(&config.periodic, from, to, week, month)?;
     list_daily_note_events(paths, &start, &end)
@@ -181,6 +183,8 @@ pub fn show_periodic_note(
     date: Option<&str>,
     period_type: &str,
 ) -> Result<PeriodicShowReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, false)?;
     let resolved = resolve_periodic_note(
@@ -246,6 +250,8 @@ pub fn read_daily_note(
     target: DailyReadTarget<'_>,
     include_content: bool,
 ) -> Result<DailyNoteReadReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let config = load_vault_config(paths).config;
     let (operation, date, path) = match target {
         DailyReadTarget::Latest => {
@@ -296,6 +302,8 @@ pub fn read_latest_daily_note_where(
     include_content: bool,
     predicate: impl FnMut(&str) -> bool,
 ) -> Result<DailyNoteReadReport, AppError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let config = load_vault_config(paths).config;
     let latest = latest_daily_note_where(paths, &config.periodic, predicate)?;
     let (date, path) = latest.map_or((None, None), |(date, path)| (Some(date), Some(path)));
@@ -368,6 +376,7 @@ fn latest_daily_note_where(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
     use std::fs;
     use tempfile::TempDir;
     use vulcan_core::paths::initialize_vulcan_dir;
@@ -489,5 +498,98 @@ mod tests {
             read_latest_daily_note_where(&paths, false, |path| !path.ends_with("2026-09-08.md"))
                 .expect("latest readable");
         assert_eq!(report.date.as_deref(), Some("2026-09-03"));
+    }
+
+    #[test]
+    fn direct_periodic_reads_refuse_pending_ordinary_write_journal() {
+        #[derive(Serialize)]
+        struct JournalFixture<'a> {
+            version: u32,
+            transaction_id: &'a str,
+            changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+            digest: String,
+        }
+
+        let temp = TempDir::new().expect("tempdir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize");
+        fs::create_dir_all(temp.path().join("Journal/Daily")).expect("daily folder");
+        fs::write(
+            temp.path().join("Journal/Daily/2026-04-03.md"),
+            "# Friday\nOriginal\n",
+        )
+        .expect("daily note");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        let directory = paths
+            .operational_state_dir()
+            .expect("operational state")
+            .join("ordinary-write");
+        fs::create_dir_all(&directory).expect("journal directory");
+        let mut journal = JournalFixture {
+            version: 1,
+            transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+                path: "Journal/Daily/2026-04-03.md".to_string(),
+                before: Some("# Friday\nOriginal\n".to_string()),
+                after: Some("# Friday\nUpdated\n".to_string()),
+            }],
+            digest: String::new(),
+        };
+        journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+            .to_hex()
+            .to_string();
+        let journal_path = directory.join("journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&journal).expect("sealed journal"),
+        )
+        .expect("pending journal");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+                .expect("owner-only journal");
+        }
+
+        let pending = Some("ordinary_write_pending");
+        assert_eq!(
+            list_daily_notes(&paths, Some("2026-04-03"), None, false, false)
+                .expect_err("list must fail closed")
+                .code(),
+            pending
+        );
+        assert_eq!(
+            show_periodic_note(&paths, Some("2026-04-03"), "daily")
+                .expect_err("show must fail closed")
+                .code(),
+            pending
+        );
+        assert_eq!(
+            read_daily_note(&paths, DailyReadTarget::Latest, true)
+                .expect_err("latest must fail closed")
+                .code(),
+            pending
+        );
+        assert_eq!(
+            read_latest_daily_note_where(&paths, true, |_| true)
+                .expect_err("filtered latest must fail closed")
+                .code(),
+            pending
+        );
+        vulcan_core::ordinary_write::recover_ordinary_write_batch(&paths)
+            .expect("recover pending batch")
+            .expect("pending batch");
+        assert_eq!(
+            read_daily_note(&paths, DailyReadTarget::Latest, true)
+                .expect("latest after recovery")
+                .content
+                .as_deref(),
+            Some("# Friday\nUpdated\n")
+        );
+        assert!(show_periodic_note(&paths, Some("2026-04-03"), "daily")
+            .expect("show after recovery")
+            .content
+            .contains("Updated"));
     }
 }

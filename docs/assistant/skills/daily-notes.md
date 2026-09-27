@@ -37,6 +37,7 @@ Use this skill for daily note creation, review, journaling, and event-oriented w
 - Do not create a second note for a date that already has a tracked daily note.
 - Do not use search or a vault-wide query to locate daily notes; the daily API uses the configured folder and filename/date semantics directly.
 - Under scoped permissions, “latest” means the newest daily note the caller may read.
+- If a daily or periodic read reports a pending ordinary-write journal, stop reading that vault and inspect it with `vulcan repair ordinary-write status`. Direct CLI and MCP daily list, show, and latest reads refuse a partially published multi-note change until recovery or explicit reconciliation.
 - Keep event syntax consistent so later extraction and export remain reliable.
 - If the workflow spans weeks or months, switch to the `periodic` command group instead of forcing everything through daily notes.
 
