@@ -2378,7 +2378,7 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         hosted: None,
         bind_addr: "127.0.0.1:8765".parse().expect("bind"),
         instance_id: Ulid::new(),
-        sessions: Arc::new(Mutex::new(BTreeMap::new())),
+        sessions: Arc::new(McpSessionRegistry::new()),
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
         oauth_clients: Arc::new(Mutex::new(BTreeMap::new())),
         oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
@@ -2433,9 +2433,8 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
     let session = Arc::new(McpHttpSession::new(core, authority.clone()));
     context
         .sessions
-        .lock()
-        .expect("sessions lock")
-        .insert(session_id.clone(), Arc::clone(&session));
+        .admit(session_id.clone(), Arc::clone(&session))
+        .expect("register SSE session");
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("SSE listener");
     let address = listener.local_addr().expect("listener address");
@@ -2477,7 +2476,7 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
         .expect("SSE stream should end");
     server.join().expect("SSE handler");
     assert!(session.is_closed());
-    assert!(context.sessions.lock().expect("sessions lock").is_empty());
+    assert!(context.sessions.is_empty());
 }
 
 #[test]
@@ -2651,12 +2650,14 @@ fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
             idle_timeout,
         ))
     };
-    let shared = make_session(MCP_HTTP_SESSION_IDLE_TIMEOUT);
-    {
-        let mut sessions = context.sessions.lock().expect("sessions lock");
-        for number in 0..MAX_MCP_HTTP_SESSIONS {
-            sessions.insert(number.to_string(), Arc::clone(&shared));
-        }
+    for number in 0..MAX_MCP_HTTP_SESSIONS {
+        context
+            .sessions
+            .admit(
+                number.to_string(),
+                make_session(MCP_HTTP_SESSION_IDLE_TIMEOUT),
+            )
+            .expect("fill session registry");
     }
     let rejected = admit_mcp_http_session(
         &context,
@@ -2668,21 +2669,21 @@ fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
     assert!(rejected
         .extra_headers
         .contains(&("Retry-After".to_string(), "60".to_string())));
-    assert_eq!(context.sessions.lock().expect("sessions lock").len(), 256);
+    assert_eq!(context.sessions.len(), 256);
 
+    context.sessions.retire("0").expect("retire first session");
     let expired = make_session(Duration::ZERO);
     context
         .sessions
-        .lock()
-        .expect("sessions lock")
-        .insert("0".to_string(), Arc::clone(&expired));
+        .admit("0".to_string(), Arc::clone(&expired))
+        .expect("admit expiring session");
     let admitted = make_session(MCP_HTTP_SESSION_IDLE_TIMEOUT);
     admit_mcp_http_session(&context, "new".to_string(), Arc::clone(&admitted))
         .expect("expired session should free capacity");
     assert!(expired.is_closed());
     assert!(live_mcp_http_session(&context, "0").is_none());
     assert!(live_mcp_http_session(&context, "new").is_some());
-    assert_eq!(context.sessions.lock().expect("sessions lock").len(), 256);
+    assert_eq!(context.sessions.len(), 256);
 }
 
 #[cfg(feature = "oauth")]
@@ -2736,9 +2737,8 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
     let session_id = Ulid::new().to_string();
     context
         .sessions
-        .lock()
-        .expect("sessions lock")
-        .insert(session_id.clone(), Arc::clone(&session));
+        .admit(session_id.clone(), Arc::clone(&session))
+        .expect("register cancellable session");
     let cancellation = ExecutionCancellationToken::default();
     assert!(session.register_request(&serde_json::json!(17), cancellation.clone()));
     let request = |params: serde_json::Value| McpHttpRequest {
@@ -3802,9 +3802,8 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
     let session = Arc::new(McpHttpSession::new(core, authority.clone()));
     let session_id = Ulid::new().to_string();
     http.sessions
-        .lock()
-        .expect("sessions lock")
-        .insert(session_id.clone(), session);
+        .admit(session_id.clone(), session)
+        .expect("register direct session");
     let request = |payload: serde_json::Value| McpHttpRequest {
         method: "POST".to_string(),
         path: "/mcp".to_string(),

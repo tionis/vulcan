@@ -23,7 +23,9 @@ use std::io::Write;
 use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
+#[cfg(feature = "oauth")]
+use std::sync::Mutex;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 #[cfg(feature = "oauth")]
@@ -128,10 +130,12 @@ use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 use vulcan_daemon::mcp_session::{
     mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
-    McpSessionAuthority,
+    McpSessionAuthority, McpSessionRegistry, SessionAdmissionError,
 };
 #[cfg(test)]
-use vulcan_daemon::mcp_session::{MAX_MCP_SSE_PENDING_EVENTS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
+use vulcan_daemon::mcp_session::{
+    MAX_MCP_HTTP_SESSIONS, MAX_MCP_SSE_PENDING_EVENTS, MCP_HTTP_SESSION_IDLE_TIMEOUT,
+};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::{CreateConnectionGrant, McpAuthorizationStore};
 #[cfg(feature = "oauth")]
@@ -144,7 +148,6 @@ use vulcan_daemon::process::DaemonProcessContext;
 use vulcan_daemon::shutdown::ShutdownSignal;
 
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const MAX_MCP_HTTP_SESSIONS: usize = 256;
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -618,7 +621,7 @@ struct McpHttpServerContext {
     hosted: Option<HostedMcpExecution>,
     bind_addr: SocketAddr,
     instance_id: Ulid,
-    sessions: Arc<Mutex<BTreeMap<String, Arc<McpHttpSession>>>>,
+    sessions: Arc<McpSessionRegistry<McpServerCore>>,
     #[cfg(feature = "oauth")]
     oauth_codes: Arc<Mutex<BTreeMap<String, LocalOAuthCode>>>,
     #[cfg(feature = "oauth")]
@@ -1301,7 +1304,7 @@ fn run_mcp_http_server_inner(
             Some(instance_id) => instance_id,
             None => Ulid::new(),
         },
-        sessions: Arc::new(Mutex::new(BTreeMap::new())),
+        sessions: Arc::new(McpSessionRegistry::new()),
         #[cfg(feature = "oauth")]
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
@@ -1346,13 +1349,7 @@ fn run_mcp_http_server_inner(
 }
 
 fn close_mcp_http_sessions(context: &McpHttpServerContext) {
-    let mut sessions = context
-        .sessions
-        .lock()
-        .expect("mcp sessions lock should not be poisoned");
-    for (_, session) in std::mem::take(&mut *sessions) {
-        session.close();
-    }
+    context.sessions.close_all();
 }
 
 fn admit_mcp_http_session(
@@ -1360,49 +1357,32 @@ fn admit_mcp_http_session(
     session_id: String,
     session: Arc<McpHttpSession>,
 ) -> Result<(), McpHttpResponse> {
-    let mut sessions = context
-        .sessions
-        .lock()
-        .expect("mcp sessions lock should not be poisoned");
-    sessions.retain(|_, existing| {
-        if existing.is_idle_expired() {
-            existing.close();
-            false
-        } else {
-            true
+    match context.sessions.admit(session_id, session) {
+        Ok(()) => Ok(()),
+        Err(SessionAdmissionError::Capacity) => {
+            let mut response = mcp_http_json_error_response(
+                503,
+                "MCP session limit reached; close unused sessions or retry later",
+                Value::Null,
+            );
+            response
+                .extra_headers
+                .push(("Retry-After".to_string(), "60".to_string()));
+            Err(response)
         }
-    });
-    if sessions.len() >= MAX_MCP_HTTP_SESSIONS {
-        let mut response = mcp_http_json_error_response(
-            503,
-            "MCP session limit reached; close unused sessions or retry later",
+        Err(SessionAdmissionError::DuplicateId) => Err(mcp_http_json_error_response(
+            500,
+            "MCP session ID collision",
             Value::Null,
-        );
-        response
-            .extra_headers
-            .push(("Retry-After".to_string(), "60".to_string()));
-        return Err(response);
+        )),
     }
-    sessions.insert(session_id, session);
-    Ok(())
 }
 
 fn live_mcp_http_session(
     context: &McpHttpServerContext,
     session_id: &str,
 ) -> Option<Arc<McpHttpSession>> {
-    let mut sessions = context
-        .sessions
-        .lock()
-        .expect("mcp sessions lock should not be poisoned");
-    let session = sessions.get(session_id)?.clone();
-    if session.is_idle_expired() {
-        sessions.remove(session_id);
-        session.close();
-        None
-    } else {
-        Some(session)
-    }
+    context.sessions.live(session_id)
 }
 
 fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
@@ -1653,11 +1633,7 @@ fn handle_mcp_http_post(
                     session.finish_request(id);
                 }
                 if created_session {
-                    context
-                        .sessions
-                        .lock()
-                        .expect("mcp sessions lock should not be poisoned")
-                        .remove(&session_id);
+                    context.sessions.retire(&session_id);
                 }
                 return McpHttpResponse {
                     status: 400,
@@ -1674,12 +1650,7 @@ fn handle_mcp_http_post(
     }
 
     if result.session_stale {
-        context
-            .sessions
-            .lock()
-            .expect("mcp sessions lock should not be poisoned")
-            .remove(&session_id);
-        session.close();
+        context.sessions.retire(&session_id);
     } else {
         session.broadcast(&result.notifications);
     }
@@ -1915,12 +1886,7 @@ fn handle_mcp_http_delete(
             Value::Null,
         );
     }
-    context
-        .sessions
-        .lock()
-        .expect("mcp sessions lock should not be poisoned")
-        .remove(session_id);
-    session.close();
+    context.sessions.retire(session_id);
     McpHttpResponse {
         status: 204,
         content_type: None,

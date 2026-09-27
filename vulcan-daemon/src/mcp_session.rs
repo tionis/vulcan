@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use ulid::Ulid;
@@ -17,6 +17,7 @@ use crate::mcp_remote::McpRemoteId;
 use crate::registry::WikiId;
 
 pub const MAX_MCP_SSE_PENDING_EVENTS: usize = 32;
+pub const MAX_MCP_HTTP_SESSIONS: usize = 256;
 pub const MCP_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Transport-owned lifecycle state; the protocol handler remains host supplied.
@@ -161,6 +162,118 @@ impl<C> McpHttpSession<C> {
                 cancellation.cancel();
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAdmissionError {
+    Capacity,
+    DuplicateId,
+}
+
+/// Per-listener session ownership and bounded admission for both hosting modes.
+#[derive(Debug)]
+pub struct McpSessionRegistry<C> {
+    sessions: Mutex<BTreeMap<String, Arc<McpHttpSession<C>>>>,
+    max_sessions: usize,
+}
+
+impl<C> McpSessionRegistry<C> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_limit(MAX_MCP_HTTP_SESSIONS)
+    }
+
+    #[must_use]
+    pub fn with_limit(max_sessions: usize) -> Self {
+        Self {
+            sessions: Mutex::new(BTreeMap::new()),
+            max_sessions,
+        }
+    }
+
+    pub fn admit(
+        &self,
+        session_id: String,
+        session: Arc<McpHttpSession<C>>,
+    ) -> Result<(), SessionAdmissionError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned");
+        sessions.retain(|_, existing| {
+            if existing.is_idle_expired() {
+                existing.close();
+                false
+            } else {
+                true
+            }
+        });
+        if sessions.contains_key(&session_id) {
+            return Err(SessionAdmissionError::DuplicateId);
+        }
+        if sessions.len() >= self.max_sessions {
+            return Err(SessionAdmissionError::Capacity);
+        }
+        sessions.insert(session_id, session);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn live(&self, session_id: &str) -> Option<Arc<McpHttpSession<C>>> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned");
+        let session = sessions.get(session_id)?.clone();
+        if session.is_idle_expired() {
+            sessions.remove(session_id);
+            session.close();
+            None
+        } else {
+            Some(session)
+        }
+    }
+
+    pub fn retire(&self, session_id: &str) -> Option<Arc<McpHttpSession<C>>> {
+        let session = self
+            .sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned")
+            .remove(session_id);
+        if let Some(session) = session.as_ref() {
+            session.close();
+        }
+        session
+    }
+
+    pub fn close_all(&self) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned");
+        for (_, session) in std::mem::take(&mut *sessions) {
+            session.close();
+        }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned")
+            .len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<C> Default for McpSessionRegistry<C> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -417,5 +530,48 @@ mod tests {
         assert!(session.is_closed());
         assert!(session.is_idle_expired());
         assert!(!session.register_request(&id, ExecutionCancellationToken::default()));
+    }
+
+    #[test]
+    fn registry_bounds_admission_and_reclaims_expired_sessions() {
+        let registry = McpSessionRegistry::with_limit(1);
+        let authority = authority(
+            Ulid::new(),
+            "https://id.example/alice",
+            Ulid::new(),
+            "token",
+        );
+        let first = Arc::new(McpHttpSession::new((), authority.clone()));
+        registry
+            .admit("first".to_string(), Arc::clone(&first))
+            .expect("first session");
+        let second = Arc::new(McpHttpSession::new((), authority.clone()));
+        assert_eq!(
+            registry.admit("second".to_string(), Arc::clone(&second)),
+            Err(SessionAdmissionError::Capacity)
+        );
+        assert_eq!(
+            registry.admit("first".to_string(), Arc::clone(&second)),
+            Err(SessionAdmissionError::DuplicateId)
+        );
+        registry.retire("first").expect("retired session");
+        assert!(first.is_closed());
+        let expiring = Arc::new(McpHttpSession::new_with_idle_timeout(
+            (),
+            authority,
+            Duration::ZERO,
+        ));
+        registry
+            .admit("expiring".to_string(), Arc::clone(&expiring))
+            .expect("expiring session");
+        registry
+            .admit("second".to_string(), Arc::clone(&second))
+            .expect("expired session reclaimed");
+        assert!(expiring.is_closed());
+        assert!(registry.live("expiring").is_none());
+        assert!(registry.live("second").is_some());
+        registry.close_all();
+        assert!(second.is_closed());
+        assert!(registry.is_empty());
     }
 }
