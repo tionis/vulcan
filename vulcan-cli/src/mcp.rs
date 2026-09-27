@@ -2157,8 +2157,8 @@ impl McpServerCore {
                 &selected_tool_packs,
                 &selection.profile,
             ),
-            prompts: prompt_files_fingerprint(paths),
-            resources: resource_files_fingerprint(paths),
+            prompts: prompt_files_fingerprint(paths, &guard),
+            resources: resource_files_fingerprint(paths, &guard),
         };
 
         Ok(Self {
@@ -3495,8 +3495,8 @@ impl McpServerCore {
                 &self.selected_tool_packs,
                 &self.selection.profile,
             ),
-            prompts: prompt_files_fingerprint(&self.paths),
-            resources: resource_files_fingerprint(&self.paths),
+            prompts: prompt_files_fingerprint(&self.paths, &self.guard),
+            resources: resource_files_fingerprint(&self.paths, &self.guard),
         };
         self.snapshot.changed_notifications(current)
     }
@@ -5450,41 +5450,101 @@ fn tool_fingerprint(
     if let Ok(custom_tools) =
         visible_custom_tools(paths, active_permission_profile, selected_tool_packs)
     {
-        if !custom_tools.is_empty() {
-            parts.extend(
-                custom_tools
-                    .into_iter()
-                    .map(|tool| format!("custom:{}", tool.summary.name)),
-            );
-            if let Ok(root) = assistant_skills_root(paths) {
-                parts.push(path_tree_fingerprint(&root));
-            }
-        }
+        parts.extend(
+            custom_tools
+                .into_iter()
+                .filter_map(|tool| serde_json::to_string(&tool.summary).ok()),
+        );
     }
     parts.join("\n")
 }
 
-fn prompt_files_fingerprint(paths: &VaultPaths) -> String {
-    assistant_prompts_root(paths)
-        .map(|root| path_tree_fingerprint(&root))
-        .unwrap_or_default()
+fn prompt_files_fingerprint(paths: &VaultPaths, guard: &ProfilePermissionGuard) -> String {
+    if guard.selection().profile.read.is_none() {
+        return String::new();
+    }
+    assistant_prompts_root(paths).map_or_else(
+        |_| String::new(),
+        |root| readable_assistant_tree_fingerprint(paths, guard, &root, false),
+    )
 }
 
-fn resource_files_fingerprint(paths: &VaultPaths) -> String {
+fn resource_files_fingerprint(paths: &VaultPaths, guard: &ProfilePermissionGuard) -> String {
     let mut parts = Vec::new();
-    if let Ok(root) = assistant_prompts_root(paths) {
-        parts.push(path_tree_fingerprint(&root));
+    if !guard.selection().profile.read.is_none() {
+        parts.push(prompt_files_fingerprint(paths, guard));
+        if let Ok(root) = assistant_skills_root(paths) {
+            parts.push(readable_assistant_tree_fingerprint(
+                paths, guard, &root, true,
+            ));
+        }
+        if guard.check_read_path("AGENTS.md").is_ok() {
+            parts.push(path_tree_fingerprint(&paths.vault_root().join("AGENTS.md")));
+        }
     }
-    if let Ok(root) = assistant_skills_root(paths) {
-        parts.push(path_tree_fingerprint(&root));
+    if guard.check_config_read().is_ok() {
+        parts.push(path_tree_fingerprint(paths.config_file()));
+        parts.push(path_tree_fingerprint(
+            &paths.vulcan_dir().join("config.local.toml"),
+        ));
     }
-    parts.extend([
-        path_tree_fingerprint(&paths.vault_root().join("AGENTS.md")),
-        path_tree_fingerprint(paths.config_file()),
-        path_tree_fingerprint(&paths.vulcan_dir().join("config.local.toml")),
-    ]);
     parts.retain(|part| !part.is_empty());
     parts.join("\n--\n")
+}
+
+fn readable_assistant_tree_fingerprint(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    root: &Path,
+    skill_only: bool,
+) -> String {
+    fn collect(
+        paths: &VaultPaths,
+        guard: &ProfilePermissionGuard,
+        path: &Path,
+        skill_only: bool,
+        lines: &mut Vec<String>,
+    ) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if metadata.file_type().is_symlink() {
+            return;
+        }
+        if metadata.is_dir() {
+            let Ok(entries) = fs::read_dir(path) else {
+                return;
+            };
+            let mut children = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            children.sort();
+            for child in children {
+                collect(paths, guard, &child, skill_only, lines);
+            }
+            return;
+        }
+        if !metadata.is_file()
+            || !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            || (skill_only && path.file_name().is_none_or(|name| name != "SKILL.md"))
+        {
+            return;
+        }
+        let Ok(relative) = path.strip_prefix(paths.vault_root()) else {
+            return;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if guard.check_read_path(&relative).is_ok() {
+            collect_path_tree_fingerprint(path, lines);
+        }
+    }
+
+    let mut lines = Vec::new();
+    collect(paths, guard, root, skill_only, &mut lines);
+    lines.join("\u{1f}")
 }
 
 fn path_tree_fingerprint(path: &Path) -> String {

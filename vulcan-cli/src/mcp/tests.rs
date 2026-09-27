@@ -3163,6 +3163,70 @@ fn mcp_http_cancellation_tokens_are_request_and_session_local() {
 }
 
 #[test]
+fn list_change_notifications_ignore_files_outside_the_read_grant() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.scoped]\nread = { allow = [\"note:AI/Prompts/visible.md\"] }\n[permissions.profiles.blind]\nread = \"none\"\n",
+    )
+    .expect("permission profiles");
+    let prompts = temporary.path().join("AI/Prompts");
+    fs::create_dir_all(&prompts).expect("prompt directory");
+    let visible = prompts.join("visible.md");
+    let hidden = prompts.join("hidden.md");
+    fs::write(
+        &visible,
+        "---\nname: visible\n---\nInitial visible prompt.\n",
+    )
+    .expect("visible prompt");
+    fs::write(&hidden, "---\nname: hidden\n---\nInitial hidden prompt.\n").expect("hidden prompt");
+    let mut scoped = McpServerCore::new(
+        &paths,
+        Some("scoped"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("scoped MCP core");
+    let mut blind = McpServerCore::new(
+        &paths,
+        Some("blind"),
+        &[McpToolPackArg::NotesRead],
+        McpToolPackModeArg::Static,
+    )
+    .expect("blind MCP core");
+
+    fs::write(&hidden, "---\nname: hidden\n---\nChanged hidden prompt.\n")
+        .expect("change hidden prompt");
+    assert!(scoped.list_changed_notifications().is_empty());
+    assert!(blind.list_changed_notifications().is_empty());
+    fs::write(&hidden, "---\nname: [malformed\n---\nHidden prompt.\n")
+        .expect("malformed hidden prompt");
+    assert!(scoped.list_changed_notifications().is_empty());
+    assert!(blind.list_changed_notifications().is_empty());
+
+    fs::write(
+        &visible,
+        "---\nname: visible\n---\nChanged visible prompt.\n",
+    )
+    .expect("change visible prompt");
+    let methods = scoped
+        .list_changed_notifications()
+        .into_iter()
+        .map(|event| event["method"].as_str().expect("method").to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        methods,
+        BTreeSet::from([
+            "notifications/prompts/list_changed".to_string(),
+            "notifications/resources/list_changed".to_string(),
+        ])
+    );
+    assert!(blind.list_changed_notifications().is_empty());
+}
+
+#[test]
 fn mcp_http_broadcast_filters_list_changes_by_connection_scopes() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
