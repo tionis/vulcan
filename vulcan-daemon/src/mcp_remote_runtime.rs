@@ -45,6 +45,13 @@ pub struct NamedTokenRequest<'a> {
     pub now: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct NamedMcpSessionConfig {
+    pub paths: VaultPaths,
+    pub permission_profile: String,
+    pub tool_packs: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedConsentError {
     pub status: u16,
@@ -68,6 +75,42 @@ impl NamedConsentError {
 }
 
 impl NamedMcpRuntime {
+    /// Select the grant-bound vault and startup capability set for an HTTP session.
+    pub fn session_config(
+        &self,
+        authority: &McpSessionAuthority,
+        remote_instance_id: Ulid,
+    ) -> Result<NamedMcpSessionConfig, &'static str> {
+        let wiki_id = authority
+            .wiki_id
+            .as_ref()
+            .ok_or("grant has no vault binding")?;
+        let vault = self
+            .vaults
+            .get(wiki_id)
+            .ok_or("grant vault is unavailable")?;
+        if authority.remote_id.as_ref() != Some(&self.remote_id)
+            || authority.remote_instance_id != remote_instance_id
+            || authority.grant_id.is_none()
+            || authority.permission_profile.is_none()
+            || authority.tool_packs.is_empty()
+            || !authority
+                .tool_packs
+                .iter()
+                .all(|pack| vault.eligible_tool_packs.contains(pack))
+        {
+            return Err("grant authority does not match this remote");
+        }
+        Ok(NamedMcpSessionConfig {
+            paths: vault.paths.clone(),
+            permission_profile: authority
+                .permission_profile
+                .clone()
+                .expect("checked profile binding"),
+            tool_packs: authority.tool_packs.clone(),
+        })
+    }
+
     /// Revalidate a named access token against durable consent and current vault policy.
     pub fn authorize_token(
         &self,
@@ -377,6 +420,70 @@ mod tests {
         assert_eq!(
             runtime.authorize_token(&token).expect_err("removed vault"),
             "connection grant vault is no longer exposed"
+        );
+    }
+
+    #[test]
+    fn session_config_stays_bound_to_the_named_vault_profile_and_packs() {
+        let (_temporary, runtime) = runtime();
+        let instance_id = Ulid::new();
+        let authority = McpSessionAuthority::granted(
+            runtime.remote_id.clone(),
+            instance_id,
+            Ulid::new(),
+            "https://client.example/app.json".to_string(),
+            "https://identity.example/alice".to_string(),
+            WikiId::parse("personal").expect("wiki ID"),
+            "https://mcp.example/personal".to_string(),
+            "readonly".to_string(),
+            vec!["notes-read".to_string()],
+            vec!["mcp:tools".to_string()],
+            "secret access token",
+        );
+        let selected = runtime
+            .session_config(&authority, instance_id)
+            .expect("named session configuration");
+        assert_eq!(
+            selected.paths.vault_root(),
+            runtime
+                .vaults
+                .get(&WikiId::parse("personal").expect("wiki ID"))
+                .expect("vault")
+                .paths
+                .vault_root()
+        );
+        assert_eq!(selected.permission_profile, "readonly");
+        assert_eq!(selected.tool_packs, ["notes-read"]);
+        assert!(runtime.session_config(&authority, Ulid::new()).is_err());
+        let direct = McpSessionAuthority::direct(
+            instance_id,
+            "local token",
+            None,
+            None,
+            Some("readonly".to_string()),
+            vec!["notes-read".to_string()],
+            Vec::new(),
+        );
+        assert!(runtime.session_config(&direct, instance_id).is_err());
+
+        let mut wrong_pack = authority.clone();
+        wrong_pack.tool_packs = vec!["notes-write".to_string()];
+        assert!(runtime.session_config(&wrong_pack, instance_id).is_err());
+        let mut missing_vault = authority.clone();
+        missing_vault.wiki_id = None;
+        assert_eq!(
+            runtime
+                .session_config(&missing_vault, instance_id)
+                .unwrap_err(),
+            "grant has no vault binding"
+        );
+        let mut removed_vault = runtime.clone();
+        removed_vault.vaults.clear();
+        assert_eq!(
+            removed_vault
+                .session_config(&authority, instance_id)
+                .unwrap_err(),
+            "grant vault is unavailable"
         );
     }
 

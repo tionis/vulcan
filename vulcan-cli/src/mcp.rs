@@ -1803,40 +1803,46 @@ fn resolve_mcp_http_session(
     if is_initialize {
         let session_id = Ulid::new().to_string();
         #[cfg(feature = "oauth")]
-        let paths = match (&context.named_runtime, &authority.wiki_id) {
-            (Some(named), Some(wiki_id)) => {
-                &named
-                    .vaults
-                    .get(wiki_id)
-                    .ok_or_else(|| {
-                        mcp_http_json_error_response(403, "grant vault is unavailable", Value::Null)
-                    })?
-                    .paths
-            }
-            (Some(_), None) => {
-                return Err(mcp_http_json_error_response(
-                    403,
-                    "grant has no vault binding",
-                    Value::Null,
-                ));
-            }
-            (None, _) => &context.paths,
-        };
+        let named_session = context
+            .named_runtime
+            .as_ref()
+            .map(|named| named.session_config(authority, context.instance_id))
+            .transpose()
+            .map_err(|message| mcp_http_json_error_response(403, message, Value::Null))?;
+        #[cfg(feature = "oauth")]
+        let paths = named_session
+            .as_ref()
+            .map_or(&context.paths, |session| &session.paths);
         #[cfg(not(feature = "oauth"))]
         let paths = &context.paths;
-        let requested_profile = authority
-            .permission_profile
-            .as_deref()
+        #[cfg(feature = "oauth")]
+        let named_profile = named_session
+            .as_ref()
+            .map(|session| session.permission_profile.as_str());
+        #[cfg(not(feature = "oauth"))]
+        let named_profile: Option<&str> = None;
+        let requested_profile = named_profile
+            .or(authority.permission_profile.as_deref())
             .or(context.requested_profile.as_deref());
-        let authority_tool_packs = if authority.grant_id.is_some() {
-            Some(
-                mcp_tool_pack_args_from_names(&authority.tool_packs).map_err(|error| {
+        #[cfg(feature = "oauth")]
+        let named_packs = named_session
+            .as_ref()
+            .map(|session| session.tool_packs.as_slice());
+        #[cfg(not(feature = "oauth"))]
+        let named_packs: Option<&[String]> = None;
+        let pack_names = named_packs.or_else(|| {
+            authority
+                .grant_id
+                .is_some()
+                .then_some(authority.tool_packs.as_slice())
+        });
+        let authority_tool_packs = pack_names
+            .map(|names| {
+                mcp_tool_pack_args_from_names(names).map_err(|error| {
                     mcp_http_json_error_response(500, error.to_string(), Value::Null)
-                })?,
-            )
-        } else {
-            None
-        };
+                })
+            })
+            .transpose()?;
         let core = McpServerCore::new(
             paths,
             requested_profile,
