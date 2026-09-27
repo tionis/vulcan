@@ -700,6 +700,21 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{foreground_prompts}"
     );
     assert!(foreground_prompts.contains("\"name\":\"summary\""));
+    let foreground_paginated = ["tools/list", "resources/list", "prompts/list"]
+        .into_iter()
+        .map(|method| {
+            let response = named_listener_method_with_params(
+                address,
+                "parity",
+                &token,
+                &foreground_session,
+                method,
+                Some(serde_json::json!({"cursor": "1"})),
+            );
+            assert!(response.starts_with("HTTP/1.1 200"), "{method}: {response}");
+            (method, response)
+        })
+        .collect::<Vec<_>>();
     let foreground_prompt = named_listener_method_with_params(
         address,
         "parity",
@@ -1040,6 +1055,31 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                 .expect("resident body")
                 .1,
             "{method} changed between foreground and resident hosting"
+        );
+    }
+    for (method, foreground) in &foreground_paginated {
+        let resident_response = named_listener_method_with_params(
+            address,
+            "parity",
+            &token,
+            &resident_resource_session,
+            method,
+            Some(serde_json::json!({"cursor": "1"})),
+        );
+        assert!(
+            resident_response.starts_with("HTTP/1.1 200"),
+            "{resident_response}"
+        );
+        assert_eq!(
+            foreground
+                .split_once("\r\n\r\n")
+                .expect("foreground body")
+                .1,
+            resident_response
+                .split_once("\r\n\r\n")
+                .expect("resident body")
+                .1,
+            "{method} pagination changed between foreground and resident hosting"
         );
     }
     for (method, params, foreground) in [
