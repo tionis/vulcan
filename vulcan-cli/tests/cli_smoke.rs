@@ -15970,6 +15970,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(vault_query.contains("Native query DSL starts with `from notes`"));
     assert!(vault_query.contains("A single `--where` value is one predicate"));
     assert!(vault_query.contains("vulcan repair ordinary-write status"));
+    let graph_exploration =
+        fs::read_to_string(vault_root.join(".agents/skills/graph-exploration/SKILL.md"))
+            .expect("graph exploration skill should be readable");
+    assert!(graph_exploration.contains("direct CLI graph read"));
     let properties =
         fs::read_to_string(vault_root.join(".agents/skills/properties-and-tags/SKILL.md"))
             .expect("properties skill should be readable");
@@ -26435,7 +26439,7 @@ fn ls_command_supports_glob_and_count_format() {
 }
 
 #[test]
-fn direct_query_commands_refuse_pending_ordinary_write_journal() {
+fn direct_query_and_graph_commands_refuse_pending_ordinary_write_journal() {
     #[derive(serde::Serialize)]
     struct JournalFixture<'a> {
         version: u32,
@@ -26489,6 +26493,10 @@ fn direct_query_commands_refuse_pending_ordinary_write_journal() {
         &["tags"][..],
         &["properties"][..],
         &["search", "Home"][..],
+        &["graph", "path", "Home", "Bob"][..],
+        &["graph", "hubs"][..],
+        &["graph", "communities"][..],
+        &["graph", "export"][..],
     ] {
         Command::cargo_bin("vulcan")
             .expect("binary")

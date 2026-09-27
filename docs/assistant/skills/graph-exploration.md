@@ -36,6 +36,7 @@ Use this skill when note relationships matter more than raw content matching.
 - Avoid traversing the whole graph when a small neighborhood answers the question.
 - Graph tools describe resolved note relationships, not arbitrary text mentions.
 - If the target note is ambiguous, resolve that first or the graph result will be misleading.
+- If a direct CLI graph read reports a pending ordinary-write journal, inspect it with `vulcan repair ordinary-write status`; do not bypass the recovery check with a different graph view.
 
 ## Example Moves
 

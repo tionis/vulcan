@@ -5587,6 +5587,7 @@ session authority -> PermissionGuard -> PermissionFilter
    - Direct vault status reports now hold that shared read lock and refuse a pending ordinary-write journal before combining cache metadata, Git state, and graph confidence. Other direct non-MCP read surfaces and multi-effect template writes remain open.
    - Browse and note-picker identity lists, plus browse tag/tagged-note lists, now use the same consistent-read barrier and fail closed while an ordinary-write batch awaits recovery. Other direct non-MCP read surfaces and multi-effect template writes remain open.
    - Direct CLI backlinks, links, query, `ls`, tags, properties, and search now hold a consistent vault read lock and refuse a pending ordinary-write journal before reading. A CLI integration regression covers every command with refresh disabled. Other direct read surfaces and multi-effect template writes remain open.
+   - Direct CLI graph path, hubs, MOC, dead ends, components, communities, stats, trends, and export now share that read barrier before graph evaluation; the pending-journal CLI regression covers representative path, hubs, communities, and export commands. Other direct reads and multi-effect template writes remain open.
 - [x] Add CIMD/public-client support while retaining DCR and advanced external-OIDC validation.
   Verify current ChatGPT and generic MCP-client behavior without encoding host-specific bypasses.
 - [x] Update `mcp-setup`, configuration/permissions guidance, installed-skill payload tests,

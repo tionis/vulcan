@@ -567,6 +567,8 @@ pub(crate) fn handle_graph_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(CliError::operation)?;
     match command {
         GraphCommand::Path { from, to } => {
             let read_filter = selected_read_permission_filter(cli, paths)?;
