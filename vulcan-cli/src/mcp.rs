@@ -43,6 +43,7 @@ use vulcan_app::execution::{
 use vulcan_app::mcp_access;
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::json_value_to_string;
+use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
 use vulcan_app::mcp_completion;
 use vulcan_app::mcp_config;
 #[cfg(feature = "oauth")]
@@ -98,16 +99,15 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::LocalOAuthUserConfig;
 #[cfg(feature = "web")]
 use vulcan_core::SearchBackendKind;
-use vulcan_core::{
-    assistant_prompts_root, assistant_skills_root, load_vault_config, resolve_permission_profile,
-    watch_vault, PermissionGuard, PermissionProfile, ProfilePermissionGuard, VaultPaths,
-    WatchOptions,
-};
 #[cfg(feature = "oauth")]
 use vulcan_core::{
     discover_indieauth_endpoints, exchange_indieauth_code, fetch_client_id_metadata,
     pkce_s256_challenge, ClientIdMetadataDocument, LocalOAuthIssuer, LocalOAuthIssuerConfig,
     OAuthResourceServer, OAuthResourceServerConfig,
+};
+use vulcan_core::{
+    load_vault_config, resolve_permission_profile, watch_vault, PermissionGuard, PermissionProfile,
+    ProfilePermissionGuard, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::host::{
@@ -5457,132 +5457,6 @@ fn tool_fingerprint(
         );
     }
     parts.join("\n")
-}
-
-fn prompt_files_fingerprint(paths: &VaultPaths, guard: &ProfilePermissionGuard) -> String {
-    if guard.selection().profile.read.is_none() {
-        return String::new();
-    }
-    assistant_prompts_root(paths).map_or_else(
-        |_| String::new(),
-        |root| readable_assistant_tree_fingerprint(paths, guard, &root, false),
-    )
-}
-
-fn resource_files_fingerprint(paths: &VaultPaths, guard: &ProfilePermissionGuard) -> String {
-    let mut parts = Vec::new();
-    if !guard.selection().profile.read.is_none() {
-        parts.push(prompt_files_fingerprint(paths, guard));
-        if let Ok(root) = assistant_skills_root(paths) {
-            parts.push(readable_assistant_tree_fingerprint(
-                paths, guard, &root, true,
-            ));
-        }
-        if guard.check_read_path("AGENTS.md").is_ok() {
-            parts.push(path_tree_fingerprint(&paths.vault_root().join("AGENTS.md")));
-        }
-    }
-    if guard.check_config_read().is_ok() {
-        parts.push(path_tree_fingerprint(paths.config_file()));
-        parts.push(path_tree_fingerprint(
-            &paths.vulcan_dir().join("config.local.toml"),
-        ));
-    }
-    parts.retain(|part| !part.is_empty());
-    parts.join("\n--\n")
-}
-
-fn readable_assistant_tree_fingerprint(
-    paths: &VaultPaths,
-    guard: &ProfilePermissionGuard,
-    root: &Path,
-    skill_only: bool,
-) -> String {
-    fn collect(
-        paths: &VaultPaths,
-        guard: &ProfilePermissionGuard,
-        path: &Path,
-        skill_only: bool,
-        lines: &mut Vec<String>,
-    ) {
-        let Ok(metadata) = fs::symlink_metadata(path) else {
-            return;
-        };
-        if metadata.file_type().is_symlink() {
-            return;
-        }
-        if metadata.is_dir() {
-            let Ok(entries) = fs::read_dir(path) else {
-                return;
-            };
-            let mut children = entries
-                .flatten()
-                .map(|entry| entry.path())
-                .collect::<Vec<_>>();
-            children.sort();
-            for child in children {
-                collect(paths, guard, &child, skill_only, lines);
-            }
-            return;
-        }
-        if !metadata.is_file()
-            || !path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-            || (skill_only && path.file_name().is_none_or(|name| name != "SKILL.md"))
-        {
-            return;
-        }
-        let Ok(relative) = path.strip_prefix(paths.vault_root()) else {
-            return;
-        };
-        let relative = relative.to_string_lossy().replace('\\', "/");
-        if guard.check_read_path(&relative).is_ok() {
-            collect_path_tree_fingerprint(path, lines);
-        }
-    }
-
-    let mut lines = Vec::new();
-    collect(paths, guard, root, skill_only, &mut lines);
-    lines.join("\u{1f}")
-}
-
-fn path_tree_fingerprint(path: &Path) -> String {
-    let mut lines = Vec::new();
-    collect_path_tree_fingerprint(path, &mut lines);
-    lines.join("\u{1f}")
-}
-
-fn collect_path_tree_fingerprint(path: &Path, lines: &mut Vec<String>) {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return;
-    };
-    if metadata.file_type().is_symlink() {
-        return;
-    }
-    if metadata.is_dir() {
-        let Ok(entries) = fs::read_dir(path) else {
-            return;
-        };
-        let mut child_paths = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .collect::<Vec<_>>();
-        child_paths.sort();
-        for child_path in child_paths {
-            collect_path_tree_fingerprint(&child_path, lines);
-        }
-        return;
-    }
-
-    lines.push(path.display().to_string());
-    if metadata.is_file() {
-        let Ok(contents) = fs::read(path) else {
-            return;
-        };
-        lines.push(contents.len().to_string());
-        lines.push(String::from_utf8_lossy(&contents).into_owned());
-    }
 }
 
 fn help_topic_completion_candidates(prefix: &str) -> Vec<String> {

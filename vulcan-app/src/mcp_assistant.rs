@@ -4,11 +4,13 @@
 
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 use vulcan_core::{
-    assistant_config_summary, list_assistant_prompts, list_assistant_skills, load_assistant_prompt,
-    load_assistant_skill, load_vault_config, read_vault_agents_file, render_assistant_prompt,
-    AssistantPromptSummary, AssistantSkillSummary, PermissionGuard, ProfilePermissionGuard,
-    VaultPaths,
+    assistant_config_summary, assistant_prompts_root, assistant_skills_root,
+    list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
+    load_vault_config, read_vault_agents_file, render_assistant_prompt, AssistantPromptSummary,
+    AssistantSkillSummary, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 
 use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
@@ -165,6 +167,134 @@ pub fn visible_prompts(
         .into_iter()
         .filter(|prompt| prompt_visible(paths, guard, prompt))
         .collect())
+}
+
+/// Fingerprint only prompt files that this session's read grant can observe.
+pub fn prompt_files_fingerprint(paths: &VaultPaths, guard: &ProfilePermissionGuard) -> String {
+    if guard.selection().profile.read.is_none() {
+        return String::new();
+    }
+    assistant_prompts_root(paths).map_or_else(
+        |_| String::new(),
+        |root| readable_assistant_tree_fingerprint(paths, guard, &root, false),
+    )
+}
+
+/// Fingerprint only resource sources visible under the session's read and config grants.
+pub fn resource_files_fingerprint(paths: &VaultPaths, guard: &ProfilePermissionGuard) -> String {
+    let mut parts = Vec::new();
+    if !guard.selection().profile.read.is_none() {
+        parts.push(prompt_files_fingerprint(paths, guard));
+        if let Ok(root) = assistant_skills_root(paths) {
+            parts.push(readable_assistant_tree_fingerprint(
+                paths, guard, &root, true,
+            ));
+        }
+        if guard.check_read_path("AGENTS.md").is_ok() {
+            parts.push(path_tree_fingerprint(&paths.vault_root().join("AGENTS.md")));
+        }
+    }
+    if guard.check_config_read().is_ok() {
+        parts.push(path_tree_fingerprint(paths.config_file()));
+        parts.push(path_tree_fingerprint(
+            &paths.vulcan_dir().join("config.local.toml"),
+        ));
+    }
+    parts.retain(|part| !part.is_empty());
+    parts.join("\n--\n")
+}
+
+fn readable_assistant_tree_fingerprint(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    root: &Path,
+    skill_only: bool,
+) -> String {
+    fn collect(
+        paths: &VaultPaths,
+        guard: &ProfilePermissionGuard,
+        path: &Path,
+        skill_only: bool,
+        lines: &mut Vec<String>,
+    ) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if metadata.file_type().is_symlink() {
+            return;
+        }
+        if metadata.is_dir() {
+            let Ok(entries) = fs::read_dir(path) else {
+                return;
+            };
+            let mut children = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            children.sort();
+            for child in children {
+                collect(paths, guard, &child, skill_only, lines);
+            }
+            return;
+        }
+        if !metadata.is_file()
+            || !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            || (skill_only && path.file_name().is_none_or(|name| name != "SKILL.md"))
+        {
+            return;
+        }
+        let Ok(relative) = path.strip_prefix(paths.vault_root()) else {
+            return;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if guard.check_read_path(&relative).is_ok() {
+            collect_path_tree_fingerprint(path, lines);
+        }
+    }
+
+    let mut lines = Vec::new();
+    collect(paths, guard, root, skill_only, &mut lines);
+    lines.join("\u{1f}")
+}
+
+fn path_tree_fingerprint(path: &Path) -> String {
+    let mut lines = Vec::new();
+    collect_path_tree_fingerprint(path, &mut lines);
+    lines.join("\u{1f}")
+}
+
+fn collect_path_tree_fingerprint(path: &Path, lines: &mut Vec<String>) {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    if metadata.is_dir() {
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        let mut child_paths = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        child_paths.sort();
+        for child_path in child_paths {
+            collect_path_tree_fingerprint(&child_path, lines);
+        }
+        return;
+    }
+
+    lines.push(path.display().to_string());
+    if metadata.is_file() {
+        let Ok(contents) = fs::read(path) else {
+            return;
+        };
+        lines.push(contents.len().to_string());
+        lines.push(String::from_utf8_lossy(&contents).into_owned());
+    }
 }
 
 pub fn visible_skills(
@@ -540,6 +670,80 @@ mod tests {
             "Summarize Projects/Alpha.md."
         );
         assert!(get_prompt(&paths, &blind, "summarize", &Map::new()).is_err());
+    }
+
+    #[test]
+    fn assistant_change_snapshots_include_only_grant_readable_files() {
+        let temporary = tempfile::tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir_all(paths.vulcan_dir()).expect("vault config directory");
+        let prompts = assistant_prompts_root(&paths).expect("prompt root");
+        let skills = assistant_skills_root(&paths).expect("skill root");
+        fs::create_dir_all(&prompts).expect("prompt directory");
+        fs::create_dir_all(skills.join("visible")).expect("visible skill directory");
+        fs::create_dir_all(skills.join("hidden")).expect("hidden skill directory");
+        let visible_prompt = prompts.join("visible.md");
+        let hidden_prompt = prompts.join("hidden.md");
+        let visible_skill = skills.join("visible/SKILL.md");
+        let hidden_skill = skills.join("hidden/SKILL.md");
+        for path in [
+            &visible_prompt,
+            &hidden_prompt,
+            &visible_skill,
+            &hidden_skill,
+        ] {
+            fs::write(path, "---\nname: example\n---\nInitial.\n").expect("assistant file");
+        }
+        let visible_prompt_path = visible_prompt
+            .strip_prefix(paths.vault_root())
+            .expect("relative prompt")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let visible_skill_path = visible_skill
+            .strip_prefix(paths.vault_root())
+            .expect("relative skill")
+            .to_string_lossy()
+            .replace('\\', "/");
+        fs::write(
+            paths.config_file(),
+            format!(
+                "[permissions.profiles.scoped]\nread = {{ allow = [\"note:{visible_prompt_path}\", \"note:{visible_skill_path}\"] }}\n[permissions.profiles.blind]\nread = \"none\"\n"
+            ),
+        )
+        .expect("permission profiles");
+        let scoped = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).expect("scoped profile"),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).expect("blind profile"),
+        );
+        let prompt_before = prompt_files_fingerprint(&paths, &scoped);
+        let resource_before = resource_files_fingerprint(&paths, &scoped);
+
+        fs::write(
+            &hidden_prompt,
+            "---\nname: [invalid\n---\nHidden changed.\n",
+        )
+        .expect("hidden prompt change");
+        fs::write(&hidden_skill, "---\nname: [invalid\n---\nHidden changed.\n")
+            .expect("hidden skill change");
+        assert_eq!(prompt_files_fingerprint(&paths, &scoped), prompt_before);
+        assert_eq!(resource_files_fingerprint(&paths, &scoped), resource_before);
+        assert!(prompt_files_fingerprint(&paths, &blind).is_empty());
+        assert!(resource_files_fingerprint(&paths, &blind).is_empty());
+
+        fs::write(&visible_skill, "---\nname: example\n---\nSkill changed.\n")
+            .expect("visible skill change");
+        assert_eq!(prompt_files_fingerprint(&paths, &scoped), prompt_before);
+        assert_ne!(resource_files_fingerprint(&paths, &scoped), resource_before);
+        fs::write(
+            &visible_prompt,
+            "---\nname: example\n---\nPrompt changed.\n",
+        )
+        .expect("visible prompt change");
+        assert_ne!(prompt_files_fingerprint(&paths, &scoped), prompt_before);
     }
 
     #[test]
