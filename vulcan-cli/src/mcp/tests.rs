@@ -481,6 +481,11 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     fs::create_dir_all(&vault).expect("vault root");
     let paths = VaultPaths::new(&vault);
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.prompt-reader]\nread = { allow = [\"note:AI/Prompts/summary.md\"] }\n",
+    )
+    .expect("path-scoped reader profile");
     fs::write(vault.join("LargeOwner.md"), "x".repeat(70_000)).expect("owner large-result fixture");
     fs::write(vault.join("LargePeer.md"), "y".repeat(70_000)).expect("peer large-result fixture");
     fs::create_dir_all(vault.join("AI/Prompts")).expect("prompt directory");
@@ -636,6 +641,15 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "unrestricted",
         &["notes-write", "notes-manage", "tasks"],
         &["mcp:tools"],
+    );
+    let prompt_reader_token = named_listener_test_token(
+        &paths,
+        &named,
+        &token_options,
+        "personal",
+        "prompt-reader",
+        &["notes-read"],
+        &["mcp:resources", "mcp:prompts"],
     );
     let team_token = named_listener_test_token(
         &team_paths,
@@ -957,6 +971,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         address,
         &token,
         &write_token,
+        &paths,
+        "foreground",
+    );
+    assert_named_listener_scoped_prompt_notifications(
+        address,
+        &token,
+        &prompt_reader_token,
         &paths,
         "foreground",
     );
@@ -1380,6 +1401,13 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &paths,
         "resident",
     );
+    assert_named_listener_scoped_prompt_notifications(
+        address,
+        &token,
+        &prompt_reader_token,
+        &paths,
+        "resident",
+    );
     named
         .authorization_store
         .revoke_grant(foreground_consent_grant, current_unix_timestamp(), false)
@@ -1619,6 +1647,35 @@ fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr,
 }
 
 #[cfg(feature = "oauth")]
+fn open_named_listener_sse(
+    address: SocketAddr,
+    token: &str,
+    session: &str,
+) -> io::BufReader<TcpStream> {
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("SSE read timeout");
+    write!(
+        stream,
+        "GET /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+    )
+    .expect("SSE request");
+    let mut client = io::BufReader::new(stream);
+    let mut headers = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(client.read_line(&mut line).expect("SSE headers") > 0);
+        headers.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+    }
+    assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
+    client
+}
+
+#[cfg(feature = "oauth")]
 fn assert_named_listener_prompt_change_notifications(
     address: SocketAddr,
     token: &str,
@@ -1628,37 +1685,14 @@ fn assert_named_listener_prompt_change_notifications(
 ) {
     let owner = named_listener_session_id(&named_listener_initialize(address, "parity", token));
     let peer = named_listener_session_id(&named_listener_initialize(address, "parity", token));
-    let open_sse = |session: &str, token: &str| {
-        let mut stream = TcpStream::connect(address).expect("named listener active");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("SSE read timeout");
-        write!(
-        stream,
-        "GET /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nMcp-Session-Id: {session}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
-    )
-    .expect("SSE request");
-        let mut client = io::BufReader::new(stream);
-        let mut headers = String::new();
-        loop {
-            let mut line = String::new();
-            assert!(client.read_line(&mut line).expect("SSE headers") > 0);
-            headers.push_str(&line);
-            if line == "\r\n" {
-                break;
-            }
-        }
-        assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
-        client
-    };
-    let mut owner_sse = open_sse(&owner, token);
-    let mut peer_sse = open_sse(&peer, token);
+    let mut owner_sse = open_named_listener_sse(address, token, &owner);
+    let mut peer_sse = open_named_listener_sse(address, token, &peer);
     let tools_only = named_listener_session_id(&named_listener_initialize(
         address,
         "parity",
         tools_only_token,
     ));
-    let mut tools_only_sse = open_sse(&tools_only, tools_only_token);
+    let mut tools_only_sse = open_named_listener_sse(address, tools_only_token, &tools_only);
 
     let prompt_path = paths
         .vault_root()
@@ -1715,6 +1749,59 @@ fn assert_named_listener_prompt_change_notifications(
     );
     fs::remove_file(prompt_path).expect("remove temporary prompt");
     fs::remove_file(second_prompt).expect("remove second prompt");
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_scoped_prompt_notifications(
+    address: SocketAddr,
+    readonly_token: &str,
+    scoped_token: &str,
+    paths: &VaultPaths,
+    label: &str,
+) {
+    let readonly = named_listener_session_id(&named_listener_initialize(
+        address,
+        "parity",
+        readonly_token,
+    ));
+    let scoped =
+        named_listener_session_id(&named_listener_initialize(address, "parity", scoped_token));
+    let mut readonly_sse = open_named_listener_sse(address, readonly_token, &readonly);
+    let mut scoped_sse = open_named_listener_sse(address, scoped_token, &scoped);
+    let hidden = paths
+        .vault_root()
+        .join(format!("AI/Prompts/hidden-scope-{label}.md"));
+    fs::write(
+        &hidden,
+        format!("---\nname: hidden-scope-{label}\nrole: user\n---\nHidden {label}.\n"),
+    )
+    .expect("hidden prompt");
+    assert_named_listener_prompt_resource_events(&mut readonly_sse);
+    scoped_sse
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(800)))
+        .expect("scoped SSE timeout");
+    let mut unexpected = String::new();
+    let no_event = scoped_sse.read_line(&mut unexpected);
+    assert!(
+        no_event.is_err_and(|error| matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        )),
+        "scoped grant received a hidden prompt/resource event: {unexpected}"
+    );
+    scoped_sse
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("restore SSE timeout");
+
+    let visible = paths.vault_root().join("AI/Prompts/summary.md");
+    let original = fs::read_to_string(&visible).expect("original visible prompt");
+    fs::write(&visible, format!("{original}\nChanged {label}.\n")).expect("change visible prompt");
+    assert_named_listener_prompt_resource_events(&mut readonly_sse);
+    assert_named_listener_prompt_resource_events(&mut scoped_sse);
+    fs::write(&visible, original).expect("restore visible prompt");
+    fs::remove_file(hidden).expect("remove hidden prompt");
 }
 
 #[cfg(feature = "oauth")]
