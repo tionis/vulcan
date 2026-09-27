@@ -1,5 +1,6 @@
 use crate::cache::{drop_fts_triggers, rebuild_fts_index, restore_fts_triggers, CacheError};
 use crate::extraction::extract_attachment_chunks;
+use crate::ordinary_write::{recover_ordinary_write_batch_unlocked, OrdinaryWriteError};
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::periodic::match_periodic_note_path;
 use crate::properties::{
@@ -84,6 +85,7 @@ pub enum ScanError {
     Ignore(ignore::Error),
     Io(std::io::Error),
     MetadataOverflow { field: &'static str, path: PathBuf },
+    OrdinaryWrite(OrdinaryWriteError),
     Sqlite(rusqlite::Error),
     Time(SystemTimeError),
 }
@@ -100,6 +102,7 @@ impl Display for ScanError {
             Self::MetadataOverflow { field, path } => {
                 write!(formatter, "{field} overflowed for {}", path.display())
             }
+            Self::OrdinaryWrite(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
             Self::Time(error) => write!(formatter, "{error}"),
         }
@@ -112,6 +115,7 @@ impl Error for ScanError {
             Self::Cache(error) => Some(error),
             Self::Ignore(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::OrdinaryWrite(error) => Some(error),
             Self::AttachmentExtraction(_) | Self::Checkpoint(_) | Self::MetadataOverflow { .. } => {
                 None
             }
@@ -160,6 +164,12 @@ impl From<SystemTimeError> for ScanError {
 impl From<crate::history::CheckpointError> for ScanError {
     fn from(error: crate::history::CheckpointError) -> Self {
         Self::Checkpoint(error.to_string())
+    }
+}
+
+impl From<OrdinaryWriteError> for ScanError {
+    fn from(error: OrdinaryWriteError) -> Self {
+        Self::OrdinaryWrite(error)
     }
 }
 
@@ -277,6 +287,7 @@ pub fn scan_vault_unlocked_with_progress<F>(
 where
     F: FnMut(ScanProgress),
 {
+    recover_ordinary_write_batch_unlocked(paths)?;
     scan_inventory(paths, mode, on_progress, None)
 }
 
@@ -287,7 +298,13 @@ pub(crate) fn scan_watched_paths(
     changed: &BTreeSet<String>,
 ) -> Result<ScanSummary, ScanError> {
     let _lock = acquire_write_lock(paths)?;
-    scan_inventory(paths, ScanMode::Incremental, &mut |_| {}, Some(changed))
+    let recovered = recover_ordinary_write_batch_unlocked(paths)?;
+    scan_inventory(
+        paths,
+        ScanMode::Incremental,
+        &mut |_| {},
+        recovered.is_none().then_some(changed),
+    )
 }
 
 #[allow(clippy::too_many_lines)]

@@ -313,7 +313,9 @@ fn content_digest(content: &str) -> String {
 }
 
 fn recover_locked(paths: &VaultPaths) -> Result<Option<OrdinaryWriteOutcome>, OrdinaryWriteError> {
-    let directory = ensure_state_directory(paths)?;
+    let Some(directory) = existing_state_directory(paths)? else {
+        return Ok(None);
+    };
     let Some(journal) = load_journal(&directory)? else {
         return Ok(None);
     };
@@ -334,6 +336,13 @@ fn recover_locked(paths: &VaultPaths) -> Result<Option<OrdinaryWriteOutcome>, Or
     }
     remove_journal(&directory)?;
     Ok(Some(journal.outcome(true)))
+}
+
+/// Recover while the caller already holds the vault write lock.
+pub(crate) fn recover_ordinary_write_batch_unlocked(
+    paths: &VaultPaths,
+) -> Result<Option<OrdinaryWriteOutcome>, OrdinaryWriteError> {
+    recover_locked(paths)
 }
 
 fn apply_one(paths: &VaultPaths, change: &OrdinaryWriteChange) -> Result<(), OrdinaryWriteError> {
@@ -841,6 +850,75 @@ mod tests {
         assert!(recover_ordinary_write_batch(&paths)
             .expect("idempotent recovery")
             .is_none());
+    }
+
+    #[test]
+    fn scanning_rolls_forward_before_indexing_an_interrupted_batch() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+        crate::scan_vault(&paths, crate::ScanMode::Full).expect("initial scan");
+        apply_with_hook(&paths, &changes(), |_| {
+            Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+        })
+        .expect_err("simulated interruption");
+
+        let summary = crate::scan_vault(&paths, crate::ScanMode::Incremental)
+            .expect("scan recovers before indexing");
+        assert_eq!(summary.added, 1);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Inbox.md")).expect("source"),
+            "[[Task]]\n"
+        );
+        assert!(inspect_ordinary_write_batch(&paths)
+            .expect("journal cleared")
+            .is_none());
+    }
+
+    #[test]
+    fn scanning_refuses_a_conflicted_batch_without_indexing_partial_state() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+        crate::scan_vault(&paths, crate::ScanMode::Full).expect("initial scan");
+        apply_with_hook(&paths, &changes(), |_| {
+            Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+        })
+        .expect_err("simulated interruption");
+        fs::write(temporary.path().join("Inbox.md"), "external edit\n").expect("external edit");
+
+        let error = crate::scan_vault(&paths, crate::ScanMode::Incremental)
+            .expect_err("conflicted recovery blocks scan");
+        assert!(matches!(error, crate::ScanError::OrdinaryWrite(_)));
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Inbox.md")).expect("source"),
+            "external edit\n"
+        );
+        assert!(inspect_ordinary_write_batch(&paths)
+            .expect("journal preserved")
+            .is_some());
+    }
+
+    #[test]
+    fn watched_path_scan_rescans_every_path_after_recovery() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").expect("source");
+        crate::scan_vault(&paths, crate::ScanMode::Full).expect("initial scan");
+        apply_with_hook(&paths, &changes(), |_| {
+            Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+        })
+        .expect_err("simulated interruption");
+
+        let summary =
+            crate::scan::scan_watched_paths(&paths, &["Task.md".to_string()].into_iter().collect())
+                .expect("watch scan recovers entire batch");
+        assert_eq!(summary.added, 1);
+        assert_eq!(summary.updated, 1);
     }
 
     #[test]
