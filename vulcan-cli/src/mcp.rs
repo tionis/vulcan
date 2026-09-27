@@ -21,7 +21,7 @@ use std::fs;
 #[cfg(feature = "oauth")]
 use std::io::Write;
 use std::io::{self, BufRead};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -1400,11 +1400,9 @@ fn run_mcp_http_server_inner(
     let auth_enabled = options.auth_token.is_some();
     let bind_addr = parse_mcp_http_bind_addr(&options.bind, auth_enabled)?;
     let endpoint = normalize_mcp_http_endpoint(&options.endpoint);
-    let listener = TcpListener::bind(bind_addr).map_err(CliError::operation)?;
-    listener
-        .set_nonblocking(true)
+    let listener = vulcan_daemon::mcp_transport::McpHttpListener::bind(bind_addr)
         .map_err(CliError::operation)?;
-    let addr = listener.local_addr().map_err(CliError::operation)?;
+    let addr = listener.local_addr();
     eprintln!("MCP HTTP server listening on http://{addr}{endpoint}");
     if lifecycle.stop.is_none() {
         spawn_mcp_index_watcher(paths.clone(), WatchOptions::default());
@@ -1466,34 +1464,15 @@ fn run_mcp_http_server_inner(
     if let Some(ready) = lifecycle.ready {
         ready(addr)?;
     }
-    loop {
-        if lifecycle.stop.is_some_and(ShutdownSignal::is_cancelled) {
-            close_mcp_http_sessions(&context);
-            return Ok(());
+    let handler_context = context.clone();
+    let result = listener.serve(lifecycle.stop, move |stream| {
+        if let Err(error) = handle_mcp_http_connection(&handler_context, stream) {
+            let response = mcp_http_json_error_response(500, error.to_string(), Value::Null);
+            let _ = write_mcp_http_response(stream, &response);
         }
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let context = context.clone();
-                thread::spawn(move || {
-                    let _ = stream.set_nonblocking(false);
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    if let Err(error) = handle_mcp_http_connection(&context, &mut stream) {
-                        let response =
-                            mcp_http_json_error_response(500, error.to_string(), Value::Null);
-                        let _ = write_mcp_http_response(&mut stream, &response);
-                    }
-                });
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if let Some(stop) = lifecycle.stop {
-                    stop.wait_timeout(Duration::from_millis(20));
-                } else {
-                    thread::sleep(Duration::from_millis(20));
-                }
-            }
-            Err(error) => return Err(CliError::operation(error)),
-        }
-    }
+    });
+    close_mcp_http_sessions(&context);
+    result.map_err(CliError::operation)
 }
 
 fn close_mcp_http_sessions(context: &McpHttpServerContext) {

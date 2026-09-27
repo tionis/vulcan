@@ -24,6 +24,7 @@ pub mod mcp_http_codec;
 pub mod mcp_remote;
 pub mod mcp_session;
 pub mod mcp_state;
+pub mod mcp_transport;
 pub mod mutation_scheduler;
 pub mod notifications;
 pub mod observation;

@@ -237,8 +237,9 @@ consume these shared contracts. `vulcan-app::mcp_assistant` provides permission-
 and skill discovery, prompt rendering, resource discovery/templates, vault-owned assistant reads, and pack-filtered custom-tool resource reads to both transports.
 The bounded HTTP/1.1 request/response and SSE frame codecs now live in
 `vulcan-daemon::mcp_http_codec` and are used by the foreground and resident named listeners.
-This moves wire framing out of the CLI without moving OAuth policy, session lifecycle, or the
-method dispatcher yet.
+`vulcan-daemon::mcp_transport` also owns TCP bind, accept, per-connection read timeout, and
+wakeable listener shutdown for both modes. OAuth routing, MCP sessions, and method dispatch still
+live in the CLI host; a daemon-owned HTTP route remains to be extracted.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or
