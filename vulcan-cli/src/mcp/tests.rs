@@ -4100,7 +4100,7 @@ fn hosted_mcp_known_failures_report_dispatch_and_commit_knowledge() {
 
 #[cfg(feature = "oauth")]
 #[test]
-fn hosted_mcp_scheduling_treats_custom_and_saving_web_tools_as_mutations() {
+fn hosted_mcp_scheduling_uses_catalog_read_hints_and_conservative_custom_mutations() {
     let call = |name| {
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -4119,7 +4119,14 @@ fn hosted_mcp_scheduling_treats_custom_and_saving_web_tools_as_mutations() {
     );
     assert_eq!(
         mcp_scheduled_operation(&call("web_fetch")),
-        ScheduledOperation::Mutation
+        ScheduledOperation::Read
+    );
+    assert!(
+        serde_json::from_value::<McpWebFetchArgs>(serde_json::json!({
+            "url": "https://example.com/",
+            "save": "Page.md"
+        }))
+        .is_err()
     );
     assert_eq!(
         mcp_scheduled_operation(&call("custom_tool")),

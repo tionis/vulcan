@@ -730,10 +730,6 @@ fn mcp_request_is_read_only(payload: &Value) -> bool {
     else {
         return false;
     };
-    if name == "web_fetch" {
-        // web_fetch is generally a read, but its save option can write a vault file.
-        return false;
-    }
     if tool_by_name(name).is_some_and(|tool| tool.annotations.read_only_hint) {
         true
     } else {

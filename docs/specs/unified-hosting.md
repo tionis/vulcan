@@ -272,6 +272,9 @@ authentication or route dispatch.
 The MCP sync pack's permission checks, dry-run target selection, doctor platform choice, and
 conflict report selection are shared app workflows. The CLI transport retains argument decoding and
 MCP presentation; moving these workflows does not grant Git access or enable sync mutation.
+Hosted `web_fetch` uses the read lane and has no MCP save argument; the direct CLI's optional
+`web fetch --save` is a separate write-capable workflow. Unknown and custom MCP tools remain on the
+mutation lane until their effects can be proved read-only.
 The MCP config pack likewise uses shared app workflows for permission checks, show, dry-run plan,
 apply, changed-file selection, and optional auto-commit. The CLI transport retains argument decoding
 and response presentation; the per-vault config file and trust rules remain unchanged.
