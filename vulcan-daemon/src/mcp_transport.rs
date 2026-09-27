@@ -9,12 +9,12 @@ use crate::mcp_http_codec::{
 };
 use crate::shutdown::ShutdownSignal;
 use serde_json::Value;
-use std::io;
+use std::io::{self, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vulcan_app::mcp_dispatch::jsonrpc_error;
 
 const MCP_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -87,8 +87,11 @@ impl McpHttpListener {
                         .spawn(move || {
                             let _slot = slot;
                             let _ = stream.set_nonblocking(false);
-                            let _ = stream.set_read_timeout(Some(MCP_CONNECTION_READ_TIMEOUT));
-                            match read_mcp_http_request(&mut stream) {
+                            let mut reader = RequestDeadlineReader::new(
+                                &mut stream,
+                                MCP_CONNECTION_READ_TIMEOUT,
+                            );
+                            match read_mcp_http_request(&mut reader) {
                                 Ok(request) => handler(&request, &mut stream),
                                 Err(error) => {
                                     let body =
@@ -120,6 +123,43 @@ impl McpHttpListener {
     }
 }
 
+/// A deadline for the whole request, not a timeout refreshed by every byte.
+struct RequestDeadlineReader<'a> {
+    stream: &'a mut TcpStream,
+    deadline: Instant,
+}
+
+impl<'a> RequestDeadlineReader<'a> {
+    fn new(stream: &'a mut TcpStream, timeout: Duration) -> Self {
+        Self {
+            stream,
+            deadline: Instant::now() + timeout,
+        }
+    }
+}
+
+impl Read for RequestDeadlineReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "MCP HTTP request deadline exceeded",
+            ));
+        }
+        self.stream
+            .set_read_timeout(Some(remaining.max(Duration::from_millis(1))))?;
+        let read = self.stream.read(buffer)?;
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "MCP HTTP request deadline exceeded",
+            ));
+        }
+        Ok(read)
+    }
+}
+
 struct ConnectionSlot(Arc<AtomicUsize>);
 
 impl Drop for ConnectionSlot {
@@ -137,6 +177,31 @@ mod tests {
 
     const TEST_REQUEST: &[u8] =
         b"GET /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n";
+
+    #[test]
+    fn request_deadline_expires_even_when_a_client_keeps_sending_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let mut client =
+            TcpStream::connect(listener.local_addr().expect("address")).expect("client connection");
+        let (mut server, _) = listener.accept().expect("server connection");
+        let writer = thread::spawn(move || {
+            for _ in 0..30 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let started = Instant::now();
+        let error = {
+            let mut reader = RequestDeadlineReader::new(&mut server, Duration::from_millis(100));
+            read_mcp_http_request(&mut reader).expect_err("slow request must time out")
+        };
+        assert_eq!(error.status, 400);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(server);
+        writer.join().expect("writer thread");
+    }
 
     #[test]
     fn listener_dispatches_connections_and_stops_on_signal() {
@@ -165,7 +230,10 @@ mod tests {
         );
         stop.cancel();
         runner.join().expect("listener thread").expect("shutdown");
-        assert!(TcpStream::connect(address).is_err());
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
     }
 
     #[test]

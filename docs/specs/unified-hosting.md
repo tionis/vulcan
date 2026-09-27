@@ -246,6 +246,8 @@ connections release admission capacity.
 The daemon listener parses bounded requests before calling the CLI's OAuth/MCP route handler and
 returns the existing JSON-RPC invalid-request shape for malformed HTTP framing. The host callback
 only receives successfully parsed requests.
+Parsing has a five-second total deadline for headers and body, rather than a timeout refreshed by
+each arriving byte. This bounds slow clients before an SSE stream or route handler starts.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or
