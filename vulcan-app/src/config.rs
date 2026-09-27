@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
-use vulcan_core::paths::secure_write;
+use vulcan_core::paths::{secure_create_atomic, secure_replace, secure_write};
 use vulcan_core::{
     default_config_template, ensure_vulcan_dir, load_permission_profiles,
     load_permission_profiles_with_overrides, load_vault_config, load_vault_config_with_overrides,
@@ -2459,8 +2459,13 @@ fn apply_config_mutation_plan(
             .absolute_config_path
             .strip_prefix(paths.vault_root())
             .map_err(AppError::operation)?;
-        secure_write(paths.vault_root(), relative_path, &plan.rendered_contents)
-            .map_err(AppError::operation)?;
+        if plan.created_config {
+            secure_create_atomic(paths.vault_root(), relative_path, &plan.rendered_contents)
+                .map_err(AppError::operation)?;
+        } else {
+            secure_replace(paths.vault_root(), relative_path, &plan.rendered_contents)
+                .map_err(AppError::operation)?;
+        }
     }
     Ok(normalize_config_diagnostics(
         paths,
@@ -2862,6 +2867,22 @@ read = { allow = ["folder:Projects/**"] }
         assert_eq!(
             fs::read_to_string(outside_config).expect("outside config should remain readable"),
             outside_contents
+        );
+    }
+
+    #[test]
+    fn apply_config_set_does_not_clobber_a_file_created_after_planning() {
+        let (_dir, paths) = test_paths();
+        let planned = plan_config_set_report(&paths, "link_style", "markdown", false)
+            .expect("config set should plan");
+        assert!(planned.created_config);
+        let concurrent_contents = "[links]\nstyle = \"wikilink\"\n";
+        fs::write(paths.config_file(), concurrent_contents).expect("concurrent config create");
+
+        apply_config_set_report(&paths, planned).expect_err("late create must not be overwritten");
+        assert_eq!(
+            fs::read_to_string(paths.config_file()).expect("concurrent config preserved"),
+            concurrent_contents
         );
     }
 

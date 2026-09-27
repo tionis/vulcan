@@ -275,6 +275,9 @@ MCP presentation; moving these workflows does not grant Git access or enable syn
 The MCP config pack likewise uses shared app workflows for permission checks, show, dry-run plan,
 apply, changed-file selection, and optional auto-commit. The CLI transport retains argument decoding
 and response presentation; the per-vault config file and trust rules remain unchanged.
+Live MCP config-set planning and publication hold the cross-process vault lock, so separately
+hosted remotes targeting one vault do not lose each other's config updates. Publication stages a
+complete replacement or an exclusive new file before exposing it to readers.
 MCP `index_scan` also uses a shared app workflow for index permission, full/incremental scan choice,
 and post-scan automation. Foreground and resident hosts retain the same typed scan summary.
 The shared auto-commit policy now lives in `vulcan-app::commit`. Both CLI mutations and MCP
