@@ -15969,6 +15969,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("vault query skill should be readable");
     assert!(vault_query.contains("Native query DSL starts with `from notes`"));
     assert!(vault_query.contains("A single `--where` value is one predicate"));
+    assert!(vault_query.contains("vulcan repair ordinary-write status"));
     let properties =
         fs::read_to_string(vault_root.join(".agents/skills/properties-and-tags/SKILL.md"))
             .expect("properties skill should be readable");
@@ -26431,6 +26432,79 @@ fn ls_command_supports_glob_and_count_format() {
     let json = parse_stdout_json(&assert);
 
     assert_eq!(json["count"], Value::Number(1.into()));
+}
+
+#[test]
+fn direct_query_commands_refuse_pending_ordinary_write_journal() {
+    #[derive(serde::Serialize)]
+    struct JournalFixture<'a> {
+        version: u32,
+        transaction_id: &'a str,
+        changes: Vec<vulcan_core::ordinary_write::OrdinaryWriteChange>,
+        digest: String,
+    }
+
+    let temp = TempDir::new().expect("temp dir");
+    let vault_root = temp.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let paths = VaultPaths::new(&vault_root);
+    let original = fs::read_to_string(vault_root.join("Home.md")).expect("original note");
+    let directory = paths
+        .operational_state_dir()
+        .expect("operational state")
+        .join("ordinary-write");
+    fs::create_dir_all(&directory).expect("journal directory");
+    let mut journal = JournalFixture {
+        version: 1,
+        transaction_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        changes: vec![vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: "Home.md".to_string(),
+            before: Some(original.clone()),
+            after: Some(format!("{original}\nInterrupted update\n")),
+        }],
+        digest: String::new(),
+    };
+    journal.digest = blake3::hash(&serde_json::to_vec(&journal).expect("journal bytes"))
+        .to_hex()
+        .to_string();
+    let journal_path = directory.join("journal.json");
+    fs::write(
+        &journal_path,
+        serde_json::to_vec(&journal).expect("sealed journal"),
+    )
+    .expect("pending journal");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+            .expect("owner-only journal");
+    }
+
+    for command_args in [
+        &["backlinks", "Home"][..],
+        &["links", "Home"][..],
+        &["query", "from notes"][..],
+        &["ls"][..],
+        &["tags"][..],
+        &["properties"][..],
+        &["search", "Home"][..],
+    ] {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .args([
+                "--vault",
+                vault_root.to_str().expect("vault path"),
+                "--refresh",
+                "off",
+            ])
+            .args(command_args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "ordinary write journal is pending",
+            ));
+    }
 }
 
 #[test]

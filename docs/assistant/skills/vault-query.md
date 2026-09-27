@@ -42,6 +42,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - A single `--where` value is one predicate. Repeat `--where` for `AND`; it does not accept `OR`,
   parentheses, `!=`, `in`, or `is null` (`field = null` is supported).
 - If the result set is surprising, inspect the filter first before adding more conditions.
+- If direct CLI search, query, `ls`, tags, properties, backlinks, or links reports a pending ordinary-write journal, inspect it with `vulcan repair ordinary-write status`; do not use another read path to bypass the recovery check.
 
 ## Example Moves
 

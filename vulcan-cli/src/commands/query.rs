@@ -20,6 +20,13 @@ use vulcan_core::{
     PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
 };
 
+fn consistent_read_guard(
+    paths: &VaultPaths,
+) -> Result<Option<vulcan_core::write_lock::ReadLockGuard>, CliError> {
+    vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+        .map_err(CliError::operation)
+}
+
 pub(crate) fn handle_backlinks_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -30,6 +37,7 @@ pub(crate) fn handle_backlinks_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let _read_guard = consistent_read_guard(paths)?;
     let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
     let read_filter = selected_read_permission_filter(cli, paths)?;
     let report = query_backlinks_with_filter(paths, &note, read_filter.as_ref())
@@ -56,6 +64,7 @@ pub(crate) fn handle_links_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let _read_guard = consistent_read_guard(paths)?;
     let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
     let read_filter = selected_read_permission_filter(cli, paths)?;
     let report =
@@ -92,6 +101,7 @@ pub(crate) fn handle_query_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let _read_guard = consistent_read_guard(paths)?;
     if list_fields {
         if dsl.is_some() || json.is_some() {
             return Err(CliError::operation(
@@ -226,6 +236,7 @@ pub(crate) fn handle_ls_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let _read_guard = consistent_read_guard(paths)?;
     let mut query_filters = filters.to_vec();
     if let Some(tag) = tag {
         query_filters.push(format!("file.tags has_tag {tag}"));
@@ -272,6 +283,7 @@ pub(crate) fn handle_tags_command(
     show_count: bool,
     list_controls: &ListOutputControls,
 ) -> Result<(), CliError> {
+    let _read_guard = consistent_read_guard(paths)?;
     let read_filter = selected_read_permission_filter(cli, paths)?;
     let report = query_notes_with_filter(
         paths,
@@ -310,6 +322,7 @@ pub(crate) fn handle_properties_command(
     show_types: bool,
     list_controls: &ListOutputControls,
 ) -> Result<(), CliError> {
+    let _read_guard = consistent_read_guard(paths)?;
     let mut properties = list_properties(paths).map_err(CliError::operation)?;
     sort_property_catalog(&mut properties, sort);
     print_property_catalog(
@@ -459,6 +472,7 @@ pub(crate) fn handle_search_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let _read_guard = consistent_read_guard(paths)?;
     let effective_query = match (query, regex) {
         (Some(_), Some(_)) => {
             return Err(CliError::operation(
