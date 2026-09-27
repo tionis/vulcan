@@ -1962,44 +1962,6 @@ fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
 
 #[cfg(feature = "oauth")]
 #[test]
-fn protected_resource_metadata_path_accepts_root_and_endpoint_forms() {
-    assert!(is_protected_resource_metadata_path(
-        "/.well-known/oauth-protected-resource",
-        "/mcp"
-    ));
-    assert!(is_protected_resource_metadata_path(
-        "/.well-known/oauth-protected-resource/mcp",
-        "/mcp"
-    ));
-    assert!(!is_protected_resource_metadata_path(
-        "/.well-known/oauth-authorization-server",
-        "/mcp"
-    ));
-}
-
-#[cfg(feature = "oauth")]
-#[test]
-fn authorization_server_metadata_path_accepts_root_endpoint_and_oidc_forms() {
-    assert!(is_authorization_server_metadata_path(
-        "/.well-known/oauth-authorization-server",
-        "/mcp"
-    ));
-    assert!(is_authorization_server_metadata_path(
-        "/.well-known/oauth-authorization-server/mcp",
-        "/mcp"
-    ));
-    assert!(is_authorization_server_metadata_path(
-        "/.well-known/openid-configuration",
-        "/mcp"
-    ));
-    assert!(is_authorization_server_metadata_path(
-        "/.well-known/openid-configuration/mcp",
-        "/mcp"
-    ));
-}
-
-#[cfg(feature = "oauth")]
-#[test]
 fn oauth_scope_parser_defaults_deduplicates_and_rejects_widening() {
     assert_eq!(
         parse_mcp_oauth_scopes(None).expect("default scopes"),
@@ -3883,8 +3845,8 @@ fn named_mcp_operation_status_is_bound_to_grant_subject_and_audience() {
         body: Vec::new(),
     };
     assert_eq!(
-        named_mcp_operation_id(&http, &request),
-        Some(operation_id.as_str())
+        classify_mcp_http_route(&request, &http.endpoint, true, true, true),
+        McpHttpRoute::OperationStatus(operation_id.as_str())
     );
 }
 

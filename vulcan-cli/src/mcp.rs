@@ -126,6 +126,7 @@ use vulcan_daemon::mcp_http_codec::{
     write_mcp_http_response, write_mcp_http_sse_event, write_mcp_http_sse_headers,
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
+use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
@@ -1589,28 +1590,57 @@ fn handle_mcp_http_connection(
     stream: &mut TcpStream,
 ) -> Result<(), CliError> {
     #[cfg(feature = "oauth")]
+    let oauth_enabled = context.oauth.is_some();
+    #[cfg(not(feature = "oauth"))]
+    let oauth_enabled = false;
+    #[cfg(feature = "oauth")]
+    let local_oauth = matches!(context.oauth, Some(McpOAuthMode::Local(_)));
+    #[cfg(not(feature = "oauth"))]
+    let local_oauth = false;
+    #[cfg(feature = "oauth")]
+    let named_remote = context.named_runtime.is_some();
+    #[cfg(not(feature = "oauth"))]
+    let named_remote = false;
+    let route = classify_mcp_http_route(
+        request,
+        &context.endpoint,
+        oauth_enabled,
+        local_oauth,
+        named_remote,
+    );
+    #[cfg(feature = "oauth")]
     {
-        if let Some(response) = handle_mcp_oauth_metadata(context, request) {
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-            return Ok(());
-        }
-        if let Some(operation_id) = named_mcp_operation_id(context, request) {
-            let response = if request.method == "GET" {
-                match authenticate_mcp_http_request(context, request) {
-                    Ok(authority) => {
-                        handle_named_mcp_operation_status(context, &authority, operation_id)
+        match route {
+            McpHttpRoute::LocalOAuthRegister
+            | McpHttpRoute::LocalOAuthAuthorize
+            | McpHttpRoute::LocalOAuthToken
+            | McpHttpRoute::LocalOAuthIndieAuthCallback
+            | McpHttpRoute::LocalOAuthConsent
+            | McpHttpRoute::AuthorizationServerMetadata
+            | McpHttpRoute::ProtectedResourceMetadata => {
+                let response = handle_mcp_oauth_route(context, request, route);
+                write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+                return Ok(());
+            }
+            McpHttpRoute::OperationStatus(operation_id) => {
+                let response = if request.method == "GET" {
+                    match authenticate_mcp_http_request(context, request) {
+                        Ok(authority) => {
+                            handle_named_mcp_operation_status(context, &authority, operation_id)
+                        }
+                        Err(response) => response,
                     }
-                    Err(response) => response,
-                }
-            } else {
-                mcp_http_json_error_response(405, "Method Not Allowed", Value::Null)
-            };
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-            return Ok(());
+                } else {
+                    mcp_http_json_error_response(405, "Method Not Allowed", Value::Null)
+                };
+                write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+                return Ok(());
+            }
+            McpHttpRoute::McpEndpoint | McpHttpRoute::NotFound => {}
         }
     }
 
-    if request.path != context.endpoint {
+    if route != McpHttpRoute::McpEndpoint {
         let response = mcp_http_json_error_response(404, "Not Found", Value::Null);
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
@@ -1640,16 +1670,6 @@ fn handle_mcp_http_connection(
     }
 
     Ok(())
-}
-
-#[cfg(feature = "oauth")]
-fn named_mcp_operation_id<'a>(
-    context: &McpHttpServerContext,
-    request: &'a McpHttpRequest,
-) -> Option<&'a str> {
-    context.named_runtime.as_ref()?;
-    let prefix = format!("{}/operations/", context.endpoint.trim_end_matches('/'));
-    request.path.strip_prefix(&prefix)
 }
 
 #[cfg(feature = "oauth")]
@@ -4008,46 +4028,36 @@ fn reject_mcp_oauth_options_when_disabled(options: &McpHttpOptions) -> Result<()
 }
 
 #[cfg(feature = "oauth")]
-fn handle_mcp_oauth_metadata(
+fn handle_mcp_oauth_route(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
-) -> Option<McpHttpResponse> {
-    let oauth = context.oauth.as_ref()?;
-    if let McpOAuthMode::Local(local) = oauth {
-        if request.path == "/oauth/register" {
-            return Some(handle_local_oauth_register(context, request));
+    route: McpHttpRoute<'_>,
+) -> McpHttpResponse {
+    let oauth = context.oauth.as_ref().expect("OAuth route requires issuer");
+    let local = || match oauth {
+        McpOAuthMode::Local(local) => local,
+        McpOAuthMode::External(_) => unreachable!("local OAuth route requires local issuer"),
+    };
+    match route {
+        McpHttpRoute::LocalOAuthRegister => handle_local_oauth_register(context, request),
+        McpHttpRoute::LocalOAuthAuthorize => {
+            handle_local_oauth_authorize(context, local(), request)
         }
-        if request.path == "/oauth/authorize" {
-            return Some(handle_local_oauth_authorize(context, local, request));
+        McpHttpRoute::LocalOAuthToken => handle_local_oauth_token(context, local(), request),
+        McpHttpRoute::LocalOAuthIndieAuthCallback => {
+            handle_local_oauth_indieauth_callback(context, local(), request)
         }
-        if request.path == "/oauth/token" {
-            return Some(handle_local_oauth_token(context, local, request));
-        }
-        if request.path == "/oauth/indieauth/callback" {
-            return Some(handle_local_oauth_indieauth_callback(
-                context, local, request,
-            ));
-        }
-        if request.path == "/oauth/consent" {
-            return Some(handle_local_oauth_consent(context, local, request));
-        }
-    }
-    if request.method != "GET" {
-        return None;
-    }
-    if is_authorization_server_metadata_path(&request.path, &context.endpoint) {
-        return Some(McpHttpResponse {
+        McpHttpRoute::LocalOAuthConsent => handle_local_oauth_consent(context, local(), request),
+        McpHttpRoute::AuthorizationServerMetadata => McpHttpResponse {
             status: 200,
             content_type: Some("application/json"),
             body: serde_json::to_vec(oauth_authorization_server_metadata(oauth))
                 .expect("json should serialize"),
             extra_headers: Vec::new(),
-        });
+        },
+        McpHttpRoute::ProtectedResourceMetadata => oauth_protected_resource_response(oauth),
+        _ => unreachable!("non-OAuth route passed to OAuth handler"),
     }
-    if is_protected_resource_metadata_path(&request.path, &context.endpoint) {
-        return Some(oauth_protected_resource_response(oauth));
-    }
-    None
 }
 
 #[cfg(feature = "oauth")]
@@ -5445,20 +5455,6 @@ fn oauth_json_error_response(
         body: serde_json::to_vec(&body).expect("json should serialize"),
         extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
     }
-}
-
-#[cfg(feature = "oauth")]
-fn is_protected_resource_metadata_path(path: &str, endpoint: &str) -> bool {
-    path == "/.well-known/oauth-protected-resource"
-        || path == format!("/.well-known/oauth-protected-resource{endpoint}")
-}
-
-#[cfg(feature = "oauth")]
-fn is_authorization_server_metadata_path(path: &str, endpoint: &str) -> bool {
-    path == "/.well-known/oauth-authorization-server"
-        || path == format!("/.well-known/oauth-authorization-server{endpoint}")
-        || path == "/.well-known/openid-configuration"
-        || path == format!("/.well-known/openid-configuration{endpoint}")
 }
 
 #[cfg(feature = "oauth")]

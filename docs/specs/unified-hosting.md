@@ -238,8 +238,9 @@ and skill discovery, prompt rendering, resource discovery/templates, vault-owned
 The bounded HTTP/1.1 request/response and SSE frame codecs now live in
 `vulcan-daemon::mcp_http_codec` and are used by the foreground and resident named listeners.
 `vulcan-daemon::mcp_transport` also owns TCP bind, accept, per-connection read timeout, and
-wakeable listener shutdown for both modes. OAuth routing, MCP sessions, and method dispatch still
-live in the CLI host; a daemon-owned HTTP route remains to be extracted.
+wakeable listener shutdown for both modes. The daemon classifies OAuth, metadata, operation-status,
+and MCP endpoint paths before dispatch. OAuth handlers, MCP sessions, and method dispatch still live
+in the CLI host and remain to be extracted into shared workflows.
 Each named or direct HTTP listener has a 64-connection admission ceiling, counting SSE streams.
 Excess connections receive HTTP 503 with `Retry-After: 1` before a worker is spawned; completed
 connections release admission capacity.
