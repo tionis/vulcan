@@ -10,9 +10,10 @@ use vulcan_core::{
     assistant_config_summary, assistant_prompts_root, assistant_skills_root,
     list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
     load_vault_config, read_vault_agents_file, render_assistant_prompt, AssistantPromptSummary,
-    AssistantSkillSummary, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    AssistantSkillSummary, PermissionGuard, PermissionProfile, ProfilePermissionGuard, VaultPaths,
 };
 
+use crate::mcp_catalog::{pack_name_list, visible_tool_catalog, McpToolPack};
 use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
 use crate::tools::{self, CustomToolDescriptor, CustomToolRegistryOptions};
 
@@ -45,6 +46,39 @@ pub fn visible_custom_tools(
             })
             .collect(),
     )
+}
+
+/// Fingerprint the built-in and custom tools discoverable under one profile and pack selection.
+pub fn tool_catalog_fingerprint(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+    profile: &PermissionProfile,
+    registry_options: impl FnOnce() -> CustomToolRegistryOptions,
+) -> String {
+    let mut parts = visible_tool_catalog(selected_tool_packs, profile)
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect::<Vec<_>>();
+    if selected_tool_packs.contains(&McpToolPack::Custom) {
+        let pack_names = pack_name_list(selected_tool_packs)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let registry_options = registry_options();
+        if let Ok(custom_tools) = visible_custom_tools(
+            paths,
+            active_permission_profile,
+            &pack_names,
+            &registry_options,
+        ) {
+            parts.extend(
+                custom_tools
+                    .into_iter()
+                    .filter_map(|tool| serde_json::to_string(&tool.summary).ok()),
+            );
+        }
+    }
+    parts.join("\n")
 }
 
 /// Handle projected skill-command resource reads using the same visibility rule as tools/list.
@@ -744,6 +778,42 @@ mod tests {
         )
         .expect("visible prompt change");
         assert_ne!(prompt_files_fingerprint(&paths, &scoped), prompt_before);
+    }
+
+    #[test]
+    fn tool_catalog_snapshot_tracks_profile_and_pack_visibility() {
+        let temporary = tempfile::tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        let readonly = resolve_permission_profile(&paths, Some("readonly"))
+            .expect("readonly profile")
+            .profile;
+        let unrestricted = resolve_permission_profile(&paths, Some("unrestricted"))
+            .expect("unrestricted profile")
+            .profile;
+        let read_packs = BTreeSet::from([McpToolPack::NotesRead]);
+        let write_packs = BTreeSet::from([McpToolPack::NotesWrite]);
+        let read =
+            tool_catalog_fingerprint(&paths, Some("readonly"), &read_packs, &readonly, || {
+                panic!("non-custom tool snapshots must not construct registry options")
+            });
+        let denied_write = tool_catalog_fingerprint(
+            &paths,
+            Some("readonly"),
+            &write_packs,
+            &readonly,
+            CustomToolRegistryOptions::default,
+        );
+        let allowed_write = tool_catalog_fingerprint(
+            &paths,
+            Some("unrestricted"),
+            &write_packs,
+            &unrestricted,
+            CustomToolRegistryOptions::default,
+        );
+        assert!(read.contains("note_get"));
+        assert!(!read.contains("note_create"));
+        assert!(!denied_write.contains("note_create"));
+        assert!(allowed_write.contains("note_create"));
     }
 
     #[test]

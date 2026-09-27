@@ -106,7 +106,7 @@ use vulcan_core::{
     OAuthResourceServer, OAuthResourceServerConfig,
 };
 use vulcan_core::{
-    load_vault_config, resolve_permission_profile, watch_vault, PermissionGuard, PermissionProfile,
+    load_vault_config, resolve_permission_profile, watch_vault, PermissionGuard,
     ProfilePermissionGuard, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
@@ -2151,11 +2151,12 @@ impl McpServerCore {
             .collect();
         let guard = ProfilePermissionGuard::new(paths, selection.clone());
         let snapshot = McpListSnapshot {
-            tools: tool_fingerprint(
+            tools: mcp_assistant::tool_catalog_fingerprint(
                 paths,
                 Some(selection.name.as_str()),
                 &selected_tool_packs,
                 &selection.profile,
+                crate::custom_tool_registry_options,
             ),
             prompts: prompt_files_fingerprint(paths, &guard),
             resources: resource_files_fingerprint(paths, &guard),
@@ -3489,11 +3490,12 @@ impl McpServerCore {
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
         let current = McpListSnapshot {
-            tools: tool_fingerprint(
+            tools: mcp_assistant::tool_catalog_fingerprint(
                 &self.paths,
                 Some(self.selection.name.as_str()),
                 &self.selected_tool_packs,
                 &self.selection.profile,
+                crate::custom_tool_registry_options,
             ),
             prompts: prompt_files_fingerprint(&self.paths, &self.guard),
             resources: resource_files_fingerprint(&self.paths, &self.guard),
@@ -5432,31 +5434,6 @@ fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'stati
         McpVisibilityRequirement::ConfigWrite => "config write access",
         McpVisibilityRequirement::GitReadAll => "Git access and full-vault read access",
     }
-}
-
-fn tool_fingerprint(
-    paths: &VaultPaths,
-    active_permission_profile: Option<&str>,
-    selected_tool_packs: &BTreeSet<McpToolPack>,
-    profile: &PermissionProfile,
-) -> String {
-    let mut parts = visible_tool_catalog(selected_tool_packs, profile)
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    if let Ok(custom_tools) =
-        visible_custom_tools(paths, active_permission_profile, selected_tool_packs)
-    {
-        parts.extend(
-            custom_tools
-                .into_iter()
-                .filter_map(|tool| serde_json::to_string(&tool.summary).ok()),
-        );
-    }
-    parts.join("\n")
 }
 
 fn help_topic_completion_candidates(prefix: &str) -> Vec<String> {
