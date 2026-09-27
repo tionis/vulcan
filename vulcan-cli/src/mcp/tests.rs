@@ -2484,6 +2484,80 @@ fn mcp_http_broadcast_drops_a_lagging_subscriber_without_blocking_another() {
 
 #[cfg(feature = "oauth")]
 #[test]
+fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
+    let issuer = Arc::new(
+        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/personal".to_string(),
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "distinct-signing-key".to_string(),
+            approval_token: String::new(),
+            subject: "https://identity.example.test/alice".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        })
+        .expect("issuer"),
+    );
+    let context = consent_test_context(&paths, issuer);
+    let make_session = || {
+        Arc::new(McpHttpSession::new(
+            McpServerCore::new(
+                &paths,
+                Some("readonly"),
+                &[McpToolPackArg::NotesRead],
+                McpToolPackModeArg::Static,
+            )
+            .expect("MCP core"),
+            McpSessionAuthority::direct(
+                context.instance_id,
+                "credential",
+                None,
+                None,
+                Some("readonly".to_string()),
+                vec!["notes-read".to_string()],
+                Vec::new(),
+            ),
+        ))
+    };
+    let shared = make_session();
+    {
+        let mut sessions = context.sessions.lock().expect("sessions lock");
+        for number in 0..MAX_MCP_HTTP_SESSIONS {
+            sessions.insert(number.to_string(), Arc::clone(&shared));
+        }
+    }
+    let rejected = admit_mcp_http_session(&context, "new".to_string(), make_session())
+        .expect_err("full session registry should reject initialization");
+    assert_eq!(rejected.status, 503);
+    assert!(rejected
+        .extra_headers
+        .contains(&("Retry-After".to_string(), "60".to_string())));
+    assert_eq!(context.sessions.lock().expect("sessions lock").len(), 256);
+
+    let expired = make_session();
+    *expired.idle_deadline.lock().expect("deadline lock") = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("monotonic clock is at least one second old");
+    context
+        .sessions
+        .lock()
+        .expect("sessions lock")
+        .insert("0".to_string(), Arc::clone(&expired));
+    let admitted = make_session();
+    admit_mcp_http_session(&context, "new".to_string(), Arc::clone(&admitted))
+        .expect("expired session should free capacity");
+    assert!(expired.is_closed());
+    assert!(live_mcp_http_session(&context, "0").is_none());
+    assert!(live_mcp_http_session(&context, "new").is_some());
+    assert_eq!(context.sessions.lock().expect("sessions lock").len(), 256);
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 #[allow(clippy::too_many_lines)] // Exercises authority rejection, validation, and lock-free cancellation in one fixture.
 fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
     let temporary = tempfile::tempdir().expect("temporary vault");

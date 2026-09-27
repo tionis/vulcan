@@ -252,6 +252,10 @@ Connection workers also have a five-second socket write timeout, including SSE f
 that stops reading cannot hold a worker through a blocked response write indefinitely.
 An SSE subscriber has at most 32 pending notification events. On overflow its stream closes after
 queued events drain; clients must reconnect and relist the catalogs available to their grant.
+Each HTTP listener admits at most 256 MCP sessions. Sessions expire after 30 minutes without an
+authenticated request, and live SSE streams close on expiry. Initialization first reclaims expired
+sessions, then returns HTTP 503 with `Retry-After: 60` if the registry is still full; an expired
+session ID returns 404 and its client must initialize again.
 The MCP browser-Origin check uses the shared daemon HTTP policy: only a valid scheme/host/port
 origin may pass, including bracketed IPv6 loopback. It remains distinct from bearer validation.
 The daemon-owned MCP HTTP codec rejects duplicate security-sensitive headers, malformed or

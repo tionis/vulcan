@@ -27,7 +27,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-#[cfg(feature = "oauth")]
 use std::time::Instant;
 #[cfg(feature = "oauth")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -144,6 +143,8 @@ use vulcan_daemon::shutdown::ShutdownSignal;
 
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_MCP_SSE_PENDING_EVENTS: usize = 32;
+const MAX_MCP_HTTP_SESSIONS: usize = 256;
+const MCP_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -231,6 +232,7 @@ struct McpHttpSession {
     core: Mutex<McpServerCore>,
     active_requests: Mutex<BTreeMap<String, ExecutionCancellationToken>>,
     subscribers: Mutex<Vec<mpsc::SyncSender<Value>>>,
+    idle_deadline: Mutex<Instant>,
     closed: AtomicBool,
 }
 
@@ -241,8 +243,26 @@ impl McpHttpSession {
             core: Mutex::new(core),
             active_requests: Mutex::new(BTreeMap::new()),
             subscribers: Mutex::new(Vec::new()),
+            idle_deadline: Mutex::new(Instant::now() + MCP_HTTP_SESSION_IDLE_TIMEOUT),
             closed: AtomicBool::new(false),
         }
+    }
+
+    fn touch(&self) {
+        *self
+            .idle_deadline
+            .lock()
+            .expect("mcp session deadline lock should not be poisoned") =
+            Instant::now() + MCP_HTTP_SESSION_IDLE_TIMEOUT;
+    }
+
+    fn is_idle_expired(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+            || *self
+                .idle_deadline
+                .lock()
+                .expect("mcp session deadline lock should not be poisoned")
+                <= Instant::now()
     }
 
     fn register_subscriber(&self) -> mpsc::Receiver<Value> {
@@ -1486,6 +1506,56 @@ fn close_mcp_http_sessions(context: &McpHttpServerContext) {
     }
 }
 
+fn admit_mcp_http_session(
+    context: &McpHttpServerContext,
+    session_id: String,
+    session: Arc<McpHttpSession>,
+) -> Result<(), McpHttpResponse> {
+    let mut sessions = context
+        .sessions
+        .lock()
+        .expect("mcp sessions lock should not be poisoned");
+    sessions.retain(|_, existing| {
+        if existing.is_idle_expired() {
+            existing.close();
+            false
+        } else {
+            true
+        }
+    });
+    if sessions.len() >= MAX_MCP_HTTP_SESSIONS {
+        let mut response = mcp_http_json_error_response(
+            503,
+            "MCP session limit reached; close unused sessions or retry later",
+            Value::Null,
+        );
+        response
+            .extra_headers
+            .push(("Retry-After".to_string(), "60".to_string()));
+        return Err(response);
+    }
+    sessions.insert(session_id, session);
+    Ok(())
+}
+
+fn live_mcp_http_session(
+    context: &McpHttpServerContext,
+    session_id: &str,
+) -> Option<Arc<McpHttpSession>> {
+    let mut sessions = context
+        .sessions
+        .lock()
+        .expect("mcp sessions lock should not be poisoned");
+    let session = sessions.get(session_id)?.clone();
+    if session.is_idle_expired() {
+        sessions.remove(session_id);
+        session.close();
+        None
+    } else {
+        Some(session)
+    }
+}
+
 fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
     thread::spawn(move || {
         if let Err(error) = watch_vault(&paths, &options, |report| -> Result<(), String> {
@@ -1938,11 +2008,7 @@ fn resolve_mcp_http_session(
         )
         .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
         let session = Arc::new(McpHttpSession::new(core, authority.clone()));
-        context
-            .sessions
-            .lock()
-            .expect("mcp sessions lock should not be poisoned")
-            .insert(session_id.clone(), Arc::clone(&session));
+        admit_mcp_http_session(context, session_id.clone(), Arc::clone(&session))?;
         return Ok((session_id, session, true));
     }
 
@@ -1953,13 +2019,7 @@ fn resolve_mcp_http_session(
             Value::Null,
         ));
     };
-    let Some(session) = context
-        .sessions
-        .lock()
-        .expect("mcp sessions lock should not be poisoned")
-        .get(&session_id)
-        .cloned()
-    else {
+    let Some(session) = live_mcp_http_session(context, &session_id) else {
         return Err(mcp_http_json_error_response(
             404,
             "unknown Mcp-Session-Id",
@@ -1973,6 +2033,7 @@ fn resolve_mcp_http_session(
             Value::Null,
         ));
     }
+    session.touch();
     Ok((session_id, session, false))
 }
 
@@ -1984,12 +2045,7 @@ fn handle_mcp_http_delete(
     let Some(session_id) = request.headers.get("mcp-session-id") else {
         return mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null);
     };
-    let session = context
-        .sessions
-        .lock()
-        .expect("mcp sessions lock should not be poisoned")
-        .get(session_id)
-        .cloned();
+    let session = live_mcp_http_session(context, session_id);
     let Some(session) = session else {
         return mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null);
     };
@@ -2039,13 +2095,7 @@ fn handle_mcp_http_sse(
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
     };
-    let Some(session) = context
-        .sessions
-        .lock()
-        .expect("mcp sessions lock should not be poisoned")
-        .get(session_id)
-        .cloned()
-    else {
+    let Some(session) = live_mcp_http_session(context, session_id) else {
         let response = mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null);
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
@@ -2059,13 +2109,15 @@ fn handle_mcp_http_sse(
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
     }
+    session.touch();
 
     write_mcp_http_sse_headers(stream).map_err(CliError::operation)?;
     let receiver = session.register_subscriber();
     let mut keepalive_elapsed = Duration::ZERO;
 
     loop {
-        if session.is_closed() {
+        if session.is_idle_expired() {
+            session.close();
             break;
         }
         match receiver.recv_timeout(MCP_HTTP_POLL_INTERVAL) {
