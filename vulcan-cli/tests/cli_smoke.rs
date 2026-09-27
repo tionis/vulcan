@@ -16189,6 +16189,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .contains("Dynamic registration rejects malformed or duplicate redirect URI entries"));
     assert!(mcp_skill.contains("set `dry_run: true` for a read-only calculation"));
     assert!(mcp_skill.contains("targets an in-flight request ID in the same MCP session"));
+    assert!(mcp_skill.contains("durable operation ID with `dispatched: false`"));
     assert!(
         mcp_skill.contains("a tools-only grant does not receive prompt or resource list changes")
     );

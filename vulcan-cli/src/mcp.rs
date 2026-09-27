@@ -2302,15 +2302,17 @@ impl McpServerCore {
             .stack_size(MCP_REQUEST_WORKER_STACK_SIZE)
             .spawn(move || {
                 #[cfg(feature = "oauth")]
-                let result = if worker_cancellation.is_cancelled() {
+                let result = if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
+                    // A hosted mutation is already durably registered. Let its executor
+                    // record pre-dispatch cancellation and retain the operation ID.
+                    hosted.execute(&mut worker, &request, &dispatch)
+                } else if worker_cancellation.is_cancelled() {
                     Err(jsonrpc_error(
                         request_id(&request).unwrap_or(Value::Null),
                         -32800,
                         "MCP request cancelled before dispatch".to_string(),
                         None,
                     ))
-                } else if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
-                    hosted.execute(&mut worker, &request, &dispatch)
                 } else if named_runtime {
                     attenuate_mcp_core_profile(&mut worker)
                         .map_err(|message| {
