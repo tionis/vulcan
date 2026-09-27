@@ -127,6 +127,10 @@ use vulcan_daemon::mcp_http_codec::{
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
 use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_clients::{
+    OAuthClientRegistry, RegisteredOAuthClient as LocalOAuthRegisteredClient,
+};
 use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_policy::{
@@ -253,17 +257,6 @@ struct LocalOAuthCode {
     resource: String,
     grant_id: Option<String>,
     expires_at: std::time::Instant,
-}
-
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
-struct LocalOAuthRegisteredClient {
-    client_id: String,
-    client_secret: String,
-    redirect_uris: Vec<String>,
-    client_name: Option<String>,
-    token_endpoint_auth_method: String,
-    client_id_issued_at: u64,
 }
 
 #[cfg(feature = "oauth")]
@@ -625,7 +618,7 @@ struct McpHttpServerContext {
     #[cfg(feature = "oauth")]
     oauth_codes: Arc<Mutex<BTreeMap<String, LocalOAuthCode>>>,
     #[cfg(feature = "oauth")]
-    oauth_clients: Arc<Mutex<BTreeMap<String, LocalOAuthRegisteredClient>>>,
+    oauth_clients: Arc<OAuthClientRegistry>,
     #[cfg(feature = "oauth")]
     oauth_pending_indieauth: Arc<Mutex<BTreeMap<String, LocalOAuthPendingIndieAuth>>>,
     #[cfg(feature = "oauth")]
@@ -640,8 +633,6 @@ struct McpHttpServerContext {
     oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
     #[cfg(all(test, feature = "oauth"))]
     indieauth_exchange: Option<IndieAuthExchange>,
-    #[cfg(feature = "oauth")]
-    oauth_clients_path: Option<std::path::PathBuf>,
     #[cfg(feature = "oauth")]
     named_runtime: Option<NamedMcpRuntime>,
     request_timeout: Duration,
@@ -1318,9 +1309,10 @@ fn run_mcp_http_server_inner(
         #[cfg(feature = "oauth")]
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
-        oauth_clients: Arc::new(Mutex::new(load_oauth_registered_clients(
-            &oauth_clients_path(paths, options),
-        )?)),
+        oauth_clients: Arc::new(
+            OAuthClientRegistry::at(oauth_clients_path(paths, options))
+                .map_err(CliError::operation)?,
+        ),
         #[cfg(feature = "oauth")]
         oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
         #[cfg(feature = "oauth")]
@@ -1339,8 +1331,6 @@ fn run_mcp_http_server_inner(
         oauth_indieauth: build_indieauth_config(options)?,
         #[cfg(all(test, feature = "oauth"))]
         indieauth_exchange: lifecycle.indieauth_exchange,
-        #[cfg(feature = "oauth")]
-        oauth_clients_path: Some(oauth_clients_path(paths, options)),
         #[cfg(feature = "oauth")]
         named_runtime,
         request_timeout: options.request_timeout,
@@ -3907,18 +3897,9 @@ fn handle_local_oauth_register(
         token_endpoint_auth_method: registration.token_endpoint_auth_method,
         client_id_issued_at: current_unix_timestamp(),
     };
-    let mut clients = context
-        .oauth_clients
-        .lock()
-        .expect("oauth clients lock should not be poisoned");
-    clients.insert(client.client_id.clone(), client.clone());
-    if let Err(error) =
-        save_oauth_registered_clients(context.oauth_clients_path.as_deref(), &clients)
-    {
-        clients.remove(&client.client_id);
+    if let Err(error) = context.oauth_clients.register(client.clone()) {
         return oauth_json_error_response(500, "server_error", error.to_string());
     }
-    drop(clients);
     let grant_types = if context.named_runtime.is_some() {
         vec!["authorization_code", "refresh_token"]
     } else {
@@ -4356,12 +4337,11 @@ fn local_oauth_consent_form(
     ));
     let client_name = context
         .oauth_clients
-        .lock()
-        .expect("oauth clients lock should not be poisoned")
         .get(&pending.client_id)
-        .and_then(|client| client.client_name.as_deref())
-        .unwrap_or(&pending.client_id)
-        .to_string();
+        .ok()
+        .flatten()
+        .and_then(|client| client.client_name)
+        .unwrap_or_else(|| pending.client_id.clone());
     let (vault_control, profile_control, pack_controls, expiry_control) =
         context.named_runtime.as_ref().map_or_else(
             || (
@@ -4553,9 +4533,9 @@ fn local_oauth_client_redirect_allowed(
     }
     context
         .oauth_clients
-        .lock()
-        .expect("oauth clients lock should not be poisoned")
         .get(client_id)
+        .ok()
+        .flatten()
         .is_some_and(|client| client.redirect_uris.iter().any(|uri| uri == redirect_uri))
         || client_id_metadata_valid(context, client_id, Some(redirect_uri))
 }
@@ -4567,9 +4547,9 @@ fn local_oauth_registered_client_valid(
 ) -> bool {
     context
         .oauth_clients
-        .lock()
-        .expect("oauth clients lock should not be poisoned")
         .get(&credentials.client_id)
+        .ok()
+        .flatten()
         .is_some_and(|client| {
             registered_mcp_client_credentials_valid(
                 credentials,
@@ -4721,78 +4701,6 @@ fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
 #[cfg(all(not(unix), feature = "oauth"))]
 fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
     fs::write(path, format!("{secret}\n")).map_err(CliError::operation)
-}
-
-#[cfg(feature = "oauth")]
-fn load_oauth_registered_clients(
-    path: &Path,
-) -> Result<BTreeMap<String, LocalOAuthRegisteredClient>, CliError> {
-    if !path.exists() {
-        return Ok(BTreeMap::new());
-    }
-    let metadata = fs::symlink_metadata(path).map_err(CliError::operation)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 1024 * 1024 {
-        return Err(CliError::operation(format!(
-            "OAuth client registry at {} must be a regular file no larger than 1 MiB",
-            path.display()
-        )));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(CliError::operation(format!(
-                "OAuth client registry at {} must be owner-only (mode 0600)",
-                path.display()
-            )));
-        }
-    }
-    let content = fs::read_to_string(path).map_err(CliError::operation)?;
-    let clients = serde_json::from_str::<Vec<LocalOAuthRegisteredClient>>(&content)
-        .map_err(CliError::operation)?;
-    Ok(clients
-        .into_iter()
-        .map(|client| (client.client_id.clone(), client))
-        .collect())
-}
-
-#[cfg(feature = "oauth")]
-fn save_oauth_registered_clients(
-    path: Option<&Path>,
-    clients: &BTreeMap<String, LocalOAuthRegisteredClient>,
-) -> Result<(), CliError> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(CliError::operation)?;
-    }
-    let serialized = serde_json::to_vec_pretty(&clients.values().collect::<Vec<_>>())
-        .map_err(CliError::operation)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(
-        path.parent()
-            .ok_or_else(|| CliError::operation("OAuth client registry path has no parent"))?,
-    )
-    .map_err(CliError::operation)?;
-    temporary
-        .write_all(&serialized)
-        .map_err(CliError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(CliError::operation)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(CliError::operation)?;
-    }
-    temporary
-        .persist(path)
-        .map_err(|error| CliError::operation(error.error))?;
-    Ok(())
 }
 
 #[cfg(feature = "oauth")]

@@ -2534,7 +2534,7 @@ fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
         };
         let response = handle_local_oauth_register(&context, &request);
         assert_eq!(response.status, 400, "{redirect_uri}");
-        assert!(context.oauth_clients.lock().expect("clients").is_empty());
+        assert!(context.oauth_clients.list().expect("clients").is_empty());
     }
     for (payload, expected_error) in [
         (
@@ -2569,7 +2569,7 @@ fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
                 .contains(expected_error),
             "{payload}"
         );
-        assert!(context.oauth_clients.lock().expect("clients").is_empty());
+        assert!(context.oauth_clients.list().expect("clients").is_empty());
     }
 }
 
@@ -2579,11 +2579,11 @@ fn failed_registration_save_does_not_publish_a_client() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let mut context = dcr_test_context(&VaultPaths::new(temporary.path()));
     let registry = temporary.path().join("oauth-clients.json");
+    context.oauth_clients = Arc::new(OAuthClientRegistry::at(registry.clone()).expect("registry"));
     fs::create_dir(&registry).expect("block registry replacement with a directory");
-    context.oauth_clients_path = Some(registry);
     let response = handle_local_oauth_register(&context, &dcr_test_request("failure"));
     assert_eq!(response.status, 500);
-    assert!(context.oauth_clients.lock().expect("clients").is_empty());
+    assert!(context.oauth_clients.list().is_err());
 }
 
 #[cfg(feature = "oauth")]
@@ -2592,7 +2592,7 @@ fn concurrent_registrations_persist_every_client() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let mut context = dcr_test_context(&VaultPaths::new(temporary.path()));
     let registry = temporary.path().join("oauth-clients.json");
-    context.oauth_clients_path = Some(registry.clone());
+    context.oauth_clients = Arc::new(OAuthClientRegistry::at(registry.clone()).expect("registry"));
     thread::scope(|scope| {
         for index in 0..8 {
             let context = &context;
@@ -2605,13 +2605,58 @@ fn concurrent_registrations_persist_every_client() {
             });
         }
     });
-    assert_eq!(context.oauth_clients.lock().expect("clients").len(), 8);
+    assert_eq!(context.oauth_clients.list().expect("clients").len(), 8);
     assert_eq!(
-        load_oauth_registered_clients(&registry)
+        OAuthClientRegistry::at(registry)
             .expect("durable registrations")
+            .list()
+            .expect("registry clients")
             .len(),
         8
     );
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn separate_http_contexts_use_fresh_durable_client_registration() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let registry = temporary.path().join("oauth-clients.json");
+    let mut first = dcr_test_context(&paths);
+    let mut second = dcr_test_context(&paths);
+    first.oauth_clients = Arc::new(OAuthClientRegistry::at(registry.clone()).expect("first"));
+    second.oauth_clients = Arc::new(OAuthClientRegistry::at(registry).expect("second"));
+
+    let response = handle_local_oauth_register(&first, &dcr_test_request("shared-client"));
+    assert_eq!(response.status, 201);
+    let registered: Value = serde_json::from_slice(&response.body).expect("registration JSON");
+    let client_id = registered["client_id"].as_str().expect("client ID");
+    let McpOAuthMode::Local(issuer) = second.oauth.as_ref().expect("OAuth mode") else {
+        panic!("expected local issuer");
+    };
+    assert!(local_oauth_client_redirect_allowed(
+        &second,
+        issuer,
+        client_id,
+        "https://client.example.test/callback"
+    ));
+    assert!(!local_oauth_client_redirect_allowed(
+        &second,
+        issuer,
+        client_id,
+        "https://client.example.test/other"
+    ));
+    assert!(local_oauth_registered_client_valid(
+        &second,
+        &McpTokenClientCredentials {
+            client_id: client_id.to_string(),
+            client_secret: registered["client_secret"]
+                .as_str()
+                .expect("client secret")
+                .to_string(),
+            method: McpTokenAuthMethod::ClientSecretBasic,
+        }
+    ));
 }
 
 #[cfg(feature = "oauth")]
@@ -2658,19 +2703,15 @@ fn token_endpoint_enforces_registered_client_authentication_method() {
     ] {
         context
             .oauth_clients
-            .lock()
-            .expect("client registry")
-            .insert(
-                client_id.to_string(),
-                LocalOAuthRegisteredClient {
-                    client_id: client_id.to_string(),
-                    client_secret: secret.to_string(),
-                    redirect_uris: vec!["https://client.example.test/callback".to_string()],
-                    client_name: None,
-                    token_endpoint_auth_method: method.to_string(),
-                    client_id_issued_at: 0,
-                },
-            );
+            .register(LocalOAuthRegisteredClient {
+                client_id: client_id.to_string(),
+                client_secret: secret.to_string(),
+                redirect_uris: vec!["https://client.example.test/callback".to_string()],
+                client_name: None,
+                token_endpoint_auth_method: method.to_string(),
+                client_id_issued_at: 0,
+            })
+            .expect("registered client");
     }
     let basic = format!("Basic {}", BASE64_STANDARD.encode("client-basic:secret"));
     let post_basic = format!("Basic {}", BASE64_STANDARD.encode("client-post:secret"));
@@ -2799,23 +2840,18 @@ fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
     );
     let mut context = consent_test_context(&paths, issuer);
     let registry = temporary.path().join("state/oauth-clients.json");
-    context.oauth_clients_path = Some(registry.clone());
-    context.oauth_clients.lock().expect("clients").insert(
-        "client".to_string(),
-        LocalOAuthRegisteredClient {
+    context.oauth_clients = Arc::new(OAuthClientRegistry::at(registry.clone()).expect("registry"));
+    context
+        .oauth_clients
+        .register(LocalOAuthRegisteredClient {
             client_id: "client".to_string(),
             client_secret: "secret-value".to_string(),
             redirect_uris: vec!["https://client.example.test/callback".to_string()],
             client_name: None,
             token_endpoint_auth_method: "client_secret_post".to_string(),
             client_id_issued_at: 1,
-        },
-    );
-    save_oauth_registered_clients(
-        context.oauth_clients_path.as_deref(),
-        &context.oauth_clients.lock().expect("clients"),
-    )
-    .expect("save registry");
+        })
+        .expect("save registry");
     assert_eq!(
         fs::metadata(&registry)
             .expect("metadata")
@@ -2824,9 +2860,9 @@ fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
             & 0o777,
         0o600
     );
-    assert!(load_oauth_registered_clients(&registry).is_ok());
+    assert!(OAuthClientRegistry::at(registry.clone()).is_ok());
     fs::set_permissions(&registry, fs::Permissions::from_mode(0o644)).expect("loosen mode");
-    assert!(load_oauth_registered_clients(&registry).is_err());
+    assert!(OAuthClientRegistry::at(registry).is_err());
 }
 
 #[cfg(feature = "oauth")]
@@ -3084,7 +3120,7 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         instance_id: Ulid::new(),
         sessions: Arc::new(McpSessionRegistry::new()),
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
-        oauth_clients: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_clients: Arc::new(OAuthClientRegistry::ephemeral()),
         oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
         oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
         oauth_dcr_enabled: true,
@@ -3092,7 +3128,6 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         oauth_local_redirect_uris: Vec::new(),
         oauth_indieauth: None,
         indieauth_exchange: None,
-        oauth_clients_path: None,
         named_runtime: None,
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     }
