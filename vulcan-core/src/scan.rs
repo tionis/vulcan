@@ -196,6 +196,8 @@ struct IncrementalScanResult {
     changed_document_ids: Vec<String>,
     requires_property_catalog_refresh: bool,
     requires_fts_rebuild: bool,
+    /// `(old_path, new_path)` pairs whose document identity was preserved.
+    renamed: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -461,6 +463,7 @@ where
                 },
             );
             crate::history::record_scan_checkpoint(database.connection())?;
+            crate::link_feedback::restore(paths, database.connection())?;
             summary
         }
         ScanMode::Incremental => {
@@ -554,6 +557,8 @@ where
                     database.connection(),
                     &result.changed_document_ids,
                 )?;
+                crate::link_feedback::rename_paths(paths, &result.renamed)?;
+                crate::link_feedback::restore(paths, database.connection())?;
             }
             result.summary
         }
@@ -753,6 +758,7 @@ fn apply_incremental_scan(
         changed_document_ids: Vec::new(),
         requires_property_catalog_refresh: false,
         requires_fts_rebuild: false,
+        renamed: Vec::new(),
     };
     emit_scan_progress(
         on_progress,
@@ -853,6 +859,9 @@ fn apply_incremental_scan(
         if let (Some(old_path), IncrementalPrepResult::Reindex { id, .. }) = (&renamed_from, &prep)
         {
             rename_document_path(transaction, id, old_path, item.file)?;
+            result
+                .renamed
+                .push((old_path.clone(), item.file.relative_path.clone()));
             result.requires_link_resolution = true;
             result.target_pool_changed = true;
         }
