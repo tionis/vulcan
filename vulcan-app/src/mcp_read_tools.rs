@@ -14,10 +14,16 @@ use vulcan_core::{
 
 use crate::mcp_access;
 use crate::mcp_protocol::{
-    McpDailyArgs, McpDailyListArgs, McpDailyShowArgs, McpMethodError, McpQueryArgs, McpSearchArgs,
-    McpTaskListArgs, McpTaskQueryArgs,
+    McpDailyArgs, McpDailyListArgs, McpDailyShowArgs, McpMethodError, McpNoteGetArgs,
+    McpNoteInfoArgs, McpNoteOutlineArgs, McpQueryArgs, McpSearchArgs, McpTaskListArgs,
+    McpTaskQueryArgs,
 };
-use crate::notes::check_read_markdown_source_access as app_check_read_markdown_source_access;
+use crate::notes::{
+    build_note_info_report,
+    check_read_markdown_source_access as app_check_read_markdown_source_access, read_note,
+    read_note_outline, NoteGetOptions, NoteGetReport, NoteInfoReport, NoteOutlineReport,
+    NoteReadMode,
+};
 use crate::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, read_daily_note,
     read_latest_daily_note_where, show_periodic_note, DailyNoteReadReport, DailyReadTarget,
@@ -284,6 +290,63 @@ pub fn check_read_markdown_source_access(
 ) -> Result<(), McpMethodError> {
     app_check_read_markdown_source_access(paths, guard, note)
         .map_err(|error| McpMethodError::tool(error.to_string()))
+}
+
+/// Resolve and read a Markdown note under the MCP caller's source boundary.
+pub fn note_get(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: &McpNoteGetArgs,
+) -> Result<NoteGetReport, McpMethodError> {
+    check_read_markdown_source_access(paths, guard, &args.note)?;
+    read_note(
+        paths,
+        NoteGetOptions {
+            note: &args.note,
+            mode: parse_note_get_mode(args.mode.as_deref())?,
+            section_id: args.section_id.as_deref(),
+            heading: args.heading.as_deref(),
+            block_ref: args.block_ref.as_deref(),
+            lines: args.lines.as_deref(),
+            match_pattern: args.match_pattern.as_deref(),
+            context: args.context,
+            no_frontmatter: args.no_frontmatter,
+            raw: args.raw,
+        },
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))
+}
+
+/// Outline a Markdown note only after the same scoped source check.
+pub fn note_outline(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: &McpNoteOutlineArgs,
+) -> Result<NoteOutlineReport, McpMethodError> {
+    check_read_markdown_source_access(paths, guard, &args.note)?;
+    read_note_outline(paths, &args.note, args.section_id.as_deref(), args.depth)
+        .map_err(|error| McpMethodError::tool(error.to_string()))
+}
+
+/// Build note metadata with backlinks filtered by the caller's read grant.
+pub fn note_info(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: &McpNoteInfoArgs,
+) -> Result<NoteInfoReport, McpMethodError> {
+    mcp_access::check_read_note_access(paths, guard, &args.note)?;
+    build_note_info_report(paths, &args.note, Some(&guard.read_filter()))
+        .map_err(|error| McpMethodError::tool(error.to_string()))
+}
+
+fn parse_note_get_mode(mode: Option<&str>) -> Result<NoteReadMode, McpMethodError> {
+    match mode.unwrap_or("markdown") {
+        "markdown" => Ok(NoteReadMode::Markdown),
+        "html" => Ok(NoteReadMode::Html),
+        other => Err(McpMethodError::invalid_params(format!(
+            "unsupported `note_get.mode`: {other}"
+        ))),
+    }
 }
 
 pub fn search(
@@ -633,6 +696,67 @@ mod tests {
     use std::fs;
     use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::{resolve_permission_profile, scan_vault, ScanMode, TasksQueryGroup};
+
+    #[test]
+    fn note_read_workflows_preserve_modes_and_deny_hidden_sources() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(temporary.path().join("Home.md"), "# Home\n\nHello MCP.\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let readable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+        let get_args =
+            || serde_json::from_value::<McpNoteGetArgs>(json!({"note": "Home.md"})).unwrap();
+        assert!(note_get(&paths, &readable, &get_args())
+            .unwrap()
+            .content
+            .contains("Hello MCP"));
+        assert!(note_get(&paths, &blind, &get_args()).is_err());
+        let html =
+            serde_json::from_value::<McpNoteGetArgs>(json!({"note": "Home.md", "mode": "html"}))
+                .unwrap();
+        assert!(note_get(&paths, &readable, &html)
+            .unwrap()
+            .content
+            .contains("<h1"));
+        let invalid = serde_json::from_value::<McpNoteGetArgs>(
+            json!({"note": "Home.md", "mode": "unsupported"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            note_get(&paths, &readable, &invalid),
+            Err(McpMethodError::JsonRpc { code: -32602, .. })
+        ));
+        let outline_args =
+            serde_json::from_value::<McpNoteOutlineArgs>(json!({"note": "Home.md"})).unwrap();
+        assert_eq!(
+            note_outline(&paths, &readable, &outline_args)
+                .unwrap()
+                .sections
+                .len(),
+            1
+        );
+        assert!(note_outline(&paths, &blind, &outline_args).is_err());
+        let info_args =
+            serde_json::from_value::<McpNoteInfoArgs>(json!({"note": "Home.md"})).unwrap();
+        assert_eq!(
+            note_info(&paths, &readable, &info_args).unwrap().path,
+            "Home.md"
+        );
+        assert!(note_info(&paths, &blind, &info_args).is_err());
+    }
 
     #[test]
     fn daily_workflows_filter_lists_and_deny_hidden_content_free_reads() {

@@ -72,10 +72,9 @@ use vulcan_app::mcp_tasks;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-    build_note_info_report, finish_note_append_report, finish_note_create_report,
-    finish_note_patch_report, finish_note_set_report, parse_note_frontmatter_bindings, read_note,
-    read_note_outline, resolve_existing_markdown_target, NoteAppendRequest, NoteCreateRequest,
-    NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode, NoteSetRequest,
+    finish_note_append_report, finish_note_create_report, finish_note_patch_report,
+    finish_note_set_report, parse_note_frontmatter_bindings, resolve_existing_markdown_target,
+    NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::templates::parse_template_var_bindings;
@@ -2558,43 +2557,12 @@ impl McpServerCore {
         match tool.id {
             McpToolId::NoteGet => {
                 let args: McpNoteGetArgs = parse_tool_arguments(arguments)?;
-                mcp_read_tools::check_read_markdown_source_access(
-                    &self.paths,
-                    &self.guard,
-                    &args.note,
-                )?;
-                let report = read_note(
-                    &self.paths,
-                    NoteGetOptions {
-                        note: &args.note,
-                        mode: parse_note_get_mode(args.mode)?,
-                        section_id: args.section_id.as_deref(),
-                        heading: args.heading.as_deref(),
-                        block_ref: args.block_ref.as_deref(),
-                        lines: args.lines.as_deref(),
-                        match_pattern: args.match_pattern.as_deref(),
-                        context: args.context,
-                        no_frontmatter: args.no_frontmatter,
-                        raw: args.raw,
-                    },
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let report = mcp_read_tools::note_get(&self.paths, &self.guard, &args)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteOutline => {
                 let args: McpNoteOutlineArgs = parse_tool_arguments(arguments)?;
-                mcp_read_tools::check_read_markdown_source_access(
-                    &self.paths,
-                    &self.guard,
-                    &args.note,
-                )?;
-                let report = read_note_outline(
-                    &self.paths,
-                    &args.note,
-                    args.section_id.as_deref(),
-                    args.depth,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let report = mcp_read_tools::note_outline(&self.paths, &self.guard, &args)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::Search => {
@@ -2847,13 +2815,7 @@ impl McpServerCore {
             }
             McpToolId::NoteInfo => {
                 let args: McpNoteInfoArgs = parse_tool_arguments(arguments)?;
-                mcp_access::check_read_note_access(&self.paths, &self.guard, &args.note)?;
-                let report = build_note_info_report(
-                    &self.paths,
-                    &args.note,
-                    Some(&self.guard.read_filter()),
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let report = mcp_read_tools::note_info(&self.paths, &self.guard, &args)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteSet => {
@@ -4049,16 +4011,6 @@ fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
 ) -> Result<T, McpMethodError> {
     serde_json::from_value(Value::Object(arguments.clone()))
         .map_err(|error| McpMethodError::invalid_params(error.to_string()))
-}
-
-fn parse_note_get_mode(mode: Option<String>) -> Result<NoteReadMode, McpMethodError> {
-    match mode.as_deref().unwrap_or("markdown") {
-        "markdown" => Ok(NoteReadMode::Markdown),
-        "html" => Ok(NoteReadMode::Html),
-        other => Err(McpMethodError::invalid_params(format!(
-            "unsupported `note_get.mode`: {other}"
-        ))),
-    }
 }
 
 fn parse_search_backend(backend: Option<String>) -> Result<Option<String>, McpMethodError> {
