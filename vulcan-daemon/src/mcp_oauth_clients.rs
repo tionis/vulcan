@@ -318,6 +318,7 @@ fn require_owner_only(
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Signature matches the fallible Unix implementation.
 fn require_owner_only(
     _path: &Path,
     _metadata: &fs::Metadata,
@@ -333,6 +334,7 @@ fn set_owner_only(file: &File) -> Result<(), OAuthClientRegistryError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Signature matches the fallible Unix implementation.
 fn set_owner_only(_file: &File) -> Result<(), OAuthClientRegistryError> {
     Ok(())
 }
