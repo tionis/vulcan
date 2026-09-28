@@ -5,7 +5,7 @@ mod catalog;
 use crate::{
     cli_command_tree, collect_help_command_topics, custom_tool_registry_entry,
     permission_error_to_cli, resolve_help_topic, CliError, McpToolPackArg, McpToolPackModeArg,
-    McpToolsReport, McpTransportArg, NoteAppendMode, ToolRegistryEntry,
+    McpToolsReport, McpTransportArg, ToolRegistryEntry,
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
@@ -69,13 +69,10 @@ use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::mcp_scan;
 use vulcan_app::mcp_sync;
 use vulcan_app::mcp_tasks;
-use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
-    apply_note_append, apply_note_patch, finish_note_append_report, finish_note_patch_report,
-    resolve_existing_markdown_target, NoteAppendRequest, NotePatchRequest,
+    apply_note_patch, finish_note_patch_report, resolve_existing_markdown_target, NotePatchRequest,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
-use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor, CustomToolRunOptions};
 #[cfg(feature = "web")]
 use vulcan_app::web::{
@@ -98,8 +95,7 @@ use vulcan_core::{
     OAuthResourceServerConfig,
 };
 use vulcan_core::{
-    load_vault_config, resolve_permission_profile, watch_vault, ProfilePermissionGuard, VaultPaths,
-    WatchOptions,
+    resolve_permission_profile, watch_vault, ProfilePermissionGuard, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::host::{
@@ -2685,55 +2681,12 @@ impl McpServerCore {
             }
             McpToolId::NoteAppend => {
                 let args: McpNoteAppendArgs = parse_tool_arguments(arguments)?;
-                let periodic = parse_periodic_arg(args.periodic.clone())?;
-                if args.note.is_some() == periodic.is_some() {
-                    return Err(McpMethodError::invalid_params(
-                        "`note_append` requires exactly one of `note` or `periodic`",
-                    ));
-                }
-                if let Some(note) = args.note.as_deref() {
-                    mcp_access::check_write_note_access(&self.paths, &self.guard, note)?;
-                } else if let Some(periodic) = periodic.as_deref() {
-                    let config = load_vault_config(&self.paths).config;
-                    let target = app_resolve_periodic_target(
-                        &config.periodic,
-                        periodic,
-                        args.date.as_deref(),
-                        true,
-                    )
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    mcp_access::check_write_path_access(&self.guard, &target.path)?;
-                }
-                let vars = parse_template_var_bindings(&template_var_bindings(&args.vars))
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let applied = apply_note_append(
+                let report = mcp_notes::note_append(
                     &self.paths,
-                    &NoteAppendRequest {
-                        note: args.note,
-                        text: args.text,
-                        mode: parse_note_append_mode(args.mode, args.heading.is_some())?,
-                        heading: args.heading,
-                        periodic,
-                        date: args.date,
-                        vars,
-                    },
-                    Some(self.selection.name.as_str()),
-                    true,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let report = finish_note_append_report(&self.paths, applied, args.check)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                refresh_cache_incrementally(&self.paths)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                    .commit(
-                        &self.paths,
-                        "note-append",
-                        std::slice::from_ref(&report.path),
-                        Some(self.selection.name.as_str()),
-                        true,
-                    )
-                    .map_err(|error| McpMethodError::tool(error.clone()))?;
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NotePatch => {
@@ -4038,47 +3991,12 @@ fn mcp_web_fetch_report(
     ))
 }
 
-fn parse_note_append_mode(
-    mode: Option<String>,
-    has_heading: bool,
-) -> Result<NoteAppendMode, McpMethodError> {
-    match mode.as_deref() {
-        None | Some("after_heading") if has_heading => Ok(NoteAppendMode::AfterHeading),
-        None | Some("append") => Ok(NoteAppendMode::Append),
-        Some("prepend") => Ok(NoteAppendMode::Prepend),
-        Some("after_heading") => Err(McpMethodError::invalid_params(
-            "`note_append.mode = after_heading` requires `heading`",
-        )),
-        Some(other) => Err(McpMethodError::invalid_params(format!(
-            "unsupported `note_append.mode`: {other}"
-        ))),
-    }
-}
-
-fn parse_periodic_arg(value: Option<String>) -> Result<Option<String>, McpMethodError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    match value.as_str() {
-        "daily" | "weekly" | "monthly" => Ok(Some(value)),
-        other => Err(McpMethodError::invalid_params(format!(
-            "unsupported `note_append.periodic`: {other}"
-        ))),
-    }
-}
-
 fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
     McpMethodError::JsonRpc {
         code: MCP_RESOURCE_NOT_FOUND,
         message,
         data: Some(serde_json::json!({ "uri": uri })),
     }
-}
-
-fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {
-    vars.iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect()
 }
 
 fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'static str {
