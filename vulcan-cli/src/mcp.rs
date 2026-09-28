@@ -79,9 +79,7 @@ use vulcan_daemon::hosted_jobs::HostedJobLedger;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
-use vulcan_daemon::mcp_http_codec::{
-    validate_mcp_sse_accept, write_mcp_http_response, McpHttpRequest, McpHttpResponse,
-};
+use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
 use vulcan_daemon::mcp_http_routes::{
     dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
 };
@@ -1725,9 +1723,10 @@ fn handle_mcp_http_delete(
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
 ) -> McpHttpResponse {
-    let Some(session_id) = request.headers.get("mcp-session-id") else {
-        return mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null);
-    };
+    let session_id = request
+        .headers
+        .get("mcp-session-id")
+        .expect("daemon route preflight requires MCP session header");
     if let Err(response) = authorized_mcp_http_session(context, session_id, authority, false) {
         return response;
     }
@@ -1746,17 +1745,10 @@ fn handle_mcp_http_sse(
     authority: &McpSessionAuthority,
     stream: &mut TcpStream,
 ) -> Result<(), CliError> {
-    if let Err(error) = validate_mcp_sse_accept(request) {
-        let response = mcp_http_json_error_response(error.status, error.message, Value::Null);
-        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        return Ok(());
-    }
-    let Some(session_id) = request.headers.get("mcp-session-id") else {
-        let response =
-            mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null);
-        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        return Ok(());
-    };
+    let session_id = request
+        .headers
+        .get("mcp-session-id")
+        .expect("daemon route preflight requires MCP session header");
     let session = match authorized_mcp_http_session(context, session_id, authority, true) {
         Ok(session) => session,
         Err(response) => {

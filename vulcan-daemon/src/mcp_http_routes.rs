@@ -4,8 +4,8 @@
 //! protocol operations are supplied by the host behind this transport boundary.
 
 use crate::mcp_http_codec::{
-    parse_mcp_http_post, validate_mcp_protocol_version, write_mcp_http_response, McpHttpRequest,
-    McpHttpResponse,
+    parse_mcp_http_post, validate_mcp_protocol_version, validate_mcp_sse_accept,
+    write_mcp_http_response, McpHttpRequest, McpHttpResponse,
 };
 use serde_json::Value;
 use std::io;
@@ -99,13 +99,32 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
             };
             match request.method.as_str() {
                 "POST" => dispatch_mcp_post(request, &authority, handler),
-                "GET" => return handler.sse(request, &authority, stream),
-                "DELETE" => handler.delete(request, &authority),
+                "GET" => match preflight_mcp_sse(request) {
+                    Ok(()) => return handler.sse(request, &authority, stream),
+                    Err(response) => response,
+                },
+                "DELETE" => match require_mcp_session_header(request) {
+                    Ok(()) => handler.delete(request, &authority),
+                    Err(response) => response,
+                },
                 _ => route_error(405, "Method Not Allowed"),
             }
         }
     };
     write_mcp_http_response(stream, &response)
+}
+
+fn preflight_mcp_sse(request: &McpHttpRequest) -> Result<(), McpHttpResponse> {
+    validate_mcp_sse_accept(request).map_err(|error| route_error(error.status, &error.message))?;
+    require_mcp_session_header(request)
+}
+
+fn require_mcp_session_header(request: &McpHttpRequest) -> Result<(), McpHttpResponse> {
+    if request.headers.contains_key("mcp-session-id") {
+        Ok(())
+    } else {
+        Err(route_error(400, "missing Mcp-Session-Id header"))
+    }
 }
 
 fn dispatch_mcp_post<H: McpHttpRouteHandler>(
@@ -385,11 +404,21 @@ mod tests {
             let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
             let (mut server, _) = listener.accept().unwrap();
             let handler = RecordingHandler::default();
-            let inbound = if method == "POST" && path == "/mcp" {
+            let mut inbound = if method == "POST" && path == "/mcp" {
                 post_request("tools/list")
             } else {
                 request(method, path)
             };
+            if path == "/mcp" && matches!(method, "GET" | "DELETE") {
+                inbound
+                    .headers
+                    .insert("mcp-session-id".to_string(), "session".to_string());
+            }
+            if path == "/mcp" && method == "GET" {
+                inbound
+                    .headers
+                    .insert("accept".to_string(), "text/event-stream".to_string());
+            }
             dispatch_mcp_http_request(&inbound, &mut server, &options, &handler).unwrap();
             drop(server);
             let mut response = String::new();
@@ -424,6 +453,52 @@ mod tests {
         );
         assert_eq!(dispatch_mcp_post(&wrong_version, &(), &handler).status, 400);
         assert_eq!(*handler.calls.borrow(), ["scope"]);
+    }
+
+    #[test]
+    fn sse_and_delete_preflight_require_session_header_after_authentication() {
+        let options = McpHttpRouteOptions {
+            endpoint: "/mcp",
+            oauth_enabled: false,
+            local_oauth: false,
+            named_remote: false,
+        };
+        for (method, accept) in [
+            ("GET", None),
+            ("GET", Some("text/event-stream")),
+            ("DELETE", None),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            let mut inbound = request(method, "/mcp");
+            if let Some(accept) = accept {
+                inbound
+                    .headers
+                    .insert("accept".to_string(), accept.to_string());
+            }
+            let handler = RecordingHandler::default();
+            dispatch_mcp_http_request(&inbound, &mut server, &options, &handler).unwrap();
+            drop(server);
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            let status = if method == "GET" && accept.is_none() {
+                405
+            } else {
+                400
+            };
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status} ")),
+                "{response}"
+            );
+            assert_eq!(*handler.calls.borrow(), ["authenticate"]);
+            let expected = if method == "GET" && accept.is_none() {
+                "MCP GET requests require Accept: text/event-stream"
+            } else {
+                "missing Mcp-Session-Id header"
+            };
+            assert!(response.contains(expected), "{response}");
+        }
     }
 
     #[test]
