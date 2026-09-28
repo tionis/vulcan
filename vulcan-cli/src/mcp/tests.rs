@@ -6,6 +6,7 @@ use std::io::Write;
 use std::net::TcpListener;
 #[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::McpWebFetchArgs;
 #[cfg(feature = "oauth")]

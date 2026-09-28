@@ -20,9 +20,9 @@ use std::io::Write;
 use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 #[cfg(feature = "oauth")]
-use std::sync::Mutex;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Duration;
 #[cfg(feature = "oauth")]
@@ -136,6 +136,7 @@ use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TI
 use vulcan_daemon::mcp_sse::{serve_mcp_sse, McpSseEnd};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::McpAuthorizationStore;
+use vulcan_daemon::mcp_worker::{run_mcp_worker, McpWorkerResult};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mutation_scheduler::MutationSchedulerConfig;
 #[cfg(feature = "oauth")]
@@ -146,7 +147,6 @@ use vulcan_daemon::process::DaemonProcessContext;
 use vulcan_daemon::shutdown::ShutdownSignal;
 
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 #[derive(Default)]
 struct McpHttpLifecycle<'a> {
@@ -1912,40 +1912,32 @@ impl McpServerCore {
         }
         let timeout_request = request.clone();
         let mut worker = self.clone();
-        let (sender, receiver) = mpsc::channel();
-        if thread::Builder::new()
-            .name("vulcan-mcp-request".to_string())
-            .stack_size(MCP_REQUEST_WORKER_STACK_SIZE)
-            .spawn(move || {
-                let messages = worker.process_request(request);
-                let _ = sender.send((worker, messages));
-            })
-            .is_err()
-        {
-            let id = request_id(&timeout_request).unwrap_or(Value::Null);
-            return vec![jsonrpc_error(
-                id,
-                -32603,
-                "MCP request worker could not be started".to_string(),
-                None,
-            )];
-        }
-        match receiver.recv_timeout(timeout) {
-            Ok((next, messages)) => {
+        match run_mcp_worker("vulcan-mcp-request", timeout, None, move || {
+            let messages = worker.process_request(request);
+            (worker, messages)
+        }) {
+            McpWorkerResult::Completed((next, messages)) => {
                 *self = next;
                 messages
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                timeout_response_for_request(&timeout_request, timeout)
-                    .into_iter()
-                    .collect()
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            McpWorkerResult::TimedOut => timeout_response_for_request(&timeout_request, timeout)
+                .into_iter()
+                .collect(),
+            McpWorkerResult::Disconnected => {
                 let id = request_id(&timeout_request).unwrap_or(Value::Null);
                 vec![jsonrpc_error(
                     id,
                     -32603,
                     "MCP request worker stopped before producing a response".to_string(),
+                    None,
+                )]
+            }
+            McpWorkerResult::SpawnFailed => {
+                let id = request_id(&timeout_request).unwrap_or(Value::Null);
+                vec![jsonrpc_error(
+                    id,
+                    -32603,
+                    "MCP request worker could not be started".to_string(),
                     None,
                 )]
             }
@@ -2007,7 +1999,6 @@ impl McpServerCore {
         }
         let timeout_request = request.clone();
         let mut worker = self.clone();
-        let (sender, receiver) = mpsc::channel();
         #[cfg(feature = "oauth")]
         let hosted = http_context.hosted.clone();
         #[cfg(feature = "oauth")]
@@ -2042,10 +2033,11 @@ impl McpServerCore {
         #[cfg(not(feature = "oauth"))]
         let _ = (http_context, inbound, authority);
         let worker_cancellation = cancellation.clone();
-        if thread::Builder::new()
-            .name("vulcan-mcp-http-request".to_string())
-            .stack_size(MCP_REQUEST_WORKER_STACK_SIZE)
-            .spawn(move || {
+        let worker_result = run_mcp_worker(
+            "vulcan-mcp-http-request",
+            timeout,
+            Some(&cancellation),
+            move || {
                 #[cfg(feature = "oauth")]
                 let result = if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
                     // A hosted mutation is already durably registered. Let its executor
@@ -2083,10 +2075,10 @@ impl McpServerCore {
                 } else {
                     worker.process_http_request(&request)
                 };
-                let _ = sender.send((worker, result));
-            })
-            .is_err()
-        {
+                (worker, result)
+            },
+        );
+        if matches!(worker_result, McpWorkerResult::SpawnFailed) {
             #[cfg(feature = "oauth")]
             if let (Some(operation_id), Some(ledger)) = (&operation_id, failed_ledger) {
                 let _ = ledger.mark_failed(
@@ -2103,13 +2095,12 @@ impl McpServerCore {
                 None,
             ));
         }
-        match receiver.recv_timeout(timeout) {
-            Ok((next, result)) => {
+        match worker_result {
+            McpWorkerResult::Completed((next, result)) => {
                 *self = next;
                 result
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                cancellation.cancel();
+            McpWorkerResult::TimedOut => {
                 #[cfg(feature = "oauth")]
                 if let Some(operation_id) = operation_id.as_deref() {
                     return Ok(hosted_mcp_unknown_result(
@@ -2121,7 +2112,7 @@ impl McpServerCore {
                 }
                 Ok(timeout_http_result(&timeout_request, timeout))
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            McpWorkerResult::Disconnected => {
                 #[cfg(feature = "oauth")]
                 if let Some(operation_id) = operation_id.as_deref() {
                     return Ok(hosted_mcp_unknown_result(
@@ -2138,6 +2129,7 @@ impl McpServerCore {
                     None,
                 ))
             }
+            McpWorkerResult::SpawnFailed => unreachable!("handled before result dispatch"),
         }
     }
 
