@@ -485,6 +485,8 @@ Upstream semantic references: [Git sparse checkout](https://git-scm.com/docs/spa
 
 The implementation should use stable internal identifiers rather than paths as primary keys. Paths move; identities should survive moves.
 
+Identity is preserved at the cache level in two ways. Vulcan's own moves pass an explicit old-path → new-path hint to the incremental scan, so the document keeps its identity even when the move also rewrote the note's own links. Moves made by other tools are matched by content: a new file takes over a deleted document's identity only when their content hash and extension match exactly one deleted document and exactly one new file. Duplicate or empty files never share an identity by guesswork. A preserved identity keeps dependent rows (chunks and their vectors, clusters, and suggestion state) instead of cascading them away. A full rebuild still allocates fresh identifiers, so anything that must survive a rebuild cannot rely on cache IDs alone (see §17b, *Graph intelligence surfaces*).
+
 Recommended logical entities:
 
 - `documents`: one row per note or relevant vault file.

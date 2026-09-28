@@ -694,7 +694,8 @@ mod tests {
         let report =
             crate::scan::scan_watched_paths(&paths, &["A.md".into(), "C.md".into()].into())
                 .unwrap();
-        assert_eq!((report.added, report.deleted), (1, 1));
+        // The renamed file keeps its cached identity instead of being deleted and re-added.
+        assert_eq!((report.added, report.deleted, report.updated), (0, 0, 1));
         std::fs::write(temporary.path().join(".gitignore"), "C.md\n").unwrap();
         let report =
             crate::scan::scan_watched_paths(&paths, &[".gitignore".into(), "C.md".into()].into())

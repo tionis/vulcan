@@ -4,15 +4,15 @@ use crate::paths::{
     normalize_relative_input_path, secure_create, secure_read, secure_write, RelativePathError,
     RelativePathOptions,
 };
-use crate::scan::scan_vault_unlocked;
+use crate::scan::scan_vault_unlocked_with_renames;
 use crate::write_lock::acquire_write_lock;
 use crate::{
     load_vault_config, GraphQueryError, LinkResolutionMode, LinkStylePreference, ScanError,
-    ScanMode, VaultPaths,
+    VaultPaths,
 };
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -234,7 +234,10 @@ pub fn move_note_unlocked(
         )?;
     }
 
-    scan_vault_unlocked(paths, ScanMode::Incremental)?;
+    scan_vault_unlocked_with_renames(
+        paths,
+        &HashMap::from([(destination_path.clone(), source.path.clone())]),
+    )?;
 
     Ok(MoveSummary {
         dry_run: false,
@@ -759,7 +762,7 @@ fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{doctor_vault, scan_vault};
+    use crate::{doctor_vault, scan_vault, ScanMode};
     use std::path::Path;
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1157,6 +1160,42 @@ mod tests {
                 .unresolved_links,
             0
         );
+    }
+
+    #[test]
+    fn move_keeps_document_identity_when_moved_note_links_are_rewritten() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::create_dir_all(vault_root.join("Projects")).expect("dir should be created");
+        fs::write(
+            vault_root.join("Projects/Alpha.md"),
+            "# Alpha\n\nSee [Beta](./Beta.md).\n",
+        )
+        .expect("alpha should be written");
+        fs::write(vault_root.join("Projects/Beta.md"), "# Beta\n").expect("beta");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let id_at = |path: &str| -> Option<String> {
+            let connection = open_existing_cache(&paths).expect("cache");
+            connection
+                .query_row("SELECT id FROM documents WHERE path = ?1", [path], |row| {
+                    row.get(0)
+                })
+                .ok()
+        };
+        let before = id_at("Projects/Alpha.md").expect("alpha id");
+
+        move_note(&paths, "Projects/Alpha.md", "Archive/Alpha.md", false)
+            .expect("move should succeed");
+
+        assert_ne!(
+            fs::read_to_string(vault_root.join("Archive/Alpha.md")).expect("moved note"),
+            "# Alpha\n\nSee [Beta](./Beta.md).\n",
+            "the moved note's relative link should be rewritten"
+        );
+        assert_eq!(id_at("Archive/Alpha.md"), Some(before));
+        assert_eq!(id_at("Projects/Alpha.md"), None);
     }
 
     #[test]
