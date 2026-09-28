@@ -9,9 +9,8 @@ use crate::{
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
-    parse_tool_pack_selector, resolve_selected_tool_packs, tool_by_name, tool_visible,
-    visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack, McpToolPackMode,
-    McpVisibilityRequirement,
+    resolve_selected_tool_packs, tool_by_name, tool_visible, visible_tool_catalog,
+    McpToolCatalogEntry, McpToolId, McpToolPack, McpToolPackMode, McpVisibilityRequirement,
 };
 use fs2::FileExt;
 use serde::Deserialize;
@@ -2741,38 +2740,15 @@ impl McpServerCore {
                 self.serialize_tool_report(tool.name, &summary)
             }
             McpToolId::ToolPacks => {
-                self.ensure_adaptive_tool_pack_mode()?;
+                vulcan_app::mcp_catalog::require_adaptive_pack_mode(self.tool_pack_mode)?;
                 let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
-                let requested = if args.operation == "list" && args.packs.is_empty() {
-                    BTreeSet::new()
-                } else {
-                    let requested = parse_tool_pack_selection_args(&args.packs)?;
-                    resolve_selected_tool_packs(&requested, McpToolPackMode::Static)
-                };
-                match args.operation.as_str() {
-                    "list" => {}
-                    "enable" => self.selected_tool_packs.extend(requested),
-                    "disable" => {
-                        for pack in requested {
-                            if pack != McpToolPack::ToolPacks
-                                && !self.pinned_tool_packs.contains(&pack)
-                            {
-                                self.selected_tool_packs.remove(&pack);
-                            }
-                        }
-                    }
-                    "set" => {
-                        self.selected_tool_packs = self.pinned_tool_packs.clone();
-                        self.selected_tool_packs.extend(requested);
-                        self.selected_tool_packs.insert(McpToolPack::ToolPacks);
-                    }
-                    other => {
-                        return Err(McpMethodError::invalid_params(format!(
-                            "unsupported `tool_packs.operation`: {other}"
-                        )));
-                    }
-                }
-                let structured = self.current_tool_pack_state();
+                let structured = vulcan_app::mcp_catalog::mutate_tool_packs(
+                    &mut self.selected_tool_packs,
+                    &self.pinned_tool_packs,
+                    self.tool_pack_mode,
+                    &self.selection.profile,
+                    &args,
+                )?;
                 Ok(self.tool_success_response(tool.name, structured))
             }
         }
@@ -2792,16 +2768,6 @@ impl McpServerCore {
             arguments,
         )?;
         Ok(self.custom_tool_success_response(&report.name, report.result, report.text.as_deref()))
-    }
-
-    fn ensure_adaptive_tool_pack_mode(&self) -> Result<(), McpMethodError> {
-        if matches!(self.tool_pack_mode, McpToolPackMode::Adaptive) {
-            Ok(())
-        } else {
-            Err(McpMethodError::tool(
-                "tool-pack mutation requires `--tool-pack-mode adaptive` for this MCP session",
-            ))
-        }
     }
 
     fn current_tool_pack_state(&self) -> Value {
@@ -3648,22 +3614,6 @@ fn mcp_oauth_policy_error_response(error: McpOAuthPolicyError) -> McpHttpRespons
             oauth_plain_response(400, "invalid OAuth authorization request")
         }
     }
-}
-
-fn parse_tool_pack_selection_args(names: &[String]) -> Result<Vec<McpToolPackArg>, McpMethodError> {
-    if names.is_empty() {
-        return Err(McpMethodError::invalid_params(
-            "`packs` must include at least one tool-pack name",
-        ));
-    }
-    names
-        .iter()
-        .map(|name| {
-            parse_tool_pack_selector(name).ok_or_else(|| {
-                McpMethodError::invalid_params(format!("unknown tool pack `{name}`"))
-            })
-        })
-        .collect()
 }
 
 fn build_mcp_tool_registry_entries(

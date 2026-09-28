@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 
+use crate::mcp_protocol::{McpMethodError, McpToolPackMutationArgs};
 use crate::mcp_schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
     config_show_output_schema, daily_input_schema, daily_list_input_schema, daily_output_schema,
@@ -732,6 +733,69 @@ pub fn tool_pack_state(
     })
 }
 
+pub fn require_adaptive_pack_mode(mode: McpToolPackMode) -> Result<(), McpMethodError> {
+    if matches!(mode, McpToolPackMode::Adaptive) {
+        Ok(())
+    } else {
+        Err(McpMethodError::tool(
+            "tool-pack mutation requires `--tool-pack-mode adaptive` for this MCP session",
+        ))
+    }
+}
+
+pub fn mutate_tool_packs(
+    selected: &mut BTreeSet<McpToolPack>,
+    pinned: &BTreeSet<McpToolPack>,
+    mode: McpToolPackMode,
+    profile: &PermissionProfile,
+    args: &McpToolPackMutationArgs,
+) -> Result<Value, McpMethodError> {
+    require_adaptive_pack_mode(mode)?;
+    let requested = if args.operation == "list" && args.packs.is_empty() {
+        BTreeSet::new()
+    } else {
+        if args.packs.is_empty() {
+            return Err(McpMethodError::invalid_params(
+                "`packs` must include at least one tool-pack name",
+            ));
+        }
+        args.packs
+            .iter()
+            .map(|name| {
+                ALL_MCP_TOOL_PACKS
+                    .iter()
+                    .copied()
+                    .find(|pack| *pack != McpToolPack::ToolPacks && pack.as_str() == name)
+                    .ok_or_else(|| {
+                        McpMethodError::invalid_params(format!("unknown tool pack `{name}`"))
+                    })
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?
+    };
+    match args.operation.as_str() {
+        "list" => {}
+        "enable" => selected.extend(requested),
+        "disable" => {
+            for pack in requested {
+                if !pinned.contains(&pack) {
+                    selected.remove(&pack);
+                }
+            }
+        }
+        "set" => {
+            selected.clone_from(pinned);
+            selected.extend(requested);
+            selected.insert(McpToolPack::ToolPacks);
+        }
+        other => {
+            return Err(McpMethodError::invalid_params(format!(
+                "unsupported `tool_packs.operation`: {other}"
+            )));
+        }
+    }
+    Ok(tool_pack_state(selected, pinned, mode, profile))
+}
+
 pub fn tool_visible(
     tool: &McpToolCatalogEntry,
     profile: &PermissionProfile,
@@ -817,6 +881,58 @@ mod tests {
         assert_eq!(notes_write["selected"], true);
         assert_eq!(notes_write["pinned"], false);
         assert_eq!(notes_write["activeTools"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn adaptive_pack_mutations_cannot_remove_pins_or_enable_unknown_packs() {
+        let readonly = PermissionProfile::readonly();
+        let pinned = BTreeSet::from([McpToolPack::NotesRead]);
+        let mut selected = BTreeSet::from([McpToolPack::NotesRead, McpToolPack::ToolPacks]);
+        let args = |operation: &str, packs: Vec<&str>| McpToolPackMutationArgs {
+            operation: operation.to_string(),
+            packs: packs.into_iter().map(ToOwned::to_owned).collect(),
+        };
+        let state = mutate_tool_packs(
+            &mut selected,
+            &pinned,
+            McpToolPackMode::Adaptive,
+            &readonly,
+            &args("disable", vec!["notes-read"]),
+        )
+        .unwrap();
+        assert!(selected.contains(&McpToolPack::NotesRead));
+        assert_eq!(state["pinnedToolPacks"], serde_json::json!(["notes-read"]));
+        assert!(matches!(
+            mutate_tool_packs(
+                &mut selected,
+                &pinned,
+                McpToolPackMode::Adaptive,
+                &readonly,
+                &args("enable", vec!["not-a-pack"]),
+            ),
+            Err(McpMethodError::JsonRpc { code: -32602, .. })
+        ));
+        assert!(matches!(
+            mutate_tool_packs(
+                &mut selected,
+                &pinned,
+                McpToolPackMode::Static,
+                &readonly,
+                &args("list", vec![]),
+            ),
+            Err(McpMethodError::Tool { .. })
+        ));
+        mutate_tool_packs(
+            &mut selected,
+            &pinned,
+            McpToolPackMode::Adaptive,
+            &readonly,
+            &args("set", vec!["search"]),
+        )
+        .unwrap();
+        assert!(selected.contains(&McpToolPack::NotesRead));
+        assert!(selected.contains(&McpToolPack::ToolPacks));
+        assert!(selected.contains(&McpToolPack::Search));
     }
 
     #[test]

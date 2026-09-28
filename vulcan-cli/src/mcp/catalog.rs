@@ -51,25 +51,6 @@ pub(super) fn is_default_tool_pack_args(tool_pack_args: &[McpToolPackArg]) -> bo
         ]
 }
 
-pub(super) fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
-    match value {
-        "notes-read" => Some(McpToolPackArg::NotesRead),
-        "search" => Some(McpToolPackArg::Search),
-        "status" => Some(McpToolPackArg::Status),
-        "graph" => Some(McpToolPackArg::Graph),
-        "custom" => Some(McpToolPackArg::Custom),
-        "daily" => Some(McpToolPackArg::Daily),
-        "tasks" => Some(McpToolPackArg::Tasks),
-        "notes-write" => Some(McpToolPackArg::NotesWrite),
-        "notes-manage" => Some(McpToolPackArg::NotesManage),
-        "web" => Some(McpToolPackArg::Web),
-        "config" => Some(McpToolPackArg::Config),
-        "index" => Some(McpToolPackArg::Index),
-        "sync" => Some(McpToolPackArg::Sync),
-        _ => None,
-    }
-}
-
 pub(super) fn mcp_tool_registry_entry(tool: &McpToolCatalogEntry) -> ToolRegistryEntry {
     ToolRegistryEntry {
         name: tool.name.to_string(),
