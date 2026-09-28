@@ -1,9 +1,13 @@
 //! Transport-level route classification for hosted MCP HTTP requests.
 //!
-//! The daemon owns path selection; OAuth authorization and MCP method handling
-//! remain behind the host callback until their application workflows migrate.
+//! The daemon owns path and method routing. Authentication, OAuth policy, and
+//! protocol operations are supplied by the host behind this transport boundary.
 
-use crate::mcp_http_codec::McpHttpRequest;
+use crate::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
+use serde_json::Value;
+use std::io;
+use std::net::TcpStream;
+use vulcan_app::mcp_dispatch::jsonrpc_error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpHttpRoute<'a> {
@@ -17,6 +21,92 @@ pub enum McpHttpRoute<'a> {
     OperationStatus(&'a str),
     McpEndpoint,
     NotFound,
+}
+
+pub struct McpHttpRouteOptions<'a> {
+    pub endpoint: &'a str,
+    pub oauth_enabled: bool,
+    pub local_oauth: bool,
+    pub named_remote: bool,
+}
+
+pub trait McpHttpRouteHandler {
+    type Authority;
+
+    fn oauth(&self, request: &McpHttpRequest, route: McpHttpRoute<'_>) -> McpHttpResponse;
+    fn authenticate(&self, request: &McpHttpRequest) -> Result<Self::Authority, McpHttpResponse>;
+    fn operation_status(&self, authority: &Self::Authority, operation_id: &str) -> McpHttpResponse;
+    fn post(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse;
+    fn sse(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        stream: &mut TcpStream,
+    ) -> io::Result<()>;
+    fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse;
+}
+
+/// Route one already-decoded request. Endpoint authentication precedes method
+/// rejection, while operation-status method rejection precedes authentication;
+/// both preserve the existing hosted HTTP contract.
+pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
+    request: &McpHttpRequest,
+    stream: &mut TcpStream,
+    options: &McpHttpRouteOptions<'_>,
+    handler: &H,
+) -> io::Result<()> {
+    let route = classify_mcp_http_route(
+        request,
+        options.endpoint,
+        options.oauth_enabled,
+        options.local_oauth,
+        options.named_remote,
+    );
+    let response = match route {
+        McpHttpRoute::LocalOAuthRegister
+        | McpHttpRoute::LocalOAuthAuthorize
+        | McpHttpRoute::LocalOAuthToken
+        | McpHttpRoute::LocalOAuthIndieAuthCallback
+        | McpHttpRoute::LocalOAuthConsent
+        | McpHttpRoute::AuthorizationServerMetadata
+        | McpHttpRoute::ProtectedResourceMetadata => handler.oauth(request, route),
+        McpHttpRoute::OperationStatus(_) if request.method != "GET" => {
+            route_error(405, "Method Not Allowed")
+        }
+        McpHttpRoute::OperationStatus(operation_id) => match handler.authenticate(request) {
+            Ok(authority) => handler.operation_status(&authority, operation_id),
+            Err(response) => response,
+        },
+        McpHttpRoute::NotFound => route_error(404, "Not Found"),
+        McpHttpRoute::McpEndpoint => {
+            let authority = match handler.authenticate(request) {
+                Ok(authority) => authority,
+                Err(response) => return write_mcp_http_response(stream, &response),
+            };
+            match request.method.as_str() {
+                "POST" => handler.post(request, &authority),
+                "GET" => return handler.sse(request, &authority, stream),
+                "DELETE" => handler.delete(request, &authority),
+                _ => route_error(405, "Method Not Allowed"),
+            }
+        }
+    };
+    write_mcp_http_response(stream, &response)
+}
+
+fn route_error(status: u16, message: &str) -> McpHttpResponse {
+    McpHttpResponse {
+        status,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&jsonrpc_error(
+            Value::Null,
+            -32600,
+            message.to_string(),
+            None,
+        ))
+        .expect("JSON-RPC error should serialize"),
+        extra_headers: Vec::new(),
+    }
 }
 
 #[must_use]
@@ -73,7 +163,10 @@ fn is_authorization_server_metadata_path(path: &str, endpoint: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::io::Read;
+    use std::net::TcpListener;
 
     fn request(method: &str, path: &str) -> McpHttpRequest {
         McpHttpRequest {
@@ -157,5 +250,117 @@ mod tests {
             classify_mcp_http_route(&request("POST", "/mcp"), "/mcp", false, false, false),
             McpHttpRoute::McpEndpoint
         );
+    }
+
+    #[derive(Default)]
+    struct RecordingHandler {
+        calls: RefCell<Vec<&'static str>>,
+        deny_auth: bool,
+    }
+
+    impl McpHttpRouteHandler for RecordingHandler {
+        type Authority = ();
+
+        fn oauth(&self, _: &McpHttpRequest, _: McpHttpRoute<'_>) -> McpHttpResponse {
+            self.calls.borrow_mut().push("oauth");
+            route_error(200, "oauth")
+        }
+
+        fn authenticate(&self, _: &McpHttpRequest) -> Result<(), McpHttpResponse> {
+            self.calls.borrow_mut().push("authenticate");
+            if self.deny_auth {
+                Err(route_error(401, "Unauthorized"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn operation_status(&self, (): &(), _: &str) -> McpHttpResponse {
+            self.calls.borrow_mut().push("operation");
+            route_error(200, "operation")
+        }
+
+        fn post(&self, _: &McpHttpRequest, (): &()) -> McpHttpResponse {
+            self.calls.borrow_mut().push("post");
+            route_error(200, "post")
+        }
+
+        fn sse(&self, _: &McpHttpRequest, (): &(), stream: &mut TcpStream) -> io::Result<()> {
+            self.calls.borrow_mut().push("sse");
+            write_mcp_http_response(stream, &route_error(200, "sse"))
+        }
+
+        fn delete(&self, _: &McpHttpRequest, (): &()) -> McpHttpResponse {
+            self.calls.borrow_mut().push("delete");
+            route_error(200, "delete")
+        }
+    }
+
+    #[test]
+    fn dispatch_preserves_route_authentication_and_method_order() {
+        let options = McpHttpRouteOptions {
+            endpoint: "/mcp",
+            oauth_enabled: true,
+            local_oauth: true,
+            named_remote: true,
+        };
+        for (method, path, status, calls) in [
+            ("GET", "/oauth/authorize", 200, &["oauth"][..]),
+            ("POST", "/missing", 404, &[][..]),
+            ("POST", "/mcp/operations/01AB", 405, &[][..]),
+            (
+                "GET",
+                "/mcp/operations/01AB",
+                200,
+                &["authenticate", "operation"][..],
+            ),
+            ("OPTIONS", "/mcp", 405, &["authenticate"][..]),
+            ("POST", "/mcp", 200, &["authenticate", "post"][..]),
+            ("GET", "/mcp", 200, &["authenticate", "sse"][..]),
+            ("DELETE", "/mcp", 200, &["authenticate", "delete"][..]),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            let handler = RecordingHandler::default();
+            dispatch_mcp_http_request(&request(method, path), &mut server, &options, &handler)
+                .unwrap();
+            drop(server);
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status} ")),
+                "{response}"
+            );
+            assert_eq!(*handler.calls.borrow(), calls, "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn endpoint_denies_unauthenticated_requests_before_method_dispatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let handler = RecordingHandler {
+            deny_auth: true,
+            ..RecordingHandler::default()
+        };
+        dispatch_mcp_http_request(
+            &request("OPTIONS", "/mcp"),
+            &mut server,
+            &McpHttpRouteOptions {
+                endpoint: "/mcp",
+                oauth_enabled: false,
+                local_oauth: false,
+                named_remote: false,
+            },
+            &handler,
+        )
+        .unwrap();
+        drop(server);
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
+        assert_eq!(*handler.calls.borrow(), ["authenticate"]);
     }
 }

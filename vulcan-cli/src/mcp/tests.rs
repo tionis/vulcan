@@ -14,6 +14,8 @@ use vulcan_app::mcp_read_tools;
 use vulcan_core::{PermissionProfile, ProfilePermissionGuard, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
 use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_http_routes::classify_mcp_http_route;
 
 #[test]
 fn stdio_and_http_reads_refuse_a_pending_ordinary_write_journal() {

@@ -83,7 +83,9 @@ use vulcan_daemon::mcp_http_codec::{
     write_mcp_http_response, write_mcp_http_sse_event, write_mcp_http_sse_headers,
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
-use vulcan_daemon::mcp_http_routes::{classify_mcp_http_route, McpHttpRoute};
+use vulcan_daemon::mcp_http_routes::{
+    dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
+};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_authorize::subject_not_allowed_response as indieauth_subject_not_allowed_response;
 #[cfg(feature = "oauth")]
@@ -1337,75 +1339,67 @@ fn handle_mcp_http_connection(
     let named_remote = context.named_runtime.is_some();
     #[cfg(not(feature = "oauth"))]
     let named_remote = false;
-    let route = classify_mcp_http_route(
+    dispatch_mcp_http_request(
         request,
-        &context.endpoint,
-        oauth_enabled,
-        local_oauth,
-        named_remote,
-    );
-    #[cfg(feature = "oauth")]
-    {
-        match route {
-            McpHttpRoute::LocalOAuthRegister
-            | McpHttpRoute::LocalOAuthAuthorize
-            | McpHttpRoute::LocalOAuthToken
-            | McpHttpRoute::LocalOAuthIndieAuthCallback
-            | McpHttpRoute::LocalOAuthConsent
-            | McpHttpRoute::AuthorizationServerMetadata
-            | McpHttpRoute::ProtectedResourceMetadata => {
-                let response = handle_mcp_oauth_route(context, request, route);
-                write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-                return Ok(());
-            }
-            McpHttpRoute::OperationStatus(operation_id) => {
-                let response = if request.method == "GET" {
-                    match authenticate_mcp_http_request(context, request) {
-                        Ok(authority) => {
-                            handle_named_mcp_operation_status(context, &authority, operation_id)
-                        }
-                        Err(response) => response,
-                    }
-                } else {
-                    mcp_http_json_error_response(405, "Method Not Allowed", Value::Null)
-                };
-                write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-                return Ok(());
-            }
-            McpHttpRoute::McpEndpoint | McpHttpRoute::NotFound => {}
+        stream,
+        &McpHttpRouteOptions {
+            endpoint: &context.endpoint,
+            oauth_enabled,
+            local_oauth,
+            named_remote,
+        },
+        context,
+    )
+    .map_err(CliError::operation)
+}
+
+impl McpHttpRouteHandler for McpHttpServerContext {
+    type Authority = McpSessionAuthority;
+
+    fn oauth(&self, request: &McpHttpRequest, route: McpHttpRoute<'_>) -> McpHttpResponse {
+        #[cfg(feature = "oauth")]
+        {
+            handle_mcp_oauth_route(self, request, route)
+        }
+        #[cfg(not(feature = "oauth"))]
+        {
+            let _ = (request, route);
+            mcp_http_json_error_response(404, "Not Found", Value::Null)
         }
     }
 
-    if route != McpHttpRoute::McpEndpoint {
-        let response = mcp_http_json_error_response(404, "Not Found", Value::Null);
-        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        return Ok(());
+    fn authenticate(&self, request: &McpHttpRequest) -> Result<Self::Authority, McpHttpResponse> {
+        authenticate_mcp_http_request(self, request)
     }
-    let authority = match authenticate_mcp_http_request(context, request) {
-        Ok(authority) => authority,
-        Err(response) => {
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-            return Ok(());
-        }
-    };
 
-    match request.method.as_str() {
-        "POST" => {
-            let response = handle_mcp_http_post(context, request, &authority);
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+    fn operation_status(&self, authority: &Self::Authority, operation_id: &str) -> McpHttpResponse {
+        #[cfg(feature = "oauth")]
+        {
+            handle_named_mcp_operation_status(self, authority, operation_id)
         }
-        "GET" => handle_mcp_http_sse(context, request, &authority, stream)?,
-        "DELETE" => {
-            let response = handle_mcp_http_delete(context, request, &authority);
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        }
-        _ => {
-            let response = mcp_http_json_error_response(405, "Method Not Allowed", Value::Null);
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        #[cfg(not(feature = "oauth"))]
+        {
+            let _ = (authority, operation_id);
+            mcp_http_json_error_response(404, "Not Found", Value::Null)
         }
     }
 
-    Ok(())
+    fn post(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse {
+        handle_mcp_http_post(self, request, authority)
+    }
+
+    fn sse(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        stream: &mut TcpStream,
+    ) -> io::Result<()> {
+        handle_mcp_http_sse(self, request, authority, stream).map_err(io::Error::other)
+    }
+
+    fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse {
+        handle_mcp_http_delete(self, request, authority)
+    }
 }
 
 #[cfg(feature = "oauth")]
