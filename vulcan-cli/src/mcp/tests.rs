@@ -642,6 +642,30 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &["notes-read", "tasks"],
         &["mcp:tools", "mcp:resources", "mcp:prompts"],
     );
+    let existing_grants = named
+        .authorization_store
+        .list_grants(Some(&remote.id))
+        .expect("existing grants")
+        .into_iter()
+        .map(|grant| grant.id)
+        .collect::<BTreeSet<_>>();
+    let foreground_revocable_token = named_listener_test_token(
+        &paths,
+        &named,
+        &token_options,
+        "personal",
+        "readonly",
+        &["notes-read"],
+        &["mcp:tools"],
+    );
+    let foreground_revocable_grant = named
+        .authorization_store
+        .list_grants(Some(&remote.id))
+        .expect("revocable grant")
+        .into_iter()
+        .find(|grant| !existing_grants.contains(&grant.id))
+        .expect("new revocable grant")
+        .id;
     let write_token = named_listener_test_token(
         &paths,
         &named,
@@ -1015,6 +1039,35 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &prompt_reader_token,
         &paths,
         "foreground",
+    );
+    let foreground_revocable_session = named_listener_session_id(&named_listener_initialize(
+        address,
+        "parity",
+        &foreground_revocable_token,
+    ));
+    assert!(named_listener_tools(
+        address,
+        "parity",
+        &foreground_revocable_token,
+        &foreground_revocable_session,
+    )
+    .starts_with("HTTP/1.1 200"));
+    named
+        .authorization_store
+        .revoke_grant(foreground_revocable_grant, current_unix_timestamp(), false)
+        .expect("revoke foreground-only grant");
+    assert!(named_listener_tools(
+        address,
+        "parity",
+        &foreground_revocable_token,
+        &foreground_revocable_session,
+    )
+    .starts_with("HTTP/1.1 401"));
+    let unaffected_foreground_session =
+        named_listener_session_id(&named_listener_initialize(address, "parity", &token));
+    assert!(
+        named_listener_tools(address, "parity", &token, &unaffected_foreground_session)
+            .starts_with("HTTP/1.1 200")
     );
     stop.cancel();
     runner
