@@ -584,32 +584,40 @@ fn update_link_suggestion_status(
             ))
         },
     )?;
-    match status {
-        LinkSuggestionStatus::Accepted => {
-            connection.execute(
-                "
-                UPDATE link_suggestions
-                SET status = 'accepted', accepted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?1
-                ",
-                params![id],
-            )?;
+    let status_text = match status {
+        LinkSuggestionStatus::Accepted => "accepted",
+        LinkSuggestionStatus::Rejected => "rejected",
+        LinkSuggestionStatus::Pending => "pending",
+    };
+    if status != LinkSuggestionStatus::Pending {
+        let decided_at: String =
+            connection.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+                row.get(0)
+            })?;
+        // Write the durable decision first: if the process dies before the cache update, the
+        // next scan projects the decision into the cache; the reverse order could lose it.
+        record_link_suggestion_feedback(
+            paths,
+            &connection,
+            &source_id,
+            &target_id,
+            status_text,
+            score,
+            &decided_at,
+        )?;
+        connection.execute(
+            "
+            UPDATE link_suggestions
+            SET status = ?2,
+                accepted_at = CASE WHEN ?2 = 'accepted' THEN ?3 ELSE accepted_at END,
+                rejected_at = CASE WHEN ?2 = 'rejected' THEN ?3 ELSE rejected_at END
+            WHERE id = ?1
+            ",
+            params![id, status_text, decided_at],
+        )?;
+        if status == LinkSuggestionStatus::Accepted {
             crate::link_feedback::insert_inferred_link(&connection, &source_id, &target_id, score)?;
         }
-        LinkSuggestionStatus::Rejected => {
-            connection.execute(
-                "
-                UPDATE link_suggestions
-                SET status = 'rejected', rejected_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?1
-                ",
-                params![id],
-            )?;
-        }
-        LinkSuggestionStatus::Pending => {}
-    }
-    if status != LinkSuggestionStatus::Pending {
-        record_link_suggestion_feedback(paths, &connection, id)?;
     }
     load_link_suggestions(&connection, &notes, None, None, 0.0, None)?
         .suggestions
@@ -622,32 +630,29 @@ fn update_link_suggestion_status(
 fn record_link_suggestion_feedback(
     paths: &VaultPaths,
     connection: &Connection,
-    id: &str,
+    source_id: &str,
+    target_id: &str,
+    status: &str,
+    score: f64,
+    decided_at: &str,
 ) -> Result<(), SuggestionError> {
-    let decision = connection.query_row(
-        "
-        SELECT source.path, target.path, suggestion.status, suggestion.score,
-               CASE suggestion.status
-                   WHEN 'accepted' THEN suggestion.accepted_at
-                   ELSE suggestion.rejected_at
-               END
-        FROM link_suggestions AS suggestion
-        JOIN documents AS source ON source.id = suggestion.source_document_id
-        JOIN documents AS target ON target.id = suggestion.target_document_id
-        WHERE suggestion.id = ?1
-        ",
-        params![id],
-        |row| {
-            Ok(crate::link_feedback::LinkFeedbackDecision {
-                source_path: row.get(0)?,
-                target_path: row.get(1)?,
-                status: row.get(2)?,
-                score: row.get(3)?,
-                decided_at: row.get(4)?,
-            })
+    let path_of = |id: &str| -> rusqlite::Result<String> {
+        connection.query_row(
+            "SELECT path FROM documents WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+    };
+    crate::link_feedback::record(
+        paths,
+        crate::link_feedback::LinkFeedbackDecision {
+            source_path: path_of(source_id)?,
+            target_path: path_of(target_id)?,
+            status: status.to_string(),
+            score,
+            decided_at: decided_at.to_string(),
         },
     )?;
-    crate::link_feedback::record(paths, decision)?;
     Ok(())
 }
 
@@ -1916,8 +1921,30 @@ mod tests {
                 .expect("count should succeed")
         };
 
+        // The latest scan checkpoint must describe the cache after decisions are restored.
+        let checkpoint_matches_live_links = || -> bool {
+            let connection = Connection::open(paths.cache_db()).expect("cache should open");
+            let recorded: i64 = connection
+                .query_row(
+                    "SELECT resolved_links FROM checkpoints WHERE source = 'scan'
+                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("scan checkpoint should exist");
+            let live: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count should succeed");
+            recorded == live
+        };
+
         // A full rebuild recreates the cache from scratch.
         scan_vault(&paths, ScanMode::Full).expect("rebuild should succeed");
+        assert!(checkpoint_matches_live_links());
         assert_eq!(status_of("A.md", "Charlie.md").as_deref(), Some("accepted"));
         assert_eq!(status_of("D.md", "Charlie.md").as_deref(), Some("rejected"));
         assert_eq!(inferred_edges("A.md"), 1);
@@ -1926,6 +1953,7 @@ mod tests {
         fs::write(vault_root.join("A.md"), "# A\n\n[[B]] edited\n").expect("edit A");
         scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
         assert_eq!(inferred_edges("A.md"), 1);
+        assert!(checkpoint_matches_live_links());
 
         // An external rename keeps the decision attached to the renamed note.
         fs::rename(vault_root.join("A.md"), vault_root.join("Alpha.md")).expect("rename A");

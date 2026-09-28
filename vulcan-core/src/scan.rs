@@ -322,9 +322,21 @@ where
     F: FnMut(ScanProgress),
 {
     // Repair the vault before indexing it: a move interrupted by a crash would otherwise be
-    // indexed as half-rewritten links.
-    crate::move_rewrite::recover_interrupted_move(paths)
+    // indexed as half-rewritten links. A move whose file changes all landed contributes its
+    // rename hint instead, and its journal is cleared once this scan succeeds.
+    let recovery = crate::move_rewrite::recover_interrupted_move(paths)
         .map_err(|error| ScanError::Io(std::io::Error::other(error.to_string())))?;
+    let mut rename_hints = rename_hints.clone();
+    let completes_applied_move = match recovery {
+        crate::move_rewrite::MoveRecovery::Applied {
+            source_path,
+            destination_path,
+        } => {
+            rename_hints.entry(destination_path).or_insert(source_path);
+            true
+        }
+        _ => false,
+    };
     let config = load_vault_config(paths).config;
     let mut database = CacheDatabase::open(paths)?;
     let targeted = changed
@@ -466,8 +478,9 @@ where
                     deleted: summary.deleted,
                 },
             );
-            crate::history::record_scan_checkpoint(database.connection())?;
+            // Restore durable decisions first so the checkpoint matches the live cache.
             crate::link_feedback::restore(paths, database.connection())?;
+            crate::history::record_scan_checkpoint(database.connection())?;
             summary
         }
         ScanMode::Incremental => {
@@ -479,10 +492,14 @@ where
                         &discovered,
                         &existing,
                         &deleted_paths,
-                        rename_hints,
+                        &rename_hints,
                         mode,
                         on_progress,
                     )?;
+                    // Follow renames in durable feedback before the cache commits them. If the
+                    // commit then fails, the files are still at their new paths on disk and the
+                    // next scan re-detects the same renames, so the two cannot drift apart.
+                    crate::link_feedback::rename_paths(paths, &result.renamed)?;
                     if result.requires_property_catalog_refresh {
                         emit_scan_progress(
                             on_progress,
@@ -557,16 +574,18 @@ where
                 || result.summary.updated > 0
                 || result.summary.deleted > 0;
             if has_changes {
+                crate::link_feedback::restore(paths, database.connection())?;
                 crate::history::record_scan_checkpoint_incremental(
                     database.connection(),
                     &result.changed_document_ids,
                 )?;
-                crate::link_feedback::rename_paths(paths, &result.renamed)?;
-                crate::link_feedback::restore(paths, database.connection())?;
             }
             result.summary
         }
     };
+    if completes_applied_move {
+        crate::move_rewrite::remove_move_journal(paths)?;
+    }
     Ok(summary)
 }
 
@@ -1043,8 +1062,12 @@ fn match_renamed_documents(
     }
 
     let mut deleted_by_hash: HashMap<(&[u8], String), Vec<&String>> = HashMap::new();
+    // Empty files carry no identifying content, so they never inherit an identity by hash.
     for path in &available {
         let cached = &existing[path];
+        if cached.file_size == 0 {
+            continue;
+        }
         deleted_by_hash
             .entry((cached.content_hash.as_slice(), extension_of(path)))
             .or_default()
@@ -1052,7 +1075,10 @@ fn match_renamed_documents(
     }
     let mut new_by_hash: HashMap<(Vec<u8>, String), Vec<usize>> = HashMap::new();
     for index in 0..work_items.len() {
-        if renamed_from[index].is_some() || !is_new_file(index) {
+        if renamed_from[index].is_some()
+            || !is_new_file(index)
+            || work_items[index].file.file_size == 0
+        {
             continue;
         }
         if let IncrementalPrepResult::Reindex { content_hash, .. } = &prepared[index] {
@@ -4636,6 +4662,31 @@ mod tests {
                 Some(before_id.clone())
             );
         }
+    }
+
+    #[test]
+    fn incremental_scan_does_not_transfer_identity_between_empty_files() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("a.md"), "").expect("empty note should be written");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let before_id = document_id_at(database.connection(), "a.md").expect("id");
+        drop(database);
+
+        fs::remove_file(vault_root.join("a.md")).expect("remove should succeed");
+        fs::write(vault_root.join("b.md"), "").expect("empty note should be written");
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!((summary.added, summary.deleted), (1, 1));
+        assert_ne!(
+            document_id_at(database.connection(), "b.md"),
+            Some(before_id)
+        );
     }
 
     #[test]

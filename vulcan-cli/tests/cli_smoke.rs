@@ -27139,6 +27139,53 @@ schedule = "every 15m"
 }
 
 #[test]
+fn integration_routes_owned_by_another_device_are_skipped_or_refused() {
+    let temp = TempDir::new().unwrap();
+    let vault_root = temp.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+    fs::create_dir_all(vault_root.join("Players/Campaign")).unwrap();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[publish.outline.profiles.players]
+base_url = "https://outline.example"
+collection_id = "collection"
+token_env = "OUTLINE_TOKEN"
+query = 'from notes where file.path starts_with "Players/Campaign/"'
+
+[integrations.routes.campaign]
+profile = "players"
+direction = "mirror"
+authority = "review"
+local_root = "Players/Campaign"
+remote_roots = ["root-id"]
+schedule = "every 15m"
+owner_device = "not-a-real-device-id"
+"#,
+    )
+    .unwrap();
+    let root = vault_root.to_str().unwrap();
+    let run = |extra: &[&str]| {
+        let mut args = vec!["--vault", root, "--output", "json", "integration", "run"];
+        args.extend_from_slice(extra);
+        Command::cargo_bin("vulcan").unwrap().args(args).assert()
+    };
+
+    let all = run(&["--all"]).success();
+    let all = parse_stdout_json(&all);
+    assert_eq!(all["skipped_owned_elsewhere"][0], "campaign");
+    let scheduled = run(&["--scheduled"]).success();
+    assert_eq!(parse_stdout_json(&scheduled)["due"], serde_json::json!([]));
+    let named = run(&["campaign"]).failure();
+    let stderr = String::from_utf8_lossy(&named.get_output().stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&named.get_output().stdout).into_owned();
+    assert!(
+        format!("{stdout}{stderr}").contains("owned by device not-a-real-device-id"),
+        "{stdout}{stderr}"
+    );
+}
+
+#[test]
 fn integration_validate_rejects_an_invalid_profile_query() {
     let temp = TempDir::new().unwrap();
     let vault_root = temp.path();

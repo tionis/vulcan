@@ -2296,6 +2296,32 @@ fn run_integration_command(
                     .clone()
                     .expect("clap requires a route name, --all, or --scheduled")]
             };
+            let skipped_elsewhere = if *dry_run {
+                Vec::new()
+            } else {
+                loaded
+                    .config
+                    .integrations
+                    .routes
+                    .iter()
+                    .filter(|(_, route)| route.enabled && !route_applies_on_this_device(route))
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>()
+            };
+            if names.is_empty() && *all && !skipped_elsewhere.is_empty() {
+                // Every enabled route belongs to another device: a successful no-op, like an
+                // empty scheduled batch, so the same timer can run on every device.
+                if cli.output == OutputFormat::Json {
+                    print_json(&json!({
+                        "all": true,
+                        "ran": [],
+                        "skipped_owned_elsewhere": skipped_elsewhere,
+                    }))?;
+                } else {
+                    println!("No enabled integration routes apply on this device.");
+                }
+                return Ok(());
+            }
             if names.is_empty() {
                 if *scheduled {
                     if cli.output == OutputFormat::Json {
