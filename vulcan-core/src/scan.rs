@@ -321,6 +321,10 @@ fn scan_inventory<F>(
 where
     F: FnMut(ScanProgress),
 {
+    // Repair the vault before indexing it: a move interrupted by a crash would otherwise be
+    // indexed as half-rewritten links.
+    crate::move_rewrite::recover_interrupted_move(paths)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error.to_string())))?;
     let config = load_vault_config(paths).config;
     let mut database = CacheDatabase::open(paths)?;
     let targeted = changed

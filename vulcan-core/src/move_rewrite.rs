@@ -11,7 +11,7 @@ use crate::{
     VaultPaths,
 };
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -24,7 +24,16 @@ pub enum MoveError {
     Graph(GraphQueryError),
     InvalidDestination(RelativePathError),
     Io(std::io::Error),
-    MissingLinkSpan { path: String, byte_offset: usize },
+    MissingLinkSpan {
+        path: String,
+        byte_offset: usize,
+    },
+    /// A file changed on disk between planning and applying the move.
+    ConcurrentModification(String),
+    /// Applying the move failed; the files already changed were restored.
+    RolledBack {
+        cause: Box<MoveError>,
+    },
     Scan(ScanError),
     Sqlite(rusqlite::Error),
 }
@@ -46,6 +55,14 @@ impl Display for MoveError {
                     "failed to locate cached link at byte offset {byte_offset} in {path}"
                 )
             }
+            Self::ConcurrentModification(path) => write!(
+                formatter,
+                "{path} changed while the move was being prepared; rerun the move"
+            ),
+            Self::RolledBack { cause } => write!(
+                formatter,
+                "move failed and its partial changes were rolled back: {cause}"
+            ),
             Self::Scan(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
         }
@@ -60,7 +77,10 @@ impl Error for MoveError {
             Self::Io(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
-            Self::DestinationExists(_) | Self::MissingLinkSpan { .. } => None,
+            Self::RolledBack { cause } => Some(cause.as_ref()),
+            Self::DestinationExists(_)
+            | Self::MissingLinkSpan { .. }
+            | Self::ConcurrentModification(_) => None,
         }
     }
 }
@@ -128,6 +148,7 @@ struct TextEdit {
 struct FileRewritePlan {
     original_path: String,
     output_path: String,
+    original_contents: String,
     updated_contents: String,
     changes: Vec<LinkChange>,
 }
@@ -158,6 +179,9 @@ pub fn move_note_unlocked(
     destination: &str,
     dry_run: bool,
 ) -> Result<MoveSummary, MoveError> {
+    if !dry_run {
+        recover_interrupted_move(paths)?;
+    }
     let connection = open_existing_cache(paths)?;
     let source = resolve_move_source(paths, &connection, source_identifier)?;
     let destination_path = normalize_destination_path(destination, &source.extension)?;
@@ -215,24 +239,7 @@ pub fn move_note_unlocked(
         });
     }
 
-    let source_contents = secure_read(paths.vault_root(), Path::new(&source.path))?;
-    secure_create(
-        paths.vault_root(),
-        Path::new(&destination_path),
-        source_contents,
-    )?;
-    fs::remove_file(paths.vault_root().join(&source.path))?;
-    for plan in &rewrite_plans {
-        if plan.changes.is_empty() {
-            continue;
-        }
-
-        secure_write(
-            paths.vault_root(),
-            Path::new(&plan.output_path),
-            &plan.updated_contents,
-        )?;
-    }
+    apply_move(paths, &source.path, &destination_path, &rewrite_plans)?;
 
     scan_vault_unlocked_with_renames(
         paths,
@@ -245,6 +252,173 @@ pub fn move_note_unlocked(
         destination_path,
         rewritten_files,
     })
+}
+
+const MOVE_JOURNAL_FILE_NAME: &str = "move-journal.json";
+const MOVE_JOURNAL_VERSION: u32 = 1;
+
+/// Crash-recovery record for one in-flight move, written before the first vault mutation.
+#[derive(Debug, Serialize, Deserialize)]
+struct MoveJournal {
+    version: u32,
+    source_path: String,
+    destination_path: String,
+    files: Vec<MoveJournalFile>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MoveJournalFile {
+    /// Where the rewritten contents are written (the destination for the moved note).
+    path: String,
+    original_contents: String,
+    updated_contents: String,
+}
+
+fn move_journal_path(paths: &VaultPaths) -> std::io::Result<PathBuf> {
+    Ok(paths.operational_state_dir()?.join(MOVE_JOURNAL_FILE_NAME))
+}
+
+fn write_move_journal(paths: &VaultPaths, journal: &MoveJournal) -> std::io::Result<()> {
+    let path = move_journal_path(paths)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("move journal path has no parent directory"))?;
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(&mut temporary, journal).map_err(std::io::Error::other)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn remove_move_journal(paths: &VaultPaths) -> std::io::Result<()> {
+    match fs::remove_file(move_journal_path(paths)?) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Applies a planned move: verify preconditions, journal, then mutate. Any failure after the
+/// first mutation restores the files already changed before returning.
+fn apply_move(
+    paths: &VaultPaths,
+    source_path: &str,
+    destination_path: &str,
+    plans: &[FileRewritePlan],
+) -> Result<(), MoveError> {
+    let changed_plans = plans
+        .iter()
+        .filter(|plan| !plan.changes.is_empty())
+        .collect::<Vec<_>>();
+    // External editors do not honor Vulcan's write lock, so refuse to overwrite edits made
+    // after planning instead of silently discarding them.
+    for plan in &changed_plans {
+        let current = fs::read_to_string(paths.vault_root().join(&plan.original_path))?;
+        if current != plan.original_contents {
+            return Err(MoveError::ConcurrentModification(
+                plan.original_path.clone(),
+            ));
+        }
+    }
+    let source_contents = secure_read(paths.vault_root(), Path::new(source_path))?;
+    let journal = MoveJournal {
+        version: MOVE_JOURNAL_VERSION,
+        source_path: source_path.to_string(),
+        destination_path: destination_path.to_string(),
+        files: changed_plans
+            .iter()
+            .map(|plan| MoveJournalFile {
+                path: plan.output_path.clone(),
+                original_contents: plan.original_contents.clone(),
+                updated_contents: plan.updated_contents.clone(),
+            })
+            .collect(),
+    };
+    write_move_journal(paths, &journal)?;
+
+    let applied = (|| -> Result<(), MoveError> {
+        secure_create(
+            paths.vault_root(),
+            Path::new(destination_path),
+            source_contents,
+        )?;
+        fs::remove_file(paths.vault_root().join(source_path))?;
+        for plan in &changed_plans {
+            secure_write(
+                paths.vault_root(),
+                Path::new(&plan.output_path),
+                &plan.updated_contents,
+            )?;
+        }
+        Ok(())
+    })();
+    if let Err(cause) = applied {
+        roll_back_move(paths, &journal)?;
+        remove_move_journal(paths)?;
+        return Err(MoveError::RolledBack {
+            cause: Box::new(cause),
+        });
+    }
+    remove_move_journal(paths)?;
+    Ok(())
+}
+
+/// Restores a move recorded in the journal. A file is restored only while it still holds
+/// either its original or Vulcan's planned contents, so edits made after an interruption win.
+fn roll_back_move(paths: &VaultPaths, journal: &MoveJournal) -> Result<(), MoveError> {
+    let root = paths.vault_root();
+    for file in &journal.files {
+        let absolute = root.join(&file.path);
+        let Ok(current) = fs::read_to_string(&absolute) else {
+            continue;
+        };
+        if current == file.updated_contents {
+            secure_write(root, Path::new(&file.path), &file.original_contents)?;
+        }
+    }
+    let source = root.join(&journal.source_path);
+    let destination = root.join(&journal.destination_path);
+    if destination.exists() && !source.exists() {
+        fs::rename(&destination, &source)?;
+    } else if destination.exists() && source.exists() {
+        // The copy happened but the original was never removed.
+        if fs::read(&destination)? == fs::read(&source)? {
+            fs::remove_file(&destination)?;
+        }
+    }
+    Ok(())
+}
+
+/// Rolls back a move that was interrupted by a crash, if its journal is still present.
+///
+/// Callers must hold the vault write lock. Returns whether a journal was found.
+pub fn recover_interrupted_move(paths: &VaultPaths) -> Result<bool, MoveError> {
+    let path = move_journal_path(paths)?;
+    let contents = match fs::read(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let journal: MoveJournal = serde_json::from_slice(&contents).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid move journal {}: {error}", path.display()),
+        )
+    })?;
+    if journal.version != MOVE_JOURNAL_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "unsupported move journal version {} in {}",
+                journal.version,
+                path.display()
+            ),
+        )
+        .into());
+    }
+    roll_back_move(paths, &journal)?;
+    remove_move_journal(paths)?;
+    Ok(true)
 }
 
 fn open_existing_cache(paths: &VaultPaths) -> Result<Connection, MoveError> {
@@ -432,6 +606,7 @@ fn plan_rewrites(
         plans.push(FileRewritePlan {
             original_path,
             output_path,
+            original_contents: source_contents,
             updated_contents,
             changes,
         });
@@ -1196,6 +1371,117 @@ mod tests {
         );
         assert_eq!(id_at("Archive/Alpha.md"), Some(before));
         assert_eq!(id_at("Projects/Alpha.md"), None);
+    }
+
+    fn rewrite_plan(original: &str, output: &str, before: &str, after: &str) -> FileRewritePlan {
+        FileRewritePlan {
+            original_path: original.to_string(),
+            output_path: output.to_string(),
+            original_contents: before.to_string(),
+            updated_contents: after.to_string(),
+            changes: vec![LinkChange {
+                before: "[[Old]]".to_string(),
+                after: "[[New]]".to_string(),
+            }],
+        }
+    }
+
+    fn move_test_vault() -> (TempDir, VaultPaths) {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("Old.md"), "# Old\n").expect("source");
+        fs::write(vault_root.join("B.md"), "[[Old]]\n").expect("b");
+        fs::write(vault_root.join("C.md"), "[[Old]] too\n").expect("c");
+        let paths = VaultPaths::new(&vault_root);
+        (temp_dir, paths)
+    }
+
+    #[test]
+    fn apply_move_refuses_files_edited_after_planning() {
+        let (_temp_dir, paths) = move_test_vault();
+        let plans = [rewrite_plan("B.md", "B.md", "stale\n", "[[New]]\n")];
+
+        let error = apply_move(&paths, "Old.md", "New.md", &plans).expect_err("should refuse");
+
+        assert!(matches!(error, MoveError::ConcurrentModification(path) if path == "B.md"));
+        assert!(paths.vault_root().join("Old.md").exists());
+        assert!(!paths.vault_root().join("New.md").exists());
+        assert_eq!(
+            fs::read_to_string(paths.vault_root().join("B.md")).expect("b"),
+            "[[Old]]\n"
+        );
+    }
+
+    #[test]
+    fn apply_move_rolls_back_partial_rewrites_on_failure() {
+        let (_temp_dir, paths) = move_test_vault();
+        let root = paths.vault_root().to_path_buf();
+        // Writing to a directory fails after the first rewrite has already landed.
+        fs::create_dir_all(root.join("Blocked.md")).expect("blocking dir");
+        let plans = [
+            rewrite_plan("B.md", "B.md", "[[Old]]\n", "[[New]]\n"),
+            rewrite_plan("C.md", "Blocked.md", "[[Old]] too\n", "[[New]] too\n"),
+        ];
+
+        let error = apply_move(&paths, "Old.md", "New.md", &plans).expect_err("should fail");
+
+        assert!(matches!(error, MoveError::RolledBack { .. }), "{error}");
+        assert_eq!(
+            fs::read_to_string(root.join("Old.md")).expect("old"),
+            "# Old\n"
+        );
+        assert!(!root.join("New.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("B.md")).expect("b"),
+            "[[Old]]\n"
+        );
+        assert!(!move_journal_path(&paths).expect("journal path").exists());
+    }
+
+    #[test]
+    fn interrupted_move_is_rolled_back_but_later_edits_win() {
+        let (_temp_dir, paths) = move_test_vault();
+        let root = paths.vault_root().to_path_buf();
+        // Simulate a crash after the move and both rewrites; the user then edited C.md.
+        fs::rename(root.join("Old.md"), root.join("New.md")).expect("move");
+        fs::write(root.join("B.md"), "[[New]]\n").expect("b rewritten");
+        fs::write(root.join("C.md"), "user edit\n").expect("c edited");
+        write_move_journal(
+            &paths,
+            &MoveJournal {
+                version: MOVE_JOURNAL_VERSION,
+                source_path: "Old.md".to_string(),
+                destination_path: "New.md".to_string(),
+                files: vec![
+                    MoveJournalFile {
+                        path: "B.md".to_string(),
+                        original_contents: "[[Old]]\n".to_string(),
+                        updated_contents: "[[New]]\n".to_string(),
+                    },
+                    MoveJournalFile {
+                        path: "C.md".to_string(),
+                        original_contents: "[[Old]] too\n".to_string(),
+                        updated_contents: "[[New]] too\n".to_string(),
+                    },
+                ],
+            },
+        )
+        .expect("journal");
+
+        assert!(recover_interrupted_move(&paths).expect("recovery"));
+
+        assert!(root.join("Old.md").exists());
+        assert!(!root.join("New.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("B.md")).expect("b"),
+            "[[Old]]\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("C.md")).expect("c"),
+            "user edit\n"
+        );
+        assert!(!recover_interrupted_move(&paths).expect("second recovery"));
     }
 
     #[test]
