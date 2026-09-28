@@ -39,6 +39,7 @@ pub mod mcp_oauth_token;
 pub mod mcp_remote;
 pub mod mcp_remote_runtime;
 pub mod mcp_session;
+pub mod mcp_sse;
 pub mod mcp_state;
 pub mod mcp_transport;
 pub mod mutation_scheduler;

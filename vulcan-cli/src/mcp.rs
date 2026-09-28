@@ -81,8 +81,7 @@ use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
 use vulcan_daemon::mcp_http_codec::{
     parse_mcp_http_post, validate_mcp_protocol_version, validate_mcp_sse_accept,
-    write_mcp_http_response, write_mcp_http_sse_event, write_mcp_http_sse_headers,
-    write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
+    write_mcp_http_response, McpHttpRequest, McpHttpResponse,
 };
 use vulcan_daemon::mcp_http_routes::{
     dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
@@ -131,11 +130,12 @@ use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime, N
 #[cfg(test)]
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
 use vulcan_daemon::mcp_session::{
-    mcp_notification_scope, mcp_request_key, McpHttpSession as HostedMcpHttpSession,
-    McpSessionAuthority, McpSessionRegistry, SessionAdmissionError, SessionLookupError,
+    mcp_request_key, McpHttpSession as HostedMcpHttpSession, McpSessionAuthority,
+    McpSessionRegistry, SessionAdmissionError, SessionLookupError,
 };
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
+use vulcan_daemon::mcp_sse::{serve_mcp_sse, McpSseEnd};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::McpAuthorizationStore;
 #[cfg(feature = "oauth")]
@@ -147,8 +147,6 @@ use vulcan_daemon::mutation_scheduler::{
 use vulcan_daemon::process::DaemonProcessContext;
 use vulcan_daemon::shutdown::ShutdownSignal;
 
-const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 
@@ -1763,66 +1761,32 @@ fn handle_mcp_http_sse(
         }
     };
 
-    write_mcp_http_sse_headers(stream).map_err(CliError::operation)?;
-    let receiver = session.register_subscriber();
-    let mut keepalive_elapsed = Duration::ZERO;
-
-    loop {
-        let next_event = receiver.recv_timeout(MCP_HTTP_POLL_INTERVAL);
-        if session.is_idle_expired() {
-            context.sessions.retire(session_id);
-            break;
-        }
-        if matches!(&next_event, Err(mpsc::RecvTimeoutError::Disconnected)) {
-            break;
-        }
-        // An SSE request can outlive its access token or connection grant. Check
-        // durable authority before computing or sending any further metadata.
-        let still_authorized = authenticate_mcp_http_request(context, request)
-            .is_ok_and(|current| session.authority.matches(&current));
-        let profile_still_allowed = still_authorized
-            && session
+    let end = serve_mcp_sse(
+        &session,
+        stream,
+        || {
+            authenticate_mcp_http_request(context, request)
+                .is_ok_and(|current| session.authority.matches(&current))
+                && session
+                    .core
+                    .lock()
+                    .expect("mcp core lock should not be poisoned")
+                    .session
+                    .attenuate_profile()
+                    .is_ok()
+        },
+        || {
+            session
                 .core
                 .lock()
                 .expect("mcp core lock should not be poisoned")
-                .session
-                .attenuate_profile()
-                .is_ok();
-        if !profile_still_allowed {
-            context.sessions.retire(session_id);
-            break;
-        }
-        match next_event {
-            Ok(message) => {
-                write_mcp_http_sse_event(stream, &message).map_err(CliError::operation)?;
-                keepalive_elapsed = Duration::ZERO;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let notifications = {
-                    let mut core = session
-                        .core
-                        .lock()
-                        .expect("mcp core lock should not be poisoned");
-                    core.list_changed_notifications()
-                };
-                for notification in notifications {
-                    if mcp_notification_scope(&notification)
-                        .is_none_or(|scope| session.authority.allows_scope(scope))
-                    {
-                        write_mcp_http_sse_event(stream, &notification)
-                            .map_err(CliError::operation)?;
-                    }
-                }
-                keepalive_elapsed += MCP_HTTP_POLL_INTERVAL;
-                if keepalive_elapsed >= MCP_HTTP_KEEPALIVE_INTERVAL {
-                    write_mcp_http_sse_keepalive(stream).map_err(CliError::operation)?;
-                    keepalive_elapsed = Duration::ZERO;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
+                .list_changed_notifications()
+        },
+    )
+    .map_err(CliError::operation)?;
+    if end == McpSseEnd::RetireSession {
+        context.sessions.retire(session_id);
     }
-
     Ok(())
 }
 
