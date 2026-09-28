@@ -42,7 +42,6 @@ use vulcan_app::execution::{
 };
 use vulcan_app::mcp_access;
 use vulcan_app::mcp_assistant;
-use vulcan_app::mcp_assistant::json_value_to_string;
 use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
 use vulcan_app::mcp_completion;
 use vulcan_app::mcp_config;
@@ -72,9 +71,8 @@ use vulcan_app::mcp_sync;
 use vulcan_app::mcp_tasks;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
-    apply_note_append, apply_note_create, apply_note_patch, finish_note_append_report,
-    finish_note_create_report, finish_note_patch_report, parse_note_frontmatter_bindings,
-    resolve_existing_markdown_target, NoteAppendRequest, NoteCreateRequest, NotePatchRequest,
+    apply_note_append, apply_note_patch, finish_note_append_report, finish_note_patch_report,
+    resolve_existing_markdown_target, NoteAppendRequest, NotePatchRequest,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::templates::parse_template_var_bindings;
@@ -84,7 +82,6 @@ use vulcan_app::web::{
     apply_web_fetch_report_with_permissions, build_web_search_report_with_permissions,
     WebFetchMode as AppWebFetchMode, WebFetchRequest, WebSearchRequest,
 };
-use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
 #[cfg(all(test, feature = "oauth"))]
@@ -2678,43 +2675,12 @@ impl McpServerCore {
             }
             McpToolId::NoteCreate => {
                 let args: McpNoteCreateArgs = parse_tool_arguments(arguments)?;
-                let normalized_path = normalize_relative_input_path(
-                    &args.path,
-                    RelativePathOptions {
-                        expected_extension: Some("md"),
-                        append_extension_if_missing: true,
-                    },
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                mcp_access::check_write_path_access(&self.guard, &normalized_path)?;
-                let frontmatter =
-                    parse_note_frontmatter_bindings(&frontmatter_bindings(&args.frontmatter))
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let applied = apply_note_create(
+                let report = mcp_notes::note_create(
                     &self.paths,
-                    &NoteCreateRequest {
-                        path: normalized_path,
-                        template: args.template,
-                        frontmatter,
-                        body: args.body,
-                    },
-                    Some(self.selection.name.as_str()),
-                    true,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let report = finish_note_create_report(&self.paths, applied, args.check)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                refresh_cache_incrementally(&self.paths)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                    .commit(
-                        &self.paths,
-                        "note-create",
-                        &report.changed_paths,
-                        Some(self.selection.name.as_str()),
-                        true,
-                    )
-                    .map_err(|error| McpMethodError::tool(error.clone()))?;
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteAppend => {
@@ -4107,13 +4073,6 @@ fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
         message,
         data: Some(serde_json::json!({ "uri": uri })),
     }
-}
-
-fn frontmatter_bindings(frontmatter: &BTreeMap<String, Value>) -> Vec<String> {
-    frontmatter
-        .iter()
-        .map(|(key, value)| format!("{key}={}", json_value_to_string(value)))
-        .collect()
 }
 
 fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {

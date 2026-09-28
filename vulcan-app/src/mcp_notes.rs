@@ -1,15 +1,71 @@
 //! Permission-checked MCP note mutation workflows shared by transports.
 
+use serde_json::Value;
+use std::collections::BTreeMap;
+use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths};
 
 use crate::commit::AutoCommitPolicy;
-use crate::mcp_access::check_write_note_access;
-use crate::mcp_protocol::{McpMethodError, McpNoteDeleteArgs, McpNoteSetArgs};
+use crate::mcp_access::{check_write_note_access, check_write_path_access};
+use crate::mcp_assistant::json_value_to_string;
+use crate::mcp_protocol::{McpMethodError, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteSetArgs};
 use crate::notes::{
-    apply_note_delete, apply_note_set, finish_note_set_report, NoteDeleteReport, NoteDeleteRequest,
-    NoteSetCommandReport, NoteSetRequest,
+    apply_note_create, apply_note_delete, apply_note_set, finish_note_create_report,
+    finish_note_set_report, parse_note_frontmatter_bindings, NoteCreateCommandReport,
+    NoteCreateRequest, NoteDeleteReport, NoteDeleteRequest, NoteSetCommandReport, NoteSetRequest,
 };
 use crate::scan::refresh_cache_incrementally;
+
+pub fn note_create(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    profile_name: &str,
+    args: McpNoteCreateArgs,
+) -> Result<NoteCreateCommandReport, McpMethodError> {
+    let normalized_path = normalize_relative_input_path(
+        &args.path,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: true,
+        },
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    check_write_path_access(guard, &normalized_path)?;
+    let frontmatter = parse_note_frontmatter_bindings(&frontmatter_bindings(&args.frontmatter))
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let applied = apply_note_create(
+        paths,
+        &NoteCreateRequest {
+            path: normalized_path,
+            template: args.template,
+            frontmatter,
+            body: args.body,
+        },
+        Some(profile_name),
+        true,
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let report = finish_note_create_report(paths, applied, args.check)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    refresh_cache_incrementally(paths).map_err(|error| McpMethodError::tool(error.to_string()))?;
+    AutoCommitPolicy::for_mutation(paths, args.no_commit)
+        .commit(
+            paths,
+            "note-create",
+            &report.changed_paths,
+            Some(profile_name),
+            true,
+        )
+        .map_err(|error| McpMethodError::tool(error.clone()))?;
+    Ok(report)
+}
+
+fn frontmatter_bindings(frontmatter: &BTreeMap<String, Value>) -> Vec<String> {
+    frontmatter
+        .iter()
+        .map(|(key, value)| format!("{key}={}", json_value_to_string(value)))
+        .collect()
+}
 
 pub fn note_set(
     paths: &VaultPaths,
@@ -98,6 +154,35 @@ mod tests {
     use std::fs;
     use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::{resolve_permission_profile, scan_vault, ScanMode};
+
+    #[test]
+    fn create_normalizes_markdown_path_and_refuses_readonly_grant() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        let readonly = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let writable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
+        );
+        let args = || {
+            serde_json::from_value::<McpNoteCreateArgs>(json!({
+                "path": "New", "body": "# New\n", "frontmatter": {"status": "draft"},
+                "no_commit": true,
+            }))
+            .unwrap()
+        };
+        assert!(note_create(&paths, &readonly, "readonly", args()).is_err());
+        assert!(!temporary.path().join("New.md").exists());
+        let report = note_create(&paths, &writable, "unrestricted", args()).unwrap();
+        assert_eq!(report.path, "New.md");
+        let content = fs::read_to_string(temporary.path().join("New.md")).unwrap();
+        assert!(content.contains("status: draft"));
+        assert!(content.contains("# New"));
+    }
 
     #[test]
     fn set_and_delete_require_confirmation_and_writable_grant() {
