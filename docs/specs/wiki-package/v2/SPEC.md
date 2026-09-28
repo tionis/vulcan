@@ -83,13 +83,19 @@ Readers apply the Container Core container, path, archive, digest, and identity 
 Vulcan imports a valid package into a new, explicit vault destination:
 
 - Each `content/` member is materialized at `<destination>/<path below content/>`.
-- Notes without source-map mappings are copied byte for byte. For a note with mappings, Vulcan adds a `vulcan.source` frontmatter entry:
+- Notes without source-map mappings are copied byte for byte. For a note with mappings, Vulcan adds a `vulcan.source` frontmatter entry. By default (`--source-locators summary`) the entry identifies the evidence without copying it:
 
   ```yaml
   vulcan:
     source:
       artifact: blake3:<package identity>
       member: content/Characters/Alice.md
+      mappings: 1
+  ```
+
+  With `--source-locators full`, the entry lists every mapped span and its locators instead of the count, in the same shape that MDAF import writes:
+
+  ```yaml
       spans:
         - start: 30
           end: 75
@@ -100,7 +106,7 @@ Vulcan imports a valid package into a new, explicit vault destination:
               method: dev.tionis.renwiki/dialogue
   ```
 
-  Spans address the package member's bytes, not the annotated note. This is the same shape that MDAF import writes. An existing `vulcan.source` entry makes the import fail before anything is written.
+  Summary is the default because statement-level source maps can be larger than the notes they describe. In one real game export, full locators made up 59% of the imported text and made a full cache scan about eight times slower. The package remains the evidence of record either way. Spans address the package member's bytes, not the annotated note. An existing `vulcan.source` entry makes the import fail before anything is written.
 - Provenance, the source map, knowledge, sources, environments, and extensions are validated and summarized. They are not materialized, and the package stays external evidence.
 - Vulcan refreshes the cache after writing and removes the destination if writing or reindexing fails.
 

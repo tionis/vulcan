@@ -19,8 +19,8 @@ use vulcan_core::paths::{secure_create, secure_create_file};
 use vulcan_core::textbundle::TextBundleRepresentation;
 use vulcan_core::wiki_package::{
     inspect_wiki_package, is_markdown_path, WikiPackage, WikiPackageManifestV2,
-    WikiPackageMemberRole, WikiPackageMemberV2, WikiPackageSummary, WIKI_MANIFEST_PATH,
-    WIKI_PACKAGE_FORMAT, WIKI_PACKAGE_VERSION, WIKI_PROVENANCE_PATH,
+    WikiPackageMemberRole, WikiPackageMemberV2, WikiPackageSummary, WikiSourceMapping,
+    WIKI_MANIFEST_PATH, WIKI_PACKAGE_FORMAT, WIKI_PACKAGE_VERSION, WIKI_PROVENANCE_PATH,
 };
 use vulcan_core::{ScanMode, VaultPaths};
 use zip::write::FileOptions;
@@ -50,7 +50,20 @@ pub struct WikiPackageExportReport {
 pub struct WikiPackageImportRequest {
     pub package: PathBuf,
     pub destination: String,
+    pub source_locators: WikiSourceLocators,
     pub dry_run: bool,
+}
+
+/// How much of the package source map import copies into `vulcan.source`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WikiSourceLocators {
+    /// Package identity, member path, and mapping count. The spans stay in
+    /// the package, which remains the evidence of record.
+    #[default]
+    Summary,
+    /// Every mapped span with its locators, as MDAF import writes them.
+    Full,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -58,6 +71,7 @@ pub struct WikiPackageImportReport {
     pub dry_run: bool,
     pub package_identity: String,
     pub format_version: u32,
+    pub source_locators: WikiSourceLocators,
     pub destination_root: String,
     pub notes: usize,
     pub assets: usize,
@@ -74,6 +88,14 @@ pub struct WikiPackageImportReport {
 struct ExportMember {
     manifest: WikiPackageMemberV2,
     source: PathBuf,
+}
+
+/// Compact per-note provenance recorded on import by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteSourceSummary {
+    artifact: String,
+    member: String,
+    mappings: usize,
 }
 
 /// Per-note provenance recorded on import. It has the same shape as MDAF
@@ -289,7 +311,7 @@ pub fn import_wiki_package(
         .iter()
         .map(|member| target(&member.path))
         .collect::<Vec<_>>();
-    let annotations = source_annotations(&package)?;
+    let annotations = source_annotations(&package, request.source_locators)?;
     if !request.dry_run {
         let apply = (|| -> Result<(), Box<dyn std::error::Error>> {
             for (member, target) in content.iter().zip(&members) {
@@ -321,6 +343,7 @@ pub fn import_wiki_package(
         dry_run: request.dry_run,
         package_identity: package.identity.clone(),
         format_version: package.version.unwrap_or(WIKI_PACKAGE_VERSION),
+        source_locators: request.source_locators,
         destination_root: destination.clone(),
         notes: package.summary.notes,
         assets: package.summary.assets,
@@ -333,60 +356,78 @@ pub fn import_wiki_package(
 
 /// Render annotated note text for every note with source-map mappings.
 /// Conflicts with existing `vulcan.source` frontmatter fail before writing.
-fn source_annotations(package: &WikiPackage) -> Result<BTreeMap<String, String>, AppError> {
+fn source_annotations(
+    package: &WikiPackage,
+    detail: WikiSourceLocators,
+) -> Result<BTreeMap<String, String>, AppError> {
     let Some(source_map) = package.source_map.as_ref() else {
         return Ok(BTreeMap::new());
     };
-    let notes = source_map
-        .mappings
-        .iter()
-        .map(|mapping| mapping.note.as_str())
-        .collect::<BTreeSet<_>>();
+    let mut by_note: BTreeMap<&str, Vec<&WikiSourceMapping>> = BTreeMap::new();
+    for mapping in &source_map.mappings {
+        by_note
+            .entry(mapping.note.as_str())
+            .or_default()
+            .push(mapping);
+    }
     let mut annotations = BTreeMap::new();
-    for note in notes {
+    for (note, mappings) in by_note {
         let mut bytes = Vec::new();
         package
             .copy_member_to(note, &mut bytes)
             .map_err(AppError::operation)?;
         let text = String::from_utf8(bytes).map_err(AppError::operation)?;
-        let mut spans: Vec<NoteSourceSpan> = Vec::new();
-        for mapping in source_map.mappings_for(note) {
-            let locator = NoteSourceLocator {
-                source_id: mapping.source.source_id.clone(),
-                selectors: mapping.source.selectors.clone(),
-                confidence: mapping.confidence,
-                method: mapping.method.clone(),
-            };
-            match spans.last_mut() {
-                Some(span)
-                    if span.start == mapping.document.start && span.end == mapping.document.end =>
-                {
-                    span.locators.push(locator);
-                }
-                _ => spans.push(NoteSourceSpan {
-                    start: mapping.document.start,
-                    end: mapping.document.end,
-                    locators: vec![locator],
-                }),
-            }
+        let provenance = match detail {
+            WikiSourceLocators::Summary => serde_yaml::to_value(NoteSourceSummary {
+                artifact: package.identity.clone(),
+                member: note.to_string(),
+                mappings: mappings.len(),
+            }),
+            WikiSourceLocators::Full => serde_yaml::to_value(NoteSourceProvenance {
+                artifact: package.identity.clone(),
+                member: note.to_string(),
+                spans: full_spans(&mappings),
+            }),
         }
-        let provenance = NoteSourceProvenance {
-            artifact: package.identity.clone(),
-            member: note.to_string(),
-            spans,
-        };
+        .map_err(AppError::operation)?;
         annotations.insert(
             note.to_string(),
-            add_source_frontmatter(&text, note, &provenance)?,
+            add_source_frontmatter(&text, note, provenance)?,
         );
     }
     Ok(annotations)
 }
 
+/// Group consecutive mappings of the same span, in source-map order.
+fn full_spans(mappings: &[&WikiSourceMapping]) -> Vec<NoteSourceSpan> {
+    let mut spans: Vec<NoteSourceSpan> = Vec::new();
+    for mapping in mappings {
+        let locator = NoteSourceLocator {
+            source_id: mapping.source.source_id.clone(),
+            selectors: mapping.source.selectors.clone(),
+            confidence: mapping.confidence,
+            method: mapping.method.clone(),
+        };
+        match spans.last_mut() {
+            Some(span)
+                if span.start == mapping.document.start && span.end == mapping.document.end =>
+            {
+                span.locators.push(locator);
+            }
+            _ => spans.push(NoteSourceSpan {
+                start: mapping.document.start,
+                end: mapping.document.end,
+                locators: vec![locator],
+            }),
+        }
+    }
+    spans
+}
+
 fn add_source_frontmatter(
     content: &str,
     note: &str,
-    provenance: &NoteSourceProvenance,
+    provenance: YamlValue,
 ) -> Result<String, AppError> {
     let (frontmatter, body) =
         parse_frontmatter_document(content, false).map_err(AppError::operation)?;
@@ -405,10 +446,7 @@ fn add_source_frontmatter(
             "{note}: existing `vulcan.source` frontmatter would be overwritten by wiki import"
         )));
     }
-    vulcan.insert(
-        source_key,
-        serde_yaml::to_value(provenance).map_err(AppError::operation)?,
-    );
+    vulcan.insert(source_key, provenance);
     render_note_from_parts(Some(&frontmatter), &body).map_err(AppError::operation)
 }
 
@@ -636,6 +674,7 @@ mod tests {
             &WikiPackageImportRequest {
                 package: output.clone(),
                 destination: "Imported".to_string(),
+                source_locators: WikiSourceLocators::Summary,
                 dry_run: true,
             },
         )
@@ -647,6 +686,7 @@ mod tests {
             &WikiPackageImportRequest {
                 package: output,
                 destination: "Imported".to_string(),
+                source_locators: WikiSourceLocators::Summary,
                 dry_run: false,
             },
         )
@@ -666,6 +706,7 @@ mod tests {
             &WikiPackageImportRequest {
                 package: directory,
                 destination: "Rollback".to_string(),
+                source_locators: WikiSourceLocators::Summary,
                 dry_run: false,
             },
         );
@@ -700,6 +741,7 @@ mod tests {
             &WikiPackageImportRequest {
                 package: package.clone(),
                 destination: "Lore".to_string(),
+                source_locators: WikiSourceLocators::Full,
                 dry_run: false,
             },
         )
@@ -736,6 +778,34 @@ mod tests {
         assert!(body.contains("Alice has lived by the harbor"));
         assert!(!vault.join("Lore/sources").exists());
         assert!(!vault.join("Lore/knowledge.jsonl").exists());
+    }
+
+    #[test]
+    fn v2_import_defaults_to_compact_source_summaries() {
+        let (_temp, paths) = empty_vault();
+        let report = import_wiki_package(
+            &paths,
+            &WikiPackageImportRequest {
+                package: spec_example("v2/examples/sourced.wikibundle"),
+                destination: "Lore".to_string(),
+                source_locators: WikiSourceLocators::default(),
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert_eq!(report.source_locators, WikiSourceLocators::Summary);
+        assert_eq!(report.annotated_notes.len(), 2);
+        let harbor =
+            fs::read_to_string(paths.vault_root().join("Lore/Places/Harbor.md")).expect("harbor");
+        let (frontmatter, _) = parse_frontmatter_document(&harbor, false).expect("parse");
+        let source = &frontmatter.expect("frontmatter")["vulcan"]["source"];
+        assert_eq!(
+            source["artifact"].as_str(),
+            Some(report.package_identity.as_str())
+        );
+        assert_eq!(source["member"].as_str(), Some("content/Places/Harbor.md"));
+        assert_eq!(source["mappings"].as_u64(), Some(1));
+        assert!(source.get("spans").is_none());
     }
 
     #[test]
@@ -788,6 +858,7 @@ mod tests {
             &WikiPackageImportRequest {
                 package,
                 destination: "Lore".to_string(),
+                source_locators: WikiSourceLocators::Summary,
                 dry_run: true,
             },
         )
@@ -805,6 +876,7 @@ mod tests {
             &WikiPackageImportRequest {
                 package: package.clone(),
                 destination: "Old".to_string(),
+                source_locators: WikiSourceLocators::Summary,
                 dry_run: false,
             },
         )

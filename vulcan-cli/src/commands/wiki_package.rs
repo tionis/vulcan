@@ -2,10 +2,11 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::print_json;
 use crate::{
     selected_permission_guard, warn_auto_commit_if_needed, Cli, CliError, OutputFormat,
-    WikiPackageCommand,
+    WikiPackageCommand, WikiSourceLocatorsArg,
 };
 use vulcan_app::wiki_package::{
     export_wiki_package, import_wiki_package, WikiPackageExportRequest, WikiPackageImportRequest,
+    WikiSourceLocators,
 };
 use vulcan_core::wiki_package::{inspect_wiki_package, WikiPackage};
 use vulcan_core::{PermissionGuard, VaultPaths};
@@ -33,6 +34,7 @@ pub(crate) fn handle_wiki_package_command(
         WikiPackageCommand::Import {
             package,
             destination,
+            source_locators,
             dry_run,
             no_commit,
         } => {
@@ -46,6 +48,10 @@ pub(crate) fn handle_wiki_package_command(
                 &WikiPackageImportRequest {
                     package: package.clone(),
                     destination: destination.clone(),
+                    source_locators: match source_locators {
+                        WikiSourceLocatorsArg::Summary => WikiSourceLocators::Summary,
+                        WikiSourceLocatorsArg::Full => WikiSourceLocators::Full,
+                    },
                     dry_run: *dry_run,
                 },
             )

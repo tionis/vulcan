@@ -439,7 +439,7 @@ pub use cli::{
     TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
     TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateNetworkArg,
     UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode, WikiPackageCommand,
+    WebCommand, WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
 };
 
 #[must_use]

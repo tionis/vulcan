@@ -12290,7 +12290,9 @@ fn wiki_exchange_validates_and_imports_sourced_v2_example() {
         Some(2)
     );
     let alice = fs::read_to_string(vault_root.join("Lore/Characters/Alice.md")).expect("alice");
-    assert!(alice.contains("source_id: script"), "{alice}");
+    assert_eq!(imported["source_locators"], "summary");
+    assert!(alice.contains("mappings: 1"), "{alice}");
+    assert!(!alice.contains("spans:"), "{alice}");
 
     let tampered = temp_dir.path().join("tampered.wikibundle");
     copy_dir_recursive(&example, &tampered);

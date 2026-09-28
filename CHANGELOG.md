@@ -40,7 +40,8 @@
 - Added Knowledge v1, a source-neutral snapshot of cited entities and claims.
 - Added Markdown Wiki Package v2, with required provenance, a note-to-source map, and a hosted
   knowledge snapshot. `exchange wiki export` now writes v2. `inspect`, `validate`, and `import`
-  accept v1 and v2. Import records source locators in `vulcan.source` frontmatter.
+  accept v1 and v2. Import records the package and member of mapped notes in `vulcan.source`
+  frontmatter; `--source-locators full` also copies every span and locator.
 - `integrations.routes.<name>.owner_device` restricts live route runs to one device so synced
   vaults cannot publish duplicate remote documents from two devices.
 

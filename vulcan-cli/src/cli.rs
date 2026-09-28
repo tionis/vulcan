@@ -6149,6 +6149,13 @@ pub enum ExchangeCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum WikiSourceLocatorsArg {
+    #[default]
+    Summary,
+    Full,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum WikiPackageCommand {
     #[command(about = "Inspect a Wiki Bundle directory or Wiki Pack ZIP")]
@@ -6167,6 +6174,13 @@ pub enum WikiPackageCommand {
         package: PathBuf,
         #[arg(long, help = "Required new vault-relative destination folder")]
         destination: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = WikiSourceLocatorsArg::Summary,
+            help = "Source-map detail copied into vulcan.source: summary (package, member, mapping count) or full (every span and locator)"
+        )]
+        source_locators: WikiSourceLocatorsArg,
         #[arg(long, help = "Validate and report without writing files")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]

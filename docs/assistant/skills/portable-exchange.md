@@ -21,7 +21,7 @@ Use this workflow to move one editable Markdown document and its linked assets b
 - Plan import with `vulcan --output json exchange textbundle import <package> --destination <new-folder> --dry-run`, then apply the same command after reviewing the destination and assets.
 - Export a complete vault snapshot with `vulcan --output json exchange wiki export --package <wiki.wikipack> --dry-run`. Use `.wikibundle` for a directory or `.wikipack` for a ZIP.
 - Inspect and validate incoming wiki packages with `vulcan exchange wiki inspect <package>` and `vulcan exchange wiki validate <package>`, then plan materialization with `vulcan --output json exchange wiki import <package> --destination <new-folder> --dry-run`.
-- For a version 2 wiki package, read the inspection `summary` before importing. It gives the counts of sources, provenance activities, source-map mappings, knowledge entities and claims, and accepted records. The import report's `annotated_notes` lists the notes that will receive `vulcan.source` locators.
+- For a version 2 wiki package, read the inspection `summary` before importing. It gives the counts of sources, provenance activities, source-map mappings, knowledge entities and claims, and accepted records. The import report's `annotated_notes` lists the notes that will receive `vulcan.source` frontmatter. It names the package and member by default; pass `--source-locators full` only when the vault must carry every span and locator itself, because full locators can outweigh the notes.
 
 ## Guardrails
 

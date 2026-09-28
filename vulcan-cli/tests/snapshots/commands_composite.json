@@ -17208,6 +17208,20 @@
                     ]
                   },
                   {
+                    "help": "Source-map detail copied into vulcan.source: summary (package, member, mapping count) or full (every span and locator)",
+                    "id": "source_locators",
+                    "long": "source-locators",
+                    "possible_values": [
+                      "summary",
+                      "full"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SOURCE_LOCATORS"
+                    ]
+                  },
+                  {
                     "help": "Validate and report without writing files",
                     "id": "dry_run",
                     "long": "dry-run",
