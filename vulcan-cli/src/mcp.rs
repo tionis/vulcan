@@ -54,6 +54,7 @@ use vulcan_app::mcp_dispatch::{
     McpMethodHandler, McpProtocolMethods,
 };
 use vulcan_app::mcp_graph;
+use vulcan_app::mcp_notes;
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs,
     McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListSnapshot, McpMethodError,
@@ -71,10 +72,9 @@ use vulcan_app::mcp_sync;
 use vulcan_app::mcp_tasks;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
-    apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-    finish_note_append_report, finish_note_create_report, finish_note_patch_report,
-    finish_note_set_report, parse_note_frontmatter_bindings, resolve_existing_markdown_target,
-    NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
+    apply_note_append, apply_note_create, apply_note_patch, finish_note_append_report,
+    finish_note_create_report, finish_note_patch_report, parse_note_frontmatter_bindings,
+    resolve_existing_markdown_target, NoteAppendRequest, NoteCreateRequest, NotePatchRequest,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::templates::parse_template_var_bindings;
@@ -91,6 +91,8 @@ use vulcan_core::pkce_s256_challenge;
 use vulcan_core::ClientIdMetadataDocument;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_core::PermissionGuard;
 #[cfg(feature = "web")]
 use vulcan_core::SearchBackendKind;
 #[cfg(feature = "oauth")]
@@ -99,8 +101,8 @@ use vulcan_core::{
     OAuthResourceServerConfig,
 };
 use vulcan_core::{
-    load_vault_config, resolve_permission_profile, watch_vault, PermissionGuard,
-    ProfilePermissionGuard, VaultPaths, WatchOptions,
+    load_vault_config, resolve_permission_profile, watch_vault, ProfilePermissionGuard, VaultPaths,
+    WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::host::{
@@ -2820,73 +2822,22 @@ impl McpServerCore {
             }
             McpToolId::NoteSet => {
                 let args: McpNoteSetArgs = parse_tool_arguments(arguments)?;
-                if !args.confirm {
-                    return Err(McpMethodError::invalid_params(
-                        "`note_set.confirm` must be true because this replaces the full note body",
-                    ));
-                }
-                mcp_access::check_write_note_access(&self.paths, &self.guard, &args.note)?;
-                let applied = apply_note_set(
+                let report = mcp_notes::note_set(
                     &self.paths,
-                    &NoteSetRequest {
-                        note: args.note,
-                        replacement: args.content,
-                        preserve_frontmatter: args.preserve_frontmatter,
-                    },
-                    Some(self.selection.name.as_str()),
-                    true,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                let report = finish_note_set_report(&self.paths, applied, args.check)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                refresh_cache_incrementally(&self.paths)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                    .commit(
-                        &self.paths,
-                        "note-set",
-                        std::slice::from_ref(&report.path),
-                        Some(self.selection.name.as_str()),
-                        true,
-                    )
-                    .map_err(|error| McpMethodError::tool(error.clone()))?;
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteDelete => {
                 let args: McpNoteDeleteArgs = parse_tool_arguments(arguments)?;
-                if !args.dry_run && !args.confirm {
-                    return Err(McpMethodError::invalid_params(
-                        "`note_delete.confirm` must be true unless `dry_run` is true",
-                    ));
-                }
-                mcp_access::check_write_note_access(&self.paths, &self.guard, &args.note)?;
-                let mut report = apply_note_delete(
+                let report = mcp_notes::note_delete(
                     &self.paths,
-                    &NoteDeleteRequest {
-                        note: args.note,
-                        dry_run: args.dry_run,
-                    },
-                    Some(self.selection.name.as_str()),
-                    true,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if !args.dry_run {
-                    refresh_cache_incrementally(&self.paths)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                        .commit(
-                            &self.paths,
-                            "note-delete",
-                            &report.changed_paths,
-                            Some(self.selection.name.as_str()),
-                            true,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.clone()))?;
-                }
-                report
-                    .backlinks
-                    .retain(|backlink| self.guard.check_read_path(&backlink.source_path).is_ok());
-                report.backlink_count = report.backlinks.len();
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::WebSearch => {
