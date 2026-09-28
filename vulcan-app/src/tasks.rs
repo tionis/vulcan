@@ -3370,8 +3370,8 @@ fn inline_task_priority_marker(config: &VaultConfig, priority: &str) -> Option<&
     let normalized = priority.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "" | "none" => None,
-        "highest" => Some("⏫"),
-        "high" | "urgent" => Some("🔺"),
+        "highest" => Some("🔺"),
+        "high" | "urgent" => Some("⏫"),
         "medium" | "normal" => Some("🔼"),
         "low" => Some("🔽"),
         "lowest" => Some("⏬"),
@@ -3384,8 +3384,8 @@ fn inline_task_priority_marker(config: &VaultConfig, priority: &str) -> Option<&
                 i32::MIN..=0 => None,
                 1 => Some("🔽"),
                 2 => Some("🔼"),
-                3 => Some("🔺"),
-                _ => Some("⏫"),
+                3 => Some("⏫"),
+                _ => Some("🔺"),
             }),
     }
 }
@@ -3474,7 +3474,7 @@ fn build_inline_task_create_plan(
     tokens.extend(tags.iter().map(|tag| format!("#{tag}")));
     tokens.extend(projects.iter().cloned());
     if let Some(due) = due.as_ref() {
-        tokens.push(format!("🗓️ {due}"));
+        tokens.push(format!("📅 {due}"));
     }
     if let Some(scheduled) = scheduled.as_ref() {
         tokens.push(format!("⏳ {scheduled}"));
@@ -5590,11 +5590,12 @@ fn update_inline_task_due_marker(line: &str, due: &str) -> Result<String, AppErr
         )));
     }
 
-    let due_marker = Regex::new(r"🗓(?:️)?\s+\S+").expect("regex should compile");
+    let due_marker =
+        Regex::new(r"(?:📅|📆|🗓\x{FE0F}?)\s*\d{4}-\d{2}-\d{2}").expect("regex should compile");
     if due_marker.is_match(line) {
-        Ok(due_marker.replace(line, format!("🗓️ {due}")).into_owned())
+        Ok(due_marker.replace(line, format!("📅 {due}")).into_owned())
     } else {
-        Ok(format!("{} 🗓️ {due}", line.trim_end()))
+        Ok(format!("{} 📅 {due}", line.trim_end()))
     }
 }
 

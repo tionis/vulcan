@@ -60,12 +60,12 @@ fn parse_document_internal(
             ..ParsedDocument::default()
         };
     }
-    let comment_regions = scan_comment_regions(source);
     let options = if include_metadata_blocks {
         parser_options()
     } else {
         fragment_parser_options()
     };
+    let comment_regions = scan_comment_regions(source, options);
     let parser = Parser::new_ext(source, options).into_offset_iter();
     process_events(
         source,
@@ -462,6 +462,27 @@ mod tests {
             .starts_with("\n  const marker"));
         assert!(parsed.chunk_texts[0].content.contains("\"%%keep%%\""));
         assert!(parsed.chunk_texts[0].content.contains("\"#notatag\""));
+    }
+
+    #[test]
+    fn comment_markers_in_code_do_not_pair_with_later_comments() {
+        let parsed = parse_document(
+            concat!(
+                "```sql\nSELECT 1 WHERE a LIKE '%%x';\n```\n\n",
+                "Important searchable paragraph.\n\n",
+                "%%secret%%\n",
+            ),
+            &VaultConfig::default(),
+        );
+        let chunk_text = parsed
+            .chunk_texts
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(chunk_text.contains("Important searchable paragraph."));
+        assert!(!chunk_text.contains("secret"));
     }
 
     #[test]

@@ -73,6 +73,7 @@ pub mod js_transform;
 pub mod json_schema;
 pub mod kanban;
 pub mod knowledge;
+mod link_feedback;
 pub mod maintenance;
 pub mod mdbase;
 pub mod move_rewrite;
@@ -380,6 +381,6 @@ pub fn current_time_override_ms() -> Option<i64> {
     expression::functions::parse_date_like_string(trimmed).or_else(|| trimmed.parse::<i64>().ok())
 }
 
-pub const PARSER_VERSION: u32 = 7;
+pub const PARSER_VERSION: u32 = 8;
 pub const EXTRACTION_VERSION: u32 = 1;
 pub const SCHEMA_VERSION: u32 = 18;

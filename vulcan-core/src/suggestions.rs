@@ -7,8 +7,8 @@ use crate::refactor::{RefactorChange, RefactorFileReport, RefactorReport};
 use crate::scan::{scan_vault_unlocked, ScanError, ScanMode};
 use crate::write_lock::acquire_write_lock;
 use crate::{
-    load_vault_config, query_notes, CacheError, LinkConfidence, LinkResolutionMode,
-    LinkStylePreference, NoteQuery, PermissionGuard, VaultPaths,
+    load_vault_config, query_notes, CacheError, LinkResolutionMode, LinkStylePreference, NoteQuery,
+    PermissionGuard, VaultPaths,
 };
 use aho_corasick::AhoCorasick;
 use rusqlite::{params, Connection};
@@ -620,29 +620,40 @@ fn update_link_suggestion_status(
                 .map_err(|_| SuggestionError::PermissionDenied)?;
         }
     }
-    match status {
-        LinkSuggestionStatus::Accepted => {
-            connection.execute(
-                "
-                UPDATE link_suggestions
-                SET status = 'accepted', accepted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?1
-                ",
-                params![id],
-            )?;
-            insert_inferred_link(&connection, &source_id, &target_id, score)?;
+    let status_text = match status {
+        LinkSuggestionStatus::Accepted => "accepted",
+        LinkSuggestionStatus::Rejected => "rejected",
+        LinkSuggestionStatus::Pending => "pending",
+    };
+    if status != LinkSuggestionStatus::Pending {
+        let decided_at: String =
+            connection.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+                row.get(0)
+            })?;
+        // Write the durable decision first: if the process dies before the cache update, the
+        // next scan projects the decision into the cache; the reverse order could lose it.
+        record_link_suggestion_feedback(
+            paths,
+            &connection,
+            &source_id,
+            &target_id,
+            status_text,
+            score,
+            &decided_at,
+        )?;
+        connection.execute(
+            "
+            UPDATE link_suggestions
+            SET status = ?2,
+                accepted_at = CASE WHEN ?2 = 'accepted' THEN ?3 ELSE accepted_at END,
+                rejected_at = CASE WHEN ?2 = 'rejected' THEN ?3 ELSE rejected_at END
+            WHERE id = ?1
+            ",
+            params![id, status_text, decided_at],
+        )?;
+        if status == LinkSuggestionStatus::Accepted {
+            crate::link_feedback::insert_inferred_link(&connection, &source_id, &target_id, score)?;
         }
-        LinkSuggestionStatus::Rejected => {
-            connection.execute(
-                "
-                UPDATE link_suggestions
-                SET status = 'rejected', rejected_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?1
-                ",
-                params![id],
-            )?;
-        }
-        LinkSuggestionStatus::Pending => {}
     }
     load_link_suggestions(&connection, &notes, None, None, 0.0, None)?
         .suggestions
@@ -651,38 +662,32 @@ fn update_link_suggestion_status(
         .ok_or_else(|| SuggestionError::InvalidRewrite(format!("suggestion not found: {id}")))
 }
 
-fn insert_inferred_link(
+/// Mirrors a decision into durable feedback so it survives cache rebuilds.
+fn record_link_suggestion_feedback(
+    paths: &VaultPaths,
     connection: &Connection,
     source_id: &str,
     target_id: &str,
+    status: &str,
     score: f64,
+    decided_at: &str,
 ) -> Result<(), SuggestionError> {
-    let target_path: String = connection.query_row(
-        "SELECT path FROM documents WHERE id = ?1",
-        params![target_id],
-        |row| row.get(0),
-    )?;
-    connection.execute(
-        "
-        INSERT INTO links (
-            id, source_document_id, raw_text, link_kind, display_text, target_path_candidate,
-            target_heading, target_block, resolved_target_id, origin_context, byte_offset,
-            confidence, confidence_score
+    let path_of = |id: &str| -> rusqlite::Result<String> {
+        connection.query_row(
+            "SELECT path FROM documents WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
         )
-        SELECT ?1, ?2, ?3, 'inferred', NULL, ?3, NULL, NULL, ?4, 'inferred', 0, ?5, ?6
-        WHERE NOT EXISTS (
-            SELECT 1 FROM links
-            WHERE source_document_id = ?2 AND resolved_target_id = ?4
-        )
-        ",
-        params![
-            Ulid::new().to_string(),
-            source_id,
-            target_path,
-            target_id,
-            LinkConfidence::Inferred.as_str(),
-            score.clamp(0.0, 1.0),
-        ],
+    };
+    crate::link_feedback::record(
+        paths,
+        crate::link_feedback::LinkFeedbackDecision {
+            source_path: path_of(source_id)?,
+            target_path: path_of(target_id)?,
+            status: status.to_string(),
+            score,
+            decided_at: decided_at.to_string(),
+        },
     )?;
     Ok(())
 }
@@ -1929,6 +1934,113 @@ mod tests {
         assert!(!after_accept.suggestions.iter().any(|suggestion| {
             suggestion.source_path == "A.md" && suggestion.target_path == "Charlie.md"
         }));
+    }
+
+    #[test]
+    fn link_suggestion_decisions_survive_rebuild_edit_and_rename() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("A.md"), "# A\n\n[[B]]\n").expect("write A");
+        fs::write(vault_root.join("B.md"), "# B\n\n[[Charlie]]\n").expect("write B");
+        fs::write(vault_root.join("Charlie.md"), "# Charlie\n").expect("write Charlie");
+        fs::write(
+            vault_root.join("D.md"),
+            "# D\n\nCharlie is mentioned here.\n",
+        )
+        .expect("write D");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report =
+            suggest_links(&paths, None, None, 0.0, None).expect("link suggestions should compute");
+        let find = |source: &str, target: &str| {
+            report
+                .suggestions
+                .iter()
+                .find(|suggestion| {
+                    suggestion.source_path == source && suggestion.target_path == target
+                })
+                .expect("suggestion should exist")
+                .id
+                .clone()
+        };
+        accept_link_suggestion(&paths, &find("A.md", "Charlie.md")).expect("accept");
+        reject_link_suggestion(&paths, &find("D.md", "Charlie.md")).expect("reject");
+
+        let status_of = |source: &str, target: &str| -> Option<String> {
+            let connection = Connection::open(paths.cache_db()).expect("cache should open");
+            connection
+                .query_row(
+                    "
+                    SELECT suggestion.status
+                    FROM link_suggestions AS suggestion
+                    JOIN documents AS source ON source.id = suggestion.source_document_id
+                    JOIN documents AS target ON target.id = suggestion.target_document_id
+                    WHERE source.path = ?1 AND target.path = ?2
+                    ",
+                    params![source, target],
+                    |row| row.get(0),
+                )
+                .ok()
+        };
+        let inferred_edges = |source: &str| -> i64 {
+            let connection = Connection::open(paths.cache_db()).expect("cache should open");
+            connection
+                .query_row(
+                    "
+                    SELECT COUNT(*) FROM links
+                    JOIN documents AS source ON source.id = links.source_document_id
+                    WHERE source.path = ?1 AND links.confidence = 'INFERRED'
+                    ",
+                    params![source],
+                    |row| row.get(0),
+                )
+                .expect("count should succeed")
+        };
+
+        // The latest scan checkpoint must describe the cache after decisions are restored.
+        let checkpoint_matches_live_links = || -> bool {
+            let connection = Connection::open(paths.cache_db()).expect("cache should open");
+            let recorded: i64 = connection
+                .query_row(
+                    "SELECT resolved_links FROM checkpoints WHERE source = 'scan'
+                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("scan checkpoint should exist");
+            let live: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count should succeed");
+            recorded == live
+        };
+
+        // A full rebuild recreates the cache from scratch.
+        scan_vault(&paths, ScanMode::Full).expect("rebuild should succeed");
+        assert!(checkpoint_matches_live_links());
+        assert_eq!(status_of("A.md", "Charlie.md").as_deref(), Some("accepted"));
+        assert_eq!(status_of("D.md", "Charlie.md").as_deref(), Some("rejected"));
+        assert_eq!(inferred_edges("A.md"), 1);
+
+        // Editing the source note rebuilds its derived link rows.
+        fs::write(vault_root.join("A.md"), "# A\n\n[[B]] edited\n").expect("edit A");
+        scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
+        assert_eq!(inferred_edges("A.md"), 1);
+        assert!(checkpoint_matches_live_links());
+
+        // An external rename keeps the decision attached to the renamed note.
+        fs::rename(vault_root.join("A.md"), vault_root.join("Alpha.md")).expect("rename A");
+        scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
+        scan_vault(&paths, ScanMode::Full).expect("rebuild should succeed");
+        assert_eq!(
+            status_of("Alpha.md", "Charlie.md").as_deref(),
+            Some("accepted")
+        );
+        assert_eq!(inferred_edges("Alpha.md"), 1);
     }
 
     #[test]

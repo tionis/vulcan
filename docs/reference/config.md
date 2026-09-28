@@ -252,7 +252,7 @@ Link formatting, resolution rules, attachment paths, and Markdown compatibility.
   Override the preferred folder for new attachments.
   Example: `vulcan config set attachment_folder <value>`
 - `link_resolution` — type: `string`; target: `shared|local`; default: `shortest`
-  Choose whether new links resolve relative to the current file or the vault root.
+  Choose whether path-qualified links are interpreted relative to the current file or the vault root; unmatched links still resolve by note name and alias.
   Example: `vulcan config set link_resolution <value>`
 - `link_style` — type: `string`; target: `shared|local`; default: `wikilink`
   Select wikilink or Markdown link formatting for generated links.
@@ -1136,6 +1136,10 @@ Named external-content topology, authority, conflict, limit, and scheduling poli
   Preferred command: `vulcan config set`
   Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
 - `integrations.routes.<name>.missing_policy` — type: `enum`; target: `shared`; default: `retain`; values: `retain`, `archive`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.owner_device` — type: `string`; target: `shared`
   Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
   Preferred command: `vulcan config set`
   Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`

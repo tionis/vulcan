@@ -1060,11 +1060,17 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("client");
-            let mut method = [0; 3];
-            stream.read_exact(&mut method).expect("request method");
-            assert_eq!(&method, b"GET");
+            // Drain the whole request before replying: closing a socket with unread bytes makes
+            // Windows send a TCP RST, which can reach the client before the response does.
+            let mut request = Vec::new();
+            let mut byte = [0; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).expect("request bytes");
+                request.push(byte[0]);
+            }
+            assert!(request.starts_with(b"GET "));
             stream
-                .write_all(b"HTTP/1.1 302 Found\r\nLocation: https://example.test/final\r\nContent-Length: 0\r\n\r\n")
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: https://example.test/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .expect("redirect");
         });
         let response = indieauth_http_client(Duration::from_secs(1))

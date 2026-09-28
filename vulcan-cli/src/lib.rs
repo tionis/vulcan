@@ -505,10 +505,11 @@ use vulcan_app::export::{
     MarkdownExportSummary,
 };
 #[cfg(feature = "web")]
-use vulcan_app::integrations::begin_route_run;
+use vulcan_app::integrations::{begin_route_run, ensure_route_owner};
 use vulcan_app::integrations::{
     list_routes as list_integration_routes, load_route_runtime_state, route as integration_route,
-    route_is_due, validate_routes as validate_integration_routes, RouteDiagnosticSeverity,
+    route_applies_on_this_device, route_is_due, validate_routes as validate_integration_routes,
+    RouteDiagnosticSeverity,
 };
 #[cfg(test)]
 use vulcan_app::mcp_catalog::McpToolAnnotations;
@@ -2271,6 +2272,7 @@ fn run_integration_command(
                     .routes
                     .iter()
                     .filter(|(_, route)| route.enabled)
+                    .filter(|(_, route)| *dry_run || route_applies_on_this_device(route))
                     .map(|(name, _)| name.clone())
                     .collect::<Vec<_>>()
             } else if *scheduled {
@@ -2283,6 +2285,9 @@ fn run_integration_command(
                     let Some(schedule) = route.schedule.as_deref().filter(|_| route.enabled) else {
                         continue;
                     };
+                    if !*dry_run && !route_applies_on_this_device(route) {
+                        continue;
+                    }
                     let runtime =
                         load_route_runtime_state(paths, name).map_err(CliError::operation)?;
                     if route_is_due(
@@ -2299,6 +2304,32 @@ fn run_integration_command(
                     .clone()
                     .expect("clap requires a route name, --all, or --scheduled")]
             };
+            let skipped_elsewhere = if *dry_run {
+                Vec::new()
+            } else {
+                loaded
+                    .config
+                    .integrations
+                    .routes
+                    .iter()
+                    .filter(|(_, route)| route.enabled && !route_applies_on_this_device(route))
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>()
+            };
+            if names.is_empty() && *all && !skipped_elsewhere.is_empty() {
+                // Every enabled route belongs to another device: a successful no-op, like an
+                // empty scheduled batch, so the same timer can run on every device.
+                if cli.output == OutputFormat::Json {
+                    print_json(&json!({
+                        "all": true,
+                        "ran": [],
+                        "skipped_owned_elsewhere": skipped_elsewhere,
+                    }))?;
+                } else {
+                    println!("No enabled integration routes apply on this device.");
+                }
+                return Ok(());
+            }
             if names.is_empty() {
                 if *scheduled {
                     if cli.output == OutputFormat::Json {
@@ -2575,6 +2606,9 @@ fn run_configured_integration_route(
         return Err(CliError::operation(format!(
             "integration route `{name}` is disabled"
         )));
+    }
+    if !dry_run {
+        ensure_route_owner(name, route).map_err(CliError::operation)?;
     }
     let run_lock = (!dry_run)
         .then(|| begin_route_run(paths, name, false))

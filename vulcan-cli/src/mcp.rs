@@ -1943,6 +1943,10 @@ impl McpServerCore {
         let mut worker = self.clone();
         #[cfg(feature = "oauth")]
         let hosted = http_context.hosted.clone();
+        // One deadline shared by the scheduler and this response wait, so a queued mutation whose
+        // pre-dispatch deadline fires before the worker wait still gets the durable status response.
+        #[cfg(feature = "oauth")]
+        let dispatch_deadline = ExecutionDeadline::after(timeout);
         #[cfg(feature = "oauth")]
         let dispatch = hosted
             .as_ref()
@@ -1953,7 +1957,7 @@ impl McpServerCore {
                         &request,
                         authority,
                         cancellation.clone(),
-                        ExecutionDeadline::after(timeout),
+                        dispatch_deadline,
                     )
                     .map(|execution| HostedMcpDispatch {
                         http: http_context.clone(),
@@ -2040,6 +2044,17 @@ impl McpServerCore {
         match worker_result {
             McpWorkerResult::Completed((next, result)) => {
                 *self = next;
+                #[cfg(feature = "oauth")]
+                if let (Err(_), Some(operation_id)) = (&result, operation_id.as_deref()) {
+                    if dispatch_deadline.is_expired_at(SystemTime::now()) {
+                        return Ok(hosted_mcp_unknown_result(
+                            &timeout_request,
+                            operation_id,
+                            "MCP response deadline expired; write outcome is not yet known",
+                            &http_context.endpoint,
+                        ));
+                    }
+                }
                 result
             }
             McpWorkerResult::TimedOut => {

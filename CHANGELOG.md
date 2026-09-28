@@ -2,12 +2,49 @@
 
 ## Unreleased
 
+### Fixed
+
+- Incremental scans now re-resolve every note's links when a note's `aliases` change, and stale
+  resolutions from removed aliases or targets are cleared.
+- `%%` inside code, math, or frontmatter no longer opens an Obsidian comment, so prose after such
+  code is indexed and later comments stay out of search and embeddings.
+- Inline tags accept non-ASCII letters and reject all-digit bodies such as `#1984`; trailing
+  ` ^id` block IDs on paragraphs, quotes, and list items are recognised.
+- Tasks plugin markers follow upstream: `📅` due (`📆`/`🗓` still read), `❌` cancelled, `🏁`
+  on-completion, `⌛` scheduled, and `🔺` highest / `⏫` high. Task create and reschedule now write `📅`.
+  **Behavior change:** tasks previously written by Vulcan with `🔺` for "high" now index as
+  highest priority, matching the Tasks plugin.
+- With `newLinkFormat` set to `relative` or `absolute`, links that miss the exact path now fall
+  back to note-name and alias resolution as in Obsidian instead of being reported unresolved.
+- Embedding requests cap each chunk at the model's `max_input_tokens` estimate; `vectors index`
+  JSON output adds a `truncated` count.
+- The embedding cap is script-aware: CJK, kana, Hangul, Thai, and emoji count as about one token
+  per character, so such chunks are truncated instead of being rejected by the provider on every
+  pass.
+- Renamed and moved notes keep their document identity, so their chunks, embeddings, clusters, and
+  link-suggestion state survive the rename instead of being rebuilt. **Behavior change:** scan
+  reports count a detected rename as one `updated` document instead of one `added` plus one
+  `deleted`.
+- Accepted and rejected link suggestions persist in device-local state
+  (`.vulcan/link-suggestion-feedback.json`) and survive `reindex`, cache migrations, and edits to
+  the source note.
+- `move` refuses files edited after it planned its rewrites, rolls back partial rewrites on
+  failure, and rolls back a move interrupted by a crash at the next move or scan.
+- New vaults track `.vulcan/templates/` in the default `.vulcan/.gitignore`. Existing ignore files
+  are not rewritten; add `!templates/` and `!templates/**` by hand.
+
+### Added
+
 - Added Container Core v1, the rules shared by MDAF and wiki packages. The rules moved from
   MDAF v1 without changes, so existing artifacts stay valid.
 - Added Knowledge v1, a source-neutral snapshot of cited entities and claims.
 - Added Markdown Wiki Package v2, with required provenance, a note-to-source map, and a hosted
   knowledge snapshot. `exchange wiki export` now writes v2. `inspect`, `validate`, and `import`
   accept v1 and v2. Import records source locators in `vulcan.source` frontmatter.
+- `integrations.routes.<name>.owner_device` restricts live route runs to one device so synced
+  vaults cannot publish duplicate remote documents from two devices.
+
+The parser version is bumped, so existing caches reindex on the next scan.
 
 ## 0.2.1 — 2026-09-06
 

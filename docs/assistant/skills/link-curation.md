@@ -26,7 +26,7 @@ Use this skill when the task is to improve graph connectivity without blindly in
 - Use `graph communities --orphans` to find orphan notes and the closest topic cluster.
 - Review the score breakdown before accepting a suggestion. Prefer links with multiple signals.
 - Accept only suggestions that make semantic sense in the source vault.
-- Reject noisy suggestions so future ranking deprioritizes the same pair.
+- Reject noisy suggestions so future ranking deprioritizes the same pair. Accept and reject decisions persist on this device across cache rebuilds and note renames, so there is no need to repeat them after a reindex.
 
 ## Guardrails
 

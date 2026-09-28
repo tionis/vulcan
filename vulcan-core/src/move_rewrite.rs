@@ -5,15 +5,15 @@ use crate::paths::{
     normalize_relative_input_path, secure_create, secure_read, secure_write, RelativePathError,
     RelativePathOptions,
 };
-use crate::scan::scan_vault_unlocked;
+use crate::scan::scan_vault_unlocked_with_renames;
 use crate::write_lock::acquire_write_lock;
 use crate::{
     load_vault_config, GraphQueryError, LinkResolutionMode, LinkStylePreference, ScanError,
-    ScanMode, VaultPaths,
+    VaultPaths,
 };
 use rusqlite::{params, Connection};
-use serde::Serialize;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -26,7 +26,16 @@ pub enum MoveError {
     InvalidDestination(RelativePathError),
     Io(std::io::Error),
     OrdinaryWrite(OrdinaryWriteError),
-    MissingLinkSpan { path: String, byte_offset: usize },
+    MissingLinkSpan {
+        path: String,
+        byte_offset: usize,
+    },
+    /// A file changed on disk between planning and applying the move.
+    ConcurrentModification(String),
+    /// Applying the move failed; the files already changed were restored.
+    RolledBack {
+        cause: Box<MoveError>,
+    },
     Scan(ScanError),
     Sqlite(rusqlite::Error),
 }
@@ -49,6 +58,14 @@ impl Display for MoveError {
                     "failed to locate cached link at byte offset {byte_offset} in {path}"
                 )
             }
+            Self::ConcurrentModification(path) => write!(
+                formatter,
+                "{path} changed while the move was being prepared; rerun the move"
+            ),
+            Self::RolledBack { cause } => write!(
+                formatter,
+                "move failed and its partial changes were rolled back: {cause}"
+            ),
             Self::Scan(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
         }
@@ -64,7 +81,10 @@ impl Error for MoveError {
             Self::OrdinaryWrite(error) => Some(error),
             Self::Scan(error) => Some(error),
             Self::Sqlite(error) => Some(error),
-            Self::DestinationExists(_) | Self::MissingLinkSpan { .. } => None,
+            Self::RolledBack { cause } => Some(cause.as_ref()),
+            Self::DestinationExists(_)
+            | Self::MissingLinkSpan { .. }
+            | Self::ConcurrentModification(_) => None,
         }
     }
 }
@@ -138,6 +158,7 @@ struct TextEdit {
 struct FileRewritePlan {
     original_path: String,
     output_path: String,
+    original_contents: String,
     updated_contents: String,
     changes: Vec<LinkChange>,
 }
@@ -169,6 +190,13 @@ pub fn move_note_unlocked(
     dry_run: bool,
 ) -> Result<MoveSummary, MoveError> {
     ensure_no_pending_ordinary_write_batch(paths)?;
+    if !dry_run {
+        if let MoveRecovery::Applied { .. } = recover_interrupted_move(paths)? {
+            // A previous move finished its file changes but not its scan; the scan picks up
+            // the journal's rename hint and clears it.
+            scan_vault_unlocked_with_renames(paths, &HashMap::new())?;
+        }
+    }
     let connection = open_existing_cache(paths)?;
     let source = resolve_move_source(paths, &connection, source_identifier)?;
     let destination_path = normalize_destination_path(destination, &source.extension)?;
@@ -226,26 +254,12 @@ pub fn move_note_unlocked(
         });
     }
 
-    let source_contents = secure_read(paths.vault_root(), Path::new(&source.path))?;
-    secure_create(
-        paths.vault_root(),
-        Path::new(&destination_path),
-        source_contents,
+    apply_move(paths, &source.path, &destination_path, &rewrite_plans)?;
+
+    scan_vault_unlocked_with_renames(
+        paths,
+        &HashMap::from([(destination_path.clone(), source.path.clone())]),
     )?;
-    fs::remove_file(paths.vault_root().join(&source.path))?;
-    for plan in &rewrite_plans {
-        if plan.changes.is_empty() {
-            continue;
-        }
-
-        secure_write(
-            paths.vault_root(),
-            Path::new(&plan.output_path),
-            &plan.updated_contents,
-        )?;
-    }
-
-    scan_vault_unlocked(paths, ScanMode::Incremental)?;
 
     Ok(MoveSummary {
         dry_run: false,
@@ -253,6 +267,255 @@ pub fn move_note_unlocked(
         destination_path,
         rewritten_files,
     })
+}
+
+const MOVE_JOURNAL_FILE_NAME: &str = "move-journal.json";
+const MOVE_JOURNAL_VERSION: u32 = 1;
+
+/// Crash-recovery record for one in-flight move, written before the first vault mutation.
+///
+/// While `applied` is false the move is rolled back on recovery. Once every file change has
+/// landed, the journal is rewritten with `applied = true` and kept until the rename-aware scan
+/// commits, so a crash in between still preserves the moved document's identity.
+#[derive(Debug, Serialize, Deserialize)]
+struct MoveJournal {
+    version: u32,
+    source_path: String,
+    destination_path: String,
+    /// BLAKE3 hex digest of the source bytes, used to recognise the moved file on rollback.
+    #[serde(default)]
+    source_hash: Option<String>,
+    #[serde(default)]
+    applied: bool,
+    files: Vec<MoveJournalFile>,
+}
+
+/// Outcome of [`recover_interrupted_move`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveRecovery {
+    /// No journal was present.
+    None,
+    /// An interrupted move was rolled back.
+    RolledBack,
+    /// A move finished its file changes; the next scan must apply this rename hint and then
+    /// clear the journal.
+    Applied {
+        source_path: String,
+        destination_path: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MoveJournalFile {
+    /// Where the rewritten contents are written (the destination for the moved note).
+    path: String,
+    original_contents: String,
+    updated_contents: String,
+}
+
+fn move_journal_path(paths: &VaultPaths) -> std::io::Result<PathBuf> {
+    Ok(paths.operational_state_dir()?.join(MOVE_JOURNAL_FILE_NAME))
+}
+
+fn write_move_journal(paths: &VaultPaths, journal: &MoveJournal) -> std::io::Result<()> {
+    let path = move_journal_path(paths)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("move journal path has no parent directory"))?;
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(&mut temporary, journal).map_err(std::io::Error::other)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+pub(crate) fn remove_move_journal(paths: &VaultPaths) -> std::io::Result<()> {
+    match fs::remove_file(move_journal_path(paths)?) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Applies a planned move: verify preconditions, journal, then mutate. Any failure after the
+/// first mutation restores the files already changed before returning.
+fn apply_move(
+    paths: &VaultPaths,
+    source_path: &str,
+    destination_path: &str,
+    plans: &[FileRewritePlan],
+) -> Result<(), MoveError> {
+    let changed_plans = plans
+        .iter()
+        .filter(|plan| !plan.changes.is_empty())
+        .collect::<Vec<_>>();
+    // External editors do not honor Vulcan's write lock, so refuse to overwrite edits made
+    // after planning instead of silently discarding them.
+    for plan in &changed_plans {
+        let current = fs::read_to_string(paths.vault_root().join(&plan.original_path))?;
+        if current != plan.original_contents {
+            return Err(MoveError::ConcurrentModification(
+                plan.original_path.clone(),
+            ));
+        }
+    }
+    let source_contents = secure_read(paths.vault_root(), Path::new(source_path))?;
+    let mut journal = MoveJournal {
+        version: MOVE_JOURNAL_VERSION,
+        source_path: source_path.to_string(),
+        destination_path: destination_path.to_string(),
+        source_hash: Some(blake3::hash(&source_contents).to_hex().to_string()),
+        applied: false,
+        files: changed_plans
+            .iter()
+            .map(|plan| MoveJournalFile {
+                path: plan.output_path.clone(),
+                original_contents: plan.original_contents.clone(),
+                updated_contents: plan.updated_contents.clone(),
+            })
+            .collect(),
+    };
+    write_move_journal(paths, &journal)?;
+
+    let applied = (|| -> Result<(), MoveError> {
+        secure_create(
+            paths.vault_root(),
+            Path::new(destination_path),
+            source_contents,
+        )?;
+        fs::remove_file(paths.vault_root().join(source_path))?;
+        for plan in &changed_plans {
+            secure_write(
+                paths.vault_root(),
+                Path::new(&plan.output_path),
+                &plan.updated_contents,
+            )?;
+        }
+        Ok(())
+    })();
+    if let Err(cause) = applied {
+        roll_back_move(paths, &journal)?;
+        remove_move_journal(paths)?;
+        return Err(MoveError::RolledBack {
+            cause: Box::new(cause),
+        });
+    }
+    journal.applied = true;
+    write_move_journal(paths, &journal)?;
+    Ok(())
+}
+
+/// Rejects journal paths that are absolute, escape the vault, or are not already in normalized
+/// vault-relative form. The journal is read back from disk, so it is untrusted input.
+fn validate_move_journal(journal: &MoveJournal) -> std::io::Result<()> {
+    let paths = [&journal.source_path, &journal.destination_path]
+        .into_iter()
+        .chain(journal.files.iter().map(|file| &file.path));
+    for path in paths {
+        let normalized = normalize_relative_input_path(
+            path,
+            RelativePathOptions {
+                expected_extension: None,
+                append_extension_if_missing: false,
+            },
+        )
+        .ok();
+        if normalized.as_deref() != Some(path.as_str()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("move journal contains an unsafe vault path: {path:?}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Restores a move recorded in the journal. A file is restored only while it still holds
+/// either its original or Vulcan's planned contents, so edits made after an interruption win.
+/// Every access goes through the vault-contained secure path helpers.
+fn roll_back_move(paths: &VaultPaths, journal: &MoveJournal) -> Result<(), MoveError> {
+    validate_move_journal(journal)?;
+    let root = paths.vault_root();
+    let read_existing = |relative: &str| -> std::io::Result<Option<Vec<u8>>> {
+        match secure_read(root, Path::new(relative)) {
+            Ok(contents) => Ok(Some(contents)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    };
+    for file in &journal.files {
+        // A file that cannot be read cannot be proven to hold Vulcan's bytes; leave it alone.
+        let current = read_existing(&file.path).ok().flatten();
+        if current.as_deref() == Some(file.updated_contents.as_bytes()) {
+            secure_write(root, Path::new(&file.path), &file.original_contents)?;
+        }
+    }
+    let is_original_source = |bytes: &[u8]| {
+        journal
+            .source_hash
+            .as_deref()
+            .is_some_and(|hash| blake3::hash(bytes).to_hex().as_str() == hash)
+    };
+    let source = read_existing(&journal.source_path)?;
+    let destination = read_existing(&journal.destination_path)?;
+    match (source, destination) {
+        // Move the file back only while it still holds exactly the original source bytes; a
+        // destination edited after the interruption stays where it is.
+        (None, Some(contents)) if is_original_source(&contents) => {
+            secure_create(root, Path::new(&journal.source_path), contents)?;
+            fs::remove_file(root.join(&journal.destination_path))?;
+        }
+        // The source was never removed, so the destination is a complete or partial copy made
+        // by this move (it did not exist when the move started).
+        (Some(source), Some(destination)) if source.starts_with(&destination) => {
+            fs::remove_file(root.join(&journal.destination_path))?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Recovers a move interrupted by a crash, if its journal is still present.
+///
+/// A move that had not finished its file changes is rolled back. A move whose file changes all
+/// landed is reported as [`MoveRecovery::Applied`] and its journal is kept until the caller's
+/// scan applies the rename hint. Callers must hold the vault write lock.
+pub fn recover_interrupted_move(paths: &VaultPaths) -> Result<MoveRecovery, MoveError> {
+    let path = move_journal_path(paths)?;
+    let contents = match fs::read(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(MoveRecovery::None)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let journal: MoveJournal = serde_json::from_slice(&contents).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid move journal {}: {error}", path.display()),
+        )
+    })?;
+    if journal.version != MOVE_JOURNAL_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "unsupported move journal version {} in {}",
+                journal.version,
+                path.display()
+            ),
+        )
+        .into());
+    }
+    if journal.applied {
+        validate_move_journal(&journal)?;
+        return Ok(MoveRecovery::Applied {
+            source_path: journal.source_path,
+            destination_path: journal.destination_path,
+        });
+    }
+    roll_back_move(paths, &journal)?;
+    remove_move_journal(paths)?;
+    Ok(MoveRecovery::RolledBack)
 }
 
 fn open_existing_cache(paths: &VaultPaths) -> Result<Connection, MoveError> {
@@ -440,6 +703,7 @@ fn plan_rewrites(
         plans.push(FileRewritePlan {
             original_path,
             output_path,
+            original_contents: source_contents,
             updated_contents,
             changes,
         });
@@ -770,7 +1034,7 @@ fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{doctor_vault, scan_vault};
+    use crate::{doctor_vault, scan_vault, ScanMode};
     use serde::Serialize;
     use std::path::Path;
     use std::sync::{Arc, Barrier};
@@ -1240,6 +1504,274 @@ mod tests {
                 .unresolved_links,
             0
         );
+    }
+
+    #[test]
+    fn move_keeps_document_identity_when_moved_note_links_are_rewritten() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::create_dir_all(vault_root.join("Projects")).expect("dir should be created");
+        fs::write(
+            vault_root.join("Projects/Alpha.md"),
+            "# Alpha\n\nSee [Beta](./Beta.md).\n",
+        )
+        .expect("alpha should be written");
+        fs::write(vault_root.join("Projects/Beta.md"), "# Beta\n").expect("beta");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let id_at = |path: &str| -> Option<String> {
+            let connection = open_existing_cache(&paths).expect("cache");
+            connection
+                .query_row("SELECT id FROM documents WHERE path = ?1", [path], |row| {
+                    row.get(0)
+                })
+                .ok()
+        };
+        let before = id_at("Projects/Alpha.md").expect("alpha id");
+
+        move_note(&paths, "Projects/Alpha.md", "Archive/Alpha.md", false)
+            .expect("move should succeed");
+
+        assert_ne!(
+            fs::read_to_string(vault_root.join("Archive/Alpha.md")).expect("moved note"),
+            "# Alpha\n\nSee [Beta](./Beta.md).\n",
+            "the moved note's relative link should be rewritten"
+        );
+        assert_eq!(id_at("Archive/Alpha.md"), Some(before));
+        assert_eq!(id_at("Projects/Alpha.md"), None);
+    }
+
+    fn rewrite_plan(original: &str, output: &str, before: &str, after: &str) -> FileRewritePlan {
+        FileRewritePlan {
+            original_path: original.to_string(),
+            output_path: output.to_string(),
+            original_contents: before.to_string(),
+            updated_contents: after.to_string(),
+            changes: vec![LinkChange {
+                before: "[[Old]]".to_string(),
+                after: "[[New]]".to_string(),
+            }],
+        }
+    }
+
+    fn move_test_vault() -> (TempDir, VaultPaths) {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("Old.md"), "# Old\n").expect("source");
+        fs::write(vault_root.join("B.md"), "[[Old]]\n").expect("b");
+        fs::write(vault_root.join("C.md"), "[[Old]] too\n").expect("c");
+        let paths = VaultPaths::new(&vault_root);
+        (temp_dir, paths)
+    }
+
+    #[test]
+    fn apply_move_refuses_files_edited_after_planning() {
+        let (_temp_dir, paths) = move_test_vault();
+        let plans = [rewrite_plan("B.md", "B.md", "stale\n", "[[New]]\n")];
+
+        let error = apply_move(&paths, "Old.md", "New.md", &plans).expect_err("should refuse");
+
+        assert!(matches!(error, MoveError::ConcurrentModification(path) if path == "B.md"));
+        assert!(paths.vault_root().join("Old.md").exists());
+        assert!(!paths.vault_root().join("New.md").exists());
+        assert_eq!(
+            fs::read_to_string(paths.vault_root().join("B.md")).expect("b"),
+            "[[Old]]\n"
+        );
+    }
+
+    #[test]
+    fn apply_move_rolls_back_partial_rewrites_on_failure() {
+        let (_temp_dir, paths) = move_test_vault();
+        let root = paths.vault_root().to_path_buf();
+        // Writing to a directory fails after the first rewrite has already landed.
+        fs::create_dir_all(root.join("Blocked.md")).expect("blocking dir");
+        let plans = [
+            rewrite_plan("B.md", "B.md", "[[Old]]\n", "[[New]]\n"),
+            rewrite_plan("C.md", "Blocked.md", "[[Old]] too\n", "[[New]] too\n"),
+        ];
+
+        let error = apply_move(&paths, "Old.md", "New.md", &plans).expect_err("should fail");
+
+        assert!(matches!(error, MoveError::RolledBack { .. }), "{error}");
+        assert_eq!(
+            fs::read_to_string(root.join("Old.md")).expect("old"),
+            "# Old\n"
+        );
+        assert!(!root.join("New.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("B.md")).expect("b"),
+            "[[Old]]\n"
+        );
+        assert!(!move_journal_path(&paths).expect("journal path").exists());
+    }
+
+    #[test]
+    fn interrupted_move_is_rolled_back_but_later_edits_win() {
+        let (_temp_dir, paths) = move_test_vault();
+        let root = paths.vault_root().to_path_buf();
+        // Simulate a crash after the move and both rewrites; the user then edited C.md.
+        fs::rename(root.join("Old.md"), root.join("New.md")).expect("move");
+        fs::write(root.join("B.md"), "[[New]]\n").expect("b rewritten");
+        fs::write(root.join("C.md"), "user edit\n").expect("c edited");
+        write_move_journal(
+            &paths,
+            &MoveJournal {
+                version: MOVE_JOURNAL_VERSION,
+                source_path: "Old.md".to_string(),
+                destination_path: "New.md".to_string(),
+                source_hash: Some(blake3::hash(b"# Old\n").to_hex().to_string()),
+                applied: false,
+                files: vec![
+                    MoveJournalFile {
+                        path: "B.md".to_string(),
+                        original_contents: "[[Old]]\n".to_string(),
+                        updated_contents: "[[New]]\n".to_string(),
+                    },
+                    MoveJournalFile {
+                        path: "C.md".to_string(),
+                        original_contents: "[[Old]] too\n".to_string(),
+                        updated_contents: "[[New]] too\n".to_string(),
+                    },
+                ],
+            },
+        )
+        .expect("journal");
+
+        assert_eq!(
+            recover_interrupted_move(&paths).expect("recovery"),
+            MoveRecovery::RolledBack
+        );
+
+        assert!(root.join("Old.md").exists());
+        assert!(!root.join("New.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("B.md")).expect("b"),
+            "[[Old]]\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("C.md")).expect("c"),
+            "user edit\n"
+        );
+        assert_eq!(
+            recover_interrupted_move(&paths).expect("second recovery"),
+            MoveRecovery::None
+        );
+    }
+
+    fn journal_for_old_to_new(applied: bool) -> MoveJournal {
+        MoveJournal {
+            version: MOVE_JOURNAL_VERSION,
+            source_path: "Old.md".to_string(),
+            destination_path: "New.md".to_string(),
+            source_hash: Some(blake3::hash(b"# Old\n").to_hex().to_string()),
+            applied,
+            files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn interrupted_move_leaves_a_destination_edited_after_the_crash() {
+        let (_temp_dir, paths) = move_test_vault();
+        let root = paths.vault_root().to_path_buf();
+        fs::rename(root.join("Old.md"), root.join("New.md")).expect("move");
+        fs::write(root.join("New.md"), "# Old\n\nedited later\n").expect("user edit");
+        write_move_journal(&paths, &journal_for_old_to_new(false)).expect("journal");
+
+        recover_interrupted_move(&paths).expect("recovery");
+
+        assert!(!root.join("Old.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("New.md")).expect("new"),
+            "# Old\n\nedited later\n"
+        );
+    }
+
+    #[test]
+    fn interrupted_move_removes_a_partial_destination_copy() {
+        let (_temp_dir, paths) = move_test_vault();
+        let root = paths.vault_root().to_path_buf();
+        fs::write(root.join("New.md"), "# O").expect("partial copy");
+        write_move_journal(&paths, &journal_for_old_to_new(false)).expect("journal");
+
+        recover_interrupted_move(&paths).expect("recovery");
+
+        assert!(!root.join("New.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("Old.md")).expect("old"),
+            "# Old\n"
+        );
+    }
+
+    #[test]
+    fn applied_move_journal_preserves_identity_when_its_scan_was_interrupted() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("Old.md"), "# Old\n\nSee [B](./B.md).\n").expect("old");
+        fs::write(vault_root.join("B.md"), "# B\n").expect("b");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let id_at = |path: &str| -> Option<String> {
+            let connection = open_existing_cache(&paths).expect("cache");
+            connection
+                .query_row("SELECT id FROM documents WHERE path = ?1", [path], |row| {
+                    row.get(0)
+                })
+                .ok()
+        };
+        let before = id_at("Old.md").expect("old id");
+        // Simulate a crash after the move's file changes (which also changed the moved note's
+        // content) but before its rename-aware scan.
+        fs::create_dir_all(vault_root.join("Archive")).expect("archive dir");
+        fs::rename(vault_root.join("Old.md"), vault_root.join("Archive/New.md")).expect("move");
+        fs::write(
+            vault_root.join("Archive/New.md"),
+            "# Old\n\nSee [B](../B.md).\n",
+        )
+        .expect("rewrite");
+        let mut journal = journal_for_old_to_new(true);
+        journal.destination_path = "Archive/New.md".to_string();
+        write_move_journal(&paths, &journal).expect("journal");
+
+        scan_vault(&paths, ScanMode::Incremental).expect("scan should succeed");
+
+        assert_eq!(id_at("Archive/New.md"), Some(before));
+        assert!(!move_journal_path(&paths).expect("journal path").exists());
+    }
+
+    #[test]
+    fn interrupted_move_recovery_rejects_paths_outside_the_vault() {
+        let (temp_dir, paths) = move_test_vault();
+        let outside = temp_dir.path().join("outside.md");
+        fs::write(&outside, "keep me\n").expect("outside file");
+        for (source, destination) in [
+            ("../outside.md", "New.md"),
+            ("Old.md", "../outside.md"),
+            (outside.to_str().expect("utf-8 path"), "New.md"),
+            ("Old.md", "./New.md"),
+        ] {
+            write_move_journal(
+                &paths,
+                &MoveJournal {
+                    version: MOVE_JOURNAL_VERSION,
+                    source_path: source.to_string(),
+                    destination_path: destination.to_string(),
+                    source_hash: None,
+                    applied: false,
+                    files: Vec::new(),
+                },
+            )
+            .expect("journal");
+
+            let error = recover_interrupted_move(&paths).expect_err("unsafe journal");
+
+            assert!(error.to_string().contains("unsafe vault path"), "{error}");
+            assert_eq!(fs::read_to_string(&outside).expect("outside"), "keep me\n");
+            assert!(paths.vault_root().join("Old.md").exists());
+        }
     }
 
     #[test]

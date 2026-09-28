@@ -2763,7 +2763,7 @@ fn create_default_config_is_idempotent() {
     );
     assert_eq!(
         fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),
-        "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
+        "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n!templates/\n!templates/**\n"
     );
 }
 

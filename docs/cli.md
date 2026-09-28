@@ -144,7 +144,7 @@ Precedence is:
 3. `.obsidian/app.json`
 4. Built-in defaults
 
-`vulcan index init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan index init --import` to apply every detected importer immediately. Use `vulcan index init --agent-files` to write the bundled `AGENTS.md` template, default Agent Skills-compatible `.agents/skills/<name>/SKILL.md` reference files, and prompt examples into the vault. Add `--example-tool` to also scaffold a starter skill command under `.agents/skills/<example>/scripts/` with the corresponding `metadata.vulcan.commands` entry in `SKILL.md`.
+`vulcan index init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that tracks `config.toml`, saved report definitions, and `.vulcan/templates/` while ignoring `config.local.toml`, the cache, and other device-local state. An existing `.vulcan/.gitignore` is never rewritten; add `!templates/` and `!templates/**` to it by hand if your vault keeps templates there. It also detects importable Obsidian settings and reports them; use `vulcan index init --import` to apply every detected importer immediately. Use `vulcan index init --agent-files` to write the bundled `AGENTS.md` template, default Agent Skills-compatible `.agents/skills/<name>/SKILL.md` reference files, and prompt examples into the vault. Add `--example-tool` to also scaffold a starter skill command under `.agents/skills/<example>/scripts/` with the corresponding `metadata.vulcan.commands` entry in `SKILL.md`.
 
 Automatic cache refresh is configured under `[scan]`:
 

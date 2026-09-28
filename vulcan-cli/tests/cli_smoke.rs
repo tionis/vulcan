@@ -14349,7 +14349,7 @@ fn tasks_create_json_output_appends_inline_task_to_default_inbox_note() {
     let updated = fs::read_to_string(vault_root.join("Inbox.md")).expect("inbox note should exist");
     assert_eq!(
         updated,
-        "- [ ] Review release @desk #ops #task 🗓️ 2026-04-05 ➕ 2026-04-04 🔺\n"
+        "- [ ] Review release @desk #ops #task 📅 2026-04-05 ➕ 2026-04-04 ⏫\n"
     );
 
     let list_assert = cargo_vulcan_fixed_now()
@@ -14372,7 +14372,7 @@ fn tasks_create_json_output_appends_inline_task_to_default_inbox_note() {
     assert_eq!(list_json["tasks"][0]["path"], "Inbox.md");
     assert_eq!(
         list_json["tasks"][0]["text"],
-        "Review release @desk #ops 🗓️ 2026-04-05 ➕ 2026-04-04 🔺"
+        "Review release @desk #ops 📅 2026-04-05 ➕ 2026-04-04 ⏫"
     );
 }
 
@@ -14412,13 +14412,13 @@ fn tasks_create_json_output_honors_explicit_target_and_flags() {
     assert_eq!(create_json["created_note"], false);
     assert_eq!(create_json["due"], "2026-04-12");
     assert_eq!(create_json["priority"], "low");
-    assert_eq!(create_json["line"], "- [ ] Ship checklist 🗓️ 2026-04-12 🔽");
+    assert_eq!(create_json["line"], "- [ ] Ship checklist 📅 2026-04-12 🔽");
 
     let updated = fs::read_to_string(vault_root.join("Projects/Website.md"))
         .expect("project note should exist");
     assert_eq!(
         updated,
-        "# Website\n\n- [ ] Ship checklist 🗓️ 2026-04-12 🔽\n"
+        "# Website\n\n- [ ] Ship checklist 📅 2026-04-12 🔽\n"
     );
 
     let list_assert = Command::cargo_bin("vulcan")
@@ -14530,12 +14530,12 @@ fn tasks_reschedule_json_output_replaces_inline_due_marker() {
     assert_eq!(reschedule_json["path"], "Inbox.md");
     assert_eq!(
         reschedule_json["changes"][0]["after"],
-        "- [ ] Review release #ops 🗓️ 2026-04-11"
+        "- [ ] Review release #ops 📅 2026-04-11"
     );
 
     let updated =
         fs::read_to_string(vault_root.join("Inbox.md")).expect("updated note should exist");
-    assert_eq!(updated, "- [ ] Review release #ops 🗓️ 2026-04-11\n");
+    assert_eq!(updated, "- [ ] Review release #ops 📅 2026-04-11\n");
 
     let list_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -16189,7 +16189,7 @@ fn init_json_output_creates_default_config() {
     assert_eq!(
         fs::read_to_string(vault_root.join(".vulcan/.gitignore"))
             .expect("gitignore should be readable"),
-        "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
+        "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n!templates/\n!templates/**\n"
     );
     assert!(json.get("support_files").is_none());
 }
@@ -27936,6 +27936,53 @@ schedule = "every 15m"
     let status = parse_stdout_json(&status);
     assert_eq!(status["binding_count"], 0);
     assert!(status["runtime"].is_null());
+}
+
+#[test]
+fn integration_routes_owned_by_another_device_are_skipped_or_refused() {
+    let temp = TempDir::new().unwrap();
+    let vault_root = temp.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+    fs::create_dir_all(vault_root.join("Players/Campaign")).unwrap();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[publish.outline.profiles.players]
+base_url = "https://outline.example"
+collection_id = "collection"
+token_env = "OUTLINE_TOKEN"
+query = 'from notes where file.path starts_with "Players/Campaign/"'
+
+[integrations.routes.campaign]
+profile = "players"
+direction = "mirror"
+authority = "review"
+local_root = "Players/Campaign"
+remote_roots = ["root-id"]
+schedule = "every 15m"
+owner_device = "not-a-real-device-id"
+"#,
+    )
+    .unwrap();
+    let root = vault_root.to_str().unwrap();
+    let run = |extra: &[&str]| {
+        let mut args = vec!["--vault", root, "--output", "json", "integration", "run"];
+        args.extend_from_slice(extra);
+        Command::cargo_bin("vulcan").unwrap().args(args).assert()
+    };
+
+    let all = run(&["--all"]).success();
+    let all = parse_stdout_json(&all);
+    assert_eq!(all["skipped_owned_elsewhere"][0], "campaign");
+    let scheduled = run(&["--scheduled"]).success();
+    assert_eq!(parse_stdout_json(&scheduled)["due"], serde_json::json!([]));
+    let named = run(&["campaign"]).failure();
+    let stderr = String::from_utf8_lossy(&named.get_output().stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&named.get_output().stdout).into_owned();
+    assert!(
+        format!("{stdout}{stderr}").contains("owned by device not-a-real-device-id"),
+        "{stdout}{stderr}"
+    );
 }
 
 #[test]
