@@ -685,6 +685,53 @@ pub fn visible_tool_catalog(
         .collect()
 }
 
+pub fn active_tool_names(
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+    profile: &PermissionProfile,
+) -> Vec<String> {
+    visible_tool_catalog(selected_tool_packs, profile)
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect()
+}
+
+pub fn tool_pack_state(
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+    pinned_tool_packs: &BTreeSet<McpToolPack>,
+    mode: McpToolPackMode,
+    profile: &PermissionProfile,
+) -> Value {
+    let available = ALL_MCP_TOOL_PACKS
+        .iter()
+        .copied()
+        .map(|pack| {
+            let tools = tool_names_for_pack(pack, profile);
+            let active_tools = if selected_tool_packs.contains(&pack) {
+                tools.clone()
+            } else {
+                Vec::new()
+            };
+            serde_json::json!({
+                "name": pack.as_str(),
+                "description": pack.description(),
+                "selected": selected_tool_packs.contains(&pack),
+                "pinned": pinned_tool_packs.contains(&pack),
+                "adaptiveOnly": pack == McpToolPack::ToolPacks,
+                "toolsIfEnabled": tools,
+                "activeTools": active_tools,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "mode": mode.as_str(),
+        "selectedToolPacks": pack_name_list(selected_tool_packs),
+        "pinnedToolPacks": pack_name_list(pinned_tool_packs),
+        "activeTools": active_tool_names(selected_tool_packs, profile),
+        "clientRefreshRequired": matches!(mode, McpToolPackMode::Adaptive),
+        "availableToolPacks": available,
+    })
+}
+
 pub fn tool_visible(
     tool: &McpToolCatalogEntry,
     profile: &PermissionProfile,
@@ -747,6 +794,29 @@ mod tests {
         );
         assert!(!tool_by_name("note_create")
             .is_some_and(|tool| tool_allowed_by_profile(tool, &readonly)));
+    }
+
+    #[test]
+    fn pack_state_filters_tools_by_profile_and_keeps_pins() {
+        let readonly = PermissionProfile::readonly();
+        let selected = BTreeSet::from([McpToolPack::NotesRead, McpToolPack::NotesWrite]);
+        let pinned = BTreeSet::from([McpToolPack::NotesRead]);
+        let state = tool_pack_state(&selected, &pinned, McpToolPackMode::Adaptive, &readonly);
+        assert_eq!(state["mode"], "adaptive");
+        assert_eq!(state["clientRefreshRequired"], true);
+        assert_eq!(state["pinnedToolPacks"], serde_json::json!(["notes-read"]));
+        let active = state["activeTools"].as_array().unwrap();
+        assert!(active.iter().any(|name| name == "note_get"));
+        assert!(!active.iter().any(|name| name == "note_create"));
+        let notes_write = state["availableToolPacks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pack| pack["name"] == "notes-write")
+            .unwrap();
+        assert_eq!(notes_write["selected"], true);
+        assert_eq!(notes_write["pinned"], false);
+        assert_eq!(notes_write["activeTools"], serde_json::json!([]));
     }
 
     #[test]

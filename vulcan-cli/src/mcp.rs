@@ -9,9 +9,9 @@ use crate::{
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
-    parse_tool_pack_selector, resolve_selected_tool_packs, tool_by_name, tool_names_for_pack,
-    tool_visible, visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack,
-    McpToolPackMode, McpVisibilityRequirement, ALL_MCP_TOOL_PACKS,
+    parse_tool_pack_selector, resolve_selected_tool_packs, tool_by_name, tool_visible,
+    visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack, McpToolPackMode,
+    McpVisibilityRequirement,
 };
 use fs2::FileExt;
 use serde::Deserialize;
@@ -2805,42 +2805,19 @@ impl McpServerCore {
     }
 
     fn current_tool_pack_state(&self) -> Value {
-        let available = ALL_MCP_TOOL_PACKS
-            .iter()
-            .copied()
-            .map(|pack| {
-                let tools = tool_names_for_pack(pack, &self.selection.profile);
-                let active_tools = if self.selected_tool_packs.contains(&pack) {
-                    tools.clone()
-                } else {
-                    Vec::new()
-                };
-                serde_json::json!({
-                    "name": pack.as_str(),
-                    "description": pack.description(),
-                    "selected": self.selected_tool_packs.contains(&pack),
-                    "pinned": self.pinned_tool_packs.contains(&pack),
-                    "adaptiveOnly": pack == McpToolPack::ToolPacks,
-                    "toolsIfEnabled": tools,
-                    "activeTools": active_tools,
-                })
-            })
-            .collect::<Vec<_>>();
-        serde_json::json!({
-            "mode": self.tool_pack_mode.as_str(),
-            "selectedToolPacks": pack_name_list(&self.selected_tool_packs),
-            "pinnedToolPacks": pack_name_list(&self.pinned_tool_packs),
-            "activeTools": self.active_tool_names(),
-            "clientRefreshRequired": matches!(self.tool_pack_mode, McpToolPackMode::Adaptive),
-            "availableToolPacks": available,
-        })
+        vulcan_app::mcp_catalog::tool_pack_state(
+            &self.selected_tool_packs,
+            &self.pinned_tool_packs,
+            self.tool_pack_mode,
+            &self.selection.profile,
+        )
     }
 
     fn active_tool_names(&self) -> Vec<String> {
-        visible_tool_catalog(&self.selected_tool_packs, &self.selection.profile)
-            .into_iter()
-            .map(|tool| tool.name.to_string())
-            .collect()
+        vulcan_app::mcp_catalog::active_tool_names(
+            &self.selected_tool_packs,
+            &self.selection.profile,
+        )
     }
 
     fn serialize_tool_report<T: serde::Serialize>(
