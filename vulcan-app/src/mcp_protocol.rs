@@ -4,7 +4,7 @@
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 pub const MCP_INLINE_TEXT_LIMIT: usize = 4_096;
@@ -13,6 +13,47 @@ pub const MCP_PAGE_SIZE: usize = 100;
 pub const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 pub const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
 const MCP_DAILY_LIST_DEFAULT_LIMIT: usize = 20;
+
+#[must_use]
+pub fn routing_guidance(active_tool_names: &[String]) -> Vec<&'static str> {
+    let active = active_tool_names
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut routes = Vec::new();
+    if active.contains("daily") {
+        routes.push("Daily/journal intent: use daily; latest means newest existing, not today.");
+    }
+    if active.contains("note_get") {
+        routes.push("Known note/path/title: use note_get or note_outline.");
+    }
+    if active.contains("query") {
+        routes.push("Metadata/property/path selection: use query.");
+    }
+    if active.contains("search") {
+        routes.push("Subject/content discovery: use search after structural routes.");
+    }
+    routes
+}
+
+#[must_use]
+pub fn initialization_result(active_tool_names: &[String], server_version: &str) -> Value {
+    let routes = routing_guidance(active_tool_names);
+    serde_json::json!({
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "capabilities": {
+            "tools": { "listChanged": true },
+            "resources": { "listChanged": true },
+            "prompts": { "listChanged": true },
+            "completions": {},
+        },
+        "serverInfo": {
+            "name": "vulcan",
+            "version": server_version,
+        },
+        "instructions": format!("Routing: {} Prefer domain APIs, then exact reads, structured query, full-text search, and only then semantic/general fallback. Results are bounded by default.", routes.join(" "))
+    })
+}
 
 #[derive(Debug, Clone)]
 struct McpStoredResource {
@@ -794,6 +835,21 @@ mod tests {
         assert_eq!(daily.limit, MCP_DAILY_LIST_DEFAULT_LIMIT);
         assert!(daily.include_content);
         assert_eq!(web.limit, 10);
+    }
+
+    #[test]
+    fn initialization_routes_only_through_active_tools() {
+        let active = vec!["daily".to_string(), "search".to_string()];
+        let result = initialization_result(&active, "1.2.3");
+        assert_eq!(result["protocolVersion"], MCP_PROTOCOL_VERSION);
+        assert_eq!(result["serverInfo"]["version"], "1.2.3");
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
+        let instructions = result["instructions"].as_str().unwrap();
+        assert!(instructions.contains("Daily/journal intent: use daily"));
+        assert!(instructions.contains("Subject/content discovery: use search"));
+        assert!(!instructions.contains("Known note/path/title"));
+        assert!(!instructions.contains("Metadata/property/path selection"));
+        assert_eq!(routing_guidance(&[]), Vec::<&str>::new());
     }
 
     #[test]

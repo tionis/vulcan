@@ -53,6 +53,7 @@ use vulcan_app::mcp_dispatch::{
 };
 use vulcan_app::mcp_graph;
 use vulcan_app::mcp_notes;
+use vulcan_app::mcp_protocol;
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs,
     McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListSnapshot, McpMethodError,
@@ -2368,21 +2369,7 @@ impl McpServerCore {
     }
 
     fn initialize_result(&self) -> Value {
-        let routes = self.routing_guidance();
-        serde_json::json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": {
-                "tools": { "listChanged": true },
-                "resources": { "listChanged": true },
-                "prompts": { "listChanged": true },
-                "completions": {},
-            },
-            "serverInfo": {
-                "name": "vulcan",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "instructions": format!("Routing: {} Prefer domain APIs, then exact reads, structured query, full-text search, and only then semantic/general fallback. Results are bounded by default.", routes.join(" "))
-        })
+        mcp_protocol::initialization_result(&self.active_tool_names(), env!("CARGO_PKG_VERSION"))
     }
 
     fn visible_tools(&self) -> Vec<&'static McpToolCatalogEntry> {
@@ -2567,7 +2554,7 @@ impl McpServerCore {
             McpToolId::Capabilities => Ok(self.tool_success_response(
                 tool.name,
                 serde_json::json!({
-                    "routing": self.routing_guidance(),
+                    "routing": mcp_protocol::routing_guidance(&self.active_tool_names()),
                     "activeTools": self.active_tool_names(),
                     "toolPacks": self.current_tool_pack_state(),
                     "resultLimits": {
@@ -2854,28 +2841,6 @@ impl McpServerCore {
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect()
-    }
-
-    fn routing_guidance(&self) -> Vec<&'static str> {
-        let active = self
-            .active_tool_names()
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let mut routes = Vec::new();
-        if active.contains("daily") {
-            routes
-                .push("Daily/journal intent: use daily; latest means newest existing, not today.");
-        }
-        if active.contains("note_get") {
-            routes.push("Known note/path/title: use note_get or note_outline.");
-        }
-        if active.contains("query") {
-            routes.push("Metadata/property/path selection: use query.");
-        }
-        if active.contains("search") {
-            routes.push("Subject/content discovery: use search after structural routes.");
-        }
-        routes
     }
 
     fn serialize_tool_report<T: serde::Serialize>(
