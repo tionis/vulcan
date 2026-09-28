@@ -69,16 +69,16 @@ use vulcan_daemon::host::{
     RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration, ServiceScope,
 };
 #[cfg(feature = "oauth")]
-use vulcan_daemon::hosted_executor::{
-    HostedExecutionError, HostedExecutor, HostedOperationCompletion, HostedOperationFailure,
-};
+use vulcan_daemon::hosted_executor::{HostedExecutionError, HostedExecutor};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_hosted::{prepare_hosted_mcp_request, scheduled_operation};
+use vulcan_daemon::mcp_hosted::{
+    prepare_hosted_mcp_request, run_hosted_mcp_request, scheduled_operation, HostedMcpRunError,
+};
 use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
 use vulcan_daemon::mcp_http_routes::{
     dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
@@ -272,72 +272,28 @@ impl HostedMcpExecution {
         payload: &Value,
         dispatch: &HostedMcpDispatch,
     ) -> Result<McpHttpProcessResult, Value> {
-        let kind = scheduled_operation(payload);
-        if kind == ScheduledOperation::Read {
-            let permit = self
-                .runtime
-                .block_on(self.scheduler.acquire(&dispatch.execution, kind, |_| {
-                    revalidate_hosted_mcp_authority(
-                        &dispatch.http,
-                        &dispatch.inbound,
-                        &dispatch.authority,
-                    )
-                }))
-                .map_err(|error| hosted_mcp_json_error(payload, error.to_string(), None))?;
-            dispatch
-                .execution
-                .checkpoint()
-                .map_err(|error| hosted_mcp_json_error(payload, error.to_string(), None))?;
-            attenuate_mcp_core_profile(core)
-                .map_err(|error| hosted_mcp_json_error(payload, error, None))?;
-            let response = core.process_http_request(payload);
-            drop(permit);
-            return response;
-        }
         let http = dispatch.http.clone();
         let inbound = dispatch.inbound.clone();
         let authority = dispatch.authority.clone();
-        let mut next_core = core.clone();
-        let request = payload.clone();
-        let result = self
-            .runtime
-            .block_on(self.executor.execute_registered_caller(
-                dispatch.execution.clone(),
-                kind,
-                move |_| revalidate_hosted_mcp_authority(&http, &inbound, &authority),
-                move |execution| {
-                    execution.checkpoint().map_err(|error| {
-                        HostedOperationFailure::before_commit(error.to_string())
-                    })?;
-                    attenuate_mcp_core_profile(&mut next_core)
-                        .map_err(HostedOperationFailure::before_commit)?;
-                    let response = next_core.process_http_request(&request);
-                    if kind == ScheduledOperation::Mutation
-                        && (response.is_err()
-                            || response.as_ref().is_ok_and(|result| {
-                                result.response.as_ref().is_some_and(|value| {
-                                    value.get("error").is_some()
-                                        || value.pointer("/result/isError").and_then(Value::as_bool)
-                                            == Some(true)
-                                })
-                            }))
-                    {
-                        return Err(HostedOperationFailure::indeterminate(
-                            "MCP mutation returned an error; its write outcome is unverified",
-                        ));
-                    }
-                    Ok(HostedOperationCompletion {
-                        value: (next_core, response),
-                        committed: kind == ScheduledOperation::Mutation,
-                    })
-                },
-            ));
-        match result {
+        match run_hosted_mcp_request(
+            &self.scheduler,
+            &self.executor,
+            &self.runtime,
+            core.clone(),
+            payload.clone(),
+            dispatch.execution.clone(),
+            move |_| revalidate_hosted_mcp_authority(&http, &inbound, &authority),
+            attenuate_mcp_core_profile,
+            McpServerCore::process_http_request,
+        ) {
             Ok((next, response)) => {
                 *core = next;
                 response
             }
-            Err(error) => hosted_mcp_execution_error(
+            Err(HostedMcpRunError::BeforeDispatch(message)) => {
+                Err(hosted_mcp_json_error(payload, message, None))
+            }
+            Err(HostedMcpRunError::Execution(error)) => hosted_mcp_execution_error(
                 payload,
                 &dispatch.execution,
                 &dispatch.http.endpoint,

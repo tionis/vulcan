@@ -1,15 +1,17 @@
 //! Hosted MCP request identity and durable pre-dispatch registration.
 
-use crate::hosted_executor::HostedExecutor;
+use crate::hosted_executor::{
+    HostedExecutionError, HostedExecutor, HostedOperationCompletion, HostedOperationFailure,
+};
 use crate::mcp_session::McpSessionAuthority;
-use crate::mutation_scheduler::ScheduledOperation;
+use crate::mutation_scheduler::{MutationScheduleError, MutationScheduler, ScheduledOperation};
 use serde_json::Value;
 use std::path::Path;
 use vulcan_app::execution::{
     ExecutionAuthority, ExecutionCancellationToken, ExecutionContext, ExecutionDeadline,
     ExecutionIdentity, ExecutionRetryClass, ExecutionVaultIdentity,
 };
-use vulcan_app::mcp_dispatch::request_is_read_only;
+use vulcan_app::mcp_dispatch::{request_is_read_only, McpHttpProcessResult};
 use vulcan_core::PermissionGrant;
 
 /// Build one caller-bound execution and register its mutation before launching
@@ -43,6 +45,82 @@ pub fn scheduled_operation(payload: &Value) -> ScheduledOperation {
     } else {
         ScheduledOperation::Mutation
     }
+}
+
+#[derive(Debug)]
+pub enum HostedMcpRunError {
+    BeforeDispatch(String),
+    Execution(HostedExecutionError),
+}
+
+/// Execute one hosted request under the shared per-vault scheduler. Mutations
+/// must already have been registered by `prepare_hosted_mcp_request` before the
+/// adapter launches its worker; the executor retains the permit and outcome
+/// monitor if the HTTP caller times out.
+#[allow(clippy::too_many_arguments)]
+pub fn run_hosted_mcp_request<C, R, A, P>(
+    scheduler: &MutationScheduler,
+    executor: &HostedExecutor,
+    runtime: &tokio::runtime::Handle,
+    mut core: C,
+    request: Value,
+    execution: ExecutionContext,
+    revalidate: R,
+    attenuate: A,
+    process: P,
+) -> Result<(C, Result<McpHttpProcessResult, Value>), HostedMcpRunError>
+where
+    C: Send + 'static,
+    R: FnOnce(&ExecutionContext) -> Result<(), MutationScheduleError>,
+    A: FnOnce(&mut C) -> Result<(), String> + Send + 'static,
+    P: FnOnce(&mut C, &Value) -> Result<McpHttpProcessResult, Value> + Send + 'static,
+{
+    let kind = scheduled_operation(&request);
+    if kind == ScheduledOperation::Read {
+        let permit = runtime
+            .block_on(scheduler.acquire(&execution, kind, revalidate))
+            .map_err(|error| HostedMcpRunError::BeforeDispatch(error.to_string()))?;
+        execution
+            .checkpoint()
+            .map_err(|error| HostedMcpRunError::BeforeDispatch(error.to_string()))?;
+        attenuate(&mut core).map_err(HostedMcpRunError::BeforeDispatch)?;
+        let response = process(&mut core, &request);
+        drop(permit);
+        return Ok((core, response));
+    }
+    runtime
+        .block_on(executor.execute_registered_caller(
+            execution,
+            kind,
+            revalidate,
+            move |execution| {
+                execution
+                    .checkpoint()
+                    .map_err(|error| HostedOperationFailure::before_commit(error.to_string()))?;
+                attenuate(&mut core).map_err(HostedOperationFailure::before_commit)?;
+                let response = process(&mut core, &request);
+                if mutation_outcome_is_indeterminate(&response) {
+                    return Err(HostedOperationFailure::indeterminate(
+                        "MCP mutation returned an error; its write outcome is unverified",
+                    ));
+                }
+                Ok(HostedOperationCompletion {
+                    value: (core, response),
+                    committed: true,
+                })
+            },
+        ))
+        .map_err(HostedMcpRunError::Execution)
+}
+
+fn mutation_outcome_is_indeterminate(response: &Result<McpHttpProcessResult, Value>) -> bool {
+    response.is_err()
+        || response.as_ref().is_ok_and(|result| {
+            result.response.as_ref().is_some_and(|value| {
+                value.get("error").is_some()
+                    || value.pointer("/result/isError").and_then(Value::as_bool) == Some(true)
+            })
+        })
 }
 
 fn build_execution_context(
@@ -82,7 +160,10 @@ fn build_execution_context(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_execution_context, prepare_hosted_mcp_request, scheduled_operation};
+    use super::{
+        build_execution_context, prepare_hosted_mcp_request, run_hosted_mcp_request,
+        scheduled_operation, HostedMcpRunError,
+    };
     use crate::hosted_executor::HostedExecutor;
     use crate::hosted_jobs::{HostedJobLedger, HostedJobState};
     use crate::mcp_session::McpSessionAuthority;
@@ -96,6 +177,7 @@ mod tests {
     use vulcan_app::execution::{
         ExecutionAuthority, ExecutionCancellationToken, ExecutionDeadline, ExecutionRetryClass,
     };
+    use vulcan_app::mcp_dispatch::McpHttpProcessResult;
     use vulcan_core::{PermissionGrant, PermissionProfile};
 
     #[test]
@@ -218,5 +300,127 @@ mod tests {
         let record = ledger.load(&write.identity.operation_id).unwrap();
         assert_eq!(record.state, HostedJobState::Queued);
         assert_eq!(record.request_id, write.identity.request_id);
+    }
+
+    #[test]
+    fn read_lane_revalidates_and_processes_without_a_durable_job() {
+        let vault = tempdir().unwrap();
+        let ledger = Arc::new(HostedJobLedger::at(vault.path().join("operations")));
+        let scheduler =
+            Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).unwrap());
+        let executor = HostedExecutor::new(Arc::clone(&scheduler), Arc::clone(&ledger));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let authority = McpSessionAuthority::direct(
+            Ulid::new(),
+            "test-credential",
+            None,
+            Some("subject".to_string()),
+            None,
+            vec![],
+            vec![],
+        );
+        let request = json!({"method": "tools/list", "id": 1});
+        let execution = prepare_hosted_mcp_request(
+            &executor,
+            runtime.handle(),
+            vault.path(),
+            PermissionGrant::from_profile(&PermissionProfile::default()),
+            &request,
+            &authority,
+            ExecutionCancellationToken::default(),
+            ExecutionDeadline::after(std::time::Duration::from_secs(5)),
+        )
+        .unwrap();
+        let operation_id = execution.identity.operation_id.clone();
+        let (core, result) = run_hosted_mcp_request(
+            &scheduler,
+            &executor,
+            runtime.handle(),
+            0_usize,
+            request,
+            execution,
+            |_| Ok(()),
+            |core| {
+                *core += 1;
+                Ok(())
+            },
+            |core, _| {
+                *core += 1;
+                Ok(McpHttpProcessResult {
+                    response: Some(json!({"result": {"tools": []}})),
+                    notifications: vec![],
+                    accepted_notification: false,
+                    session_stale: false,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(core, 2);
+        assert_eq!(
+            result.unwrap().response,
+            Some(json!({"result": {"tools": []}}))
+        );
+        assert!(ledger.load(&operation_id).is_err());
+    }
+
+    #[test]
+    fn mutation_tool_error_records_unknown_commit_state() {
+        let vault = tempdir().unwrap();
+        let ledger = Arc::new(HostedJobLedger::at(vault.path().join("operations")));
+        let scheduler =
+            Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).unwrap());
+        let executor = HostedExecutor::new(Arc::clone(&scheduler), Arc::clone(&ledger));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let authority = McpSessionAuthority::direct(
+            Ulid::new(),
+            "test-credential",
+            None,
+            Some("subject".to_string()),
+            None,
+            vec![],
+            vec![],
+        );
+        let request = json!({"method": "tools/call", "id": 1});
+        let execution = prepare_hosted_mcp_request(
+            &executor,
+            runtime.handle(),
+            vault.path(),
+            PermissionGrant::from_profile(&PermissionProfile::default()),
+            &request,
+            &authority,
+            ExecutionCancellationToken::default(),
+            ExecutionDeadline::after(std::time::Duration::from_secs(5)),
+        )
+        .unwrap();
+        let operation_id = execution.identity.operation_id.clone();
+        let result = run_hosted_mcp_request(
+            &scheduler,
+            &executor,
+            runtime.handle(),
+            0_usize,
+            request,
+            execution,
+            |_| Ok(()),
+            |_| Ok(()),
+            |_, _| {
+                Ok(McpHttpProcessResult {
+                    response: Some(json!({"result": {"isError": true}})),
+                    notifications: vec![],
+                    accepted_notification: false,
+                    session_stale: false,
+                })
+            },
+        );
+        assert!(matches!(result, Err(HostedMcpRunError::Execution(_))));
+        let record = ledger.load(&operation_id).unwrap();
+        assert_eq!(record.state, HostedJobState::Failed);
+        assert_eq!(record.committed, None);
     }
 }
