@@ -490,7 +490,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
     fs::write(
         paths.config_file(),
-        "[permissions.profiles.prompt-reader]\nread = { allow = [\"note:AI/Prompts/summary.md\"] }\n",
+        "[permissions.profiles.prompt-reader]\nread = { allow = [\"note:AI/Prompts/summary.md\"] }\n\
+         [permissions.profiles.tool-change-foreground]\nread = \"all\"\nwrite = \"all\"\n\
+         [permissions.profiles.tool-change-resident]\nread = \"all\"\nwrite = \"all\"\n",
     )
     .expect("path-scoped reader profile");
     fs::write(vault.join("LargeOwner.md"), "x".repeat(70_000)).expect("owner large-result fixture");
@@ -680,6 +682,24 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "personal",
         "unrestricted",
         &["notes-write", "notes-manage", "tasks"],
+        &["mcp:tools"],
+    );
+    let foreground_tool_change_token = named_listener_test_token(
+        &paths,
+        &named,
+        &token_options,
+        "personal",
+        "tool-change-foreground",
+        &["notes-write"],
+        &["mcp:tools"],
+    );
+    let resident_tool_change_token = named_listener_test_token(
+        &paths,
+        &named,
+        &token_options,
+        "personal",
+        "tool-change-resident",
+        &["notes-write"],
         &["mcp:tools"],
     );
     let prompt_reader_token = named_listener_test_token(
@@ -1046,6 +1066,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &prompt_reader_token,
         &paths,
         "foreground",
+    );
+    assert_named_listener_tool_change_after_profile_narrowing(
+        address,
+        &foreground_tool_change_token,
+        &paths,
+        "tool-change-foreground",
     );
     let foreground_revocable_session = named_listener_session_id(&named_listener_initialize(
         address,
@@ -1546,6 +1572,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &paths,
         "resident",
     );
+    assert_named_listener_tool_change_after_profile_narrowing(
+        address,
+        &resident_tool_change_token,
+        &paths,
+        "tool-change-resident",
+    );
     let soon_revoked_session = named_listener_session_id(&named_listener_initialize(
         address,
         "parity",
@@ -2028,6 +2060,45 @@ fn assert_named_listener_prompt_resource_events(client: &mut io::BufReader<TcpSt
     }
     assert!(prompt_changed, "prompt change notification missing");
     assert!(resource_changed, "resource change notification missing");
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_tool_change_after_profile_narrowing(
+    address: SocketAddr,
+    token: &str,
+    paths: &VaultPaths,
+    profile: &str,
+) {
+    let session = named_listener_session_id(&named_listener_initialize(address, "parity", token));
+    let before = named_listener_tools(address, "parity", token, &session);
+    assert!(before.contains("\"name\":\"note_create\""), "{before}");
+    let mut sse = open_named_listener_sse(address, token, &session);
+
+    let config = fs::read_to_string(paths.config_file()).expect("permission config");
+    let old = format!("[permissions.profiles.{profile}]\nread = \"all\"\nwrite = \"all\"\n");
+    let new = format!("[permissions.profiles.{profile}]\nread = \"all\"\nwrite = \"none\"\n");
+    assert!(config.contains(&old), "profile fixture missing: {profile}");
+    fs::write(paths.config_file(), config.replacen(&old, &new, 1)).expect("narrow profile");
+
+    let mut changed = false;
+    for _ in 0..12 {
+        let mut line = String::new();
+        assert!(sse.read_line(&mut line).expect("tool-change SSE event") > 0);
+        if let Some(payload) = line.strip_prefix("data: ") {
+            let event: serde_json::Value = serde_json::from_str(payload).expect("SSE JSON");
+            if event["method"] == "notifications/tools/list_changed" {
+                changed = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        changed,
+        "profile narrowing did not signal tools/list_changed"
+    );
+    let after = named_listener_tools(address, "parity", token, &session);
+    assert!(after.starts_with("HTTP/1.1 200"), "{after}");
+    assert!(!after.contains("\"name\":\"note_create\""), "{after}");
 }
 
 #[cfg(feature = "oauth")]
