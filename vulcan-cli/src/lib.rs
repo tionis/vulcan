@@ -503,7 +503,8 @@ use vulcan_app::export::{
 use vulcan_app::integrations::{begin_route_run, ensure_route_owner};
 use vulcan_app::integrations::{
     list_routes as list_integration_routes, load_route_runtime_state, route as integration_route,
-    route_is_due, validate_routes as validate_integration_routes, RouteDiagnosticSeverity,
+    route_applies_on_this_device, route_is_due, validate_routes as validate_integration_routes,
+    RouteDiagnosticSeverity,
 };
 #[cfg(test)]
 use vulcan_app::mcp_catalog::McpToolAnnotations;
@@ -2263,6 +2264,7 @@ fn run_integration_command(
                     .routes
                     .iter()
                     .filter(|(_, route)| route.enabled)
+                    .filter(|(_, route)| *dry_run || route_applies_on_this_device(route))
                     .map(|(name, _)| name.clone())
                     .collect::<Vec<_>>()
             } else if *scheduled {
@@ -2275,6 +2277,9 @@ fn run_integration_command(
                     let Some(schedule) = route.schedule.as_deref().filter(|_| route.enabled) else {
                         continue;
                     };
+                    if !*dry_run && !route_applies_on_this_device(route) {
+                        continue;
+                    }
                     let runtime =
                         load_route_runtime_state(paths, name).map_err(CliError::operation)?;
                     if route_is_due(

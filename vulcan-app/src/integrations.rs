@@ -114,6 +114,13 @@ pub fn ensure_route_owner(name: &str, route: &IntegrationRouteConfig) -> Result<
     check_route_owner(name, owner, local.as_deref())
 }
 
+/// Whether this device may apply `route`. Batch runs (`--all`, `--scheduled`) use this to skip
+/// routes owned by another device instead of failing on every timer tick.
+#[must_use]
+pub fn route_applies_on_this_device(route: &IntegrationRouteConfig) -> bool {
+    ensure_route_owner("", route).is_ok()
+}
+
 fn check_route_owner(name: &str, owner: &str, local: Option<&str>) -> Result<(), AppError> {
     match local {
         Some(local) if local.eq_ignore_ascii_case(owner) => Ok(()),
@@ -894,6 +901,13 @@ mod tests {
         assert!(other.to_string().contains("owned by device abc"));
         assert!(check_route_owner("players", "abc", None).is_err());
         assert!(ensure_route_owner("players", &IntegrationRouteConfig::default()).is_ok());
+        assert!(route_applies_on_this_device(
+            &IntegrationRouteConfig::default()
+        ));
+        assert!(!route_applies_on_this_device(&IntegrationRouteConfig {
+            owner_device: Some("not-a-real-device-id".to_string()),
+            ..IntegrationRouteConfig::default()
+        }));
     }
 
     #[test]
