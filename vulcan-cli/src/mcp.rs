@@ -127,7 +127,7 @@ use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime, N
 #[cfg(test)]
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
 use vulcan_daemon::mcp_session::{
-    mcp_request_key, McpHttpSession as HostedMcpHttpSession, McpSessionAuthority,
+    McpCancellationError, McpHttpSession as HostedMcpHttpSession, McpSessionAuthority,
     McpSessionRegistry, SessionAdmissionError, SessionLookupError, SessionResolutionError,
 };
 #[cfg(all(test, feature = "oauth"))]
@@ -1514,15 +1514,13 @@ fn handle_mcp_http_post(
         return handle_mcp_cancellation_notification(payload, &session);
     }
 
-    let active_id = request_id(payload);
-    let cancellation = ExecutionCancellationToken::default();
-    if !register_mcp_http_request(&session, active_id.as_ref(), &cancellation) {
+    let Some(active_request) = session.start_request(request_id(payload).as_ref()) else {
         return mcp_http_json_error_response(
             409,
             "MCP request ID is already active in this session",
             Value::Null,
         );
-    }
+    };
 
     let result = {
         let mut core = session
@@ -1535,13 +1533,10 @@ fn handle_mcp_http_post(
             context,
             request,
             authority,
-            cancellation,
+            active_request.cancellation(),
         ) {
             Ok(result) => result,
             Err(error_response) => {
-                if let Some(id) = active_id.as_ref() {
-                    session.finish_request(id);
-                }
                 if created_session {
                     context.sessions.retire(&session_id);
                 }
@@ -1555,9 +1550,7 @@ fn handle_mcp_http_post(
         }
     };
 
-    if let Some(id) = active_id.as_ref() {
-        session.finish_request(id);
-    }
+    drop(active_request);
 
     if result.session_stale {
         context.sessions.retire(&session_id);
@@ -1593,35 +1586,21 @@ fn handle_mcp_cancellation_notification(
     payload: &Value,
     session: &McpHttpSession,
 ) -> McpHttpResponse {
-    let Some(target) = payload.pointer("/params/requestId") else {
-        return mcp_http_json_error_response(
-            400,
-            "MCP cancellation requires params.requestId",
-            Value::Null,
-        );
-    };
-    if mcp_request_key(target).is_none() {
-        return mcp_http_json_error_response(
-            400,
-            "MCP cancellation requestId must be a string or number",
-            Value::Null,
-        );
+    if let Err(error) = session.cancel_notification(payload) {
+        let message = match error {
+            McpCancellationError::MissingRequestId => "MCP cancellation requires params.requestId",
+            McpCancellationError::InvalidRequestId => {
+                "MCP cancellation requestId must be a string or number"
+            }
+        };
+        return mcp_http_json_error_response(400, message, Value::Null);
     }
-    session.cancel_request(target);
     McpHttpResponse {
         status: 202,
         content_type: None,
         body: Vec::new(),
         extra_headers: Vec::new(),
     }
-}
-
-fn register_mcp_http_request(
-    session: &McpHttpSession,
-    id: Option<&Value>,
-    cancellation: &ExecutionCancellationToken,
-) -> bool {
-    id.is_none_or(|id| session.register_request(id, cancellation.clone()))
 }
 
 fn insufficient_scope_response(context: &McpHttpServerContext, required: &str) -> McpHttpResponse {

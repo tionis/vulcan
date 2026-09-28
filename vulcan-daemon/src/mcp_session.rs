@@ -21,6 +21,36 @@ pub const MAX_MCP_SSE_PENDING_EVENTS: usize = 32;
 pub const MAX_MCP_HTTP_SESSIONS: usize = 256;
 pub const MCP_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpCancellationError {
+    MissingRequestId,
+    InvalidRequestId,
+}
+
+/// Removes a request ID from its session when the HTTP handler exits, including
+/// early error and timeout responses.
+#[must_use]
+pub struct McpActiveRequest<C> {
+    session: Arc<McpHttpSession<C>>,
+    id: Option<Value>,
+    cancellation: ExecutionCancellationToken,
+}
+
+impl<C> McpActiveRequest<C> {
+    #[must_use]
+    pub fn cancellation(&self) -> ExecutionCancellationToken {
+        self.cancellation.clone()
+    }
+}
+
+impl<C> Drop for McpActiveRequest<C> {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.as_ref() {
+            self.session.finish_request(id);
+        }
+    }
+}
+
 /// Transport-owned lifecycle state; the protocol handler remains host supplied.
 #[derive(Debug)]
 pub struct McpHttpSession<C> {
@@ -34,6 +64,32 @@ pub struct McpHttpSession<C> {
 }
 
 impl<C> McpHttpSession<C> {
+    /// Register one active JSON-RPC request and tie cleanup to a scoped guard.
+    /// A notification has no request ID but still receives a cancellation token.
+    pub fn start_request(self: &Arc<Self>, id: Option<&Value>) -> Option<McpActiveRequest<C>> {
+        let cancellation = ExecutionCancellationToken::default();
+        if id.is_some_and(|id| !self.register_request(id, cancellation.clone())) {
+            return None;
+        }
+        Some(McpActiveRequest {
+            session: Arc::clone(self),
+            id: id.cloned(),
+            cancellation,
+        })
+    }
+
+    /// Parse a cancellation notification without waiting for the protocol core.
+    pub fn cancel_notification(&self, payload: &Value) -> Result<(), McpCancellationError> {
+        let target = payload
+            .pointer("/params/requestId")
+            .ok_or(McpCancellationError::MissingRequestId)?;
+        if mcp_request_key(target).is_none() {
+            return Err(McpCancellationError::InvalidRequestId);
+        }
+        self.cancel_request(target);
+        Ok(())
+    }
+
     pub fn new(core: C, authority: McpSessionAuthority) -> Self {
         Self::new_with_idle_timeout(core, authority, MCP_HTTP_SESSION_IDLE_TIMEOUT)
     }
@@ -613,6 +669,41 @@ mod tests {
         assert!(session.is_closed());
         assert!(session.is_idle_expired());
         assert!(!session.register_request(&id, ExecutionCancellationToken::default()));
+    }
+
+    #[test]
+    fn active_request_guard_cleans_up_and_cancellation_validates_target_id() {
+        let session = Arc::new(McpHttpSession::new(
+            (),
+            authority(
+                Ulid::new(),
+                "https://id.example/alice",
+                Ulid::new(),
+                "token",
+            ),
+        ));
+        let id = serde_json::json!(17);
+        let active = session.start_request(Some(&id)).expect("register request");
+        let cancellation = active.cancellation();
+        assert!(session.start_request(Some(&id)).is_none());
+        assert!(session
+            .start_request(Some(&serde_json::json!({})))
+            .is_none());
+        assert_eq!(
+            session.cancel_notification(&serde_json::json!({"params": {}})),
+            Err(McpCancellationError::MissingRequestId)
+        );
+        assert_eq!(
+            session.cancel_notification(&serde_json::json!({"params": {"requestId": null}})),
+            Err(McpCancellationError::InvalidRequestId)
+        );
+        assert!(!cancellation.is_cancelled());
+        session
+            .cancel_notification(&serde_json::json!({"params": {"requestId": 17}}))
+            .expect("cancel active request");
+        assert!(cancellation.is_cancelled());
+        drop(active);
+        assert!(session.start_request(Some(&id)).is_some());
     }
 
     #[test]
