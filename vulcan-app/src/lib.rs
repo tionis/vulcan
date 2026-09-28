@@ -60,6 +60,7 @@ pub mod mcp_protocol;
 pub mod mcp_read_tools;
 pub mod mcp_scan;
 pub mod mcp_schemas;
+pub mod mcp_session;
 pub mod mcp_sync;
 pub mod mcp_tasks;
 pub mod mcp_tool_exec;

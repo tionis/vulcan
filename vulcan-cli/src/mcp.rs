@@ -37,7 +37,6 @@ use vulcan_app::execution::{
     ExecutionRetryClass, ExecutionVaultIdentity,
 };
 use vulcan_app::mcp_assistant;
-use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::request_is_read_only;
 #[cfg(feature = "oauth")]
@@ -49,8 +48,7 @@ use vulcan_app::mcp_dispatch::{
 };
 use vulcan_app::mcp_protocol;
 use vulcan_app::mcp_protocol::{
-    McpCompletionParams, McpListSnapshot, McpMethodError, McpMethodOutcome, McpToolResourceStore,
-    MCP_PROTOCOL_VERSION,
+    McpCompletionParams, McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION,
 };
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor};
 #[cfg(all(test, feature = "oauth"))]
@@ -66,9 +64,7 @@ use vulcan_core::{
     discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthResourceServer,
     OAuthResourceServerConfig,
 };
-use vulcan_core::{
-    resolve_permission_profile, watch_vault, ProfilePermissionGuard, VaultPaths, WatchOptions,
-};
+use vulcan_core::{resolve_permission_profile, watch_vault, VaultPaths, WatchOptions};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::host::{
     RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration, ServiceScope,
@@ -197,14 +193,7 @@ pub(crate) struct McpHttpOptions {
 
 #[derive(Debug, Clone)]
 struct McpServerCore {
-    paths: VaultPaths,
-    selection: vulcan_core::ResolvedPermissionProfile,
-    guard: ProfilePermissionGuard,
-    tool_pack_mode: McpToolPackMode,
-    pinned_tool_packs: BTreeSet<McpToolPack>,
-    selected_tool_packs: BTreeSet<McpToolPack>,
-    tool_resources: McpToolResourceStore,
-    snapshot: McpListSnapshot,
+    session: vulcan_app::mcp_session::McpSessionState,
 }
 
 type McpHttpSession = HostedMcpHttpSession<McpServerCore>;
@@ -267,14 +256,14 @@ impl HostedMcpExecution {
             )
         };
         let kind = mcp_scheduled_operation(payload);
-        let grant = core.selection.grant.clone();
+        let grant = core.session.selection().grant.clone();
         let principal_id = authority
             .subject
             .clone()
             .or_else(|| authority.client_id.clone())
             .unwrap_or_else(|| format!("mcp:{}", authority.remote_instance_id));
         let execution = ExecutionContext::new(
-            ExecutionVaultIdentity::resolve(core.paths.vault_root(), None, None)
+            ExecutionVaultIdentity::resolve(core.session.paths().vault_root(), None, None)
                 .map_err(|error| failure(error.to_string()))?,
             ExecutionAuthority::Caller {
                 principal_id,
@@ -483,14 +472,7 @@ fn hosted_mcp_execution_error(
 
 #[cfg(feature = "oauth")]
 fn attenuate_mcp_core_profile(core: &mut McpServerCore) -> Result<(), String> {
-    let current_profile = resolve_permission_profile(&core.paths, Some(&core.selection.name))
-        .map_err(|error| error.to_string())?;
-    if !current_profile.grant.is_subset_of(&core.selection.grant) {
-        return Err("MCP permission profile widened after session initialization".to_string());
-    }
-    core.guard = ProfilePermissionGuard::new(&core.paths, current_profile.clone());
-    core.selection = current_profile;
-    Ok(())
+    core.session.attenuate_profile()
 }
 
 #[cfg(feature = "oauth")]
@@ -1980,37 +1962,17 @@ impl McpServerCore {
         tool_pack_args: &[McpToolPackArg],
         tool_pack_mode_arg: McpToolPackModeArg,
     ) -> Result<Self, CliError> {
-        let selection = resolve_permission_profile(paths, requested_profile)
-            .map_err(permission_error_to_cli)?;
         let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
         let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
-        let pinned_tool_packs = selected_tool_packs
-            .iter()
-            .copied()
-            .filter(|pack| *pack != McpToolPack::ToolPacks)
-            .collect();
-        let guard = ProfilePermissionGuard::new(paths, selection.clone());
-        let snapshot = McpListSnapshot {
-            tools: mcp_assistant::tool_catalog_fingerprint(
-                paths,
-                Some(selection.name.as_str()),
-                &selected_tool_packs,
-                &selection.profile,
-                crate::custom_tool_registry_options,
-            ),
-            prompts: prompt_files_fingerprint(paths, &guard),
-            resources: resource_files_fingerprint(paths, &guard),
-        };
-
         Ok(Self {
-            paths: paths.clone(),
-            selection,
-            guard,
-            tool_pack_mode,
-            pinned_tool_packs,
-            selected_tool_packs,
-            tool_resources: McpToolResourceStore::default(),
-            snapshot,
+            session: vulcan_app::mcp_session::McpSessionState::new(
+                paths,
+                requested_profile,
+                selected_tool_packs,
+                tool_pack_mode,
+                crate::custom_tool_registry_options,
+            )
+            .map_err(permission_error_to_cli)?,
         })
     }
 
@@ -2063,7 +2025,8 @@ impl McpServerCore {
     }
 
     fn process_request(&mut self, request: Value) -> Vec<Value> {
-        let _read_guard = match acquire_request_ordinary_write_gate(&self.paths, &request) {
+        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), &request)
+        {
             Ok(guard) => guard,
             Err(message) => {
                 return request_id(&request)
@@ -2075,7 +2038,7 @@ impl McpServerCore {
     }
 
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
-        let _read_guard = match acquire_request_ordinary_write_gate(&self.paths, request) {
+        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), request) {
             Ok(guard) => guard,
             Err(message) => {
                 return if let Some(id) = request_id(request) {
@@ -2259,64 +2222,10 @@ impl McpServerCore {
     }
 
     fn initialize_result(&self) -> Value {
-        mcp_protocol::initialization_result(&self.active_tool_names(), env!("CARGO_PKG_VERSION"))
-    }
-
-    fn discovery<'a>(
-        &'a self,
-        registry: &'a vulcan_app::tools::CustomToolRegistryOptions,
-    ) -> vulcan_app::mcp_discovery::McpDiscovery<'a> {
-        vulcan_app::mcp_discovery::McpDiscovery {
-            paths: &self.paths,
-            guard: &self.guard,
-            profile_name: self.selection.name.as_str(),
-            profile: &self.selection.profile,
-            selected_packs: &self.selected_tool_packs,
-            resources: &self.tool_resources,
-            custom_registry: registry,
-        }
-    }
-
-    fn call_tool(
-        &mut self,
-        name: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Value, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        vulcan_app::mcp_tool_exec::McpToolExecution {
-            paths: &self.paths,
-            guard: &self.guard,
-            profile_name: self.selection.name.as_str(),
-            profile: &self.selection.profile,
-            selected_packs: &mut self.selected_tool_packs,
-            pinned_packs: &self.pinned_tool_packs,
-            pack_mode: self.tool_pack_mode,
-            resources: &mut self.tool_resources,
-            custom_registry: &registry,
-        }
-        .call_tool(name, arguments)
-    }
-
-    fn active_tool_names(&self) -> Vec<String> {
-        vulcan_app::mcp_catalog::active_tool_names(
-            &self.selected_tool_packs,
-            &self.selection.profile,
+        mcp_protocol::initialization_result(
+            &self.session.active_tool_names(),
+            env!("CARGO_PKG_VERSION"),
         )
-    }
-
-    fn list_changed_notifications(&mut self) -> Vec<Value> {
-        let current = McpListSnapshot {
-            tools: mcp_assistant::tool_catalog_fingerprint(
-                &self.paths,
-                Some(self.selection.name.as_str()),
-                &self.selected_tool_packs,
-                &self.selection.profile,
-                crate::custom_tool_registry_options,
-            ),
-            prompts: prompt_files_fingerprint(&self.paths, &self.guard),
-            resources: resource_files_fingerprint(&self.paths, &self.guard),
-        };
-        self.snapshot.changed_notifications(current)
     }
 }
 
@@ -2327,7 +2236,7 @@ impl McpProtocolMethods for McpServerCore {
 
     fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
         let registry = crate::custom_tool_registry_options();
-        self.discovery(&registry).visible_tool_items()
+        self.session.discovery(&registry).visible_tool_items()
     }
 
     fn call_tool(
@@ -2335,12 +2244,13 @@ impl McpProtocolMethods for McpServerCore {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        McpServerCore::call_tool(self, name, arguments)
+        let registry = crate::custom_tool_registry_options();
+        self.session.call_tool(&registry, name, arguments)
     }
 
     fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
         let registry = crate::custom_tool_registry_options();
-        self.discovery(&registry).visible_prompt_items()
+        self.session.discovery(&registry).visible_prompt_items()
     }
 
     fn get_prompt(
@@ -2349,29 +2259,36 @@ impl McpProtocolMethods for McpServerCore {
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
         let registry = crate::custom_tool_registry_options();
-        self.discovery(&registry).get_prompt(name, arguments)
+        self.session
+            .discovery(&registry)
+            .get_prompt(name, arguments)
     }
 
     fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
         let registry = crate::custom_tool_registry_options();
-        self.discovery(&registry).visible_resources()
+        self.session.discovery(&registry).visible_resources()
     }
 
     fn visible_resource_templates(&self) -> Vec<Value> {
         let registry = crate::custom_tool_registry_options();
-        self.discovery(&registry).visible_resource_templates()
+        self.session
+            .discovery(&registry)
+            .visible_resource_templates()
     }
 
     fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
         let registry = crate::custom_tool_registry_options();
-        self.discovery(&registry).read_resource(uri, |topic_path| {
-            resolve_help_topic(topic_path).map_err(|error| error.message)
-        })
+        self.session
+            .discovery(&registry)
+            .read_resource(uri, |topic_path| {
+                resolve_help_topic(topic_path).map_err(|error| error.message)
+            })
     }
 
     fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
         let registry = crate::custom_tool_registry_options();
-        self.discovery(&registry)
+        self.session
+            .discovery(&registry)
             .complete(params, &help_topic_completion_candidates(""))
     }
 }
@@ -2386,7 +2303,8 @@ impl McpMethodHandler for McpServerCore {
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
-        McpServerCore::list_changed_notifications(self)
+        self.session
+            .list_changed_notifications(crate::custom_tool_registry_options)
     }
 }
 

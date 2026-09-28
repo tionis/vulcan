@@ -11,7 +11,7 @@ use vulcan_app::mcp_protocol::McpWebFetchArgs;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::MCP_RESOURCE_NOT_FOUND;
 use vulcan_app::mcp_read_tools;
-use vulcan_core::{PermissionProfile, TasksQueryResult};
+use vulcan_core::{PermissionProfile, ProfilePermissionGuard, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
 use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
 
@@ -4337,7 +4337,13 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
     )
     .expect("team session");
     assert_eq!(
-        session.core.lock().expect("core").paths.vault_root(),
+        session
+            .core
+            .lock()
+            .expect("core")
+            .session
+            .paths()
+            .vault_root(),
         second.vault_root()
     );
     let personal_grant_id = create_named_connection_grant(
@@ -4378,7 +4384,8 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
             .core
             .lock()
             .expect("core")
-            .paths
+            .session
+            .paths()
             .vault_root(),
         first.vault_root()
     );
@@ -4726,7 +4733,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
         .expect("runtime");
     let scheduler =
         Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
-    let grant = core.selection.grant.clone();
+    let grant = core.session.selection().grant.clone();
     let blocker = ExecutionContext::new(
         ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
         ExecutionAuthority::Caller {
@@ -4856,7 +4863,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
         .expect("runtime");
     let scheduler =
         Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
-    let grant = core.selection.grant.clone();
+    let grant = core.session.selection().grant.clone();
     let blocker = ExecutionContext::new(
         ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
         ExecutionAuthority::Caller {
@@ -5280,7 +5287,7 @@ fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
         McpToolPackModeArg::Static,
     )
     .expect("MCP core");
-    assert!(core.guard.check_write_path("Note.md").is_ok());
+    assert!(core.session.guard().check_write_path("Note.md").is_ok());
 
     fs::write(
         paths.config_file(),
@@ -5288,7 +5295,7 @@ fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
     )
     .expect("narrow profile");
     attenuate_mcp_core_profile(&mut core).expect("narrowed profile");
-    assert!(core.guard.check_write_path("Note.md").is_err());
+    assert!(core.session.guard().check_write_path("Note.md").is_err());
 
     fs::write(
         paths.config_file(),
@@ -5298,7 +5305,7 @@ fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
     assert!(attenuate_mcp_core_profile(&mut core)
         .expect_err("existing session cannot widen")
         .contains("widened"));
-    assert!(core.guard.check_write_path("Note.md").is_err());
+    assert!(core.session.guard().check_write_path("Note.md").is_err());
 }
 
 #[test]

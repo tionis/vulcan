@@ -120,6 +120,9 @@ fn js_and_mcp_web_fetch_adapters_use_the_shared_redirect_policy() {
         .expect("DataviewJS source should read");
     let mcp_source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp.rs"))
         .expect("MCP source should read");
+    let mcp_session_source =
+        fs::read_to_string(workspace_root.join("vulcan-app/src/mcp_session.rs"))
+            .expect("shared MCP session source should read");
     let mcp_exec_source =
         fs::read_to_string(workspace_root.join("vulcan-app/src/mcp_tool_exec.rs"))
             .expect("shared MCP executor source should read");
@@ -129,13 +132,15 @@ fn js_and_mcp_web_fetch_adapters_use_the_shared_redirect_policy() {
         .expect("app web source should read");
 
     assert!(js_source.contains("fetch_web(&state.web_config, url, mode)"));
-    assert!(mcp_source.contains("vulcan_app::mcp_tool_exec::McpToolExecution"));
+    assert!(mcp_source.contains("vulcan_app::mcp_session::McpSessionState::new"));
+    assert!(mcp_session_source.contains("McpToolExecution {"));
     assert!(mcp_exec_source.contains("mcp_web::web_fetch(self.paths, self.guard, args)"));
     assert!(mcp_web_source.contains("apply_web_fetch_report_with_permissions("));
     assert!(app_web_source.contains("fetch_web_content(&config, &request.url"));
     assert!(!mcp_source.contains("run_web_fetch_command("));
     assert!(!production_source(&js_source).contains("reqwest::"));
     assert!(!production_source(&mcp_source).contains("reqwest::"));
+    assert!(!production_source(&mcp_session_source).contains("reqwest::"));
     assert!(!production_source(&mcp_exec_source).contains("reqwest::"));
     assert!(!production_source(&mcp_web_source).contains("reqwest::"));
     assert!(!production_source(&app_web_source).contains("reqwest::"));
