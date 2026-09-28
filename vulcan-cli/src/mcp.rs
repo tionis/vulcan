@@ -43,6 +43,7 @@ use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
 use vulcan_app::mcp_completion;
 use vulcan_app::mcp_config;
+use vulcan_app::mcp_custom;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
@@ -68,7 +69,7 @@ use vulcan_app::mcp_scan;
 use vulcan_app::mcp_sync;
 use vulcan_app::mcp_tasks;
 use vulcan_app::mcp_web;
-use vulcan_app::tools::{self as app_tools, CustomToolDescriptor, CustomToolRunOptions};
+use vulcan_app::tools::{self as app_tools, CustomToolDescriptor};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
 #[cfg(all(test, feature = "oauth"))]
@@ -2795,46 +2796,14 @@ impl McpServerCore {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        if !self.selected_tool_packs.contains(&McpToolPack::Custom) {
-            return Err(McpMethodError::invalid_params(format!(
-                "Unknown tool: {name}"
-            )));
-        }
-        let report = app_tools::show_custom_tool(
+        let report = mcp_custom::call_custom_tool(
             &self.paths,
-            Some(self.selection.name.as_str()),
-            name,
+            self.selection.name.as_str(),
+            &self.selected_tool_packs,
             &crate::custom_tool_registry_options(),
-        )
-        .map_err(|_| McpMethodError::invalid_params(format!("Unknown tool: {name}")))?;
-        let selected_pack_names = pack_name_list(&self.selected_tool_packs)
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if !mcp_assistant::custom_tool_matches_selected_packs(
-            &report.tool.summary.packs,
-            &selected_pack_names,
-        ) {
-            return Err(McpMethodError::invalid_params(format!(
-                "Unknown tool: {name}"
-            )));
-        }
-        if !report.callable {
-            return Err(McpMethodError::tool(format!(
-                "permission denied: tool `{name}` is not available under profile `{}`",
-                self.selection.name
-            )));
-        }
-        let report = app_tools::run_custom_tool(
-            &self.paths,
-            Some(self.selection.name.as_str()),
             name,
-            &Value::Object(arguments.clone()),
-            &crate::custom_tool_registry_options(),
-            &CustomToolRunOptions {
-                surface: "mcp".to_string(),
-            },
-        )
-        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+            arguments,
+        )?;
         Ok(self.custom_tool_success_response(&report.name, report.result, report.text.as_deref()))
     }
 
