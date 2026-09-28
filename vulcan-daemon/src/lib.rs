@@ -20,6 +20,7 @@ pub mod hosted_executor;
 pub mod hosted_jobs;
 pub mod http;
 pub mod http_policy;
+pub mod mcp_hosted;
 pub mod mcp_http_codec;
 pub mod mcp_http_routes;
 #[cfg(feature = "oauth")]

@@ -4913,10 +4913,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
             "arguments": {"path": "Blocked.md", "body": "must not appear"}
         }
     });
-    assert_eq!(
-        mcp_scheduled_operation(&payload),
-        ScheduledOperation::Mutation
-    );
+    assert_eq!(scheduled_operation(&payload), ScheduledOperation::Mutation);
     let ledger = hosted.executor.ledger();
     http.hosted = Some(hosted);
     let outcome = core.process_http_request_with_timeout(
@@ -5359,20 +5356,20 @@ fn hosted_mcp_scheduling_uses_catalog_read_hints_and_conservative_custom_mutatio
         })
     };
     assert_eq!(
-        mcp_scheduled_operation(&call("note_get")),
+        scheduled_operation(&call("note_get")),
         ScheduledOperation::Read
     );
     assert_eq!(
-        mcp_scheduled_operation(&call("note_create")),
+        scheduled_operation(&call("note_create")),
         ScheduledOperation::Mutation
     );
     assert_eq!(
-        mcp_scheduled_operation(&call("graph_communities")),
+        scheduled_operation(&call("graph_communities")),
         ScheduledOperation::Mutation,
         "the default graph call persists derived clusters"
     );
     assert_eq!(
-        mcp_scheduled_operation(&serde_json::json!({
+        scheduled_operation(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
@@ -5384,7 +5381,7 @@ fn hosted_mcp_scheduling_uses_catalog_read_hints_and_conservative_custom_mutatio
         ScheduledOperation::Read
     );
     assert_eq!(
-        mcp_scheduled_operation(&serde_json::json!({
+        scheduled_operation(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
@@ -5397,7 +5394,7 @@ fn hosted_mcp_scheduling_uses_catalog_read_hints_and_conservative_custom_mutatio
         "malformed dry-run values must stay on the conservative lane"
     );
     assert_eq!(
-        mcp_scheduled_operation(&call("web_fetch")),
+        scheduled_operation(&call("web_fetch")),
         ScheduledOperation::Read
     );
     assert!(
@@ -5408,7 +5405,7 @@ fn hosted_mcp_scheduling_uses_catalog_read_hints_and_conservative_custom_mutatio
         .is_err()
     );
     assert_eq!(
-        mcp_scheduled_operation(&call("custom_tool")),
+        scheduled_operation(&call("custom_tool")),
         ScheduledOperation::Mutation
     );
 }

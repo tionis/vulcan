@@ -38,8 +38,6 @@ use vulcan_app::execution::{
 };
 use vulcan_app::mcp_assistant;
 #[cfg(feature = "oauth")]
-use vulcan_app::mcp_dispatch::request_is_read_only;
-#[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
     acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
@@ -79,6 +77,8 @@ use vulcan_daemon::hosted_jobs::HostedJobLedger;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_hosted::{prepare_hosted_mcp_request, scheduled_operation};
 use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
 use vulcan_daemon::mcp_http_routes::{
     dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
@@ -246,47 +246,24 @@ impl HostedMcpExecution {
         cancellation: ExecutionCancellationToken,
         deadline: ExecutionDeadline,
     ) -> Result<ExecutionContext, Value> {
-        let failure = |message: String| {
+        prepare_hosted_mcp_request(
+            &self.executor,
+            &self.runtime,
+            core.session.paths().vault_root(),
+            core.session.selection().grant.clone(),
+            payload,
+            authority,
+            cancellation,
+            deadline,
+        )
+        .map_err(|message| {
             jsonrpc_error(
                 request_id(payload).unwrap_or(Value::Null),
                 -32603,
                 message,
                 None,
             )
-        };
-        let kind = mcp_scheduled_operation(payload);
-        let grant = core.session.selection().grant.clone();
-        let principal_id = authority
-            .subject
-            .clone()
-            .or_else(|| authority.client_id.clone())
-            .unwrap_or_else(|| format!("mcp:{}", authority.remote_instance_id));
-        let execution = ExecutionContext::new(
-            ExecutionVaultIdentity::resolve(core.session.paths().vault_root(), None, None)
-                .map_err(|error| failure(error.to_string()))?,
-            ExecutionAuthority::Caller {
-                principal_id,
-                credential_id: authority.grant_id.map(|id| id.to_string()),
-                permission_ceiling: grant.clone(),
-            },
-            grant,
-            ExecutionIdentity::new(format!("mcp:{}", authority.remote_instance_id)),
-            authority.audience.clone(),
-            if kind == ScheduledOperation::Read {
-                ExecutionRetryClass::ReadOnly
-            } else {
-                ExecutionRetryClass::IndeterminateAfterDispatch
-            },
-            cancellation,
-            Some(deadline),
-        )
-        .map_err(|error| failure(error.to_string()))?;
-        if kind == ScheduledOperation::Mutation {
-            self.runtime
-                .block_on(self.executor.register(&execution))
-                .map_err(|error| failure(error.to_string()))?;
-        }
-        Ok(execution)
+        })
     }
 
     fn execute(
@@ -295,7 +272,7 @@ impl HostedMcpExecution {
         payload: &Value,
         dispatch: &HostedMcpDispatch,
     ) -> Result<McpHttpProcessResult, Value> {
-        let kind = mcp_scheduled_operation(payload);
+        let kind = scheduled_operation(payload);
         if kind == ScheduledOperation::Read {
             let permit = self
                 .runtime
@@ -472,15 +449,6 @@ fn hosted_mcp_execution_error(
 #[cfg(feature = "oauth")]
 fn attenuate_mcp_core_profile(core: &mut McpServerCore) -> Result<(), String> {
     core.session.attenuate_profile()
-}
-
-#[cfg(feature = "oauth")]
-fn mcp_scheduled_operation(payload: &Value) -> ScheduledOperation {
-    if request_is_read_only(payload) {
-        ScheduledOperation::Read
-    } else {
-        ScheduledOperation::Mutation
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -2024,7 +1992,7 @@ impl McpServerCore {
         #[cfg(feature = "oauth")]
         let operation_id = dispatch
             .as_ref()
-            .filter(|_| mcp_scheduled_operation(&request) == ScheduledOperation::Mutation)
+            .filter(|_| scheduled_operation(&request) == ScheduledOperation::Mutation)
             .map(|dispatch| dispatch.execution.identity.operation_id.clone());
         #[cfg(feature = "oauth")]
         let failed_ledger = hosted.as_ref().map(|hosted| hosted.executor.ledger());
