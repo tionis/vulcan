@@ -1270,7 +1270,7 @@ Configuration sections and keys are named after native Vulcan capabilities, not 
 
 This file is loaded after `.vulcan/config.toml` and may override device-local Vulcan settings. It is intended for concerns such as endpoint URLs, API key environment variable names, connector executable paths, auto-refresh preferences, the `sync.merge_automation` review ceiling, the default-off `sync.agent_auto_accept` gate, or editor-adjacent workflow tuning that should not be synced back into the shared vault config. Repository identity and structure settings such as `[folder_notes]`, `sync.merge_policy`, and `sync.tree_validation` remain shared-only and local attempts to override them are diagnosed and ignored. Credential values never belong in either shared or local TOML when an environment variable or device secret store can supply them; configuration holds only structured references resolved through the device-local `SecretStore` designed in `docs/specs/device-key-custody.md`. Git-backed sync excludes this file from captured trees and worktree verification independently of user ignore rules.
 
-The default `.vulcan/.gitignore` should ignore `config.local.toml` while still tracking `config.toml`.
+The default `.vulcan/.gitignore` ignores everything under `.vulcan/` except `config.toml`, saved report definitions (`reports/*.toml`), and `.vulcan/templates/`, so `config.local.toml`, `cache.db`, the REPL history, and device-local operational state never travel with the vault while shared templates do. Existing ignore files are never rewritten.
 
 ### Configuration precedence
 

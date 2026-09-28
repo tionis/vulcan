@@ -15829,7 +15829,7 @@ fn init_json_output_creates_default_config() {
     assert_eq!(
         fs::read_to_string(vault_root.join(".vulcan/.gitignore"))
             .expect("gitignore should be readable"),
-        "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
+        "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n!templates/\n!templates/**\n"
     );
     assert!(json.get("support_files").is_none());
 }
