@@ -42,8 +42,8 @@ use vulcan_app::mcp_dispatch::request_is_read_only;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
-    acquire_request_ordinary_write_gate, dispatch_protocol_method, http_initialize_request,
-    jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
+    acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
+    process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler, McpProtocolMethods,
 };
 use vulcan_app::mcp_help;
@@ -128,7 +128,7 @@ use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime, N
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
 use vulcan_daemon::mcp_session::{
     mcp_request_key, McpHttpSession as HostedMcpHttpSession, McpSessionAuthority,
-    McpSessionRegistry, SessionAdmissionError, SessionLookupError,
+    McpSessionRegistry, SessionAdmissionError, SessionLookupError, SessionResolutionError,
 };
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
@@ -1236,14 +1236,21 @@ fn close_mcp_http_sessions(context: &McpHttpServerContext) {
     context.sessions.close_all();
 }
 
+#[cfg(all(test, feature = "oauth"))]
 fn admit_mcp_http_session(
     context: &McpHttpServerContext,
     session_id: String,
     session: Arc<McpHttpSession>,
 ) -> Result<(), McpHttpResponse> {
-    match context.sessions.admit(session_id, session) {
-        Ok(()) => Ok(()),
-        Err(SessionAdmissionError::Capacity) => {
+    context
+        .sessions
+        .admit(session_id, session)
+        .map_err(session_admission_response)
+}
+
+fn session_admission_response(error: SessionAdmissionError) -> McpHttpResponse {
+    match error {
+        SessionAdmissionError::Capacity => {
             let mut response = mcp_http_json_error_response(
                 503,
                 "MCP session limit reached; close unused sessions or retry later",
@@ -1252,13 +1259,11 @@ fn admit_mcp_http_session(
             response
                 .extra_headers
                 .push(("Retry-After".to_string(), "60".to_string()));
-            Err(response)
+            response
         }
-        Err(SessionAdmissionError::DuplicateId) => Err(mcp_http_json_error_response(
-            500,
-            "MCP session ID collision",
-            Value::Null,
-        )),
+        SessionAdmissionError::DuplicateId => {
+            mcp_http_json_error_response(500, "MCP session ID collision", Value::Null)
+        }
     }
 }
 
@@ -1279,16 +1284,20 @@ fn authorized_mcp_http_session(
     context
         .sessions
         .authorized(session_id, authority, touch)
-        .map_err(|error| match error {
-            SessionLookupError::Missing => {
-                mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null)
-            }
-            SessionLookupError::AuthorityMismatch => mcp_http_json_error_response(
-                403,
-                "MCP session authority does not match this request",
-                Value::Null,
-            ),
-        })
+        .map_err(session_lookup_response)
+}
+
+fn session_lookup_response(error: SessionLookupError) -> McpHttpResponse {
+    match error {
+        SessionLookupError::Missing => {
+            mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null)
+        }
+        SessionLookupError::AuthorityMismatch => mcp_http_json_error_response(
+            403,
+            "MCP session authority does not match this request",
+            Value::Null,
+        ),
+    }
 }
 
 fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
@@ -1643,79 +1652,84 @@ fn resolve_mcp_http_session(
     payload: &Value,
     authority: &McpSessionAuthority,
 ) -> Result<(String, Arc<McpHttpSession>, bool), McpHttpResponse> {
-    let is_initialize = http_initialize_request(payload).map_err(|error| McpHttpResponse {
-        status: 400,
-        content_type: Some("application/json"),
-        body: serde_json::to_vec(&error).expect("JSON-RPC error should serialize"),
-        extra_headers: Vec::new(),
-    })?;
-
-    if is_initialize {
-        let session_id = Ulid::new().to_string();
-        #[cfg(feature = "oauth")]
-        let named_session = context
-            .named_runtime
-            .as_ref()
-            .map(|named| named.session_config(authority, context.instance_id))
-            .transpose()
-            .map_err(|message| mcp_http_json_error_response(403, message, Value::Null))?;
-        #[cfg(feature = "oauth")]
-        let paths = named_session
-            .as_ref()
-            .map_or(&context.paths, |session| &session.paths);
-        #[cfg(not(feature = "oauth"))]
-        let paths = &context.paths;
-        #[cfg(feature = "oauth")]
-        let named_profile = named_session
-            .as_ref()
-            .map(|session| session.permission_profile.as_str());
-        #[cfg(not(feature = "oauth"))]
-        let named_profile: Option<&str> = None;
-        let requested_profile = named_profile
-            .or(authority.permission_profile.as_deref())
-            .or(context.requested_profile.as_deref());
-        #[cfg(feature = "oauth")]
-        let named_packs = named_session
-            .as_ref()
-            .map(|session| session.tool_packs.as_slice());
-        #[cfg(not(feature = "oauth"))]
-        let named_packs: Option<&[String]> = None;
-        let pack_names = named_packs.or_else(|| {
-            authority
-                .grant_id
-                .is_some()
-                .then_some(authority.tool_packs.as_slice())
-        });
-        let authority_tool_packs = pack_names
-            .map(|names| {
-                mcp_tool_pack_args_from_names(names).map_err(|error| {
-                    mcp_http_json_error_response(500, error.to_string(), Value::Null)
-                })
-            })
-            .transpose()?;
-        let core = McpServerCore::new(
-            paths,
-            requested_profile,
-            authority_tool_packs
-                .as_deref()
-                .unwrap_or(&context.tool_pack_args),
-            context.tool_pack_mode_arg,
+    let resolved = context
+        .sessions
+        .resolve_http(
+            payload,
+            request.headers.get("mcp-session-id").map(String::as_str),
+            authority,
+            || create_mcp_http_core(context, authority),
         )
-        .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
-        let session = Arc::new(McpHttpSession::new(core, authority.clone()));
-        admit_mcp_http_session(context, session_id.clone(), Arc::clone(&session))?;
-        return Ok((session_id, session, true));
-    }
+        .map_err(|error| match error {
+            SessionResolutionError::InvalidInitialize(error) => McpHttpResponse {
+                status: 400,
+                content_type: Some("application/json"),
+                body: serde_json::to_vec(&error).expect("JSON-RPC error should serialize"),
+                extra_headers: Vec::new(),
+            },
+            SessionResolutionError::MissingSessionId => {
+                mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null)
+            }
+            SessionResolutionError::Admission(error) => session_admission_response(error),
+            SessionResolutionError::Lookup(error) => session_lookup_response(error),
+            SessionResolutionError::Create(response) => response,
+        })?;
+    Ok((resolved.id, resolved.session, resolved.created))
+}
 
-    let Some(session_id) = request.headers.get("mcp-session-id").cloned() else {
-        return Err(mcp_http_json_error_response(
-            400,
-            "missing Mcp-Session-Id header",
-            Value::Null,
-        ));
-    };
-    let session = authorized_mcp_http_session(context, &session_id, authority, true)?;
-    Ok((session_id, session, false))
+fn create_mcp_http_core(
+    context: &McpHttpServerContext,
+    authority: &McpSessionAuthority,
+) -> Result<McpServerCore, McpHttpResponse> {
+    #[cfg(feature = "oauth")]
+    let named_session = context
+        .named_runtime
+        .as_ref()
+        .map(|named| named.session_config(authority, context.instance_id))
+        .transpose()
+        .map_err(|message| mcp_http_json_error_response(403, message, Value::Null))?;
+    #[cfg(feature = "oauth")]
+    let paths = named_session
+        .as_ref()
+        .map_or(&context.paths, |session| &session.paths);
+    #[cfg(not(feature = "oauth"))]
+    let paths = &context.paths;
+    #[cfg(feature = "oauth")]
+    let named_profile = named_session
+        .as_ref()
+        .map(|session| session.permission_profile.as_str());
+    #[cfg(not(feature = "oauth"))]
+    let named_profile: Option<&str> = None;
+    let requested_profile = named_profile
+        .or(authority.permission_profile.as_deref())
+        .or(context.requested_profile.as_deref());
+    #[cfg(feature = "oauth")]
+    let named_packs = named_session
+        .as_ref()
+        .map(|session| session.tool_packs.as_slice());
+    #[cfg(not(feature = "oauth"))]
+    let named_packs: Option<&[String]> = None;
+    let pack_names = named_packs.or_else(|| {
+        authority
+            .grant_id
+            .is_some()
+            .then_some(authority.tool_packs.as_slice())
+    });
+    let authority_tool_packs = pack_names
+        .map(|names| {
+            mcp_tool_pack_args_from_names(names)
+                .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
+        })
+        .transpose()?;
+    McpServerCore::new(
+        paths,
+        requested_profile,
+        authority_tool_packs
+            .as_deref()
+            .unwrap_or(&context.tool_pack_args),
+        context.tool_pack_mode_arg,
+    )
+    .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
 }
 
 fn handle_mcp_http_delete(

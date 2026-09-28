@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use ulid::Ulid;
 use vulcan_app::execution::ExecutionCancellationToken;
+use vulcan_app::mcp_dispatch::http_initialize_request;
 
 use crate::mcp_remote::McpRemoteId;
 use crate::registry::WikiId;
@@ -177,6 +178,22 @@ pub enum SessionLookupError {
     AuthorityMismatch,
 }
 
+#[derive(Debug)]
+pub enum SessionResolutionError<E> {
+    InvalidInitialize(Value),
+    MissingSessionId,
+    Admission(SessionAdmissionError),
+    Lookup(SessionLookupError),
+    Create(E),
+}
+
+#[derive(Debug)]
+pub struct ResolvedMcpSession<C> {
+    pub id: String,
+    pub session: Arc<McpHttpSession<C>>,
+    pub created: bool,
+}
+
 /// Per-listener session ownership and bounded admission for both hosting modes.
 #[derive(Debug)]
 pub struct McpSessionRegistry<C> {
@@ -185,6 +202,38 @@ pub struct McpSessionRegistry<C> {
 }
 
 impl<C> McpSessionRegistry<C> {
+    /// Resolve a decoded HTTP POST against one authority. The host supplies
+    /// only protocol-core construction for a valid initialization request.
+    pub fn resolve_http<E>(
+        &self,
+        payload: &Value,
+        session_header: Option<&str>,
+        authority: &McpSessionAuthority,
+        create_core: impl FnOnce() -> Result<C, E>,
+    ) -> Result<ResolvedMcpSession<C>, SessionResolutionError<E>> {
+        if http_initialize_request(payload).map_err(SessionResolutionError::InvalidInitialize)? {
+            let core = create_core().map_err(SessionResolutionError::Create)?;
+            let id = Ulid::new().to_string();
+            let session = Arc::new(McpHttpSession::new(core, authority.clone()));
+            self.admit(id.clone(), Arc::clone(&session))
+                .map_err(SessionResolutionError::Admission)?;
+            return Ok(ResolvedMcpSession {
+                id,
+                session,
+                created: true,
+            });
+        }
+        let id = session_header.ok_or(SessionResolutionError::MissingSessionId)?;
+        let session = self
+            .authorized(id, authority, true)
+            .map_err(SessionResolutionError::Lookup)?;
+        Ok(ResolvedMcpSession {
+            id: id.to_string(),
+            session,
+            created: false,
+        })
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::with_limit(MAX_MCP_HTTP_SESSIONS)
@@ -622,5 +671,58 @@ mod tests {
         registry.close_all();
         assert!(second.is_closed());
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn http_resolution_admits_only_valid_initialization_and_reuses_exact_authority() {
+        let registry = McpSessionRegistry::with_limit(1);
+        let instance = Ulid::new();
+        let grant = Ulid::new();
+        let owner = authority(instance, "https://id.example/alice", grant, "token-a");
+        let invalid = serde_json::json!({"jsonrpc":"2.0","method":"initialize"});
+        assert!(matches!(
+            registry.resolve_http(&invalid, None, &owner, || Ok::<_, ()>(())),
+            Err(SessionResolutionError::InvalidInitialize(_))
+        ));
+        assert!(registry.is_empty());
+
+        let initialize = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"});
+        assert!(matches!(
+            registry.resolve_http(&initialize, None, &owner, || Err::<(), _>(
+                "core unavailable"
+            )),
+            Err(SessionResolutionError::Create("core unavailable"))
+        ));
+        assert!(registry.is_empty());
+
+        let admitted = registry
+            .resolve_http(&initialize, None, &owner, || Ok::<_, ()>(()))
+            .expect("initialize session");
+        assert!(admitted.created);
+        assert_eq!(registry.len(), 1);
+        assert!(matches!(
+            registry.resolve_http(&initialize, None, &owner, || Ok::<_, ()>(())),
+            Err(SessionResolutionError::Admission(
+                SessionAdmissionError::Capacity
+            ))
+        ));
+
+        let request = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"});
+        assert!(matches!(
+            registry.resolve_http(&request, None, &owner, || Ok::<_, ()>(())),
+            Err(SessionResolutionError::MissingSessionId)
+        ));
+        let other = authority(instance, "https://id.example/alice", grant, "token-b");
+        assert!(matches!(
+            registry.resolve_http(&request, Some(&admitted.id), &other, || Ok::<_, ()>(())),
+            Err(SessionResolutionError::Lookup(
+                SessionLookupError::AuthorityMismatch
+            ))
+        ));
+        let resumed = registry
+            .resolve_http(&request, Some(&admitted.id), &owner, || Err::<(), _>(()))
+            .expect("resume owned session");
+        assert!(!resumed.created);
+        assert!(Arc::ptr_eq(&admitted.session, &resumed.session));
     }
 }
