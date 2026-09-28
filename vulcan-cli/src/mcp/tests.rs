@@ -1059,10 +1059,23 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &foreground_revocable_session,
     )
     .starts_with("HTTP/1.1 200"));
+    let mut revoked_foreground_sse = open_named_listener_sse(
+        address,
+        &foreground_revocable_token,
+        &foreground_revocable_session,
+    );
     named
         .authorization_store
         .revoke_grant(foreground_revocable_grant, current_unix_timestamp(), false)
         .expect("revoke foreground-only grant");
+    let mut revoked_stream_tail = String::new();
+    assert_eq!(
+        revoked_foreground_sse
+            .read_line(&mut revoked_stream_tail)
+            .expect("revoked foreground SSE should close"),
+        0,
+        "revoked foreground SSE emitted data: {revoked_stream_tail}"
+    );
     assert!(named_listener_tools(
         address,
         "parity",
@@ -1545,10 +1558,20 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &soon_revoked_session,
     )
     .starts_with("HTTP/1.1 200"));
+    let mut revoked_resident_sse =
+        open_named_listener_sse(address, refreshed_foreground_access, &soon_revoked_session);
     named
         .authorization_store
         .revoke_grant(foreground_consent_grant, current_unix_timestamp(), false)
         .expect("revoke foreground consent grant");
+    let mut revoked_stream_tail = String::new();
+    assert_eq!(
+        revoked_resident_sse
+            .read_line(&mut revoked_stream_tail)
+            .expect("revoked resident SSE should close"),
+        0,
+        "revoked resident SSE emitted data: {revoked_stream_tail}"
+    );
     assert!(named_listener_tools(
         address,
         "parity",

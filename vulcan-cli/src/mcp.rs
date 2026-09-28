@@ -1768,11 +1768,31 @@ fn handle_mcp_http_sse(
     let mut keepalive_elapsed = Duration::ZERO;
 
     loop {
+        let next_event = receiver.recv_timeout(MCP_HTTP_POLL_INTERVAL);
         if session.is_idle_expired() {
-            session.close();
+            context.sessions.retire(session_id);
             break;
         }
-        match receiver.recv_timeout(MCP_HTTP_POLL_INTERVAL) {
+        if matches!(&next_event, Err(mpsc::RecvTimeoutError::Disconnected)) {
+            break;
+        }
+        // An SSE request can outlive its access token or connection grant. Check
+        // durable authority before computing or sending any further metadata.
+        let still_authorized = authenticate_mcp_http_request(context, request)
+            .is_ok_and(|current| session.authority.matches(&current));
+        let profile_still_allowed = still_authorized
+            && session
+                .core
+                .lock()
+                .expect("mcp core lock should not be poisoned")
+                .session
+                .attenuate_profile()
+                .is_ok();
+        if !profile_still_allowed {
+            context.sessions.retire(session_id);
+            break;
+        }
+        match next_event {
             Ok(message) => {
                 write_mcp_http_sse_event(stream, &message).map_err(CliError::operation)?;
                 keepalive_elapsed = Duration::ZERO;
