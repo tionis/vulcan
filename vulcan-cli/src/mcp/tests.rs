@@ -1473,10 +1473,29 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &paths,
         "resident",
     );
+    let soon_revoked_session = named_listener_session_id(&named_listener_initialize(
+        address,
+        "parity",
+        refreshed_foreground_access,
+    ));
+    assert!(named_listener_tools(
+        address,
+        "parity",
+        refreshed_foreground_access,
+        &soon_revoked_session,
+    )
+    .starts_with("HTTP/1.1 200"));
     named
         .authorization_store
         .revoke_grant(foreground_consent_grant, current_unix_timestamp(), false)
         .expect("revoke foreground consent grant");
+    assert!(named_listener_tools(
+        address,
+        "parity",
+        refreshed_foreground_access,
+        &soon_revoked_session,
+    )
+    .starts_with("HTTP/1.1 401"));
     assert!(
         named_listener_initialize(address, "parity", refreshed_foreground_access)
             .starts_with("HTTP/1.1 401")
