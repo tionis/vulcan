@@ -5,6 +5,7 @@
 use globset::Glob;
 use serde_json::{Map, Value};
 use std::fs;
+use vulcan_core::config::TasksDefaultSource;
 use vulcan_core::{
     evaluate_dql_with_filter, execute_query_report_with_filter, query_notes_with_filter,
     search_vault_with_filter, NoteQuery, PermissionGuard, ProfilePermissionGuard, QueryAst,
@@ -14,12 +15,14 @@ use vulcan_core::{
 use crate::mcp_access;
 use crate::mcp_protocol::{
     McpDailyArgs, McpDailyListArgs, McpDailyShowArgs, McpMethodError, McpQueryArgs, McpSearchArgs,
+    McpTaskListArgs, McpTaskQueryArgs,
 };
 use crate::notes::check_read_markdown_source_access as app_check_read_markdown_source_access;
 use crate::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, read_daily_note,
     read_latest_daily_note_where, show_periodic_note, DailyNoteReadReport, DailyReadTarget,
 };
+use crate::tasks::{build_tasks_list_report, build_tasks_query_result, TaskListRequest};
 
 const MCP_QUERY_SOFT_MAX: usize = 200;
 pub const MCP_QUERY_HARD_MAX: usize = 1_000;
@@ -38,6 +41,59 @@ pub fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut Ta
     }
     report.groups.retain(|group| !group.tasks.is_empty());
     report.result_count = report.tasks.len();
+}
+
+/// Execute the MCP task-list read with source validation and row-level filtering.
+pub fn task_list(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: McpTaskListArgs,
+) -> Result<TasksQueryResult, McpMethodError> {
+    let mut report = build_tasks_list_report(
+        paths,
+        &TaskListRequest {
+            filter: args.filter,
+            source: parse_tasks_default_source(args.source.as_deref())?,
+            status: args.status,
+            priority: args.priority,
+            due_before: args.due_before,
+            due_after: args.due_after,
+            project: args.project,
+            context: args.context,
+            group_by: args.group_by,
+            sort_by: args.sort_by,
+            include_archived: args.include_archived,
+        },
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    filter_tasks_query_report(guard, &mut report);
+    Ok(report)
+}
+
+/// Execute the MCP task query and remove unreadable flat and grouped rows.
+pub fn task_query(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: &McpTaskQueryArgs,
+) -> Result<TasksQueryResult, McpMethodError> {
+    let mut report = build_tasks_query_result(paths, &args.query)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    filter_tasks_query_report(guard, &mut report);
+    Ok(report)
+}
+
+fn parse_tasks_default_source(
+    value: Option<&str>,
+) -> Result<Option<TasksDefaultSource>, McpMethodError> {
+    match value {
+        None => Ok(None),
+        Some("all") => Ok(Some(TasksDefaultSource::All)),
+        Some("inline") => Ok(Some(TasksDefaultSource::Inline)),
+        Some("tasknotes" | "file") => Ok(Some(TasksDefaultSource::Tasknotes)),
+        Some(other) => Err(McpMethodError::invalid_params(format!(
+            "unsupported `task_list.source`: {other}"
+        ))),
+    }
 }
 
 /// Apply the read boundary even for a daily report that omits its content.
@@ -663,6 +719,59 @@ mod tests {
         assert!(report.tasks.is_empty());
         assert!(report.groups.is_empty());
         assert_eq!(report.result_count, 0);
+    }
+
+    #[test]
+    fn task_list_and_query_apply_the_same_read_filter_and_validate_source() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.blind]\nread = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(temporary.path().join("Tasks.md"), "- [ ] Visible task\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let readable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let blind = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("blind")).unwrap(),
+        );
+        let list_args =
+            || serde_json::from_value::<McpTaskListArgs>(json!({"source": "inline"})).unwrap();
+        assert_eq!(
+            task_list(&paths, &readable, list_args())
+                .unwrap()
+                .result_count,
+            1
+        );
+        assert_eq!(
+            task_list(&paths, &blind, list_args()).unwrap().result_count,
+            0
+        );
+        let query_args = serde_json::from_value::<McpTaskQueryArgs>(json!({"query": ""})).unwrap();
+        assert_eq!(
+            task_query(&paths, &readable, &query_args)
+                .unwrap()
+                .result_count,
+            1
+        );
+        assert_eq!(
+            task_query(&paths, &blind, &query_args)
+                .unwrap()
+                .result_count,
+            0
+        );
+        let invalid =
+            serde_json::from_value::<McpTaskListArgs>(json!({"source": "unknown"})).unwrap();
+        assert!(matches!(
+            task_list(&paths, &readable, invalid),
+            Err(McpMethodError::JsonRpc { code: -32602, .. })
+        ));
     }
 
     #[test]

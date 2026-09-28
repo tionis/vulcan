@@ -80,8 +80,7 @@ use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::tasks::{
     apply_task_complete, apply_task_complete_with_guard, apply_task_create,
     apply_task_create_with_guard, apply_task_reschedule, apply_task_reschedule_with_guard,
-    build_tasks_list_report, build_tasks_query_result, TaskCompleteRequest, TaskCreateRequest,
-    TaskListRequest, TaskRescheduleRequest,
+    TaskCompleteRequest, TaskCreateRequest, TaskRescheduleRequest,
 };
 use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor, CustomToolRunOptions};
@@ -90,7 +89,6 @@ use vulcan_app::web::{
     apply_web_fetch_report_with_permissions, build_web_search_report_with_permissions,
     WebFetchMode as AppWebFetchMode, WebFetchRequest, WebSearchRequest,
 };
-use vulcan_core::config::TasksDefaultSource;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
@@ -2674,31 +2672,12 @@ impl McpServerCore {
             }
             McpToolId::TaskList => {
                 let args: McpTaskListArgs = parse_tool_arguments(arguments)?;
-                let mut report = build_tasks_list_report(
-                    &self.paths,
-                    &TaskListRequest {
-                        filter: args.filter,
-                        source: parse_tasks_default_source(args.source.as_deref())?,
-                        status: args.status,
-                        priority: args.priority,
-                        due_before: args.due_before,
-                        due_after: args.due_after,
-                        project: args.project,
-                        context: args.context,
-                        group_by: args.group_by,
-                        sort_by: args.sort_by,
-                        include_archived: args.include_archived,
-                    },
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                mcp_read_tools::filter_tasks_query_report(&self.guard, &mut report);
+                let report = mcp_read_tools::task_list(&self.paths, &self.guard, args)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskQuery => {
                 let args: McpTaskQueryArgs = parse_tool_arguments(arguments)?;
-                let mut report = build_tasks_query_result(&self.paths, &args.query)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                mcp_read_tools::filter_tasks_query_report(&self.guard, &mut report);
+                let report = mcp_read_tools::task_query(&self.paths, &self.guard, &args)?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskCreate => {
@@ -4295,20 +4274,6 @@ fn parse_periodic_arg(value: Option<String>) -> Result<Option<String>, McpMethod
         "daily" | "weekly" | "monthly" => Ok(Some(value)),
         other => Err(McpMethodError::invalid_params(format!(
             "unsupported `note_append.periodic`: {other}"
-        ))),
-    }
-}
-
-fn parse_tasks_default_source(
-    value: Option<&str>,
-) -> Result<Option<TasksDefaultSource>, McpMethodError> {
-    match value {
-        None => Ok(None),
-        Some("all") => Ok(Some(TasksDefaultSource::All)),
-        Some("inline") => Ok(Some(TasksDefaultSource::Inline)),
-        Some("tasknotes" | "file") => Ok(Some(TasksDefaultSource::Tasknotes)),
-        Some(other) => Err(McpMethodError::invalid_params(format!(
-            "unsupported `task_list.source`: {other}"
         ))),
     }
 }
