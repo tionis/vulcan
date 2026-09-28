@@ -46,6 +46,7 @@ use vulcan_app::mcp_dispatch::{
     process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler, McpProtocolMethods,
 };
+use vulcan_app::mcp_help;
 use vulcan_app::mcp_protocol;
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION,
@@ -3060,34 +3061,7 @@ fn visible_custom_tools(
 }
 
 fn help_topic_completion_candidates(prefix: &str) -> Vec<String> {
-    let mut values = vec!["overview".to_string()];
-    values.extend(
-        collect_help_command_topics(&cli_command_tree())
-            .into_iter()
-            .map(|topic| topic.name.replace(' ', "/")),
-    );
-    values.extend(
-        [
-            "getting-started",
-            "examples",
-            "filters",
-            "query-dsl",
-            "scripting",
-            "sandbox",
-            "js",
-            "js.vault",
-            "js.vault.graph",
-            "js.vault.note",
-            "js.plugins",
-            "reports",
-        ]
-        .into_iter()
-        .map(ToOwned::to_owned),
-    );
-    values.sort();
-    values.dedup();
-    values.retain(|value| value.starts_with(prefix));
-    values
+    mcp_help::help_completion_candidates(&collect_help_command_topics(&cli_command_tree()), prefix)
 }
 
 #[cfg(test)]

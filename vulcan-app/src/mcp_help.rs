@@ -602,6 +602,23 @@ pub fn builtin_help_topic(name: &str) -> Option<HelpTopicReport> {
         .find(|topic| topic.name.eq_ignore_ascii_case(name))
 }
 
+/// Complete MCP help resource topics from the shared built-in catalog and
+/// command topics supplied by the host without importing its CLI parser.
+#[must_use]
+pub fn help_completion_candidates(command_topics: &[HelpTopicReport], prefix: &str) -> Vec<String> {
+    let mut values = vec!["overview".to_string()];
+    values.extend(
+        builtin_help_topics()
+            .into_iter()
+            .chain(command_topics.iter().cloned())
+            .map(|topic| topic.name.replace(' ', "/")),
+    );
+    values.sort();
+    values.dedup();
+    values.retain(|value| value.starts_with(prefix));
+    values
+}
+
 /// Resolve a help resource with built-in content shared by all hosts. The host supplies
 /// command-specific help from its command catalog without making the app layer depend on Clap.
 pub fn read_help_resource(
@@ -640,9 +657,39 @@ fn help_resource_not_found(uri: &str, message: String) -> McpMethodError {
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_help_topic, read_help_resource};
+    use super::{
+        builtin_help_topic, builtin_help_topics, help_completion_candidates, read_help_resource,
+        HelpTopicKind, HelpTopicReport,
+    };
     use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
     use vulcan_core::QueryAst;
+
+    #[test]
+    fn completion_tracks_every_builtin_and_injected_command_topic() {
+        let command = HelpTopicReport {
+            name: "note get".to_string(),
+            kind: HelpTopicKind::Command,
+            summary: String::new(),
+            body: String::new(),
+            options: Vec::new(),
+            subcommands: Vec::new(),
+            related: Vec::new(),
+        };
+        let values = help_completion_candidates(&[command], "");
+        assert!(values.contains(&"overview".to_string()));
+        assert!(values.contains(&"note/get".to_string()));
+        for topic in builtin_help_topics() {
+            assert!(
+                values.contains(&topic.name.replace(' ', "/")),
+                "{}",
+                topic.name
+            );
+        }
+        assert_eq!(
+            help_completion_candidates(&[], "chatgpt"),
+            vec!["chatgpt-mcp".to_string()]
+        );
+    }
 
     #[test]
     fn query_help_topics_track_the_native_grammar() {

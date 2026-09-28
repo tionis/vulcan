@@ -32399,6 +32399,19 @@ Use this skill to review the day.
             .any(|value| value.as_str() == Some("note/get")),
         "resource completion should include command-topic help entries"
     );
+    let guide_completion = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "completion/complete",
+        "params": {
+            "ref": { "type": "ref/resource", "uri": "vulcan://help/{topic}" },
+            "argument": { "name": "topic", "value": "chatgpt" }
+        }
+    }));
+    assert_eq!(
+        guide_completion.last().unwrap()["result"]["completion"]["values"],
+        serde_json::json!(["chatgpt-mcp"]),
+    );
     assert!(session.finish().is_empty());
 }
 
