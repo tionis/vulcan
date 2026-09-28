@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 62
+version: 64
 tools:
   - git_status
   - git_diff
@@ -23,6 +23,8 @@ Use this skill when you need repository state rather than note content.
 Use `vulcan sync` when the user wants device/file-tree synchronization. This is separate from `git commit`: live sync snapshots are non-semantic and use Vulcan-owned refs without advancing the user's current branch.
 
 Registered directories default to the versioned `knowledge` profile. Use `vulcan vault add <id> <path> --profile files-only`, either clone command with `--profile files-only`, or `vulcan vault set <id> --profile files-only` when a full working tree should be synchronized without Markdown indexing or knowledge-specific validation, scripts, semantic history, and agent conflict resolution. Both profiles currently use full-tree materialization. Files-only devices retain concurrent automatic merges for review to preserve shared accepted bytes. The daemon's unattended preflight rejects detached HEAD, staged changes, linked worktrees, in-progress Git operations, and nested repositories or submodules; branch changes are checked again before applying. Vulcan's lock does not exclude external Git processes. Do not use unattended sync for active development checkouts, and do not describe file replication as a complete refs/history/LFS backup.
+
+A vault can be one directory of a larger Git repository, such as the `docs/` directory of an MkDocs site. A repository-root `.vulcan.toml` (`vault = "docs"`, written by `vulcan init --repository-pointer`) lets Vulcan find that vault from anywhere in the checkout. `vulcan status` then reports `git_repository_root` and `git_vault_prefix`. `git status`, `git diff`, `git log`, `git blame`, `git commit`, and auto-commit stay scoped to the vault and report vault-relative paths; code and other files outside the vault are never staged. `vulcan sync` is file-tree replication of the whole enclosing repository: it captures and applies every work-tree change, while reading sync configuration and taking the write lock from the vault.
 
 ## Recommended Flow
 
@@ -102,6 +104,7 @@ Registered directories default to the versioned `knowledge` profile. Use `vulcan
 - A projected conflict can also report `automatic_resolutions` for structured sibling paths that were resolved deterministically. Those bytes are already part of the validated projected tree; the immutable conflict record contains only the paths that still require review.
 - A directory-rename or file-location conflict may name a Git-synthesized destination absent from both original candidate trees. Vulcan deliberately omits projection and refuses path-side resolution for that topology; do not turn the refusal into an implicit deletion or manipulate preserved refs. Report the structural diagnostic and keep both candidate revisions intact for a dedicated structural resolution workflow.
 - A device-local automation ceiling may turn an otherwise deterministic structured resolution into a preserved conflict, but it must never produce a different accepted tree. Do not infer that two devices disagree merely because one requires additional review.
+- For a vault nested inside a code or documentation repository, use `vulcan git commit` for vault-only commits and ordinary Git for the rest of the repository. Do not run `vulcan sync` there unless the user wants the entire work tree, including uncommitted code, replicated.
 - Sync defaults to remote `origin` and `refs/heads/__vulcan-sync/live`; pass `--remote` or `--live-ref` only when the repository uses a different agreed profile.
 - A clone that succeeds before registration fails is deliberately preserved. Report the partial state and register or remove it only with explicit user direction.
 - Treat the Android shared-storage policy as a real capability constraint: executable bits are not representable, symlinks become link files, and case-only renames require an intermediate path. Do not silently substitute it for native Linux policy.

@@ -195,7 +195,7 @@ fn require_sync_knowledge_profile(cli: &Cli, command: &SyncCommand) -> Result<()
                 .registration,
         )
     } else {
-        crate::registered_directory_for_path(&cli.vault)?
+        crate::registered_directory_for_path(&cli.vault_root()?)?
     };
     if let Some(registration) = registration {
         if !registration.capabilities().knowledge_services {

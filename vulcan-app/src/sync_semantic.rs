@@ -453,7 +453,7 @@ fn create_semantic_plan_internal(
     provider: Option<&dyn SemanticAgentProvider>,
     cancellation: &SyncCancellationToken,
 ) -> Result<SemanticPlanReport, AppError> {
-    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let engine = GitCliEngine::default();
     let repository = engine
         .discover_repository(&vault)

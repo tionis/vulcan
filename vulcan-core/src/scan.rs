@@ -948,6 +948,65 @@ fn emit_scan_progress(on_progress: &mut impl FnMut(ScanProgress), progress: Scan
     on_progress(progress);
 }
 
+/// `.gitignore` rules from the directories between an enclosing Git work-tree
+/// root and a vault nested below it, such as the repository root of an MkDocs
+/// site whose vault is `docs/`. The vault's own ignore files are handled by
+/// the directory walker; these cover the ancestors it does not read.
+struct AncestorGitIgnores {
+    /// Canonical vault root that the matchers' roots are ancestors of.
+    canonical_root: PathBuf,
+    /// Matchers ordered from the vault's parent up to the work-tree root, so
+    /// the deepest ignore file decides first as in Git.
+    matchers: Vec<ignore::gitignore::Gitignore>,
+}
+
+impl AncestorGitIgnores {
+    fn for_vault(vault_root: &Path) -> Self {
+        let canonical_root = fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.into());
+        let mut matchers = Vec::new();
+        if let Some(work_tree) = crate::vault_discovery::enclosing_git_work_tree(&canonical_root) {
+            for directory in canonical_root
+                .ancestors()
+                .skip(1)
+                .take_while(|directory| directory.starts_with(&work_tree))
+            {
+                let path = directory.join(".gitignore");
+                if path.is_file() {
+                    let (matcher, _) = ignore::gitignore::Gitignore::new(path);
+                    if !matcher.is_empty() {
+                        matchers.push(matcher);
+                    }
+                }
+            }
+        }
+        Self {
+            canonical_root,
+            matchers,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.matchers.is_empty()
+    }
+
+    /// Only paths inside the vault are matched: a vault directory that the
+    /// enclosing repository ignores as a whole is still indexed.
+    fn is_ignored(&self, walk_root: &Path, path: &Path, is_dir: bool) -> bool {
+        let Ok(relative) = path.strip_prefix(walk_root) else {
+            return false;
+        };
+        if relative.as_os_str().is_empty() {
+            return false;
+        }
+        let candidate = self.canonical_root.join(relative);
+        self.matchers
+            .iter()
+            .map(|matcher| matcher.matched(&candidate, is_dir))
+            .find(|matched| !matched.is_none())
+            .is_some_and(|matched| matched.is_ignore())
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
     let mut builder = WalkBuilder::new(vault_root);
@@ -957,6 +1016,14 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
     builder.git_exclude(false);
     builder.parents(false);
     builder.require_git(false);
+    let ancestor_ignores = AncestorGitIgnores::for_vault(vault_root);
+    if !ancestor_ignores.is_empty() {
+        let walk_root = vault_root.to_path_buf();
+        builder.filter_entry(move |entry| {
+            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+            !ancestor_ignores.is_ignored(&walk_root, entry.path(), is_dir)
+        });
+    }
 
     let files = std::sync::Mutex::new(Vec::new());
     let first_error = std::sync::Mutex::new(None::<ScanError>);
@@ -2888,6 +2955,9 @@ fn resolution_problem_message(problem: &LinkResolutionProblem, link: &ResolverLi
     match problem {
         LinkResolutionProblem::Unresolved => format!("Unresolved link target: {target}"),
         LinkResolutionProblem::Ambiguous(_) => format!("Ambiguous link target: {target}"),
+        LinkResolutionProblem::OutsideVault => {
+            format!("Link target leaves the vault root: {target}")
+        }
     }
 }
 
@@ -2904,6 +2974,10 @@ fn resolution_problem_detail(
             "reason": "ambiguous",
             "target": link.target_path_candidate,
             "matches": matches,
+        }),
+        LinkResolutionProblem::OutsideVault => json!({
+            "reason": "outside_vault",
+            "target": link.target_path_candidate,
         }),
     }
 }
@@ -4377,8 +4451,12 @@ mod tests {
     fn scan_ignores_parent_gitignore_outside_the_vault() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let parent_root = temp_dir.path().join("parent");
+        // The vault is its own Git work tree, so ignore files above it are
+        // outside every repository that contains the vault.
         let vault_root = parent_root.join("vault");
         std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::create_dir_all(vault_root.join(".git")).expect("git marker should be created");
+        fs::write(vault_root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
         fs::create_dir_all(vault_root.join("notes")).expect("notes dir should be created");
         fs::write(parent_root.join(".gitignore"), "**/*.md\n")
             .expect("parent gitignore should exist");
@@ -4393,6 +4471,74 @@ mod tests {
         assert_eq!(
             document_paths(database.connection()),
             vec!["a.md".to_string(), "notes/b.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn scan_applies_enclosing_repository_gitignore_to_nested_vaults() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let repository = temp_dir.path().join("site");
+        let vault_root = repository.join("docs");
+        fs::create_dir_all(repository.join(".git")).expect("git marker should be created");
+        fs::write(repository.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::create_dir_all(vault_root.join("generated")).expect("generated dir should exist");
+        fs::create_dir_all(vault_root.join("guide")).expect("guide dir should exist");
+        // `docs/` itself is listed to prove a repository-ignored vault is still indexed.
+        fs::write(
+            repository.join(".gitignore"),
+            "*.tmp
+/docs/generated/
+docs/
+!docs/
+",
+        )
+        .expect("repository gitignore should exist");
+        fs::write(
+            vault_root.join("guide/.gitignore"),
+            "draft-*.md
+",
+        )
+        .expect("vault gitignore should exist");
+        fs::write(vault_root.join("index.md"), "# Home").expect("home");
+        fs::write(vault_root.join("guide/setup.md"), "# Setup").expect("setup");
+        fs::write(vault_root.join("guide/draft-plan.md"), "# Draft").expect("draft");
+        fs::write(vault_root.join("scratch.tmp"), "tmp").expect("scratch");
+        fs::write(vault_root.join("generated/api.md"), "# API").expect("generated");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(
+            document_paths(database.connection()),
+            vec!["guide/setup.md".to_string(), "index.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn scan_indexes_a_vault_directory_ignored_by_its_repository() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let repository = temp_dir.path().join("code");
+        let vault_root = repository.join("private-notes");
+        fs::create_dir_all(repository.join(".git")).expect("git marker should be created");
+        fs::write(repository.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(
+            repository.join(".gitignore"),
+            "private-notes/
+",
+        )
+        .expect("repository gitignore should exist");
+        fs::write(vault_root.join("idea.md"), "# Idea").expect("idea");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!(
+            document_paths(database.connection()),
+            vec!["idea.md".to_string()]
         );
     }
 

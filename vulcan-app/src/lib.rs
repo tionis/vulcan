@@ -95,6 +95,7 @@ pub mod textbundle;
 pub mod tools;
 pub mod trust;
 pub mod update;
+pub mod vault_layout;
 #[cfg(feature = "web")]
 pub mod web;
 pub mod wiki_package;
@@ -147,6 +148,10 @@ mod contract_tests {
             git_staged: 1,
             git_unstaged: 2,
             git_untracked: 3,
+            git_repository_root: None,
+            git_vault_prefix: None,
+            mkdocs_config: None,
+            layout_hints: Vec::new(),
             graph_confidence: None,
         };
 

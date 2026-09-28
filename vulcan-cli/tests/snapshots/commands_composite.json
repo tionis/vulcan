@@ -287,6 +287,20 @@
                 "value_names": [
                   "EXAMPLE_TOOL"
                 ]
+              },
+              {
+                "help": "Write .vulcan.toml at the enclosing Git repository root so commands run anywhere in the repository use this nested vault",
+                "id": "repository_pointer",
+                "long": "repository-pointer",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REPOSITORY_POINTER"
+                ]
               }
             ],
             "subcommands": []
@@ -18962,7 +18976,7 @@
     ],
     "global_options": [
       {
-        "help": "Vault root directory",
+        "help": "Vault root directory [default: discovered from the current directory]",
         "id": "vault",
         "long": "vault",
         "possible_values": [],

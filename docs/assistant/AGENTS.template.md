@@ -7,6 +7,8 @@ Core conventions:
 - Prefer `vulcan --output json ...` for all tool-driven workflows.
 - Use `--dry-run` before bulk or destructive mutations.
 - Note names can be ambiguous; prefer vault-relative paths when precision matters.
+- Without `--vault`, Vulcan uses the vault named by a repository-root `.vulcan.toml` pointer (`vault = "docs"`), else the nearest enclosing directory with `.vulcan/`, or the `docs_dir` of an MkDocs project when run from its root. Pass `--vault` (or set `VULCAN_VAULT`) when working from elsewhere; `vulcan status` reports the resolved vault.
+- A vault may be one directory of a larger Git repository (for example MkDocs `docs/`). Note paths stay vault-relative, `vulcan git ...` only inspects and commits vault files, and `vulcan sync` replicates the whole repository work tree.
 - `note patch` fails on multiple matches by design. Treat that as a safety guard, not a bug, and narrow the edit with `--section`, `--heading`, `--block-ref`, or `--lines`.
 
 Useful command groups:

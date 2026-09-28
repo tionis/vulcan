@@ -98,6 +98,7 @@ pub mod suggestions;
 pub mod tasknotes;
 pub mod tasks;
 pub mod textbundle;
+pub mod vault_discovery;
 #[cfg(feature = "vectors")]
 pub mod vector;
 pub mod watch;
@@ -178,8 +179,9 @@ pub use dql::{
 };
 pub use folder_notes::{FolderNotePlacement, FolderNotesConfig};
 pub use git::{
-    auto_commit, git_blame, git_commit, git_diff, git_log, git_recent_log, git_status, is_git_repo,
-    AutoCommitReport, GitBlameLine, GitCommitReport, GitError, GitLogEntry, GitStatusReport,
+    auto_commit, git_blame, git_commit, git_diff, git_log, git_recent_log, git_repository_layout,
+    git_status, is_git_repo, AutoCommitReport, GitBlameLine, GitCommitReport, GitError,
+    GitLogEntry, GitRepositoryLayout, GitStatusReport,
 };
 pub use graph::{
     export_graph, export_graph_with_filter, list_note_identities, list_note_identities_with_filter,

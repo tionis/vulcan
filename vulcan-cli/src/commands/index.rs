@@ -29,7 +29,7 @@ pub(crate) fn handle_index_command(
         .map_err(CliError::operation)?;
     match command {
         IndexCommand::Init(args) => {
-            let report = crate::run_init_command(paths, args)?;
+            let report = crate::run_init_command(paths, args, &cli.vault_discovery()?)?;
             crate::print_init_summary(cli.output, paths, &report)?;
             Ok(())
         }

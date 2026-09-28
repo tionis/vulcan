@@ -82,7 +82,7 @@ pub fn run_semantic_auto(
     now_unix_ms: u64,
 ) -> Result<SemanticAutoReport, AppError> {
     validate_options(options, provider)?;
-    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let engine = GitCliEngine::default();
     let repository = engine
         .discover_repository(&vault)

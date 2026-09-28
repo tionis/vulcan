@@ -581,7 +581,7 @@ pub fn list_sync_conflicts_with_state_store(
     paths: &vulcan_core::VaultPaths,
     state_store: &SyncStateStore,
 ) -> Result<SyncConflictListReport, AppError> {
-    let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let store = SyncConflictStore::from_state_store(state_store);
     let states = store
@@ -654,7 +654,7 @@ pub fn get_sync_conflict_with_state_store(
     conflict_id: &str,
     state_store: &SyncStateStore,
 ) -> Result<SyncConflictDetailReport, AppError> {
-    let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let store = SyncConflictStore::from_state_store(state_store);
     let record = store.get(&repository_key, conflict_id)?;
@@ -698,7 +698,7 @@ pub fn get_sync_conflict_page_with_state_store(
             "sync conflict path page limit must be between 1 and 256",
         ));
     }
-    let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let store = SyncConflictStore::from_state_store(state_store);
     let (record, total, progress) =
@@ -739,7 +739,7 @@ pub fn resolve_sync_conflict_with_state_store(
     options: &ResolveSyncConflictOptions,
     state_store: &SyncStateStore,
 ) -> Result<ResolveSyncConflictReport, AppError> {
-    let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let context = ResolutionContext {
         vault: work_tree.clone(),
@@ -877,7 +877,7 @@ pub(crate) fn resolve_proposal_conflict_groups_with_state_store(
         cancellation: Some(cancellation),
     };
     options.check_cancelled()?;
-    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&vault);
     let context = ResolutionContext {
         vault,

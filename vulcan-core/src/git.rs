@@ -105,6 +105,52 @@ impl GitStatusReport {
     }
 }
 
+/// Where a vault sits inside its enclosing Git work tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitRepositoryLayout {
+    /// Absolute path of the enclosing Git work tree.
+    pub work_tree: PathBuf,
+    /// The vault root relative to the work tree with `/` separators, without a
+    /// trailing slash. Empty when the vault is the work-tree root.
+    pub vault_prefix: String,
+}
+
+impl GitRepositoryLayout {
+    #[must_use]
+    pub fn is_nested(&self) -> bool {
+        !self.vault_prefix.is_empty()
+    }
+
+    /// Converts a vault-relative path into a work-tree-relative path.
+    #[must_use]
+    pub fn repository_path(&self, vault_path: &str) -> String {
+        if self.vault_prefix.is_empty() {
+            vault_path.to_string()
+        } else {
+            format!("{}/{vault_path}", self.vault_prefix)
+        }
+    }
+}
+
+/// Describes the Git work tree containing `vault_root`, or `None` when the
+/// vault is not inside a Git work tree.
+#[must_use]
+pub fn git_repository_layout(vault_root: &Path) -> Option<GitRepositoryLayout> {
+    let stdout = run_git_capture(vault_root, |command| {
+        command.args(["rev-parse", "--show-toplevel", "--show-prefix"]);
+    })
+    .ok()?;
+    let mut lines = stdout.lines();
+    let work_tree = PathBuf::from(lines.next()?.trim());
+    let vault_prefix = normalize_git_path(lines.next().unwrap_or_default().trim())
+        .trim_end_matches('/')
+        .to_string();
+    Some(GitRepositoryLayout {
+        work_tree,
+        vault_prefix,
+    })
+}
+
 #[must_use]
 pub fn is_git_repo(vault_root: &Path) -> bool {
     Command::new("git")
@@ -1007,6 +1053,69 @@ mod tests {
         })
         .expect("sibling status should load");
         assert!(!sibling_status.trim().is_empty());
+    }
+
+    #[test]
+    fn repository_layout_reports_the_vault_prefix() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        let vault_root = temp_dir.path().join("site/docs");
+        fs::create_dir_all(&vault_root).expect("vault should create");
+
+        let nested = git_repository_layout(&vault_root).expect("nested layout");
+        assert_eq!(nested.vault_prefix, "site/docs");
+        assert!(nested.is_nested());
+        assert_eq!(nested.repository_path("a/b.md"), "site/docs/a/b.md");
+        assert_eq!(
+            fs::canonicalize(&nested.work_tree).expect("work tree"),
+            fs::canonicalize(temp_dir.path()).expect("temp dir")
+        );
+
+        let root = git_repository_layout(temp_dir.path()).expect("root layout");
+        assert_eq!(root.vault_prefix, "");
+        assert!(!root.is_nested());
+        assert_eq!(root.repository_path("a.md"), "a.md");
+    }
+
+    #[test]
+    fn nested_vault_status_log_and_commit_stay_vault_relative() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("docs");
+        fs::create_dir_all(vault_root.join("guide")).expect("vault should create");
+        init_git_repo(temp_dir.path());
+        fs::write(vault_root.join("index.md"), "home\n").expect("home");
+        fs::write(temp_dir.path().join("README.md"), "readme\n").expect("readme");
+        commit_all(temp_dir.path(), "Initial");
+        fs::write(temp_dir.path().join("README.md"), "readme changed\n").expect("readme");
+        commit_all(temp_dir.path(), "Outside only");
+
+        fs::write(vault_root.join("index.md"), "home changed\n").expect("home");
+        fs::write(vault_root.join("guide/setup.md"), "setup\n").expect("setup");
+        fs::write(temp_dir.path().join("main.rs"), "fn main() {}\n").expect("code");
+
+        let status = git_status(&vault_root).expect("status");
+        assert_eq!(status.unstaged, vec!["index.md".to_string()]);
+        assert_eq!(status.untracked, vec!["guide/setup.md".to_string()]);
+
+        let history = git_recent_log(&vault_root, 10).expect("log");
+        assert_eq!(
+            history
+                .iter()
+                .map(|entry| entry.summary.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Initial"]
+        );
+
+        let report = git_commit(&vault_root, "Docs").expect("commit");
+        assert_eq!(
+            report.files,
+            vec!["guide/setup.md".to_string(), "index.md".to_string()]
+        );
+        let outside = run_git_capture(temp_dir.path(), |command| {
+            command.args(["status", "--short", "--", "main.rs"]);
+        })
+        .expect("outside status");
+        assert!(outside.starts_with("??"), "outside file stays untracked");
     }
 
     #[test]

@@ -1,0 +1,2 @@
+# Product names that clippy::doc_markdown should not require in backticks.
+doc-valid-idents = ["MkDocs", ".."]

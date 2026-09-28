@@ -6,8 +6,8 @@ use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
 use serde::{Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::OpenOptions;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vulcan_core::{
     load_vault_config, parse_document, LinkResolutionProblem, ResolverDocument, ResolverIndex,
@@ -930,7 +930,7 @@ fn doctor_journal(
     state_store: Option<&SyncStateStore>,
     report: &mut SyncDoctorReport,
 ) {
-    let work_tree = match std::fs::canonicalize(paths.vault_root()) {
+    let work_tree = match crate::sync_state::sync_work_tree(paths.vault_root()) {
         Ok(path) => path,
         Err(error) => {
             doctor_check(
@@ -1262,9 +1262,13 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
     let started = Instant::now();
     let subprocesses_before = engine.subprocess_count();
     check_sync_start(cancellation)?;
-    // Key durable state on the discovered root, while retaining failed invocation paths.
-    let resolved_paths = resolved_repository_paths(engine, paths);
-    let paths = &resolved_paths;
+    // Sync replicates the whole enclosing work tree, so durable state is keyed
+    // on the discovered repository root while vault configuration and the
+    // vault write lock come from the vault itself, which may be nested below
+    // that root (for example an MkDocs `docs/` vault).
+    let work_tree = discovered_work_tree(engine, paths);
+    let vault_paths = sync_vault_paths(paths, &work_tree);
+    let paths = &vault_paths;
     let options = configured_git_sync_options_for_profile(paths, options, profile)?;
     let branch_guard = if unattended && profile == SyncContentProfile::FilesOnly {
         validate_unattended_files_only_repository(engine, paths)?
@@ -1272,7 +1276,7 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
         None
     };
     let mut journal = SyncJournal::preparing(
-        paths.vault_root(),
+        &work_tree,
         options.remote.to_string(),
         options.live_ref.to_string(),
     )?;
@@ -1673,14 +1677,30 @@ fn check_sync_start(cancellation: &SyncCancellationToken) -> Result<(), AppError
     }
 }
 
-/// Resolves the vault paths anchored at the discovered repository root, or
-/// the invocation path when discovery cannot complete.
-fn resolved_repository_paths(engine: &dyn GitEngine, paths: &VaultPaths) -> VaultPaths {
+/// Resolves the discovered repository work-tree root, or the invocation path
+/// when discovery cannot complete so the retained error journal still names it.
+fn discovered_work_tree(engine: &dyn GitEngine, paths: &VaultPaths) -> PathBuf {
     engine
         .discover_repository(paths.vault_root())
         .ok()
-        .and_then(|repository| repository.work_tree.as_deref().map(VaultPaths::new))
-        .unwrap_or_else(|| paths.clone())
+        .and_then(|repository| repository.work_tree)
+        .unwrap_or_else(|| paths.vault_root().to_path_buf())
+}
+
+/// Chooses the vault whose configuration and write lock govern a sync
+/// started at `paths`: the invocation directory when it is an initialized
+/// vault, otherwise the nearest initialized vault between it and the work-tree
+/// root, otherwise the work-tree root itself.
+fn sync_vault_paths(paths: &VaultPaths, work_tree: &Path) -> VaultPaths {
+    if paths.vulcan_dir().is_dir() {
+        return paths.clone();
+    }
+    let start = fs::canonicalize(paths.vault_root()).unwrap_or_else(|_| paths.vault_root().into());
+    start
+        .ancestors()
+        .take_while(|directory| directory.starts_with(work_tree))
+        .find(|directory| directory.join(vulcan_core::paths::VULCAN_DIR_NAME).is_dir())
+        .map_or_else(|| VaultPaths::new(work_tree), VaultPaths::new)
 }
 
 /// Applies the shared vault merge policy and device-local automation ceiling.
@@ -2215,6 +2235,7 @@ fn resolve_document_links(
                 problem: match problem {
                     LinkResolutionProblem::Unresolved => "unresolved",
                     LinkResolutionProblem::Ambiguous(_) => "ambiguous",
+                    LinkResolutionProblem::OutsideVault => "outside_vault",
                 },
             });
         }
@@ -2247,6 +2268,7 @@ fn resolve_canvas_links(
             problem: match problem {
                 LinkResolutionProblem::Unresolved => "unresolved",
                 LinkResolutionProblem::Ambiguous(_) => "ambiguous",
+                LinkResolutionProblem::OutsideVault => "outside_vault",
             },
         });
     }
@@ -2622,6 +2644,73 @@ mod tests {
         );
         drop(held);
         worker.join().expect("sync thread").expect("sync result");
+    }
+
+    #[test]
+    fn nested_vault_sync_uses_vault_lock_and_cache_with_repository_state() {
+        let fixture = structured_sync_fixture(&[
+            ("docs/index.md", "# Home\n"),
+            ("src/main.rs", "fn main() {}\n"),
+        ]);
+        let expected_key = crate::sync_state::repository_state_key(
+            &fs::canonicalize(&fixture.reader).expect("canonical reader"),
+        );
+        let reader_docs = VaultPaths::new(fixture.reader.join("docs"));
+        initialize_vulcan_dir(&reader_docs).expect("initialize nested vault");
+        vulcan_core::scan_vault(&reader_docs, vulcan_core::ScanMode::Full)
+            .expect("initial nested vault scan");
+
+        fs::write(fixture.writer.join("docs/index.md"), "# Home\n\nRemote.\n")
+            .expect("remote note edit");
+        fs::write(
+            fixture.writer.join("src/main.rs"),
+            "fn main() { todo!() }\n",
+        )
+        .expect("remote code edit");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer publish");
+
+        // The nested vault's own write lock serializes sync with vault writers.
+        let held = vulcan_core::write_lock::acquire_write_lock(&reader_docs).expect("vault lock");
+        let store = fixture.store.clone();
+        let worker_paths = reader_docs.clone();
+        let worker = std::thread::spawn(move || {
+            sync_git_vault_with_state_store(&worker_paths, &GitSyncOptions::default(), &store)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !worker.is_finished(),
+            "nested vault sync must wait for the vault write lock"
+        );
+        drop(held);
+        let report = worker.join().expect("sync thread").expect("nested sync");
+
+        assert_eq!(report.state.repository_key, expected_key);
+        // Conflict, proposal, and doctor workflows key state the same way.
+        assert_eq!(
+            crate::sync_state::repository_state_key(
+                &crate::sync_state::sync_work_tree(reader_docs.vault_root()).expect("work tree")
+            ),
+            expected_key
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("src/main.rs")).expect("code"),
+            "fn main() { todo!() }\n",
+            "sync replicates the whole repository work tree"
+        );
+        let refreshed = report.cache_refresh.expect("nested vault cache refresh");
+        assert_eq!(refreshed.updated, 1);
+        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(
+            &reader_docs,
+            &fixture.store,
+        )
+        .expect("conflict listing from the nested vault");
+        assert_eq!(listed.count, 0);
+        assert!(!fixture.reader.join(".vulcan").exists());
     }
 
     #[test]

@@ -152,7 +152,7 @@ fn install_companion(
         }
         None => context
             .registry
-            .find_by_path(&cli.vault)
+            .find_by_path(&cli.vault_root()?)
             .map_err(CliError::operation)?,
     };
     let config = context.registry.load().map_err(CliError::operation)?;

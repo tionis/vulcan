@@ -43,6 +43,16 @@ pub struct VaultStatusReport {
     pub git_staged: usize,
     pub git_unstaged: usize,
     pub git_untracked: usize,
+    /// Enclosing Git work tree, reported when the vault is nested below it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_repository_root: Option<String>,
+    /// Vault root relative to `git_repository_root`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_vault_prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mkdocs_config: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layout_hints: Vec<String>,
     pub graph_confidence: Option<GraphConfidenceBreakdown>,
 }
 
@@ -361,7 +371,21 @@ pub fn build_vault_status_report(paths: &VaultPaths) -> Result<VaultStatusReport
             (None, false, 0, 0, 0)
         };
 
+    let layout = crate::vault_layout::inspect_vault_layout(paths);
+    let nested_repository = layout
+        .repository
+        .as_ref()
+        .filter(|repository| repository.is_nested());
+
     Ok(VaultStatusReport {
+        git_repository_root: nested_repository
+            .map(|repository| repository.work_tree.display().to_string()),
+        git_vault_prefix: nested_repository.map(|repository| repository.vault_prefix.clone()),
+        mkdocs_config: layout
+            .mkdocs
+            .as_ref()
+            .map(|mkdocs| mkdocs.config_file.display().to_string()),
+        layout_hints: layout.hints,
         vault_root: paths.vault_root().display().to_string(),
         note_count: cache.notes,
         attachment_count: cache.attachments,

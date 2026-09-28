@@ -46,8 +46,22 @@ pub(crate) fn print_status_report(
                     format!(" {}", palette.green("(clean)"))
                 };
                 println!("Git:        {branch}{dirty_flag}");
+                if let (Some(root), Some(prefix)) =
+                    (&report.git_repository_root, &report.git_vault_prefix)
+                {
+                    println!(
+                        "Repository: {root} {}",
+                        palette.dim(&format!("(vault at {prefix}/; git counts are vault-only)"))
+                    );
+                }
             } else {
                 println!("Git:        {}", palette.dim("not a git repository"));
+            }
+            if let Some(config) = &report.mkdocs_config {
+                println!("MkDocs:     {config}");
+            }
+            for hint in &report.layout_hints {
+                println!("{} {hint}", palette.yellow("hint:"));
             }
             Ok(())
         }

@@ -364,6 +364,17 @@ fn parse_device_identity(path: &Path, source: &[u8]) -> Result<GitSyncDeviceId, 
     GitSyncDeviceId::parse(identity.device_id).map_err(AppError::operation)
 }
 
+/// Canonical Git work-tree root that keys durable sync state for a vault.
+///
+/// Sync replicates the whole enclosing work tree, so a vault nested below the
+/// repository root (for example an MkDocs `docs/` vault) shares the
+/// repository's journal, conflicts, and proposals. Vaults outside Git keep
+/// their own canonical root.
+pub fn sync_work_tree(vault_root: &Path) -> Result<PathBuf, AppError> {
+    let vault = fs::canonicalize(vault_root).map_err(AppError::operation)?;
+    Ok(vulcan_core::vault_discovery::enclosing_git_work_tree(&vault).unwrap_or(vault))
+}
+
 #[must_use]
 pub fn repository_state_key(work_tree: &Path) -> String {
     let normalized = work_tree.to_string_lossy();
