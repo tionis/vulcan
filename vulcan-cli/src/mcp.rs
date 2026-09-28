@@ -44,11 +44,13 @@ use vulcan_app::mcp_completion;
 use vulcan_app::mcp_config;
 use vulcan_app::mcp_custom;
 #[cfg(feature = "oauth")]
+use vulcan_app::mcp_dispatch::request_is_read_only;
+#[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
-    dispatch_protocol_method, jsonrpc_error, process_http_request, process_stdio_request,
-    request_id, timeout_http_result, timeout_response_for_request, McpHttpProcessResult,
-    McpMethodHandler, McpProtocolMethods,
+    acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
+    process_http_request, process_stdio_request, request_id, timeout_http_result,
+    timeout_response_for_request, McpHttpProcessResult, McpMethodHandler, McpProtocolMethods,
 };
 use vulcan_app::mcp_graph;
 use vulcan_app::mcp_notes;
@@ -511,37 +513,10 @@ fn attenuate_mcp_core_profile(core: &mut McpServerCore) -> Result<(), String> {
 
 #[cfg(feature = "oauth")]
 fn mcp_scheduled_operation(payload: &Value) -> ScheduledOperation {
-    if mcp_request_is_read_only(payload) {
+    if request_is_read_only(payload) {
         ScheduledOperation::Read
     } else {
         ScheduledOperation::Mutation
-    }
-}
-
-fn mcp_request_is_read_only(payload: &Value) -> bool {
-    if payload.get("method").and_then(Value::as_str) != Some("tools/call") {
-        return true;
-    }
-    let Some(name) = payload
-        .get("params")
-        .and_then(|params| params.get("name"))
-        .and_then(Value::as_str)
-    else {
-        return false;
-    };
-    if name == "graph_communities" {
-        return payload
-            .get("params")
-            .and_then(|params| params.get("arguments"))
-            .and_then(|arguments| arguments.get("dry_run"))
-            .and_then(Value::as_bool)
-            == Some(true);
-    }
-    if tool_by_name(name).is_some_and(|tool| tool.annotations.read_only_hint) {
-        true
-    } else {
-        // Custom tools and unknown aliases may mutate; never infer read-only from absence.
-        false
     }
 }
 
@@ -2158,7 +2133,7 @@ impl McpServerCore {
     }
 
     fn process_request(&mut self, request: Value) -> Vec<Value> {
-        let _read_guard = match self.ordinary_write_gate(&request) {
+        let _read_guard = match acquire_request_ordinary_write_gate(&self.paths, &request) {
             Ok(guard) => guard,
             Err(message) => {
                 return request_id(&request)
@@ -2170,7 +2145,7 @@ impl McpServerCore {
     }
 
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
-        let _read_guard = match self.ordinary_write_gate(request) {
+        let _read_guard = match acquire_request_ordinary_write_gate(&self.paths, request) {
             Ok(guard) => guard,
             Err(message) => {
                 return if let Some(id) = request_id(request) {
@@ -2186,20 +2161,6 @@ impl McpServerCore {
             }
         };
         process_http_request(self, request)
-    }
-
-    fn ordinary_write_gate(
-        &self,
-        request: &Value,
-    ) -> Result<Option<vulcan_core::write_lock::ReadLockGuard>, String> {
-        if mcp_request_is_read_only(request) {
-            vulcan_core::ordinary_write::acquire_consistent_ordinary_read(&self.paths)
-                .map_err(|error| error.to_string())
-        } else {
-            vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(&self.paths)
-                .map_err(|error| error.to_string())?;
-            Ok(None)
-        }
     }
 
     #[allow(clippy::too_many_lines)] // Registration must precede the worker, and all timeout branches share its ID.

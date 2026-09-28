@@ -5,7 +5,9 @@
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use std::time::Duration;
+use vulcan_core::{write_lock::ReadLockGuard, VaultPaths};
 
+use crate::mcp_catalog::tool_by_name;
 use crate::mcp_protocol::{
     McpCompletionParams, McpListParams, McpMethodError, McpMethodOutcome, McpPromptGetParams,
     McpResourceReadParams, McpToolCallParams, MCP_PAGE_SIZE,
@@ -18,6 +20,47 @@ pub trait McpMethodHandler {
         params: Option<&Value>,
     ) -> Result<McpMethodOutcome, McpMethodError>;
     fn list_changed_notifications(&mut self) -> Vec<Value>;
+}
+
+/// Classify requests conservatively for scheduling and the canonical read barrier.
+/// Unknown and custom tool calls may write even when their names look read-only.
+pub fn request_is_read_only(payload: &Value) -> bool {
+    if payload.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return true;
+    }
+    let Some(name) = payload
+        .get("params")
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    if name == "graph_communities" {
+        return payload
+            .get("params")
+            .and_then(|params| params.get("arguments"))
+            .and_then(|arguments| arguments.get("dry_run"))
+            .and_then(Value::as_bool)
+            == Some(true);
+    }
+    tool_by_name(name).is_some_and(|tool| tool.annotations.read_only_hint)
+}
+
+/// Refuse pending multi-file ordinary writes before dispatch. A read holds the
+/// shared vault lock through response construction; mutations fail closed and
+/// acquire their write lock in the target application workflow.
+pub fn acquire_request_ordinary_write_gate(
+    paths: &VaultPaths,
+    payload: &Value,
+) -> Result<Option<ReadLockGuard>, String> {
+    if request_is_read_only(payload) {
+        vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+            .map_err(|error| error.to_string())
+    } else {
+        vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
+            .map_err(|error| error.to_string())?;
+        Ok(None)
+    }
 }
 
 /// Vault-specific operations needed by the shared MCP method router.
@@ -418,6 +461,26 @@ fn request_method(request: &Value) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn request_classification_is_conservative_for_unknown_and_effectful_tools() {
+        let call = |name: &str, arguments: Value| json!({"method": "tools/call", "params": {"name": name, "arguments": arguments}});
+        assert!(request_is_read_only(&json!({"method": "tools/list"})));
+        assert!(request_is_read_only(&call("note_get", json!({}))));
+        assert!(request_is_read_only(&call("web_fetch", json!({}))));
+        assert!(!request_is_read_only(&call("note_create", json!({}))));
+        assert!(!request_is_read_only(&call("custom_tool", json!({}))));
+        assert!(!request_is_read_only(&call("graph_communities", json!({}))));
+        assert!(request_is_read_only(&call(
+            "graph_communities",
+            json!({"dry_run": true})
+        )));
+        assert!(!request_is_read_only(&call(
+            "graph_communities",
+            json!({"dry_run": "true"})
+        )));
+        assert!(!request_is_read_only(&json!({"method": "tools/call"})));
+    }
 
     struct ProtocolHandler;
 
