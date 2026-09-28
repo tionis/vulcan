@@ -1139,6 +1139,10 @@ Named external-content topology, authority, conflict, limit, and scheduling poli
   Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
   Preferred command: `vulcan config set`
   Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.owner_device` — type: `string`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
 - `integrations.routes.<name>.profile` — type: `string`; target: `shared`
   Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
   Preferred command: `vulcan config set`

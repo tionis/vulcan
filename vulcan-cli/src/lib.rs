@@ -500,7 +500,7 @@ use vulcan_app::export::{
     MarkdownExportSummary,
 };
 #[cfg(feature = "web")]
-use vulcan_app::integrations::begin_route_run;
+use vulcan_app::integrations::{begin_route_run, ensure_route_owner};
 use vulcan_app::integrations::{
     list_routes as list_integration_routes, load_route_runtime_state, route as integration_route,
     route_is_due, validate_routes as validate_integration_routes, RouteDiagnosticSeverity,
@@ -2567,6 +2567,9 @@ fn run_configured_integration_route(
         return Err(CliError::operation(format!(
             "integration route `{name}` is disabled"
         )));
+    }
+    if !dry_run {
+        ensure_route_owner(name, route).map_err(CliError::operation)?;
     }
     let run_lock = (!dry_run)
         .then(|| begin_route_run(paths, name, false))

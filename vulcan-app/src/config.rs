@@ -1283,6 +1283,7 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         ("integrations.routes.<name>.missing_archive", None),
         ("integrations.routes.<name>.stale_attachment_archive", None),
         ("integrations.routes.<name>.schedule", None),
+        ("integrations.routes.<name>.owner_device", None),
     ] {
         push(
             key,

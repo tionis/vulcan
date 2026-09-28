@@ -2247,6 +2247,10 @@ pub struct IntegrationRouteConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub schedule: Option<String>,
+    /// Device ID allowed to apply this route. Route mappings and pending creates are
+    /// device-local, so two devices applying one shared route would publish duplicates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_device: Option<String>,
 }
 
 impl Default for IntegrationRouteConfig {
@@ -2273,6 +2277,7 @@ impl Default for IntegrationRouteConfig {
             max_total_attachment_bytes: None,
             enabled: true,
             schedule: None,
+            owner_device: None,
         }
     }
 }
