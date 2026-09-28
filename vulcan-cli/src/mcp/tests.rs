@@ -3642,6 +3642,41 @@ fn mcp_http_broadcast_drops_a_lagging_subscriber_without_blocking_another() {
 
 #[cfg(feature = "oauth")]
 #[test]
+fn malformed_initialize_requests_do_not_admit_http_sessions() {
+    let temporary = tempfile::tempdir().expect("temporary vault");
+    let paths = VaultPaths::new(temporary.path());
+    let context = dcr_test_context(&paths);
+    let request = McpHttpRequest {
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query: String::new(),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
+    };
+    let authority = McpSessionAuthority::direct(
+        context.instance_id,
+        "credential",
+        None,
+        None,
+        Some("readonly".to_string()),
+        vec!["notes-read".to_string()],
+        Vec::new(),
+    );
+    for payload in [
+        serde_json::json!({"jsonrpc":"2.0","method":"initialize"}),
+        serde_json::json!({"jsonrpc":"2.0","id":null,"method":"initialize"}),
+        serde_json::json!({"jsonrpc":"2.0","id":true,"method":"initialize"}),
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","error":{}}),
+    ] {
+        let response = resolve_mcp_http_session(&context, &request, &payload, &authority)
+            .expect_err("malformed initialize should be rejected");
+        assert_eq!(response.status, 400);
+        assert_eq!(context.sessions.len(), 0);
+    }
+}
+
+#[cfg(feature = "oauth")]
+#[test]
 fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());

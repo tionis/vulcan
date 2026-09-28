@@ -16287,6 +16287,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("reconnect and relist the catalogs"));
     assert!(mcp_skill.contains("Revoking a connection grant closes its existing SSE streams"));
     assert!(mcp_skill.contains("An MCP session expires after 30 minutes"));
+    assert!(mcp_skill.contains("Send HTTP `initialize` as a JSON-RPC request"));
     assert!(mcp_skill.contains("remote set <name> --add-wiki <id> --dry-run"));
     assert!(mcp_skill.contains("remote set <name> --remove-wiki <id>"));
     assert!(mcp_skill.contains("vulcan mcp connections list|show|revoke"));
@@ -29870,6 +29871,32 @@ fn mcp_server_negotiates_protocol_and_advertises_native_capabilities() {
         trailing.is_empty(),
         "initialized notification should not emit a response"
     );
+}
+
+#[test]
+fn mcp_http_initialize_requires_a_request_id_without_consuming_a_session() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let session = McpHttpSession::start(&vault_root, "/streamable-mcp", None, &[]);
+    for payload in [
+        serde_json::json!({"jsonrpc":"2.0","method":"initialize"}),
+        serde_json::json!({"jsonrpc":"2.0","id":null,"method":"initialize"}),
+        serde_json::json!({"jsonrpc":"2.0","id":true,"method":"initialize"}),
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","result":{}}),
+    ] {
+        let rejected = session.post(&payload, None);
+        assert_eq!(rejected.status_line, "HTTP/1.1 400 Bad Request");
+        assert_eq!(rejected.json_body()["error"]["code"], -32600);
+        assert!(!rejected.headers.contains_key("mcp-session-id"));
+    }
+    let valid = session.post(
+        &serde_json::json!({"jsonrpc":"2.0","id":2,"method":"initialize"}),
+        None,
+    );
+    assert_eq!(valid.status_line, "HTTP/1.1 200 OK");
+    assert!(valid.headers.contains_key("mcp-session-id"));
 }
 
 #[test]

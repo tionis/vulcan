@@ -450,6 +450,32 @@ pub fn request_id(request: &Value) -> Option<Value> {
         .cloned()
 }
 
+/// Decide whether an HTTP request may allocate a fresh MCP session. Ordinary
+/// notifications do not need an ID, but `initialize` must be a request with a
+/// usable JSON-RPC ID; otherwise it could consume a session slot invisibly.
+pub fn http_initialize_request(payload: &Value) -> Result<bool, Value> {
+    let Some(object) = payload.as_object() else {
+        return Ok(false);
+    };
+    if object.get("method").and_then(Value::as_str) != Some("initialize") {
+        return Ok(false);
+    }
+    if object.contains_key("result")
+        || object.contains_key("error")
+        || object
+            .get("id")
+            .is_none_or(|id| !matches!(id, Value::String(_) | Value::Number(_)))
+    {
+        return Err(jsonrpc_error(
+            Value::Null,
+            -32600,
+            "MCP initialize requires a string or number request ID".to_string(),
+            None,
+        ));
+    }
+    Ok(true)
+}
+
 fn request_method(request: &Value) -> Option<&str> {
     request
         .as_object()
@@ -461,6 +487,33 @@ fn request_method(request: &Value) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn http_initialize_requires_a_request_id_before_session_admission() {
+        assert_eq!(
+            http_initialize_request(&json!({"jsonrpc":"2.0","id":1,"method":"initialize"})),
+            Ok(true)
+        );
+        assert_eq!(
+            http_initialize_request(&json!({"jsonrpc":"2.0","id":"start","method":"initialize"})),
+            Ok(true)
+        );
+        assert_eq!(
+            http_initialize_request(&json!({"jsonrpc":"2.0","method":"notifications/initialized"})),
+            Ok(false)
+        );
+        for malformed in [
+            json!({"jsonrpc":"2.0","method":"initialize"}),
+            json!({"jsonrpc":"2.0","id":null,"method":"initialize"}),
+            json!({"jsonrpc":"2.0","id":true,"method":"initialize"}),
+            json!({"jsonrpc":"2.0","id":{},"method":"initialize"}),
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","result":{}}),
+        ] {
+            let error = http_initialize_request(&malformed).expect_err("invalid initialize");
+            assert_eq!(error["error"]["code"], -32600);
+            assert!(error["id"].is_null());
+        }
+    }
 
     #[test]
     fn request_classification_is_conservative_for_unknown_and_effectful_tools() {

@@ -42,8 +42,8 @@ use vulcan_app::mcp_dispatch::request_is_read_only;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
-    acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
-    process_http_request, process_stdio_request, request_id, timeout_http_result,
+    acquire_request_ordinary_write_gate, dispatch_protocol_method, http_initialize_request,
+    jsonrpc_error, process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler, McpProtocolMethods,
 };
 use vulcan_app::mcp_help;
@@ -1642,11 +1642,12 @@ fn resolve_mcp_http_session(
     payload: &Value,
     authority: &McpSessionAuthority,
 ) -> Result<(String, Arc<McpHttpSession>, bool), McpHttpResponse> {
-    let is_initialize = payload
-        .as_object()
-        .and_then(|object| object.get("method"))
-        .and_then(Value::as_str)
-        == Some("initialize");
+    let is_initialize = http_initialize_request(payload).map_err(|error| McpHttpResponse {
+        status: 400,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&error).expect("JSON-RPC error should serialize"),
+        extra_headers: Vec::new(),
+    })?;
 
     if is_initialize {
         let session_id = Ulid::new().to_string();
