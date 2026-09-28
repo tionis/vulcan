@@ -633,6 +633,15 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &["notes-read", "tasks"],
         &["mcp:tools", "mcp:resources", "mcp:prompts"],
     );
+    let same_authority_peer_token = named_listener_test_token(
+        &paths,
+        &named,
+        &token_options,
+        "personal",
+        "readonly",
+        &["notes-read", "tasks"],
+        &["mcp:tools", "mcp:resources", "mcp:prompts"],
+    );
     let write_token = named_listener_test_token(
         &paths,
         &named,
@@ -742,6 +751,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{foreground_init}"
     );
     let foreground_session = named_listener_session_id(&foreground_init);
+    assert_named_listener_rejects_same_policy_other_grant(
+        address,
+        &token,
+        &same_authority_peer_token,
+        &foreground_session,
+    );
     let foreground_tools = named_listener_tools(address, "parity", &token, &foreground_session);
     assert!(
         foreground_tools.starts_with("HTTP/1.1 200"),
@@ -1134,6 +1149,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     let resident_init = named_listener_initialize(address, "parity", &token);
     assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
     let resident_session = named_listener_session_id(&resident_init);
+    assert_named_listener_rejects_same_policy_other_grant(
+        address,
+        &token,
+        &same_authority_peer_token,
+        &resident_session,
+    );
     let resident_tools = named_listener_tools(address, "parity", &token, &resident_session);
     assert!(
         resident_tools.starts_with("HTTP/1.1 200"),
@@ -1564,6 +1585,45 @@ fn named_listener_method_with_params(
         .read_to_string(&mut response)
         .expect("MCP method response");
     response
+}
+
+#[cfg(feature = "oauth")]
+fn assert_named_listener_rejects_same_policy_other_grant(
+    address: SocketAddr,
+    owner_token: &str,
+    peer_token: &str,
+    owner_session: &str,
+) {
+    let peer_session =
+        named_listener_session_id(&named_listener_initialize(address, "parity", peer_token));
+    assert!(
+        named_listener_tools(address, "parity", peer_token, &peer_session)
+            .starts_with("HTTP/1.1 200")
+    );
+    assert!(
+        named_listener_tools(address, "parity", peer_token, owner_session)
+            .starts_with("HTTP/1.1 403")
+    );
+    for method in ["GET", "DELETE"] {
+        let mut stream = TcpStream::connect(address).expect("named listener active");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("session response timeout");
+        write!(
+            stream,
+            "{method} /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {peer_token}\r\nMcp-Session-Id: {owner_session}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+        )
+        .expect("foreign session request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("foreign session response");
+        assert!(response.starts_with("HTTP/1.1 403"), "{method}: {response}");
+    }
+    assert!(
+        named_listener_tools(address, "parity", owner_token, owner_session)
+            .starts_with("HTTP/1.1 200")
+    );
 }
 
 #[cfg(feature = "oauth")]
