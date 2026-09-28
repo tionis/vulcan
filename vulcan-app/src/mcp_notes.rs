@@ -6,17 +6,21 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{load_vault_config, PermissionGuard, ProfilePermissionGuard, VaultPaths};
 
 use crate::commit::AutoCommitPolicy;
-use crate::mcp_access::{check_write_note_access, check_write_path_access};
+use crate::mcp_access::{
+    check_write_markdown_source_access, check_write_note_access, check_write_path_access,
+};
 use crate::mcp_assistant::json_value_to_string;
 use crate::mcp_protocol::{
-    McpMethodError, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteSetArgs,
+    McpMethodError, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNotePatchArgs,
+    McpNoteSetArgs,
 };
 use crate::notes::{
-    apply_note_append, apply_note_create, apply_note_delete, apply_note_set,
-    finish_note_append_report, finish_note_create_report, finish_note_set_report,
-    parse_note_frontmatter_bindings, NoteAppendCommandReport, NoteAppendMode, NoteAppendRequest,
-    NoteCreateCommandReport, NoteCreateRequest, NoteDeleteReport, NoteDeleteRequest,
-    NoteSetCommandReport, NoteSetRequest,
+    apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
+    finish_note_append_report, finish_note_create_report, finish_note_patch_report,
+    finish_note_set_report, parse_note_frontmatter_bindings, resolve_existing_markdown_target,
+    NoteAppendCommandReport, NoteAppendMode, NoteAppendRequest, NoteCreateCommandReport,
+    NoteCreateRequest, NoteDeleteReport, NoteDeleteRequest, NotePatchCommandReport,
+    NotePatchRequest, NoteSetCommandReport, NoteSetRequest,
 };
 use crate::periodic::resolve_periodic_target;
 use crate::scan::refresh_cache_incrementally;
@@ -159,6 +163,47 @@ fn template_var_bindings(vars: &BTreeMap<String, String>) -> Vec<String> {
     vars.iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect()
+}
+
+pub fn note_patch(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    profile_name: &str,
+    args: McpNotePatchArgs,
+) -> Result<NotePatchCommandReport, McpMethodError> {
+    check_write_markdown_source_access(paths, guard, &args.note)?;
+    let request = NotePatchRequest {
+        target: resolve_existing_markdown_target(paths, &args.note)
+            .map_err(|error| McpMethodError::tool(error.to_string()))?,
+        section_id: args.section_id,
+        heading: args.heading,
+        block_ref: args.block_ref,
+        lines: args.lines,
+        find: args.find,
+        replace: args.replace,
+        replace_all: args.all,
+        dry_run: args.dry_run,
+    };
+    let applied = apply_note_patch(paths, &request, Some(profile_name), true)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    if !applied.dry_run && !applied.changed_paths.is_empty() {
+        refresh_cache_incrementally(paths)
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    }
+    let report = finish_note_patch_report(paths, &request, applied, args.check)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    if !args.dry_run {
+        AutoCommitPolicy::for_mutation(paths, args.no_commit)
+            .commit(
+                paths,
+                "note-patch",
+                std::slice::from_ref(&report.path),
+                Some(profile_name),
+                true,
+            )
+            .map_err(|error| McpMethodError::tool(error.clone()))?;
+    }
+    Ok(report)
 }
 
 pub fn note_set(
@@ -316,6 +361,40 @@ mod tests {
         assert!(fs::read_to_string(temporary.path().join("Home.md"))
             .unwrap()
             .contains("Appended text"));
+    }
+
+    #[test]
+    fn patch_enforces_write_scope_and_keeps_dry_run_mutation_free() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        let target = temporary.path().join("Home.md");
+        fs::write(&target, "# Home\nold\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let readonly = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        );
+        let writable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
+        );
+        let args = |dry_run| {
+            serde_json::from_value::<McpNotePatchArgs>(json!({
+                "note": "Home.md", "find": "old", "replace": "new",
+                "dry_run": dry_run, "no_commit": true,
+            }))
+            .unwrap()
+        };
+        assert!(note_patch(&paths, &readonly, "readonly", args(false)).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "# Home\nold\n");
+        let preview = note_patch(&paths, &writable, "unrestricted", args(true)).unwrap();
+        assert!(preview.dry_run);
+        assert_eq!(preview.match_count, 1);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "# Home\nold\n");
+        let applied = note_patch(&paths, &writable, "unrestricted", args(false)).unwrap();
+        assert!(!applied.dry_run);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "# Home\nnew\n");
     }
 
     #[test]

@@ -33,14 +33,12 @@ use std::time::Instant;
 #[cfg(feature = "oauth")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
-use vulcan_app::commit::AutoCommitPolicy;
 use vulcan_app::execution::ExecutionCancellationToken;
 #[cfg(feature = "oauth")]
 use vulcan_app::execution::{
     ExecutionAuthority, ExecutionContext, ExecutionDeadline, ExecutionIdentity,
     ExecutionRetryClass, ExecutionVaultIdentity,
 };
-use vulcan_app::mcp_access;
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
 use vulcan_app::mcp_completion;
@@ -69,10 +67,6 @@ use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::mcp_scan;
 use vulcan_app::mcp_sync;
 use vulcan_app::mcp_tasks;
-use vulcan_app::notes::{
-    apply_note_patch, finish_note_patch_report, resolve_existing_markdown_target, NotePatchRequest,
-};
-use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor, CustomToolRunOptions};
 #[cfg(feature = "web")]
 use vulcan_app::web::{
@@ -2691,47 +2685,12 @@ impl McpServerCore {
             }
             McpToolId::NotePatch => {
                 let args: McpNotePatchArgs = parse_tool_arguments(arguments)?;
-                mcp_access::check_write_markdown_source_access(
+                let report = mcp_notes::note_patch(
                     &self.paths,
                     &self.guard,
-                    &args.note,
+                    self.selection.name.as_str(),
+                    args,
                 )?;
-                let request = NotePatchRequest {
-                    target: resolve_existing_markdown_target(&self.paths, &args.note)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?,
-                    section_id: args.section_id,
-                    heading: args.heading,
-                    block_ref: args.block_ref,
-                    lines: args.lines,
-                    find: args.find,
-                    replace: args.replace,
-                    replace_all: args.all,
-                    dry_run: args.dry_run,
-                };
-                let applied = apply_note_patch(
-                    &self.paths,
-                    &request,
-                    Some(self.selection.name.as_str()),
-                    true,
-                )
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if !applied.dry_run && !applied.changed_paths.is_empty() {
-                    refresh_cache_incrementally(&self.paths)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                }
-                let report = finish_note_patch_report(&self.paths, &request, applied, args.check)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if !args.dry_run {
-                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                        .commit(
-                            &self.paths,
-                            "note-patch",
-                            std::slice::from_ref(&report.path),
-                            Some(self.selection.name.as_str()),
-                            true,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.clone()))?;
-                }
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteInfo => {
