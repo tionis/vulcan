@@ -273,6 +273,7 @@ mod tests {
             id: WikiId::parse(id).unwrap(),
             registration_id: Ulid::new(),
             path: path.to_path_buf(),
+            work_tree: None,
             groups: vec![],
             git_dir: None,
             permissions_profile: None,

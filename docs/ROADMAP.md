@@ -8078,6 +8078,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 **Boundary:** The vault root stays the unit Vulcan indexes, resolves links against, and mutates. The enclosing repository and MkDocs project are context. Sync keeps its whole-work-tree replication semantics; a vault-scoped sync lane is a separate future decision because it needs its own live-ref namespace.
 
 - [x] Discover the vault when `--vault` is omitted: nearest enclosing `.vulcan/`, then an enclosing MkDocs `docs_dir` from the project root or inside the docs directory, then the current directory. Never cross a Git work-tree root or adopt the home directory from below it; accept `VULCAN_VAULT`; keep `init` from adopting ancestor vaults while following MkDocs `docs_dir`.
+- [x] Add a repository-root `.vulcan.toml` pointer (`vault = "docs"`) honored by discovery from anywhere in the repository, by `init`, and by explicitly named repository roots; write it with `vulcan init --repository-pointer` without ever overwriting a pointer that names another directory, and report invalid pointers.
+- [x] Resolve pointers in `vault add` and `vault clone`, register the vault directory as the wiki path, and record the enclosing Git work tree for detached-Git recovery and repository status.
 - [x] Read MkDocs `docs_dir` without deserializing the whole configuration, which commonly carries Python-specific YAML tags.
 - [x] Apply `.gitignore` rules between the enclosing work-tree root and a nested vault during scans, while still indexing a vault directory the repository ignores as a whole.
 - [x] Report relative links that climb above the vault root as `outside_vault` instead of clamping them to the vault root, where they could resolve to an unrelated note.

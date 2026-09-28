@@ -3738,6 +3738,11 @@ pub struct InitArgs {
         help = "Also scaffold an example Agent Skills-compatible skill command under .agents/skills/"
     )]
     pub example_tool: bool,
+    #[arg(
+        long,
+        help = "Write .vulcan.toml at the enclosing Git repository root so commands run anywhere in the repository use this nested vault"
+    )]
+    pub repository_pointer: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
@@ -8066,10 +8071,12 @@ pub struct Cli {
         global = true,
         env = "VULCAN_VAULT",
         help = "Vault root directory [default: discovered from the current directory]",
-        long_help = "Vault root directory. When omitted, Vulcan uses the nearest enclosing \
-directory that contains `.vulcan/` (without leaving the current Git work tree or climbing \
-into your home directory), then the `docs_dir` of an enclosing MkDocs project, then the \
-current directory. `vulcan init` does not adopt an ancestor vault."
+        long_help = "Vault root directory. A named directory holding a `.vulcan.toml` pointer \
+(`vault = \"docs\"`) resolves to the vault it names. When omitted, Vulcan walks up from the \
+current directory (without leaving the Git work tree or climbing into your home directory) to \
+the first `.vulcan.toml` pointer or `.vulcan/` directory, then tries the `docs_dir` of an \
+enclosing MkDocs project, then the current directory. `vulcan init` does not adopt an \
+ancestor `.vulcan/` vault."
     )]
     pub vault: Option<PathBuf>,
 

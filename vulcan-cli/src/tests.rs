@@ -4079,6 +4079,7 @@ fn parses_init_import_flags() {
             no_import: false,
             agent_files: false,
             example_tool: false,
+            repository_pointer: false,
         })
     );
 }
@@ -4094,6 +4095,7 @@ fn parses_init_agent_files_flag() {
             no_import: false,
             agent_files: true,
             example_tool: false,
+            repository_pointer: false,
         })
     );
 }
@@ -4110,6 +4112,24 @@ fn parses_init_agent_files_with_example_tool_flag() {
             no_import: false,
             agent_files: true,
             example_tool: true,
+            repository_pointer: false,
+        })
+    );
+}
+
+#[test]
+fn parses_init_repository_pointer_flag() {
+    let cli =
+        Cli::try_parse_from(["vulcan", "init", "--repository-pointer"]).expect("cli should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Init(InitArgs {
+            import: false,
+            no_import: false,
+            agent_files: false,
+            example_tool: false,
+            repository_pointer: true,
         })
     );
 }

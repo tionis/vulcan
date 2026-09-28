@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 37
+version: 38
 metadata:
   vulcan:
     managed: true
@@ -204,6 +204,12 @@ checked-out branch. It reads sync configuration and takes the write lock from th
 journal, conflicts, and proposals on the repository root, and refreshes the vault cache after
 applying changes. Before syncing a code repository, confirm that the user wants the whole work tree
 replicated; for vault-only history, use `vulcan git commit` and ordinary Git instead.
+
+Registration and cloning follow the repository's `.vulcan.toml` pointer: `vulcan vault add <id>
+<repo>` or `vulcan vault clone <url> <dir>` registers the pointed vault directory as the wiki
+`path` and records the repository root as `work_tree`. Commands then work from anywhere in the
+checkout. Use `vulcan init --repository-pointer` inside the vault to create the pointer and commit
+it with the repository. Never hand-edit a pointer to name a directory outside the repository.
 
 ## Branch lane
 

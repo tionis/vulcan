@@ -563,7 +563,9 @@ use vulcan_core::config::{
     ExportProfileConfig, ExportProfileFormat,
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
-use vulcan_core::vault_discovery::{discover_init_root, discover_vault_root, VaultRootDiscovery};
+use vulcan_core::vault_discovery::{
+    discover_init_root, discover_vault_root, resolve_named_vault, VaultRootDiscovery,
+};
 use vulcan_core::{
     bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
     doctor_fix, doctor_vault, evaluate_base_file, evaluate_base_file_with_filter,
@@ -4676,20 +4678,28 @@ fn extract_vault_root_from_args(args: &[OsString]) -> PathBuf {
         let rendered = args[index].to_string_lossy();
         if rendered == "--vault" {
             if let Some(path) = args.get(index + 1) {
-                return PathBuf::from(path);
+                return named_vault_root(PathBuf::from(path));
             }
             break;
         }
         if let Some(path) = rendered.strip_prefix("--vault=") {
-            return PathBuf::from(path);
+            return named_vault_root(PathBuf::from(path));
         }
         index += 1;
     }
     if let Some(path) = std::env::var_os("VULCAN_VAULT").filter(|path| !path.is_empty()) {
-        return PathBuf::from(path);
+        return named_vault_root(PathBuf::from(path));
     }
     let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    discover_vault_root(&current).root
+    // Alias expansion is best-effort; an invalid pointer is reported later by
+    // regular vault resolution.
+    discover_vault_root(&current).map_or(current, |discovery| discovery.root)
+}
+
+/// Best-effort pointer resolution for an explicitly named vault during alias
+/// expansion; regular vault resolution reports invalid pointers.
+fn named_vault_root(path: PathBuf) -> PathBuf {
+    resolve_named_vault(&path).map_or(path, |discovery| discovery.root)
 }
 
 fn split_alias_words(source: &str) -> Option<Vec<OsString>> {
@@ -10032,7 +10042,8 @@ impl Cli {
     /// `VULCAN_VAULT` value, otherwise discovery from the current directory.
     pub(crate) fn vault_discovery(&self) -> Result<VaultRootDiscovery, CliError> {
         if let Some(vault) = &self.vault {
-            return resolve_vault_root(vault).map(VaultRootDiscovery::explicit);
+            let vault = resolve_vault_root(vault)?;
+            return resolve_named_vault(&vault).map_err(CliError::operation);
         }
         let current = std::env::current_dir().map_err(|error| CliError::io(&error))?;
         let initializing = matches!(
@@ -10042,11 +10053,12 @@ impl Cli {
                     command: IndexCommand::Init(_)
                 }
         );
-        Ok(if initializing {
+        if initializing {
             discover_init_root(&current)
         } else {
             discover_vault_root(&current)
-        })
+        }
+        .map_err(CliError::operation)
     }
 
     pub(crate) fn vault_root(&self) -> Result<PathBuf, CliError> {

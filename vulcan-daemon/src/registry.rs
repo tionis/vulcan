@@ -54,7 +54,12 @@ impl Display for WikiId {
 pub struct WikiRegistration {
     pub id: WikiId,
     pub registration_id: Ulid,
+    /// The vault root: the unit Vulcan indexes and serves.
     pub path: PathBuf,
+    /// Enclosing Git work tree when the vault is nested below it (for example
+    /// an MkDocs `docs/` vault). Missing values mean the vault is the work tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_tree: Option<PathBuf>,
     /// Local knowledge-service profile. Missing values retain historical behavior.
     #[serde(default, skip_serializing_if = "ManagedDirectoryProfile::is_knowledge")]
     pub profile: ManagedDirectoryProfile,
@@ -149,6 +154,12 @@ impl ManagedDirectoryCapabilities {
 }
 
 impl WikiRegistration {
+    /// The Git work tree that synchronization and Git recovery operate on.
+    #[must_use]
+    pub fn work_tree(&self) -> &Path {
+        self.work_tree.as_deref().unwrap_or(&self.path)
+    }
+
     #[must_use]
     pub fn capabilities(&self) -> ManagedDirectoryCapabilities {
         ManagedDirectoryCapabilities::for_profile(
@@ -442,7 +453,7 @@ impl WikiRegistrationStatus {
             .git_dir
             .as_ref()
             .is_some_and(|path| path.is_dir())
-            || registration.path.join(".git").exists();
+            || registration.work_tree().join(".git").exists();
         Self {
             capabilities: (registration.profile == ManagedDirectoryProfile::FilesOnly)
                 .then(|| registration.capabilities()),
@@ -461,6 +472,7 @@ pub enum RegistryError {
     InvalidWikiId(String),
     InvalidGroup(String),
     InvalidDaemonSetting(String),
+    InvalidVaultPointer(String),
     MissingDirectory(PathBuf),
     DuplicateId(WikiId),
     DuplicatePath { id: WikiId, path: PathBuf },
@@ -494,6 +506,7 @@ impl Display for RegistryError {
             Self::InvalidDaemonSetting(detail) => {
                 write!(formatter, "invalid daemon setting: {detail}")
             }
+            Self::InvalidVaultPointer(detail) => formatter.write_str(detail),
             Self::MissingDirectory(path) => {
                 write!(formatter, "wiki directory does not exist: {}", path.display())
             }
@@ -630,7 +643,7 @@ impl WikiRegistry {
                         .to_string(),
                 ));
             }
-            let path = canonical_directory(&request.path)?;
+            let (path, work_tree) = resolve_registered_vault(&request.path)?;
             let git_dir = request
                 .git_dir
                 .as_deref()
@@ -664,6 +677,7 @@ impl WikiRegistry {
                 id: request.id.clone(),
                 registration_id: Ulid::new(),
                 path,
+                work_tree,
                 profile: request.profile.unwrap_or_default(),
                 profile_version: (request.profile.unwrap_or_default()
                     == ManagedDirectoryProfile::FilesOnly)
@@ -1404,6 +1418,23 @@ fn validate_environment_name(name: &str, label: &str) -> Result<(), RegistryErro
     }
 }
 
+/// Resolves the directory named at registration to the vault it holds and
+/// the enclosing Git work tree when that differs. A `.vulcan.toml` pointer in
+/// the named directory (a repository root) selects the vault it names; a
+/// named vault nested in a repository records the repository's work tree.
+fn resolve_registered_vault(named: &Path) -> Result<(PathBuf, Option<PathBuf>), RegistryError> {
+    let named = canonical_directory(named)?;
+    let resolved = vulcan_core::vault_discovery::resolve_named_vault(&named)
+        .map_err(|error| RegistryError::InvalidVaultPointer(error.to_string()))?;
+    let path = canonical_directory(&resolved.root)?;
+    let work_tree = if path == named {
+        vulcan_core::vault_discovery::enclosing_git_work_tree(&path).filter(|root| root != &path)
+    } else {
+        Some(named)
+    };
+    Ok((path, work_tree))
+}
+
 fn canonical_directory(path: &Path) -> Result<PathBuf, RegistryError> {
     let canonical = fs::canonicalize(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -1597,6 +1628,75 @@ mod tests {
         assert_eq!(removed.registration_id, personal.registration_id);
         assert_eq!(registry.load().expect("reload").vaults.len(), 1);
         assert!(first.is_dir(), "unregistering must preserve the worktree");
+    }
+
+    #[test]
+    fn registration_resolves_repository_pointers_and_records_the_work_tree() {
+        let temporary = tempdir().expect("temporary directory");
+        let repository = temporary.path().join("site");
+        fs::create_dir_all(repository.join("docs")).expect("docs directory");
+        fs::create_dir_all(repository.join(".git")).expect("git directory");
+        fs::write(repository.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        let canonical_repository = fs::canonicalize(&repository).expect("repository");
+
+        // Without a pointer, the named repository root is the vault.
+        let preview = registry
+            .add(&request("site", &repository), true)
+            .expect("preview root registration");
+        assert_eq!(preview.path, canonical_repository);
+        assert_eq!(preview.work_tree, None);
+
+        fs::write(
+            repository.join(vulcan_core::vault_discovery::VAULT_POINTER_FILE_NAME),
+            vulcan_core::vault_discovery::render_vault_pointer("docs"),
+        )
+        .expect("pointer");
+        let added = registry
+            .add(&request("site", &repository), false)
+            .expect("pointer registration");
+        assert_eq!(added.path, canonical_repository.join("docs"));
+        assert_eq!(
+            added.work_tree.as_deref(),
+            Some(canonical_repository.as_path())
+        );
+        assert_eq!(added.work_tree(), canonical_repository);
+        assert!(WikiRegistrationStatus::from_registration(&added).git_repository);
+
+        // Naming the nested vault directly resolves to the same registration.
+        let duplicate = registry
+            .add(&request("docs", &repository.join("docs")), true)
+            .expect_err("same vault");
+        assert!(matches!(duplicate, RegistryError::DuplicatePath { .. }));
+
+        fs::write(
+            repository.join(vulcan_core::vault_discovery::VAULT_POINTER_FILE_NAME),
+            "vault = \"../elsewhere\"\n",
+        )
+        .expect("invalid pointer");
+        let invalid = registry
+            .add(&request("broken", &repository), true)
+            .expect_err("invalid pointer");
+        assert!(matches!(invalid, RegistryError::InvalidVaultPointer(_)));
+    }
+
+    #[test]
+    fn nested_vault_registered_directly_records_the_enclosing_work_tree() {
+        let temporary = tempdir().expect("temporary directory");
+        let repository = temporary.path().join("code");
+        fs::create_dir_all(repository.join("notes")).expect("notes directory");
+        fs::write(repository.join(".git"), "gitdir: /elsewhere/code.git\n").expect("git file");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+
+        let added = registry
+            .add(&request("notes", &repository.join("notes")), false)
+            .expect("nested registration");
+
+        let canonical_repository = fs::canonicalize(&repository).expect("repository");
+        assert_eq!(added.path, canonical_repository.join("notes"));
+        assert_eq!(added.work_tree(), canonical_repository);
+        let reloaded = registry.load().expect("reload");
+        assert_eq!(reloaded.vaults[0].work_tree, added.work_tree);
     }
 
     #[test]

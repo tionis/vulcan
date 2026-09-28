@@ -13,8 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use vulcan_app::vault_layout::{inspect_vault_layout, VaultLayoutReport};
-use vulcan_core::vault_discovery::{VaultRootDiscovery, VaultRootSource};
+use vulcan_app::vault_layout::{
+    inspect_vault_layout, write_repository_pointer, RepositoryPointerReport,
+    RepositoryPointerStatus, VaultLayoutReport,
+};
+use vulcan_core::vault_discovery::{VaultRootDiscovery, VaultRootSource, VAULT_POINTER_FILE_NAME};
 use vulcan_core::{
     all_importers, annotate_import_conflicts, assistant_config_summary, assistant_prompts_root,
     assistant_skills_root, initialize_vault, list_assistant_prompts, list_assistant_skills,
@@ -311,6 +314,8 @@ pub(crate) struct InitReport {
     /// How the vault root was chosen when `--vault` was omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     discovered_from: Option<VaultRootSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository_pointer: Option<RepositoryPointerReport>,
     #[serde(skip_serializing_if = "VaultLayoutReport::is_empty")]
     layout: VaultLayoutReport,
 }
@@ -329,6 +334,11 @@ pub(crate) fn run_init_command(
     discovery: &VaultRootDiscovery,
 ) -> Result<InitReport, CliError> {
     let summary = initialize_vault(paths).map_err(CliError::operation)?;
+    let repository_pointer = args
+        .repository_pointer
+        .then(|| write_repository_pointer(paths, false))
+        .transpose()
+        .map_err(CliError::operation)?;
     let support_files = if args.agent_files {
         write_bundled_support_files(paths, false, &[], args.example_tool)?
     } else {
@@ -374,6 +384,7 @@ pub(crate) fn run_init_command(
         imported,
         discovered_from: (discovery.source != VaultRootSource::Explicit)
             .then_some(discovery.source),
+        repository_pointer,
         layout: inspect_vault_layout(paths),
     })
 }
@@ -424,6 +435,7 @@ pub(crate) fn print_init_summary(
         support_files: report.support_files.clone(),
         imported: normalized_imported,
         discovered_from: report.discovered_from,
+        repository_pointer: report.repository_pointer.clone(),
         layout: report.layout.clone(),
     };
 
@@ -492,7 +504,21 @@ pub(crate) fn print_agent_install_summary(
 }
 
 fn print_init_layout(report: &InitReport) {
+    if let Some(pointer) = &report.repository_pointer {
+        println!(
+            "Repository pointer {} ({}): vault = \"{}\"",
+            pointer.path.display(),
+            match pointer.status {
+                RepositoryPointerStatus::Created => "created",
+                RepositoryPointerStatus::Kept => "kept",
+            },
+            pointer.vault
+        );
+    }
     match (report.discovered_from, report.layout.mkdocs.as_ref()) {
+        (Some(VaultRootSource::Pointer), _) => {
+            println!("Using the vault named by the repository's {VAULT_POINTER_FILE_NAME}.");
+        }
         (Some(VaultRootSource::MkDocs), Some(mkdocs)) => println!(
             "Using the MkDocs docs_dir from {} as the vault root.",
             mkdocs.config_file.display()

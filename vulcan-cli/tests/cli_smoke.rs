@@ -1236,6 +1236,106 @@ fn vault_discovery_prefers_explicit_vaults_and_nearest_vulcan_directory() {
 }
 
 #[test]
+fn repository_pointer_is_written_by_init_and_followed_by_discovery_and_clone() {
+    let temp = TempDir::new().expect("temporary directory");
+    let source = temp.path().join("source");
+    fs::create_dir_all(source.join("handbook/guide")).expect("vault directory");
+    fs::create_dir_all(source.join("src")).expect("source directory");
+    init_git_repo(&source);
+    fs::write(source.join("handbook/index.md"), "# Handbook\n").expect("note");
+    fs::write(source.join("src/main.rs"), "fn main() {}\n").expect("code");
+
+    let init = parse_stdout_json(
+        &vulcan_in(&source.join("handbook"))
+            .args([
+                "--output",
+                "json",
+                "init",
+                "--no-import",
+                "--repository-pointer",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(init["repository_pointer"]["status"], "created");
+    assert_eq!(init["repository_pointer"]["vault"], "handbook");
+    assert_eq!(
+        fs::read_to_string(source.join(".vulcan.toml")).expect("pointer"),
+        "# Names this repository's Vulcan vault; commands run anywhere in the repository use it.\nvault = \"handbook\"\n"
+    );
+    commit_all(&source, "Initial handbook");
+
+    // Discovery follows the pointer from the root, unrelated folders, and
+    // an explicitly named repository root.
+    let handbook = fs::canonicalize(source.join("handbook")).expect("handbook");
+    for (directory, vault) in [
+        (source.clone(), None),
+        (source.join("src"), None),
+        (temp.path().to_path_buf(), Some(source.as_path())),
+    ] {
+        let mut command = vulcan_in(&directory);
+        if let Some(vault) = vault {
+            command.arg("--vault").arg(vault);
+        }
+        let status = parse_stdout_json(
+            &command
+                .args(["--output", "json", "status"])
+                .assert()
+                .success(),
+        );
+        assert_eq!(
+            fs::canonicalize(status["vault_root"].as_str().expect("root")).expect("root"),
+            handbook,
+            "from {}",
+            directory.display()
+        );
+        assert_eq!(status["git_vault_prefix"], "handbook");
+    }
+
+    // Cloning and registering the repository registers the pointed vault.
+    let config_home = temp.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home");
+    let clone = temp.path().join("clone");
+    let cloned = parse_stdout_json(
+        &cargo_vulcan_with_xdg_config(config_home.to_str().expect("config path"))
+            .env_remove("VULCAN_VAULT")
+            .args([
+                "--output",
+                "json",
+                "vault",
+                "clone",
+                source.to_str().expect("source path"),
+                clone.to_str().expect("clone path"),
+                "--id",
+                "handbook",
+            ])
+            .assert()
+            .success(),
+    );
+    let clone = fs::canonicalize(&clone).expect("clone");
+    assert_eq!(
+        cloned["wiki"]["path"],
+        clone.join("handbook").to_str().expect("utf-8")
+    );
+    assert_eq!(cloned["wiki"]["work_tree"], clone.to_str().expect("utf-8"));
+    let shown = parse_stdout_json(
+        &cargo_vulcan_with_xdg_config(config_home.to_str().expect("config path"))
+            .args(["--output", "json", "vault", "show", "handbook"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(shown["git_repository"], true);
+
+    // A broken pointer is reported rather than silently ignored.
+    fs::write(source.join(".vulcan.toml"), "vault = \"../outside\"\n").expect("pointer");
+    vulcan_in(&source.join("src"))
+        .args(["status"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid vault pointer"));
+}
+
+#[test]
 fn nested_vault_git_commands_stay_scoped_to_the_vault() {
     let temp = TempDir::new().expect("temporary directory");
     let site = mkdocs_site_fixture(temp.path());

@@ -2,18 +2,23 @@
 //!
 //! A vault is often one directory of a larger Git repository, for example the
 //! `docs/` directory of an MkDocs site. Discovery lets commands run from any
-//! directory inside such a vault (or from an MkDocs project root) without an
-//! explicit `--vault` flag while keeping the vault itself the unit that Vulcan
-//! indexes and mutates.
+//! directory inside such a repository without an explicit `--vault` flag while
+//! keeping the vault itself the unit that Vulcan indexes and mutates.
+//!
+//! A repository states where its vault lives with a `.vulcan.toml` pointer at
+//! its root (`vault = "docs"`). Without one, discovery falls back to the
+//! nearest `.vulcan/` directory and to an MkDocs project's `docs_dir`.
 //!
 //! Discovery is purely filesystem based. It never runs Git, never creates
 //! files, and never crosses a Git work-tree boundary or climbs into the user's
 //! home directory from below it.
 
+use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::paths::VULCAN_DIR_NAME;
 
@@ -21,6 +26,9 @@ use crate::paths::VULCAN_DIR_NAME;
 pub const MKDOCS_CONFIG_FILE_NAMES: [&str; 2] = ["mkdocs.yml", "mkdocs.yaml"];
 /// MkDocs' default documentation directory when `docs_dir` is not configured.
 pub const MKDOCS_DEFAULT_DOCS_DIR: &str = "docs";
+/// Pointer file naming the vault directory of the repository containing it.
+pub const VAULT_POINTER_FILE_NAME: &str = ".vulcan.toml";
+const MAX_POINTER_BYTES: u64 = 4096;
 
 /// How a vault root was chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -28,6 +36,9 @@ pub const MKDOCS_DEFAULT_DOCS_DIR: &str = "docs";
 pub enum VaultRootSource {
     /// The caller named the vault root explicitly.
     Explicit,
+    /// A `.vulcan.toml` pointer in an enclosing directory (or in the
+    /// explicitly named directory) names the vault.
+    Pointer,
     /// The nearest enclosing directory that contains `.vulcan/`.
     VulcanDirectory,
     /// The `docs_dir` of an enclosing MkDocs project.
@@ -45,23 +56,32 @@ pub struct VaultRootDiscovery {
     /// MkDocs configuration file that selected the root, when `source` is `mkdocs`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mkdocs_config: Option<PathBuf>,
+    /// Pointer file that selected the root, when `source` is `pointer`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pointer_file: Option<PathBuf>,
 }
 
 impl VaultRootDiscovery {
     #[must_use]
     pub fn explicit(root: impl Into<PathBuf>) -> Self {
+        Self::with_source(root.into(), VaultRootSource::Explicit)
+    }
+
+    fn with_source(root: PathBuf, source: VaultRootSource) -> Self {
         Self {
-            root: root.into(),
-            source: VaultRootSource::Explicit,
+            root,
+            source,
             mkdocs_config: None,
+            pointer_file: None,
         }
     }
 
-    fn working_directory(root: &Path) -> Self {
+    fn from_pointer(pointer: VaultPointer) -> Self {
         Self {
-            root: root.to_path_buf(),
-            source: VaultRootSource::WorkingDirectory,
+            root: pointer.vault_root,
+            source: VaultRootSource::Pointer,
             mkdocs_config: None,
+            pointer_file: Some(pointer.file),
         }
     }
 }
@@ -74,48 +94,183 @@ pub struct MkDocsProject {
     pub docs_dir: PathBuf,
 }
 
+/// A parsed `.vulcan.toml` pointer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VaultPointer {
+    /// The pointer file itself.
+    pub file: PathBuf,
+    /// The vault directory as written, relative to the pointer's directory.
+    pub vault: String,
+    /// The pointer's directory joined with `vault`.
+    pub vault_root: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VaultPointerFile {
+    vault: String,
+}
+
+/// A pointer file that cannot be honored. Discovery reports it instead of
+/// silently falling back to another vault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultPointerError {
+    pub file: PathBuf,
+    pub detail: String,
+}
+
+impl Display for VaultPointerError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid vault pointer {}: {}",
+            self.file.display(),
+            self.detail
+        )
+    }
+}
+
+impl Error for VaultPointerError {}
+
+/// Reads the `.vulcan.toml` pointer directly inside `directory`, if any.
+///
+/// The target must be a relative path of normal components that names an
+/// existing directory below `directory`.
+pub fn read_vault_pointer(directory: &Path) -> Result<Option<VaultPointer>, VaultPointerError> {
+    let file = directory.join(VAULT_POINTER_FILE_NAME);
+    let Ok(metadata) = fs::metadata(&file) else {
+        return Ok(None);
+    };
+    let error = |detail: String| VaultPointerError {
+        file: file.clone(),
+        detail,
+    };
+    if !metadata.is_file() {
+        return Err(error("expected a regular file".to_string()));
+    }
+    if metadata.len() > MAX_POINTER_BYTES {
+        return Err(error(format!("larger than {MAX_POINTER_BYTES} bytes")));
+    }
+    let source = fs::read_to_string(&file).map_err(|source| error(source.to_string()))?;
+    let parsed: VaultPointerFile =
+        toml::from_str(&source).map_err(|source| error(source.message().to_string()))?;
+    let vault = validate_pointer_target(&parsed.vault).map_err(error)?;
+    let vault_root = directory.join(&vault);
+    if !vault_root.is_dir() {
+        return Err(error(format!("`vault = \"{vault}\"` is not a directory")));
+    }
+    Ok(Some(VaultPointer {
+        file,
+        vault,
+        vault_root,
+    }))
+}
+
+/// Normalizes a pointer target to `/`-separated normal components.
+pub fn validate_pointer_target(target: &str) -> Result<String, String> {
+    let trimmed = target.trim().trim_end_matches('/');
+    let mut components = Vec::new();
+    for component in Path::new(trimmed).components() {
+        match component {
+            Component::Normal(part) => components.push(
+                part.to_str()
+                    .ok_or_else(|| "the vault path must be valid UTF-8".to_string())?
+                    .to_string(),
+            ),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "`vault = \"{target}\"` must be a relative path inside the pointer's directory"
+                ));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err("`vault` must name a subdirectory; omit the pointer for a root vault".into());
+    }
+    Ok(components.join("/"))
+}
+
+/// Renders pointer file contents for a vault at `vault` below the pointer.
+#[must_use]
+pub fn render_vault_pointer(vault: &str) -> String {
+    let escaped = vault.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "# Names this repository's Vulcan vault; commands run anywhere in the repository use it.\nvault = \"{escaped}\"\n"
+    )
+}
+
 /// Discovers the vault root for a command started in `start` (normally the
 /// current directory) without an explicit vault.
 ///
-/// Resolution order:
-/// 1. the nearest directory at or above `start` containing `.vulcan/`;
-/// 2. the `docs_dir` of the nearest enclosing MkDocs project, when `start` is
-///    the MkDocs project root or lies inside its `docs_dir`;
-/// 3. `start` itself.
+/// Walking up from `start`, the first directory that holds a `.vulcan.toml`
+/// pointer or a `.vulcan/` directory decides: a pointer names its vault
+/// (a pointer wins over `.vulcan/` in the same directory), and `.vulcan/`
+/// makes that directory the vault. Without either, the `docs_dir` of an
+/// enclosing MkDocs project is used when `start` is its project root or lies
+/// inside its `docs_dir`; otherwise `start` itself.
 ///
 /// The upward walk stops at the first Git work-tree root (inclusive) and never
 /// considers the user's home directory unless `start` is the home directory.
-#[must_use]
-pub fn discover_vault_root(start: &Path) -> VaultRootDiscovery {
+pub fn discover_vault_root(start: &Path) -> Result<VaultRootDiscovery, VaultPointerError> {
     discover_vault_root_with_home(start, home_dir().as_deref())
 }
 
 /// Chooses the root for `vulcan init` started in `start` without an explicit
-/// vault. Initialization never adopts an ancestor vault, but an MkDocs project
-/// root or a directory inside its `docs_dir` initializes the `docs_dir`.
-#[must_use]
-pub fn discover_init_root(start: &Path) -> VaultRootDiscovery {
+/// vault. Initialization never adopts an ancestor `.vulcan/` vault, but it
+/// follows an enclosing `.vulcan.toml` pointer and an MkDocs `docs_dir`.
+pub fn discover_init_root(start: &Path) -> Result<VaultRootDiscovery, VaultPointerError> {
     discover_init_root_with_home(start, home_dir().as_deref())
 }
 
-fn discover_vault_root_with_home(start: &Path, home: Option<&Path>) -> VaultRootDiscovery {
-    for directory in bounded_ancestors(start, home) {
-        if directory.join(VULCAN_DIR_NAME).is_dir() {
-            return VaultRootDiscovery {
-                root: directory.to_path_buf(),
-                source: if directory == start {
-                    VaultRootSource::WorkingDirectory
-                } else {
-                    VaultRootSource::VulcanDirectory
-                },
-                mkdocs_config: None,
-            };
+/// Resolves a directory that a caller named explicitly (`--vault`, `vault
+/// add`, a clone destination): an initialized vault stays as named, and a
+/// directory holding a `.vulcan.toml` pointer resolves to the vault it names.
+pub fn resolve_named_vault(path: &Path) -> Result<VaultRootDiscovery, VaultPointerError> {
+    if !path.join(VULCAN_DIR_NAME).is_dir() {
+        if let Some(pointer) = read_vault_pointer(path)? {
+            return Ok(VaultRootDiscovery::from_pointer(pointer));
         }
     }
-    discover_init_root_with_home(start, home)
+    Ok(VaultRootDiscovery::explicit(path))
 }
 
-fn discover_init_root_with_home(start: &Path, home: Option<&Path>) -> VaultRootDiscovery {
+fn discover_vault_root_with_home(
+    start: &Path,
+    home: Option<&Path>,
+) -> Result<VaultRootDiscovery, VaultPointerError> {
+    for directory in bounded_ancestors(start, home) {
+        if let Some(pointer) = read_vault_pointer(directory)? {
+            return Ok(VaultRootDiscovery::from_pointer(pointer));
+        }
+        if directory.join(VULCAN_DIR_NAME).is_dir() {
+            let source = if directory == start {
+                VaultRootSource::WorkingDirectory
+            } else {
+                VaultRootSource::VulcanDirectory
+            };
+            return Ok(VaultRootDiscovery::with_source(
+                directory.to_path_buf(),
+                source,
+            ));
+        }
+    }
+    Ok(discover_mkdocs_or_start(start, home))
+}
+
+fn discover_init_root_with_home(
+    start: &Path,
+    home: Option<&Path>,
+) -> Result<VaultRootDiscovery, VaultPointerError> {
+    for directory in bounded_ancestors(start, home) {
+        if let Some(pointer) = read_vault_pointer(directory)? {
+            return Ok(VaultRootDiscovery::from_pointer(pointer));
+        }
+    }
+    Ok(discover_mkdocs_or_start(start, home))
+}
+
+fn discover_mkdocs_or_start(start: &Path, home: Option<&Path>) -> VaultRootDiscovery {
     if let Some(project) = enclosing_mkdocs_project_with_home(start, home) {
         let selects_docs = start == project.project_root || start.starts_with(&project.docs_dir);
         if selects_docs && project.docs_dir.is_dir() && project.docs_dir != start {
@@ -123,10 +278,11 @@ fn discover_init_root_with_home(start: &Path, home: Option<&Path>) -> VaultRootD
                 root: project.docs_dir,
                 source: VaultRootSource::MkDocs,
                 mkdocs_config: Some(project.config_file),
+                pointer_file: None,
             };
         }
     }
-    VaultRootDiscovery::working_directory(start)
+    VaultRootDiscovery::with_source(start.to_path_buf(), VaultRootSource::WorkingDirectory)
 }
 
 /// Finds the nearest MkDocs project at or above `start`, within the same
@@ -268,11 +424,12 @@ mod tests {
         mkdir(&vault.join(".vulcan"));
         mkdir(&vault.join("Projects/Deep"));
 
-        let discovery = discover_vault_root_with_home(&vault.join("Projects/Deep"), None);
+        let discovery =
+            discover_vault_root_with_home(&vault.join("Projects/Deep"), None).expect("discovery");
 
         assert_eq!(discovery.root, vault);
         assert_eq!(discovery.source, VaultRootSource::VulcanDirectory);
-        let at_root = discover_vault_root_with_home(&vault, None);
+        let at_root = discover_vault_root_with_home(&vault, None).expect("discovery");
         assert_eq!(at_root.root, vault);
         assert_eq!(at_root.source, VaultRootSource::WorkingDirectory);
     }
@@ -285,16 +442,18 @@ mod tests {
         git_marker(&repo);
         mkdir(&repo.join("notes"));
 
-        let inside_repo = discover_vault_root_with_home(&repo.join("notes"), None);
+        let inside_repo =
+            discover_vault_root_with_home(&repo.join("notes"), None).expect("discovery");
         assert_eq!(inside_repo.root, repo.join("notes"));
         assert_eq!(inside_repo.source, VaultRootSource::WorkingDirectory);
 
         let home = temp.path().join("home");
         mkdir(&home.join(".vulcan"));
         mkdir(&home.join("scratch"));
-        let below_home = discover_vault_root_with_home(&home.join("scratch"), Some(&home));
+        let below_home =
+            discover_vault_root_with_home(&home.join("scratch"), Some(&home)).expect("discovery");
         assert_eq!(below_home.root, home.join("scratch"));
-        let at_home = discover_vault_root_with_home(&home, Some(&home));
+        let at_home = discover_vault_root_with_home(&home, Some(&home)).expect("discovery");
         assert_eq!(at_home.root, home);
     }
 
@@ -312,16 +471,16 @@ mod tests {
         .expect("mkdocs config");
 
         for start in [site.clone(), site.join("content/guide")] {
-            let discovery = discover_vault_root_with_home(&start, None);
+            let discovery = discover_vault_root_with_home(&start, None).expect("discovery");
             assert_eq!(discovery.root, site.join("content"), "start {start:?}");
             assert_eq!(discovery.source, VaultRootSource::MkDocs);
             assert_eq!(discovery.mkdocs_config, Some(site.join("mkdocs.yml")));
         }
         // Unrelated project directories keep their own root.
-        let source_dir = discover_vault_root_with_home(&site.join("src"), None);
+        let source_dir = discover_vault_root_with_home(&site.join("src"), None).expect("discovery");
         assert_eq!(source_dir.root, site.join("src"));
         // Starting at the docs_dir itself is an ordinary working-directory root.
-        let docs = discover_vault_root_with_home(&site.join("content"), None);
+        let docs = discover_vault_root_with_home(&site.join("content"), None).expect("discovery");
         assert_eq!(docs.source, VaultRootSource::WorkingDirectory);
     }
 
@@ -333,13 +492,13 @@ mod tests {
         mkdir(&site.join("docs/.vulcan"));
         fs::write(site.join("mkdocs.yml"), "site_name: Demo\n").expect("mkdocs config");
 
-        let discovery = discover_vault_root_with_home(&site, None);
+        let discovery = discover_vault_root_with_home(&site, None).expect("discovery");
         assert_eq!(discovery.root, site.join("docs"));
         assert_eq!(discovery.source, VaultRootSource::MkDocs);
 
         // An explicitly initialized repository-root vault takes precedence.
         mkdir(&site.join(".vulcan"));
-        let root_vault = discover_vault_root_with_home(&site, None);
+        let root_vault = discover_vault_root_with_home(&site, None).expect("discovery");
         assert_eq!(root_vault.root, site);
     }
 
@@ -348,15 +507,101 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         mkdir(&temp.path().join("outer/.vulcan"));
         mkdir(&temp.path().join("outer/inner"));
-        let discovery = discover_init_root_with_home(&temp.path().join("outer/inner"), None);
+        let discovery = discover_init_root_with_home(&temp.path().join("outer/inner"), None)
+            .expect("discovery");
         assert_eq!(discovery.root, temp.path().join("outer/inner"));
 
         let site = temp.path().join("site");
         mkdir(&site.join("docs"));
         fs::write(site.join("mkdocs.yaml"), "site_name: Demo\n").expect("mkdocs config");
-        let mkdocs = discover_init_root_with_home(&site, None);
+        let mkdocs = discover_init_root_with_home(&site, None).expect("discovery");
         assert_eq!(mkdocs.root, site.join("docs"));
         assert_eq!(mkdocs.mkdocs_config, Some(site.join("mkdocs.yaml")));
+    }
+
+    #[test]
+    fn repository_pointer_selects_the_vault_from_anywhere_in_the_repository() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = temp.path().join("repo");
+        git_marker(&repo);
+        mkdir(&repo.join("wiki/notes"));
+        mkdir(&repo.join("src/deep"));
+        fs::write(
+            repo.join(VAULT_POINTER_FILE_NAME),
+            render_vault_pointer("wiki"),
+        )
+        .expect("pointer");
+
+        for start in [repo.clone(), repo.join("src/deep"), repo.join("wiki/notes")] {
+            let discovery = discover_vault_root_with_home(&start, None).expect("discovery");
+            assert_eq!(discovery.root, repo.join("wiki"), "start {start:?}");
+            assert_eq!(discovery.source, VaultRootSource::Pointer);
+            assert_eq!(
+                discovery.pointer_file,
+                Some(repo.join(VAULT_POINTER_FILE_NAME))
+            );
+        }
+        // Once initialized, the vault's own `.vulcan/` is the nearest marker.
+        mkdir(&repo.join("wiki/.vulcan"));
+        let inside =
+            discover_vault_root_with_home(&repo.join("wiki/notes"), None).expect("discovery");
+        assert_eq!(inside.root, repo.join("wiki"));
+        assert_eq!(inside.source, VaultRootSource::VulcanDirectory);
+        // The pointer wins over a stray `.vulcan/` beside it and applies to init.
+        mkdir(&repo.join(".vulcan"));
+        let root = discover_vault_root_with_home(&repo, None).expect("discovery");
+        assert_eq!(root.root, repo.join("wiki"));
+        let init = discover_init_root_with_home(&repo.join("src"), None).expect("discovery");
+        assert_eq!(init.root, repo.join("wiki"));
+        // Explicitly naming the repository follows the pointer too.
+        fs::remove_dir(repo.join(".vulcan")).expect("remove stray vault");
+        let named = resolve_named_vault(&repo).expect("named");
+        assert_eq!(named.root, repo.join("wiki"));
+        assert_eq!(named.source, VaultRootSource::Pointer);
+        assert_eq!(
+            resolve_named_vault(&repo.join("src"))
+                .expect("named")
+                .source,
+            VaultRootSource::Explicit
+        );
+    }
+
+    #[test]
+    fn invalid_repository_pointers_are_reported() {
+        let temp = TempDir::new().expect("temp dir");
+        mkdir(&temp.path().join("docs"));
+        for (contents, expected) in [
+            ("vault = \"../outside\"\n", "relative path"),
+            ("vault = \"/abs\"\n", "relative path"),
+            ("vault = \".\"\n", "subdirectory"),
+            ("vault = \"missing\"\n", "not a directory"),
+            ("vault = 3\n", "invalid type"),
+            ("vault = \"docs\"\nextra = true\n", "unknown field"),
+        ] {
+            fs::write(temp.path().join(VAULT_POINTER_FILE_NAME), contents).expect("pointer");
+            let error = discover_vault_root_with_home(temp.path(), None)
+                .expect_err("invalid pointer should be reported");
+            assert!(
+                error.detail.contains(expected),
+                "{contents:?}: {}",
+                error.detail
+            );
+        }
+        fs::write(
+            temp.path().join(VAULT_POINTER_FILE_NAME),
+            "vault = \"./docs/\"\n",
+        )
+        .expect("pointer");
+        let pointer = read_vault_pointer(temp.path())
+            .expect("valid pointer")
+            .expect("pointer present");
+        assert_eq!(pointer.vault, "docs");
+        assert_eq!(
+            toml::from_str::<VaultPointerFile>(&render_vault_pointer("a \"b\""))
+                .expect("rendered pointer parses")
+                .vault,
+            "a \"b\""
+        );
     }
 
     #[test]
@@ -390,7 +635,8 @@ mod tests {
         mkdir(&bogus.join(".vulcan"));
         mkdir(&bogus.join("child/sub"));
         assert!(!is_git_work_tree_root(&bogus));
-        let discovery = discover_vault_root_with_home(&bogus.join("child/sub"), None);
+        let discovery =
+            discover_vault_root_with_home(&bogus.join("child/sub"), None).expect("discovery");
         assert_eq!(discovery.root, bogus);
     }
 }

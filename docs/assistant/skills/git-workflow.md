@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 63
+version: 64
 tools:
   - git_status
   - git_diff
@@ -24,7 +24,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 
 Registered directories default to the versioned `knowledge` profile. Use `vulcan vault add <id> <path> --profile files-only`, either clone command with `--profile files-only`, or `vulcan vault set <id> --profile files-only` when a full working tree should be synchronized without Markdown indexing or knowledge-specific validation, scripts, semantic history, and agent conflict resolution. Both profiles currently use full-tree materialization. Files-only devices retain concurrent automatic merges for review to preserve shared accepted bytes. The daemon's unattended preflight rejects detached HEAD, staged changes, linked worktrees, in-progress Git operations, and nested repositories or submodules; branch changes are checked again before applying. Vulcan's lock does not exclude external Git processes. Do not use unattended sync for active development checkouts, and do not describe file replication as a complete refs/history/LFS backup.
 
-A vault can be one directory of a larger Git repository, such as the `docs/` directory of an MkDocs site. `vulcan status` then reports `git_repository_root` and `git_vault_prefix`. `git status`, `git diff`, `git log`, `git blame`, `git commit`, and auto-commit stay scoped to the vault and report vault-relative paths; code and other files outside the vault are never staged. `vulcan sync` is file-tree replication of the whole enclosing repository: it captures and applies every work-tree change, while reading sync configuration and taking the write lock from the vault.
+A vault can be one directory of a larger Git repository, such as the `docs/` directory of an MkDocs site. A repository-root `.vulcan.toml` (`vault = "docs"`, written by `vulcan init --repository-pointer`) lets Vulcan find that vault from anywhere in the checkout. `vulcan status` then reports `git_repository_root` and `git_vault_prefix`. `git status`, `git diff`, `git log`, `git blame`, `git commit`, and auto-commit stay scoped to the vault and report vault-relative paths; code and other files outside the vault are never staged. `vulcan sync` is file-tree replication of the whole enclosing repository: it captures and applies every work-tree change, while reading sync configuration and taking the write lock from the vault.
 
 ## Recommended Flow
 

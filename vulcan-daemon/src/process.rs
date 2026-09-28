@@ -1239,6 +1239,7 @@ mod tests {
                 id: WikiId::parse("notes").expect("wiki ID"),
                 registration_id: Ulid::new(),
                 path: vault,
+                work_tree: None,
                 groups: Vec::new(),
                 git_dir: None,
                 permissions_profile: None,

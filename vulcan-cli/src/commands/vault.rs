@@ -4,6 +4,7 @@ use crate::{Cli, CliError, ClonePlatformArg, OutputFormat, VaultCommand};
 use serde::Serialize;
 use std::path::Path;
 use vulcan_app::sync::GitPlatformProfile;
+use vulcan_core::vault_discovery::VAULT_POINTER_FILE_NAME;
 use vulcan_daemon::clone::{
     clone_registered_wiki, recover_registered_wiki_git, CloneWikiReport, CloneWikiRequest,
     RecoverWikiGitReport, RecoverWikiGitRequest,
@@ -136,7 +137,7 @@ fn print_recovery(output: OutputFormat, report: &RecoverWikiGitReport) -> Result
         println!(
             "Would recreate the detached Git directory for wiki `{}` after preserving {}",
             report.wiki.id,
-            report.wiki.path.display()
+            report.wiki.work_tree().display()
         );
     } else if let Some(recovery) = &report.recovery {
         println!(
@@ -242,11 +243,22 @@ fn print_clone(output: OutputFormat, report: &CloneWikiReport) -> Result<(), Cli
     } else {
         "Cloned and registered"
     };
+    let path = report
+        .wiki
+        .as_ref()
+        .map_or(&report.proposed_registration.path, |wiki| &wiki.path);
     println!(
         "{verb} wiki `{}` at {}",
         report.proposed_registration.id,
-        report.proposed_registration.path.display()
+        path.display()
     );
+    if let Some(wiki) = &report.wiki {
+        print_work_tree(wiki);
+    } else {
+        println!(
+            "A {VAULT_POINTER_FILE_NAME} in the cloned repository will select its vault directory."
+        );
+    }
     if let Some(git_dir) = &report.proposed_registration.git_dir {
         println!("Git directory: {}", git_dir.display());
     }
@@ -295,6 +307,9 @@ fn print_show(output: OutputFormat, wiki: &WikiRegistrationStatus) -> Result<(),
     }
     println!("Wiki: {}", wiki.registration.id);
     println!("Path: {}", wiki.registration.path.display());
+    if let Some(work_tree) = &wiki.registration.work_tree {
+        println!("Work tree: {}", work_tree.display());
+    }
     println!("Available: {}", wiki.available);
     println!("Indexed: {}", wiki.indexed);
     println!("Git repository: {}", wiki.git_repository);
@@ -318,6 +333,15 @@ pub(crate) fn managed_profile(profile: ManagedDirectoryProfileArg) -> ManagedDir
     }
 }
 
+fn print_work_tree(wiki: &WikiRegistration) {
+    if let Some(work_tree) = &wiki.work_tree {
+        println!(
+            "Vault is nested in the Git work tree {}; sync replicates the whole work tree.",
+            work_tree.display()
+        );
+    }
+}
+
 fn print_mutation(
     output: OutputFormat,
     action: &'static str,
@@ -337,6 +361,7 @@ fn print_mutation(
         OutputFormat::Human | OutputFormat::Markdown => {
             let qualifier = if dry_run { "Would update" } else { "Updated" };
             println!("{qualifier} wiki `{}`: {}", wiki.id, wiki.path.display());
+            print_work_tree(wiki);
             Ok(())
         }
     }

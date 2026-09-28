@@ -297,7 +297,7 @@ pub fn recover_registered_wiki_git(
     };
     let recovery_request = GitDetachedRecoveryRequest {
         source: request.source.clone(),
-        work_tree: wiki.path.clone(),
+        work_tree: wiki.work_tree().to_path_buf(),
         git_dir,
         platform,
     };

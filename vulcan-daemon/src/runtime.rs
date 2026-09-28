@@ -627,6 +627,7 @@ mod tests {
             id: WikiId::parse(id).expect("wiki id"),
             registration_id: ulid::Ulid::new(),
             path: PathBuf::from(format!("/{id}")),
+            work_tree: None,
             profile: ManagedDirectoryProfile::Knowledge,
             profile_version: None,
             materialization: crate::registry::MaterializationProfile::Full,
