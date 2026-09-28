@@ -60,20 +60,30 @@ pub struct ExchangeByteSpan {
 pub enum ExchangeSelector {
     Interval {
         unit: String,
+        #[serde(serialize_with = "serialize_number")]
         start: f64,
+        #[serde(serialize_with = "serialize_number")]
         end: f64,
-        #[serde(default)]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_optional_number"
+        )]
         origin: Option<f64>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         label_start: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         label_end: Option<String>,
     },
     Rectangle {
         unit: String,
+        #[serde(serialize_with = "serialize_number")]
         x: f64,
+        #[serde(serialize_with = "serialize_number")]
         y: f64,
+        #[serde(serialize_with = "serialize_number")]
         width: f64,
+        #[serde(serialize_with = "serialize_number")]
         height: f64,
     },
     Polygon {
@@ -81,7 +91,7 @@ pub enum ExchangeSelector {
         points: Vec<ExchangePoint>,
     },
     Grid {
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         sheet: Option<String>,
         row_start: u64,
         row_end: u64,
@@ -90,14 +100,14 @@ pub enum ExchangeSelector {
     },
     TextQuote {
         exact: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         prefix: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         suffix: Option<String>,
     },
     Fragment {
         value: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         conforms_to: Option<String>,
     },
     Extension {
@@ -124,8 +134,35 @@ impl ExchangeSelector {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExchangePoint {
+    #[serde(serialize_with = "serialize_number")]
     pub x: f64,
+    #[serde(serialize_with = "serialize_number")]
     pub y: f64,
+}
+
+/// Largest magnitude at which every integer is exactly representable as f64.
+const MAX_EXACT_INTEGER: f64 = 9_007_199_254_740_992.0;
+
+/// Write integral coordinates as JSON/YAML integers (`74`, not `74.0`) so
+/// locators copied into frontmatter read like the producer wrote them.
+#[allow(clippy::cast_possible_truncation, clippy::trivially_copy_pass_by_ref)]
+fn serialize_number<S: serde::Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+    if value.fract() == 0.0 && value.abs() <= MAX_EXACT_INTEGER {
+        serializer.serialize_i64(*value as i64)
+    } else {
+        serializer.serialize_f64(*value)
+    }
+}
+
+#[allow(clippy::ref_option)]
+fn serialize_optional_number<S: serde::Serializer>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(value) => serialize_number(value, serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -736,6 +773,36 @@ mod tests {
         assert_eq!(
             String::from_utf8(canonical_json(&value)).expect("utf8"),
             r#"{"a":{"c":"é","d":[2,1]},"b":1}"#
+        );
+    }
+
+    #[test]
+    fn selectors_serialize_without_unset_fields_or_integral_fractions() {
+        let selectors = vec![
+            ExchangeSelector::Interval {
+                unit: "byte".to_string(),
+                start: 74.0,
+                end: 128.5,
+                origin: Some(1.0),
+                label_start: None,
+                label_end: None,
+            },
+            ExchangeSelector::Fragment {
+                value: "node".to_string(),
+                conforms_to: None,
+            },
+        ];
+        let json = serde_json::to_string(&selectors).expect("json");
+        assert_eq!(
+            json,
+            r#"[{"type":"interval","unit":"byte","start":74,"end":128.5,"origin":1},{"type":"fragment","value":"node"}]"#
+        );
+        let round_trip: Vec<ExchangeSelector> = serde_json::from_str(&json).expect("parse");
+        assert_eq!(round_trip, selectors);
+        let yaml = serde_yaml::to_string(&selectors[0]).expect("yaml");
+        assert!(
+            yaml.contains("start: 74\n") && !yaml.contains("null"),
+            "{yaml}"
         );
     }
 
