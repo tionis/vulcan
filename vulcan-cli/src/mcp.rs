@@ -67,12 +67,8 @@ use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::mcp_scan;
 use vulcan_app::mcp_sync;
 use vulcan_app::mcp_tasks;
+use vulcan_app::mcp_web;
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor, CustomToolRunOptions};
-#[cfg(feature = "web")]
-use vulcan_app::web::{
-    apply_web_fetch_report_with_permissions, build_web_search_report_with_permissions,
-    WebFetchMode as AppWebFetchMode, WebFetchRequest, WebSearchRequest,
-};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
 #[cfg(all(test, feature = "oauth"))]
@@ -81,8 +77,6 @@ use vulcan_core::ClientIdMetadataDocument;
 use vulcan_core::LocalOAuthUserConfig;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::PermissionGuard;
-#[cfg(feature = "web")]
-use vulcan_core::SearchBackendKind;
 #[cfg(feature = "oauth")]
 use vulcan_core::{
     discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthResourceServer,
@@ -2720,25 +2714,12 @@ impl McpServerCore {
             }
             McpToolId::WebSearch => {
                 let args: McpWebSearchArgs = parse_tool_arguments(arguments)?;
-                if args.limit == 0 {
-                    return Err(McpMethodError::invalid_params(
-                        "`web_search.limit` must be at least 1",
-                    ));
-                }
-                let backend = parse_search_backend(args.backend)?;
-                let report = mcp_web_search_report(
-                    &self.paths,
-                    &args.query,
-                    backend.as_deref(),
-                    args.limit,
-                    &self.guard,
-                )?;
+                let report = mcp_web::web_search(&self.paths, &self.guard, args)?;
                 Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::WebFetch => {
                 let args: McpWebFetchArgs = parse_tool_arguments(arguments)?;
-                let mode = parse_web_fetch_mode(args.mode)?;
-                let report = mcp_web_fetch_report(&self.paths, &args.url, mode, &self.guard)?;
+                let report = mcp_web::web_fetch(&self.paths, &self.guard, args)?;
                 Ok(self.tool_success_response(tool.name, report))
             }
             McpToolId::ConfigShow => {
@@ -3840,114 +3821,6 @@ fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
 ) -> Result<T, McpMethodError> {
     serde_json::from_value(Value::Object(arguments.clone()))
         .map_err(|error| McpMethodError::invalid_params(error.to_string()))
-}
-
-fn parse_search_backend(backend: Option<String>) -> Result<Option<String>, McpMethodError> {
-    let Some(backend) = backend else {
-        return Ok(None);
-    };
-    match backend.as_str() {
-        "disabled" | "auto" | "duckduckgo" | "kagi" | "exa" | "tavily" | "brave" | "ollama" => {
-            Ok(Some(backend))
-        }
-        other => Err(McpMethodError::invalid_params(format!(
-            "unsupported `web_search.backend`: {other}"
-        ))),
-    }
-}
-
-fn parse_web_fetch_mode(mode: Option<String>) -> Result<&'static str, McpMethodError> {
-    match mode.as_deref().unwrap_or("markdown") {
-        "markdown" => Ok("markdown"),
-        "html" => Ok("html"),
-        "raw" => Ok("raw"),
-        other => Err(McpMethodError::invalid_params(format!(
-            "unsupported `web_fetch.mode`: {other}"
-        ))),
-    }
-}
-
-#[cfg(feature = "web")]
-fn mcp_web_search_report(
-    paths: &VaultPaths,
-    query: &str,
-    backend: Option<&str>,
-    limit: usize,
-    guard: &ProfilePermissionGuard,
-) -> Result<Value, McpMethodError> {
-    let backend = backend.map(|value| match value {
-        "disabled" => SearchBackendKind::Disabled,
-        "auto" => SearchBackendKind::Auto,
-        "duckduckgo" => SearchBackendKind::Duckduckgo,
-        "kagi" => SearchBackendKind::Kagi,
-        "exa" => SearchBackendKind::Exa,
-        "tavily" => SearchBackendKind::Tavily,
-        "brave" => SearchBackendKind::Brave,
-        "ollama" => SearchBackendKind::Ollama,
-        _ => unreachable!("backend was validated by parse_search_backend"),
-    });
-    let report = build_web_search_report_with_permissions(
-        paths,
-        &WebSearchRequest {
-            query: query.to_string(),
-            backend,
-            limit,
-        },
-        Some(guard),
-    )
-    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    serde_json::to_value(report).map_err(|error| McpMethodError::internal(error.to_string()))
-}
-
-#[cfg(not(feature = "web"))]
-fn mcp_web_search_report(
-    _paths: &VaultPaths,
-    _query: &str,
-    _backend: Option<&str>,
-    _limit: usize,
-    _guard: &ProfilePermissionGuard,
-) -> Result<Value, McpMethodError> {
-    Err(McpMethodError::tool(
-        "web search requires a build with the `web` feature enabled",
-    ))
-}
-
-#[cfg(feature = "web")]
-fn mcp_web_fetch_report(
-    paths: &VaultPaths,
-    url: &str,
-    mode: &str,
-    guard: &ProfilePermissionGuard,
-) -> Result<Value, McpMethodError> {
-    let mode = match mode {
-        "markdown" => AppWebFetchMode::Markdown,
-        "html" => AppWebFetchMode::Html,
-        "raw" => AppWebFetchMode::Raw,
-        _ => unreachable!("mode was validated by parse_web_fetch_mode"),
-    };
-    let report = apply_web_fetch_report_with_permissions(
-        paths,
-        &WebFetchRequest {
-            url: url.to_string(),
-            mode,
-            save: None,
-        },
-        Some(guard),
-    )
-    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    serde_json::to_value(report).map_err(|error| McpMethodError::internal(error.to_string()))
-}
-
-#[cfg(not(feature = "web"))]
-fn mcp_web_fetch_report(
-    _paths: &VaultPaths,
-    _url: &str,
-    _mode: &str,
-    _guard: &ProfilePermissionGuard,
-) -> Result<Value, McpMethodError> {
-    Err(McpMethodError::tool(
-        "web fetch requires a build with the `web` feature enabled",
-    ))
 }
 
 fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
