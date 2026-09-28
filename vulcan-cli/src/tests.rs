@@ -6810,13 +6810,6 @@ fn tool_registry_entry_converts_to_openai_and_mcp_shapes() {
         mcp.output_schema.as_ref().expect("output schema")["type"],
         "object"
     );
-
-    let item = entry.to_mcp_list_item();
-    assert_eq!(item["name"], "demo_tool");
-    assert_eq!(item["title"], "Demo Tool");
-    assert_eq!(item["annotations"]["readOnlyHint"], true);
-    assert_eq!(item["toolPacks"], serde_json::json!(["custom"]));
-    assert!(item.get("examples").is_none());
 }
 
 #[test]

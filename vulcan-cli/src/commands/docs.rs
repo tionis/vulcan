@@ -330,19 +330,6 @@ impl ToolRegistryEntry {
             examples: self.examples.clone(),
         }
     }
-
-    pub(crate) fn to_mcp_list_item(&self) -> Value {
-        let definition = self.to_mcp_definition();
-        serde_json::json!({
-            "name": definition.name,
-            "title": definition.title,
-            "description": definition.description,
-            "inputSchema": definition.input_schema,
-            "outputSchema": definition.output_schema,
-            "annotations": definition.annotations,
-            "toolPacks": definition.tool_packs,
-        })
-    }
 }
 
 pub(crate) fn cli_command_tree() -> clap::Command {

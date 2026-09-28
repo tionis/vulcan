@@ -8,6 +8,8 @@ use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::McpWebFetchArgs;
+#[cfg(feature = "oauth")]
+use vulcan_app::mcp_protocol::MCP_RESOURCE_NOT_FOUND;
 use vulcan_app::mcp_read_tools;
 use vulcan_core::{PermissionProfile, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
@@ -5394,9 +5396,9 @@ fn daily_wiki_agent_can_use_index_scan_when_index_pack_is_selected() {
     )
     .expect("MCP core should initialize");
 
-    let tools = core.visible_tools();
+    let tools = core.visible_tool_items().expect("visible tools");
     assert!(
-        tools.iter().any(|tool| tool.name == "index_scan"),
+        tools.iter().any(|tool| tool["name"] == "index_scan"),
         "index pack should expose index_scan under daily-wiki-agent"
     );
     let result = core

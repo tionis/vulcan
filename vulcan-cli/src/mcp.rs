@@ -9,8 +9,7 @@ use crate::{
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
-    resolve_selected_tool_packs, visible_tool_catalog, McpToolCatalogEntry, McpToolPack,
-    McpToolPackMode,
+    resolve_selected_tool_packs, visible_tool_catalog, McpToolPack, McpToolPackMode,
 };
 use fs2::FileExt;
 use serde_json::{Map, Value};
@@ -39,7 +38,6 @@ use vulcan_app::execution::{
 };
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
-use vulcan_app::mcp_completion;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::request_is_read_only;
 #[cfg(feature = "oauth")]
@@ -52,7 +50,7 @@ use vulcan_app::mcp_dispatch::{
 use vulcan_app::mcp_protocol;
 use vulcan_app::mcp_protocol::{
     McpCompletionParams, McpListSnapshot, McpMethodError, McpMethodOutcome, McpToolResourceStore,
-    MCP_PROTOCOL_VERSION, MCP_RESOURCE_NOT_FOUND,
+    MCP_PROTOCOL_VERSION,
 };
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor};
 #[cfg(all(test, feature = "oauth"))]
@@ -2264,109 +2262,19 @@ impl McpServerCore {
         mcp_protocol::initialization_result(&self.active_tool_names(), env!("CARGO_PKG_VERSION"))
     }
 
-    fn visible_tools(&self) -> Vec<&'static McpToolCatalogEntry> {
-        visible_tool_catalog(&self.selected_tool_packs, &self.selection.profile)
-    }
-
-    fn visible_custom_tools(&self) -> Result<Vec<CustomToolDescriptor>, McpMethodError> {
-        let selected_pack_names = pack_name_list(&self.selected_tool_packs)
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        mcp_assistant::visible_custom_tools(
-            &self.paths,
-            Some(self.selection.name.as_str()),
-            &selected_pack_names,
-            &crate::custom_tool_registry_options(),
-        )
-    }
-
-    fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        let mut tools = self
-            .visible_tools()
-            .into_iter()
-            .map(tool_list_item)
-            .collect::<Vec<_>>();
-        tools.extend(
-            self.visible_custom_tools()?
-                .iter()
-                .map(custom_tool_list_item),
-        );
-        Ok(tools)
-    }
-
-    fn visible_prompts(&self) -> Result<Vec<vulcan_core::AssistantPromptSummary>, McpMethodError> {
-        mcp_assistant::visible_prompts(&self.paths, &self.guard)
-    }
-
-    fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        let custom_tool_names = if self.selection.profile.read.is_none() {
-            Vec::new()
-        } else {
-            self.visible_custom_tools()?
-                .into_iter()
-                .map(|tool| tool.summary.name)
-                .collect()
-        };
-        mcp_assistant::visible_resources(&self.paths, &self.guard, &custom_tool_names)
-    }
-
-    fn visible_resource_templates(&self) -> Vec<Value> {
-        mcp_assistant::visible_resource_templates(
-            &self.guard,
-            self.selected_tool_packs.contains(&McpToolPack::Custom),
-        )
-    }
-
-    fn get_prompt(
-        &self,
-        name: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Value, McpMethodError> {
-        mcp_assistant::get_prompt(&self.paths, &self.guard, name, arguments)
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
-        if let Some(stored) = self.tool_resources.read(uri) {
-            return Ok(stored);
+    fn discovery<'a>(
+        &'a self,
+        registry: &'a vulcan_app::tools::CustomToolRegistryOptions,
+    ) -> vulcan_app::mcp_discovery::McpDiscovery<'a> {
+        vulcan_app::mcp_discovery::McpDiscovery {
+            paths: &self.paths,
+            guard: &self.guard,
+            profile_name: self.selection.name.as_str(),
+            profile: &self.selection.profile,
+            selected_packs: &self.selected_tool_packs,
+            resources: &self.tool_resources,
+            custom_registry: registry,
         }
-
-        if let Some(result) = mcp_assistant::read_resource(&self.paths, &self.guard, uri) {
-            return result;
-        }
-
-        let selected_pack_names = pack_name_list(&self.selected_tool_packs)
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if let Some(result) = mcp_assistant::read_custom_tool_resource(
-            &self.paths,
-            Some(self.selection.name.as_str()),
-            &selected_pack_names,
-            &crate::custom_tool_registry_options(),
-            uri,
-        ) {
-            return result;
-        }
-
-        if let Some(result) = vulcan_app::mcp_help::read_help_resource(uri, |topic_path| {
-            resolve_help_topic(topic_path).map_err(|error| error.message)
-        }) {
-            return result;
-        }
-
-        Err(resource_not_found_error(
-            uri,
-            "Resource not found".to_string(),
-        ))
-    }
-
-    fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
-        mcp_completion::complete(
-            &self.paths,
-            &self.guard,
-            params,
-            &help_topic_completion_candidates(""),
-        )
     }
 
     fn call_tool(
@@ -2418,7 +2326,8 @@ impl McpProtocolMethods for McpServerCore {
     }
 
     fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        McpServerCore::visible_tool_items(self)
+        let registry = crate::custom_tool_registry_options();
+        self.discovery(&registry).visible_tool_items()
     }
 
     fn call_tool(
@@ -2430,10 +2339,8 @@ impl McpProtocolMethods for McpServerCore {
     }
 
     fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        Ok(McpServerCore::visible_prompts(self)?
-            .into_iter()
-            .map(prompt_list_item)
-            .collect())
+        let registry = crate::custom_tool_registry_options();
+        self.discovery(&registry).visible_prompt_items()
     }
 
     fn get_prompt(
@@ -2441,23 +2348,31 @@ impl McpProtocolMethods for McpServerCore {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        McpServerCore::get_prompt(self, name, arguments)
+        let registry = crate::custom_tool_registry_options();
+        self.discovery(&registry).get_prompt(name, arguments)
     }
 
     fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        McpServerCore::visible_resources(self)
+        let registry = crate::custom_tool_registry_options();
+        self.discovery(&registry).visible_resources()
     }
 
     fn visible_resource_templates(&self) -> Vec<Value> {
-        McpServerCore::visible_resource_templates(self)
+        let registry = crate::custom_tool_registry_options();
+        self.discovery(&registry).visible_resource_templates()
     }
 
     fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
-        McpServerCore::read_resource(self, uri)
+        let registry = crate::custom_tool_registry_options();
+        self.discovery(&registry).read_resource(uri, |topic_path| {
+            resolve_help_topic(topic_path).map_err(|error| error.message)
+        })
     }
 
     fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
-        McpServerCore::complete(self, params)
+        let registry = crate::custom_tool_registry_options();
+        self.discovery(&registry)
+            .complete(params, &help_topic_completion_candidates(""))
     }
 }
 
@@ -3230,31 +3145,6 @@ fn visible_custom_tools(
         mcp_assistant::custom_tool_matches_selected_packs(&tool.summary.packs, &selected_pack_names)
     })
     .collect())
-}
-
-fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
-    mcp_tool_registry_entry(tool).to_mcp_list_item()
-}
-
-fn custom_tool_list_item(tool: &CustomToolDescriptor) -> Value {
-    custom_tool_registry_entry(tool).to_mcp_list_item()
-}
-
-fn prompt_list_item(prompt: vulcan_core::AssistantPromptSummary) -> Value {
-    serde_json::json!({
-        "name": prompt.name,
-        "title": prompt.title,
-        "description": prompt.description,
-        "arguments": prompt.arguments,
-    })
-}
-
-fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
-    McpMethodError::JsonRpc {
-        code: MCP_RESOURCE_NOT_FOUND,
-        message,
-        data: Some(serde_json::json!({ "uri": uri })),
-    }
 }
 
 fn help_topic_completion_candidates(prefix: &str) -> Vec<String> {
