@@ -131,6 +131,7 @@ apply_remote_moves = true
 missing_policy = "archive"
 missing_archive = "Archive/Outline"
 schedule = "every 15m"
+owner_device = "<device id from `vulcan device show`>"
 ```
 
 Shared configuration contains non-secret topology and policy. Device-local endpoint overrides, executable paths, and credential environment-variable names may live in ignored local or daemon configuration. Credential values stay in environment variables or a device secret store and must never be logged.
@@ -150,6 +151,8 @@ vulcan integration bindings players
 vulcan integration bind players <remote-id> Players/Campaign/Setting.md
 vulcan integration unbind players <remote-id>
 ```
+
+Route mappings, pending creates, run locks, and checkpoints are device-local state, while the route definition is shared. When a vault syncs to several devices, set `owner_device` so only that device applies the route; other devices can still `plan` and `run --dry-run`, but a live run of that named route refuses with the owning device's ID. Live `integration run --all` and `--scheduled` skip routes owned by another device, so the same timer can be installed on every device. Without `owner_device`, every device that runs the route keeps its own mappings and would publish duplicate remote documents.
 
 Manual operations and interval-due automation work without a daemon. Live route runs have an exclusive route lock and durable running/completed/failed checkpoints. The daemon will add its own scheduler, route dependencies, remote triggers, and richer history over the same request/report contracts.
 

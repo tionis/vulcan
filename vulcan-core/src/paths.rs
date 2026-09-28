@@ -12,7 +12,7 @@ pub const REPORTS_DIR_NAME: &str = "reports";
 pub const TRUSTED_VAULTS_FILE_NAME: &str = "trusted_vaults.json";
 pub const DEFAULT_ATTACHMENT_FOLDER: &str = ".";
 const DEFAULT_VULCAN_GITIGNORE: &str =
-    "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n";
+    "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n!templates/\n!templates/**\n";
 
 fn missing_vulcan_dir_error(paths: &VaultPaths) -> std::io::Error {
     std::io::Error::new(

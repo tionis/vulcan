@@ -196,6 +196,8 @@ struct IncrementalScanResult {
     changed_document_ids: Vec<String>,
     requires_property_catalog_refresh: bool,
     requires_fts_rebuild: bool,
+    /// `(old_path, new_path)` pairs whose document identity was preserved.
+    renamed: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -277,7 +279,19 @@ pub fn scan_vault_unlocked_with_progress<F>(
 where
     F: FnMut(ScanProgress),
 {
-    scan_inventory(paths, mode, on_progress, None)
+    scan_inventory(paths, mode, on_progress, None, &HashMap::new())
+}
+
+/// Incremental scan that carries explicit rename hints from a Vulcan move.
+///
+/// `renames` maps each new vault-relative path to the path it replaced. A hinted pair keeps the
+/// cached document identity even when the move also rewrote the note's own links. Callers must
+/// already hold [`crate::write_lock::WriteLockGuard`].
+pub(crate) fn scan_vault_unlocked_with_renames(
+    paths: &VaultPaths,
+    renames: &HashMap<String, String>,
+) -> Result<ScanSummary, ScanError> {
+    scan_inventory(paths, ScanMode::Incremental, &mut |_| {}, None, renames)
 }
 
 /// Update known files directly. Structural/ignore changes and uncertain paths
@@ -287,7 +301,13 @@ pub(crate) fn scan_watched_paths(
     changed: &BTreeSet<String>,
 ) -> Result<ScanSummary, ScanError> {
     let _lock = acquire_write_lock(paths)?;
-    scan_inventory(paths, ScanMode::Incremental, &mut |_| {}, Some(changed))
+    scan_inventory(
+        paths,
+        ScanMode::Incremental,
+        &mut |_| {},
+        Some(changed),
+        &HashMap::new(),
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -296,10 +316,27 @@ fn scan_inventory<F>(
     mode: ScanMode,
     on_progress: &mut F,
     changed: Option<&BTreeSet<String>>,
+    rename_hints: &HashMap<String, String>,
 ) -> Result<ScanSummary, ScanError>
 where
     F: FnMut(ScanProgress),
 {
+    // Repair the vault before indexing it: a move interrupted by a crash would otherwise be
+    // indexed as half-rewritten links. A move whose file changes all landed contributes its
+    // rename hint instead, and its journal is cleared once this scan succeeds.
+    let recovery = crate::move_rewrite::recover_interrupted_move(paths)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error.to_string())))?;
+    let mut rename_hints = rename_hints.clone();
+    let completes_applied_move = match recovery {
+        crate::move_rewrite::MoveRecovery::Applied {
+            source_path,
+            destination_path,
+        } => {
+            rename_hints.entry(destination_path).or_insert(source_path);
+            true
+        }
+        _ => false,
+    };
     let config = load_vault_config(paths).config;
     let mut database = CacheDatabase::open(paths)?;
     let targeted = changed
@@ -441,6 +478,8 @@ where
                     deleted: summary.deleted,
                 },
             );
+            // Restore durable decisions first so the checkpoint matches the live cache.
+            crate::link_feedback::restore(paths, database.connection())?;
             crate::history::record_scan_checkpoint(database.connection())?;
             summary
         }
@@ -453,9 +492,14 @@ where
                         &discovered,
                         &existing,
                         &deleted_paths,
+                        &rename_hints,
                         mode,
                         on_progress,
                     )?;
+                    // Follow renames in durable feedback before the cache commits them. If the
+                    // commit then fails, the files are still at their new paths on disk and the
+                    // next scan re-detects the same renames, so the two cannot drift apart.
+                    crate::link_feedback::rename_paths(paths, &result.renamed)?;
                     if result.requires_property_catalog_refresh {
                         emit_scan_progress(
                             on_progress,
@@ -530,6 +574,7 @@ where
                 || result.summary.updated > 0
                 || result.summary.deleted > 0;
             if has_changes {
+                crate::link_feedback::restore(paths, database.connection())?;
                 crate::history::record_scan_checkpoint_incremental(
                     database.connection(),
                     &result.changed_document_ids,
@@ -538,6 +583,9 @@ where
             result.summary
         }
     };
+    if completes_applied_move {
+        crate::move_rewrite::remove_move_journal(paths)?;
+    }
     Ok(summary)
 }
 
@@ -708,13 +756,14 @@ fn prepare_derived_content(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn apply_incremental_scan(
     transaction: &Transaction<'_>,
     config: &crate::VaultConfig,
     discovered: &[DiscoveredFile],
     existing: &HashMap<String, CachedDocument>,
     deleted_paths: &[String],
+    rename_hints: &HashMap<String, String>,
     mode: ScanMode,
     on_progress: &mut impl FnMut(ScanProgress),
 ) -> Result<IncrementalScanResult, ScanError> {
@@ -732,6 +781,7 @@ fn apply_incremental_scan(
         changed_document_ids: Vec::new(),
         requires_property_catalog_refresh: false,
         requires_fts_rebuild: false,
+        renamed: Vec::new(),
     };
     emit_scan_progress(
         on_progress,
@@ -791,6 +841,21 @@ fn apply_incremental_scan(
         prepared_results.append(&mut batch_results);
     }
 
+    // Phase 2b: Keep document identity across renames so dependent rows (chunks, vectors,
+    // suggestion feedback) survive moves instead of being deleted and recreated.
+    let renamed_from = match_renamed_documents(
+        &work_items,
+        &mut prepared_results,
+        existing,
+        deleted_paths,
+        rename_hints,
+    );
+    let renamed_paths = renamed_from
+        .iter()
+        .flatten()
+        .cloned()
+        .collect::<HashSet<_>>();
+
     // Phase 3: Apply all changes sequentially within the transaction.
     // For bulk changes, drop FTS triggers and rebuild the index in one pass at the end.
     // For small changes, keep triggers active so FTS updates happen incrementally per row.
@@ -813,7 +878,16 @@ fn apply_incremental_scan(
         },
     );
 
-    for (item, prep) in work_items.iter().zip(prepared_results) {
+    for ((item, prep), renamed_from) in work_items.iter().zip(prepared_results).zip(renamed_from) {
+        if let (Some(old_path), IncrementalPrepResult::Reindex { id, .. }) = (&renamed_from, &prep)
+        {
+            rename_document_path(transaction, id, old_path, item.file)?;
+            result
+                .renamed
+                .push((old_path.clone(), item.file.relative_path.clone()));
+            result.requires_link_resolution = true;
+            result.target_pool_changed = true;
+        }
         match prep {
             IncrementalPrepResult::MetadataOnly { cached_id } => {
                 update_document_metadata(transaction, &cached_id, item.file)?;
@@ -906,6 +980,9 @@ fn apply_incremental_scan(
     }
 
     for path in deleted_paths {
+        if renamed_paths.contains(path) {
+            continue;
+        }
         if let Some(cached) = existing.get(path) {
             result.changed_document_ids.push(cached.id.clone());
             delete_document(transaction, &cached.id)?;
@@ -930,6 +1007,131 @@ fn apply_incremental_scan(
     }
 
     Ok(result)
+}
+
+/// Pairs newly discovered files with deleted cached documents that they replace.
+///
+/// An explicit hint (new path -> old path) always wins when the old path really disappeared and
+/// has the same extension. Otherwise a new file inherits a deleted document's identity only when
+/// the content hash and extension match exactly one deleted document and exactly one new file,
+/// so duplicated or empty files never merge identities by guesswork. Matched preparations are
+/// rewritten to reuse the cached id; the returned vector gives each work item's old path.
+fn match_renamed_documents(
+    work_items: &[IncrementalWorkItem<'_>],
+    prepared: &mut [IncrementalPrepResult],
+    existing: &HashMap<String, CachedDocument>,
+    deleted_paths: &[String],
+    rename_hints: &HashMap<String, String>,
+) -> Vec<Option<String>> {
+    let mut renamed_from = vec![None; work_items.len()];
+    if deleted_paths.is_empty() {
+        return renamed_from;
+    }
+    let mut available = deleted_paths
+        .iter()
+        .filter(|path| existing.contains_key(*path))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let extension_of = |path: &str| {
+        Path::new(path)
+            .extension()
+            .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let is_new_file = |index: usize| {
+        work_items[index].cached.is_none()
+            && matches!(
+                prepared[index],
+                IncrementalPrepResult::Reindex { is_new: true, .. }
+            )
+    };
+
+    for index in 0..work_items.len() {
+        if !is_new_file(index) {
+            continue;
+        }
+        let file = work_items[index].file;
+        if let Some(old_path) = rename_hints.get(&file.relative_path) {
+            if available.contains(old_path)
+                && extension_of(old_path) == file.extension.to_ascii_lowercase()
+            {
+                available.remove(old_path);
+                renamed_from[index] = Some(old_path.clone());
+            }
+        }
+    }
+
+    let mut deleted_by_hash: HashMap<(&[u8], String), Vec<&String>> = HashMap::new();
+    // Empty files carry no identifying content, so they never inherit an identity by hash.
+    for path in &available {
+        let cached = &existing[path];
+        if cached.file_size == 0 {
+            continue;
+        }
+        deleted_by_hash
+            .entry((cached.content_hash.as_slice(), extension_of(path)))
+            .or_default()
+            .push(path);
+    }
+    let mut new_by_hash: HashMap<(Vec<u8>, String), Vec<usize>> = HashMap::new();
+    for index in 0..work_items.len() {
+        if renamed_from[index].is_some()
+            || !is_new_file(index)
+            || work_items[index].file.file_size == 0
+        {
+            continue;
+        }
+        if let IncrementalPrepResult::Reindex { content_hash, .. } = &prepared[index] {
+            new_by_hash
+                .entry((
+                    content_hash.clone(),
+                    work_items[index].file.extension.to_ascii_lowercase(),
+                ))
+                .or_default()
+                .push(index);
+        }
+    }
+    for ((hash, extension), indexes) in new_by_hash {
+        let [index] = indexes.as_slice() else {
+            continue;
+        };
+        if let Some([old_path]) = deleted_by_hash
+            .get(&(hash.as_slice(), extension))
+            .map(Vec::as_slice)
+        {
+            renamed_from[*index] = Some((*old_path).clone());
+        }
+    }
+
+    for (index, old_path) in renamed_from.iter().enumerate() {
+        let Some(old_path) = old_path else {
+            continue;
+        };
+        if let IncrementalPrepResult::Reindex { id, is_new, .. } = &mut prepared[index] {
+            id.clone_from(&existing[old_path].id);
+            *is_new = false;
+        }
+    }
+    renamed_from
+}
+
+fn rename_document_path(
+    transaction: &Transaction<'_>,
+    id: &str,
+    old_path: &str,
+    file: &DiscoveredFile,
+) -> Result<(), ScanError> {
+    transaction.execute(
+        "UPDATE documents SET path = ?2, filename = ?3, extension = ?4 WHERE id = ?1 AND path = ?5",
+        params![
+            id,
+            file.relative_path,
+            file.filename,
+            file.extension,
+            old_path
+        ],
+    )?;
+    Ok(())
 }
 
 fn emit_scan_progress(on_progress: &mut impl FnMut(ScanProgress), progress: ScanProgress) {
@@ -4389,6 +4591,101 @@ mod tests {
         assert_eq!(
             chunk_ids_for_document(database.connection(), "Home.md"),
             before_chunk_ids
+        );
+    }
+
+    fn document_id_at(connection: &Connection, path: &str) -> Option<String> {
+        connection
+            .query_row("SELECT id FROM documents WHERE path = ?1", [path], |row| {
+                row.get(0)
+            })
+            .optional()
+            .expect("document lookup should succeed")
+    }
+
+    #[test]
+    fn incremental_scan_keeps_identity_for_external_rename() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let before_id = document_id_at(database.connection(), "Home.md").expect("home id");
+        let before_chunk_ids = chunk_ids_for_document(database.connection(), "Home.md");
+        drop(database);
+
+        fs::rename(vault_root.join("Home.md"), vault_root.join("Start.md"))
+            .expect("rename should succeed");
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!((summary.added, summary.deleted, summary.updated), (0, 0, 1));
+        assert_eq!(document_id_at(database.connection(), "Home.md"), None);
+        assert_eq!(
+            document_id_at(database.connection(), "Start.md"),
+            Some(before_id)
+        );
+        assert_eq!(
+            chunk_ids_for_document(database.connection(), "Start.md"),
+            before_chunk_ids
+        );
+    }
+
+    #[test]
+    fn incremental_scan_does_not_guess_identity_for_duplicate_content() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("a.md"), "# Same\n").expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let before_id = document_id_at(database.connection(), "a.md").expect("id");
+        drop(database);
+
+        fs::remove_file(vault_root.join("a.md")).expect("remove should succeed");
+        fs::write(vault_root.join("b.md"), "# Same\n").expect("note should be written");
+        fs::write(vault_root.join("c.md"), "# Same\n").expect("note should be written");
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!((summary.added, summary.deleted), (2, 1));
+        for path in ["b.md", "c.md"] {
+            assert_ne!(
+                document_id_at(database.connection(), path),
+                Some(before_id.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_scan_does_not_transfer_identity_between_empty_files() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("a.md"), "").expect("empty note should be written");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+        let before_id = document_id_at(database.connection(), "a.md").expect("id");
+        drop(database);
+
+        fs::remove_file(vault_root.join("a.md")).expect("remove should succeed");
+        fs::write(vault_root.join("b.md"), "").expect("empty note should be written");
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("database should open");
+
+        assert_eq!((summary.added, summary.deleted), (1, 1));
+        assert_ne!(
+            document_id_at(database.connection(), "b.md"),
+            Some(before_id)
         );
     }
 

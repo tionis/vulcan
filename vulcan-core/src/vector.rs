@@ -1516,13 +1516,40 @@ const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
 /// Caps embedding input at the model's `max_input_tokens` estimate. Chunking never splits a
 /// single oversized block, so without this bound a large code block or table would be sent whole
 /// and rejected (or silently truncated) by the provider. Returns whether truncation occurred.
+///
+/// The budget is `max_input_tokens × CHARS_PER_TOKEN_ESTIMATE` weight units. Alphabetic scripts
+/// cost one unit per character (≈ 4 characters per token), but CJK, kana, Hangul, Thai, emoji,
+/// and similar dense scripts cost about one token per character, so a flat character cap would
+/// send several times the model's limit and be rejected on every indexing pass.
 fn bounded_embedding_text(text: &str, max_input_tokens: usize) -> (String, bool) {
-    let limit = max_input_tokens
+    let budget = max_input_tokens
         .max(1)
         .saturating_mul(CHARS_PER_TOKEN_ESTIMATE);
-    match text.char_indices().nth(limit) {
-        Some((byte_index, _)) => (text[..byte_index].to_string(), true),
-        None => (text.to_string(), false),
+    let mut spent = 0usize;
+    for (byte_index, character) in text.char_indices() {
+        spent = spent.saturating_add(token_estimate_weight(character));
+        if spent > budget {
+            return (text[..byte_index].to_string(), true);
+        }
+    }
+    (text.to_string(), false)
+}
+
+/// Estimated cost of one character in `1 / CHARS_PER_TOKEN_ESTIMATE` token units.
+fn token_estimate_weight(character: char) -> usize {
+    match u32::from(character) {
+        // ASCII plus Latin, Greek, Cyrillic, and Armenian letters.
+        0x0000..=0x058F => 1,
+        // Thai/Lao, Hangul Jamo, CJK radicals through Yi, Hangul syllables, CJK compatibility,
+        // halfwidth/fullwidth forms, and supplementary ideographs/emoji planes.
+        0x0E00..=0x0EFF
+        | 0x1100..=0x11FF
+        | 0x2E80..=0xA4CF
+        | 0xAC00..=0xD7AF
+        | 0xF900..=0xFAFF
+        | 0xFF00..=0xFFEF
+        | 0x1_F000.. => CHARS_PER_TOKEN_ESTIMATE,
+        _ => 2,
     }
 }
 
@@ -2120,6 +2147,14 @@ mod tests {
         let (text, truncated) = bounded_embedding_text(&"é".repeat(10), 2);
         assert!(truncated);
         assert_eq!(text, "é".repeat(2 * CHARS_PER_TOKEN_ESTIMATE));
+        // Dense scripts are capped near one character per token, not four.
+        let (text, truncated) = bounded_embedding_text(&"漢".repeat(20), 5);
+        assert!(truncated);
+        assert_eq!(text, "漢".repeat(5));
+        let (text, truncated) = bounded_embedding_text(&"한".repeat(5), 5);
+        assert_eq!((text.as_str(), truncated), ("한한한한한", false));
+        let (text, truncated) = bounded_embedding_text("🙂🙂🙂", 2);
+        assert_eq!((text.as_str(), truncated), ("🙂🙂", true));
     }
 
     #[test]

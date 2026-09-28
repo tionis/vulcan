@@ -99,6 +99,42 @@ impl Drop for RouteRunLock {
     }
 }
 
+/// Refuses to apply a route on any device other than its configured owner.
+///
+/// Route mappings, pending creates, and run locks are device-local state, so the shared route
+/// configuration names the one device allowed to mutate the remote. Planning and dry runs are
+/// always allowed. A route without `owner_device` keeps the single-device behavior.
+pub fn ensure_route_owner(name: &str, route: &IntegrationRouteConfig) -> Result<(), AppError> {
+    let Some(owner) = route.owner_device.as_deref() else {
+        return Ok(());
+    };
+    let local = crate::device_identity::DeviceIdentityStore::user_default()
+        .ok()
+        .and_then(|store| store.inspect().device_id);
+    check_route_owner(name, owner, local.as_deref())
+}
+
+/// Whether this device may apply `route`. Batch runs (`--all`, `--scheduled`) use this to skip
+/// routes owned by another device instead of failing on every timer tick.
+#[must_use]
+pub fn route_applies_on_this_device(route: &IntegrationRouteConfig) -> bool {
+    ensure_route_owner("", route).is_ok()
+}
+
+fn check_route_owner(name: &str, owner: &str, local: Option<&str>) -> Result<(), AppError> {
+    match local {
+        Some(local) if local.eq_ignore_ascii_case(owner) => Ok(()),
+        Some(local) => Err(AppError::operation(format!(
+            "integration route `{name}` is owned by device {owner}; this device is {local}. \
+             Run it on the owning device or change `owner_device` deliberately"
+        ))),
+        None => Err(AppError::operation(format!(
+            "integration route `{name}` is owned by device {owner}, but this installation has \
+             no device identity; check `vulcan device show`"
+        ))),
+    }
+}
+
 pub fn begin_route_run(
     paths: &VaultPaths,
     route: &str,
@@ -856,6 +892,22 @@ mod tests {
         assert!(route_is_due("every 15m", None, 1_000));
         assert!(!route_is_due("every 15m", Some(500), 1_000));
         assert!(route_is_due("every 15m", Some(100), 1_000));
+    }
+
+    #[test]
+    fn route_owner_gate_allows_only_the_owning_device() {
+        assert!(check_route_owner("players", "abc", Some("ABC")).is_ok());
+        let other = check_route_owner("players", "abc", Some("def")).unwrap_err();
+        assert!(other.to_string().contains("owned by device abc"));
+        assert!(check_route_owner("players", "abc", None).is_err());
+        assert!(ensure_route_owner("players", &IntegrationRouteConfig::default()).is_ok());
+        assert!(route_applies_on_this_device(
+            &IntegrationRouteConfig::default()
+        ));
+        assert!(!route_applies_on_this_device(&IntegrationRouteConfig {
+            owner_device: Some("not-a-real-device-id".to_string()),
+            ..IntegrationRouteConfig::default()
+        }));
     }
 
     #[test]

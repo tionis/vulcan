@@ -3,7 +3,7 @@
 
 **Implementation brief for the engineering agent**  
 Created: 19 March 2026<br>
-Last architecture/status reconciliation: 26 September 2026
+Last architecture/status reconciliation: 28 September 2026
 
 User-facing CLI usage, filter syntax, and examples are documented separately in `docs/cli.md`. This document focuses on architecture and design decisions.
 
@@ -31,7 +31,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 - **Vulcan App storage model:** Apps declare bounded logical stores rather than receiving paths or generic SQLite authority. Engine, authority, scope, replication, visibility, retention, schema, limits, canonical representation, and local materialization remain independent. mdbase is preferred for wiki-native structured knowledge; private SQLite serves substantial local/cache workloads; canonical SQLite remains an explicit conflict-reviewed vault artifact; immutable event sets serve audit, history, and reducer-shaped domains; replicated database change sets serve multi-writer relational domains; and Automerge documents serve bounded document-shaped application state. The latter three remain experimental behind Vulcan-owned format, adapter, merge, and conformance contracts.
 - **Capability and compatibility model:** Design stable CLI, config, API, and domain boundaries around native Vulcan capabilities. Obsidian plugins and other tools contribute optional persisted-format adapters, settings importers, migration aliases, providers, and conformance profiles; they do not define Vulcan's product taxonomy or cap what a native workflow may do.
 - **Authorization model:** Resolve all human, group, agent, automation, share, and service authority from typed, vault-canonical capability objects. Delegation may only attenuate authority. A reserved authorization namespace and dedicated mutation workflows protect those objects across WebUI/API/managed-sync paths; direct filesystem control remains trusted. Roles and ACL-like administration views are convenience projections over the grant graph, while runtime enforcement continues through `PermissionGrant`, `PermissionGuard`, and `PermissionFilter`. Capability grants are unsigned vault objects; the signed key registry above only authenticates *who* changed them when a governed ingress policy requires signatures (§4.3).
-- **Chunk sizing:** Chunk sizes are configured in characters (`chunking.target_size`, default 4000 characters, estimated at 4 characters per token ≈ 1000 tokens). Embedding requests cap each input at the model's `max_input_tokens` using the same estimate and report truncated chunks. A lightweight tokenizer may replace the estimate later for model-specific accuracy.
+- **Chunk sizing:** Chunk sizes are configured in characters (`chunking.target_size`, default 4000 characters, estimated at 4 characters per token ≈ 1000 tokens). Embedding requests cap each input at the model's `max_input_tokens` using a script-aware version of that estimate (alphabetic text ≈ 4 characters per token; CJK, kana, Hangul, Thai, emoji and similar dense scripts ≈ 1 character per token) and report truncated chunks. Chunk sizing still uses the flat character estimate, so dense-script chunks hold more tokens than the nominal target and rely on that cap. A lightweight tokenizer may replace the estimate later for model-specific accuracy.
 - **CI:** GitHub Actions (`cargo test` + `clippy` + `fmt --check`), structured for future migration to Forgejo CI.
 
 ## 1. Project context and problem statement
@@ -113,7 +113,8 @@ Recommended approach:
 - CLI-initiated mutations such as `move` or `reindex` must acquire an application-level write lock before beginning their transaction. If the watcher is mid-update, the CLI command waits; if a CLI command is running, the watcher queues events and replays them after the lock is released.
 - The watcher should batch file system events into coalesced changesets before acquiring the write lock, rather than taking a write lock per event.
 - Vault-mutating operations (move, rename) must be atomic from the user's perspective: update the filesystem first, then update the cache within a single transaction. If the cache update fails, the filesystem change has already happened and the next reconciliation will repair the cache.
-- Long-running operations such as full reindex or batch embedding should use chunked transactions (e.g., commit every N documents) to avoid holding the write lock for minutes. This means partial progress is visible and a crash mid-reindex leaves the cache in a consistent but incomplete state, which reconciliation can repair.
+- Reconciliation only repairs the cache, never the vault, so multi-file vault mutations need their own recovery. A move first re-reads every file it will rewrite and refuses with a concurrent-modification error if any changed since planning, because external editors do not honor Vulcan's lock. It then writes a device-local move journal (original and planned contents plus the source/destination pair) before the first mutation. A failure mid-apply restores the files already changed. If the process dies before every file change has landed, the next move or scan rolls the journal back before doing anything else. Once the changes have all landed, the journal is marked applied and kept until the rename-aware scan commits, so a crash in that gap still preserves the moved document's identity. Journal paths are untrusted input: they must be normalized vault-relative paths, and recovery uses only the vault-contained file helpers. Rollback restores a file only while it still holds its original or Vulcan's planned bytes. The moved file itself goes back only while it matches the recorded source hash. A partial destination copy is removed. Edits made after an interruption always win. Other multi-file refactors should adopt the same journal before they claim atomicity.
+- A full rebuild currently runs as one transaction, so WAL readers keep seeing the previous complete snapshot until it commits and never observe a partial graph; the cost is that the write lock is held for the whole rebuild. Batch embedding commits per provider batch, so semantic results may omit chunks that are not embedded yet while indexing runs. If full rebuilds are ever split into chunked commits to shorten lock hold times, readers must be told the cache is mid-rebuild (for example via a rebuild marker surfaced in JSON output) rather than being handed an incomplete graph as if it were complete.
 - Never assume two concurrent CLI invocations coordinate with each other. If a user runs `move` in one terminal while `scan` runs in another, both must serialize through the same write lock. Use SQLite's `busy_timeout` as a backstop, but prefer the application-level lock to give better error messages.
 
 ### Workspace crate boundaries
@@ -291,7 +292,7 @@ Authority is explicit per route:
 
 Pulls materialize content or proxy notes through normal atomic vault workflows and quarantine removals by default. Pushes update only managed or explicitly bound objects and archive rather than permanently delete by default. Every route supports deterministic planning, structured reports, bounded retries, interruption-safe progress, secret sanitization, and direct CLI execution; the daemon adds schedules, dependencies, cancellation, and event triggers over the same service contracts.
 
-The first implemented route specialization uses `[integrations.routes.<name>]` for Outline and reuses `[publish.outline.profiles.<name>]` for API connection, outgoing selection, and rendering policy. The route adds direction, authority, contained local root, immutable-ID remote subtree selectors, exact document ID/path overrides, move/archive policy, work limits, and interval hints. Direct `integration plan|run|status` operations compose the existing pull and publisher planners, preserve their separate durable mappings, lock concurrent route runs, and checkpoint running/completed/failed outcomes under `.vulcan/integrations/routes/`. Exact existing-note adoption is explicit and never inserts synchronization frontmatter. Outline collection discovery and recoverable lifecycle operations are typed connector workflows; an opted-in publication may create a missing collection and atomically persist its returned immutable UUID before document reconciliation, while existing durable publication state prevents silent collection replacement. Generic connector profiles and authored portable binding projections remain Phase 15 work.
+The first implemented route specialization uses `[integrations.routes.<name>]` for Outline and reuses `[publish.outline.profiles.<name>]` for API connection, outgoing selection, and rendering policy. The route adds direction, authority, contained local root, immutable-ID remote subtree selectors, exact document ID/path overrides, move/archive policy, work limits, and interval hints. Direct `integration plan|run|status` operations compose the existing pull and publisher planners, preserve their separate durable mappings, lock concurrent route runs, and checkpoint running/completed/failed outcomes under `.vulcan/integrations/routes/`. Route mappings, pending creates, locks, and checkpoints are device-local operational state while the route definition is shared configuration, so a route must have exactly one applying device. `owner_device` names it: other devices may plan and dry-run, but a live run refuses. Without it, several synced devices would each allocate their own remote identities and publish duplicates. Scheduled daemon routes will reuse the same gate through their target node. Exact existing-note adoption is explicit and never inserts synchronization frontmatter. Outline collection discovery and recoverable lifecycle operations are typed connector workflows; an opted-in publication may create a missing collection and atomically persist its returned immutable UUID before document reconciliation, while existing durable publication state prevents silent collection replacement. Generic connector profiles and authored portable binding projections remain Phase 15 work.
 
 ### 4.3 Delegable capability authorization
 
@@ -325,7 +326,7 @@ Capability attenuation is monotonic:
 - a holder without explicit delegation authority cannot issue a child grant;
 - revoking a grant invalidates every descendant grant and credential derived from it.
 
-**Revocation and offline replicas.** Enforcement is local and eventual. A disconnected daemon or device keeps honouring the last accepted grant graph until an update that contains the revocation is accepted, so revocation latency is bounded by synchronization rather than by wall-clock time. This is an accepted limitation, not an oversight. Authority that must lapse while a replica is offline has to carry an explicit expiry, which attenuation lets a delegator impose and which every replica enforces with its own clock. Possession-based agent, automation, share, and session credentials should therefore be issued with short expiries; long-lived authority should belong to identities whose revocation can wait for the next sync.
+**Revocation and offline replicas.** Enforcement is local and eventual. A disconnected daemon or device keeps honouring the last accepted grant graph until an update that contains the revocation is accepted, so revocation latency is bounded by synchronization rather than by wall-clock time. That bound depends on attenuation-only changes being accepted at default Git ingress (see below); a replica whose ingress holds every authorization change would never receive the revocation at all. This is an accepted limitation, not an oversight. Authority that must lapse while a replica is offline has to carry an explicit expiry, which attenuation lets a delegator impose and which every replica enforces with its own clock. Possession-based agent, automation, share, and session credentials should therefore be issued with short expiries; long-lived authority should belong to identities whose revocation can wait for the next sync.
 
 Normal access is expressed through positive authority and default denial, not arbitrarily composable negative ACLs. Canonical policy objects may impose fail-closed, non-delegable ceilings such as disabled identities, forbidden control paths, prohibited network domains, or a read-only vault. Role names such as `owner`, `editor`, and `viewer` are ergonomic templates that issue capability bundles; they are not privileged bypasses. Groups are capability subjects whose current membership is resolved from canonical membership objects.
 
@@ -333,7 +334,17 @@ Authorization objects live under a configured reserved namespace such as `System
 
 Only secret or ephemeral authentication material stays outside the wiki: password verifiers, bearer-token hashes, OAuth/PKCE state, sessions, challenges, and rate/use counters. Public credential metadata—subject, audience, grant references, expiry, label, and revocation status—is canonical wiki content. User/group delegation creates a durable child grant through an authenticated workflow and never requires recipients to share an issuer's bearer token. Possession-based credentials are reserved for bounded agent, automation, service, session, and share use, with optional subject/device binding when bearer possession is not an adequate authenticator.
 
-Incoming Git changes are validated in a candidate tree before they replace the live vault. The default integration policy rejects changes to the reserved authorization namespace or its namespace configuration. An optional governed mode may accept them only after the complete capability graph validates and the change is authenticated by a configured ingress policy: either forge-reported protected-branch and CODEOWNERS approvals, or verified commit signatures mapped to canonical subjects whose authority covers every authorization mutation. Signatures authenticate a Git actor; they do not cryptographically anchor grant files, grant authority by themselves, or substitute for attenuation checks. Direct local Git/filesystem changes remain trusted, while malformed authorization state still fails closed for daemon clients.
+Incoming Git changes are validated in a candidate tree before they replace the live vault. The default integration policy distinguishes attenuating from widening authorization changes:
+
+- **Attenuating changes are accepted by default.** A change that only adds revocation objects, disables identities, or shortens expiries can only remove authority. It is accepted once the complete resulting capability graph validates. A forged revocation can at worst deny service, which fails closed. This is what makes the offline-revocation guarantee above hold under the default policy: without it, a revocation issued on another device would be rejected at ingress and never arrive.
+- **Every other change to the reserved namespace or its namespace configuration is held.** That covers new or widened grants, removed revocations or ceilings, identity or group membership changes, and namespace relocation.
+- **Holding blocks the whole candidate.** The sync cycle stops before applying it and reports a blocked-ingress state naming the offending paths. Content changes in the same candidate wait too. Applying only the non-authorization paths would produce a local merge that reverts the remote authorization change and then publishes that reversion back to every peer.
+- **A held change is resolved explicitly.** Either enable governed ingress (below) or re-author the change locally through the trusted `auth` workflows. An optional governed mode may accept them only after the complete capability graph validates and the change is authenticated by a configured ingress policy: either forge-reported protected-branch and CODEOWNERS approvals, or verified commit signatures mapped to canonical subjects whose authority covers every authorization mutation. Signatures authenticate a Git actor; they do not cryptographically anchor grant files, grant authority by themselves, or substitute for attenuation checks. Direct local Git/filesystem changes remain trusted, while malformed authorization state still fails closed for daemon clients.
+
+Two limits follow from this boundary and must be stated to operators rather than implied:
+
+- **Only managed sync is checked.** Ingress validation covers changes that arrive through Vulcan's managed synchronization. Third-party file sync tools (Syncthing, Obsidian Sync, iCloud, Dropbox, and similar) write straight into the worktree and are indistinguishable from trusted local filesystem control. A deployment that serves the vault to less-trusted subjects must make managed sync the only writer to that worktree.
+- **Managed sync authenticates devices, not subjects.** Ordinary content that arrives by Git is accepted as trusted device content, so per-subject write grants constrain daemon, API, and WebUI access but not what an enrolled device pushes. Enforcing subject grants on Git-borne content changes would need governed ingress with signatures mapped to subjects, which is not planned for the first Phase 17 release.
 
 Folder and tag selectors require transition-aware mutation checks. Moving a document, changing a security-relevant tag, or rewriting a selector-bearing object must be authorized against both the old and resulting states so a writer cannot expand their own authority by reclassification. Query, graph, vector, rendering, embed, export, publication, and collaborative-editing paths filter before producing derived output. This protects daemon/API/WebUI and managed-sync access; raw Markdown and authorization objects remain directly visible and editable to trusted principals with filesystem access.
 
@@ -370,17 +381,6 @@ Imported wiki packages materialize ordinary files below an explicit new vault de
 SQLite may later serialize the same wiki-package semantic model for offline web, mobile, WASM, or large transactional consumers. Such a database uses its own application ID and schema version, stores authoritative Markdown and asset bytes without lossy normalization, checkpoints transport state into one file, and marks any materialized indexes disposable. It is not a writable Vulcan vault or synchronization protocol. Supporting a directly editable SQLite-backed wiki would require a separately reviewed storage abstraction, revision model, merge semantics, and interoperability story; the rebuildable `.vulcan/cache.db` is never repurposed for it.
 
 ### 4.6 Vulcan App data and storage model
-
-Vault-owned scheduled execution is specified in [the scheduling contract](specs/scheduled-execution.md)
-and Roadmap 10.8. Canonical definitions select jobs, enabled state, and target nodes; the daemon
-live-reloads them without a second local schedule switch. Device configuration owns identity,
-credentials, permission ceilings, and optional admin-signature enforcement. One bounded scheduler
-invokes finite workflows; no distributed claims, coordinator, or automatic failover is planned.
-Repository-trust and trusted-commit policies share immutable execution identity and existing sandbox
-checks. Static allowed signers ship first; scoped accepted-registry authority and multiple isolated
-in-vault sigchains extend Phase 12.17 later. Execution trust never comes from merely syncing a key
-file. RSS imports retain portable canonical bindings so node handoff does not lose article identity;
-offline reassignment/revocation is eventual, and overlap remains recoverable rather than exactly once.
 
 The normative Phase 19 implementation target is `docs/specs/vulcan-app/v1/SPEC.md`, with its closed manifest schema, WIT component boundary, identity fixture, and per-example product contracts. The normative companion `docs/specs/vulcan-app/v1/IMPLEMENTATION_CONTRACTS.md` defines signature/migration declarations, API authorization, exact-number transport, document-bound browser channels, canonical SQLite snapshots, and staged delivery; `docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md` defines validation-scope authorization and journaled record writes. This section records the architectural rationale; when prose here is less specific, the versioned specification controls v1 behavior. Changing a frozen v1 requirement requires an explicit specification revision and compatibility review rather than an implementation-local interpretation.
 
@@ -481,9 +481,24 @@ File-tree synchronization is distinct from development-branch management and com
 
 Upstream semantic references: [Git sparse checkout](https://git-scm.com/docs/sparse-checkout), [partial clone](https://git-scm.com/docs/partial-clone), and [Git LFS fetch](https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-fetch.adoc). Pin tested Git/LFS versions and server capabilities when implementing the conformance matrix rather than inferring compatibility from these documents alone.
 
+### 4.8 Vault-owned scheduled execution
+
+Vault-owned scheduled execution is specified in [the scheduling contract](specs/scheduled-execution.md)
+and Roadmap 10.8. Canonical definitions select jobs, enabled state, and target nodes; the daemon
+live-reloads them without a second local schedule switch. Device configuration owns identity,
+credentials, permission ceilings, and optional admin-signature enforcement. One bounded scheduler
+invokes finite workflows; no distributed claims, coordinator, or automatic failover is planned.
+Repository-trust and trusted-commit policies share immutable execution identity and existing sandbox
+checks. Static allowed signers ship first; scoped accepted-registry authority and multiple isolated
+in-vault sigchains extend Phase 12.17 later. Execution trust never comes from merely syncing a key
+file. RSS imports retain portable canonical bindings so node handoff does not lose article identity;
+offline reassignment/revocation is eventual, and overlap remains recoverable rather than exactly once.
+
 ## 5. Data model overview
 
 The implementation should use stable internal identifiers rather than paths as primary keys. Paths move; identities should survive moves.
+
+Identity is preserved at the cache level in two ways. Vulcan's own moves pass an explicit old-path → new-path hint to the incremental scan, so the document keeps its identity even when the move also rewrote the note's own links. Moves made by other tools are matched by content: a new file takes over a deleted document's identity only when their content hash and extension match exactly one deleted document and exactly one new file. Duplicate or empty files never share an identity by guesswork. A preserved identity keeps dependent rows (chunks and their vectors, clusters, and suggestion state) instead of cascading them away. A full rebuild still allocates fresh identifiers, so anything that must survive a rebuild cannot rely on cache IDs alone (see §17b, *Graph intelligence surfaces*).
 
 Recommended logical entities:
 
@@ -550,7 +565,7 @@ The default chunker should produce heading-aware, paragraph-respecting chunks:
 
 1. Split at heading boundaries (any level). Each heading starts a new chunk. The heading text is included as the first line of its chunk.
 2. Within a heading section, split at paragraph boundaries if the section exceeds a target size (default: 4000 characters, configurable).
-3. Never split mid-paragraph, mid-list-item, mid-blockquote, or mid-code-block. If a single block exceeds the target size, keep it as one oversized chunk rather than breaking semantic units. Because an oversized chunk can exceed an embedding model's input limit, the vector indexer embeds at most `max_input_tokens × 4` characters of it and counts the chunk in the report's `truncated` field; FTS still indexes the full text.
+3. Never split mid-paragraph, mid-list-item, mid-blockquote, or mid-code-block. If a single block exceeds the target size, keep it as one oversized chunk rather than breaking semantic units. Because an oversized chunk can exceed an embedding model's input limit, the vector indexer embeds at most an estimated `max_input_tokens` of it (four alphabetic characters, or one dense-script character, per token) and counts the chunk in the report's `truncated` field; FTS still indexes the full text.
 4. Frontmatter is not a chunk. Properties are indexed separately.
 5. Each chunk carries contextual metadata: source document id, heading path (e.g., `["Section 1", "Subsection A"]`), chunk sequence index within the document, byte offset range in the source file, and content hash.
 
@@ -1106,7 +1121,7 @@ Vaults may have customized Dataview behavior via `.obsidian/plugins/dataview/dat
 | `primaryColumnName` | `"File"` | Header text for the auto-generated file column in TABLE |
 | `groupColumnName` | `"Group"` | Header text for the group key column |
 
-Vulcan should check for this file during vault initialization and merge discovered settings into its runtime config, with `.vulcan/config.toml` overrides taking precedence. Settings not found in the Dataview config file fall back to Vulcan defaults.
+This file is one of the frozen legacy runtime defaults (§14): it is read at config load beneath `.vulcan/config.toml` and `.vulcan/config.local.toml`, fills only values the Vulcan config leaves unset, and falls back to Vulcan defaults for missing keys. `vulcan config import` copies it into `.vulcan/config.toml` so a vault can stop depending on it. It is not a precedent for runtime reads of other plugin files.
 
 ### Inline expressions
 
@@ -1267,7 +1282,7 @@ Configuration sections and keys are named after native Vulcan capabilities, not 
 
 This file is loaded after `.vulcan/config.toml` and may override device-local Vulcan settings. It is intended for concerns such as endpoint URLs, API key environment variable names, connector executable paths, auto-refresh preferences, the `sync.merge_automation` review ceiling, the default-off `sync.agent_auto_accept` gate, or editor-adjacent workflow tuning that should not be synced back into the shared vault config. Repository identity and structure settings such as `[folder_notes]`, `sync.merge_policy`, and `sync.tree_validation` remain shared-only and local attempts to override them are diagnosed and ignored. Credential values never belong in either shared or local TOML when an environment variable or device secret store can supply them; configuration holds only structured references resolved through the device-local `SecretStore` designed in `docs/specs/device-key-custody.md`. Git-backed sync excludes this file from captured trees and worktree verification independently of user ignore rules.
 
-The default `.vulcan/.gitignore` should ignore `config.local.toml` while still tracking `config.toml`.
+The default `.vulcan/.gitignore` ignores everything under `.vulcan/` except `config.toml`, saved report definitions (`reports/*.toml`), and `.vulcan/templates/`, so `config.local.toml`, `cache.db`, the REPL history, and device-local operational state never travel with the vault while shared templates do. Existing ignore files are never rewritten.
 
 ### Configuration precedence
 
@@ -1275,7 +1290,7 @@ When multiple configuration sources exist, precedence is:
 
 1. `.vulcan/config.local.toml`
 2. `.vulcan/config.toml`
-3. `.obsidian/app.json`
+3. The frozen legacy `.obsidian` runtime defaults listed below (`app.json`, `types.json`, `templates.json`, `daily-notes.json`, and the listed plugin `data.json` files), which only fill values the Vulcan files leave unset
 4. Built-in defaults
 
 This allows users to keep a synced shared config while still overriding any setting locally without modifying the shared file or the Obsidian configuration. Plugin settings otherwise participate only through explicit import; the precedence list does not authorize runtime reads from `.obsidian/plugins/` beyond the frozen legacy set below.
@@ -1425,20 +1440,22 @@ Commands are organized into a two-level hierarchy using clap nested subcommand e
 
 The CLI's tool surface is designed for gradual discovery rather than loading all tool definitions upfront. This keeps context budgets manageable while making the full command surface accessible.
 
-**Core tools (always in the runtime's initial prompt, ~10):** The initial prompt for an external runtime such as `pi` should include full schemas for the most frequently used tools: `note_get`, `note_create`, `note_set`, `note_append`, `note_patch`, `search`, `query`, `update_property`, `unset_property`, `inbox`. These cover the vast majority of vault interactions.
+**Core tools (always in the runtime's initial prompt, ~10):** The initial prompt for an external runtime such as `pi` should include full schemas for the most frequently used commands: `note get`, `note outline`, `note create`, `note set`, `note append`, `note patch`, `note update`, `note unset`, `search`, `query`, and `inbox`. These cover the vast majority of vault interactions. MCP exposes the same operations under snake_case tool names (for example `note_get` and `note_patch`); see *MCP-specific discovery boundary* for which MCP packs are enabled by default.
 
 For generic MCP clients, the stable read/navigation surface also includes a compact high-level `daily` tool. It owns `latest`, `today`, `show`, `list`, and `range` operations; `latest` returns the newest existing note from the configured daily-note convention and can include content in one response. Legacy `daily_show` and `daily_list` remain available in the explicit daily pack for compatibility. Common navigation must not depend on a host honoring dynamic tool-list changes.
 
-**Discovery meta-tools (always available):**
+**Discovery commands (always available on the CLI):**
 - **`describe`** — returns a compact listing of all commands with one-line descriptions. Cheap to call, gives the LLM a map of what exists.
 - **`help <command>`** — returns the full schema for a specific command: parameters, types, defaults, examples. The LLM reads this right before calling an unfamiliar tool.
-- **`run_js`** — executes JavaScript in the sandboxed QuickJS runtime with the full vault API. Serves as an escape hatch for complex multi-step operations.
-- **`skill_list`** — returns all available skills with names and descriptions.
-- **`skill_get <name>`** — returns the full skill content (prompt, tool list, examples, patterns).
+- **`run`** — executes JavaScript in the sandboxed QuickJS runtime with the full vault API. Serves as an escape hatch for complex multi-step operations.
+- **`skill list`** — returns all available skills with names and descriptions.
+- **`skill get <name>`** — returns the full skill content (prompt, tool list, examples, patterns).
+
+Over MCP, discovery goes through the `help` and `capabilities` tools and through `resources` and `prompts` rather than these commands; MCP currently has no JavaScript escape-hatch tool.
 
 **Gradual discovery flow:** When the LLM needs to do something not covered by core tools, it calls `describe` to see what's available, then `help("graph path")` to get the full parameter schema, then calls the tool by name. This mirrors how humans use a CLI: know the basics, run `--help` when you need something else, write a script when it gets complex.
 
-**All tools callable by name:** Discovered tools don't need to be "loaded" — the agent dispatches by command name regardless. The schema just isn't in the initial prompt to save context budget. A strong model discovers and uses advanced tools fluidly; a weaker model sticks to core tools + `run_js` and still gets work done.
+**All tools callable by name:** Discovered tools don't need to be "loaded" — the agent dispatches by command name regardless. The schema just isn't in the initial prompt to save context budget. A strong model discovers and uses advanced tools fluidly; a weaker model sticks to core tools plus `run` and still gets work done.
 
 ### Skills as executable knowledge
 
@@ -1496,7 +1513,7 @@ The CLI/harness pattern above does **not** map 1:1 onto generic MCP clients.
 That means Vulcan should treat MCP as a **server-native discovery surface**, not just as "the CLI tool list over JSON-RPC". In practice:
 
 - The Phase 9 MCP baseline should speak **protocolVersion `2025-06-18`** and advertise `tools`, `resources`, `prompts`, and `completions`, with stdio remaining the default local transport and `vulcan mcp --transport http` exposing the same registry over Streamable HTTP for networked clients.
-- MCP `tools` should come from an explicit, permission-filtered registry with curated packs such as `core`, `extended`, and `admin`. Interactive/TUI/editor/desktop-launch commands are CLI affordances, not MCP tools, and `vulcan describe --format mcp` should reuse the same registry so export and live exposure do not drift.
+- MCP `tools` should come from an explicit, permission-filtered registry with curated packs. `notes-read`, `search`, and `status` are enabled by default; `daily`, `tasks`, `notes-write`, `notes-manage`, `graph`, `web`, `config`, `index`, `sync`, `custom` (vault skill commands), and `tool-packs` are opt-in. Interactive/TUI/editor/desktop-launch commands are CLI affordances, not MCP tools, and `vulcan describe --format mcp` should reuse the same registry so export and live exposure do not drift.
 - Tool calls should return `structuredContent` plus a text fallback, with JSON-RPC protocol failures kept separate from `isError` tool failures. Large payloads should be referenceable via stable `vulcan://...` resource URIs instead of being forced into one opaque text blob.
 - Command help, `AGENTS.md`, assistant config summaries, skill indexes/content, and similar reference material should be exposed over MCP `resources`, because generic MCP clients cannot rely on injected skills or out-of-band files.
 - Reusable workflow starters should be stored as prompt files in the vault's configured prompts folder and exposed through MCP `prompts`, not hidden in a server-only prompt catalog. Prompt and resource list changes should surface through the corresponding MCP notifications.
@@ -1514,7 +1531,7 @@ This keeps the subprocess harness story and the MCP story aligned in spirit whil
 
 Graph queries expose whether each edge was extracted directly from vault Markdown or inferred by Vulcan workflows. Extracted links use `confidence = EXTRACTED` and score `1.0`; accepted composite link suggestions insert cache-local `INFERRED` edges with the accepted suggestion score. This keeps the vault as source of truth while allowing graph algorithms, MCP clients, and JSON exports to distinguish found structure from curated recommendations.
 
-`graph communities` detects dense note clusters from the resolved link graph without requiring embeddings. Community reports include labels from shared tags, cohesion, top internal nodes, boundary notes, bridge candidates, and orphan-to-community hints. `suggest links` builds a ranked queue from graph proximity, text mentions, tag overlap, and community boundaries; user feedback is stored in `link_suggestions` so accepted suggestions become inferred graph edges and rejected pairs are deprioritized on later runs.
+`graph communities` detects dense note clusters from the resolved link graph without requiring embeddings. Community reports include labels from shared tags, cohesion, top internal nodes, boundary notes, bridge candidates, and orphan-to-community hints. `suggest links` builds a ranked queue from graph proximity, text mentions, tag overlap, and community boundaries; accepted suggestions become inferred graph edges and rejected pairs are deprioritized on later runs. Those decisions are user curation, not derived data: they are written to device-local operational state (`link-suggestion-feedback.json` under the vault's operational state directory), keyed by vault-relative path pair and updated when a rename keeps document identity. After each scan that changes the cache, including a full rebuild, the decisions are projected back into the rebuildable `link_suggestions` rows and `INFERRED` links. A corrupt or unsupported feedback file fails the scan with its path rather than silently discarding curation.
 
 Agent Skills-compatible `SKILL.md` files may declare Vulcan command metadata under `metadata.vulcan.commands`. The `skill` command group lists, shows, validates, and reports those command declarations so external harnesses can discover executable skill knowledge without preloading every skill body.
 

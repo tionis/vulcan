@@ -481,6 +481,9 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 - [x] Track note-to-attachment embed references for images, PDFs, audio, and video
 - [x] `doctor` checks for broken embeds and orphaned assets
 - [x] Extend move-safe rewrites to attachment renames and moves
+- [x] Keep document identity across Vulcan moves (explicit rename hint) and exact external renames (unique content-hash match), so chunks, vectors, and suggestion state survive renames
+- [x] Journal moves: verify rewritten files are unchanged since planning, roll back partial rewrites on failure, and roll back an interrupted journal at the next move or scan
+- [ ] Adopt the same journal for other multi-file refactors (tag merges, property renames, bulk rewrites) before documenting them as atomic
 - [x] Optional text extraction / OCR pipeline for PDFs and images to feed search and vectors
 - [x] Integration tests with attachment-heavy fixture vaults
 
@@ -6443,6 +6446,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 **Hosting dependency:** Daemon route scheduling uses 10.7's supervised workers and execution/mutation contract. Direct finite route operations remain independent; do not introduce a connector-specific resident server or watcher.
 
 - [x] Compose Outline pull/push directly without a daemon through authority-aware named route runs, route-level concurrency locks, durable status, all-route execution, and an interval-due `integration run --scheduled` entrypoint suitable for cron/systemd timers.
+- [x] Gate live route runs with an optional shared `owner_device` so mappings, pending creates, and locks that stay device-local cannot cause duplicate publication from a second synced device; plan and dry-run remain available everywhere.
+- [ ] Apply the same owner gate to daemon-scheduled routes through their target node, and report routes without `owner_device` in multi-device vaults as a validation warning.
 - [ ] Make plan/run/reconcile operations usable without the daemon through direct vault access. The daemon exposes the same request/report contracts, adds schedules, cancellation, status/history endpoints, and event-triggered runs, and serializes filesystem mutation through the same cross-process lock.
 - [ ] Route scheduled connector operations through 10.8's vault-owned node assignment and execution trust. Keep authoritative imported-document identities/reconciliation bindings portable for runner handoff, outside `cache.db`; fetch caches and local job history are not the only copy. No connector-specific timer or Git claim protocol.
 - [x] Add reusable phase/item Outline pull progress events and a cooperative cancellation callback to the app workflow; human CLI runs report listing, planning, applying, attachment download, scan, and completion phases, while structured output remains clean.
@@ -6684,7 +6689,7 @@ Existing Phase 9 profiles treat `write` as create/update/delete. Phase 17 adds f
 
 **Mutation safety:** folder moves, tag changes, note renames, and other classification-changing operations are checked against both the original and resulting resource states. Possessing write access to content is not enough to move it into a broader scope or attach a tag that expands the caller's effective authority.
 
-**Git and managed-sync ingress:** evaluate candidate changes before they replace the live working tree. The default Git/sync integration rejects any incoming diff touching the reserved authorization namespace or its namespace configuration. An optional governed mode may accept authorization changes only when both conditions hold:
+**Git and managed-sync ingress:** evaluate candidate changes before they replace the live working tree. The default Git/sync integration accepts attenuation-only authorization changes (added revocations, disabled identities, earlier expiries) once the complete candidate graph validates, so offline revocation propagates by sync. It holds every other incoming diff touching the reserved authorization namespace or its namespace configuration and blocks the whole candidate with a blocked-ingress report instead of applying non-authorization paths separately. Ingress validation covers only managed sync: third-party file-sync tools write as trusted filesystem control, and managed sync authenticates devices rather than subjects (design document §4.3). An optional governed mode may accept authorization changes only when both conditions hold:
 
 1. Vulcan parses the complete candidate authorization graph and proves identity-management authority, valid lineage, monotonic attenuation, and valid revocations.
 2. A configured ingress policy authenticates the change through either forge-reported protected-branch and CODEOWNERS approvals or verified commit signatures mapped to canonical subjects whose authority covers every authorization mutation.
@@ -6700,7 +6705,7 @@ CODEOWNERS without branch protection is advisory, not enforcement. A signature a
 - [ ] `vulcan auth grant check --subject <p> --action <a> --resource <r>` — explain contributing grants and canonical policy ceilings
 - [ ] Property tests prove that arbitrary attenuation sequences never widen authority
 - [ ] Regression tests cover groups, expiry, depth, revocation cascades, multiple independent parents, policy ceilings, old/new-state mutation checks, reserved-path bypasses, and full rebuild from canonical files
-- [ ] Git-ingress tests cover default rejection, namespace-setting changes, staged/candidate-tree validation, CODEOWNERS-without-protection rejection, required approvals, signer-to-subject authority checks, and mutation-free failure before the live tree changes
+- [ ] Git-ingress tests cover default acceptance of attenuation-only changes, default holding of widening changes with whole-candidate blocking, namespace-setting changes, staged/candidate-tree validation, CODEOWNERS-without-protection rejection, required approvals, signer-to-subject authority checks, and mutation-free failure before the live tree changes
 
 ### 17.3 Capability resolution and permission-filtered queries
 
@@ -7804,6 +7809,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 - [x] When a user accepts a `link_suggestions` entry (9.26.2), insert the corresponding row in `links` with `confidence = 'INFERRED', confidence_score = <suggestion score>`
 - [x] Accepted edges participate fully in graph queries (path, hubs, communities, components) but are visually distinct in output
 - [x] Recomputing suggestions for an already-accepted pair returns a note that a link exists (inferred), not a new suggestion
+- [x] Accept/reject decisions persist outside the cache in device-local operational state and are re-projected after rebuilds, source-note edits, and identity-preserving renames
 
 ### 9.27.4 CLI and MCP surfaces
 

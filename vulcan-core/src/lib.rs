@@ -71,6 +71,7 @@ pub mod init;
 pub mod js_transform;
 pub mod json_schema;
 pub mod kanban;
+mod link_feedback;
 pub mod maintenance;
 pub mod mdbase;
 pub mod move_rewrite;
