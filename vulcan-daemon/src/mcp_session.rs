@@ -13,7 +13,9 @@ use subtle::ConstantTimeEq;
 use ulid::Ulid;
 use vulcan_app::execution::ExecutionCancellationToken;
 use vulcan_app::mcp_dispatch::http_initialize_request;
+use vulcan_app::mcp_dispatch::McpHttpProcessResult;
 
+use crate::mcp_http_codec::McpHttpResponse;
 use crate::mcp_remote::McpRemoteId;
 use crate::registry::WikiId;
 
@@ -258,6 +260,61 @@ pub struct McpSessionRegistry<C> {
 }
 
 impl<C> McpSessionRegistry<C> {
+    /// Apply one completed protocol result to its session and render the
+    /// Streamable HTTP response. A timed-out/stale worker must not broadcast
+    /// events or leave its original session reusable.
+    pub fn finish_http_post(
+        &self,
+        resolved: ResolvedMcpSession<C>,
+        result: Result<McpHttpProcessResult, Value>,
+    ) -> McpHttpResponse {
+        let ResolvedMcpSession {
+            id,
+            session,
+            created,
+        } = resolved;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                if created {
+                    self.retire(&id);
+                }
+                return McpHttpResponse {
+                    status: 400,
+                    content_type: Some("application/json"),
+                    body: serde_json::to_vec(&error).expect("JSON-RPC error should serialize"),
+                    extra_headers: Vec::new(),
+                };
+            }
+        };
+        if result.session_stale {
+            self.retire(&id);
+        } else {
+            session.broadcast(&result.notifications);
+        }
+        if result.accepted_notification {
+            return McpHttpResponse {
+                status: 202,
+                content_type: None,
+                body: Vec::new(),
+                extra_headers: Vec::new(),
+            };
+        }
+        let response = result
+            .response
+            .expect("MCP HTTP requests should produce a JSON-RPC response");
+        let mut extra_headers = Vec::new();
+        if created && !result.session_stale {
+            extra_headers.push(("Mcp-Session-Id".to_string(), id));
+        }
+        McpHttpResponse {
+            status: 200,
+            content_type: Some("application/json"),
+            body: serde_json::to_vec(&response).expect("JSON-RPC response should serialize"),
+            extra_headers,
+        }
+    }
+
     /// Resolve a decoded HTTP POST against one authority. The host supplies
     /// only protocol-core construction for a valid initialization request.
     pub fn resolve_http<E>(
@@ -815,5 +872,91 @@ mod tests {
             .expect("resume owned session");
         assert!(!resumed.created);
         assert!(Arc::ptr_eq(&admitted.session, &resumed.session));
+    }
+
+    #[test]
+    fn http_finalization_broadcasts_or_retires_and_preserves_response_contract() {
+        let registry = McpSessionRegistry::new();
+        let owner = authority(
+            Ulid::new(),
+            "https://id.example/alice",
+            Ulid::new(),
+            "token",
+        );
+        let initialize = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"});
+        let resolved = registry
+            .resolve_http(&initialize, None, &owner, || Ok::<_, ()>(()))
+            .expect("initialize session");
+        let id = resolved.id.clone();
+        let receiver = resolved.session.register_subscriber();
+        let response = registry.finish_http_post(
+            resolved,
+            Ok(McpHttpProcessResult {
+                response: Some(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}})),
+                notifications: vec![
+                    serde_json::json!({"method":"notifications/tools/list_changed"}),
+                ],
+                accepted_notification: false,
+                session_stale: false,
+            }),
+        );
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, Some("application/json"));
+        assert_eq!(
+            response.extra_headers,
+            [("Mcp-Session-Id".to_string(), id.clone())]
+        );
+        assert_eq!(
+            receiver.try_recv().expect("broadcast")["method"],
+            "notifications/tools/list_changed"
+        );
+        assert!(registry.live(&id).is_some());
+
+        let request = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"ping"});
+        let resumed = registry
+            .resolve_http(&request, Some(&id), &owner, || Err::<(), _>(()))
+            .expect("resume session");
+        let accepted = registry.finish_http_post(
+            resumed,
+            Ok(McpHttpProcessResult {
+                response: None,
+                notifications: Vec::new(),
+                accepted_notification: true,
+                session_stale: false,
+            }),
+        );
+        assert_eq!(accepted.status, 202);
+        assert!(accepted.extra_headers.is_empty());
+
+        let resumed = registry
+            .resolve_http(&request, Some(&id), &owner, || Err::<(), _>(()))
+            .expect("resume session");
+        let stale = registry.finish_http_post(
+            resumed,
+            Ok(McpHttpProcessResult {
+                response: Some(serde_json::json!({"jsonrpc":"2.0","id":2,"result":{}})),
+                notifications: vec![
+                    serde_json::json!({"method":"notifications/tools/list_changed"}),
+                ],
+                accepted_notification: false,
+                session_stale: true,
+            }),
+        );
+        assert_eq!(stale.status, 200);
+        assert!(stale.extra_headers.is_empty());
+        assert!(registry.live(&id).is_none());
+        assert!(receiver.try_recv().is_err());
+
+        let failed = registry
+            .resolve_http(&initialize, None, &owner, || Ok::<_, ()>(()))
+            .expect("new session");
+        let failed_id = failed.id.clone();
+        let invalid = registry.finish_http_post(
+            failed,
+            Err(serde_json::json!({"jsonrpc":"2.0","id":1,"error":{"code":-32600}})),
+        );
+        assert_eq!(invalid.status, 400);
+        assert!(invalid.extra_headers.is_empty());
+        assert!(registry.live(&failed_id).is_none());
     }
 }

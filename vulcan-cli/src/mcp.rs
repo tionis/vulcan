@@ -128,7 +128,8 @@ use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime, N
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
 use vulcan_daemon::mcp_session::{
     McpCancellationError, McpHttpSession as HostedMcpHttpSession, McpSessionAuthority,
-    McpSessionRegistry, SessionAdmissionError, SessionLookupError, SessionResolutionError,
+    McpSessionRegistry, ResolvedMcpSession, SessionAdmissionError, SessionLookupError,
+    SessionResolutionError,
 };
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
@@ -1504,11 +1505,11 @@ fn handle_mcp_http_post(
     authority: &McpSessionAuthority,
     payload: &Value,
 ) -> McpHttpResponse {
-    let (session_id, session, created_session) =
-        match resolve_mcp_http_session(context, request, payload, authority) {
-            Ok(session) => session,
-            Err(response) => return response,
-        };
+    let resolved = match resolve_mcp_http_session(context, request, payload, authority) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+    let session = Arc::clone(&resolved.session);
 
     if payload.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
         return handle_mcp_cancellation_notification(payload, &session);
@@ -1527,59 +1528,18 @@ fn handle_mcp_http_post(
             .core
             .lock()
             .expect("mcp core lock should not be poisoned");
-        match core.process_http_request_with_timeout(
+        core.process_http_request_with_timeout(
             payload.clone(),
             context.request_timeout,
             context,
             request,
             authority,
             active_request.cancellation(),
-        ) {
-            Ok(result) => result,
-            Err(error_response) => {
-                if created_session {
-                    context.sessions.retire(&session_id);
-                }
-                return McpHttpResponse {
-                    status: 400,
-                    content_type: Some("application/json"),
-                    body: serde_json::to_vec(&error_response).expect("json should serialize"),
-                    extra_headers: Vec::new(),
-                };
-            }
-        }
+        )
     };
 
     drop(active_request);
-
-    if result.session_stale {
-        context.sessions.retire(&session_id);
-    } else {
-        session.broadcast(&result.notifications);
-    }
-
-    if result.accepted_notification {
-        return McpHttpResponse {
-            status: 202,
-            content_type: None,
-            body: Vec::new(),
-            extra_headers: Vec::new(),
-        };
-    }
-
-    let response_body = result
-        .response
-        .expect("MCP HTTP requests should produce a JSON-RPC response");
-    let mut extra_headers = Vec::new();
-    if created_session && !result.session_stale {
-        extra_headers.push(("Mcp-Session-Id".to_string(), session_id));
-    }
-    McpHttpResponse {
-        status: 200,
-        content_type: Some("application/json"),
-        body: serde_json::to_vec(&response_body).expect("json should serialize"),
-        extra_headers,
-    }
+    context.sessions.finish_http_post(resolved, result)
 }
 
 fn handle_mcp_cancellation_notification(
@@ -1630,7 +1590,7 @@ fn resolve_mcp_http_session(
     request: &McpHttpRequest,
     payload: &Value,
     authority: &McpSessionAuthority,
-) -> Result<(String, Arc<McpHttpSession>, bool), McpHttpResponse> {
+) -> Result<ResolvedMcpSession<McpServerCore>, McpHttpResponse> {
     let resolved = context
         .sessions
         .resolve_http(
@@ -1653,7 +1613,7 @@ fn resolve_mcp_http_session(
             SessionResolutionError::Lookup(error) => session_lookup_response(error),
             SessionResolutionError::Create(response) => response,
         })?;
-    Ok((resolved.id, resolved.session, resolved.created))
+    Ok(resolved)
 }
 
 fn create_mcp_http_core(

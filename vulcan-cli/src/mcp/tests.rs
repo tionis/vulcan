@@ -4470,7 +4470,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
         body: Vec::new(),
     };
     let authority = authenticate_mcp_http_request(&context, &request).expect("team authority");
-    let (team_session_id, session, _) = resolve_mcp_http_session(
+    let team_session = resolve_mcp_http_session(
         &context,
         &request,
         &serde_json::json!({"jsonrpc":"2.0","method":"initialize","id":1}),
@@ -4478,7 +4478,8 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
     )
     .expect("team session");
     assert_eq!(
-        session
+        team_session
+            .session
             .core
             .lock()
             .expect("core")
@@ -4513,7 +4514,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
     );
     let personal_authority =
         authenticate_mcp_http_request(&context, &personal_request).expect("personal authority");
-    let (_, personal_session, _) = resolve_mcp_http_session(
+    let personal_session = resolve_mcp_http_session(
         &context,
         &personal_request,
         &serde_json::json!({"jsonrpc":"2.0","method":"initialize","id":2}),
@@ -4522,6 +4523,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
     .expect("personal session");
     assert_eq!(
         personal_session
+            .session
             .core
             .lock()
             .expect("core")
@@ -4532,7 +4534,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
     );
     personal_request
         .headers
-        .insert("mcp-session-id".to_string(), team_session_id);
+        .insert("mcp-session-id".to_string(), team_session.id);
     assert!(
         resolve_mcp_http_session(
             &context,
