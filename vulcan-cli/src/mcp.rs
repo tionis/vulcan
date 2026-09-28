@@ -19,6 +19,7 @@ use std::fs;
 use std::io::Write;
 use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpStream};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "oauth")]
@@ -46,7 +47,7 @@ use vulcan_app::mcp_dispatch::{
 };
 use vulcan_app::mcp_help;
 use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION};
-use vulcan_app::mcp_session_protocol::McpSessionProtocol;
+use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
@@ -190,7 +191,21 @@ pub(crate) struct McpHttpOptions {
 
 #[derive(Debug, Clone)]
 struct McpServerCore {
-    session: vulcan_app::mcp_session::McpSessionState,
+    inner: McpProtocolCore,
+}
+
+impl Deref for McpServerCore {
+    type Target = McpProtocolCore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for McpServerCore {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 type McpHttpSession = HostedMcpHttpSession<McpServerCore>;
@@ -1815,12 +1830,17 @@ impl McpServerCore {
         let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
         let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
         Ok(Self {
-            session: vulcan_app::mcp_session::McpSessionState::new(
+            inner: McpProtocolCore::new(
                 paths,
                 requested_profile,
                 selected_tool_packs,
                 tool_pack_mode,
-                crate::custom_tool_registry_options,
+                McpProtocolHost {
+                    registry_options: crate::custom_tool_registry_options,
+                    command_help: resolve_command_help_for_mcp,
+                    help_candidates: help_topic_completion_candidates,
+                    server_version: env!("CARGO_PKG_VERSION"),
+                },
             )
             .map_err(permission_error_to_cli)?,
         })
@@ -2054,16 +2074,6 @@ impl McpServerCore {
             McpWorkerResult::SpawnFailed => unreachable!("handled before result dispatch"),
         }
     }
-
-    fn protocol(&mut self) -> McpSessionProtocol<'_> {
-        McpSessionProtocol::new(
-            &mut self.session,
-            crate::custom_tool_registry_options,
-            resolve_command_help_for_mcp,
-            help_topic_completion_candidates,
-            env!("CARGO_PKG_VERSION"),
-        )
-    }
 }
 
 impl McpMethodHandler for McpServerCore {
@@ -2072,11 +2082,11 @@ impl McpMethodHandler for McpServerCore {
         method: &str,
         params: Option<&Value>,
     ) -> Result<McpMethodOutcome, McpMethodError> {
-        self.protocol().handle_method(method, params)
+        self.inner.handle_method(method, params)
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
-        self.protocol().list_changed_notifications()
+        self.inner.list_changed_notifications()
     }
 }
 

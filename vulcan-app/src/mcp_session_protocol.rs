@@ -1,12 +1,76 @@
 //! Transport-neutral MCP protocol methods over one vault session.
 
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
+use vulcan_core::{PermissionError, VaultPaths};
 
+use crate::mcp_catalog::{McpToolPack, McpToolPackMode};
 use crate::mcp_dispatch::{dispatch_protocol_method, McpMethodHandler, McpProtocolMethods};
 use crate::mcp_help::HelpTopicReport;
 use crate::mcp_protocol::{self, McpCompletionParams, McpMethodError, McpMethodOutcome};
 use crate::mcp_session::McpSessionState;
 use crate::tools::CustomToolRegistryOptions;
+
+#[derive(Debug, Clone, Copy)]
+pub struct McpProtocolHost {
+    pub registry_options: fn() -> CustomToolRegistryOptions,
+    pub command_help: fn(&[String]) -> Result<HelpTopicReport, String>,
+    pub help_candidates: fn(&str) -> Vec<String>,
+    pub server_version: &'static str,
+}
+
+/// Persistent, transport-neutral protocol state for one MCP client session.
+#[derive(Debug, Clone)]
+pub struct McpProtocolCore {
+    pub session: McpSessionState,
+    host: McpProtocolHost,
+}
+
+impl McpProtocolCore {
+    pub fn new(
+        paths: &VaultPaths,
+        requested_profile: Option<&str>,
+        selected_packs: BTreeSet<McpToolPack>,
+        pack_mode: McpToolPackMode,
+        host: McpProtocolHost,
+    ) -> Result<Self, PermissionError> {
+        Ok(Self {
+            session: McpSessionState::new(
+                paths,
+                requested_profile,
+                selected_packs,
+                pack_mode,
+                host.registry_options,
+            )?,
+            host,
+        })
+    }
+
+    #[must_use]
+    pub fn protocol(&mut self) -> McpSessionProtocol<'_> {
+        McpSessionProtocol::new(
+            &mut self.session,
+            self.host.registry_options,
+            self.host.command_help,
+            self.host.help_candidates,
+            self.host.server_version,
+        )
+    }
+}
+
+impl McpMethodHandler for McpProtocolCore {
+    fn handle_method(
+        &mut self,
+        method: &str,
+        params: Option<&Value>,
+    ) -> Result<McpMethodOutcome, McpMethodError> {
+        self.protocol().handle_method(method, params)
+    }
+
+    fn list_changed_notifications(&mut self) -> Vec<Value> {
+        self.protocol().list_changed_notifications()
+    }
+}
 
 /// CLI and daemon adapters inject only host-specific help and reserved names.
 /// Discovery, tool execution, and method routing remain in the app layer.
@@ -115,7 +179,7 @@ impl McpMethodHandler for McpSessionProtocol<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::McpSessionProtocol;
+    use super::{McpProtocolCore, McpProtocolHost, McpSessionProtocol};
     use crate::mcp_catalog::{McpToolPack, McpToolPackMode};
     use crate::mcp_dispatch::McpMethodHandler;
     use crate::mcp_help::HelpTopicReport;
@@ -158,5 +222,35 @@ mod tests {
         let items = tools.response.unwrap()["tools"].as_array().unwrap().clone();
         assert!(items.iter().any(|tool| tool["name"] == "note_get"));
         assert!(!items.iter().any(|tool| tool["name"] == "note_create"));
+    }
+
+    #[test]
+    fn persistent_core_routes_methods_with_injected_host_catalog() {
+        let vault = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(vault.path());
+        let mut core = McpProtocolCore::new(
+            &paths,
+            Some("readonly"),
+            BTreeSet::from([McpToolPack::NotesRead]),
+            McpToolPackMode::Static,
+            McpProtocolHost {
+                registry_options: CustomToolRegistryOptions::default,
+                command_help: no_command_help,
+                help_candidates: no_help_candidates,
+                server_version: "app-core-test",
+            },
+        )
+        .unwrap();
+        let initialized = core.handle_method("initialize", None).unwrap();
+        assert_eq!(
+            initialized.response.unwrap()["serverInfo"]["version"],
+            "app-core-test"
+        );
+        let listed = core.handle_method("tools/list", None).unwrap();
+        assert!(listed.response.unwrap()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "note_get"));
     }
 }
