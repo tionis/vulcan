@@ -68,6 +68,7 @@ use vulcan_app::mcp_protocol::{
 use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
 use vulcan_app::mcp_scan;
 use vulcan_app::mcp_sync;
+use vulcan_app::mcp_tasks;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
@@ -77,11 +78,6 @@ use vulcan_app::notes::{
     NoteDeleteRequest, NoteGetOptions, NotePatchRequest, NoteReadMode, NoteSetRequest,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
-use vulcan_app::tasks::{
-    apply_task_complete, apply_task_complete_with_guard, apply_task_create,
-    apply_task_create_with_guard, apply_task_reschedule, apply_task_reschedule_with_guard,
-    TaskCompleteRequest, TaskCreateRequest, TaskRescheduleRequest,
-};
 use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor, CustomToolRunOptions};
 #[cfg(feature = "web")]
@@ -2682,108 +2678,32 @@ impl McpServerCore {
             }
             McpToolId::TaskCreate => {
                 let args: McpTaskCreateArgs = parse_tool_arguments(arguments)?;
-                let mut request = TaskCreateRequest {
-                    text: args.text,
-                    note: args.note,
-                    due: args.due,
-                    priority: args.priority,
-                    dry_run: true,
-                };
-                if !args.dry_run {
-                    let planned = apply_task_create(&self.paths, &request)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    for path in &planned.changed_paths {
-                        mcp_access::check_write_path_access(&self.guard, path)?;
-                    }
-                }
-                request.dry_run = args.dry_run;
-                let report = apply_task_create_with_guard(&self.paths, &request, Some(&self.guard))
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if !report.dry_run && !report.changed_paths.is_empty() {
-                    refresh_cache_incrementally(&self.paths)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                }
-                if !args.dry_run {
-                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                        .commit(
-                            &self.paths,
-                            "task-create",
-                            &report.changed_paths,
-                            Some(self.selection.name.as_str()),
-                            true,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.clone()))?;
-                }
+                let report = mcp_tasks::task_create(
+                    &self.paths,
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskComplete => {
                 let args: McpTaskCompleteArgs = parse_tool_arguments(arguments)?;
-                let mut request = TaskCompleteRequest {
-                    task: args.task,
-                    date: args.date,
-                    dry_run: true,
-                };
-                if !args.dry_run {
-                    let planned = apply_task_complete(&self.paths, &request)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    for path in &planned.changed_paths {
-                        mcp_access::check_write_path_access(&self.guard, path)?;
-                    }
-                }
-                request.dry_run = args.dry_run;
-                let report =
-                    apply_task_complete_with_guard(&self.paths, &request, Some(&self.guard))
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if !report.dry_run && !report.changed_paths.is_empty() {
-                    refresh_cache_incrementally(&self.paths)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                }
-                if !args.dry_run {
-                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                        .commit(
-                            &self.paths,
-                            "task-complete",
-                            &report.changed_paths,
-                            Some(self.selection.name.as_str()),
-                            true,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.clone()))?;
-                }
+                let report = mcp_tasks::task_complete(
+                    &self.paths,
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskReschedule => {
                 let args: McpTaskRescheduleArgs = parse_tool_arguments(arguments)?;
-                let mut request = TaskRescheduleRequest {
-                    task: args.task,
-                    due: args.due,
-                    dry_run: true,
-                };
-                if !args.dry_run {
-                    let planned = apply_task_reschedule(&self.paths, &request)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                    for path in &planned.changed_paths {
-                        mcp_access::check_write_path_access(&self.guard, path)?;
-                    }
-                }
-                request.dry_run = args.dry_run;
-                let report =
-                    apply_task_reschedule_with_guard(&self.paths, &request, Some(&self.guard))
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                if !report.dry_run && !report.changed_paths.is_empty() {
-                    refresh_cache_incrementally(&self.paths)
-                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                }
-                if !args.dry_run {
-                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
-                        .commit(
-                            &self.paths,
-                            "task-reschedule",
-                            &report.changed_paths,
-                            Some(self.selection.name.as_str()),
-                            true,
-                        )
-                        .map_err(|error| McpMethodError::tool(error.clone()))?;
-                }
+                let report = mcp_tasks::task_reschedule(
+                    &self.paths,
+                    &self.guard,
+                    self.selection.name.as_str(),
+                    args,
+                )?;
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteCreate => {
