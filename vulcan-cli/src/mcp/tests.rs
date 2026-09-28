@@ -17,6 +17,16 @@ use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_http_routes::classify_mcp_http_route;
 
+#[cfg(feature = "oauth")]
+fn handle_test_mcp_http_post(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+) -> McpHttpResponse {
+    let payload = serde_json::from_slice(&request.body).expect("test MCP POST payload");
+    handle_mcp_http_post(context, request, authority, &payload)
+}
+
 #[test]
 fn stdio_and_http_reads_refuse_a_pending_ordinary_write_journal() {
     #[derive(serde::Serialize)]
@@ -3897,7 +3907,7 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
         .expect("cancellation JSON"),
     };
     assert_eq!(
-        handle_mcp_http_post(
+        handle_test_mcp_http_post(
             &context,
             &request(serde_json::json!({"requestId": 17})),
             &other_authority,
@@ -3907,7 +3917,7 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
     );
     assert!(!cancellation.is_cancelled());
     assert_eq!(
-        handle_mcp_http_post(&context, &request(serde_json::json!({})), &authority).status,
+        handle_test_mcp_http_post(&context, &request(serde_json::json!({})), &authority).status,
         400
     );
     assert!(!cancellation.is_cancelled());
@@ -3919,7 +3929,7 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
     let (sender, receiver) = mpsc::channel();
     let worker = thread::spawn(move || {
         sender
-            .send(handle_mcp_http_post(
+            .send(handle_test_mcp_http_post(
                 &worker_context,
                 &worker_request,
                 &worker_authority,
@@ -5061,7 +5071,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
     let worker_http = http.clone();
     let worker_authority = authority.clone();
     let worker = thread::spawn(move || {
-        handle_mcp_http_post(&worker_http, &write_request, &worker_authority)
+        handle_test_mcp_http_post(&worker_http, &write_request, &worker_authority)
     });
     let mut operation_id = None;
     for _ in 0..100 {
@@ -5082,7 +5092,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
         "params": {"requestId": 41, "reason": "test cancellation"}
     }));
     assert_eq!(
-        handle_mcp_http_post(&http, &cancel_request, &authority).status,
+        handle_test_mcp_http_post(&http, &cancel_request, &authority).status,
         202
     );
     drop(held);

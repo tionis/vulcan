@@ -80,8 +80,7 @@ use vulcan_daemon::hosted_jobs::HostedJobLedger;
 use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
 use vulcan_daemon::mcp_http_codec::{
-    parse_mcp_http_post, validate_mcp_protocol_version, validate_mcp_sse_accept,
-    write_mcp_http_response, McpHttpRequest, McpHttpResponse,
+    validate_mcp_sse_accept, write_mcp_http_response, McpHttpRequest, McpHttpResponse,
 };
 use vulcan_daemon::mcp_http_routes::{
     dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
@@ -1371,6 +1370,18 @@ impl McpHttpRouteHandler for McpHttpServerContext {
         authenticate_mcp_http_request(self, request)
     }
 
+    fn authorize_scope(
+        &self,
+        authority: &Self::Authority,
+        required: &str,
+    ) -> Result<(), McpHttpResponse> {
+        if authority.allows_scope(required) {
+            Ok(())
+        } else {
+            Err(insufficient_scope_response(self, required))
+        }
+    }
+
     fn operation_status(&self, authority: &Self::Authority, operation_id: &str) -> McpHttpResponse {
         #[cfg(feature = "oauth")]
         {
@@ -1383,8 +1394,13 @@ impl McpHttpRouteHandler for McpHttpServerContext {
         }
     }
 
-    fn post(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse {
-        handle_mcp_http_post(self, request, authority)
+    fn post(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        payload: &Value,
+    ) -> McpHttpResponse {
+        handle_mcp_http_post(self, request, authority, payload)
     }
 
     fn sse(
@@ -1479,32 +1495,19 @@ fn handle_mcp_http_post(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
+    payload: &Value,
 ) -> McpHttpResponse {
-    let payload = match parse_mcp_http_post(request) {
-        Ok(payload) => payload,
-        Err(error) => {
-            return mcp_http_json_error_response(error.status, error.message, Value::Null)
-        }
-    };
-    if let Some(required) = mcp_protocol::required_scope_for_request(&payload) {
-        if !authority.allows_scope(required) {
-            return insufficient_scope_response(context, required);
-        }
-    }
-    if let Err(error) = validate_mcp_protocol_version(request) {
-        return mcp_http_json_error_response(error.status, error.message, Value::Null);
-    }
     let (session_id, session, created_session) =
-        match resolve_mcp_http_session(context, request, &payload, authority) {
+        match resolve_mcp_http_session(context, request, payload, authority) {
             Ok(session) => session,
             Err(response) => return response,
         };
 
     if payload.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
-        return handle_mcp_cancellation_notification(&payload, &session);
+        return handle_mcp_cancellation_notification(payload, &session);
     }
 
-    let active_id = request_id(&payload);
+    let active_id = request_id(payload);
     let cancellation = ExecutionCancellationToken::default();
     if !register_mcp_http_request(&session, active_id.as_ref(), &cancellation) {
         return mcp_http_json_error_response(

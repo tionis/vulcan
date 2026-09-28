@@ -3,11 +3,15 @@
 //! The daemon owns path and method routing. Authentication, OAuth policy, and
 //! protocol operations are supplied by the host behind this transport boundary.
 
-use crate::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
+use crate::mcp_http_codec::{
+    parse_mcp_http_post, validate_mcp_protocol_version, write_mcp_http_response, McpHttpRequest,
+    McpHttpResponse,
+};
 use serde_json::Value;
 use std::io;
 use std::net::TcpStream;
 use vulcan_app::mcp_dispatch::jsonrpc_error;
+use vulcan_app::mcp_protocol::required_scope_for_request;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpHttpRoute<'a> {
@@ -35,8 +39,18 @@ pub trait McpHttpRouteHandler {
 
     fn oauth(&self, request: &McpHttpRequest, route: McpHttpRoute<'_>) -> McpHttpResponse;
     fn authenticate(&self, request: &McpHttpRequest) -> Result<Self::Authority, McpHttpResponse>;
+    fn authorize_scope(
+        &self,
+        authority: &Self::Authority,
+        required: &str,
+    ) -> Result<(), McpHttpResponse>;
     fn operation_status(&self, authority: &Self::Authority, operation_id: &str) -> McpHttpResponse;
-    fn post(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse;
+    fn post(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        payload: &Value,
+    ) -> McpHttpResponse;
     fn sse(
         &self,
         request: &McpHttpRequest,
@@ -84,7 +98,7 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
                 Err(response) => return write_mcp_http_response(stream, &response),
             };
             match request.method.as_str() {
-                "POST" => handler.post(request, &authority),
+                "POST" => dispatch_mcp_post(request, &authority, handler),
                 "GET" => return handler.sse(request, &authority, stream),
                 "DELETE" => handler.delete(request, &authority),
                 _ => route_error(405, "Method Not Allowed"),
@@ -92,6 +106,26 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
         }
     };
     write_mcp_http_response(stream, &response)
+}
+
+fn dispatch_mcp_post<H: McpHttpRouteHandler>(
+    request: &McpHttpRequest,
+    authority: &H::Authority,
+    handler: &H,
+) -> McpHttpResponse {
+    let payload = match parse_mcp_http_post(request) {
+        Ok(payload) => payload,
+        Err(error) => return route_error(error.status, &error.message),
+    };
+    if let Some(required) = required_scope_for_request(&payload) {
+        if let Err(response) = handler.authorize_scope(authority, required) {
+            return response;
+        }
+    }
+    if let Err(error) = validate_mcp_protocol_version(request) {
+        return route_error(error.status, &error.message);
+    }
+    handler.post(request, authority, &payload)
 }
 
 fn route_error(status: u16, message: &str) -> McpHttpResponse {
@@ -178,6 +212,22 @@ mod tests {
         }
     }
 
+    fn post_request(method: &str) -> McpHttpRequest {
+        let mut request = request("POST", "/mcp");
+        request
+            .headers
+            .insert("content-type".to_string(), "application/json".to_string());
+        request.headers.insert(
+            "accept".to_string(),
+            "application/json, text/event-stream".to_string(),
+        );
+        request.body = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method
+        }))
+        .unwrap();
+        request
+    }
+
     #[test]
     fn metadata_routes_accept_root_endpoint_and_oidc_forms_only_for_get() {
         for path in [
@@ -256,6 +306,7 @@ mod tests {
     struct RecordingHandler {
         calls: RefCell<Vec<&'static str>>,
         deny_auth: bool,
+        deny_scope: bool,
     }
 
     impl McpHttpRouteHandler for RecordingHandler {
@@ -275,12 +326,23 @@ mod tests {
             }
         }
 
+        fn authorize_scope(&self, (): &(), required: &str) -> Result<(), McpHttpResponse> {
+            assert_eq!(required, "mcp:tools");
+            self.calls.borrow_mut().push("scope");
+            if self.deny_scope {
+                Err(route_error(403, "insufficient_scope"))
+            } else {
+                Ok(())
+            }
+        }
+
         fn operation_status(&self, (): &(), _: &str) -> McpHttpResponse {
             self.calls.borrow_mut().push("operation");
             route_error(200, "operation")
         }
 
-        fn post(&self, _: &McpHttpRequest, (): &()) -> McpHttpResponse {
+        fn post(&self, _: &McpHttpRequest, (): &(), payload: &Value) -> McpHttpResponse {
+            assert_eq!(payload["method"], "tools/list");
             self.calls.borrow_mut().push("post");
             route_error(200, "post")
         }
@@ -315,7 +377,7 @@ mod tests {
                 &["authenticate", "operation"][..],
             ),
             ("OPTIONS", "/mcp", 405, &["authenticate"][..]),
-            ("POST", "/mcp", 200, &["authenticate", "post"][..]),
+            ("POST", "/mcp", 200, &["authenticate", "scope", "post"][..]),
             ("GET", "/mcp", 200, &["authenticate", "sse"][..]),
             ("DELETE", "/mcp", 200, &["authenticate", "delete"][..]),
         ] {
@@ -323,8 +385,12 @@ mod tests {
             let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
             let (mut server, _) = listener.accept().unwrap();
             let handler = RecordingHandler::default();
-            dispatch_mcp_http_request(&request(method, path), &mut server, &options, &handler)
-                .unwrap();
+            let inbound = if method == "POST" && path == "/mcp" {
+                post_request("tools/list")
+            } else {
+                request(method, path)
+            };
+            dispatch_mcp_http_request(&inbound, &mut server, &options, &handler).unwrap();
             drop(server);
             let mut response = String::new();
             client.read_to_string(&mut response).unwrap();
@@ -334,6 +400,30 @@ mod tests {
             );
             assert_eq!(*handler.calls.borrow(), calls, "{method} {path}");
         }
+    }
+
+    #[test]
+    fn post_preflight_decodes_then_checks_scope_then_version_before_host_dispatch() {
+        let handler = RecordingHandler::default();
+        let malformed = request("POST", "/mcp");
+        assert_eq!(dispatch_mcp_post(&malformed, &(), &handler).status, 400);
+        assert!(handler.calls.borrow().is_empty());
+
+        let denied = RecordingHandler {
+            deny_scope: true,
+            ..RecordingHandler::default()
+        };
+        let valid = post_request("tools/list");
+        assert_eq!(dispatch_mcp_post(&valid, &(), &denied).status, 403);
+        assert_eq!(*denied.calls.borrow(), ["scope"]);
+
+        let mut wrong_version = post_request("tools/list");
+        wrong_version.headers.insert(
+            "mcp-protocol-version".to_string(),
+            "unsupported".to_string(),
+        );
+        assert_eq!(dispatch_mcp_post(&wrong_version, &(), &handler).status, 400);
+        assert_eq!(*handler.calls.borrow(), ["scope"]);
     }
 
     #[test]
