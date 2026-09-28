@@ -12,7 +12,7 @@ use catalog::{
     resolve_selected_tool_packs, visible_tool_catalog, McpToolPack, McpToolPackMode,
 };
 use fs2::FileExt;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(feature = "oauth")]
@@ -40,15 +40,13 @@ use vulcan_app::mcp_assistant;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
-    acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
-    process_http_request, process_stdio_request, request_id, timeout_http_result,
-    timeout_response_for_request, McpHttpProcessResult, McpMethodHandler, McpProtocolMethods,
+    acquire_request_ordinary_write_gate, jsonrpc_error, process_http_request,
+    process_stdio_request, request_id, timeout_http_result, timeout_response_for_request,
+    McpHttpProcessResult, McpMethodHandler,
 };
 use vulcan_app::mcp_help;
-use vulcan_app::mcp_protocol;
-use vulcan_app::mcp_protocol::{
-    McpCompletionParams, McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION,
-};
+use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION};
+use vulcan_app::mcp_session_protocol::McpSessionProtocol;
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
@@ -2057,83 +2055,14 @@ impl McpServerCore {
         }
     }
 
-    fn handle_method(
-        &mut self,
-        method: &str,
-        params: Option<&Value>,
-    ) -> Result<McpMethodOutcome, McpMethodError> {
-        dispatch_protocol_method(self, method, params)
-    }
-
-    fn initialize_result(&self) -> Value {
-        mcp_protocol::initialization_result(
-            &self.session.active_tool_names(),
+    fn protocol(&mut self) -> McpSessionProtocol<'_> {
+        McpSessionProtocol::new(
+            &mut self.session,
+            crate::custom_tool_registry_options,
+            resolve_command_help_for_mcp,
+            help_topic_completion_candidates,
             env!("CARGO_PKG_VERSION"),
         )
-    }
-}
-
-impl McpProtocolMethods for McpServerCore {
-    fn initialize_result(&self) -> Value {
-        McpServerCore::initialize_result(self)
-    }
-
-    fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        self.session.discovery(&registry).visible_tool_items()
-    }
-
-    fn call_tool(
-        &mut self,
-        name: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Value, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        self.session.call_tool(&registry, name, arguments)
-    }
-
-    fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        self.session.discovery(&registry).visible_prompt_items()
-    }
-
-    fn get_prompt(
-        &self,
-        name: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Value, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        self.session
-            .discovery(&registry)
-            .get_prompt(name, arguments)
-    }
-
-    fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        self.session.discovery(&registry).visible_resources()
-    }
-
-    fn visible_resource_templates(&self) -> Vec<Value> {
-        let registry = crate::custom_tool_registry_options();
-        self.session
-            .discovery(&registry)
-            .visible_resource_templates()
-    }
-
-    fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        self.session
-            .discovery(&registry)
-            .read_resource(uri, |topic_path| {
-                resolve_help_topic(topic_path).map_err(|error| error.message)
-            })
-    }
-
-    fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
-        let registry = crate::custom_tool_registry_options();
-        self.session
-            .discovery(&registry)
-            .complete(params, &help_topic_completion_candidates(""))
     }
 }
 
@@ -2143,13 +2072,18 @@ impl McpMethodHandler for McpServerCore {
         method: &str,
         params: Option<&Value>,
     ) -> Result<McpMethodOutcome, McpMethodError> {
-        McpServerCore::handle_method(self, method, params)
+        self.protocol().handle_method(method, params)
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
-        self.session
-            .list_changed_notifications(crate::custom_tool_registry_options)
+        self.protocol().list_changed_notifications()
     }
+}
+
+fn resolve_command_help_for_mcp(
+    topic_path: &[String],
+) -> Result<mcp_help::HelpTopicReport, String> {
+    resolve_help_topic(topic_path).map_err(|error| error.message)
 }
 
 fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr, CliError> {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::McpToolPackModeArg;
+use serde_json::Map;
 #[cfg(feature = "oauth")]
 use std::io::Read;
 use std::io::Write;
@@ -7,6 +8,7 @@ use std::net::TcpListener;
 #[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use vulcan_app::mcp_dispatch::McpProtocolMethods;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::McpWebFetchArgs;
 #[cfg(feature = "oauth")]
@@ -5522,6 +5524,7 @@ fn sync_tools_require_full_read_and_git_and_remain_mutation_free() {
     )
     .expect("MCP core should initialize");
     let result = core
+        .protocol()
         .call_tool("sync_doctor", &Map::new())
         .expect("read-only sync doctor should execute");
     assert_eq!(result["isError"].as_bool(), Some(false));
@@ -5544,12 +5547,13 @@ fn daily_wiki_agent_can_use_index_scan_when_index_pack_is_selected() {
     )
     .expect("MCP core should initialize");
 
-    let tools = core.visible_tool_items().expect("visible tools");
+    let tools = core.protocol().visible_tool_items().expect("visible tools");
     assert!(
         tools.iter().any(|tool| tool["name"] == "index_scan"),
         "index pack should expose index_scan under daily-wiki-agent"
     );
     let result = core
+        .protocol()
         .call_tool("index_scan", &Map::new())
         .expect("daily-wiki-agent should be allowed to scan");
     assert_eq!(result["isError"].as_bool(), Some(false));
@@ -5580,17 +5584,24 @@ fn mcp_config_tools_preserve_dry_run_apply_and_show_report_shapes() {
         ("dry_run".to_string(), Value::Bool(true)),
         ("no_commit".to_string(), Value::Bool(true)),
     ]);
-    let preview = core.call_tool("config_set", &set).expect("config preview");
+    let preview = core
+        .protocol()
+        .call_tool("config_set", &set)
+        .expect("config preview");
     assert_eq!(preview["isError"], false);
     assert_eq!(preview["structuredContent"]["dry_run"], true);
     assert!(!paths.config_file().exists());
 
     set.insert("dry_run".to_string(), Value::Bool(false));
-    let applied = core.call_tool("config_set", &set).expect("config apply");
+    let applied = core
+        .protocol()
+        .call_tool("config_set", &set)
+        .expect("config apply");
     assert_eq!(applied["isError"], false);
     assert_eq!(applied["structuredContent"]["updated"], true);
     assert!(paths.config_file().exists());
     let show = core
+        .protocol()
         .call_tool(
             "config_show",
             &Map::from_iter([(
