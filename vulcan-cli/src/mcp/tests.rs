@@ -751,11 +751,31 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{foreground_init}"
     );
     let foreground_session = named_listener_session_id(&foreground_init);
-    assert_named_listener_rejects_same_policy_other_grant(
+    assert_named_listener_rejects_foreign_credential(
         address,
         &token,
         &same_authority_peer_token,
         &foreground_session,
+    );
+    let consent_session = named_listener_session_id(&named_listener_initialize(
+        address,
+        "parity",
+        &foreground_consent_token,
+    ));
+    // Access-token claims have second precision; cross that boundary so the
+    // refresh yields a distinct bearer credential for the same grant.
+    thread::sleep(Duration::from_millis(1100));
+    let foreground_first_refresh =
+        named_listener_refresh_token(address, &client, &foreground_refresh_token);
+    let foreground_first_refreshed_access = foreground_first_refresh["access_token"]
+        .as_str()
+        .expect("first refreshed access token");
+    assert_ne!(foreground_first_refreshed_access, foreground_consent_token);
+    assert_named_listener_rejects_foreign_credential(
+        address,
+        &foreground_consent_token,
+        foreground_first_refreshed_access,
+        &consent_session,
     );
     let foreground_tools = named_listener_tools(address, "parity", &token, &foreground_session);
     assert!(
@@ -1135,21 +1155,45 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             .as_str()
             .expect("public refreshed access token"),
     );
-    let refreshed_foreground =
-        named_listener_refresh_token(address, &client, &foreground_refresh_token);
+    let refreshed_foreground = named_listener_refresh_token(
+        address,
+        &client,
+        foreground_first_refresh["refresh_token"]
+            .as_str()
+            .expect("first rotated refresh token"),
+    );
     let refreshed_foreground_access = refreshed_foreground["access_token"]
         .as_str()
         .expect("refreshed access token");
     named_listener_assert_consented_tools(address, refreshed_foreground_access);
-    let (resident_consent_token, _) = named_listener_complete_browser_consent(address, &client);
+    let (resident_consent_token, resident_refresh_token) =
+        named_listener_complete_browser_consent(address, &client);
     named_listener_assert_consented_tools(address, &resident_consent_token);
     let (public_resident_token, _) =
         named_listener_complete_browser_consent(address, &public_client);
     named_listener_assert_consented_tools(address, &public_resident_token);
+    let resident_consent_session = named_listener_session_id(&named_listener_initialize(
+        address,
+        "parity",
+        &resident_consent_token,
+    ));
+    thread::sleep(Duration::from_millis(1100));
+    let resident_refreshed =
+        named_listener_refresh_token(address, &client, &resident_refresh_token);
+    let resident_refreshed_access = resident_refreshed["access_token"]
+        .as_str()
+        .expect("resident refreshed access token");
+    assert_ne!(resident_refreshed_access, resident_consent_token);
+    assert_named_listener_rejects_foreign_credential(
+        address,
+        &resident_consent_token,
+        resident_refreshed_access,
+        &resident_consent_session,
+    );
     let resident_init = named_listener_initialize(address, "parity", &token);
     assert!(resident_init.starts_with("HTTP/1.1 200"), "{resident_init}");
     let resident_session = named_listener_session_id(&resident_init);
-    assert_named_listener_rejects_same_policy_other_grant(
+    assert_named_listener_rejects_foreign_credential(
         address,
         &token,
         &same_authority_peer_token,
@@ -1588,7 +1632,7 @@ fn named_listener_method_with_params(
 }
 
 #[cfg(feature = "oauth")]
-fn assert_named_listener_rejects_same_policy_other_grant(
+fn assert_named_listener_rejects_foreign_credential(
     address: SocketAddr,
     owner_token: &str,
     peer_token: &str,
