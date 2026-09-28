@@ -15,8 +15,6 @@ use fs2::FileExt;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-#[cfg(feature = "oauth")]
-use std::io::Write;
 use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpStream};
 use std::ops::{Deref, DerefMut};
@@ -2575,6 +2573,7 @@ fn load_or_create_secret_file(path: &Path, label: &str) -> Result<String, CliErr
 #[cfg(all(unix, feature = "oauth"))]
 fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
     use std::fs::OpenOptions;
+    use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
     let mut file = OpenOptions::new()
