@@ -14,6 +14,22 @@ pub const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 pub const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
 const MCP_DAILY_LIST_DEFAULT_LIMIT: usize = 20;
 
+/// Coarse OAuth scope required for a protocol method. Fine-grained vault
+/// permissions are checked separately by the selected application workflow.
+#[must_use]
+pub fn required_scope_for_request(payload: &Value) -> Option<&'static str> {
+    let method = payload.get("method")?.as_str()?;
+    if method.starts_with("tools/") {
+        Some("mcp:tools")
+    } else if method.starts_with("resources/") {
+        Some("mcp:resources")
+    } else if method.starts_with("prompts/") {
+        Some("mcp:prompts")
+    } else {
+        None
+    }
+}
+
 #[must_use]
 pub fn routing_guidance(active_tool_names: &[String]) -> Vec<&'static str> {
     let active = active_tool_names
@@ -822,6 +838,25 @@ fn default_web_limit() -> usize {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn request_scopes_cover_all_protocol_namespaces_without_granting_unknown_methods() {
+        for (method, scope) in [
+            ("tools/call", Some("mcp:tools")),
+            ("tools/list", Some("mcp:tools")),
+            ("resources/read", Some("mcp:resources")),
+            ("resources/templates/list", Some("mcp:resources")),
+            ("prompts/get", Some("mcp:prompts")),
+            ("initialize", None),
+            ("notifications/cancelled", None),
+        ] {
+            assert_eq!(
+                required_scope_for_request(&json!({"method": method})),
+                scope
+            );
+        }
+        assert_eq!(required_scope_for_request(&json!({"method": 4})), None);
+    }
 
     #[test]
     fn shared_request_defaults_preserve_mcp_limits() {

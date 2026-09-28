@@ -49,6 +49,57 @@ impl McpHttpReadError {
     }
 }
 
+/// Validate the HTTP envelope and decode one MCP JSON-RPC POST body.
+/// Authentication and OAuth-scope checks remain separate host policy.
+pub fn parse_mcp_http_post(request: &McpHttpRequest) -> Result<Value, McpHttpReadError> {
+    if !request
+        .headers
+        .get("content-type")
+        .is_some_and(|value| value.contains("application/json"))
+    {
+        return Err(McpHttpReadError::bad_request(
+            "MCP POST requests require Content-Type: application/json",
+        ));
+    }
+    if !request.headers.get("accept").is_some_and(|value| {
+        value.contains("application/json") && value.contains("text/event-stream")
+    }) {
+        return Err(McpHttpReadError::bad_request(
+            "MCP POST requests require Accept: application/json, text/event-stream",
+        ));
+    }
+    serde_json::from_slice(&request.body)
+        .map_err(|error| McpHttpReadError::bad_request(format!("Parse error: {error}")))
+}
+
+pub fn validate_mcp_protocol_version(request: &McpHttpRequest) -> Result<(), McpHttpReadError> {
+    let Some(version) = request.headers.get("mcp-protocol-version") else {
+        return Ok(());
+    };
+    if version == vulcan_app::mcp_protocol::MCP_PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(McpHttpReadError::bad_request(format!(
+            "unsupported MCP-Protocol-Version `{version}`"
+        )))
+    }
+}
+
+pub fn validate_mcp_sse_accept(request: &McpHttpRequest) -> Result<(), McpHttpReadError> {
+    if request
+        .headers
+        .get("accept")
+        .is_some_and(|value| value.contains("text/event-stream"))
+    {
+        Ok(())
+    } else {
+        Err(McpHttpReadError {
+            status: 405,
+            message: "MCP GET requests require Accept: text/event-stream".to_string(),
+        })
+    }
+}
+
 pub fn read_mcp_http_request(stream: &mut impl Read) -> Result<McpHttpRequest, McpHttpReadError> {
     let mut buffer = Vec::new();
     let mut header_end = None;
@@ -288,6 +339,59 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_and_sse_preflight_preserve_http_error_contract() {
+        let mut request = McpHttpRequest {
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query: String::new(),
+            headers: BTreeMap::new(),
+            body: br#"{"method":"tools/list"}"#.to_vec(),
+        };
+        let error = parse_mcp_http_post(&request).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(
+            error.message,
+            "MCP POST requests require Content-Type: application/json"
+        );
+        request
+            .headers
+            .insert("content-type".into(), "application/json".into());
+        assert!(parse_mcp_http_post(&request)
+            .unwrap_err()
+            .message
+            .contains("require Accept"));
+        request.headers.insert(
+            "accept".into(),
+            "application/json, text/event-stream".into(),
+        );
+        assert_eq!(
+            parse_mcp_http_post(&request).unwrap()["method"],
+            "tools/list"
+        );
+        request.body = b"{".to_vec();
+        assert!(parse_mcp_http_post(&request)
+            .unwrap_err()
+            .message
+            .starts_with("Parse error:"));
+        assert!(validate_mcp_protocol_version(&request).is_ok());
+        request
+            .headers
+            .insert("mcp-protocol-version".into(), "other".into());
+        assert!(validate_mcp_protocol_version(&request)
+            .unwrap_err()
+            .message
+            .contains("unsupported MCP-Protocol-Version"));
+        request
+            .headers
+            .insert("accept".into(), "application/json".into());
+        assert_eq!(validate_mcp_sse_accept(&request).unwrap_err().status, 405);
+        request
+            .headers
+            .insert("accept".into(), "text/event-stream".into());
+        assert!(validate_mcp_sse_accept(&request).is_ok());
+    }
 
     #[test]
     fn request_codec_keeps_query_headers_and_bounded_body() {

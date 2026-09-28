@@ -85,6 +85,7 @@ use vulcan_daemon::hosted_jobs::HostedJobLedger;
 use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 use vulcan_daemon::http_policy::mcp_origin_allowed;
 use vulcan_daemon::mcp_http_codec::{
+    parse_mcp_http_post, validate_mcp_protocol_version, validate_mcp_sse_accept,
     write_mcp_http_response, write_mcp_http_sse_event, write_mcp_http_sse_headers,
     write_mcp_http_sse_keepalive, McpHttpRequest, McpHttpResponse,
 };
@@ -1506,20 +1507,19 @@ fn handle_mcp_http_post(
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
 ) -> McpHttpResponse {
-    if let Some(response) = validate_mcp_http_post_headers(request) {
-        return response;
-    }
-    let payload = match parse_mcp_http_json_body(request) {
+    let payload = match parse_mcp_http_post(request) {
         Ok(payload) => payload,
-        Err(response) => return response,
+        Err(error) => {
+            return mcp_http_json_error_response(error.status, error.message, Value::Null)
+        }
     };
-    if let Some(required) = required_mcp_scope(&payload) {
+    if let Some(required) = mcp_protocol::required_scope_for_request(&payload) {
         if !authority.allows_scope(required) {
             return insufficient_scope_response(context, required);
         }
     }
-    if let Some(response) = validate_mcp_protocol_version(request) {
-        return response;
+    if let Err(error) = validate_mcp_protocol_version(request) {
+        return mcp_http_json_error_response(error.status, error.message, Value::Null);
     }
     let (session_id, session, created_session) =
         match resolve_mcp_http_session(context, request, &payload, authority) {
@@ -1641,19 +1641,6 @@ fn register_mcp_http_request(
     id.is_none_or(|id| session.register_request(id, cancellation.clone()))
 }
 
-fn required_mcp_scope(payload: &Value) -> Option<&'static str> {
-    let method = payload.get("method")?.as_str()?;
-    if method.starts_with("tools/") {
-        Some("mcp:tools")
-    } else if method.starts_with("resources/") {
-        Some("mcp:resources")
-    } else if method.starts_with("prompts/") {
-        Some("mcp:prompts")
-    } else {
-        None
-    }
-}
-
 fn insufficient_scope_response(context: &McpHttpServerContext, required: &str) -> McpHttpResponse {
     let message = format!("OAuth token does not grant required scope `{required}`");
     #[cfg(feature = "oauth")]
@@ -1674,36 +1661,6 @@ fn insufficient_scope_response(context: &McpHttpServerContext, required: &str) -
     #[cfg(not(feature = "oauth"))]
     let _ = context;
     mcp_http_json_error_response(403, message, Value::Null)
-}
-
-fn validate_mcp_http_post_headers(request: &McpHttpRequest) -> Option<McpHttpResponse> {
-    if !request
-        .headers
-        .get("content-type")
-        .is_some_and(|value| value.contains("application/json"))
-    {
-        return Some(mcp_http_json_error_response(
-            400,
-            "MCP POST requests require Content-Type: application/json",
-            Value::Null,
-        ));
-    }
-    if !request.headers.get("accept").is_some_and(|value| {
-        value.contains("application/json") && value.contains("text/event-stream")
-    }) {
-        return Some(mcp_http_json_error_response(
-            400,
-            "MCP POST requests require Accept: application/json, text/event-stream",
-            Value::Null,
-        ));
-    }
-    None
-}
-
-fn parse_mcp_http_json_body(request: &McpHttpRequest) -> Result<Value, McpHttpResponse> {
-    serde_json::from_slice(&request.body).map_err(|error| {
-        mcp_http_json_error_response(400, format!("Parse error: {error}"), Value::Null)
-    })
 }
 
 fn resolve_mcp_http_session(
@@ -1812,16 +1769,8 @@ fn handle_mcp_http_sse(
     authority: &McpSessionAuthority,
     stream: &mut TcpStream,
 ) -> Result<(), CliError> {
-    if !request
-        .headers
-        .get("accept")
-        .is_some_and(|value| value.contains("text/event-stream"))
-    {
-        let response = mcp_http_json_error_response(
-            405,
-            "MCP GET requests require Accept: text/event-stream",
-            Value::Null,
-        );
+    if let Err(error) = validate_mcp_sse_accept(request) {
+        let response = mcp_http_json_error_response(error.status, error.message, Value::Null);
         write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
         return Ok(());
     }
@@ -3187,19 +3136,6 @@ fn normalize_mcp_http_endpoint(endpoint: &str) -> String {
         endpoint.to_string()
     } else {
         format!("/{endpoint}")
-    }
-}
-
-fn validate_mcp_protocol_version(request: &McpHttpRequest) -> Option<McpHttpResponse> {
-    let version = request.headers.get("mcp-protocol-version")?;
-    if version == MCP_PROTOCOL_VERSION {
-        None
-    } else {
-        Some(mcp_http_json_error_response(
-            400,
-            format!("unsupported MCP-Protocol-Version `{version}`"),
-            Value::Null,
-        ))
     }
 }
 
