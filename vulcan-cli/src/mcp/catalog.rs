@@ -4,7 +4,7 @@ use crate::{McpToolPackArg, McpToolPackModeArg, ToolRegistryEntry};
 use vulcan_app::mcp_catalog::resolve_selected_tool_packs as resolve_shared_tool_packs;
 pub(super) use vulcan_app::mcp_catalog::{
     default_openai_tool_packs, pack_name_list, visible_tool_catalog, McpToolCatalogEntry,
-    McpToolId, McpToolPack, McpToolPackMode,
+    McpToolPack, McpToolPackMode,
 };
 
 impl From<McpToolPackModeArg> for McpToolPackMode {

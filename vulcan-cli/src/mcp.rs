@@ -9,11 +9,10 @@ use crate::{
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
-    resolve_selected_tool_packs, visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack,
+    resolve_selected_tool_packs, visible_tool_catalog, McpToolCatalogEntry, McpToolPack,
     McpToolPackMode,
 };
 use fs2::FileExt;
-use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -40,10 +39,7 @@ use vulcan_app::execution::{
 };
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
-use vulcan_app::mcp_catalog::authorize_builtin_tool_call;
 use vulcan_app::mcp_completion;
-use vulcan_app::mcp_config;
-use vulcan_app::mcp_custom;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::request_is_read_only;
 #[cfg(feature = "oauth")]
@@ -53,25 +49,11 @@ use vulcan_app::mcp_dispatch::{
     process_http_request, process_stdio_request, request_id, timeout_http_result,
     timeout_response_for_request, McpHttpProcessResult, McpMethodHandler, McpProtocolMethods,
 };
-use vulcan_app::mcp_graph;
-use vulcan_app::mcp_notes;
 use vulcan_app::mcp_protocol;
 use vulcan_app::mcp_protocol::{
-    McpCompletionParams, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs,
-    McpDailyShowArgs, McpGraphCommunitiesArgs, McpIndexScanArgs, McpListSnapshot, McpMethodError,
-    McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteGetArgs,
-    McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs, McpQueryArgs,
-    McpSearchArgs, McpSuggestLinksArgs, McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs,
-    McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs,
-    McpTaskRescheduleArgs, McpToolPackMutationArgs, McpToolResourceStore, McpWebFetchArgs,
-    McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_PROTOCOL_VERSION, MCP_QUERY_DEFAULT_LIMIT,
-    MCP_RESOURCE_NOT_FOUND, MCP_STRUCTURED_CONTENT_LIMIT,
+    McpCompletionParams, McpListSnapshot, McpMethodError, McpMethodOutcome, McpToolResourceStore,
+    MCP_PROTOCOL_VERSION, MCP_RESOURCE_NOT_FOUND,
 };
-use vulcan_app::mcp_read_tools::{self, MCP_QUERY_HARD_MAX};
-use vulcan_app::mcp_scan;
-use vulcan_app::mcp_sync;
-use vulcan_app::mcp_tasks;
-use vulcan_app::mcp_web;
 use vulcan_app::tools::{self as app_tools, CustomToolDescriptor};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
@@ -2438,278 +2420,24 @@ impl McpServerCore {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
     fn call_tool(
         &mut self,
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        let Some(authorized) = authorize_builtin_tool_call(
-            name,
-            arguments,
-            &self.selected_tool_packs,
-            &self.selection.profile,
-            self.selection.name.as_str(),
-        )?
-        else {
-            return self.call_custom_tool(name, arguments);
-        };
-        let tool = authorized.tool;
-        let arguments = authorized.arguments.as_ref();
-
-        match tool.id {
-            McpToolId::NoteGet => {
-                let args: McpNoteGetArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::note_get(&self.paths, &self.guard, &args)?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::NoteOutline => {
-                let args: McpNoteOutlineArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::note_outline(&self.paths, &self.guard, &args)?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::Search => {
-                let args: McpSearchArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::search(&self.paths, &self.guard, args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::Query => {
-                let args: McpQueryArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::query(&self.paths, &self.guard, args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::Status => {
-                let report = vulcan_app::browse::build_vault_status_report(&self.paths)
-                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::Capabilities => Ok(self.tool_success_response(
-                tool.name,
-                serde_json::json!({
-                    "routing": mcp_protocol::routing_guidance(&self.active_tool_names()),
-                    "activeTools": self.active_tool_names(),
-                    "toolPacks": self.current_tool_pack_state(),
-                    "resultLimits": {
-                        "inlineTextBytes": MCP_INLINE_TEXT_LIMIT,
-                        "structuredContentBytes": MCP_STRUCTURED_CONTENT_LIMIT,
-                        "queryDefaultRows": MCP_QUERY_DEFAULT_LIMIT,
-                        "queryMaximumRows": MCP_QUERY_HARD_MAX,
-                    },
-                }),
-            )),
-            McpToolId::SyncStatus | McpToolId::SyncPlan => {
-                let args: McpSyncTargetArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_sync::sync_preview(&self.paths, &self.guard, &args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::SyncDoctor => {
-                let args: McpSyncDoctorArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_sync::sync_doctor(&self.paths, &self.guard, &args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::SyncConflicts => {
-                let args: McpSyncConflictsArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_sync::sync_conflicts(&self.paths, &self.guard, &args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::Daily => {
-                let args: McpDailyArgs = parse_tool_arguments(arguments)?;
-                let structured = mcp_read_tools::daily(&self.paths, &self.guard, args)?;
-                Ok(self.tool_success_response(tool.name, structured))
-            }
-            McpToolId::DailyShow => {
-                let args: McpDailyShowArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::daily_show(&self.paths, &self.guard, &args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::DailyList => {
-                let args: McpDailyListArgs = parse_tool_arguments(arguments)?;
-                let structured = mcp_read_tools::daily_list(&self.paths, &self.guard, &args)?;
-                Ok(self.tool_success_response(tool.name, structured))
-            }
-            McpToolId::GraphCommunities => {
-                let args: McpGraphCommunitiesArgs = parse_tool_arguments(arguments)?;
-                let value = mcp_graph::graph_communities(&self.paths, &self.guard, &args)?;
-                Ok(self.tool_success_response(tool.name, value))
-            }
-            McpToolId::SuggestLinks => {
-                let args: McpSuggestLinksArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_graph::link_suggestions(&self.paths, &self.guard, &args)?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::TaskList => {
-                let args: McpTaskListArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::task_list(&self.paths, &self.guard, args)?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::TaskQuery => {
-                let args: McpTaskQueryArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::task_query(&self.paths, &self.guard, &args)?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::TaskCreate => {
-                let args: McpTaskCreateArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_tasks::task_create(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::TaskComplete => {
-                let args: McpTaskCompleteArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_tasks::task_complete(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::TaskReschedule => {
-                let args: McpTaskRescheduleArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_tasks::task_reschedule(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::NoteCreate => {
-                let args: McpNoteCreateArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_notes::note_create(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::NoteAppend => {
-                let args: McpNoteAppendArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_notes::note_append(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::NotePatch => {
-                let args: McpNotePatchArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_notes::note_patch(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::NoteInfo => {
-                let args: McpNoteInfoArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_read_tools::note_info(&self.paths, &self.guard, &args)?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::NoteSet => {
-                let args: McpNoteSetArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_notes::note_set(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::NoteDelete => {
-                let args: McpNoteDeleteArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_notes::note_delete(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::WebSearch => {
-                let args: McpWebSearchArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_web::web_search(&self.paths, &self.guard, args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::WebFetch => {
-                let args: McpWebFetchArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_web::web_fetch(&self.paths, &self.guard, args)?;
-                Ok(self.tool_success_response(tool.name, report))
-            }
-            McpToolId::ConfigShow => {
-                let args: McpConfigShowArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_config::config_show(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    &args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::ConfigSet => {
-                let args: McpConfigSetArgs = parse_tool_arguments(arguments)?;
-                let report = mcp_config::config_set(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    &args,
-                )?;
-                self.serialize_tool_report(tool.name, &report)
-            }
-            McpToolId::IndexScan => {
-                let args: McpIndexScanArgs = parse_tool_arguments(arguments)?;
-                let summary = mcp_scan::index_scan(
-                    &self.paths,
-                    &self.guard,
-                    self.selection.name.as_str(),
-                    &args,
-                )?;
-                self.serialize_tool_report(tool.name, &summary)
-            }
-            McpToolId::ToolPacks => {
-                vulcan_app::mcp_catalog::require_adaptive_pack_mode(self.tool_pack_mode)?;
-                let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
-                let structured = vulcan_app::mcp_catalog::mutate_tool_packs(
-                    &mut self.selected_tool_packs,
-                    &self.pinned_tool_packs,
-                    self.tool_pack_mode,
-                    &self.selection.profile,
-                    &args,
-                )?;
-                Ok(self.tool_success_response(tool.name, structured))
-            }
+        let registry = crate::custom_tool_registry_options();
+        vulcan_app::mcp_tool_exec::McpToolExecution {
+            paths: &self.paths,
+            guard: &self.guard,
+            profile_name: self.selection.name.as_str(),
+            profile: &self.selection.profile,
+            selected_packs: &mut self.selected_tool_packs,
+            pinned_packs: &self.pinned_tool_packs,
+            pack_mode: self.tool_pack_mode,
+            resources: &mut self.tool_resources,
+            custom_registry: &registry,
         }
-    }
-
-    fn call_custom_tool(
-        &mut self,
-        name: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Value, McpMethodError> {
-        let report = mcp_custom::call_custom_tool(
-            &self.paths,
-            self.selection.name.as_str(),
-            &self.selected_tool_packs,
-            &crate::custom_tool_registry_options(),
-            name,
-            arguments,
-        )?;
-        Ok(self.custom_tool_success_response(&report.name, report.result, report.text.as_deref()))
-    }
-
-    fn current_tool_pack_state(&self) -> Value {
-        vulcan_app::mcp_catalog::tool_pack_state(
-            &self.selected_tool_packs,
-            &self.pinned_tool_packs,
-            self.tool_pack_mode,
-            &self.selection.profile,
-        )
+        .call_tool(name, arguments)
     }
 
     fn active_tool_names(&self) -> Vec<String> {
@@ -2717,31 +2445,6 @@ impl McpServerCore {
             &self.selected_tool_packs,
             &self.selection.profile,
         )
-    }
-
-    fn serialize_tool_report<T: serde::Serialize>(
-        &mut self,
-        tool_name: &str,
-        report: &T,
-    ) -> Result<Value, McpMethodError> {
-        let structured = serde_json::to_value(report).map_err(|error| {
-            McpMethodError::internal(format!("failed to serialize `{tool_name}` report: {error}"))
-        })?;
-        Ok(self.tool_resources.success_response(tool_name, structured))
-    }
-
-    fn tool_success_response(&mut self, tool_name: &str, structured: Value) -> Value {
-        self.tool_resources.success_response(tool_name, structured)
-    }
-
-    fn custom_tool_success_response(
-        &mut self,
-        tool_name: &str,
-        structured: Value,
-        text: Option<&str>,
-    ) -> Value {
-        self.tool_resources
-            .custom_success_response(tool_name, structured, text)
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
@@ -3608,13 +3311,6 @@ fn prompt_list_item(prompt: vulcan_core::AssistantPromptSummary) -> Value {
         "description": prompt.description,
         "arguments": prompt.arguments,
     })
-}
-
-fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
-    arguments: &Map<String, Value>,
-) -> Result<T, McpMethodError> {
-    serde_json::from_value(Value::Object(arguments.clone()))
-        .map_err(|error| McpMethodError::invalid_params(error.to_string()))
 }
 
 fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {

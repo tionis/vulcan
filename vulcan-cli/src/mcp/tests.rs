@@ -6,6 +6,9 @@ use std::io::Write;
 use std::net::TcpListener;
 #[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "oauth")]
+use vulcan_app::mcp_protocol::McpWebFetchArgs;
+use vulcan_app::mcp_read_tools;
 use vulcan_core::{PermissionProfile, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
 use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
