@@ -9,8 +9,8 @@ use crate::{
 };
 use catalog::{
     default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
-    resolve_selected_tool_packs, tool_by_name, tool_visible, visible_tool_catalog,
-    McpToolCatalogEntry, McpToolId, McpToolPack, McpToolPackMode, McpVisibilityRequirement,
+    resolve_selected_tool_packs, visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack,
+    McpToolPackMode,
 };
 use fs2::FileExt;
 use serde::Deserialize;
@@ -40,6 +40,7 @@ use vulcan_app::execution::{
 };
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_assistant::{prompt_files_fingerprint, resource_files_fingerprint};
+use vulcan_app::mcp_catalog::authorize_builtin_tool_call;
 use vulcan_app::mcp_completion;
 use vulcan_app::mcp_config;
 use vulcan_app::mcp_custom;
@@ -2443,47 +2444,18 @@ impl McpServerCore {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        let mut legacy_arguments = None;
-        let name = match name {
-            "tool_pack_list" => {
-                let mut normalized = arguments.clone();
-                normalized.insert("operation".to_string(), Value::String("list".to_string()));
-                legacy_arguments = Some(normalized);
-                "tool_packs"
-            }
-            "tool_pack_enable" | "tool_pack_disable" | "tool_pack_set" => {
-                let mut normalized = arguments.clone();
-                let operation = name.trim_start_matches("tool_pack_");
-                normalized.insert(
-                    "operation".to_string(),
-                    Value::String(operation.to_string()),
-                );
-                legacy_arguments = Some(normalized);
-                "tool_packs"
-            }
-            _ => name,
-        };
-        let arguments = legacy_arguments.as_ref().unwrap_or(arguments);
-        let Some(tool) = tool_by_name(name) else {
+        let Some(authorized) = authorize_builtin_tool_call(
+            name,
+            arguments,
+            &self.selected_tool_packs,
+            &self.selection.profile,
+            self.selection.name.as_str(),
+        )?
+        else {
             return self.call_custom_tool(name, arguments);
         };
-        if !tool
-            .packs
-            .iter()
-            .any(|pack| self.selected_tool_packs.contains(pack))
-        {
-            return Err(McpMethodError::invalid_params(format!(
-                "Unknown tool: {name}"
-            )));
-        }
-        if !tool_visible(tool, &self.selection.profile, &self.selected_tool_packs) {
-            return Err(McpMethodError::tool(format!(
-                "permission denied: tool `{}` requires {} under profile `{}`",
-                tool.name,
-                visibility_requirement_name(tool.visibility),
-                self.selection.name
-            )));
-        }
+        let tool = authorized.tool;
+        let arguments = authorized.arguments.as_ref();
 
         match tool.id {
             McpToolId::NoteGet => {
@@ -3650,19 +3622,6 @@ fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {
         code: MCP_RESOURCE_NOT_FOUND,
         message,
         data: Some(serde_json::json!({ "uri": uri })),
-    }
-}
-
-fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'static str {
-    match requirement {
-        McpVisibilityRequirement::None => "session access",
-        McpVisibilityRequirement::Read => "read access",
-        McpVisibilityRequirement::Write => "write access",
-        McpVisibilityRequirement::Network => "network access",
-        McpVisibilityRequirement::Index => "index access",
-        McpVisibilityRequirement::ConfigRead => "config read access",
-        McpVisibilityRequirement::ConfigWrite => "config write access",
-        McpVisibilityRequirement::GitReadAll => "Git access and full-vault read access",
     }
 }
 

@@ -3,7 +3,8 @@
 #![allow(clippy::must_use_candidate)]
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 
@@ -638,6 +639,73 @@ pub fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
     MCP_TOOL_CATALOG.iter().find(|tool| tool.name == name)
 }
 
+pub struct AuthorizedBuiltinToolCall<'a> {
+    pub tool: &'static McpToolCatalogEntry,
+    pub arguments: Cow<'a, Map<String, Value>>,
+}
+
+/// Resolve aliases and apply the same pack/profile gate used for discovery.
+/// `None` means a custom tool name; a built-in hidden by a pack is not custom.
+pub fn authorize_builtin_tool_call<'a>(
+    name: &str,
+    arguments: &'a Map<String, Value>,
+    selected_packs: &BTreeSet<McpToolPack>,
+    profile: &PermissionProfile,
+    profile_name: &str,
+) -> Result<Option<AuthorizedBuiltinToolCall<'a>>, McpMethodError> {
+    let legacy_operation = match name {
+        "tool_pack_list" => Some("list"),
+        "tool_pack_enable" => Some("enable"),
+        "tool_pack_disable" => Some("disable"),
+        "tool_pack_set" => Some("set"),
+        _ => None,
+    };
+    let canonical_name = if legacy_operation.is_some() {
+        "tool_packs"
+    } else {
+        name
+    };
+    let Some(tool) = tool_by_name(canonical_name) else {
+        return Ok(None);
+    };
+    if !tool.packs.iter().any(|pack| selected_packs.contains(pack)) {
+        return Err(McpMethodError::invalid_params(format!(
+            "Unknown tool: {canonical_name}"
+        )));
+    }
+    if !tool_visible(tool, profile, selected_packs) {
+        return Err(McpMethodError::tool(format!(
+            "permission denied: tool `{}` requires {} under profile `{profile_name}`",
+            tool.name,
+            visibility_requirement_name(tool.visibility),
+        )));
+    }
+    let arguments = if let Some(operation) = legacy_operation {
+        let mut normalized = arguments.clone();
+        normalized.insert(
+            "operation".to_string(),
+            Value::String(operation.to_string()),
+        );
+        Cow::Owned(normalized)
+    } else {
+        Cow::Borrowed(arguments)
+    };
+    Ok(Some(AuthorizedBuiltinToolCall { tool, arguments }))
+}
+
+fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'static str {
+    match requirement {
+        McpVisibilityRequirement::None => "session access",
+        McpVisibilityRequirement::Read => "read access",
+        McpVisibilityRequirement::Write => "write access",
+        McpVisibilityRequirement::Network => "network access",
+        McpVisibilityRequirement::Index => "index access",
+        McpVisibilityRequirement::ConfigRead => "config read access",
+        McpVisibilityRequirement::ConfigWrite => "config write access",
+        McpVisibilityRequirement::GitReadAll => "Git access and full-vault read access",
+    }
+}
+
 pub fn resolve_selected_tool_packs(
     requested: &[McpToolPack],
     mode: McpToolPackMode,
@@ -842,6 +910,47 @@ pub fn tool_names_for_pack(pack: McpToolPack, profile: &PermissionProfile) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_call_authorization_preserves_alias_and_visibility_boundaries() {
+        let readonly = PermissionProfile::readonly();
+        let arguments = Map::from_iter([(
+            "operation".to_string(),
+            Value::String("disable".to_string()),
+        )]);
+        let packs = BTreeSet::from([McpToolPack::NotesRead, McpToolPack::ToolPacks]);
+        let alias = authorize_builtin_tool_call(
+            "tool_pack_list",
+            &arguments,
+            &packs,
+            &readonly,
+            "readonly",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(alias.tool.name, "tool_packs");
+        assert_eq!(alias.arguments["operation"], "list");
+        assert_eq!(arguments["operation"], "disable");
+        assert!(matches!(
+            authorize_builtin_tool_call("custom_name", &arguments, &packs, &readonly, "readonly"),
+            Ok(None)
+        ));
+        assert!(matches!(
+            authorize_builtin_tool_call("note_create", &arguments, &packs, &readonly, "readonly"),
+            Err(McpMethodError::JsonRpc { code: -32602, .. })
+        ));
+        let write_packs = BTreeSet::from([McpToolPack::NotesWrite]);
+        assert!(matches!(
+            authorize_builtin_tool_call(
+                "note_create",
+                &arguments,
+                &write_packs,
+                &readonly,
+                "readonly"
+            ),
+            Err(McpMethodError::Tool { .. })
+        ));
+    }
 
     #[test]
     fn selected_packs_and_permissions_are_shared_host_contracts() {
