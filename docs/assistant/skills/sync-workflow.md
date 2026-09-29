@@ -18,17 +18,16 @@ both execute the same application workflow.
 ## Inspect local device identity
 
 - Use `vulcan device show --output json` for a vault-independent, state-free view of the local
-  identity. `device_id` is the key-derived ID when initialized; `sync_actor_id` is the separate
-  legacy ULID currently used by sync. Neither field proves trust, remote access, or enrollment.
+  identity. `device_id` is the key-derived ID that sync uses as its actor; it proves no trust,
+  remote access, or enrollment. The first mutating sync initializes the identity automatically.
 - Preview `vulcan device init --dry-run` before initializing a missing local Ed25519 identity.
   Initialization never replaces existing key material. `vulcan device public-key` explicitly
   exports the public key; never request or print the private key for inventory work. If `device show`
   reports `invalid` because storage is readable by other accounts, preview
   `vulcan device repair-permissions --dry-run`; it only tightens access and never rewrites keys.
-- A local key may be ready while sync still reports `key_pending_rollout`. Continue using current
-  legacy sync actor and recovery procedures until version-3 live reconciliation and key-backed
-  writer migration are complete. On Windows, initialization remains unavailable until protected
-  private-file ACL creation is verified.
+- Remote safety branches named with an older 26-character ULID are historical recovery heads from
+  before key-derived IDs. `vulcan sync devices list/fetch/prune-backup` still handle them; a stale
+  legacy `_device.json` is ignored.
 - Use `vulcan devices list --output json` for an installation-wide view across registered wikis.
   Each wiki has its own local recovery and remote observation state; a failed remote observation
   means remote backup status is unknown, while locally retained recovery and names remain visible.
@@ -37,9 +36,6 @@ both execute the same application workflow.
   selected wiki through `vulcan sync devices list --offline`.
   The current inventory uses the default `origin` remote and hidden live ref for Git registrations.
   It is an observed recovery inventory, not an enrollment, possession, trust, or online roster.
-- If `vulcan device show` reports `sync_identity_state: legacy_unavailable`, inspect the legacy
-  sync actor state with `vulcan sync doctor`; the local key identity status remains independently
-  visible. Do not infer a new sync actor from the key ID.
 
 For a new sync checkout, preview `vulcan sync clone <remote> <path> --dry-run` before applying it.
 The command derives the wiki ID from the destination, uses native clone defaults on desktop, and

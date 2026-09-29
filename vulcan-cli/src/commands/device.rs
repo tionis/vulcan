@@ -6,7 +6,6 @@ use vulcan_app::device_identity::{
     DeviceIdentityInitReport, DeviceIdentityRepairReport, DeviceIdentityReport,
     DeviceIdentityStatus, DeviceIdentityStore,
 };
-use vulcan_app::sync_state::SyncStateStore;
 
 #[derive(Serialize)]
 struct PublicKeyReport {
@@ -18,19 +17,17 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
     let store = DeviceIdentityStore::user_default().map_err(CliError::operation)?;
     match command {
         DeviceCommand::Show => {
-            let report = inspect_with_legacy_state(&store);
+            let report = store.inspect();
             print_device_show(cli.output, &report)
         }
         DeviceCommand::Init { dry_run } => {
-            let mut report = store.initialize(*dry_run).map_err(CliError::operation)?;
-            report.identity = inspect_with_legacy_state(&store);
+            let report = store.initialize(*dry_run).map_err(CliError::operation)?;
             print_device_init(cli.output, &report)
         }
         DeviceCommand::RepairPermissions { dry_run } => {
-            let mut report = store
+            let report = store
                 .repair_permissions(*dry_run)
                 .map_err(CliError::operation)?;
-            report.identity = inspect_with_legacy_state(&store);
             print_device_repair(cli.output, &report)
         }
         DeviceCommand::PublicKey => {
@@ -49,33 +46,13 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
     }
 }
 
-fn inspect_with_legacy_state(store: &DeviceIdentityStore) -> DeviceIdentityReport {
-    let legacy =
-        SyncStateStore::user_default().and_then(|state| state.load_or_create_device_id(false));
-    if let Ok(id) = legacy {
-        return store
-            .inspect_with_legacy_id(id.as_ref().map(vulcan_app::sync::GitSyncDeviceId::as_str));
-    }
-    let mut report = store.inspect();
-    report.sync_identity_state = "legacy_unavailable".to_string();
-    let detail = "legacy sync actor state could not be read or validated; run `vulcan sync doctor`";
-    report.diagnostic = Some(match report.diagnostic {
-        Some(existing) => format!("{existing}; {detail}"),
-        None => detail.to_string(),
-    });
-    report
-}
-
 fn print_device_show(output: OutputFormat, report: &DeviceIdentityReport) -> Result<(), CliError> {
     if output == OutputFormat::Json {
         return print_json(report);
     }
     println!("Local device identity: {}", status_label(report.status));
     if let Some(id) = &report.device_id {
-        println!("Key identity ID: {id}");
-    }
-    if let Some(id) = &report.sync_actor_id {
-        println!("Current sync actor ID: {id}");
+        println!("Device ID: {id}");
     }
     if let Some(fingerprint) = &report.fingerprint {
         println!("Public fingerprint: {fingerprint}");
@@ -93,9 +70,6 @@ fn print_device_show(output: OutputFormat, report: &DeviceIdentityReport) -> Res
     }
     if let Some(diagnostic) = &report.diagnostic {
         println!("{diagnostic}");
-    }
-    if report.sync_identity_state == "key_pending_rollout" {
-        println!("Sync still uses legacy ULID actor IDs; this key is not yet its sync actor.");
     }
     println!("Identity is not a trust or access decision.");
     Ok(())
@@ -130,12 +104,6 @@ fn print_device_init(
             "Device identity {} is already initialized; no key was replaced.",
             report.identity.device_id.as_deref().unwrap_or("(unknown)")
         );
-    }
-    if let Some(id) = &report.identity.sync_actor_id {
-        println!("Current sync actor ID: {id}");
-    }
-    if report.identity.sync_identity_state == "key_pending_rollout" {
-        println!("Sync still uses legacy ULID actor IDs; this key is not yet its sync actor.");
     }
     println!("Identity is not a trust or access decision.");
     Ok(())
@@ -176,7 +144,6 @@ fn status_label(status: DeviceIdentityStatus) -> &'static str {
         DeviceIdentityStatus::Uninitialized => "uninitialized",
         DeviceIdentityStatus::Ready => "ready",
         DeviceIdentityStatus::Degraded => "degraded",
-        DeviceIdentityStatus::Legacy => "legacy ULID",
         DeviceIdentityStatus::Invalid => "invalid",
     }
 }

@@ -30,7 +30,6 @@ pub enum DeviceIdentityStatus {
     Uninitialized,
     Ready,
     Degraded,
-    Legacy,
     Invalid,
 }
 
@@ -38,9 +37,6 @@ pub enum DeviceIdentityStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceIdentityReport {
     pub status: DeviceIdentityStatus,
-    /// Current sync actor, which may remain a legacy ULID during rollout.
-    pub sync_actor_id: Option<String>,
-    pub sync_identity_state: String,
     /// Cryptographic device ID, absent until local key initialization.
     pub device_id: Option<String>,
     pub scheme: Option<String>,
@@ -126,23 +122,26 @@ impl DeviceIdentityStore {
         }
     }
 
-    /// Project a legacy sync ID into the device view without creating or
-    /// migrating identity state. The caller supplies the ID from its
-    /// repository's legacy `_device.json` when one is available.
-    #[must_use]
-    pub fn inspect_with_legacy_id(&self, legacy_id: Option<&str>) -> DeviceIdentityReport {
-        let mut report = self.inspect();
-        if let Some(legacy_id) = legacy_id.filter(|id| is_legacy_device_id(id)) {
-            report.sync_actor_id = Some(legacy_id.to_ascii_lowercase());
-            report.sync_identity_state = "legacy_ulid".to_string();
-            if report.status == DeviceIdentityStatus::Uninitialized {
-                report.status = DeviceIdentityStatus::Legacy;
-                report.diagnostic = Some(
-                    "this installation has a legacy sync ID; explicit initialization creates a new key identity".into(),
-                );
-            }
+    /// Return the public device ID from the manifest without creating anything or requiring the
+    /// private key, which ordinary sync naming and provenance never need.
+    pub fn device_id(&self) -> Result<Option<String>, AppError> {
+        match fs::symlink_metadata(self.directory.join(IDENTITY_FILE)) {
+            Ok(_) => Ok(Some(self.load_manifest()?.manifest.device_id)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(identity_io_error(error)),
         }
-        report
+    }
+
+    /// Return the device ID, initializing the identity when no identity artifacts exist. This is
+    /// the frictionless first-mutation path; an existing manifest is never regenerated.
+    pub fn ensure_device_id(&self) -> Result<String, AppError> {
+        if let Some(id) = self.device_id()? {
+            return Ok(id);
+        }
+        self.initialize(false)?
+            .identity
+            .device_id
+            .ok_or_else(|| AppError::operation("device identity initialization produced no ID"))
     }
 
     /// Explicitly initialize the file-backed Ed25519 identity.
@@ -709,8 +708,6 @@ fn identity_report(
     diagnostic: Option<String>,
 ) -> DeviceIdentityReport {
     DeviceIdentityReport {
-        sync_actor_id: None,
-        sync_identity_state: "key_pending_rollout".to_string(),
         status,
         device_id: Some(identity.manifest.device_id.clone()),
         scheme: Some(identity.manifest.scheme.clone()),
@@ -724,8 +721,6 @@ fn identity_report(
 fn uninitialized_report() -> DeviceIdentityReport {
     DeviceIdentityReport {
         status: DeviceIdentityStatus::Uninitialized,
-        sync_actor_id: None,
-        sync_identity_state: "uninitialized".to_string(),
         device_id: None,
         scheme: None,
         fingerprint: None,
@@ -738,8 +733,6 @@ fn uninitialized_report() -> DeviceIdentityReport {
 fn invalid_report(diagnostic: &str) -> DeviceIdentityReport {
     DeviceIdentityReport {
         status: DeviceIdentityStatus::Invalid,
-        sync_actor_id: None,
-        sync_identity_state: "unknown".to_string(),
         device_id: None,
         scheme: None,
         fingerprint: None,
@@ -752,8 +745,6 @@ fn invalid_report(diagnostic: &str) -> DeviceIdentityReport {
 fn unavailable_report(diagnostic: &str) -> DeviceIdentityReport {
     DeviceIdentityReport {
         status: DeviceIdentityStatus::Degraded,
-        sync_actor_id: None,
-        sync_identity_state: "unavailable".to_string(),
         device_id: None,
         scheme: None,
         fingerprint: None,
@@ -1049,10 +1040,6 @@ fn sync_directory(_path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn is_legacy_device_id(id: &str) -> bool {
-    id.len() == 26 && ulid::Ulid::from_string(id).is_ok()
-}
-
 fn base32_lower(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut output = String::with_capacity((bytes.len() * 8).div_ceil(5));
@@ -1214,34 +1201,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_id_projection_is_read_only_and_validates_ulid_grammar() {
+    fn device_id_is_read_only_and_ensure_initializes_once() {
         let temporary = tempdir().expect("tempdir");
         let directory = temporary.path().join("device");
         let store = DeviceIdentityStore::at(&directory);
-        let report = store.inspect_with_legacy_id(Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
-        assert_eq!(report.status, DeviceIdentityStatus::Legacy);
-        assert_eq!(report.device_id, None);
-        assert_eq!(
-            report.sync_actor_id.as_deref(),
-            Some("01arz3ndektsv4rrffq69g5fav")
-        );
-        assert_eq!(report.sync_identity_state, "legacy_ulid");
+        assert_eq!(store.device_id().expect("absent"), None);
         assert!(!directory.exists());
-        assert_eq!(
-            store.inspect_with_legacy_id(Some("not-a-device-id")).status,
-            DeviceIdentityStatus::Uninitialized
-        );
 
-        let initialized = DeviceIdentityStore::at(temporary.path().join("initialized/device"));
-        let key_report = initialized.initialize(false).expect("init").identity;
-        let projected = initialized.inspect_with_legacy_id(Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
-        assert_eq!(projected.status, DeviceIdentityStatus::Ready);
-        assert_eq!(projected.device_id, key_report.device_id);
-        assert_eq!(
-            projected.sync_actor_id.as_deref(),
-            Some("01arz3ndektsv4rrffq69g5fav")
-        );
-        assert_eq!(projected.sync_identity_state, "legacy_ulid");
+        let id = store.ensure_device_id().expect("ensure");
+        assert!(id.starts_with("vdev1_"));
+        assert_eq!(store.device_id().expect("present"), Some(id.clone()));
+        assert_eq!(store.ensure_device_id().expect("stable"), id);
+
+        // The public manifest alone is enough for naming, even without the private key.
+        fs::remove_file(directory.join(PRIVATE_KEY_FILE)).expect("remove private key");
+        assert_eq!(store.ensure_device_id().expect("degraded"), id);
     }
 
     #[test]

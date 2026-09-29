@@ -4,7 +4,8 @@
 //! below the platform user-state directory rather than in the rebuildable
 //! per-vault cache or the synchronized worktree.
 
-use crate::durable_file::{self, DurableCreate};
+use crate::device_identity::DeviceIdentityStore;
+use crate::durable_file;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -14,14 +15,7 @@ use vulcan_sync::GitSyncDeviceId;
 
 pub const SYNC_JOURNAL_VERSION: u32 = 2;
 const MAX_SYNC_JOURNAL_BYTES: u64 = 1024 * 1024;
-const SYNC_DEVICE_IDENTITY_VERSION: u32 = 1;
 pub const SYNC_APPLY_MARKER_VERSION: u32 = 2;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct SyncDeviceIdentity {
-    version: u32,
-    device_id: String,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,6 +132,7 @@ impl SyncJournal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncStateStore {
     root: PathBuf,
+    identity: DeviceIdentityStore,
 }
 
 impl SyncStateStore {
@@ -147,12 +142,22 @@ impl SyncStateStore {
                 "cannot determine the Vulcan user state directory; set XDG_STATE_HOME or HOME",
             )
         })?;
-        Ok(Self::at(root.join("sync/repositories")))
+        Ok(Self {
+            root: root.join("sync/repositories"),
+            identity: DeviceIdentityStore::user_default()?,
+        })
     }
 
+    /// Store rooted at an explicit directory. Its device identity lives beside the root so
+    /// tests and embedders never touch the installation's real identity.
     #[must_use]
     pub fn at(root: PathBuf) -> Self {
-        Self { root }
+        let identity = DeviceIdentityStore::at(
+            root.parent()
+                .unwrap_or(root.as_path())
+                .join("device-identity"),
+        );
+        Self { root, identity }
     }
 
     #[must_use]
@@ -160,35 +165,22 @@ impl SyncStateStore {
         &self.root
     }
 
+    /// The installation's key-derived sync actor ID.
+    ///
+    /// With `create`, the first identity-requiring mutation initializes the Ed25519 identity;
+    /// otherwise an absent identity is reported as `None` without creating anything. Only the
+    /// public manifest is needed, so a locked or unavailable private key does not stop naming.
     pub fn load_or_create_device_id(
         &self,
         create: bool,
     ) -> Result<Option<GitSyncDeviceId>, AppError> {
-        let path = self.root.join("_device.json");
-        match fs::read(&path) {
-            Ok(source) => return parse_device_identity(&path, &source).map(Some),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
-                return Ok(None);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(AppError::operation(error)),
-        }
-        fs::create_dir_all(&self.root).map_err(AppError::operation)?;
-        let identity = SyncDeviceIdentity {
-            version: SYNC_DEVICE_IDENTITY_VERSION,
-            device_id: Ulid::new().to_string().to_ascii_lowercase(),
+        let id = if create {
+            Some(self.identity.ensure_device_id()?)
+        } else {
+            self.identity.device_id()?
         };
-        let mut bytes = serde_json::to_vec_pretty(&identity).map_err(AppError::operation)?;
-        bytes.push(b'\n');
-        match durable_file::create(&path, &bytes)? {
-            DurableCreate::Created => GitSyncDeviceId::parse(identity.device_id)
-                .map(Some)
-                .map_err(AppError::operation),
-            DurableCreate::AlreadyExists => {
-                parse_device_identity(&path, &fs::read(&path).map_err(AppError::operation)?)
-                    .map(Some)
-            }
-        }
+        id.map(|id| GitSyncDeviceId::parse(id).map_err(AppError::operation))
+            .transpose()
     }
 
     pub fn journal_path(&self, repository_key: &str) -> Result<PathBuf, AppError> {
@@ -342,26 +334,6 @@ fn validate_apply_marker(path: &Path, marker: &SyncApplyMarker) -> Result<(), Ap
     vulcan_sync::GitOid::parse(marker.expected_revision.clone()).map_err(AppError::operation)?;
     vulcan_sync::GitOid::parse(marker.accepted.clone()).map_err(AppError::operation)?;
     Ok(())
-}
-
-fn parse_device_identity(path: &Path, source: &[u8]) -> Result<GitSyncDeviceId, AppError> {
-    if source.len() as u64 > MAX_SYNC_JOURNAL_BYTES {
-        return Err(AppError::operation(format!(
-            "sync device identity at {} exceeds the {} byte limit",
-            path.display(),
-            MAX_SYNC_JOURNAL_BYTES
-        )));
-    }
-    let identity: SyncDeviceIdentity =
-        serde_json::from_slice(source).map_err(AppError::operation)?;
-    if identity.version != SYNC_DEVICE_IDENTITY_VERSION {
-        return Err(AppError::operation(format!(
-            "unsupported sync device identity version {} at {}",
-            identity.version,
-            path.display()
-        )));
-    }
-    GitSyncDeviceId::parse(identity.device_id).map_err(AppError::operation)
 }
 
 /// Canonical Git work-tree root that keys durable sync state for a vault.
@@ -607,6 +579,7 @@ mod tests {
             None
         );
         assert!(!root.exists());
+        assert!(!temporary.path().join("device-identity").exists());
 
         let created = store
             .load_or_create_device_id(true)
@@ -617,7 +590,11 @@ mod tests {
             .expect("load identity")
             .expect("stored identity");
         assert_eq!(loaded, created);
-        assert_eq!(created.as_str().len(), 26);
-        assert!(root.join("_device.json").is_file());
+        assert!(created.as_str().starts_with("vdev1_"));
+        assert_eq!(created.as_str().len(), 58);
+        assert!(temporary
+            .path()
+            .join("device-identity/identity.json")
+            .is_file());
     }
 }

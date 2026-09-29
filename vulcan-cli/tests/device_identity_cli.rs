@@ -251,8 +251,6 @@ fn local_identity_commands_are_vault_independent_and_state_free_until_init() {
     let shown = json_output(&run(root, &["--output", "json", "device", "show"]));
     assert_eq!(shown["status"], "ready");
     assert_eq!(shown["device_id"], id);
-    assert_eq!(shown["sync_identity_state"], "key_pending_rollout");
-    assert!(shown["sync_actor_id"].is_null());
     assert!(shown.get("public_key").is_none());
     assert!(
         !String::from_utf8_lossy(&run(root, &["device", "show"]).stdout)
@@ -272,66 +270,28 @@ fn local_identity_commands_are_vault_independent_and_state_free_until_init() {
 }
 
 #[test]
-fn local_identity_show_reports_legacy_ulid_without_creating_key_material() {
+fn stale_legacy_sync_actor_state_is_ignored() {
     let temporary = TempDir::new().expect("temporary directory");
     let root = temporary.path();
     let state = root.join("state/vulcan/sync/repositories");
     fs::create_dir_all(&state).expect("legacy sync state directory");
-    fs::write(
-        state.join("_device.json"),
-        br#"{"version":1,"device_id":"01arz3ndektsv4rrffq69g5fav"}"#,
-    )
-    .expect("legacy identity");
-
-    let shown = json_output(&run(root, &["--output", "json", "device", "show"]));
-    assert_eq!(shown["status"], "legacy");
-    assert!(shown["device_id"].is_null());
-    assert_eq!(shown["sync_actor_id"], "01arz3ndektsv4rrffq69g5fav");
-    assert!(!root.join("data/vulcan/device").exists());
-
-    let initialized = json_output(&run(root, &["--output", "json", "device", "init"]));
-    assert_eq!(initialized["identity"]["status"], "ready");
-    assert_eq!(
-        initialized["identity"]["sync_actor_id"],
-        "01arz3ndektsv4rrffq69g5fav"
-    );
-    assert_ne!(
-        initialized["identity"]["device_id"],
-        initialized["identity"]["sync_actor_id"]
-    );
-    assert_eq!(
-        fs::read(state.join("_device.json")).expect("legacy state retained"),
-        br#"{"version":1,"device_id":"01arz3ndektsv4rrffq69g5fav"}"#
-    );
-}
-
-#[test]
-fn malformed_legacy_actor_does_not_hide_local_identity_inspection() {
-    let temporary = TempDir::new().expect("temporary directory");
-    let root = temporary.path();
-    let state = root.join("state/vulcan/sync/repositories");
-    fs::create_dir_all(&state).expect("legacy sync state directory");
-    fs::write(state.join("_device.json"), b"not-json").expect("malformed legacy state");
+    let legacy = br#"{"version":1,"device_id":"01arz3ndektsv4rrffq69g5fav"}"#;
+    fs::write(state.join("_device.json"), legacy).expect("legacy identity");
 
     let shown = json_output(&run(root, &["--output", "json", "device", "show"]));
     assert_eq!(shown["status"], "uninitialized");
-    assert_eq!(shown["sync_identity_state"], "legacy_unavailable");
-    assert!(shown["sync_actor_id"].is_null());
-    assert!(shown["diagnostic"]
-        .as_str()
-        .unwrap()
-        .contains("vulcan sync doctor"));
+    assert!(shown["device_id"].is_null());
     assert!(!root.join("data/vulcan/device").exists());
 
     let initialized = json_output(&run(root, &["--output", "json", "device", "init"]));
     assert_eq!(initialized["identity"]["status"], "ready");
+    assert!(initialized["identity"]["device_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("vdev1_")));
     assert_eq!(
-        initialized["identity"]["sync_identity_state"],
-        "legacy_unavailable"
+        fs::read(state.join("_device.json")).expect("legacy state retained"),
+        legacy
     );
-    let ready = json_output(&run(root, &["--output", "json", "device", "show"]));
-    assert_eq!(ready["status"], "ready");
-    assert_eq!(ready["device_id"], initialized["identity"]["device_id"]);
 }
 
 #[cfg(unix)]

@@ -10,7 +10,6 @@ use vulcan_app::sync::{GitRefName, GitRemote};
 use vulcan_app::sync_devices::{
     list_sync_device_backups_with_observation, SyncDeviceListReport, SyncDeviceOptions,
 };
-use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::permissions::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard,
 };
@@ -21,7 +20,6 @@ use vulcan_daemon::registry::WikiRegistry;
 struct InstallationDeviceInventory {
     version: u32,
     identity: InventoryField<DeviceIdentityReport>,
-    sync_actor: InventoryField<Option<String>>,
     vaults: Vec<VaultInventory>,
 }
 
@@ -66,12 +64,7 @@ pub(crate) fn handle_devices_command(cli: &Cli, command: &DevicesCommand) -> Res
 
 fn build_inventory(cli: &Cli, offline: bool) -> Result<InstallationDeviceInventory, CliError> {
     let identity_store = DeviceIdentityStore::user_default().map_err(CliError::operation)?;
-    let sync_actor_result = SyncStateStore::user_default()
-        .map_err(CliError::operation)?
-        .load_or_create_device_id(false)
-        .map(|id| id.map(|id| id.as_str().to_string()));
-    let sync_actor = sync_actor_result.as_ref().ok().and_then(Clone::clone);
-    let identity = identity_store.inspect_with_legacy_id(sync_actor.as_deref());
+    let identity = identity_store.inspect();
     let registrations = WikiRegistry::user_default()
         .map_err(CliError::operation)?
         .list(None)
@@ -90,19 +83,6 @@ fn build_inventory(cli: &Cli, offline: bool) -> Result<InstallationDeviceInvento
             freshness: "current_local_read",
             error: None,
             value: identity,
-        },
-        sync_actor: InventoryField {
-            source: "installation_sync_state_store",
-            scope: "user_state/sync".to_string(),
-            freshness: if sync_actor_result.is_ok() {
-                "current_local_read"
-            } else {
-                "current_local_read_failed"
-            },
-            error: sync_actor_result
-                .is_err()
-                .then_some("legacy sync actor metadata could not be read"),
-            value: sync_actor,
         },
         vaults,
     })
@@ -235,9 +215,6 @@ fn print_inventory(
         println!("Identity ID: {id}");
     }
     println!("Identity is local metadata; it does not establish trust or authorization.");
-    if let Some(actor) = &report.sync_actor.value {
-        println!("Current sync actor (legacy sync state): {actor}");
-    }
     for vault in &report.vaults {
         println!("\nWiki {} ({})", vault.wiki_id, vault.local_state);
         if let Some(detail) = &vault.detail {
@@ -245,7 +222,7 @@ fn print_inventory(
         }
         if let Some(inventory) = &vault.sync_inventory {
             println!(
-                "  Legacy sync actor: {}",
+                "  This device: {}",
                 inventory.current_device_id.as_deref().unwrap_or("unknown")
             );
             if inventory.remote_observation.state

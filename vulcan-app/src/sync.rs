@@ -3742,7 +3742,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         for phase in RECOVERABLE_JOURNAL_PHASES {
             assert_dry_run_recovers_journal_phase(&paths, &store, &writer, phase);
         }
-        assert!(!store.root().join("_device.json").exists());
+        assert_eq!(
+            store
+                .load_or_create_device_id(false)
+                .expect("no identity yet"),
+            None
+        );
 
         let mut interrupted =
             SyncJournal::preparing(&writer, "origin", "refs/heads/__vulcan-sync/live")
@@ -3773,7 +3778,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
                 .expect("load unchanged journal"),
             Some(interrupted.clone())
         );
-        assert!(!store.root().join("_device.json").exists());
+        assert_eq!(
+            store
+                .load_or_create_device_id(false)
+                .expect("no identity yet"),
+            None
+        );
 
         fs::write(writer.join("Home.md"), "changed before recovery\n").expect("changed note");
 
@@ -3794,7 +3804,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
                 .expect("load cleared journal"),
             None
         );
-        assert!(store.root().join("_device.json").is_file());
         let device_id = store
             .load_or_create_device_id(false)
             .expect("load device identity")

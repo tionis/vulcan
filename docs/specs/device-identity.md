@@ -1,9 +1,8 @@
 # Cryptographic Device Identity
 
 Status: accepted design for Roadmap 12.15; partially implemented. Local identity inspection and
-initialization on Unix and Windows, public-key export, and key-shaped recovery ID parsing are
-available. Sync writers still use legacy ULIDs and namespace version 2; live version-3
-reconciliation remains blocked.
+initialization on Unix and Windows and public-key export are available, and sync writers use the
+key-derived ID with ref namespace version 3. Legacy ULIDs are read-only recovery evidence.
 
 ## Purpose
 
@@ -168,31 +167,21 @@ must still reach the leased device safety head before conflict-prone canonical r
 work must not weaken capture-before-apply, compare-and-swap, conflict preservation, or recovery-ref
 retention.
 
-Current writers already emit namespace version 2 with legacy ULID device IDs. The key-derived ID
-grammar therefore requires namespace version 3. Rollout has three gated stages:
+Legacy writers emitted namespace version 2 with random ULID device IDs. The key-derived grammar
+requires namespace version 3. While Vulcan is pre-alpha, the implementation skips a staged
+dual-reader rollout: sync writers use only the key-derived ID and namespace version 3, and readers
+still reject any namespace version above the one they understand before canonical reconciliation.
+A staged rollout (recovery reader, then monotonic live reader, then writer) must be reconsidered
+before any release whose users run mixed binary versions.
 
-1. A recovery-reader release accepts canonical key-shaped IDs alongside legacy ULIDs in device
-   backup inventory, labels, fetch, and safe pruning. It still creates legacy IDs, emits version 2,
-   and rejects a version-3 live tip before canonical reconciliation. Key-shaped ref names are
-   recovery evidence, not proof of key ownership or trust.
-2. A later live-reader release may reconcile version-3 live tips only when every newly written live
-   descendant preserves at least the observed namespace version. It still creates legacy IDs by
-   default. This monotonic rule prevents a version-2 descendant from hiding an upgrade requirement
-   from older clients.
-3. After the compatible reader is deployed, a key-writer release generates key identities and
-   writes version-3 provenance. It must tolerate mixed legacy/key device heads throughout rollout.
-
-An existing installation keeps its legacy `_device.json` intact during migration. The first explicit
-initialization or identity-requiring mutation creates a new key identity and therefore a new remote
-device head. Existing commits, trailers, conflict records, journals, recovery refs, and legacy remote
-heads are never rewritten, relabelled, or automatically deleted. The legacy head remains visible as a
-different historical device and uses the ordinary fetch, compare, integrate, and exact-lease backup-pruning
-workflow. Local migration metadata may report the legacy ID, but it is not a predecessor claim and is
-not published as cryptographic continuity.
-
-Old binaries that do not understand namespace version 3 must fail closed and require upgrade. The
-staged rollout prevents that failure during an intentionally supported rolling upgrade; it does not
-promise indefinite write compatibility with unupgraded clients.
+`SyncStateStore::load_or_create_device_id` is the sync-side entry point. It reads only the public
+manifest, so a locked or missing private key does not stop ordinary naming and provenance; when no
+identity artifacts exist, the first mutating operation initializes one. A legacy `_device.json` is
+ignored and never rewritten or deleted. Legacy ULID heads, commits, trailers, conflict records, and
+recovery refs stay readable as different historical devices and use the ordinary fetch, compare,
+integrate, and exact-lease backup-pruning workflow. Existing history is never relabelled, and no
+predecessor or continuity claim is published. ULID parsing can be removed once such heads are
+pruned.
 
 ## Security and failure semantics
 

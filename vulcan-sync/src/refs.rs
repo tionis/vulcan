@@ -1,6 +1,6 @@
 use crate::{GitEngineError, GitRefName, GitRemote};
 
-pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 2;
+pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 3;
 pub const DEFAULT_REMOTE_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 pub const REMOTE_EPOCH_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/epochs";
 pub const REMOTE_DEVICE_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/devices";
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn namespace_builders_are_versioned_stable_and_reject_unsafe_components() {
-        assert_eq!(VULCAN_REF_NAMESPACE_VERSION, 2);
+        assert_eq!(VULCAN_REF_NAMESPACE_VERSION, 3);
         let remote = GitRemote::parse("origin").expect("remote");
         let live = GitRefName::parse(DEFAULT_REMOTE_LIVE_REF).expect("live ref");
         let profile = sync_profile_key(&remote, &live);

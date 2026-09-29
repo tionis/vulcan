@@ -4664,7 +4664,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
                 "-p",
                 accepted.as_str(),
                 "-m",
-                "future writer\n\nVulcan-Ref-Namespace: 3",
+                "future writer\n\nVulcan-Ref-Namespace: 4",
             ],
         );
         run_git(
@@ -4682,7 +4682,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             .expect_err("unknown remote namespace must block reconciliation");
         assert!(error
             .to_string()
-            .contains("unsupported Vulcan ref namespace version `3`"));
+            .contains("unsupported Vulcan ref namespace version `4`"));
         let repository = engine.discover_repository(&writer).expect("repository");
         assert_eq!(
             engine
@@ -5133,7 +5133,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
 
         assert!(message.starts_with("vulcan live snapshot\n\n"));
         assert!(message.contains("Vulcan-Sync-Version: 2"));
-        assert!(message.contains("Vulcan-Ref-Namespace: 2"));
+        assert!(message.contains("Vulcan-Ref-Namespace: 3"));
         assert!(message.contains(&format!("Vulcan-Sync-Device: {}", device_id.as_str())));
         assert!(message.contains("Vulcan-Sync-Profile:"));
         assert!(message.contains("Vulcan-Sync-Policy: 1:"));

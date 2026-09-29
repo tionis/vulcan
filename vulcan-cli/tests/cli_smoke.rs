@@ -5290,7 +5290,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let bootstrap_json = parse_stdout_json(&bootstrap);
     assert_eq!(bootstrap_json["outcome"], "bootstrapped");
     assert_eq!(bootstrap_json["actions"], serde_json::json!(["pushed"]));
-    assert_eq!(bootstrap_json["refs"]["namespace_version"], 2);
+    assert_eq!(bootstrap_json["refs"]["namespace_version"], 3);
     assert_eq!(
         bootstrap_json["requirements"]["required_filters"],
         serde_json::json!([])
@@ -16439,8 +16439,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan devices list --output json"));
     assert!(sync_skill.contains("vulcan devices list --offline"));
     assert!(sync_skill.contains("vulcan sync devices list --offline"));
-    assert!(sync_skill.contains("legacy_unavailable"));
-    assert!(sync_skill.contains("key_pending_rollout"));
+    assert!(sync_skill.contains("key-derived ID that sync uses as its actor"));
+    assert!(sync_skill.contains("vulcan device repair-permissions --dry-run"));
     assert!(sync_skill.contains("vulcan sync run <wiki>"));
     assert!(sync_skill.contains("`safe.directory`"));
     assert!(sync_skill.contains("managed: true"));
