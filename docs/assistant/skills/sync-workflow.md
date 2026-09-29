@@ -22,7 +22,9 @@ both execute the same application workflow.
   legacy ULID currently used by sync. Neither field proves trust, remote access, or enrollment.
 - Preview `vulcan device init --dry-run` before initializing a missing local Ed25519 identity.
   Initialization never replaces existing key material. `vulcan device public-key` explicitly
-  exports the public key; never request or print the private key for inventory work.
+  exports the public key; never request or print the private key for inventory work. If `device show`
+  reports `invalid` because storage is readable by other accounts, preview
+  `vulcan device repair-permissions --dry-run`; it only tightens access and never rewrites keys.
 - A local key may be ready while sync still reports `key_pending_rollout`. Continue using current
   legacy sync actor and recovery procedures until version-3 live reconciliation and key-backed
   writer migration are complete. On Windows, initialization remains unavailable until protected

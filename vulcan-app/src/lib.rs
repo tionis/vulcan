@@ -33,6 +33,8 @@ mod credential_transport;
 mod device_state;
 mod durable_file;
 mod error;
+#[cfg(windows)]
+pub use vulcan_winacl as windows_acl;
 
 pub mod artifact;
 pub mod background_policy;

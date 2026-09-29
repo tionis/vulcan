@@ -59,6 +59,15 @@ pub struct DeviceIdentityInitReport {
     pub adopted_interrupted_initialization: bool,
 }
 
+/// Result from tightening over-permissive identity storage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceIdentityRepairReport {
+    pub dry_run: bool,
+    /// Logical artifact names whose access was (or would be) restricted; never paths.
+    pub repaired: Vec<String>,
+    pub identity: DeviceIdentityReport,
+}
+
 /// Installation-global storage for the local device identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceIdentityStore {
@@ -149,6 +158,61 @@ impl DeviceIdentityStore {
         Ok(validated.manifest.public_key)
     }
 
+    /// Restrict an existing identity directory and its known files to the current user.
+    ///
+    /// This only tightens access: it refuses symlinks/reparse points and objects owned by
+    /// another account, never creates, replaces, or rewrites key material, and leaves
+    /// malformed or mismatched keys for manual repair (the returned report re-inspects them).
+    pub fn repair_permissions(
+        &self,
+        dry_run: bool,
+    ) -> Result<DeviceIdentityRepairReport, AppError> {
+        let metadata = match fs::symlink_metadata(&self.directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::operation(
+                    "no device identity directory exists; nothing to repair",
+                ));
+            }
+            Err(error) => return Err(identity_io_error(error)),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(AppError::operation(
+                "identity directory is not a safe directory",
+            ));
+        }
+        let mut targets = vec![(
+            "identity directory".to_string(),
+            self.directory.clone(),
+            true,
+        )];
+        for name in [
+            IDENTITY_FILE,
+            PRIVATE_KEY_FILE,
+            PUBLIC_KEY_FILE,
+            INIT_LOCK_FILE,
+        ] {
+            let path = self.directory.join(name);
+            if artifact_state(&path)? == ArtifactState::Present {
+                targets.push((name.to_string(), path, false));
+            }
+        }
+        let mut repaired = Vec::new();
+        for (name, path, directory) in targets {
+            if needs_repair(&path, directory)? {
+                if !dry_run {
+                    repair_private_path(&path, directory)?;
+                }
+                repaired.push(name);
+            }
+        }
+        Ok(DeviceIdentityRepairReport {
+            dry_run,
+            repaired,
+            identity: self.inspect(),
+        })
+    }
+
     fn inspect_inner(&self) -> Result<DeviceIdentityReport, AppError> {
         let directory = match fs::symlink_metadata(&self.directory) {
             Ok(metadata) => {
@@ -157,7 +221,7 @@ impl DeviceIdentityStore {
                         "identity directory is not a safe directory",
                     ));
                 }
-                validate_private_directory(&metadata)?;
+                validate_private_directory(&self.directory, &metadata)?;
                 true
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -180,25 +244,6 @@ impl DeviceIdentityStore {
                         Some("public identity is available, but a key file is missing".into()),
                     ));
                 }
-                #[cfg(windows)]
-                {
-                    let public = self.read_public_key()?;
-                    if canonical_public_key(&public)? != identity.manifest.public_key {
-                        return Ok(identity_report(
-                            &identity,
-                            DeviceIdentityStatus::Invalid,
-                            false,
-                            Some("stored public key does not match identity manifest".into()),
-                        ));
-                    }
-                    Ok(identity_report(
-                        &identity,
-                        DeviceIdentityStatus::Degraded,
-                        false,
-                        Some("private file ACL cannot be verified on this platform; initialization is disabled".into()),
-                    ))
-                }
-                #[cfg(not(windows))]
                 match self.verify_keypair_files(&identity) {
                     Ok(()) => Ok(identity_report(
                         &identity,
@@ -265,12 +310,6 @@ impl DeviceIdentityStore {
             });
         }
 
-        if cfg!(windows) {
-            return Err(AppError::operation(
-                "device identity initialization is not supported on Windows until Vulcan can verify a private per-user ACL",
-            ));
-        }
-
         match fs::symlink_metadata(&self.directory) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
                 return Err(AppError::operation(
@@ -295,7 +334,7 @@ impl DeviceIdentityStore {
                 "identity directory is not a safe directory",
             ));
         }
-        validate_private_directory(&directory_metadata)?;
+        validate_private_directory(&self.directory, &directory_metadata)?;
 
         let lock = self.acquire_lock()?;
         let _unlock = UnlockOnDrop(lock);
@@ -404,7 +443,7 @@ impl DeviceIdentityStore {
         let file = options.open(path).map_err(AppError::operation)?;
         let metadata = file.metadata().map_err(AppError::operation)?;
         validate_regular_file(&metadata)?;
-        validate_private_file(&metadata)?;
+        validate_private_file(&file)?;
         file.lock_exclusive().map_err(AppError::operation)?;
         Ok(file)
     }
@@ -445,15 +484,8 @@ impl DeviceIdentityStore {
         let public = self.read_public_key()?;
         let canonical = canonical_public_key(&public)?;
         let identity = build_identity(&canonical)?;
-        #[cfg(windows)]
-        {
-            Ok(Some(identity))
-        }
-        #[cfg(not(windows))]
-        {
-            self.verify_keypair_files(&identity)?;
-            Ok(Some(identity))
-        }
+        self.verify_keypair_files(&identity)?;
+        Ok(Some(identity))
     }
 
     fn load_manifest(&self) -> Result<ValidatedPublicIdentity, AppError> {
@@ -513,7 +545,7 @@ impl DeviceIdentityStore {
         let file = open_regular_file(&path)?;
         let metadata = file.metadata().map_err(AppError::operation)?;
         validate_regular_file(&metadata)?;
-        validate_private_file(&metadata)?;
+        validate_private_file(&file)?;
         let capacity = usize::try_from(metadata.len())
             .map_err(|_| AppError::operation("private key exceeds platform limits"))?;
         let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
@@ -731,6 +763,84 @@ fn unavailable_report(diagnostic: &str) -> DeviceIdentityReport {
     }
 }
 
+#[cfg(unix)]
+fn needs_repair(path: &Path, _directory: bool) -> Result<bool, AppError> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::symlink_metadata(path).map_err(identity_io_error)?;
+    Ok(metadata.permissions().mode() & 0o077 != 0)
+}
+
+#[cfg(windows)]
+fn needs_repair(path: &Path, _directory: bool) -> Result<bool, AppError> {
+    match crate::windows_acl::verify_private_path(path) {
+        Ok(()) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(true),
+        Err(error) => Err(identity_io_error(error)),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn needs_repair(_path: &Path, _directory: bool) -> Result<bool, AppError> {
+    Err(AppError::operation(
+        "permission repair is unavailable on this platform",
+    ))
+}
+
+#[cfg(unix)]
+fn repair_private_path(path: &Path, directory: bool) -> Result<(), AppError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let handle = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(identity_io_error)?;
+    let metadata = handle.metadata().map_err(AppError::operation)?;
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(AppError::operation(
+            "identity storage is owned by another account; no permissions were changed",
+        ));
+    }
+    if directory != metadata.is_dir() {
+        return Err(AppError::operation(
+            "identity artifact has an unexpected type",
+        ));
+    }
+    let mode = if directory { 0o700 } else { 0o600 };
+    handle
+        .set_permissions(fs::Permissions::from_mode(mode))
+        .map_err(AppError::operation)
+}
+
+#[cfg(windows)]
+fn repair_private_path(path: &Path, directory: bool) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path).map_err(identity_io_error)?;
+    if directory {
+        validate_reparse_free(&metadata)?;
+    } else {
+        validate_regular_file(&metadata)?;
+    }
+    crate::windows_acl::repair_private_path(path, directory).map_err(acl_error)
+}
+
+#[cfg(windows)]
+fn validate_reparse_free(metadata: &fs::Metadata) -> Result<(), AppError> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    if metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(AppError::operation("identity directory is a reparse point"));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn repair_private_path(_path: &Path, _directory: bool) -> Result<(), AppError> {
+    Err(AppError::operation(
+        "permission repair is unavailable on this platform",
+    ))
+}
+
 fn artifact_state(path: &Path) -> Result<ArtifactState, AppError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -767,7 +877,7 @@ fn validate_regular_file(metadata: &fs::Metadata) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_private_directory(metadata: &fs::Metadata) -> Result<(), AppError> {
+fn validate_private_directory(path: &Path, metadata: &fs::Metadata) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -784,13 +894,19 @@ fn validate_private_directory(metadata: &fs::Metadata) -> Result<(), AppError> {
         if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(AppError::operation("identity directory is a reparse point"));
         }
+        crate::windows_acl::verify_private_path(path).map_err(acl_error)?;
     }
+    #[cfg(not(windows))]
+    let _ = path;
+    #[cfg(not(any(unix, windows)))]
+    let _ = metadata;
     Ok(())
 }
 
 #[cfg(unix)]
-fn validate_private_file(metadata: &fs::Metadata) -> Result<(), AppError> {
+fn validate_private_file(file: &File) -> Result<(), AppError> {
     use std::os::unix::fs::PermissionsExt;
+    let metadata = file.metadata().map_err(AppError::operation)?;
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(AppError::operation(
             "device private key is accessible by group or other users",
@@ -799,11 +915,26 @@ fn validate_private_file(metadata: &fs::Metadata) -> Result<(), AppError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_private_file(_metadata: &fs::Metadata) -> Result<(), AppError> {
+#[cfg(windows)]
+fn validate_private_file(file: &File) -> Result<(), AppError> {
+    crate::windows_acl::verify_private_file(file).map_err(acl_error)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn validate_private_file(_file: &File) -> Result<(), AppError> {
     Err(AppError::operation(
-        "private key ACL verification is unavailable on this platform",
+        "private key access verification is unavailable on this platform",
     ))
+}
+
+/// Keep ACL diagnostics free of paths and account names.
+#[cfg(windows)]
+fn acl_error(error: std::io::Error) -> AppError {
+    if error.kind() == std::io::ErrorKind::PermissionDenied && error.raw_os_error().is_none() {
+        AppError::operation(format!("device identity storage {error}"))
+    } else {
+        identity_io_error(error)
+    }
 }
 
 fn create_private_directory(path: &Path) -> Result<(), AppError> {
@@ -818,7 +949,15 @@ fn create_private_directory(path: &Path) -> Result<(), AppError> {
             Err(error) => Err(AppError::operation(error)),
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        match crate::windows_acl::create_private_directory(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(AppError::operation(error)),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         match fs::create_dir(path) {
             Ok(()) => Ok(()),
@@ -850,7 +989,7 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
         .as_file()
         .metadata()
         .map_err(AppError::operation)?;
-    validate_private_file(&metadata).and_then(|()| validate_regular_file(&metadata))?;
+    validate_private_file(temporary.as_file()).and_then(|()| validate_regular_file(&metadata))?;
     temporary
         .persist_noclobber(path)
         .map_err(|error| AppError::operation(error.error))?;
@@ -902,11 +1041,12 @@ fn sync_directory(path: &Path) -> Result<(), AppError> {
         .map_err(AppError::operation)
 }
 
+/// NTFS cannot open a directory for a portable flush; files are already synced and moved
+/// atomically, matching `durable_file`.
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Keep one fallible cross-platform durability contract.
 fn sync_directory(_path: &Path) -> Result<(), AppError> {
-    Err(AppError::operation(
-        "durable identity directory writes are unavailable on this platform",
-    ))
+    Ok(())
 }
 
 fn is_legacy_device_id(id: &str) -> bool {
@@ -973,6 +1113,55 @@ mod tests {
         assert!(!report.created);
         assert_eq!(report.identity.device_id, None);
         assert!(!directory.exists());
+    }
+
+    #[test]
+    fn repair_tightens_loose_permissions_without_touching_key_material() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempdir().expect("tempdir");
+        let store = DeviceIdentityStore::at(temporary.path().join("vulcan/device"));
+        let id = store
+            .initialize(false)
+            .expect("initialize")
+            .identity
+            .device_id
+            .expect("device ID");
+        let private = store.directory.join(PRIVATE_KEY_FILE);
+        let before = fs::read(&private).expect("private key bytes");
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o644)).expect("loosen key");
+        fs::set_permissions(&store.directory, fs::Permissions::from_mode(0o755))
+            .expect("loosen directory");
+        assert_eq!(store.inspect().status, DeviceIdentityStatus::Invalid);
+
+        let preview = store.repair_permissions(true).expect("preview");
+        assert_eq!(preview.repaired, ["identity directory", PRIVATE_KEY_FILE]);
+        assert_eq!(
+            fs::metadata(&private).expect("key").permissions().mode() & 0o777,
+            0o644,
+            "dry-run changes nothing"
+        );
+
+        let repaired = store.repair_permissions(false).expect("repair");
+        assert_eq!(repaired.repaired, preview.repaired);
+        assert_eq!(repaired.identity.status, DeviceIdentityStatus::Ready);
+        assert_eq!(repaired.identity.device_id.as_deref(), Some(id.as_str()));
+        assert_eq!(fs::read(&private).expect("private key bytes"), before);
+        assert!(store
+            .repair_permissions(false)
+            .expect("idempotent")
+            .repaired
+            .is_empty());
+    }
+
+    #[test]
+    fn repair_refuses_missing_directories_and_symlinks() {
+        let temporary = tempdir().expect("tempdir");
+        let store = DeviceIdentityStore::at(temporary.path().join("device"));
+        assert!(store.repair_permissions(false).is_err());
+        let target = temporary.path().join("elsewhere");
+        fs::create_dir(&target).expect("target");
+        std::os::unix::fs::symlink(&target, temporary.path().join("device")).expect("symlink");
+        assert!(store.repair_permissions(false).is_err());
     }
 
     #[test]

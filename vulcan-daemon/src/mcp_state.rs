@@ -877,7 +877,17 @@ fn set_owner_only(path: &Path) -> Result<(), McpStateError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn validate_owner_only(_metadata: &fs::Metadata, path: &Path) -> Result<(), McpStateError> {
+    vulcan_app::windows_acl::verify_private_path(path).map_err(|error| {
+        McpStateError::Invalid(format!(
+            "remote MCP authorization state at {} is not private to the current user: {error}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 #[allow(clippy::unnecessary_wraps)]
 fn validate_owner_only(_metadata: &fs::Metadata, _path: &Path) -> Result<(), McpStateError> {
     Ok(())

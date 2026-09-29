@@ -218,7 +218,6 @@ fn assert_no_remote_git_trace(trace: &Path) {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn local_identity_commands_are_vault_independent_and_state_free_until_init() {
     let temporary = TempDir::new().expect("temporary directory");
@@ -272,21 +271,6 @@ fn local_identity_commands_are_vault_independent_and_state_free_until_init() {
     assert_eq!(repeated["identity"]["device_id"], id);
 }
 
-#[cfg(windows)]
-#[test]
-fn local_identity_init_fails_closed_until_private_acl_support_is_available() {
-    let temporary = TempDir::new().expect("temporary directory");
-    let root = temporary.path();
-    let preview = json_output(&run(
-        root,
-        &["--output", "json", "device", "init", "--dry-run"],
-    ));
-    assert_eq!(preview["dry_run"], true);
-    let applied = run(root, &["device", "init"]);
-    assert!(!applied.status.success());
-    assert!(!root.join("data/vulcan/device").exists());
-}
-
 #[test]
 fn local_identity_show_reports_legacy_ulid_without_creating_key_material() {
     let temporary = TempDir::new().expect("temporary directory");
@@ -305,23 +289,20 @@ fn local_identity_show_reports_legacy_ulid_without_creating_key_material() {
     assert_eq!(shown["sync_actor_id"], "01arz3ndektsv4rrffq69g5fav");
     assert!(!root.join("data/vulcan/device").exists());
 
-    #[cfg(unix)]
-    {
-        let initialized = json_output(&run(root, &["--output", "json", "device", "init"]));
-        assert_eq!(initialized["identity"]["status"], "ready");
-        assert_eq!(
-            initialized["identity"]["sync_actor_id"],
-            "01arz3ndektsv4rrffq69g5fav"
-        );
-        assert_ne!(
-            initialized["identity"]["device_id"],
-            initialized["identity"]["sync_actor_id"]
-        );
-        assert_eq!(
-            fs::read(state.join("_device.json")).expect("legacy state retained"),
-            br#"{"version":1,"device_id":"01arz3ndektsv4rrffq69g5fav"}"#
-        );
-    }
+    let initialized = json_output(&run(root, &["--output", "json", "device", "init"]));
+    assert_eq!(initialized["identity"]["status"], "ready");
+    assert_eq!(
+        initialized["identity"]["sync_actor_id"],
+        "01arz3ndektsv4rrffq69g5fav"
+    );
+    assert_ne!(
+        initialized["identity"]["device_id"],
+        initialized["identity"]["sync_actor_id"]
+    );
+    assert_eq!(
+        fs::read(state.join("_device.json")).expect("legacy state retained"),
+        br#"{"version":1,"device_id":"01arz3ndektsv4rrffq69g5fav"}"#
+    );
 }
 
 #[test]
@@ -342,16 +323,51 @@ fn malformed_legacy_actor_does_not_hide_local_identity_inspection() {
         .contains("vulcan sync doctor"));
     assert!(!root.join("data/vulcan/device").exists());
 
-    #[cfg(unix)]
-    {
-        let initialized = json_output(&run(root, &["--output", "json", "device", "init"]));
-        assert_eq!(initialized["identity"]["status"], "ready");
-        assert_eq!(
-            initialized["identity"]["sync_identity_state"],
-            "legacy_unavailable"
-        );
-        let ready = json_output(&run(root, &["--output", "json", "device", "show"]));
-        assert_eq!(ready["status"], "ready");
-        assert_eq!(ready["device_id"], initialized["identity"]["device_id"]);
-    }
+    let initialized = json_output(&run(root, &["--output", "json", "device", "init"]));
+    assert_eq!(initialized["identity"]["status"], "ready");
+    assert_eq!(
+        initialized["identity"]["sync_identity_state"],
+        "legacy_unavailable"
+    );
+    let ready = json_output(&run(root, &["--output", "json", "device", "show"]));
+    assert_eq!(ready["status"], "ready");
+    assert_eq!(ready["device_id"], initialized["identity"]["device_id"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn repair_permissions_restricts_loose_identity_storage() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let directory = root.join("data/vulcan/device");
+    json_output(&run(root, &["--output", "json", "device", "init"]));
+    fs::set_permissions(
+        directory.join("id_ed25519"),
+        fs::Permissions::from_mode(0o640),
+    )
+    .expect("loosen key");
+
+    let shown = json_output(&run(root, &["--output", "json", "device", "show"]));
+    assert_eq!(shown["status"], "invalid");
+
+    let preview = json_output(&run(
+        root,
+        &[
+            "--output",
+            "json",
+            "device",
+            "repair-permissions",
+            "--dry-run",
+        ],
+    ));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["repaired"][0], "id_ed25519");
+
+    let repaired = json_output(&run(
+        root,
+        &["--output", "json", "device", "repair-permissions"],
+    ));
+    assert_eq!(repaired["identity"]["status"], "ready");
+    assert!(!repaired.to_string().contains(root.to_str().unwrap()));
 }

@@ -3,7 +3,8 @@ use crate::output::print_json;
 use crate::{Cli, CliError, OutputFormat};
 use serde::Serialize;
 use vulcan_app::device_identity::{
-    DeviceIdentityInitReport, DeviceIdentityReport, DeviceIdentityStatus, DeviceIdentityStore,
+    DeviceIdentityInitReport, DeviceIdentityRepairReport, DeviceIdentityReport,
+    DeviceIdentityStatus, DeviceIdentityStore,
 };
 use vulcan_app::sync_state::SyncStateStore;
 
@@ -24,6 +25,13 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
             let mut report = store.initialize(*dry_run).map_err(CliError::operation)?;
             report.identity = inspect_with_legacy_state(&store);
             print_device_init(cli.output, &report)
+        }
+        DeviceCommand::RepairPermissions { dry_run } => {
+            let mut report = store
+                .repair_permissions(*dry_run)
+                .map_err(CliError::operation)?;
+            report.identity = inspect_with_legacy_state(&store);
+            print_device_repair(cli.output, &report)
         }
         DeviceCommand::PublicKey => {
             let public_key = store.public_key().map_err(CliError::operation)?;
@@ -130,6 +138,36 @@ fn print_device_init(
         println!("Sync still uses legacy ULID actor IDs; this key is not yet its sync actor.");
     }
     println!("Identity is not a trust or access decision.");
+    Ok(())
+}
+
+fn print_device_repair(
+    output: OutputFormat,
+    report: &DeviceIdentityRepairReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.repaired.is_empty() {
+        println!("Device identity storage is already private to the current user.");
+    } else {
+        let verb = if report.dry_run {
+            "Would restrict"
+        } else {
+            "Restricted"
+        };
+        println!(
+            "{verb} access to the current user for: {}",
+            report.repaired.join(", ")
+        );
+    }
+    println!(
+        "Local device identity: {}",
+        status_label(report.identity.status)
+    );
+    if let Some(diagnostic) = &report.identity.diagnostic {
+        println!("{diagnostic}");
+    }
     Ok(())
 }
 

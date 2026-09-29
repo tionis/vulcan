@@ -1,9 +1,9 @@
 # Cryptographic Device Identity
 
 Status: accepted design for Roadmap 12.15; partially implemented. Local identity inspection and
-Unix initialization, public-key export, and key-shaped recovery ID parsing are available. Sync
-writers still use legacy ULIDs and namespace version 2; live version-3 reconciliation remains
-blocked. Windows initialization is held until private ACL handling is verified.
+initialization on Unix and Windows, public-key export, and key-shaped recovery ID parsing are
+available. Sync writers still use legacy ULIDs and namespace version 2; live version-3
+reconciliation remains blocked.
 
 ## Purpose
 
@@ -104,8 +104,11 @@ Key generation uses the operating system CSPRNG and a reviewed SSH key parser/se
 hand-written OpenSSH private-key encoding. It writes an unencrypted OpenSSH private key so the current
 unattended daemon can use it. This is explicitly a filesystem-protected credential until later keychain
 or agent support exists: on Unix the directory/private file are owner-only, and loads reject symlinks
-and group/other-accessible private keys; Windows uses a private per-user directory, inherited ACLs, and
-reparse-point rejection. The private key and its contents never appear in normal output, JSON, logs,
+and group/other-accessible private keys. Windows creates the identity directory with a protected DACL
+(full control for the current user and `SYSTEM` only, inherited by children) and, on every load,
+verifies the directory and private-key handle: the owner must be the current user, `Administrators`,
+or `SYSTEM`; a missing DACL, an unrecognized access-control entry, or an effective allow entry for
+any other principal (beyond attribute/metadata reads) fails closed; reparse points are rejected. The private key and its contents never appear in normal output, JSON, logs,
 notifications, crash diagnostics, or vault configuration.
 
 Initialization is serialized, no-clobber, and crash-recoverable. Files are prepared in the destination
@@ -130,6 +133,10 @@ The singular `vulcan device` group describes the local cryptographic identity; t
   or create directories.
 - `vulcan device init [--dry-run]` creates the identity only when no current key identity exists. It
   never overwrites or silently replaces a key.
+- `vulcan device repair-permissions [--dry-run]` restricts an existing identity directory and its known
+  files to the current user (Unix modes 0700/0600, Windows protected DACL). It refuses symlinks,
+  reparse points, and objects owned by another account, never creates or rewrites key material, and
+  leaves malformed or mismatched keys for manual repair.
 - `vulcan device public-key` explicitly emits the canonical OpenSSH public key for later manual
   registration. Structured output keeps it in a named field so scripts need not scrape prose.
 - `sync status`, `sync doctor`, `sync devices list`, and per-vault daemon status expose the current

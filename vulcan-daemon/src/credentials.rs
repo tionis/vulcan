@@ -251,7 +251,17 @@ fn set_owner_only(path: &Path) -> Result<(), CredentialError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn validate_owner_only(_metadata: &fs::Metadata, path: &Path) -> Result<(), CredentialError> {
+    vulcan_app::windows_acl::verify_private_path(path).map_err(|error| {
+        CredentialError::Invalid(format!(
+            "companion credential at {} is not private to the current user: {error}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 // Keep the fallible signature shared with the Unix implementation so callers
 // cannot accidentally omit permission validation on platforms that support it.
 #[allow(clippy::unnecessary_wraps)]

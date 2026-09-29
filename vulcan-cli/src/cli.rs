@@ -3959,6 +3959,13 @@ pub enum DeviceCommand {
     },
     #[command(about = "Export this installation's canonical public device key")]
     PublicKey,
+    #[command(
+        about = "Restrict existing device identity storage to the current user without touching key material"
+    )]
+    RepairPermissions {
+        #[arg(long, help = "Preview which artifacts would be restricted")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

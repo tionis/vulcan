@@ -155,7 +155,20 @@ fn validate_owner_only(metadata: &fs::Metadata, path: &Path) -> Result<(), Daemo
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn validate_owner_only(
+    _metadata: &fs::Metadata,
+    path: &Path,
+) -> Result<(), DaemonEnvironmentError> {
+    vulcan_app::windows_acl::verify_private_path(path).map_err(|error| {
+        DaemonEnvironmentError::Invalid(
+            path.to_path_buf(),
+            format!("file must be private to the current user: {error}"),
+        )
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 #[allow(clippy::unnecessary_wraps)]
 fn validate_owner_only(
     _metadata: &fs::Metadata,

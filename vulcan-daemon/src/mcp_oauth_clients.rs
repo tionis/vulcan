@@ -317,7 +317,20 @@ fn require_owner_only(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn require_owner_only(
+    path: &Path,
+    _metadata: &fs::Metadata,
+) -> Result<(), OAuthClientRegistryError> {
+    vulcan_app::windows_acl::verify_private_path(path).map_err(|error| {
+        OAuthClientRegistryError::Invalid(format!(
+            "{} must be private to the current user: {error}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 #[allow(clippy::unnecessary_wraps)] // Signature matches the fallible Unix implementation.
 fn require_owner_only(
     _path: &Path,

@@ -4640,6 +4640,7 @@ dependencies = [
  "reqwest",
  "rquickjs",
  "rusqlite",
+ "rustix 1.1.4",
  "semver",
  "serde",
  "serde_json",
@@ -4653,6 +4654,7 @@ dependencies = [
  "unicode-normalization",
  "vulcan-core",
  "vulcan-sync",
+ "vulcan-winacl",
  "zeroize",
  "zip",
 ]
@@ -4789,6 +4791,14 @@ dependencies = [
  "unicode-normalization",
  "url",
  "wait-timeout",
+]
+
+[[package]]
+name = "vulcan-winacl"
+version = "0.2.1"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

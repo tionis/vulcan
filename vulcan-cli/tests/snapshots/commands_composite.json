@@ -11140,6 +11140,27 @@
             "name": "public-key",
             "options": [],
             "subcommands": []
+          },
+          {
+            "about": "Restrict existing device identity storage to the current user without touching key material",
+            "name": "repair-permissions",
+            "options": [
+              {
+                "help": "Preview which artifacts would be restricted",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },

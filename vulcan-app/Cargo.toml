@@ -43,5 +43,11 @@ zeroize.workspace = true
 rquickjs = { workspace = true, optional = true }
 zip.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+vulcan-winacl = { path = "../vulcan-winacl", version = "0.2.1" }
+
 [lints]
 workspace = true
