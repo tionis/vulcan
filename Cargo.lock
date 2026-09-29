@@ -4775,6 +4775,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vulcan-secrets"
+version = "0.2.1"
+dependencies = [
+ "fs2",
+ "libc",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vulcan-winacl",
+ "zeroize",
+]
+
+[[package]]
 name = "vulcan-sync"
 version = "0.2.1"
 dependencies = [

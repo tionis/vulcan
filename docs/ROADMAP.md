@@ -5613,6 +5613,7 @@ session authority -> PermissionGuard -> PermissionFilter
   validation, stable ULIDs, version dispatch for migrations, audience/client/instance binding,
   hashed refresh secrets, rotation replay detection, family revocation, and dry-run-safe grant
   mutation. Neither daemon nor app code imports CLI types.
+  - Acceptance audit found issuer/client credential custody still using direct protected files rather than the specified shared `SecretStore`. The `vulcan-secrets` foundation now supplies bounded, redacted/zeroizing secret values, closed `file_v1` references, non-replacing durable file custody, read-only inspection, typed failure states, and concurrency/unsafe-storage tests. MCP integration, explicit credential migration, and secret references in management reports remain open; this foundation does not complete those requirements or the broader 12.16 key-provider/native-store work.
 - [x] Bind the existing HTTP session lifecycle to an authenticated authority record and add
   regression tests with two subjects, two grants, two remotes, and attempted cross-session/token
   reuse. POST, SSE, and DELETE require the exact instance/grant/client/subject/vault/audience,

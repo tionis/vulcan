@@ -135,6 +135,7 @@ The workspace boundary contract for the current and upcoming phases is:
 
 - `vulcan-core` owns parser/indexer semantics, query and expression evaluation, cache abstractions, config models, shared backend logic, and serializable domain request/response types that are not tied to a transport.
 - `vulcan-app` owns reusable synchronous workflow orchestration that composes `vulcan-core` with filesystem mutation, plugin dispatch, scan refresh, config-file mutation, packaging, and other non-UI application services.
+- `vulcan-secrets` owns bounded synchronous opaque-secret custody below application workflows: redacted/zeroizing values, closed provider references, and protected-file storage. It has no vault, OAuth, signing, or authorization semantics; native keychains and device-key provider integration remain separate roadmap work.
 - `vulcan-cli` owns `clap` parsing, terminal I/O, TUI state, editor/browser launching, shell completions, and human/JSON rendering. It should call shared services rather than becoming the primary home of business logic.
 - `vulcan-daemon` owns long-lived transports, async boundaries, background scheduling, HTTP/WebSocket endpoints, and adapter/runtime state that should not live in the CLI or rebuildable cache.
 - The migration from today's daemon and CLI-owned listeners to one reusable host follows the

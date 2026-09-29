@@ -1,6 +1,8 @@
 # Device Key Custody and Secret Stores
 
-Status: accepted design for Roadmap 12.16; not yet implemented.
+Status: accepted design for Roadmap 12.16. The opaque `SecretStore` boundary and portable
+`file_v1` secret provider are implemented in `vulcan-secrets`; device-key provider integration,
+native stores, signing, and custody migration remain unimplemented.
 
 This specification extends `device-identity.md`. It changes where the private half of a device
 identity may be kept, not how a device is identified or trusted.
@@ -51,6 +53,20 @@ a fixed maximum size, and zeroization on drop. This reduces exposure but does no
 debugger, swap, core dump, or compromised process cannot observe memory. Private bytes are never cloned
 into reports, durable journals, configuration, tracing fields, notifications, panic text, or test
 snapshots.
+
+The current opaque-store foundation is synchronous and independent of app/core/daemon code. It
+accepts non-empty values up to 64 KiB, lowercase-canonical non-path logical names up to 128 ASCII bytes
+(excluding Windows reserved device names), and closed structured references selecting `file_v1`.
+Secret memory is non-cloneable and zeroized on drop.
+The protected-file adapter uses a trusted device-local directory chosen by its application caller,
+refuses loose permissions, symlinks/reparse points and non-regular files (also hard links on Unix),
+stages complete values before no-clobber publication, and serializes mutations with a nonblocking
+cross-process lock. Inspection
+never creates storage or reads secret bytes. File custody is exportable and unattended, not encrypted,
+native-keychain-backed, or hardware protected; no provider fallback or permission repair is implicit.
+Unix publication/deletion syncs the parent directory; a failed post-publication sync reports an unknown
+outcome rather than authorizing replacement. Windows uses the shared current-user/SYSTEM ACL adapter.
+This foundation alone does not migrate device keys, connector credentials, or MCP issuer/client secrets.
 
 Every provider reports a structured state rather than flattening failures into “missing”:
 
