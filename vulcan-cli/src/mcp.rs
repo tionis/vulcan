@@ -76,30 +76,26 @@ use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 use vulcan_daemon::mcp_hosted::{
     prepare_hosted_mcp_request, run_hosted_mcp_request, scheduled_operation, HostedMcpRunError,
 };
+use vulcan_daemon::mcp_http_auth::McpHttpAuthError;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_http_auth::McpOAuthMode;
-use vulcan_daemon::mcp_http_auth::{
-    authenticate_mcp_http_request as authenticate_http_authority, McpHttpAuthError,
-    McpHttpAuthOptions,
-};
 use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
+use vulcan_daemon::mcp_http_host::McpHttpHost;
 use vulcan_daemon::mcp_http_routes::{
     dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
 };
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_authorize::subject_not_allowed_response as indieauth_subject_not_allowed_response;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_oauth_authorize::McpAuthorizeEndpoint;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_authorize::{
-    default_indieauth_exchange, IndieAuthExchange, McpAuthorizeEndpoint,
-};
+use vulcan_daemon::mcp_oauth_authorize::{default_indieauth_exchange, IndieAuthExchange};
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_oauth_browser::IndieAuthConfig as LocalOAuthIndieAuthConfig;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_browser::{
     percent_encode, redirect_to_indieauth as local_oauth_redirect_to_indieauth,
     PendingConsent as LocalOAuthPendingConsent,
-};
-#[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_browser::{
-    IndieAuthConfig as LocalOAuthIndieAuthConfig, PendingConsentMap, PendingIndieAuthMap,
 };
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_clients::OAuthClientRegistry;
@@ -109,7 +105,7 @@ use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient as LocalOAuthRegiste
 use vulcan_daemon::mcp_oauth_codes::McpAuthorizationCode as LocalOAuthCode;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_oauth_codes::McpAuthorizationCodeMap;
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_consent::McpConsentEndpoint;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy;
@@ -117,9 +113,7 @@ use vulcan_daemon::mcp_oauth_policy::parse_mcp_oauth_scopes as parse_mcp_oauth_s
 use vulcan_daemon::mcp_oauth_policy::McpOAuthPolicyError;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::{McpTokenAuthMethod, McpTokenClientCredentials};
-#[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_oauth_routes::{McpLocalOAuthRoutes, McpOAuthRoutes};
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_token::McpLocalTokenEndpoint;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
@@ -408,40 +402,25 @@ fn attenuate_mcp_core_profile(core: &mut McpServerCore) -> Result<(), String> {
 
 #[derive(Debug, Clone)]
 struct McpHttpServerContext {
-    paths: VaultPaths,
-    requested_profile: Option<String>,
-    tool_pack_args: Vec<McpToolPackArg>,
-    tool_pack_mode_arg: McpToolPackModeArg,
-    endpoint: String,
-    auth_token: Option<String>,
-    #[cfg(feature = "oauth")]
-    oauth: Option<McpOAuthMode>,
+    inner: McpHttpHost<McpServerCore>,
     #[cfg(feature = "oauth")]
     hosted: Option<HostedMcpExecution>,
-    bind_addr: SocketAddr,
-    instance_id: Ulid,
-    sessions: Arc<McpSessionRegistry<McpServerCore>>,
-    #[cfg(feature = "oauth")]
-    oauth_codes: Arc<McpAuthorizationCodeMap>,
-    #[cfg(feature = "oauth")]
-    oauth_clients: Arc<OAuthClientRegistry>,
-    #[cfg(feature = "oauth")]
-    oauth_pending_indieauth: Arc<PendingIndieAuthMap>,
-    #[cfg(feature = "oauth")]
-    oauth_pending_consent: Arc<PendingConsentMap>,
-    #[cfg(feature = "oauth")]
-    oauth_dcr_enabled: bool,
-    #[cfg(feature = "oauth")]
-    oauth_dcr_allowed_redirect_hosts: Vec<String>,
-    #[cfg(feature = "oauth")]
-    oauth_local_redirect_uris: Vec<String>,
-    #[cfg(feature = "oauth")]
-    oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
     #[cfg(all(test, feature = "oauth"))]
     indieauth_exchange: Option<IndieAuthExchange>,
-    #[cfg(feature = "oauth")]
-    named_runtime: Option<NamedMcpRuntime>,
-    request_timeout: Duration,
+}
+
+impl Deref for McpHttpServerContext {
+    type Target = McpHttpHost<McpServerCore>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for McpHttpServerContext {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 pub(crate) fn build_mcp_tool_definitions(
@@ -1088,50 +1067,56 @@ fn run_mcp_http_server_inner(
         }
     }
     let context = McpHttpServerContext {
-        paths: paths.clone(),
-        requested_profile: requested_profile.map(ToOwned::to_owned),
-        tool_pack_args: tool_pack_args.to_vec(),
-        tool_pack_mode_arg,
-        endpoint,
-        auth_token: options.auth_token.clone(),
-        #[cfg(feature = "oauth")]
-        oauth,
         #[cfg(feature = "oauth")]
         hosted: lifecycle.hosted,
-        bind_addr: addr,
-        instance_id: match options.instance_id {
-            Some(instance_id) => instance_id,
-            None => Ulid::new(),
-        },
-        sessions: Arc::new(McpSessionRegistry::new()),
-        #[cfg(feature = "oauth")]
-        oauth_codes: Arc::new(McpAuthorizationCodeMap::default()),
-        #[cfg(feature = "oauth")]
-        oauth_clients: Arc::new(
-            OAuthClientRegistry::at(oauth_clients_path(paths, options))
-                .map_err(CliError::operation)?,
-        ),
-        #[cfg(feature = "oauth")]
-        oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
-        #[cfg(feature = "oauth")]
-        oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
-        #[cfg(feature = "oauth")]
-        oauth_dcr_enabled: options.oauth_dcr,
-        #[cfg(feature = "oauth")]
-        oauth_dcr_allowed_redirect_hosts: if options.oauth_dcr_allowed_redirect_host.is_empty() {
-            vec!["chatgpt.com".to_string()]
-        } else {
-            options.oauth_dcr_allowed_redirect_host.clone()
-        },
-        #[cfg(feature = "oauth")]
-        oauth_local_redirect_uris: options.oauth_local_redirect_uri.clone(),
-        #[cfg(feature = "oauth")]
-        oauth_indieauth: build_indieauth_config(options)?,
         #[cfg(all(test, feature = "oauth"))]
         indieauth_exchange: lifecycle.indieauth_exchange,
-        #[cfg(feature = "oauth")]
-        named_runtime,
-        request_timeout: options.request_timeout,
+        inner: McpHttpHost {
+            paths: paths.clone(),
+            requested_profile: requested_profile.map(ToOwned::to_owned),
+            selected_tool_packs: resolve_selected_tool_packs(
+                tool_pack_args,
+                McpToolPackMode::from(tool_pack_mode_arg),
+            ),
+            tool_pack_mode: McpToolPackMode::from(tool_pack_mode_arg),
+            endpoint,
+            auth_token: options.auth_token.clone(),
+            #[cfg(feature = "oauth")]
+            oauth,
+            bind_addr: addr,
+            instance_id: match options.instance_id {
+                Some(instance_id) => instance_id,
+                None => Ulid::new(),
+            },
+            sessions: Arc::new(McpSessionRegistry::new()),
+            #[cfg(feature = "oauth")]
+            oauth_codes: Arc::new(McpAuthorizationCodeMap::default()),
+            #[cfg(feature = "oauth")]
+            oauth_clients: Arc::new(
+                OAuthClientRegistry::at(oauth_clients_path(paths, options))
+                    .map_err(CliError::operation)?,
+            ),
+            #[cfg(feature = "oauth")]
+            oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
+            #[cfg(feature = "oauth")]
+            oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
+            #[cfg(feature = "oauth")]
+            oauth_dcr_enabled: options.oauth_dcr,
+            #[cfg(feature = "oauth")]
+            oauth_dcr_allowed_redirect_hosts: if options.oauth_dcr_allowed_redirect_host.is_empty()
+            {
+                vec!["chatgpt.com".to_string()]
+            } else {
+                options.oauth_dcr_allowed_redirect_host.clone()
+            },
+            #[cfg(feature = "oauth")]
+            oauth_local_redirect_uris: options.oauth_local_redirect_uri.clone(),
+            #[cfg(feature = "oauth")]
+            oauth_indieauth: build_indieauth_config(options)?,
+            #[cfg(feature = "oauth")]
+            named_runtime,
+            request_timeout: options.request_timeout,
+        },
     };
 
     if let Some(ready) = lifecycle.ready {
@@ -1572,16 +1557,15 @@ fn create_mcp_http_core(
     let authority_tool_packs = pack_names
         .map(|names| {
             mcp_tool_pack_args_from_names(names)
+                .map(|args| resolve_selected_tool_packs(&args, context.tool_pack_mode))
                 .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
         })
         .transpose()?;
-    McpServerCore::new(
+    McpServerCore::new_resolved(
         paths,
         requested_profile,
-        authority_tool_packs
-            .as_deref()
-            .unwrap_or(&context.tool_pack_args),
-        context.tool_pack_mode_arg,
+        authority_tool_packs.unwrap_or_else(|| context.selected_tool_packs.clone()),
+        context.tool_pack_mode,
     )
     .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
 }
@@ -1658,46 +1642,31 @@ fn authenticate_mcp_http_request(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Result<McpSessionAuthority, McpHttpResponse> {
-    let packs = pack_name_list(&resolve_selected_tool_packs(
-        &context.tool_pack_args,
-        McpToolPackMode::from(context.tool_pack_mode_arg),
-    ));
-    authenticate_http_authority(
-        McpHttpAuthOptions {
-            instance_id: context.instance_id,
-            bind_addr: context.bind_addr,
-            auth_token: context.auth_token.as_deref(),
-            permission_profile: context.requested_profile.as_deref(),
-            packs,
-            #[cfg(feature = "oauth")]
-            oauth: context.oauth.as_ref(),
-            #[cfg(feature = "oauth")]
-            named_runtime: context.named_runtime.as_ref(),
-        },
-        &request.headers,
-    )
-    .map_err(|error| match error {
-        McpHttpAuthError::Http { status, message } => {
-            mcp_http_json_error_response(status, message, Value::Null)
-        }
-        #[cfg(feature = "oauth")]
-        McpHttpAuthError::OAuth {
-            message,
-            rejected_bearer,
-        } => {
-            if rejected_bearer {
-                eprintln!("MCP OAuth bearer token rejected: {message}");
+    context
+        .inner
+        .authenticate(&request.headers)
+        .map_err(|error| match error {
+            McpHttpAuthError::Http { status, message } => {
+                mcp_http_json_error_response(status, message, Value::Null)
             }
-            oauth_error_response(
-                context
-                    .oauth
-                    .as_ref()
-                    .expect("OAuth rejection has an issuer"),
+            #[cfg(feature = "oauth")]
+            McpHttpAuthError::OAuth {
                 message,
-                "invalid_token",
-            )
-        }
-    })
+                rejected_bearer,
+            } => {
+                if rejected_bearer {
+                    eprintln!("MCP OAuth bearer token rejected: {message}");
+                }
+                oauth_error_response(
+                    context
+                        .oauth
+                        .as_ref()
+                        .expect("OAuth rejection has an issuer"),
+                    message,
+                    "invalid_token",
+                )
+            }
+        })
 }
 
 impl McpServerCore {
@@ -1709,6 +1678,20 @@ impl McpServerCore {
     ) -> Result<Self, CliError> {
         let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
         let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
+        Self::new_resolved(
+            paths,
+            requested_profile,
+            selected_tool_packs,
+            tool_pack_mode,
+        )
+    }
+
+    fn new_resolved(
+        paths: &VaultPaths,
+        requested_profile: Option<&str>,
+        selected_tool_packs: BTreeSet<McpToolPack>,
+        tool_pack_mode: McpToolPackMode,
+    ) -> Result<Self, CliError> {
         Ok(Self {
             inner: McpProtocolCore::new(
                 paths,
@@ -2162,21 +2145,17 @@ fn handle_mcp_oauth_route(
     request: &McpHttpRequest,
     route: McpHttpRoute<'_>,
 ) -> McpHttpResponse {
-    match context.oauth.as_ref().expect("OAuth route requires issuer") {
-        McpOAuthMode::External(external) => {
-            McpOAuthRoutes::External(external).handle(request, route)
-        }
-        McpOAuthMode::Local(local) => McpOAuthRoutes::Local(Box::new(McpLocalOAuthRoutes {
-            issuer: local,
-            authorize: local_authorize_endpoint(context, local),
-            consent: local_consent_endpoint(context, local),
-            token: local_token_endpoint(context, local),
-            dcr_enabled: context.oauth_dcr_enabled,
-            allowed_redirect_hosts: &context.oauth_dcr_allowed_redirect_hosts,
-            refresh_supported: context.named_runtime.is_some(),
-        }))
-        .handle(request, route),
-    }
+    #[cfg(test)]
+    let exchange = context
+        .indieauth_exchange
+        .unwrap_or(default_indieauth_exchange);
+    #[cfg(not(test))]
+    let exchange = default_indieauth_exchange;
+    context
+        .inner
+        .oauth_routes(exchange)
+        .expect("OAuth route requires issuer")
+        .handle(request, route)
 }
 
 #[cfg(all(test, feature = "oauth"))]
@@ -2236,19 +2215,12 @@ fn handle_local_oauth_consent(
     handle_mcp_oauth_route(context, request, McpHttpRoute::LocalOAuthConsent)
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn local_token_endpoint<'a>(
     context: &'a McpHttpServerContext,
     issuer: &'a LocalOAuthIssuer,
 ) -> McpLocalTokenEndpoint<'a> {
-    McpLocalTokenEndpoint {
-        issuer,
-        clients: &context.oauth_clients,
-        codes: &context.oauth_codes,
-        named_runtime: context.named_runtime.as_ref(),
-        instance_id: context.instance_id,
-        allowed_redirect_hosts: &context.oauth_dcr_allowed_redirect_hosts,
-    }
+    context.inner.token_endpoint(issuer)
 }
 
 #[cfg(all(test, feature = "oauth"))]
@@ -2261,49 +2233,25 @@ fn handle_local_oauth_refresh(
     local_token_endpoint(context, issuer).refresh(client_id, params)
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn local_authorize_endpoint<'a>(
     context: &'a McpHttpServerContext,
     issuer: &'a LocalOAuthIssuer,
 ) -> McpAuthorizeEndpoint<'a> {
-    #[cfg(test)]
-    let exchange = context
-        .indieauth_exchange
-        .unwrap_or(default_indieauth_exchange);
-    #[cfg(not(test))]
-    let exchange = default_indieauth_exchange;
-    McpAuthorizeEndpoint {
+    context.inner.authorize_endpoint(
         issuer,
-        clients: &context.oauth_clients,
-        codes: &context.oauth_codes,
-        pending_indieauth: &context.oauth_pending_indieauth,
-        pending_consent: &context.oauth_pending_consent,
-        indieauth: context.oauth_indieauth.as_ref(),
-        named_runtime: context.named_runtime.as_ref(),
-        requested_profile: context.requested_profile.clone(),
-        selected_packs: pack_name_list(&resolve_selected_tool_packs(
-            &context.tool_pack_args,
-            McpToolPackMode::from(context.tool_pack_mode_arg),
-        )),
-        fallback_vault_root: context.paths.vault_root().display().to_string(),
-        local_redirect_uris: &context.oauth_local_redirect_uris,
-        allowed_redirect_hosts: &context.oauth_dcr_allowed_redirect_hosts,
-        exchange,
-    }
+        context
+            .indieauth_exchange
+            .unwrap_or(default_indieauth_exchange),
+    )
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn local_consent_endpoint<'a>(
     context: &'a McpHttpServerContext,
     issuer: &'a LocalOAuthIssuer,
 ) -> McpConsentEndpoint<'a> {
-    McpConsentEndpoint {
-        issuer,
-        pending: &context.oauth_pending_consent,
-        codes: &context.oauth_codes,
-        named_runtime: context.named_runtime.as_ref(),
-        instance_id: context.instance_id,
-    }
+    context.inner.consent_endpoint(issuer)
 }
 
 #[cfg(all(test, feature = "oauth"))]

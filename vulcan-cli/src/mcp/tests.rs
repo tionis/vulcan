@@ -3401,28 +3401,30 @@ fn indieauth_redirect_includes_pkce_challenge() {
 #[cfg(feature = "oauth")]
 fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> McpHttpServerContext {
     McpHttpServerContext {
-        paths: paths.clone(),
-        requested_profile: Some("readonly".to_string()),
-        tool_pack_args: vec![McpToolPackArg::NotesRead, McpToolPackArg::Search],
-        tool_pack_mode_arg: McpToolPackModeArg::Static,
-        endpoint: "/mcp".to_string(),
-        auth_token: None,
-        oauth: Some(McpOAuthMode::Local(issuer)),
         hosted: None,
-        bind_addr: "127.0.0.1:8765".parse().expect("bind"),
-        instance_id: Ulid::new(),
-        sessions: Arc::new(McpSessionRegistry::new()),
-        oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
-        oauth_clients: Arc::new(OAuthClientRegistry::ephemeral()),
-        oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
-        oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
-        oauth_dcr_enabled: true,
-        oauth_dcr_allowed_redirect_hosts: vec!["client.example.test".to_string()],
-        oauth_local_redirect_uris: Vec::new(),
-        oauth_indieauth: None,
         indieauth_exchange: None,
-        named_runtime: None,
-        request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
+        inner: McpHttpHost {
+            paths: paths.clone(),
+            requested_profile: Some("readonly".to_string()),
+            selected_tool_packs: BTreeSet::from([McpToolPack::NotesRead, McpToolPack::Search]),
+            tool_pack_mode: McpToolPackMode::Static,
+            endpoint: "/mcp".to_string(),
+            auth_token: None,
+            oauth: Some(McpOAuthMode::Local(issuer)),
+            bind_addr: "127.0.0.1:8765".parse().expect("bind"),
+            instance_id: Ulid::new(),
+            sessions: Arc::new(McpSessionRegistry::new()),
+            oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
+            oauth_clients: Arc::new(OAuthClientRegistry::ephemeral()),
+            oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
+            oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
+            oauth_dcr_enabled: true,
+            oauth_dcr_allowed_redirect_hosts: vec!["client.example.test".to_string()],
+            oauth_local_redirect_uris: Vec::new(),
+            oauth_indieauth: None,
+            named_runtime: None,
+            request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
+        },
     }
 }
 
@@ -4864,7 +4866,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
     let mut http = consent_test_context(&paths, issuer);
     http.oauth = None;
     http.requested_profile = Some("unrestricted".to_string());
-    http.tool_pack_args = vec![McpToolPackArg::NotesWrite];
+    http.selected_tool_packs = BTreeSet::from([McpToolPack::NotesWrite]);
     let inbound = McpHttpRequest {
         method: "POST".to_string(),
         path: "/mcp".to_string(),
@@ -4998,7 +5000,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
     let mut http = consent_test_context(&paths, issuer);
     http.oauth = None;
     http.requested_profile = Some("unrestricted".to_string());
-    http.tool_pack_args = vec![McpToolPackArg::NotesWrite];
+    http.selected_tool_packs = BTreeSet::from([McpToolPack::NotesWrite]);
     http.request_timeout = Duration::from_secs(5);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
