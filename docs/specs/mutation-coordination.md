@@ -107,6 +107,15 @@ boundary: create refuses a destination created after rendering, and insert rejec
 changed since it was read. This does not make earlier Templater side effects atomic with the
 final note write.
 
+The ordinary-write core now supports rename-aware batches as a foundation for that template
+transaction. A version-2 journal includes validated destination-to-source hints whose endpoints
+must be a unique create/delete pair in the recorded changes. Publication and recovery finish a
+rename-aware cache scan under the same vault lock before removing the journal. This preserves
+document identity even when the moved note's final content differs, including a retry after the
+cache committed but journal removal did not. Version-1 journals retain their original digest
+encoding and recovery behavior. Template move/rename orchestration has not yet adopted this API;
+this foundation alone does not make an existing multi-effect template atomic.
+
 ## Hosted scheduler
 
 `vulcan_daemon::mutation_scheduler::MutationScheduler` is the process-wide admission layer owned by

@@ -11,7 +11,7 @@ use crate::paths::{
 use crate::write_lock::acquire_write_lock;
 use crate::write_lock::{acquire_read_lock, ReadLockGuard};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::fs;
 #[cfg(unix)]
@@ -22,6 +22,7 @@ use tempfile::NamedTempFile;
 use ulid::Ulid;
 
 const JOURNAL_VERSION: u32 = 1;
+const RENAME_JOURNAL_VERSION: u32 = 2;
 const STATE_DIR: &str = "ordinary-write";
 const JOURNAL_NAME: &str = "journal.json";
 const MAX_CHANGES: usize = 32;
@@ -108,6 +109,8 @@ struct Journal {
     version: u32,
     transaction_id: String,
     changes: Vec<OrdinaryWriteChange>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    renames: BTreeMap<String, String>,
     digest: String,
 }
 
@@ -126,7 +129,8 @@ impl Journal {
     fn verify(&self) -> Result<(), OrdinaryWriteError> {
         let mut expected = self.clone();
         expected.seal()?;
-        if self.version != JOURNAL_VERSION
+        if !matches!(self.version, JOURNAL_VERSION | RENAME_JOURNAL_VERSION)
+            || (self.version == JOURNAL_VERSION && !self.renames.is_empty())
             || self.digest != expected.digest
             || self.transaction_id.parse::<Ulid>().is_err()
         {
@@ -136,7 +140,8 @@ impl Journal {
                 None,
             ));
         }
-        validate_changes(&self.changes)
+        validate_changes(&self.changes)?;
+        validate_renames(&self.changes, &self.renames)
     }
 
     fn outcome(&self, recovered: bool) -> OrdinaryWriteOutcome {
@@ -173,6 +178,22 @@ pub fn apply_ordinary_write_batch_with_preflight(
     apply_with_hook_and_preflight(paths, changes, &mut preflight, |_| Ok(()))
 }
 
+/// Publish an ordinary batch that moves existing Markdown notes and may also
+/// update their content, backlinks, or companion files. Each rename maps its
+/// destination to its original source. Both paths must be represented by a
+/// create and a delete in the batch.
+///
+/// Rename hints remain journaled until the rename-aware cache scan succeeds,
+/// so recovery preserves document identity even when final content differs.
+pub fn apply_ordinary_write_batch_with_renames_and_preflight(
+    paths: &VaultPaths,
+    changes: &[OrdinaryWriteChange],
+    renames: &BTreeMap<String, String>,
+    preflight: impl FnMut() -> Result<(), String>,
+) -> Result<OrdinaryWriteOutcome, OrdinaryWriteError> {
+    apply_with_renames_hook_and_preflight(paths, changes, renames, preflight, |_| Ok(()))
+}
+
 fn apply_with_hook<F>(
     paths: &VaultPaths,
     changes: &[OrdinaryWriteChange],
@@ -187,6 +208,26 @@ where
 fn apply_with_hook_and_preflight<P, F>(
     paths: &VaultPaths,
     changes: &[OrdinaryWriteChange],
+    preflight: P,
+    after_publish: F,
+) -> Result<OrdinaryWriteOutcome, OrdinaryWriteError>
+where
+    P: FnMut() -> Result<(), String>,
+    F: FnMut(usize) -> Result<(), OrdinaryWriteError>,
+{
+    apply_with_renames_hook_and_preflight(
+        paths,
+        changes,
+        &BTreeMap::new(),
+        preflight,
+        after_publish,
+    )
+}
+
+fn apply_with_renames_hook_and_preflight<P, F>(
+    paths: &VaultPaths,
+    changes: &[OrdinaryWriteChange],
+    renames: &BTreeMap<String, String>,
     mut preflight: P,
     mut after_publish: F,
 ) -> Result<OrdinaryWriteOutcome, OrdinaryWriteError>
@@ -195,6 +236,7 @@ where
     F: FnMut(usize) -> Result<(), OrdinaryWriteError>,
 {
     validate_changes(changes)?;
+    validate_renames(changes, renames)?;
     let _lock = acquire_write_lock(paths)
         .map_err(|error| OrdinaryWriteError::io("acquire vault write lock", error))?;
     recover_locked(paths)?;
@@ -211,9 +253,14 @@ where
         }
     }
     let mut journal = Journal {
-        version: JOURNAL_VERSION,
+        version: if renames.is_empty() {
+            JOURNAL_VERSION
+        } else {
+            RENAME_JOURNAL_VERSION
+        },
         transaction_id: Ulid::new().to_string(),
         changes: changes.to_vec(),
+        renames: renames.clone(),
         digest: String::new(),
     };
     journal.seal()?;
@@ -222,6 +269,7 @@ where
         apply_one(paths, change)?;
         after_publish(index)?;
     }
+    scan_journal_renames(paths, &journal)?;
     remove_journal(&directory)?;
     Ok(journal.outcome(false))
 }
@@ -397,8 +445,50 @@ fn recover_locked(paths: &VaultPaths) -> Result<Option<OrdinaryWriteOutcome>, Or
         }
         apply_one(paths, change)?;
     }
+    scan_journal_renames(paths, &journal)?;
     remove_journal(&directory)?;
     Ok(Some(journal.outcome(true)))
+}
+
+fn validate_renames(
+    changes: &[OrdinaryWriteChange],
+    renames: &BTreeMap<String, String>,
+) -> Result<(), OrdinaryWriteError> {
+    let mut sources = BTreeSet::new();
+    for (destination, source) in renames {
+        let source_change = changes.iter().find(|change| &change.path == source);
+        let destination_change = changes.iter().find(|change| &change.path == destination);
+        if source == destination
+            || !sources.insert(source)
+            || renames.contains_key(source)
+            || !source_change
+                .is_some_and(|change| change.before.is_some() && change.after.is_none())
+            || !destination_change
+                .is_some_and(|change| change.before.is_none() && change.after.is_some())
+        {
+            return Err(OrdinaryWriteError::new(
+                "ordinary_write_invalid_rename",
+                "rename hints must match unique source deletions and destination creations",
+                Some(destination.clone()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scan_journal_renames(paths: &VaultPaths, journal: &Journal) -> Result<(), OrdinaryWriteError> {
+    if !journal.renames.is_empty() {
+        crate::scan::scan_vault_unlocked_with_renames(
+            paths,
+            &journal
+                .renames
+                .iter()
+                .map(|(new, old)| (new.clone(), old.clone()))
+                .collect::<HashMap<_, _>>(),
+        )
+        .map_err(|error| OrdinaryWriteError::io("scan ordinary write renames", error))?;
+    }
+    Ok(())
 }
 
 /// Recover while the caller already holds the vault write lock.
@@ -696,6 +786,190 @@ mod tests {
                 after: None,
             },
         ]
+    }
+
+    fn document_id(paths: &VaultPaths, path: &str) -> Option<String> {
+        rusqlite::Connection::open(paths.cache_db())
+            .expect("cache")
+            .query_row("SELECT id FROM documents WHERE path = ?1", [path], |row| {
+                row.get(0)
+            })
+            .ok()
+    }
+
+    #[test]
+    fn rename_batches_preserve_identity_across_every_publication_interruption() {
+        for interrupted_index in 0..4 {
+            let temporary = tempdir().expect("vault");
+            let paths = VaultPaths::new(temporary.path());
+            initialize_vulcan_dir(&paths).expect("initialize");
+            fs::create_dir(temporary.path().join("Archive")).expect("archive");
+            fs::write(temporary.path().join("Task.md"), "active task\n").expect("source");
+            fs::write(temporary.path().join("Inbox.md"), "[[Task]]\n").expect("backlink");
+            crate::scan::scan_vault(&paths, crate::scan::ScanMode::Full).expect("scan");
+            let original_id = document_id(&paths, "Task.md").expect("source ID");
+            let mut batch = archive_changes();
+            batch.extend([
+                OrdinaryWriteChange {
+                    path: "Inbox.md".into(),
+                    before: Some("[[Task]]\n".into()),
+                    after: Some("[[Archive/Task]]\n".into()),
+                },
+                OrdinaryWriteChange {
+                    path: "Companion.md".into(),
+                    before: None,
+                    after: Some("companion\n".into()),
+                },
+            ]);
+            let renames = BTreeMap::from([("Archive/Task.md".into(), "Task.md".into())]);
+            let error = apply_with_renames_hook_and_preflight(
+                &paths,
+                &batch,
+                &renames,
+                || Ok(()),
+                |index| {
+                    if index == interrupted_index {
+                        Err(OrdinaryWriteError::new("test_interruption", "stop", None))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("interrupt publication before rename-aware scan");
+            assert_eq!(error.code, "test_interruption");
+            assert!(
+                inspect_ordinary_write_batch(&paths)
+                    .unwrap()
+                    .unwrap()
+                    .recoverable
+            );
+            let recovered = recover_ordinary_write_batch(&paths)
+                .expect("recover")
+                .expect("pending");
+            assert!(recovered.recovered);
+            assert_eq!(
+                document_id(&paths, "Archive/Task.md").as_deref(),
+                Some(original_id.as_str())
+            );
+            assert!(document_id(&paths, "Task.md").is_none());
+            assert_eq!(
+                fs::read_to_string(temporary.path().join("Inbox.md")).unwrap(),
+                "[[Archive/Task]]\n"
+            );
+            assert_eq!(
+                fs::read_to_string(temporary.path().join("Companion.md")).unwrap(),
+                "companion\n"
+            );
+            assert!(recover_ordinary_write_batch(&paths).unwrap().is_none());
+            crate::scan::scan_vault(&paths, crate::scan::ScanMode::Incremental).expect("rescan");
+            assert_eq!(
+                document_id(&paths, "Archive/Task.md").as_deref(),
+                Some(original_id.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn rename_batch_finishes_its_cache_scan_before_removing_the_journal() {
+        let temporary = tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::create_dir(temporary.path().join("Archive")).unwrap();
+        fs::write(temporary.path().join("Task.md"), "active task\n").unwrap();
+        crate::scan::scan_vault(&paths, crate::scan::ScanMode::Full).unwrap();
+        let original_id = document_id(&paths, "Task.md").unwrap();
+        apply_ordinary_write_batch_with_renames_and_preflight(
+            &paths,
+            &archive_changes(),
+            &BTreeMap::from([("Archive/Task.md".into(), "Task.md".into())]),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(document_id(&paths, "Archive/Task.md"), Some(original_id));
+        assert!(inspect_ordinary_write_batch(&paths).unwrap().is_none());
+    }
+
+    #[test]
+    fn retrying_a_rename_scan_after_cache_commit_keeps_the_same_identity() {
+        let temporary = tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::create_dir(temporary.path().join("Archive")).unwrap();
+        fs::write(temporary.path().join("Task.md"), "active task\n").unwrap();
+        crate::scan::scan_vault(&paths, crate::scan::ScanMode::Full).unwrap();
+        let original_id = document_id(&paths, "Task.md").unwrap();
+        let renames = BTreeMap::from([("Archive/Task.md".into(), "Task.md".into())]);
+        apply_with_renames_hook_and_preflight(
+            &paths,
+            &archive_changes(),
+            &renames,
+            || Ok(()),
+            |_| Err(OrdinaryWriteError::new("stop", "stop", None)),
+        )
+        .unwrap_err();
+        let directory = existing_state_directory(&paths).unwrap().unwrap();
+        let journal = load_journal(&directory).unwrap().unwrap();
+        recover_ordinary_write_batch(&paths).unwrap().unwrap();
+        // Recreate the durable state of a crash after SQLite commit but before
+        // journal removal, without changing the already-published vault bytes.
+        save_journal(&directory, &journal).unwrap();
+        recover_ordinary_write_batch(&paths).unwrap().unwrap();
+        assert_eq!(document_id(&paths, "Archive/Task.md"), Some(original_id));
+        assert!(inspect_ordinary_write_batch(&paths).unwrap().is_none());
+    }
+
+    #[test]
+    fn invalid_rename_metadata_cannot_publish_a_batch() {
+        let temporary = tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(temporary.path().join("Task.md"), "active task\n").unwrap();
+        for renames in [
+            BTreeMap::from([("Archive/Task.md".into(), "../Task.md".into())]),
+            BTreeMap::from([("Task.md".into(), "Task.md".into())]),
+            BTreeMap::from([
+                ("Archive/Task.md".into(), "Task.md".into()),
+                ("Other.md".into(), "Task.md".into()),
+            ]),
+            BTreeMap::from([("Task.md".into(), "Archive/Task.md".into())]),
+        ] {
+            let error = apply_ordinary_write_batch_with_renames_and_preflight(
+                &paths,
+                &archive_changes(),
+                &renames,
+                || Ok(()),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "ordinary_write_invalid_rename");
+        }
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Task.md")).unwrap(),
+            "active task\n"
+        );
+        assert!(!temporary.path().join("Archive/Task.md").exists());
+        assert!(inspect_ordinary_write_batch(&paths).unwrap().is_none());
+    }
+
+    #[test]
+    fn version_one_journals_keep_their_original_digest_and_recover() {
+        let temporary = tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(temporary.path().join("Inbox.md"), "old task\n").unwrap();
+        apply_with_hook(&paths, &changes(), |_| {
+            Err(OrdinaryWriteError::new("stop", "stop", None))
+        })
+        .unwrap_err();
+        let directory = existing_state_directory(&paths).unwrap().unwrap();
+        let bytes = fs::read(directory.join(JOURNAL_NAME)).unwrap();
+        let legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(legacy["version"], 1);
+        assert!(legacy.get("renames").is_none());
+        recover_ordinary_write_batch(&paths).unwrap().unwrap();
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Inbox.md")).unwrap(),
+            "[[Task]]\n"
+        );
     }
 
     #[test]
