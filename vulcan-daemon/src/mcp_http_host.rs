@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use ulid::Ulid;
-use vulcan_app::mcp_catalog::{pack_name_list, McpToolPack, McpToolPackMode};
+use vulcan_app::mcp_catalog::{
+    pack_name_list, resolve_selected_tool_packs, McpToolPack, McpToolPackMode, ALL_MCP_TOOL_PACKS,
+};
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthIssuer;
 use vulcan_core::VaultPaths;
@@ -64,7 +66,89 @@ pub struct McpHttpHost<C> {
     pub named_runtime: Option<NamedMcpRuntime>,
 }
 
+/// Authority-bound inputs to the transport-neutral application protocol core.
+#[derive(Debug, Clone)]
+pub struct McpHttpProtocolConfig {
+    pub paths: VaultPaths,
+    pub permission_profile: Option<String>,
+    pub selected_tool_packs: BTreeSet<McpToolPack>,
+    pub tool_pack_mode: McpToolPackMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpHttpProtocolConfigError {
+    pub status: u16,
+    pub message: String,
+}
+
 impl<C> McpHttpHost<C> {
+    /// Select the consent-bound vault and catalog before creating session state.
+    /// CLI parsing is not part of this boundary; authenticated named grants must
+    /// not fall back to the listener's default vault, profile, or pack selection.
+    pub fn protocol_config(
+        &self,
+        authority: &McpSessionAuthority,
+    ) -> Result<McpHttpProtocolConfig, McpHttpProtocolConfigError> {
+        #[cfg(feature = "oauth")]
+        let named = self
+            .named_runtime
+            .as_ref()
+            .map(|runtime| runtime.session_config(authority, self.instance_id))
+            .transpose()
+            .map_err(|message| McpHttpProtocolConfigError {
+                status: 403,
+                message: message.to_string(),
+            })?;
+        #[cfg(feature = "oauth")]
+        let (paths, named_profile, named_packs) =
+            named.as_ref().map_or((&self.paths, None, None), |named| {
+                (
+                    &named.paths,
+                    Some(named.permission_profile.as_str()),
+                    Some(named.tool_packs.as_slice()),
+                )
+            });
+        #[cfg(not(feature = "oauth"))]
+        let (paths, named_profile, named_packs): (_, Option<&str>, Option<&[String]>) =
+            (&self.paths, None, None);
+        let profile = named_profile
+            .or(authority.permission_profile.as_deref())
+            .or(self.requested_profile.as_deref());
+        let pack_names = named_packs.or_else(|| {
+            authority
+                .grant_id
+                .is_some()
+                .then_some(authority.tool_packs.as_slice())
+        });
+        let packs = pack_names
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|name| {
+                        ALL_MCP_TOOL_PACKS
+                            .iter()
+                            .copied()
+                            .find(|pack| *pack != McpToolPack::ToolPacks && pack.as_str() == name)
+                            .ok_or_else(|| McpHttpProtocolConfigError {
+                                status: 500,
+                                message: format!(
+                                    "named MCP remote contains unknown tool pack `{name}`"
+                                ),
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|packs| resolve_selected_tool_packs(&packs, self.tool_pack_mode))
+            })
+            .transpose()?
+            .unwrap_or_else(|| self.selected_tool_packs.clone());
+        Ok(McpHttpProtocolConfig {
+            paths: paths.clone(),
+            permission_profile: profile.map(str::to_string),
+            selected_tool_packs: packs,
+            tool_pack_mode: self.tool_pack_mode,
+        })
+    }
+
     pub fn authenticate(
         &self,
         headers: &BTreeMap<String, String>,
@@ -188,6 +272,126 @@ mod tests {
             oauth_indieauth: None,
             #[cfg(feature = "oauth")]
             named_runtime: None,
+        }
+    }
+
+    #[test]
+    fn direct_protocol_config_preserves_listener_packs_and_profile_precedence() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let listener = host(&paths);
+        let mut authority = listener.authenticate(&BTreeMap::new()).unwrap();
+        // Direct callers use the invocation's resolved pack selection, not an
+        // unbound list supplied independently of its listener.
+        authority.tool_packs = vec!["notes-write".into()];
+        authority.permission_profile = None;
+        let selected = listener.protocol_config(&authority).unwrap();
+        assert_eq!(selected.paths.vault_root(), paths.vault_root());
+        assert_eq!(selected.permission_profile.as_deref(), Some("readonly"));
+        assert_eq!(selected.selected_tool_packs, listener.selected_tool_packs);
+        assert_eq!(selected.tool_pack_mode, McpToolPackMode::Static);
+        authority.permission_profile = Some("prompt-reader".into());
+        assert_eq!(
+            listener
+                .protocol_config(&authority)
+                .unwrap()
+                .permission_profile
+                .as_deref(),
+            Some("prompt-reader")
+        );
+    }
+
+    #[cfg(feature = "oauth")]
+    #[test]
+    fn named_protocol_config_never_falls_back_from_the_consent_binding() {
+        use crate::mcp_remote::McpRemoteId;
+        use crate::mcp_remote_runtime::NamedMcpVaultRuntime;
+        use crate::mcp_state::McpAuthorizationStore;
+        use crate::registry::WikiId;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let mut listener = host(&VaultPaths::new(temporary.path()));
+        let consent_paths = VaultPaths::new(temporary.path().join("consented-vault"));
+        let remote_id = McpRemoteId::parse("personal").unwrap();
+        let wiki_id = WikiId::parse("consented").unwrap();
+        listener.named_runtime = Some(NamedMcpRuntime {
+            remote_id: remote_id.clone(),
+            vaults: BTreeMap::from([(
+                wiki_id.clone(),
+                NamedMcpVaultRuntime {
+                    paths: consent_paths.clone(),
+                    ceiling_profile: "readonly".into(),
+                    default_profile: "readonly".into(),
+                    eligible_tool_packs: vec!["notes-read".into(), "tasks".into()],
+                },
+            )]),
+            authorization_store: McpAuthorizationStore::at(temporary.path()),
+        });
+        let authority = McpSessionAuthority::granted(
+            remote_id,
+            listener.instance_id,
+            Ulid::new(),
+            "https://client.example/app.json".into(),
+            "https://identity.example/alice".into(),
+            wiki_id,
+            "https://mcp.example/personal".into(),
+            "prompt-reader".into(),
+            vec!["tasks".into()],
+            vec!["mcp:tools".into()],
+            "test credential",
+        );
+        let selected = listener.protocol_config(&authority).unwrap();
+        assert_eq!(selected.paths.vault_root(), consent_paths.vault_root());
+        assert_eq!(
+            selected.permission_profile.as_deref(),
+            Some("prompt-reader")
+        );
+        assert_eq!(
+            selected.selected_tool_packs,
+            BTreeSet::from([McpToolPack::Tasks])
+        );
+
+        for changed in ["instance", "vault", "profile", "packs", "grant"] {
+            let mut invalid = authority.clone();
+            match changed {
+                "instance" => invalid.remote_instance_id = Ulid::new(),
+                "vault" => invalid.wiki_id = None,
+                "profile" => invalid.permission_profile = None,
+                "packs" => invalid.tool_packs.clear(),
+                "grant" => invalid.grant_id = None,
+                _ => unreachable!(),
+            }
+            assert_eq!(listener.protocol_config(&invalid).unwrap_err().status, 403);
+        }
+        listener.tool_pack_mode = McpToolPackMode::Adaptive;
+        assert_eq!(
+            listener
+                .protocol_config(&authority)
+                .unwrap()
+                .selected_tool_packs,
+            BTreeSet::from([McpToolPack::Tasks, McpToolPack::ToolPacks])
+        );
+        listener.named_runtime.as_mut().unwrap().vaults.clear();
+        assert_eq!(
+            listener.protocol_config(&authority).unwrap_err().status,
+            403
+        );
+    }
+
+    #[test]
+    fn grant_pack_resolution_rejects_unknown_and_internal_pack_names() {
+        let temporary = tempfile::tempdir().unwrap();
+        let listener = host(&VaultPaths::new(temporary.path()));
+        let mut authority = listener.authenticate(&BTreeMap::new()).unwrap();
+        authority.grant_id = Some(Ulid::new());
+        for name in ["unknown", "tool-packs"] {
+            authority.tool_packs = vec![name.into()];
+            let error = listener.protocol_config(&authority).unwrap_err();
+            assert_eq!(error.status, 500);
+            assert_eq!(
+                error.message,
+                format!("named MCP remote contains unknown tool pack `{name}`")
+            );
         }
     }
 

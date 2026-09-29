@@ -13,7 +13,7 @@ use catalog::{
 };
 use fs2::FileExt;
 use serde_json::Value;
-#[cfg(any(test, feature = "oauth"))]
+#[cfg(feature = "oauth")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
@@ -907,6 +907,7 @@ pub(crate) fn acquire_named_remote_runtime_lock(
     Ok(file)
 }
 
+#[cfg(feature = "oauth")]
 fn mcp_tool_pack_args_from_names(names: &[String]) -> Result<Vec<McpToolPackArg>, CliError> {
     names
         .iter()
@@ -1520,52 +1521,15 @@ fn create_mcp_http_core(
     context: &McpHttpServerContext,
     authority: &McpSessionAuthority,
 ) -> Result<McpServerCore, McpHttpResponse> {
-    #[cfg(feature = "oauth")]
-    let named_session = context
-        .named_runtime
-        .as_ref()
-        .map(|named| named.session_config(authority, context.instance_id))
-        .transpose()
-        .map_err(|message| mcp_http_json_error_response(403, message, Value::Null))?;
-    #[cfg(feature = "oauth")]
-    let paths = named_session
-        .as_ref()
-        .map_or(&context.paths, |session| &session.paths);
-    #[cfg(not(feature = "oauth"))]
-    let paths = &context.paths;
-    #[cfg(feature = "oauth")]
-    let named_profile = named_session
-        .as_ref()
-        .map(|session| session.permission_profile.as_str());
-    #[cfg(not(feature = "oauth"))]
-    let named_profile: Option<&str> = None;
-    let requested_profile = named_profile
-        .or(authority.permission_profile.as_deref())
-        .or(context.requested_profile.as_deref());
-    #[cfg(feature = "oauth")]
-    let named_packs = named_session
-        .as_ref()
-        .map(|session| session.tool_packs.as_slice());
-    #[cfg(not(feature = "oauth"))]
-    let named_packs: Option<&[String]> = None;
-    let pack_names = named_packs.or_else(|| {
-        authority
-            .grant_id
-            .is_some()
-            .then_some(authority.tool_packs.as_slice())
-    });
-    let authority_tool_packs = pack_names
-        .map(|names| {
-            mcp_tool_pack_args_from_names(names)
-                .map(|args| resolve_selected_tool_packs(&args, context.tool_pack_mode))
-                .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
-        })
-        .transpose()?;
+    let config = context
+        .inner
+        .protocol_config(authority)
+        .map_err(|error| mcp_http_json_error_response(error.status, error.message, Value::Null))?;
     McpServerCore::new_resolved(
-        paths,
-        requested_profile,
-        authority_tool_packs.unwrap_or_else(|| context.selected_tool_packs.clone()),
-        context.tool_pack_mode,
+        &config.paths,
+        config.permission_profile.as_deref(),
+        config.selected_tool_packs,
+        config.tool_pack_mode,
     )
     .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
 }

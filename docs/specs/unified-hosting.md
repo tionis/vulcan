@@ -354,8 +354,15 @@ MCP treats the append text parameter as literal protocol data rather than a CLI 
 selection and dry-run diagnostics without CLI handler imports.
 `vulcan-app::web` provides permission-checked search/fetch workflows to CLI and MCP, including
 network and optional save-path preflight; MCP no longer calls CLI web handlers.
-Remaining tool workflows, CLI-derived command-help catalog sharing, and HTTP/OAuth hosting
-remain migration work under 10.7.6.
+`vulcan-app::mcp_session_protocol` now owns the protocol dispatcher and guarded stdio/HTTP
+entry points. `vulcan-daemon::mcp_http_host` owns per-listener state, authentication and OAuth
+endpoint composition, and authority-bound protocol configuration for new HTTP sessions. Named
+sessions use the consent-bound vault, profile, and packs, never listener defaults when a binding
+is missing or invalid; direct sessions retain invocation-selected packs and profile precedence.
+The CLI constructs the shared protocol wrapper and renders typed configuration failures without
+converting grant pack names through CLI argument enums. Shared-host tests cover binding failures,
+direct defaults, removed vaults, and static/adaptive pack selection. CLI-derived command-help
+catalog injection and remaining HTTP request orchestration remain adapter work under 10.7.6.
 
 ## Preserved compatibility contracts
 
