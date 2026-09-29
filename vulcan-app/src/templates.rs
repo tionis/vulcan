@@ -36,10 +36,16 @@ pub type CliError = AppError;
 pub type YamlMapping = serde_yaml::Mapping;
 pub type YamlValue = serde_yaml::Value;
 
-pub(crate) type StagedTemplateCreates = Arc<Mutex<BTreeMap<String, String>>>;
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TemplateStage {
+    creates: BTreeMap<String, String>,
+    moved: Option<vulcan_core::move_rewrite::OrdinaryNoteMovePlan>,
+}
+
+pub(crate) type StagedTemplateCreates = Arc<Mutex<TemplateStage>>;
 
 pub(crate) fn staged_template_creates() -> StagedTemplateCreates {
-    Arc::new(Mutex::new(BTreeMap::new()))
+    Arc::new(Mutex::new(TemplateStage::default()))
 }
 
 pub(crate) fn staged_template_create_snapshot(
@@ -47,8 +53,16 @@ pub(crate) fn staged_template_create_snapshot(
 ) -> Result<BTreeMap<String, String>, AppError> {
     staged
         .lock()
-        .map(|changes| changes.clone())
         .map_err(|_| AppError::operation("template create staging lock poisoned"))
+        .and_then(|changes| {
+            if changes.moved.is_some() {
+                Err(AppError::operation(
+                    "note create cannot move an existing note",
+                ))
+            } else {
+                Ok(changes.creates.clone())
+            }
+        })
 }
 
 fn write_template_result_with_staged_creates(
@@ -60,16 +74,20 @@ fn write_template_result_with_staged_creates(
     permission_profile: Option<&str>,
     operation: &str,
 ) -> Result<(), AppError> {
-    let staged = staged_template_create_snapshot(staged)?;
-    if staged.is_empty() {
+    let staged = staged
+        .lock()
+        .map_err(|_| AppError::operation("template staging lock poisoned"))?
+        .clone();
+    if staged.creates.is_empty() && staged.moved.is_none() {
         return write_ordinary_note_if_unchanged(paths, path, before, after, operation);
     }
-    if staged.contains_key(path) {
+    if staged.creates.contains_key(path) {
         return Err(AppError::operation(format!(
             "template side effect conflicts with final note path: {path}"
         )));
     }
     let mut changes = staged
+        .creates
         .into_iter()
         .map(
             |(path, content)| vulcan_core::ordinary_write::OrdinaryWriteChange {
@@ -79,37 +97,89 @@ fn write_template_result_with_staged_creates(
             },
         )
         .collect::<Vec<_>>();
-    changes.push(vulcan_core::ordinary_write::OrdinaryWriteChange {
-        path: path.to_string(),
-        before: before.map(str::to_string),
-        after: Some(after.to_string()),
-    });
-    vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(paths, &changes, || {
-        let guard = permission_profile
-            .map(|profile| {
-                resolve_permission_profile(paths, Some(profile))
-                    .map(|selection| ProfilePermissionGuard::new(paths, selection))
-                    .map_err(|error| error.to_string())
-            })
-            .transpose()?;
-        for change in &changes {
-            if note_path_is_mdbase_managed(paths, &change.path)
-                .map_err(|error| error.to_string())?
-            {
-                return Err(format!(
-                    "template write target became an mdbase-managed note: {}",
-                    change.path
-                ));
-            }
-            if let Some(guard) = guard.as_ref() {
+    let mut renames = BTreeMap::new();
+    let refactor_paths = staged
+        .moved
+        .as_ref()
+        .map(|plan| {
+            plan.changes
+                .iter()
+                .map(|change| change.path.clone())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(mut moved) = staged.moved {
+        if moved.summary.destination_path != path {
+            return Err(AppError::operation(
+                "template final path differs from its staged move",
+            ));
+        }
+        let destination = moved
+            .changes
+            .iter_mut()
+            .find(|change| change.path == path)
+            .ok_or_else(|| AppError::operation("staged template move has no destination"))?;
+        if destination.after.as_deref() != before {
+            return Err(AppError::operation(
+                "template moved target changed during rendering",
+            ));
+        }
+        destination.after = Some(after.to_string());
+        renames.insert(moved.summary.destination_path, moved.summary.source_path);
+        changes.extend(moved.changes);
+    } else {
+        changes.push(vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: path.to_string(),
+            before: before.map(str::to_string),
+            after: Some(after.to_string()),
+        });
+    }
+    vulcan_core::ordinary_write::apply_ordinary_write_batch_with_renames_and_preflight(
+        paths,
+        &changes,
+        &renames,
+        || validate_template_batch(paths, &changes, &refactor_paths, permission_profile),
+    )
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    Ok(())
+}
+
+fn validate_template_batch(
+    paths: &VaultPaths,
+    changes: &[vulcan_core::ordinary_write::OrdinaryWriteChange],
+    refactor_paths: &BTreeSet<String>,
+    permission_profile: Option<&str>,
+) -> Result<(), String> {
+    let guard = permission_profile
+        .map(|profile| {
+            resolve_permission_profile(paths, Some(profile))
+                .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    for change in changes {
+        if note_path_is_mdbase_managed(paths, &change.path).map_err(|error| error.to_string())? {
+            return Err(format!(
+                "template write target became an mdbase-managed note: {}",
+                change.path
+            ));
+        }
+        if let Some(guard) = guard.as_ref() {
+            guard
+                .check_write_path(&change.path)
+                .map_err(|error| error.to_string())?;
+            if refactor_paths.contains(&change.path) {
                 guard
-                    .check_write_path(&change.path)
+                    .check_refactor_path(&change.path)
                     .map_err(|error| error.to_string())?;
+                if change.before.is_some() {
+                    guard
+                        .check_read_path(&change.path)
+                        .map_err(|error| error.to_string())?;
+                }
             }
         }
-        Ok(())
-    })
-    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    }
     Ok(())
 }
 
@@ -122,15 +192,151 @@ fn stage_template_create(
     let mut changes = staged
         .lock()
         .map_err(|_| "template create staging lock poisoned".to_string())?;
-    if changes.contains_key(path) || paths.vault_root().join(path).exists() {
+    if changes.creates.contains_key(path)
+        || changes
+            .moved
+            .as_ref()
+            .is_some_and(|plan| plan.changes.iter().any(|change| change.path == path))
+        || paths.vault_root().join(path).exists()
+    {
         return Err(format!("destination note already exists: {path}"));
     }
-    changes.insert(path.to_string(), content);
+    changes.creates.insert(path.to_string(), content);
     Ok(())
 }
 
-fn staged_template_content(staged: Option<&StagedTemplateCreates>, path: &str) -> Option<String> {
-    staged?.lock().ok()?.get(path).cloned()
+enum StagedTemplatePath {
+    Content(String),
+    Deleted,
+}
+
+fn staged_template_path_state(
+    staged: Option<&StagedTemplateCreates>,
+    path: &str,
+) -> Option<StagedTemplatePath> {
+    let staged = staged?.lock().ok()?;
+    if let Some(content) = staged.creates.get(path) {
+        return Some(StagedTemplatePath::Content(content.clone()));
+    }
+    staged
+        .moved
+        .as_ref()?
+        .changes
+        .iter()
+        .find(|change| change.path == path)
+        .map(|change| {
+            change
+                .after
+                .clone()
+                .map_or(StagedTemplatePath::Deleted, StagedTemplatePath::Content)
+        })
+}
+
+fn template_path_exists(
+    paths: &VaultPaths,
+    staged: Option<&StagedTemplateCreates>,
+    path: &str,
+) -> bool {
+    staged_template_path_state(staged, path).map_or_else(
+        || secure_read_to_string(paths.vault_root(), Path::new(path)).is_ok(),
+        |content| matches!(content, StagedTemplatePath::Content(_)),
+    )
+}
+
+fn template_path_content(
+    paths: &VaultPaths,
+    staged: Option<&StagedTemplateCreates>,
+    path: &str,
+) -> Result<String, String> {
+    match staged_template_path_state(staged, path) {
+        Some(StagedTemplatePath::Content(content)) => Ok(content),
+        Some(StagedTemplatePath::Deleted) => Err(format!("File {path} doesn't exist")),
+        None => secure_read_to_string(paths.vault_root(), Path::new(path))
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn stage_template_move(
+    staged: &StagedTemplateCreates,
+    paths: &VaultPaths,
+    current: &str,
+    destination: &str,
+    expected_source: Option<&str>,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<Option<MoveSummary>, String> {
+    let previous = staged
+        .lock()
+        .map_err(|_| "template staging lock poisoned".to_string())?
+        .clone();
+    let source = previous
+        .moved
+        .as_ref()
+        .map_or(current, |plan| plan.summary.source_path.as_str());
+    if previous.moved.is_none() && !paths.vault_root().join(source).is_file() {
+        if let Some(guard) = guard {
+            guard
+                .check_write_path(destination)
+                .map_err(|error| error.to_string())?;
+        }
+        return Ok(None);
+    }
+    let expected_source =
+        expected_source.ok_or_else(|| "template create target already exists".to_string())?;
+    let plan = vulcan_core::move_rewrite::plan_ordinary_note_move(paths, source, destination)
+        .map_err(|error| error.to_string())?;
+    if source == destination {
+        staged
+            .lock()
+            .map_err(|_| "template staging lock poisoned".to_string())?
+            .moved = None;
+        return Ok(Some(plan.summary));
+    }
+    if plan
+        .changes
+        .iter()
+        .find(|change| change.path == source)
+        .and_then(|change| change.before.as_deref())
+        != Some(expected_source)
+    {
+        return Err("template source changed before move staging".to_string());
+    }
+    for change in &plan.changes {
+        if previous.creates.contains_key(&change.path) {
+            return Err(format!(
+                "template move conflicts with staged create: {}",
+                change.path
+            ));
+        }
+        if let Some(old) = previous.moved.as_ref().and_then(|old| {
+            old.changes
+                .iter()
+                .find(|old| old.path == change.path && old.before.is_some())
+        }) {
+            if old.before != change.before {
+                return Err(format!(
+                    "template move input changed during rendering: {}",
+                    change.path
+                ));
+            }
+        }
+        if let Some(guard) = guard {
+            guard
+                .check_write_path(&change.path)
+                .and_then(|()| guard.check_refactor_path(&change.path))
+                .map_err(|error| error.to_string())?;
+            if change.before.is_some() {
+                guard
+                    .check_read_path(&change.path)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    let summary = plan.summary.clone();
+    staged
+        .lock()
+        .map_err(|_| "template staging lock poisoned".to_string())?
+        .moved = Some(plan);
+    Ok(Some(summary))
 }
 
 const MAX_TEMPLATE_INCLUDE_DEPTH: usize = 10;
@@ -396,6 +602,22 @@ fn render_template_request_with_authority(
     let content = session.merge_pending_frontmatter(&content)?;
     #[cfg(feature = "js_runtime")]
     let content = session.run_post_render_hooks(content)?;
+    if let Some(staged) = session.staged_creates.as_ref() {
+        let staged = staged
+            .lock()
+            .map_err(|_| AppError::operation("template staging lock poisoned"))?;
+        session.changed_paths = staged
+            .creates
+            .keys()
+            .cloned()
+            .chain(
+                staged
+                    .moved
+                    .iter()
+                    .flat_map(|plan| plan.changes.iter().map(|change| change.path.clone())),
+            )
+            .collect();
+    }
     Ok(TemplateRenderOutput {
         content,
         target_path: session.target_path,
@@ -607,7 +829,7 @@ pub fn apply_template_creation_trigger(
     let expected_final = if rendered.target_path == relative_path {
         previous.clone()
     } else {
-        secure_read_to_string(paths.vault_root(), Path::new(&rendered.target_path))
+        template_path_content(paths, Some(&staged), &rendered.target_path)
             .map_err(AppError::operation)?
     };
 
@@ -1001,10 +1223,10 @@ pub fn apply_template_insert_with_filter(
     let expected_final = if rendered.target_path == target_path {
         target_source.clone()
     } else {
-        secure_read_to_string(paths.vault_root(), Path::new(&rendered.target_path))
+        template_path_content(paths, Some(&staged), &rendered.target_path)
             .map_err(AppError::operation)?
     };
-    let prepared = prepare_template_insertion(&target_source, &rendered.content)
+    let prepared = prepare_template_insertion(&expected_final, &rendered.content)
         .map_err(AppError::operation)?;
     let updated =
         apply_template_insertion_mode(&prepared, request.mode).map_err(AppError::operation)?;
@@ -1727,14 +1949,12 @@ impl<'a> TemplateSession<'a> {
             return Ok(TemplateValue::Null);
         };
         let include_path = self.resolve_include_target(&path)?;
-        let source = if let Some(content) =
-            staged_template_content(self.staged_creates.as_ref(), &include_path)
-        {
-            content
-        } else {
-            secure_read_to_string(self.request.paths.vault_root(), Path::new(&include_path))
-                .map_err(|error| NativeExpressionError::Message(error.to_string()))?
-        };
+        let source = template_path_content(
+            self.request.paths,
+            self.staged_creates.as_ref(),
+            &include_path,
+        )
+        .map_err(NativeExpressionError::Message)?;
         let rendered = self
             .render_source(&source, TemplateEngineKind::Templater, include_depth + 1)
             .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
@@ -1817,7 +2037,20 @@ impl<'a> TemplateSession<'a> {
             return Ok(TemplateValue::Null);
         }
 
-        if self
+        if let Some(staged) = self.staged_creates.as_ref() {
+            if let Some(summary) = stage_template_move(
+                staged,
+                self.request.paths,
+                &self.target_path,
+                &normalized,
+                self.request.target_contents,
+                self.mutation_guard.as_ref(),
+            )
+            .map_err(NativeExpressionError::Message)?
+            {
+                self.record_move_summary(&summary);
+            }
+        } else if self
             .request
             .paths
             .vault_root()
@@ -1949,7 +2182,10 @@ impl<'a> TemplateSession<'a> {
             let normalized = normalize_template_include_path(&reference.path)?;
             return self
                 .include_path_is_allowed(&normalized)
-                .then_some(normalized);
+                .then(|| normalized.clone())
+                .filter(|path| {
+                    template_path_exists(self.request.paths, self.staged_creates.as_ref(), path)
+                });
         }
         let path = Path::new(identifier);
         let candidate = if path.extension().is_none() {
@@ -1961,9 +2197,7 @@ impl<'a> TemplateSession<'a> {
         self.include_path_is_allowed(&normalized)
             .then(|| normalized.clone())
             .filter(|path| {
-                staged_template_content(self.staged_creates.as_ref(), path).is_some()
-                    || secure_read_to_string(self.request.paths.vault_root(), Path::new(path))
-                        .is_ok()
+                template_path_exists(self.request.paths, self.staged_creates.as_ref(), path)
             })
     }
 
@@ -2274,6 +2508,7 @@ struct JsTemplateState {
     read_filter: Option<PermissionFilter>,
     mutation_guard: Option<ProfilePermissionGuard>,
     staged_creates: Option<StagedTemplateCreates>,
+    original_target_contents: Option<String>,
 }
 
 #[cfg(feature = "js_runtime")]
@@ -2294,6 +2529,7 @@ impl JsTemplateState {
             read_filter: session.read_filter.clone(),
             mutation_guard: session.mutation_guard.clone(),
             staged_creates: session.staged_creates.clone(),
+            original_target_contents: session.request.target_contents.map(str::to_string),
         }
     }
 
@@ -2721,12 +2957,7 @@ fn js_file_include(state: &JsTemplateState, args: &[JsonValue]) -> Result<String
     {
         return Err(format!("File {path} doesn't exist"));
     }
-    if let Some(content) = staged_template_content(state.staged_creates.as_ref(), &target) {
-        Ok(content)
-    } else {
-        secure_read_to_string(state.paths.vault_root(), Path::new(&target))
-            .map_err(|error| error.to_string())
-    }
+    template_path_content(&state.paths, state.staged_creates.as_ref(), &target)
 }
 
 fn normalize_template_include_path(path: &str) -> Option<String> {
@@ -2795,7 +3026,21 @@ fn js_file_move(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<(), S
     }
     let new_path = args.first().and_then(JsonValue::as_str).unwrap_or_default();
     let normalized = normalize_note_output_path(new_path)?;
-    if state.paths.vault_root().join(&state.target_path).is_file() {
+    if let Some(staged) = state.staged_creates.as_ref() {
+        if let Some(summary) = stage_template_move(
+            staged,
+            &state.paths,
+            &state.target_path,
+            &normalized,
+            state.original_target_contents.as_deref(),
+            state.mutation_guard.as_ref(),
+        )? {
+            state.changed_paths.insert(summary.destination_path);
+            state
+                .changed_paths
+                .extend(summary.rewritten_files.into_iter().map(|file| file.path));
+        }
+    } else if state.paths.vault_root().join(&state.target_path).is_file() {
         let summary = guarded_template_move(
             &state.paths,
             &state.target_path,
@@ -4116,7 +4361,9 @@ fn path_to_relative_file_json(path: &Path) -> JsonMap<String, JsonValue> {
 #[cfg(feature = "js_runtime")]
 fn resolve_vault_path_from_state(state: &JsTemplateState, identifier: &str) -> Option<String> {
     if let Ok(reference) = resolve_note_reference(&state.paths, identifier) {
-        return normalize_template_include_path(&reference.path);
+        return normalize_template_include_path(&reference.path).filter(|path| {
+            template_path_exists(&state.paths, state.staged_creates.as_ref(), path)
+        });
     }
     let trimmed = identifier
         .trim()
@@ -4134,9 +4381,8 @@ fn resolve_vault_path_from_state(state: &JsTemplateState, identifier: &str) -> O
         path.to_path_buf()
     };
     let normalized = normalize_template_include_path(&candidate.to_string_lossy())?;
-    (staged_template_content(state.staged_creates.as_ref(), &normalized).is_some()
-        || secure_read_to_string(state.paths.vault_root(), Path::new(&normalized)).is_ok())
-    .then_some(normalized)
+    template_path_exists(&state.paths, state.staged_creates.as_ref(), &normalized)
+        .then_some(normalized)
 }
 
 #[cfg(feature = "js_runtime")]

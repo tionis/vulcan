@@ -65,6 +65,223 @@ fn scoped_template_move_rejects_rewrites_outside_its_grant() {
     assert!(!root.join("Allowed/Moved.md").exists());
 }
 
+fn staged_move_fixture(template: &str) -> (tempfile::TempDir, VaultPaths) {
+    let temporary = tempdir().unwrap();
+    let root = temporary.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).unwrap();
+    fs::create_dir_all(root.join("Projects")).unwrap();
+    fs::create_dir_all(root.join("Archive")).unwrap();
+    fs::write(root.join(".vulcan/templates/move.md"), template).unwrap();
+    fs::write(root.join("Projects/Task.md"), "# Task\n[Peer](./Peer.md)\n").unwrap();
+    fs::write(root.join("Projects/Peer.md"), "# Peer\n").unwrap();
+    fs::write(root.join("Backlink.md"), "[[Projects/Task]]\n").unwrap();
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).unwrap();
+    (temporary, paths)
+}
+
+fn insert_move_template(
+    paths: &VaultPaths,
+) -> Result<super::TemplateInsertReport, super::AppError> {
+    apply_template_insert(
+        paths,
+        &TemplateInsertRequest {
+            template: "move".into(),
+            note: "Projects/Task.md".into(),
+            mode: TemplateInsertMode::Append,
+            engine: TemplateEngineKind::Templater,
+            vars: HashMap::new(),
+        },
+    )
+}
+
+#[test]
+fn native_template_move_insert_commits_companions_backlinks_and_identity_together() {
+    let (temporary, paths) = staged_move_fixture(
+        "<% tp.file.create_new('companion', 'Companion') %><% tp.file.move('Archive/Task') %>Added",
+    );
+    let id_at = |path: &str| -> String {
+        rusqlite::Connection::open(paths.cache_db())
+            .unwrap()
+            .query_row("SELECT id FROM documents WHERE path = ?1", [path], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    let original = id_at("Projects/Task.md");
+    insert_move_template(&paths).unwrap();
+    assert!(!temporary.path().join("Projects/Task.md").exists());
+    let moved = fs::read_to_string(temporary.path().join("Archive/Task.md")).unwrap();
+    assert!(moved.contains("[Peer](Peer.md)"), "{moved}");
+    assert!(moved.contains("Added"));
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("Companion.md")).unwrap(),
+        "companion"
+    );
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("Backlink.md")).unwrap(),
+        "[[Task]]\n"
+    );
+    assert_eq!(id_at("Archive/Task.md"), original);
+    assert!(
+        vulcan_core::ordinary_write::inspect_ordinary_write_batch(&paths)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn native_template_failure_does_not_publish_its_staged_move_or_companion() {
+    let (temporary, paths) = staged_move_fixture(
+        "<% tp.file.create_new('companion', 'Companion') %><% tp.file.move('Archive/Task') %><% tp.file.include('Missing') %>",
+    );
+    assert!(insert_move_template(&paths).is_err());
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("Projects/Task.md")).unwrap(),
+        "# Task\n[Peer](./Peer.md)\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("Backlink.md")).unwrap(),
+        "[[Projects/Task]]\n"
+    );
+    assert!(!temporary.path().join("Archive/Task.md").exists());
+    assert!(!temporary.path().join("Companion.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn template_move_planning_refuses_a_cached_backlink_replaced_by_an_outside_symlink() {
+    let (temporary, paths) = staged_move_fixture("<% tp.file.move('Archive/Task') %>Added");
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("Backlink.md"), "[[Projects/Task]]\n").unwrap();
+    fs::remove_file(temporary.path().join("Backlink.md")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("Backlink.md"),
+        temporary.path().join("Backlink.md"),
+    )
+    .unwrap();
+    assert!(insert_move_template(&paths).is_err());
+    assert!(temporary.path().join("Projects/Task.md").is_file());
+    assert!(!temporary.path().join("Archive/Task.md").exists());
+    assert_eq!(
+        fs::read_to_string(outside.path().join("Backlink.md")).unwrap(),
+        "[[Projects/Task]]\n"
+    );
+}
+
+#[test]
+fn staged_move_rechecks_source_and_backlinks_before_publication() {
+    for edited_path in ["Projects/Task.md", "Backlink.md"] {
+        let (temporary, paths) = staged_move_fixture("Added");
+        let staged = super::staged_template_creates();
+        super::stage_template_create(&staged, &paths, "Companion.md", "companion".into()).unwrap();
+        super::stage_template_move(
+            &staged,
+            &paths,
+            "Projects/Task.md",
+            "Archive/Task.md",
+            Some("# Task\n[Peer](./Peer.md)\n"),
+            None,
+        )
+        .unwrap();
+        let expected =
+            super::template_path_content(&paths, Some(&staged), "Archive/Task.md").unwrap();
+        fs::write(temporary.path().join(edited_path), "external edit").unwrap();
+        let error = super::write_template_result_with_staged_creates(
+            &paths,
+            "Archive/Task.md",
+            Some(&expected),
+            "final",
+            &staged,
+            None,
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("changed before apply"));
+        assert_eq!(
+            fs::read_to_string(temporary.path().join(edited_path)).unwrap(),
+            "external edit"
+        );
+        assert!(!temporary.path().join("Archive/Task.md").exists());
+        assert!(!temporary.path().join("Companion.md").exists());
+    }
+}
+
+#[test]
+fn staged_template_move_rechecks_a_narrowed_refactor_profile() {
+    let (temporary, paths) = staged_move_fixture("Added");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\nrefactor = \"all\"\n",
+    )
+    .unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("agent")).unwrap(),
+    );
+    let staged = super::staged_template_creates();
+    super::stage_template_move(
+        &staged,
+        &paths,
+        "Projects/Task.md",
+        "Archive/Task.md",
+        Some("# Task\n[Peer](./Peer.md)\n"),
+        Some(&guard),
+    )
+    .unwrap();
+    let expected = super::template_path_content(&paths, Some(&staged), "Archive/Task.md").unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\nrefactor = { allow = [\"folder:Projects/**\"] }\n").unwrap();
+    assert!(super::write_template_result_with_staged_creates(
+        &paths,
+        "Archive/Task.md",
+        Some(&expected),
+        "final",
+        &staged,
+        Some("agent"),
+        "test",
+    )
+    .is_err());
+    assert!(temporary.path().join("Projects/Task.md").is_file());
+    assert!(!temporary.path().join("Archive/Task.md").exists());
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("Backlink.md")).unwrap(),
+        "[[Projects/Task]]\n"
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn js_template_repeated_moves_remain_staged_and_final_render_failure_is_atomic() {
+    let (temporary, paths) = staged_move_fixture(
+        "<%* await tp.file.create_new('companion', 'Companion'); await tp.file.move('Archive/First'); await tp.file.rename('Final'); if (await tp.file.exists('Projects/Task.md')) throw new Error('old source visible'); if (!(await tp.file.exists('Archive/Final.md'))) throw new Error('new target missing'); throw new Error('render failure'); %>",
+    );
+    assert!(insert_move_template(&paths).is_err());
+    assert!(temporary.path().join("Projects/Task.md").is_file());
+    assert!(!temporary.path().join("Archive/First.md").exists());
+    assert!(!temporary.path().join("Archive/Final.md").exists());
+    assert!(!temporary.path().join("Companion.md").exists());
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn js_template_repeated_moves_publish_only_the_final_destination() {
+    let (temporary, paths) = staged_move_fixture(
+        "<%* await tp.file.create_new('companion', 'Companion'); await tp.file.move('Archive/First'); await tp.file.rename('Final'); if (await tp.file.exists('Projects/Task.md')) throw new Error('old source visible'); if (!(await tp.file.exists('Archive/Final.md'))) throw new Error('new target missing'); tR += 'Added'; %>",
+    );
+    let report = insert_move_template(&paths).unwrap();
+    assert!(!temporary.path().join("Projects/Task.md").exists());
+    assert!(!temporary.path().join("Archive/First.md").exists());
+    assert!(temporary.path().join("Archive/Final.md").is_file());
+    assert!(temporary.path().join("Companion.md").is_file());
+    assert!(!report
+        .changed_paths
+        .contains(&"Archive/First.md".to_string()));
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("Backlink.md")).unwrap(),
+        "[[Final]]\n"
+    );
+}
+
 fn fixed_template_timestamp() -> TemplateTimestamp {
     TemplateTimestamp::from_millis(
         vulcan_core::expression::functions::parse_date_like_string("2026-04-04T09:30:00Z")

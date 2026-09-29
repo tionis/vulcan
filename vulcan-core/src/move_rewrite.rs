@@ -192,21 +192,48 @@ pub fn move_note_unlocked(
     ensure_no_pending_ordinary_write_batch(paths)?;
     if !dry_run {
         if let MoveRecovery::Applied { .. } = recover_interrupted_move(paths)? {
-            // A previous move finished its file changes but not its scan; the scan picks up
-            // the journal's rename hint and clears it.
             scan_vault_unlocked_with_renames(paths, &HashMap::new())?;
         }
     }
+    let (mut summary, rewrite_plans) = prepare_note_move(paths, source_identifier, destination)?;
+    summary.dry_run = dry_run;
+    if dry_run || summary.source_path == summary.destination_path {
+        return Ok(summary);
+    }
+    apply_move(
+        paths,
+        &summary.source_path,
+        &summary.destination_path,
+        &rewrite_plans,
+    )?;
+    scan_vault_unlocked_with_renames(
+        paths,
+        &HashMap::from([(
+            summary.destination_path.clone(),
+            summary.source_path.clone(),
+        )]),
+    )?;
+    Ok(summary)
+}
+
+fn prepare_note_move(
+    paths: &VaultPaths,
+    source_identifier: &str,
+    destination: &str,
+) -> Result<(MoveSummary, Vec<FileRewritePlan>), MoveError> {
     let connection = open_existing_cache(paths)?;
     let source = resolve_move_source(paths, &connection, source_identifier)?;
     let destination_path = normalize_destination_path(destination, &source.extension)?;
     if source.path == destination_path {
-        return Ok(MoveSummary {
-            dry_run,
-            source_path: source.path,
-            destination_path,
-            rewritten_files: Vec::new(),
-        });
+        return Ok((
+            MoveSummary {
+                dry_run: true,
+                source_path: source.path,
+                destination_path,
+                rewritten_files: Vec::new(),
+            },
+            Vec::new(),
+        ));
     }
 
     let destination_absolute = paths.vault_root().join(&destination_path);
@@ -245,28 +272,82 @@ pub fn move_note_unlocked(
         })
         .collect::<Vec<_>>();
 
-    if dry_run {
-        return Ok(MoveSummary {
+    Ok((
+        MoveSummary {
             dry_run: true,
             source_path: source.path,
             destination_path,
             rewritten_files,
+        },
+        rewrite_plans,
+    ))
+}
+
+/// Immutable file preimages for composing a move with a larger ordinary-write
+/// batch. Planning does not publish files or mutate the cache.
+#[derive(Debug, Clone)]
+pub struct OrdinaryNoteMovePlan {
+    pub summary: MoveSummary,
+    pub changes: Vec<crate::ordinary_write::OrdinaryWriteChange>,
+}
+
+pub fn plan_ordinary_note_move(
+    paths: &VaultPaths,
+    source_identifier: &str,
+    destination: &str,
+) -> Result<OrdinaryNoteMovePlan, MoveError> {
+    use crate::ordinary_write::OrdinaryWriteChange;
+    let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    let (summary, rewrites) = prepare_note_move(paths, source_identifier, destination)?;
+    if summary.source_path == summary.destination_path {
+        return Ok(OrdinaryNoteMovePlan {
+            summary,
+            changes: Vec::new(),
         });
     }
-
-    apply_move(paths, &source.path, &destination_path, &rewrite_plans)?;
-
-    scan_vault_unlocked_with_renames(
-        paths,
-        &HashMap::from([(destination_path.clone(), source.path.clone())]),
-    )?;
-
-    Ok(MoveSummary {
-        dry_run: false,
-        source_path: source.path,
-        destination_path,
-        rewritten_files,
-    })
+    let source = String::from_utf8(secure_read(
+        paths.vault_root(),
+        Path::new(&summary.source_path),
+    )?)
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if rewrites.iter().any(|rewrite| {
+        rewrite.original_path == summary.source_path && rewrite.original_contents != source
+    }) {
+        return Err(MoveError::ConcurrentModification(summary.source_path));
+    }
+    let moved = rewrites
+        .iter()
+        .find(|rewrite| rewrite.original_path == summary.source_path)
+        .map_or_else(
+            || source.clone(),
+            |rewrite| rewrite.updated_contents.clone(),
+        );
+    let mut changes = vec![
+        OrdinaryWriteChange {
+            path: summary.source_path.clone(),
+            before: Some(source),
+            after: None,
+        },
+        OrdinaryWriteChange {
+            path: summary.destination_path.clone(),
+            before: None,
+            after: Some(moved),
+        },
+    ];
+    changes.extend(
+        rewrites
+            .into_iter()
+            .filter(|rewrite| {
+                rewrite.original_path != summary.source_path && !rewrite.changes.is_empty()
+            })
+            .map(|rewrite| OrdinaryWriteChange {
+                path: rewrite.output_path,
+                before: Some(rewrite.original_contents),
+                after: Some(rewrite.updated_contents),
+            }),
+    );
+    Ok(OrdinaryNoteMovePlan { summary, changes })
 }
 
 const MOVE_JOURNAL_FILE_NAME: &str = "move-journal.json";
@@ -652,7 +733,8 @@ fn plan_rewrites(
 
     let mut plans = Vec::new();
     for (original_path, links) in links_by_file {
-        let source_contents = fs::read_to_string(paths.vault_root().join(&original_path))?;
+        let source_contents =
+            crate::paths::secure_read_to_string(paths.vault_root(), Path::new(&original_path))?;
         let parsed = parse_document(&source_contents, config);
         let output_path = if original_path == source_path {
             destination_path.to_string()

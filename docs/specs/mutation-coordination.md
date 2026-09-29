@@ -113,8 +113,13 @@ must be a unique create/delete pair in the recorded changes. Publication and rec
 rename-aware cache scan under the same vault lock before removing the journal. This preserves
 document identity even when the moved note's final content differs, including a retry after the
 cache committed but journal removal did not. Version-1 journals retain their original digest
-encoding and recovery behavior. Template move/rename orchestration has not yet adopted this API;
-this foundation alone does not make an existing multi-effect template atomic.
+encoding and recovery behavior. Direct template insertion and creation triggers on existing
+ordinary notes now stage native/JS moves, renames, backlink rewrites, and companion creates with
+the final note update through that API. Rendering uses the staged file view; locked publication
+rechecks preimages, managed-path classification, and current write/refactor/read authority.
+Repeated moves collapse to the final destination. New-note creation refuses moving an existing
+note at its requested path. Generic standalone rendering and plugin/system-command effects remain
+outside this transaction; ordinary batches still have their explicit 32-path bound.
 
 ## Hosted scheduler
 

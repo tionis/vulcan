@@ -16077,6 +16077,54 @@ fn template_insert_renders_templater_syntax_against_target_note() {
 }
 
 #[test]
+fn template_insert_publishes_the_complete_staged_move_batch() {
+    let temporary = TempDir::new().unwrap();
+    let vault = temporary.path().join("vault");
+    fs::create_dir_all(vault.join(".vulcan/templates")).unwrap();
+    fs::create_dir_all(vault.join("Projects")).unwrap();
+    fs::create_dir_all(vault.join("Archive")).unwrap();
+    fs::write(vault.join("Projects/Source.md"), "# Source\n").unwrap();
+    fs::write(vault.join("Backlink.md"), "[[Projects/Source]]\n").unwrap();
+    fs::write(
+        vault.join(".vulcan/templates/move.md"),
+        "<% tp.file.create_new('child', 'Child') %><% tp.file.move('Archive/Source') %>Added",
+    )
+    .unwrap();
+    run_scan(&vault);
+    let output = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            vault.to_str().unwrap(),
+            "--output",
+            "json",
+            "template",
+            "insert",
+            "move",
+            "Projects/Source",
+            "--engine",
+            "templater",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&output);
+    assert_eq!(report["note"], "Archive/Source.md");
+    assert_eq!(report["engine"], "templater");
+    // Keep the existing CLI report shape; changed paths are internal input
+    // to optional auto-commit, not a new public JSON field.
+    assert!(report.get("changed_paths").is_none());
+    assert!(!vault.join("Projects/Source.md").exists());
+    assert!(fs::read_to_string(vault.join("Archive/Source.md"))
+        .unwrap()
+        .contains("Added"));
+    assert_eq!(
+        fs::read_to_string(vault.join("Backlink.md")).unwrap(),
+        "[[Source]]\n"
+    );
+    assert_eq!(fs::read_to_string(vault.join("Child.md")).unwrap(), "child");
+}
+
+#[test]
 fn template_preview_reports_diagnostics_for_mutating_helpers() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -16602,9 +16650,12 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(template_skill.contains("Direct CLI and MCP template reports refuse"));
     assert!(template_skill.contains("direct `template create`/`insert`"));
     assert!(template_skill
+        .contains("`tp.file.move`/`rename` also stage the move and backlink rewrites"));
+    assert!(template_skill.contains("A new-note creation cannot move an existing note"));
+    assert!(template_skill
         .contains("companions publish with the final ordinary note in one recoverable batch"));
     assert!(template_skill.contains("creation trigger applied to an existing ordinary note"));
-    assert!(template_skill.contains("Templater `tp.file.move` and `tp.file.rename` also refuse"));
+    assert!(template_skill.contains("Templater `tp.file.move` and `tp.file.rename` refuse"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
