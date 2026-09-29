@@ -13,7 +13,9 @@ use catalog::{
 };
 use fs2::FileExt;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(any(test, feature = "oauth"))]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpStream};
@@ -70,10 +72,15 @@ use vulcan_daemon::hosted_executor::{HostedExecutionError, HostedExecutor};
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
-use vulcan_daemon::http_policy::mcp_origin_allowed;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_hosted::{
     prepare_hosted_mcp_request, run_hosted_mcp_request, scheduled_operation, HostedMcpRunError,
+};
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mcp_http_auth::McpOAuthMode;
+use vulcan_daemon::mcp_http_auth::{
+    authenticate_mcp_http_request as authenticate_http_authority, McpHttpAuthError,
+    McpHttpAuthOptions,
 };
 use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
 use vulcan_daemon::mcp_http_routes::{
@@ -108,7 +115,6 @@ use vulcan_daemon::mcp_oauth_consent::McpConsentEndpoint;
 use vulcan_daemon::mcp_oauth_policy::parse_mcp_oauth_scopes as parse_mcp_oauth_scopes_policy;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::McpOAuthPolicyError;
-use vulcan_daemon::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_policy::{McpTokenAuthMethod, McpTokenClientCredentials};
 #[cfg(feature = "oauth")]
@@ -119,7 +125,7 @@ use vulcan_daemon::mcp_oauth_token::McpLocalTokenEndpoint;
 use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime, NamedTokenRequest};
+use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime};
 #[cfg(test)]
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
 use vulcan_daemon::mcp_session::{
@@ -206,23 +212,6 @@ impl DerefMut for McpServerCore {
 }
 
 type McpHttpSession = HostedMcpHttpSession<McpServerCore>;
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-enum McpOAuthMode {
-    External(Arc<OAuthResourceServer>),
-    Local(Arc<LocalOAuthIssuer>),
-}
-
-#[cfg(feature = "oauth")]
-impl McpOAuthMode {
-    fn public_url(&self) -> &str {
-        match self {
-            Self::External(server) => server.public_url(),
-            Self::Local(issuer) => issuer.public_url(),
-        }
-    }
-}
-
 #[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 struct HostedMcpExecution {
@@ -987,14 +976,6 @@ fn public_url_path(public_url: &str) -> Result<String, CliError> {
     Ok(normalize_mcp_http_endpoint(path))
 }
 
-#[cfg(feature = "oauth")]
-fn unix_timestamp_for_mcp() -> Result<u64, CliError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(CliError::operation)
-}
-
 fn run_mcp_stdio_server(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
@@ -1673,148 +1654,50 @@ fn handle_mcp_http_sse(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 fn authenticate_mcp_http_request(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Result<McpSessionAuthority, McpHttpResponse> {
-    let mut credential = "loopback-unauthenticated".to_string();
-    #[allow(unused_mut)]
-    let mut client_id = None;
-    #[allow(unused_mut)]
-    let mut subject = None;
-    #[allow(unused_mut)]
-    let mut permission_profile = context.requested_profile.clone();
-    #[cfg(feature = "oauth")]
-    let mut oauth_grant_id = None;
-    #[allow(unused_mut)]
-    let mut scopes = DEFAULT_MCP_OAUTH_SCOPES
-        .iter()
-        .map(|scope| (*scope).to_string())
-        .collect::<Vec<_>>();
-    #[cfg(feature = "oauth")]
-    if let Some(oauth) = context.oauth.as_ref() {
-        let Some(token) = bearer_token(&request.headers) else {
-            return Err(oauth_error_response(
-                oauth,
-                "missing OAuth bearer token",
-                "invalid_token",
-            ));
-        };
-        match oauth {
-            McpOAuthMode::External(external) => match external.validate_bearer_token(&token) {
-                Ok(identity) => {
-                    subject = Some(identity.subject);
-                    scopes = identity.scopes;
-                }
-                Err(error) => {
-                    eprintln!("MCP OAuth bearer token rejected: {error}");
-                    return Err(oauth_error_response(
-                        oauth,
-                        error.to_string(),
-                        "invalid_token",
-                    ));
-                }
-            },
-            McpOAuthMode::Local(local) => match local.validate_bearer_token(&token) {
-                Ok(identity) => {
-                    subject = Some(identity.subject);
-                    client_id = identity.client_id;
-                    scopes = identity.scopes;
-                    oauth_grant_id = identity.grant_id;
-                    if permission_profile.is_none() {
-                        permission_profile = identity.permission_profile;
-                    }
-                }
-                Err(error) => {
-                    eprintln!("MCP OAuth bearer token rejected: {error}");
-                    return Err(oauth_error_response(
-                        oauth,
-                        error.to_string(),
-                        "invalid_token",
-                    ));
-                }
-            },
-        }
-        credential = token;
-    }
-    if let Some(expected_token) = context.auth_token.as_deref() {
-        let actual_token = bearer_or_shared_token(&request.headers);
-        if actual_token.as_deref() != Some(expected_token) {
-            return Err(mcp_http_json_error_response(
-                401,
-                "missing or invalid authentication token",
-                Value::Null,
-            ));
-        }
-        credential = actual_token.expect("validated token should be present");
-    }
-    if let Some(origin) = request.headers.get("origin") {
-        if !mcp_origin_allowed(origin, context.bind_addr) {
-            return Err(mcp_http_json_error_response(
-                403,
-                "invalid Origin header",
-                Value::Null,
-            ));
-        }
-    }
-    #[cfg(feature = "oauth")]
-    if let Some(named) = context.named_runtime.as_ref() {
-        let grant_id = oauth_grant_id
-            .as_deref()
-            .and_then(|value| value.parse::<Ulid>().ok())
-            .ok_or_else(|| {
-                oauth_error_response(
-                    context.oauth.as_ref().expect("named runtime has OAuth"),
-                    "access token is not bound to a connection grant",
-                    "invalid_token",
-                )
-            })?;
-        let client_id = client_id.clone().ok_or_else(|| {
-            oauth_error_response(
-                context.oauth.as_ref().expect("named runtime has OAuth"),
-                "access token has no OAuth client binding",
-                "invalid_token",
-            )
-        })?;
-        let now = unix_timestamp_for_mcp()
-            .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
-        return named
-            .authorize_token(&NamedTokenRequest {
-                remote_instance_id: context.instance_id,
-                grant_id,
-                client_id: &client_id,
-                subject: subject.as_deref(),
-                scopes: &scopes,
-                resource: context
-                    .oauth
-                    .as_ref()
-                    .expect("named runtime has OAuth")
-                    .public_url(),
-                credential: &credential,
-                now,
-            })
-            .map_err(|error| {
-                oauth_error_response(
-                    context.oauth.as_ref().expect("named runtime has OAuth"),
-                    error,
-                    "invalid_token",
-                )
-            });
-    }
     let packs = pack_name_list(&resolve_selected_tool_packs(
         &context.tool_pack_args,
         McpToolPackMode::from(context.tool_pack_mode_arg),
     ));
-    Ok(McpSessionAuthority::direct(
-        context.instance_id,
-        &credential,
-        client_id,
-        subject,
-        permission_profile,
-        packs,
-        scopes,
-    ))
+    authenticate_http_authority(
+        McpHttpAuthOptions {
+            instance_id: context.instance_id,
+            bind_addr: context.bind_addr,
+            auth_token: context.auth_token.as_deref(),
+            permission_profile: context.requested_profile.as_deref(),
+            packs,
+            #[cfg(feature = "oauth")]
+            oauth: context.oauth.as_ref(),
+            #[cfg(feature = "oauth")]
+            named_runtime: context.named_runtime.as_ref(),
+        },
+        &request.headers,
+    )
+    .map_err(|error| match error {
+        McpHttpAuthError::Http { status, message } => {
+            mcp_http_json_error_response(status, message, Value::Null)
+        }
+        #[cfg(feature = "oauth")]
+        McpHttpAuthError::OAuth {
+            message,
+            rejected_bearer,
+        } => {
+            if rejected_bearer {
+                eprintln!("MCP OAuth bearer token rejected: {message}");
+            }
+            oauth_error_response(
+                context
+                    .oauth
+                    .as_ref()
+                    .expect("OAuth rejection has an issuer"),
+                message,
+                "invalid_token",
+            )
+        }
+    })
 }
 
 impl McpServerCore {
@@ -2747,22 +2630,6 @@ fn normalize_mcp_http_endpoint(endpoint: &str) -> String {
     } else {
         format!("/{endpoint}")
     }
-}
-
-fn bearer_or_shared_token(headers: &BTreeMap<String, String>) -> Option<String> {
-    if let Some(token) = bearer_token(headers) {
-        return Some(token);
-    }
-    headers.get("x-vulcan-token").cloned()
-}
-
-fn bearer_token(headers: &BTreeMap<String, String>) -> Option<String> {
-    if let Some(value) = headers.get("authorization") {
-        if let Some(token) = value.strip_prefix("Bearer ") {
-            return Some(token.to_string());
-        }
-    }
-    None
 }
 
 fn mcp_http_json_error_response(
