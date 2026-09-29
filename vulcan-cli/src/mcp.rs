@@ -39,8 +39,7 @@ use vulcan_app::mcp_assistant;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_dispatch::tool_error_response;
 use vulcan_app::mcp_dispatch::{
-    acquire_request_ordinary_write_gate, jsonrpc_error, process_http_request,
-    process_stdio_request, request_id, timeout_http_result, timeout_response_for_request,
+    jsonrpc_error, request_id, timeout_http_result, timeout_response_for_request,
     McpHttpProcessResult, McpMethodHandler,
 };
 use vulcan_app::mcp_help;
@@ -1885,35 +1884,11 @@ impl McpServerCore {
     }
 
     fn process_request(&mut self, request: Value) -> Vec<Value> {
-        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), &request)
-        {
-            Ok(guard) => guard,
-            Err(message) => {
-                return request_id(&request)
-                    .map(|id| vec![jsonrpc_error(id, -32603, message, None)])
-                    .unwrap_or_default()
-            }
-        };
-        process_stdio_request(self, request)
+        self.inner.process_request(request)
     }
 
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
-        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), request) {
-            Ok(guard) => guard,
-            Err(message) => {
-                return if let Some(id) = request_id(request) {
-                    Err(jsonrpc_error(id, -32603, message, None))
-                } else {
-                    Ok(McpHttpProcessResult {
-                        response: None,
-                        notifications: Vec::new(),
-                        accepted_notification: true,
-                        session_stale: false,
-                    })
-                };
-            }
-        };
-        process_http_request(self, request)
+        self.inner.process_http_request(request)
     }
 
     #[allow(clippy::too_many_lines)] // Registration must precede the worker, and all timeout branches share its ID.

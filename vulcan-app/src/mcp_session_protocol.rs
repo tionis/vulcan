@@ -5,7 +5,11 @@ use std::collections::BTreeSet;
 use vulcan_core::{PermissionError, VaultPaths};
 
 use crate::mcp_catalog::{McpToolPack, McpToolPackMode};
-use crate::mcp_dispatch::{dispatch_protocol_method, McpMethodHandler, McpProtocolMethods};
+use crate::mcp_dispatch::{
+    acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
+    process_http_request, process_stdio_request, request_id, McpHttpProcessResult,
+    McpMethodHandler, McpProtocolMethods,
+};
 use crate::mcp_help::HelpTopicReport;
 use crate::mcp_protocol::{self, McpCompletionParams, McpMethodError, McpMethodOutcome};
 use crate::mcp_session::McpSessionState;
@@ -55,6 +59,41 @@ impl McpProtocolCore {
             self.host.help_candidates,
             self.host.server_version,
         )
+    }
+
+    /// Process a local request while excluding cooperating writers from reads
+    /// and refusing canonical state with an unfinished ordinary-write journal.
+    pub fn process_request(&mut self, request: Value) -> Vec<Value> {
+        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), &request)
+        {
+            Ok(guard) => guard,
+            Err(message) => {
+                return request_id(&request)
+                    .map(|id| vec![jsonrpc_error(id, -32603, message, None)])
+                    .unwrap_or_default();
+            }
+        };
+        process_stdio_request(self, request)
+    }
+
+    /// Apply the same canonical read barrier before HTTP protocol dispatch.
+    pub fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
+        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), request) {
+            Ok(guard) => guard,
+            Err(message) => {
+                return if let Some(id) = request_id(request) {
+                    Err(jsonrpc_error(id, -32603, message, None))
+                } else {
+                    Ok(McpHttpProcessResult {
+                        response: None,
+                        notifications: Vec::new(),
+                        accepted_notification: true,
+                        session_stale: false,
+                    })
+                };
+            }
+        };
+        process_http_request(self, request)
     }
 }
 
@@ -252,5 +291,50 @@ mod tests {
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "note_get"));
+    }
+
+    #[test]
+    fn both_core_transports_refuse_invalid_pending_write_state_without_removing_it() {
+        let vault = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(vault.path());
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        let mut core = McpProtocolCore::new(
+            &paths,
+            Some("readonly"),
+            BTreeSet::from([McpToolPack::NotesRead]),
+            McpToolPackMode::Static,
+            McpProtocolHost {
+                registry_options: CustomToolRegistryOptions::default,
+                command_help: no_command_help,
+                help_candidates: no_help_candidates,
+                server_version: "app-core-test",
+            },
+        )
+        .unwrap();
+        let state = paths
+            .operational_state_dir()
+            .unwrap()
+            .join("ordinary-write");
+        std::fs::create_dir_all(&state).unwrap();
+        let journal = state.join("journal.json");
+        std::fs::write(&journal, b"{}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let request = serde_json::json!({"jsonrpc":"2.0", "id":7, "method":"tools/list"});
+        let stdio = core.process_request(request.clone());
+        assert_eq!(stdio[0]["id"], 7);
+        assert_eq!(stdio[0]["error"]["code"], -32603);
+        let http = core.process_http_request(&request).unwrap_err();
+        assert_eq!(http, stdio[0]);
+        let notification =
+            serde_json::json!({"jsonrpc":"2.0", "method":"notifications/initialized"});
+        assert!(core.process_request(notification.clone()).is_empty());
+        let accepted = core.process_http_request(&notification).unwrap();
+        assert!(accepted.accepted_notification);
+        assert!(accepted.response.is_none());
+        assert_eq!(std::fs::read(&journal).unwrap(), b"{}");
     }
 }
