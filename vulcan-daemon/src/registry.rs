@@ -6,6 +6,8 @@ use std::fmt::{Display, Formatter};
 use std::fs::{self, File, OpenOptions};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_app::sync::{GitRefName, GitRemote};
@@ -572,6 +574,18 @@ impl From<std::io::Error> for RegistryError {
 #[derive(Debug, Clone)]
 pub struct WikiRegistry {
     path: PathBuf,
+    snapshot: Arc<Mutex<RegistrySnapshot>>,
+}
+
+#[derive(Debug, Default)]
+struct RegistrySnapshot {
+    source: Option<String>,
+    config: Option<DaemonConfig>,
+    checked: Option<Instant>,
+    #[cfg(test)]
+    reads: usize,
+    #[cfg(test)]
+    parses: usize,
 }
 
 impl WikiRegistry {
@@ -583,7 +597,10 @@ impl WikiRegistry {
 
     #[must_use]
     pub fn at(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            snapshot: Arc::default(),
+        }
     }
 
     #[must_use]
@@ -592,8 +609,59 @@ impl WikiRegistry {
     }
 
     pub fn load(&self) -> Result<DaemonConfig, RegistryError> {
-        let config = load_config(&self.path)?;
+        self.load_snapshot(false)
+    }
+
+    /// Shared by the runtime clones wired in process.rs. Content is reread at
+    /// least every 500ms (plus the consumer's polling interval), even when file
+    /// size and timestamps are preserved. Direct/API reads never use the TTL.
+    /// Invalid input fails closed; runtime supervisors retain their existing
+    /// stop/restart behavior and a repaired file is read on the next attempt.
+    pub(crate) fn poll(&self) -> Result<DaemonConfig, RegistryError> {
+        self.load_snapshot(true)
+    }
+
+    fn load_snapshot(&self, allow_cached: bool) -> Result<DaemonConfig, RegistryError> {
+        let mut snapshot = self.snapshot.lock().expect("registry snapshot lock");
+        if allow_cached
+            && snapshot
+                .checked
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(500))
+        {
+            if let Some(config) = &snapshot.config {
+                return Ok(config.clone());
+            }
+        }
+        #[cfg(test)]
+        {
+            snapshot.reads += 1;
+        }
+        let source = match fs::read_to_string(&self.path) {
+            Ok(source) => Some(source),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                snapshot.checked = None;
+                return Err(RegistryError::Io(error));
+            }
+        };
+        if source == snapshot.source {
+            if let Some(config) = snapshot.config.clone() {
+                snapshot.checked = Some(Instant::now());
+                return Ok(config);
+            }
+        }
+        // Invalidate before parsing: never serve old authorization after an error.
+        snapshot.config = None;
+        snapshot.checked = None;
+        #[cfg(test)]
+        {
+            snapshot.parses += 1;
+        }
+        let config = parse_config(&self.path, source.as_deref())?;
         validate_daemon_config(&config)?;
+        snapshot.source = source;
+        snapshot.config = Some(config.clone());
+        snapshot.checked = Some(Instant::now());
         Ok(config)
     }
 
@@ -1042,6 +1110,10 @@ impl WikiRegistry {
         validate_daemon_config(&config)?;
         if !dry_run {
             save_config(&self.path, &config)?;
+            self.snapshot
+                .lock()
+                .expect("registry snapshot lock")
+                .checked = None;
         }
         Ok(result)
     }
@@ -1456,11 +1528,11 @@ fn validate_groups(groups: &[String]) -> Result<(), RegistryError> {
     Ok(())
 }
 
-fn load_config(path: &Path) -> Result<DaemonConfig, RegistryError> {
-    match fs::read_to_string(path) {
-        Ok(source) => {
+fn parse_config(path: &Path, source: Option<&str>) -> Result<DaemonConfig, RegistryError> {
+    match source {
+        Some(source) => {
             let mut config: DaemonConfig =
-                toml::from_str(&source).map_err(|error| RegistryError::InvalidConfig {
+                toml::from_str(source).map_err(|error| RegistryError::InvalidConfig {
                     path: path.to_path_buf(),
                     detail: error.to_string(),
                 })?;
@@ -1477,8 +1549,7 @@ fn load_config(path: &Path) -> Result<DaemonConfig, RegistryError> {
             }
             Ok(config)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(DaemonConfig::default()),
-        Err(error) => Err(RegistryError::Io(error)),
+        None => Ok(DaemonConfig::default()),
     }
 }
 
@@ -1532,6 +1603,70 @@ mod tests {
     use super::*;
     use crate::mcp_remote::{McpRemoteAuthentication, McpRemoteVault, DEFAULT_MCP_TOOL_PACKS};
     use tempfile::tempdir;
+
+    #[test]
+    fn shared_polling_reads_once_and_parses_only_changed_bytes() {
+        let temporary = tempdir().unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry.set_bind("127.0.0.1:3210", false).unwrap();
+        let notification = registry.clone();
+        let baseline = registry.poll().unwrap();
+        let (reads, parses) = {
+            let cache = registry.snapshot.lock().unwrap();
+            (cache.reads, cache.parses)
+        };
+        for _ in 0..60 {
+            // Simulate one elapsed refresh window and both runtime consumers.
+            registry.snapshot.lock().unwrap().checked = None;
+            assert_eq!(registry.poll().unwrap(), baseline);
+            assert_eq!(notification.poll().unwrap(), baseline);
+        }
+        let cache = registry.snapshot.lock().unwrap();
+        assert_eq!(cache.reads - reads, 60);
+        assert_eq!(cache.parses - parses, 0);
+        eprintln!(
+            "registry: 60 windows x 2 consumers: reads=60 (baseline 120), parses=0 (baseline 120)"
+        );
+    }
+
+    #[test]
+    fn shared_snapshot_observes_api_atomic_same_size_invalid_and_repaired_config() {
+        let temporary = tempdir().unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry.set_bind("127.0.0.1:3210", false).unwrap();
+        let other = registry.clone();
+        registry.poll().unwrap();
+        registry.set_bind("127.0.0.1:3211", false).unwrap();
+        assert_eq!(other.poll().unwrap().bind, "127.0.0.1:3211");
+        let source = fs::read_to_string(registry.path()).unwrap();
+        let modified = fs::metadata(registry.path()).unwrap().modified().unwrap();
+        fs::write(registry.path(), source.replace("3211", "3212")).unwrap();
+        File::options()
+            .write(true)
+            .open(registry.path())
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(
+            fs::metadata(registry.path()).unwrap().modified().unwrap(),
+            modified
+        );
+        registry.snapshot.lock().unwrap().checked = None;
+        assert_eq!(other.poll().unwrap().bind, "127.0.0.1:3212");
+        let mut config = other.load().unwrap();
+        config.bind = "127.0.0.1:3213".into();
+        save_config(registry.path(), &config).unwrap();
+        registry.snapshot.lock().unwrap().checked = None;
+        assert_eq!(other.poll().unwrap(), config);
+        fs::write(registry.path(), "malformed = [").unwrap();
+        assert!(registry.load().is_err());
+        assert!(other.poll().is_err());
+        save_config(registry.path(), &config).unwrap();
+        assert_eq!(other.poll().unwrap(), config);
+        fs::remove_file(registry.path()).unwrap();
+        assert!(registry.load().unwrap().vaults.is_empty());
+        assert!(other.poll().unwrap().vaults.is_empty());
+    }
 
     fn absolute_notification_program() -> PathBuf {
         std::env::current_exe().expect("test executable path should be available")

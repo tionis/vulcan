@@ -627,6 +627,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Bound incremental parsed-document retention to one batch while preserving global rename matching and transactional rollback.
 
+- [x] Share validated registry snapshots across daemon pollers with content-based external-edit detection and fail-closed configuration errors.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

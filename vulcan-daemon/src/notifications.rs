@@ -183,7 +183,7 @@ async fn reconcile_listeners(
     client: &reqwest::Client,
     listeners: &mut BTreeMap<String, ListenerTask>,
 ) -> Result<(), NotificationRuntimeError> {
-    let desired = desired_listeners(registry.load()?.vaults);
+    let desired = desired_listeners(registry.poll()?.vaults);
     let completed = listeners
         .iter()
         .filter(|(_, task)| task.handle.is_finished())

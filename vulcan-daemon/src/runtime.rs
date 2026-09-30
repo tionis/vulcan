@@ -294,7 +294,7 @@ fn reconcile_watchers(
     watchers: &mut BTreeMap<String, WatcherTask>,
     catalog: &mut VaultRuntimeCatalog,
 ) -> Result<(), SyncTriggerRuntimeError> {
-    let config = registry.load()?;
+    let config = registry.poll()?;
     let desired = desired_observers(&config.vaults, catalog)?;
     let mut failed_this_cycle = BTreeSet::new();
     let finished = watchers
@@ -510,7 +510,7 @@ fn enqueue_periodic_reconciliation(
     registry: &WikiRegistry,
     supervisor: &SyncSupervisor,
 ) -> Result<(), SyncTriggerRuntimeError> {
-    let config = registry.load()?;
+    let config = registry.poll()?;
     let mut catalog = VaultRuntimeCatalog::default();
     for registration in desired_observers(&config.vaults, &mut catalog)?
         .into_values()
@@ -529,7 +529,7 @@ fn enqueue_resume_reconciliation(
     registry: &WikiRegistry,
     supervisor: &SyncSupervisor,
 ) -> Result<(), SyncTriggerRuntimeError> {
-    let config = registry.load()?;
+    let config = registry.poll()?;
     let mut catalog = VaultRuntimeCatalog::default();
     for registration in desired_observers(&config.vaults, &mut catalog)?
         .into_values()
