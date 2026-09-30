@@ -130,6 +130,7 @@ pub struct MdbaseControlRevisions {
 pub enum MdbaseRecordCacheError {
     PermissionDenied,
     StaleControls,
+    StaleRecords,
     Records(MdbaseRecordError),
     Cache(CacheError),
     Database(rusqlite::Error),
@@ -146,6 +147,10 @@ impl Display for MdbaseRecordCacheError {
             Self::StaleControls => write!(
                 formatter,
                 "mdbase control snapshots are stale; reload the collection and registries"
+            ),
+            Self::StaleRecords => write!(
+                formatter,
+                "mdbase record snapshot changed during cache derivation; retry refresh"
             ),
             Self::PermissionDenied => {
                 write!(formatter, "permission denied for required mdbase controls")
@@ -550,6 +555,7 @@ fn update_mdbase_record_cache_with_boundary(
     };
 
     before_publication();
+    verify_derived_record_snapshot(collection, &next)?;
     if verify_mdbase_control_snapshots(collection, types, contracts, None)? != controls {
         return Err(MdbaseRecordCacheError::StaleControls);
     }
@@ -584,6 +590,49 @@ fn update_mdbase_record_cache_with_boundary(
         unchanged,
         deleted,
     })
+}
+
+/// Bind publication to the exact sources and metadata consumed by derivation,
+/// not just current controls. This conservative disk reconciliation is not a
+/// filesystem transaction: external editors may still race after the checks.
+/// Future incremental snapshots must preserve this evidence without re-reading
+/// every unchanged record; never replace content checks with mtime/size alone.
+fn verify_derived_record_snapshot(
+    collection: &MdbaseCollection,
+    records: &BTreeMap<String, MdbaseCachedRecord>,
+) -> Result<(), MdbaseRecordCacheError> {
+    for (path, record) in records {
+        let read_error = |source: std::io::Error| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                MdbaseRecordCacheError::StaleRecords
+            } else {
+                MdbaseRecordCacheError::Records(MdbaseRecordError::Read {
+                    path: collection.root.join(path),
+                    source,
+                })
+            }
+        };
+        let source =
+            secure_read_to_string(&collection.root, Path::new(path)).map_err(read_error)?;
+        let metadata = fs::metadata(collection.root.join(path)).map_err(read_error)?;
+        let file = super::records::file_metadata(path, source.len() as u64, Some(&metadata));
+        if super::mdbase_content_revision(&source) != record.revision
+            || record
+                .metadata
+                .as_ref()
+                .is_none_or(|cached| cached.file != file)
+        {
+            return Err(MdbaseRecordCacheError::StaleRecords);
+        }
+    }
+    let discovery =
+        super::discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
+    if discovery.records.into_iter().collect::<BTreeSet<_>>()
+        != records.keys().cloned().collect::<BTreeSet<_>>()
+    {
+        return Err(MdbaseRecordCacheError::StaleRecords);
+    }
+    Ok(())
 }
 
 fn derive_collection_cache(
@@ -1275,6 +1324,92 @@ mod tests {
             verify_mdbase_control_snapshots(&collection, &types, &contracts, None),
             Err(MdbaseRecordCacheError::StaleControls)
         ));
+    }
+
+    #[test]
+    fn record_drift_during_derivation_preserves_previous_cache() {
+        for rebuild in [false, true] {
+            for mutation in [
+                "edit",
+                "same_size",
+                "metadata",
+                "create",
+                "delete",
+                "rename",
+            ] {
+                let directory = tempdir().unwrap();
+                write(
+                    &directory.path().join("mdbase.yaml"),
+                    "spec_version: 0.3.0\n",
+                );
+                let record_path = directory.path().join("a.md");
+                write(&record_path, "Before\n");
+                let paths = VaultPaths::new(directory.path());
+                crate::initialize_vulcan_dir(&paths).unwrap();
+                let mut database = CacheDatabase::open(&paths).unwrap();
+                let (collection, types, contracts) = load_registries(directory.path());
+                refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts)
+                    .unwrap();
+                let root = cache_collection_root(&collection).unwrap();
+                let before = load_collection_cache(database.connection(), &root).unwrap();
+                // A legitimate change awaits publication, so failure must not
+                // publish even a subset of the newly derived rows.
+                write(&record_path, "During\n");
+                let previous_mtime = fs::metadata(&record_path).unwrap().modified().unwrap();
+                let error = update_mdbase_record_cache_with_boundary(
+                    &mut database,
+                    &collection,
+                    &types,
+                    &contracts,
+                    rebuild,
+                    || match mutation {
+                        "edit" => write(&record_path, "Changed after derivation\n"),
+                        "same_size" => {
+                            write(&record_path, "AFTER!\n");
+                            fs::File::options()
+                                .write(true)
+                                .open(&record_path)
+                                .unwrap()
+                                .set_modified(previous_mtime)
+                                .unwrap();
+                        }
+                        "metadata" => {
+                            fs::File::options()
+                                .write(true)
+                                .open(&record_path)
+                                .unwrap()
+                                .set_modified(
+                                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(100),
+                                )
+                                .unwrap();
+                        }
+                        "create" => write(&directory.path().join("new.md"), "New\n"),
+                        "delete" => fs::remove_file(&record_path).unwrap(),
+                        "rename" => {
+                            fs::rename(&record_path, directory.path().join("renamed.md")).unwrap();
+                        }
+                        _ => unreachable!(),
+                    },
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(error, MdbaseRecordCacheError::StaleRecords),
+                    "{mutation}/{rebuild}: {error}"
+                );
+                assert_eq!(
+                    load_collection_cache(database.connection(), &root).unwrap(),
+                    before
+                );
+                // Retrying with stable sources succeeds and fully reconciles the
+                // actual filesystem, including the empty/deleted collection.
+                refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts)
+                    .unwrap();
+                assert_ne!(
+                    load_collection_cache(database.connection(), &root).unwrap(),
+                    before
+                );
+            }
+        }
     }
 
     #[test]

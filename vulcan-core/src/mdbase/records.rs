@@ -868,7 +868,7 @@ fn record_body(source: &str) -> &str {
     source
 }
 
-fn file_metadata(
+pub(super) fn file_metadata(
     path: &str,
     size: u64,
     metadata: Option<&fs::Metadata>,
