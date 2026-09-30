@@ -1,7 +1,9 @@
 use crate::bases_tui;
 use crate::commit::AutoCommitPolicy;
 use crate::editor::{open_in_editor, with_terminal_suspended};
-use crate::note_picker::{handle_picker_key, NotePickerState, PickerAction};
+use crate::note_picker::{
+    handle_picker_key, NotePickerState, PickerAction, Redraw, TerminalRestore, Viewport,
+};
 use crate::output::{markdown_table_column_count, markdown_table_header_lines, markdown_table_row};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -66,6 +68,7 @@ pub fn run_browse_tui(
     }
 
     enable_raw_mode()?;
+    let _restore = TerminalRestore;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
@@ -91,15 +94,24 @@ fn run_event_loop(
     state: &mut BrowseState,
     auto_commit: &AutoCommitPolicy,
 ) -> Result<(), io::Error> {
+    let mut redraw = Redraw::default();
     loop {
-        state.poll_background_refresh();
-        terminal.draw(|frame| draw(frame, state))?;
+        if state.poll_background_refresh() {
+            redraw.invalidate();
+        }
+        if redraw.take() {
+            terminal.draw(|frame| draw(frame, state))?;
+        }
 
-        if !event::poll(Duration::from_millis(200))? {
+        // Only poll while a finite refresh is outstanding. Once it completes,
+        // read blocks without idle wakeups, just like the picker and Bases.
+        if state.background_refresh.is_some() && !event::poll(Duration::from_millis(200))? {
             continue;
         }
 
-        if let Event::Key(key) = event::read()? {
+        let event = event::read()?;
+        redraw.event(&event);
+        if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -392,8 +404,13 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
         return;
     }
 
+    let range = state.viewport.range(
+        state.filtered_count(),
+        state.selected_index(),
+        usize::from(body[0].height.saturating_sub(2)),
+    );
     let items = state
-        .list_items()
+        .list_items(range.clone())
         .into_iter()
         .map(ListItem::new)
         .collect::<Vec<_>>();
@@ -406,7 +423,11 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
                 .border_style(Style::default().fg(Color::Cyan)),
         );
     let mut list_state = ListState::default();
-    list_state.select(state.selected_index());
+    list_state.select(
+        state
+            .selected_index()
+            .and_then(|index| range.contains(&index).then(|| index - range.start)),
+    );
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
     let show_full_text_explain = state.mode == BrowseMode::FullText
@@ -729,6 +750,7 @@ struct BrowseState {
     move_prompt: Option<MovePrompt>,
     background_refresh: Option<BackgroundRefreshState>,
     last_scan_label: String,
+    viewport: Viewport,
     mode: BrowseMode,
     preview_mode: PreviewMode,
     dataview_preview: CachedDataviewPreview,
@@ -761,6 +783,7 @@ impl BrowseState {
             move_prompt: None,
             background_refresh: None,
             last_scan_label,
+            viewport: Viewport::default(),
             mode: BrowseMode::Fuzzy,
             preview_mode: PreviewMode::File,
             dataview_preview: CachedDataviewPreview::default(),
@@ -1231,16 +1254,17 @@ impl BrowseState {
         Ok(())
     }
 
-    fn poll_background_refresh(&mut self) {
+    fn poll_background_refresh(&mut self) -> bool {
         let result = self
             .background_refresh
             .as_ref()
             .and_then(BackgroundRefreshState::try_finish);
         let Some(result) = result else {
-            return;
+            return false;
         };
         self.background_refresh = None;
         self.apply_background_refresh_result(result);
+        true
     }
 
     fn apply_background_refresh_result(&mut self, result: Result<ScanSummary, String>) {
@@ -1509,45 +1533,43 @@ impl BrowseState {
         }
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         if let Some(view) = self.kanban_view.as_ref() {
             return view
                 .board
                 .columns
                 .iter()
+                .skip(range.start)
+                .take(range.len())
                 .map(|column| format!("{} ({})", column.name, column.card_count))
                 .collect();
         }
         if let Some(view) = self.git_view.as_ref() {
-            return view.list_items();
+            return view.list_items(range);
         }
         if let Some(view) = self.doctor_view.as_ref() {
-            return view.list_items();
+            return view.list_items(range);
         }
         if let Some(view) = self.backlinks_view.as_ref() {
-            return view.list_items();
+            return view.list_items(range);
         }
         if let Some(view) = self.links_view.as_ref() {
-            return view.list_items();
+            return view.list_items(range);
         }
         match self.mode {
             BrowseMode::Fuzzy => self
                 .picker
                 .filtered_notes()
-                .iter()
-                .map(|(_, note)| {
-                    let aliases = if note.aliases.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", note.aliases.join(", "))
-                    };
-                    format!("{}{}", note.path, aliases)
-                })
+                .skip(range.start)
+                .take(range.len())
+                .map(|(_, note)| crate::note_picker::note_label(note))
                 .collect(),
             BrowseMode::FullText => self
                 .full_text
                 .hits
                 .iter()
+                .skip(range.start)
+                .take(range.len())
                 .map(|hit| {
                     let suffix = if self.full_text.sort() == SearchSort::Relevance {
                         format!(" [{:.3}]", hit.rank)
@@ -1559,9 +1581,9 @@ impl BrowseState {
                     format!("{}{}", search_hit_location(hit), suffix)
                 })
                 .collect(),
-            BrowseMode::Tag => self.tag_filter.list_items(),
-            BrowseMode::Property => self.property_filter.list_items(),
-            BrowseMode::Calendar => self.calendar.list_items(),
+            BrowseMode::Tag => self.tag_filter.list_items(range),
+            BrowseMode::Property => self.property_filter.list_items(range),
+            BrowseMode::Calendar => self.calendar.list_items(range),
         }
     }
 
@@ -2157,9 +2179,11 @@ impl GitLogViewState {
         ]
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         self.entries
             .iter()
+            .skip(range.start)
+            .take(range.len())
             .map(|entry| {
                 format!(
                     "{} {} {}",
@@ -2277,9 +2301,11 @@ impl DoctorViewState {
         lines
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         self.issues
             .iter()
+            .skip(range.start)
+            .take(range.len())
             .map(|issue| format!("{}: {}", issue.kind, issue.message))
             .collect()
     }
@@ -2485,9 +2511,11 @@ impl BacklinksViewState {
         lines
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         self.backlinks
             .iter()
+            .skip(range.start)
+            .take(range.len())
             .map(|backlink| {
                 backlink.context.as_ref().map_or_else(
                     || format!("{} [{}]", backlink.source_path, backlink.link_kind),
@@ -2624,9 +2652,11 @@ impl OutgoingLinksViewState {
         lines
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         self.links
             .iter()
+            .skip(range.start)
+            .take(range.len())
             .map(|link| {
                 link.context.as_ref().map_or_else(
                     || {
@@ -2921,10 +2951,12 @@ impl CalendarViewState {
         format!("Calendar ({})", calendar_month_label(self.visible_month))
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         self.cells
             .iter()
-            .filter(|cell| cell.in_month)
+            .filter(|cell| cell.in_month && cell.path.is_some())
+            .skip(range.start)
+            .take(range.len())
             .filter_map(|cell| {
                 cell.path.as_ref().map(|path| {
                     format!(
@@ -3534,18 +3566,12 @@ impl TagFilterState {
         self.picker.refresh_preview();
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         self.picker
             .filtered_notes()
-            .iter()
-            .map(|(_, note)| {
-                let aliases = if note.aliases.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", note.aliases.join(", "))
-                };
-                format!("{}{}", note.path, aliases)
-            })
+            .skip(range.start)
+            .take(range.len())
+            .map(|(_, note)| crate::note_picker::note_label(note))
             .collect()
     }
 
@@ -3654,18 +3680,12 @@ impl PropertyFilterState {
         self.picker.refresh_preview();
     }
 
-    fn list_items(&self) -> Vec<String> {
+    fn list_items(&self, range: std::ops::Range<usize>) -> Vec<String> {
         self.picker
             .filtered_notes()
-            .iter()
-            .map(|(_, note)| {
-                let aliases = if note.aliases.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", note.aliases.join(", "))
-                };
-                format!("{}{}", note.path, aliases)
-            })
+            .skip(range.start)
+            .take(range.len())
+            .map(|(_, note)| crate::note_picker::note_label(note))
             .collect()
     }
 
@@ -4694,7 +4714,7 @@ mod tests {
             state.mode_help_line(),
             "view git history for the selected file; Esc returns to browse"
         );
-        assert!(state.list_items()[0].contains("Update alpha"));
+        assert!(state.list_items(0..usize::MAX)[0].contains("Update alpha"));
     }
 
     #[test]
@@ -4747,7 +4767,7 @@ mod tests {
             state.mode_help_line(),
             "view doctor diagnostics for the selected note; Esc returns to browse"
         );
-        assert!(state.list_items()[0].contains("Unresolved link"));
+        assert!(state.list_items(0..usize::MAX)[0].contains("Unresolved link"));
         assert!(state.preview_lines().iter().any(|line| line
             .spans
             .iter()
@@ -4876,6 +4896,67 @@ mod tests {
     }
 
     #[test]
+    fn tui_background_completion_invalidates_without_keyboard_input() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        write_note(temp.path(), "Home.md", "# Home");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths.clone(), vec![note("Home.md", &[])]).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        state.background_refresh = Some(BackgroundRefreshState { receiver });
+        let mut redraw = Redraw::default();
+        let mut renders = usize::from(redraw.take());
+        for _tick in 0..300 {
+            if state.poll_background_refresh() {
+                redraw.invalidate();
+            }
+            renders += usize::from(redraw.take());
+        }
+        assert_eq!(renders, 1);
+        write_note(temp.path(), "Added.md", "# Added");
+        sender
+            .send(Ok(scan_vault(&paths, ScanMode::Incremental).unwrap()))
+            .unwrap();
+        assert!(state.poll_background_refresh());
+        redraw.invalidate();
+        renders += usize::from(redraw.take());
+        assert_eq!(renders, 2);
+        assert_eq!(state.total_notes(), 2);
+        assert!(state.background_refresh.is_none());
+        assert!(!state.poll_background_refresh());
+        let (sender, receiver) = mpsc::channel();
+        state.background_refresh = Some(BackgroundRefreshState { receiver });
+        drop(sender);
+        assert!(state.poll_background_refresh());
+        assert!(state.status_line().contains("ended unexpectedly"));
+        assert!(state.background_refresh.is_none());
+        eprintln!("browse: 300 empty background polls: 1 initial frame; completion adds 1 frame without input");
+    }
+
+    #[test]
+    fn tui_browse_large_list_formats_only_the_selected_window() {
+        use crate::note_picker::{FILTERED_ROWS, FORMATTED_ROWS};
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        write_note(temp.path(), "Home.md", "# Home");
+        scan_fixture(&paths);
+        let notes = (0..10_000)
+            .map(|index| note(&format!("Note{index:05}.md"), &[]))
+            .collect();
+        let mut state = BrowseState::new(paths, notes).unwrap();
+        state.picker.move_selection(9_999);
+        FILTERED_ROWS.set(0);
+        FORMATTED_ROWS.set(0);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &state)).unwrap();
+        assert_eq!(FORMATTED_ROWS.get(), 20); // query 3, footer 5, borders 2
+        assert_eq!(FILTERED_ROWS.get(), 0);
+        assert_eq!(state.selected_path(), Some("Note09999.md"));
+        assert_eq!(state.list_items(9_999..10_000), vec!["Note09999.md"]);
+        eprintln!("browse: 10000 matches, 100x30 terminal: formatted rows 10000 -> 20; redraw filter evaluations 0");
+    }
+
+    #[test]
     fn background_refresh_result_reloads_notes_with_minimal_disruption() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
@@ -4963,8 +5044,8 @@ mod tests {
         assert_eq!(state.filtered_count(), 1);
         assert_eq!(state.selected_path(), Some("Projects/Alpha.md"));
         assert!(state.preview_title().contains("Projects/Alpha.md"));
-        assert_eq!(state.list_items().len(), 1);
-        assert!(state.list_items()[0].contains("Projects/Alpha.md"));
+        assert_eq!(state.list_items(0..usize::MAX).len(), 1);
+        assert!(state.list_items(0..usize::MAX)[0].contains("Projects/Alpha.md"));
 
         let preview = state.preview_lines();
         assert!(!preview.is_empty());
@@ -5047,11 +5128,11 @@ mod tests {
 
         state.handle_key(ctrl('s'));
         assert_eq!(state.full_text.sort(), SearchSort::PathDesc);
-        assert!(state.list_items()[0].contains("Beta.md"));
+        assert!(state.list_items(0..usize::MAX)[0].contains("Beta.md"));
 
         state.handle_key(ctrl('s'));
         assert_eq!(state.full_text.sort(), SearchSort::ModifiedNewest);
-        assert!(state.list_items()[0].contains("Beta.md"));
+        assert!(state.list_items(0..usize::MAX)[0].contains("Beta.md"));
     }
 
     #[test]

@@ -11,7 +11,6 @@ use ratatui::{Frame, Terminal};
 use std::collections::HashSet;
 use std::fs;
 use std::io;
-use std::time::Duration;
 use vulcan_core::{list_note_identities, NoteIdentity, VaultPaths};
 
 pub fn pick_note(
@@ -26,6 +25,7 @@ pub fn pick_note(
     }
 
     enable_raw_mode()?;
+    let _restore = TerminalRestore;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
@@ -46,14 +46,24 @@ fn run_event_loop(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     state: &mut NotePickerState,
 ) -> Result<Option<String>, io::Error> {
+    run_picker_events(terminal, state, event::read)
+}
+
+fn run_picker_events<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    state: &mut NotePickerState,
+    mut read: impl FnMut() -> io::Result<Event>,
+) -> Result<Option<String>, io::Error> {
+    let mut redraw = Redraw::default();
     loop {
-        terminal.draw(|frame| draw(frame, state))?;
-
-        if !event::poll(Duration::from_millis(200))? {
-            continue;
+        if redraw.take() {
+            terminal
+                .draw(|frame| draw(frame, state))
+                .map_err(|error| io::Error::other(error.to_string()))?;
         }
-
-        if let Event::Key(key) = event::read()? {
+        let event = read()?;
+        redraw.event(&event);
+        if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -65,6 +75,91 @@ fn run_event_loop(
                 }
             }
         }
+    }
+}
+
+/// Best-effort cleanup also covers setup failures and early error returns.
+pub(crate) struct TerminalRestore;
+
+impl Drop for TerminalRestore {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+    }
+}
+
+/// Shared terminal invalidation. There are no animation/status-expiry timers in
+/// these screens. Key releases and unrelated terminal events need no frame.
+pub(crate) struct Redraw(bool);
+
+impl Default for Redraw {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+impl Redraw {
+    pub(crate) fn invalidate(&mut self) {
+        self.0 = true;
+    }
+
+    pub(crate) fn event(&mut self, event: &Event) {
+        if matches!(
+            event,
+            Event::Resize(..)
+                | Event::Key(crossterm::event::KeyEvent {
+                    kind: KeyEventKind::Press,
+                    ..
+                })
+        ) {
+            self.invalidate();
+        }
+    }
+
+    pub(crate) fn take(&mut self) -> bool {
+        std::mem::take(&mut self.0)
+    }
+}
+
+/// Keep selection visible without allocating or formatting off-screen rows.
+/// The offset survives redraws; resizing and shrinking results clamp it safely.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Viewport(std::cell::Cell<usize>);
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FILTERED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static FORMATTED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(crate) fn note_label(note: &NoteIdentity) -> String {
+    #[cfg(test)]
+    FORMATTED_ROWS.with(|count| count.set(count.get() + 1));
+    let aliases = if note.aliases.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", note.aliases.join(", "))
+    };
+    format!("{}{}", note.path, aliases)
+}
+
+impl Viewport {
+    pub(crate) fn range(
+        &self,
+        len: usize,
+        selected: Option<usize>,
+        height: usize,
+    ) -> std::ops::Range<usize> {
+        let mut start = self.0.get().min(len.saturating_sub(height));
+        if let Some(selected) = selected.filter(|index| *index < len) {
+            if selected < start {
+                start = selected;
+            } else if selected >= start.saturating_add(height) {
+                start = selected.saturating_add(1).saturating_sub(height);
+            }
+        }
+        self.0.set(start);
+        start..start.saturating_add(height).min(len)
     }
 }
 
@@ -122,17 +217,16 @@ fn draw(frame: &mut Frame<'_>, state: &NotePickerState) {
     );
     frame.render_widget(query, layout[0]);
 
+    let range = state.viewport.range(
+        state.filtered_count(),
+        state.selected_index,
+        usize::from(body[0].height.saturating_sub(2)),
+    );
     let items = state
         .filtered_notes()
-        .iter()
-        .map(|(_, note)| {
-            let aliases = if note.aliases.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", note.aliases.join(", "))
-            };
-            ListItem::new(format!("{}{}", note.path, aliases))
-        })
+        .skip(range.start)
+        .take(range.len())
+        .map(|(_, note)| ListItem::new(note_label(note)))
         .collect::<Vec<_>>();
     let list = List::new(items)
         .highlight_style(Style::default().bg(Color::DarkGray))
@@ -143,7 +237,11 @@ fn draw(frame: &mut Frame<'_>, state: &NotePickerState) {
                 .border_style(Style::default().fg(Color::Cyan)),
         );
     let mut list_state = ListState::default();
-    list_state.select(state.selected_index);
+    list_state.select(
+        state
+            .selected_index
+            .and_then(|index| range.contains(&index).then(|| index - range.start)),
+    );
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
     let preview_title = state.selected_note().map_or_else(
@@ -182,6 +280,8 @@ pub(crate) struct NotePickerState {
     query: String,
     selected_index: Option<usize>,
     preview: Vec<String>,
+    filtered: Vec<(i32, usize)>,
+    viewport: Viewport,
 }
 
 impl NotePickerState {
@@ -192,23 +292,35 @@ impl NotePickerState {
             query: query.to_string(),
             selected_index: None,
             preview: vec!["No notes available.".to_string()],
+            filtered: Vec::new(),
+            viewport: Viewport::default(),
         };
+        state.refilter();
         state.clamp_selection();
         state
     }
 
-    pub(crate) fn filtered_notes(&self) -> Vec<(i32, &NoteIdentity)> {
+    pub(crate) fn filtered_notes(&self) -> impl ExactSizeIterator<Item = (i32, &NoteIdentity)> {
+        self.filtered
+            .iter()
+            .map(|(score, index)| (*score, &self.notes[*index]))
+    }
+
+    fn refilter(&mut self) {
+        #[cfg(test)]
+        FILTERED_ROWS.with(|count| count.set(count.get() + self.notes.len()));
         let mut filtered = self
             .notes
             .iter()
-            .filter_map(|note| fuzzy_score(note, &self.query).map(|score| (score, note)))
+            .enumerate()
+            .filter_map(|(index, note)| fuzzy_score(note, &self.query).map(|score| (score, index)))
             .collect::<Vec<_>>();
         filtered.sort_by(|(left_score, left), (right_score, right)| {
             right_score
                 .cmp(left_score)
-                .then_with(|| left.path.cmp(&right.path))
+                .then_with(|| self.notes[*left].path.cmp(&self.notes[*right].path))
         });
-        filtered
+        self.filtered = filtered;
     }
 
     pub(crate) fn selected_index(&self) -> Option<usize> {
@@ -221,6 +333,7 @@ impl NotePickerState {
 
     pub(crate) fn set_query(&mut self, query: &str) {
         self.query = query.to_string();
+        self.refilter();
         self.clamp_selection();
     }
 
@@ -237,9 +350,11 @@ impl NotePickerState {
     }
 
     fn selected_note(&self) -> Option<&NoteIdentity> {
-        let filtered = self.filtered_notes();
-        self.selected_index
-            .and_then(|index| filtered.get(index).map(|(_, note)| *note))
+        self.selected_index.and_then(|index| {
+            self.filtered
+                .get(index)
+                .map(|(_, index)| &self.notes[*index])
+        })
     }
 
     pub(crate) fn move_selection(&mut self, delta: isize) {
@@ -263,11 +378,13 @@ impl NotePickerState {
 
     fn push_query(&mut self, character: char) {
         self.query.push(character);
+        self.refilter();
         self.clamp_selection();
     }
 
     fn pop_query(&mut self) {
         self.query.pop();
+        self.refilter();
         self.clamp_selection();
     }
 
@@ -284,10 +401,9 @@ impl NotePickerState {
     pub(crate) fn replace_notes_preserve_selection(&mut self, notes: Vec<NoteIdentity>) {
         let selected_path = self.selected_note().map(|note| note.path.clone());
         self.notes = notes;
-        let filtered = self.filtered_notes();
+        self.refilter();
         self.selected_index = selected_path.and_then(|selected_path| {
-            filtered
-                .iter()
+            self.filtered_notes()
                 .position(|(_, note)| note.path == selected_path)
         });
         if self.selected_index.is_none() {
@@ -298,8 +414,10 @@ impl NotePickerState {
     }
 
     pub(crate) fn select_path(&mut self, path: &str) {
-        let filtered = self.filtered_notes();
-        if let Some(index) = filtered.iter().position(|(_, note)| note.path == path) {
+        let index = self
+            .filtered_notes()
+            .position(|(_, note)| note.path == path);
+        if let Some(index) = index {
             self.selected_index = Some(index);
             self.refresh_preview();
         }
@@ -383,6 +501,134 @@ fn load_preview(paths: &VaultPaths, relative_path: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Manual PTY harness: run this ignored test with `VULCAN_TUI_SMOKE` set to
+    /// picker, bases or browse. Uses only a temporary synthetic vault.
+    #[test]
+    #[ignore = "requires a controlling terminal; used for idle CPU and editor restoration smoke checks"]
+    fn tui_pty_smoke() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("Alpha.md"),
+            "# Alpha\n\nA synthetic note.\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("All.base"),
+            "views:\n  - type: table\n    name: All\n",
+        )
+        .unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        match std::env::var("VULCAN_TUI_SMOKE").as_deref() {
+            Ok("bases") => {
+                let report = vulcan_core::evaluate_base_file(&paths, "All.base").unwrap();
+                crate::bases_tui::run_bases_tui(&paths, "All.base", &report).unwrap();
+            }
+            Ok("browse") => {
+                crate::browse_tui::run_browse_tui(&paths, vulcan_core::AutoScanMode::Off, true)
+                    .unwrap();
+            }
+            _ => {
+                pick_note(&paths, None, None).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn tui_idle_invalidation_and_viewport_boundaries() {
+        let mut redraw = Redraw::default();
+        let mut renders = usize::from(redraw.take());
+        // Sixty seconds at the old 200ms interval, with a synthetic clock.
+        for _tick in 0..300 {
+            renders += usize::from(redraw.take());
+        }
+        assert_eq!(renders, 1);
+        redraw.event(&Event::Resize(80, 24));
+        assert!(redraw.take());
+        redraw.invalidate(); // background completion / editor return
+        assert!(redraw.take());
+        assert!(!redraw.take());
+
+        let viewport = Viewport::default();
+        assert_eq!(viewport.range(10_000, Some(0), 20), 0..20);
+        assert_eq!(viewport.range(10_000, Some(500), 20), 481..501);
+        assert_eq!(viewport.range(10_000, Some(499), 20), 481..501);
+        assert_eq!(viewport.range(10_000, Some(480), 20), 480..500);
+        assert_eq!(viewport.range(10_000, Some(9_999), 40), 9_960..10_000);
+        assert_eq!(viewport.range(2, Some(1), 20), 0..2);
+        assert!(viewport.range(2, Some(1), 0).is_empty());
+        assert_eq!(viewport.range(0, None, 20), 0..0);
+        eprintln!("idle model: 60s/300 old ticks, frames 301 -> 1");
+    }
+
+    #[test]
+    fn tui_picker_injected_events_render_only_invalidated_frames() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let temp = TempDir::new().unwrap();
+        let mut state = NotePickerState::new(
+            VaultPaths::new(temp.path()),
+            vec![note("Alpha.md", &[])],
+            "",
+        );
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let release = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        let mut events = std::iter::repeat_n(release, 300).chain([
+            Event::Resize(100, 30),
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        ]);
+        assert_eq!(
+            run_picker_events(&mut terminal, &mut state, || Ok(events.next().unwrap())).unwrap(),
+            None
+        );
+        assert_eq!(terminal.get_frame().count(), 3);
+        assert_eq!(state.query(), "a");
+        let error = run_picker_events(&mut terminal, &mut state, || {
+            Err(io::Error::other("injected input failure"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("injected input failure"));
+    }
+
+    #[test]
+    fn tui_picker_large_list_caches_filter_and_formats_viewport() {
+        let temp = TempDir::new().unwrap();
+        let notes = (0..10_000)
+            .map(|index| note(&format!("Note{index:05}.md"), &["alias"]))
+            .collect();
+        let mut state = NotePickerState::new(VaultPaths::new(temp.path()), notes, "");
+        state.move_selection(9_999);
+        FILTERED_ROWS.set(0);
+        FORMATTED_ROWS.set(0);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &state)).unwrap();
+        assert_eq!(FILTERED_ROWS.get(), 0);
+        assert_eq!(FORMATTED_ROWS.get(), 21); // 30 - query 3 - footer 4 - borders 2
+        assert_eq!(state.selected_path(), Some("Note09999.md"));
+        state.set_query("note09999");
+        assert_eq!(FILTERED_ROWS.get(), 10_000);
+        // Fuzzy subsequence matches remain eligible; the exact match ranks first.
+        assert_eq!(
+            state.filtered_notes().next().unwrap().1.path,
+            "Note09999.md"
+        );
+        assert!(state.filtered_count() < state.total_notes());
+        state.replace_notes_preserve_selection(vec![
+            note("Note09999.md", &[]),
+            note("Other.md", &[]),
+        ]);
+        assert_eq!(state.selected_path(), Some("Note09999.md"));
+        state.set_query("no matches here");
+        assert_eq!(state.selected_path(), None);
+        terminal.draw(|frame| draw(frame, &state)).unwrap();
+        eprintln!("picker: 10000 matches, 100x30 terminal: formatted rows 10000 -> 21; cached redraw filter evaluations 0");
+    }
 
     fn note(path: &str, aliases: &[&str]) -> NoteIdentity {
         NoteIdentity {

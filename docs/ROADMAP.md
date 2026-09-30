@@ -643,6 +643,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Reuse section-search contexts within an 8 MiB request budget and assemble headings with indexed slots while preserving cross-chunk predicates and ranking.
 
+- [x] Redraw TUIs only on changes, cache result filtering, and format visible rows; preserve resize, background completion, and editor/terminal restoration.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

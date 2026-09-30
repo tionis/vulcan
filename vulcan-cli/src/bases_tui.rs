@@ -1,5 +1,6 @@
 use crate::create_note_from_bases_view;
 use crate::editor::{open_in_editor, with_terminal_suspended};
+use crate::note_picker::{Redraw, TerminalRestore, Viewport};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -15,7 +16,6 @@ use ratatui::{Frame, Terminal};
 use serde_json::Value;
 use std::fs;
 use std::io;
-use std::time::Duration;
 use vulcan_core::{
     evaluate_base_file, scan_vault, set_note_property, BasesEvalReport, BasesEvaluatedView,
     BasesRow, ScanMode, VaultPaths,
@@ -31,6 +31,7 @@ pub fn run_bases_tui(
     report: &BasesEvalReport,
 ) -> Result<(), io::Error> {
     enable_raw_mode()?;
+    let _restore = TerminalRestore;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
@@ -51,14 +52,14 @@ fn run_event_loop(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     state: &mut BasesTuiState,
 ) -> Result<(), io::Error> {
+    let mut redraw = Redraw::default();
     loop {
-        terminal.draw(|frame| draw(frame, state))?;
-
-        if !event::poll(Duration::from_millis(200))? {
-            continue;
+        if redraw.take() {
+            terminal.draw(|frame| draw(frame, state))?;
         }
-
-        if let Event::Key(key) = event::read()? {
+        let event = event::read()?;
+        redraw.event(&event);
+        if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -218,7 +219,8 @@ fn draw_body(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
 }
 
 fn draw_table(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
-    let (headers, rows, selected_index) = state.table_rows();
+    let (headers, rows, selected_index) =
+        state.table_rows(usize::from(area.height.saturating_sub(3)));
     let widths = vec![Constraint::Length(18); headers.len()];
     let header = Row::new(headers.into_iter().map(Cell::from)).style(
         Style::default()
@@ -478,6 +480,8 @@ struct BasesTuiState {
     preview_scroll: u16,
     preview: PreviewContent,
     status_message: Option<String>,
+    filtered: Vec<usize>,
+    viewport: Viewport,
 }
 
 impl BasesTuiState {
@@ -510,7 +514,10 @@ impl BasesTuiState {
                 lines: vec!["No preview available.".to_string()],
             },
             status_message: None,
+            filtered: Vec::new(),
+            viewport: Viewport::default(),
         };
+        state.refilter();
         state.refresh_preview();
         state
     }
@@ -519,16 +526,25 @@ impl BasesTuiState {
         self.report.views.get(self.active_view)
     }
 
-    fn filtered_rows(&self) -> Vec<usize> {
+    fn filtered_rows(&self) -> &[usize] {
+        &self.filtered
+    }
+
+    fn refilter(&mut self) {
+        #[cfg(test)]
+        crate::note_picker::FILTERED_ROWS.with(|count| {
+            count.set(count.get() + self.active_view().map_or(0, |view| view.rows.len()));
+        });
         let query = self.search.trim().to_lowercase();
-        self.active_view()
+        self.filtered = self
+            .active_view()
             .into_iter()
             .flat_map(|view| view.rows.iter().enumerate())
             .filter(|(_, row)| {
                 query.is_empty() || row_search_text(row).to_lowercase().contains(&query)
             })
             .map(|(index, _)| index)
-            .collect()
+            .collect();
     }
 
     fn selected_row(&self) -> Option<&BasesRow> {
@@ -756,6 +772,7 @@ impl BasesTuiState {
     }
 
     fn clamp_selection(&mut self) {
+        self.refilter();
         let row_count = self.filtered_rows().len();
         self.selected_row = if row_count == 0 {
             None
@@ -765,11 +782,14 @@ impl BasesTuiState {
         self.refresh_preview();
     }
 
-    fn table_rows(&self) -> (Vec<String>, Vec<Vec<String>>, Option<usize>) {
+    fn table_rows(&self, height: usize) -> (Vec<String>, Vec<Vec<String>>, Option<usize>) {
         let Some(view) = self.active_view() else {
             return (vec!["Path".to_string()], Vec::new(), None);
         };
         let filtered = self.filtered_rows();
+        let range = self
+            .viewport
+            .range(filtered.len(), self.selected_row, height);
         let mut headers = Vec::new();
         let mut keys = Vec::new();
         if self.group_mode {
@@ -791,7 +811,11 @@ impl BasesTuiState {
 
         let rows = filtered
             .iter()
+            .skip(range.start)
+            .take(range.len())
             .map(|row_index| {
+                #[cfg(test)]
+                crate::note_picker::FORMATTED_ROWS.with(|count| count.set(count.get() + 1));
                 let row = &view.rows[*row_index];
                 keys.iter()
                     .map(|key| {
@@ -809,7 +833,12 @@ impl BasesTuiState {
             })
             .collect::<Vec<_>>();
 
-        (headers, rows, self.selected_row)
+        (
+            headers,
+            rows,
+            self.selected_row
+                .and_then(|index| range.contains(&index).then(|| index - range.start)),
+        )
     }
 
     fn selected_row_lines(&self) -> Vec<Line<'static>> {
@@ -940,6 +969,7 @@ impl BasesTuiState {
             .active_view()
             .and_then(|view| view.group_by.as_ref())
             .is_some();
+        self.refilter();
         self.selected_row = selected_path
             .as_deref()
             .and_then(|path| {
@@ -950,11 +980,7 @@ impl BasesTuiState {
                         .position(|index| view.rows[*index].document_path == path)
                 })
             })
-            .or_else(|| {
-                self.active_view()
-                    .filter(|view| !view.rows.is_empty())
-                    .map(|_| 0)
-            });
+            .or_else(|| (!self.filtered.is_empty()).then_some(0));
         self.refresh_preview();
         Ok(())
     }
@@ -1071,6 +1097,47 @@ mod tests {
     use tempfile::TempDir;
     use vulcan_core::{BasesColumn, BasesDiagnostic, BasesGroupBy};
 
+    #[test]
+    fn tui_bases_large_table_formats_only_visible_rows_and_reuses_filter() {
+        use crate::note_picker::{FILTERED_ROWS, FORMATTED_ROWS};
+        let mut state = sample_state();
+        let template = state.report.views[0].rows[0].clone();
+        state.report.views[0].rows = (0..10_000)
+            .map(|index| {
+                let mut row = template.clone();
+                row.document_path = format!("Note{index:05}.md");
+                row
+            })
+            .collect();
+        state.clamp_selection();
+        FORMATTED_ROWS.set(0);
+        assert_eq!(state.table_rows(usize::MAX).1.len(), 10_000);
+        assert_eq!(FORMATTED_ROWS.get(), 10_000);
+        FILTERED_ROWS.set(0);
+        FORMATTED_ROWS.set(0);
+        state.move_selection(9_999);
+        let (headers, rows, selected) = state.table_rows(20);
+        assert_eq!(headers.len(), 4);
+        assert_eq!(rows.len(), 20);
+        assert_eq!(selected, Some(19));
+        assert_eq!(rows[19][1], "Note09999.md");
+        assert_eq!(FORMATTED_ROWS.get(), 20);
+        assert_eq!(FILTERED_ROWS.get(), 0);
+        assert!(state.table_rows(0).1.is_empty());
+        state.search = "note09999".into();
+        state.clamp_selection();
+        assert_eq!(state.filtered_rows(), &[9_999]);
+        assert_eq!(state.table_rows(20).2, Some(0));
+        state.next_view();
+        assert!(state.filtered_rows().is_empty());
+        state.search.clear();
+        state.clamp_selection();
+        assert_eq!(state.selected_row_path().as_deref(), Some("Gear/C.md"));
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(2, 2)).unwrap();
+        terminal.draw(|frame| draw(frame, &state)).unwrap();
+        eprintln!("bases: 10000 matches, 20-row viewport: formatted rows 10000 -> 20; navigation filter evaluations 0");
+    }
+
     fn sample_state() -> BasesTuiState {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1173,6 +1240,7 @@ mod tests {
     fn state_filters_rows_by_query() {
         let mut state = sample_state();
         state.search = "weapon".to_string();
+        state.clamp_selection();
 
         assert_eq!(state.filtered_rows(), vec![1]);
         assert_eq!(
@@ -1196,7 +1264,7 @@ mod tests {
     #[test]
     fn table_rows_include_group_column_when_enabled() {
         let state = sample_state();
-        let (headers, rows, selected) = state.table_rows();
+        let (headers, rows, selected) = state.table_rows(20);
 
         assert_eq!(headers[0], "Category");
         assert_eq!(rows[0][0], "Armor");
