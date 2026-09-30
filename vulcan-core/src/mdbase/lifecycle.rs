@@ -2,11 +2,180 @@
 //! entropy, evaluates each accepted assignment once, and retains the result in
 //! its immutable preview. Applying a preview must never call these providers.
 
-use super::{resolve_match_field, MdbaseCelClock};
+use super::{
+    resolve_match_field, MdbaseCelClock, MdbaseCelContext, MdbaseCelEngine, MdbaseCelLinkIndex,
+    MdbaseComposedTypeBehavior, MdbaseTypeCompositionDiagnostic,
+};
 use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
+
+#[cfg(test)]
+mod action_tests;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MdbaseLifecycleEvent {
+    Create,
+    Update,
+}
+
+impl MdbaseLifecycleEvent {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Create => "on_create",
+            Self::Update => "on_update",
+        }
+    }
+}
+
+/// Authorized, raw inputs for one record's lifecycle planning pass.
+pub struct MdbaseLifecycleInput<'a> {
+    pub event: MdbaseLifecycleEvent,
+    pub draft: &'a Value,
+    pub old: Option<&'a Value>,
+    pub file: Value,
+    pub operation: Value,
+    pub known_fields: Vec<String>,
+    pub clock: MdbaseCelClock,
+    pub link_index: Option<Arc<MdbaseCelLinkIndex>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseLifecycleEvaluation {
+    /// Field selectors and generated values to bind into the write preview.
+    pub assignments: BTreeMap<String, Value>,
+    /// Distinct guards compiled and evaluated against this input snapshot.
+    pub evaluated_guards: usize,
+}
+
+/// Evaluate composed lifecycle policy without changing source or draft bytes.
+///
+/// All guards and field providers see the same pre-lifecycle draft snapshot.
+/// Within a field's ordered actions the last active assignment wins; identical
+/// declarations from multiple matched types have already been coalesced by the
+/// composer and execute once. Composition conflicts fail before any generation.
+/// No assignments escape on error. The caller applies the returned assignments,
+/// checks membership once, then validates the resulting draft before persistence.
+pub fn evaluate_mdbase_lifecycle(
+    behavior: &MdbaseComposedTypeBehavior,
+    input: MdbaseLifecycleInput<'_>,
+    engine: &MdbaseCelEngine,
+    mut entropy: impl FnMut() -> Result<[u8; 16], MdbaseLifecycleProviderError>,
+) -> Result<MdbaseLifecycleEvaluation, Vec<MdbaseTypeCompositionDiagnostic>> {
+    if !behavior.diagnostics.is_empty() {
+        return Err(behavior.diagnostics.clone());
+    }
+    let event = input.event.name();
+    let fail = |code: &str, message: String, field: &str| {
+        vec![MdbaseTypeCompositionDiagnostic {
+            code: code.to_string(),
+            message,
+            field: field.to_string(),
+            type_names: behavior.types.clone(),
+            locations: vec![format!("lifecycle.{event}.{field}")],
+        }]
+    };
+    if !input.draft.is_object() || input.old.is_some_and(|old| !old.is_object()) {
+        return Err(fail(
+            "lifecycle_input_invalid",
+            "lifecycle requires raw frontmatter objects".to_string(),
+            "",
+        ));
+    }
+    if (input.event == MdbaseLifecycleEvent::Update) != input.old.is_some() {
+        return Err(fail(
+            "lifecycle_input_invalid",
+            "old frontmatter is required only for update".to_string(),
+            "",
+        ));
+    }
+    let mut context = MdbaseCelContext::lifecycle_guard(
+        input.draft,
+        input.old,
+        input.file,
+        input.operation,
+        input.known_fields,
+        input.clock.clone(),
+    );
+    if let Some(index) = input.link_index {
+        context = context.with_link_index(index);
+    }
+    let mut guards = BTreeMap::<String, bool>::new();
+    let mut assignments = BTreeMap::new();
+    for (field, actions) in behavior.lifecycle.get(event).into_iter().flatten() {
+        let actions = actions.as_array().ok_or_else(|| {
+            fail(
+                "lifecycle_input_invalid",
+                "expected normalized lifecycle actions".to_string(),
+                field,
+            )
+        })?;
+        for action in actions {
+            let active = match action.get("if") {
+                Some(Value::Null) => true,
+                Some(Value::String(source)) => {
+                    if let Some(active) = guards.get(source) {
+                        *active
+                    } else {
+                        let active =
+                            evaluate_guard(source, &context, engine).map_err(|message| {
+                                fail("lifecycle_expression_error", message, field)
+                            })?;
+                        guards.insert(source.clone(), active);
+                        active
+                    }
+                }
+                _ => {
+                    return Err(fail(
+                        "lifecycle_input_invalid",
+                        "expected a normalized guard".to_string(),
+                        field,
+                    ))
+                }
+            };
+            if active {
+                let provider = action.get("value").ok_or_else(|| {
+                    fail(
+                        "lifecycle_input_invalid",
+                        "missing lifecycle provider".to_string(),
+                        field,
+                    )
+                })?;
+                let value = evaluate_mdbase_lifecycle_provider(
+                    provider,
+                    input.draft,
+                    &input.clock,
+                    &mut entropy,
+                )
+                .map_err(|error| fail(&error.code, error.message, field))?;
+                assignments.insert(field.clone(), value);
+            }
+        }
+    }
+    Ok(MdbaseLifecycleEvaluation {
+        assignments,
+        evaluated_guards: guards.len(),
+    })
+}
+
+fn evaluate_guard(
+    source: &str,
+    context: &MdbaseCelContext,
+    engine: &MdbaseCelEngine,
+) -> Result<bool, String> {
+    let program = engine.compile(source).map_err(|error| error.to_string())?;
+    let result = engine
+        .evaluate_context(&program, context)
+        .map_err(|error| error.to_string())?;
+    match result.value {
+        Value::Bool(active) => Ok(active),
+        Value::Null => Ok(false),
+        _ => Err("lifecycle guard must return a boolean or null".to_string()),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MdbaseLifecycleProviderError {

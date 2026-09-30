@@ -623,6 +623,57 @@ impl MdbaseCelContext {
         }
     }
 
+    /// Bind a lifecycle guard to persisted draft/old fields. Read defaults must
+    /// not become lifecycle input, and reserved names cannot be shadowed by
+    /// user frontmatter. Known-but-missing fields evaluate as null while the
+    /// presence maps retain the distinction from explicitly persisted null.
+    pub fn lifecycle_guard(
+        draft: &serde_json::Value,
+        old: Option<&serde_json::Value>,
+        file: serde_json::Value,
+        operation: serde_json::Value,
+        known_fields: impl IntoIterator<Item = String>,
+        clock: MdbaseCelClock,
+    ) -> Self {
+        let known_fields = known_fields.into_iter().collect::<BTreeSet<_>>();
+        let raw = materialize_record_fields(draft, &known_fields);
+        let present = presence_map(draft, &known_fields);
+        let path = file
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let mut bindings = BTreeMap::from([
+            ("record".to_string(), raw.clone()),
+            ("raw".to_string(), raw.clone()),
+            (
+                "present".to_string(),
+                serde_json::json!({"raw": present.clone(), "record": present}),
+            ),
+            (
+                "old".to_string(),
+                old.map_or(serde_json::Value::Null, |old| {
+                    materialize_record_fields(old, &known_fields)
+                }),
+            ),
+            ("file".to_string(), file),
+            ("operation".to_string(), operation),
+        ]);
+        if let Some(fields) = raw.as_object() {
+            for (name, value) in fields {
+                if !MDBASE_CEL_RESERVED_BINDINGS.contains(&name.as_str()) {
+                    bindings.insert(name.clone(), value.clone());
+                }
+            }
+        }
+        Self {
+            kind: MdbaseCelContextKind::LifecycleGuard,
+            bindings,
+            clock,
+            path,
+            link_index: None,
+        }
+    }
+
     pub fn system(
         kind: MdbaseCelContextKind,
         bindings: BTreeMap<String, serde_json::Value>,
