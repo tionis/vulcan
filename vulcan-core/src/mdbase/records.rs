@@ -11,6 +11,7 @@ use crate::permissions::PermissionFilter;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,8 @@ use std::time::SystemTime;
 
 mod draft;
 pub use draft::*;
+#[cfg(test)]
+mod snapshot_tests;
 
 pub const MDBASE_RECORD_MODEL_VERSION: u32 = 1;
 
@@ -179,7 +182,7 @@ pub fn load_mdbase_records_filtered(
 ) -> Result<MdbaseRecordSet, MdbaseRecordError> {
     let discovery = discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
     let clock = operation_clock(collection);
-    let mut records = discovery
+    let records = discovery
         .records
         .iter()
         .filter(|path| match filter {
@@ -188,6 +191,36 @@ pub fn load_mdbase_records_filtered(
         })
         .map(|path| load_mdbase_record_at_clock(collection, types, path, include_source, &clock))
         .collect::<Result<Vec<_>, _>>()?;
+    Ok(finish_record_set(collection, types, records))
+}
+
+/// Analyze an explicitly supplied complete proposed snapshot without reading
+/// record files from disk. The caller must prove read authority over the full
+/// constraint scope before assembling this map; a filtered read result is not
+/// write-integrity evidence. Include creations/replacements and omit deletions
+/// so uniqueness and link validation observe the final batch, not intermediates.
+/// Schema references may still be read through the bounded local schema loader.
+#[must_use]
+pub fn analyze_mdbase_record_set_sources(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    sources: &BTreeMap<String, String>,
+    clock: &MdbaseCelClock,
+) -> MdbaseRecordSet {
+    let records = sources
+        .iter()
+        .map(|(path, source)| {
+            build_mdbase_record(collection, types, path, source.clone(), None, true, clock)
+        })
+        .collect();
+    finish_record_set(collection, types, records)
+}
+
+fn finish_record_set(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    mut records: Vec<MdbaseRecordDocument>,
+) -> MdbaseRecordSet {
     if collection.config.settings.validation != MdbaseValidationLevel::Off {
         validate_cross_file_uniqueness(collection, types, &mut records);
     }
@@ -195,7 +228,7 @@ pub fn load_mdbase_records_filtered(
     for record in &mut records {
         sort_record_diagnostics(&mut record.diagnostics);
     }
-    Ok(MdbaseRecordSet { records })
+    MdbaseRecordSet { records }
 }
 
 /// Load records and materialize every exact record-contract view implemented by their types.
@@ -274,7 +307,7 @@ fn load_mdbase_record_at_clock(
         types,
         path,
         source,
-        &metadata,
+        Some(&metadata),
         include_source,
         clock,
     ))
@@ -285,7 +318,7 @@ fn build_mdbase_record(
     types: &MdbaseTypeRegistry,
     path: &str,
     source: String,
-    metadata: &fs::Metadata,
+    metadata: Option<&fs::Metadata>,
     include_source: bool,
     clock: &MdbaseCelClock,
 ) -> MdbaseRecordDocument {
@@ -306,7 +339,7 @@ fn build_mdbase_record(
     let behavior = compose_mdbase_type_behavior(types, &analysis.types);
     let effective_frontmatter = apply_mdbase_read_defaults(&frontmatter, &behavior.read_defaults);
     let revision = mdbase_content_revision(&source);
-    let file = file_metadata(path, metadata);
+    let file = file_metadata(path, source.len() as u64, metadata);
     MdbaseRecordDocument {
         path: path.to_string(),
         revision,
@@ -861,7 +894,11 @@ fn record_body(source: &str) -> &str {
     source
 }
 
-fn file_metadata(path: &str, metadata: &fs::Metadata) -> MdbaseRecordFileMetadata {
+fn file_metadata(
+    path: &str,
+    size: u64,
+    metadata: Option<&fs::Metadata>,
+) -> MdbaseRecordFileMetadata {
     let path_object = Path::new(path);
     let name = path_object
         .file_name()
@@ -889,9 +926,13 @@ fn file_metadata(path: &str, metadata: &fs::Metadata) -> MdbaseRecordFileMetadat
         basename,
         ext,
         folder,
-        size: metadata.len(),
-        mtime: metadata.modified().ok().map(format_system_time),
-        ctime: metadata.created().ok().map(format_system_time),
+        size,
+        mtime: metadata
+            .and_then(|metadata| metadata.modified().ok())
+            .map(format_system_time),
+        ctime: metadata
+            .and_then(|metadata| metadata.created().ok())
+            .map(format_system_time),
     }
 }
 
