@@ -31,6 +31,7 @@ use std::time::Instant;
 #[cfg(feature = "oauth")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
+#[cfg(test)]
 use vulcan_app::execution::ExecutionCancellationToken;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_app::execution::{
@@ -39,7 +40,7 @@ use vulcan_app::execution::{
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_app::execution::{ExecutionContext, ExecutionDeadline};
 use vulcan_app::mcp_assistant;
-use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult, McpMethodHandler};
+use vulcan_app::mcp_dispatch::{jsonrpc_error, McpHttpProcessResult, McpMethodHandler};
 use vulcan_app::mcp_help;
 use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION};
 use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
@@ -78,14 +79,17 @@ use vulcan_daemon::mcp_execution::{
 };
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_hosted::scheduled_operation;
-use vulcan_daemon::mcp_http_auth::McpHttpAuthError;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_http_auth::McpOAuthMode;
-use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_http_codec::McpHttpResponse;
+use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest};
+use vulcan_daemon::mcp_http_driver::mcp_http_json_error_response;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_http_driver::session_admission_response;
 use vulcan_daemon::mcp_http_host::McpHttpHost;
-use vulcan_daemon::mcp_http_routes::{
-    dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
-};
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_http_routes::McpHttpRoute;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_oauth_authorize::subject_not_allowed_response as indieauth_subject_not_allowed_response;
 #[cfg(all(test, feature = "oauth"))]
@@ -122,16 +126,15 @@ use vulcan_daemon::mcp_remote::McpRemoteAuthentication;
 use vulcan_daemon::mcp_remote::McpRemoteDefinition;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime};
+use vulcan_daemon::mcp_session::McpSessionRegistry;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_session::ResolvedMcpSession;
 #[cfg(test)]
 use vulcan_daemon::mcp_session::MAX_MCP_SSE_PENDING_EVENTS;
-use vulcan_daemon::mcp_session::{
-    McpCancellationError, McpHttpSession as HostedMcpHttpSession, McpSessionAuthority,
-    McpSessionRegistry, ResolvedMcpSession, SessionAdmissionError, SessionLookupError,
-    SessionResolutionError,
-};
+#[cfg(test)]
+use vulcan_daemon::mcp_session::{McpHttpSession as HostedMcpHttpSession, McpSessionAuthority};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
-use vulcan_daemon::mcp_sse::{serve_mcp_sse, McpSseEnd};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::McpAuthorizationStore;
 #[cfg(feature = "oauth")]
@@ -208,6 +211,7 @@ impl DerefMut for McpServerCore {
     }
 }
 
+#[cfg(test)]
 type McpHttpSession = HostedMcpHttpSession<McpServerCore>;
 
 #[cfg(feature = "oauth")]
@@ -977,56 +981,12 @@ fn admit_mcp_http_session(
         .map_err(session_admission_response)
 }
 
-fn session_admission_response(error: SessionAdmissionError) -> McpHttpResponse {
-    match error {
-        SessionAdmissionError::Capacity => {
-            let mut response = mcp_http_json_error_response(
-                503,
-                "MCP session limit reached; close unused sessions or retry later",
-                Value::Null,
-            );
-            response
-                .extra_headers
-                .push(("Retry-After".to_string(), "60".to_string()));
-            response
-        }
-        SessionAdmissionError::DuplicateId => {
-            mcp_http_json_error_response(500, "MCP session ID collision", Value::Null)
-        }
-    }
-}
-
 #[cfg(all(test, feature = "oauth"))]
 fn live_mcp_http_session(
     context: &McpHttpServerContext,
     session_id: &str,
 ) -> Option<Arc<McpHttpSession>> {
     context.sessions.live(session_id)
-}
-
-fn authorized_mcp_http_session(
-    context: &McpHttpServerContext,
-    session_id: &str,
-    authority: &McpSessionAuthority,
-    touch: bool,
-) -> Result<Arc<McpHttpSession>, McpHttpResponse> {
-    context
-        .sessions
-        .authorized(session_id, authority, touch)
-        .map_err(session_lookup_response)
-}
-
-fn session_lookup_response(error: SessionLookupError) -> McpHttpResponse {
-    match error {
-        SessionLookupError::Missing => {
-            mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null)
-        }
-        SessionLookupError::AuthorityMismatch => mcp_http_json_error_response(
-            403,
-            "MCP session authority does not match this request",
-            Value::Null,
-        ),
-    }
 }
 
 fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
@@ -1056,367 +1016,117 @@ fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
     });
 }
 
+fn mcp_http_driver(
+    context: &McpHttpServerContext,
+) -> vulcan_daemon::mcp_http_driver::McpHttpDriver<'_, McpServerCore> {
+    #[cfg(feature = "oauth")]
+    let hosted = context.hosted.as_ref();
+    #[cfg(not(feature = "oauth"))]
+    let hosted = None;
+    #[cfg(all(test, feature = "oauth"))]
+    let exchange = context
+        .indieauth_exchange
+        .unwrap_or(default_indieauth_exchange);
+    #[cfg(all(not(test), feature = "oauth"))]
+    let exchange = default_indieauth_exchange;
+    vulcan_daemon::mcp_http_driver::McpHttpDriver {
+        inner: &context.inner,
+        hosted,
+        core_factory: |config| {
+            McpServerCore::new_resolved(
+                &config.paths,
+                config.permission_profile.as_deref(),
+                config.selected_tool_packs,
+                config.tool_pack_mode,
+            )
+            .map_err(|error| error.to_string())
+        },
+        #[cfg(feature = "oauth")]
+        indieauth_exchange: exchange,
+    }
+}
+
 fn handle_mcp_http_connection(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     stream: &mut TcpStream,
 ) -> Result<(), CliError> {
-    #[cfg(feature = "oauth")]
-    let oauth_enabled = context.oauth.is_some();
-    #[cfg(not(feature = "oauth"))]
-    let oauth_enabled = false;
-    #[cfg(feature = "oauth")]
-    let local_oauth = matches!(context.oauth, Some(McpOAuthMode::Local(_)));
-    #[cfg(not(feature = "oauth"))]
-    let local_oauth = false;
-    #[cfg(feature = "oauth")]
-    let named_remote = context.named_runtime.is_some();
-    #[cfg(not(feature = "oauth"))]
-    let named_remote = false;
-    dispatch_mcp_http_request(
+    vulcan_daemon::mcp_http_driver::handle_mcp_http_connection(
+        &mcp_http_driver(context),
         request,
         stream,
-        &McpHttpRouteOptions {
-            endpoint: &context.endpoint,
-            oauth_enabled,
-            local_oauth,
-            named_remote,
-        },
-        context,
     )
     .map_err(CliError::operation)
 }
 
-impl McpHttpRouteHandler for McpHttpServerContext {
-    type Authority = McpSessionAuthority;
-
-    fn oauth(&self, request: &McpHttpRequest, route: McpHttpRoute<'_>) -> McpHttpResponse {
-        #[cfg(feature = "oauth")]
-        {
-            handle_mcp_oauth_route(self, request, route)
-        }
-        #[cfg(not(feature = "oauth"))]
-        {
-            let _ = (request, route);
-            mcp_http_json_error_response(404, "Not Found", Value::Null)
-        }
-    }
-
-    fn authenticate(&self, request: &McpHttpRequest) -> Result<Self::Authority, McpHttpResponse> {
-        authenticate_mcp_http_request(self, request)
-    }
-
-    fn authorize_scope(
-        &self,
-        authority: &Self::Authority,
-        required: &str,
-    ) -> Result<(), McpHttpResponse> {
-        if authority.allows_scope(required) {
-            Ok(())
-        } else {
-            Err(insufficient_scope_response(self, required))
-        }
-    }
-
-    fn operation_status(&self, authority: &Self::Authority, operation_id: &str) -> McpHttpResponse {
-        #[cfg(feature = "oauth")]
-        {
-            handle_named_mcp_operation_status(self, authority, operation_id)
-        }
-        #[cfg(not(feature = "oauth"))]
-        {
-            let _ = (authority, operation_id);
-            mcp_http_json_error_response(404, "Not Found", Value::Null)
-        }
-    }
-
-    fn post(
-        &self,
-        request: &McpHttpRequest,
-        authority: &Self::Authority,
-        payload: &Value,
-    ) -> McpHttpResponse {
-        handle_mcp_http_post(self, request, authority, payload)
-    }
-
-    fn sse(
-        &self,
-        request: &McpHttpRequest,
-        authority: &Self::Authority,
-        stream: &mut TcpStream,
-    ) -> io::Result<()> {
-        handle_mcp_http_sse(self, request, authority, stream).map_err(io::Error::other)
-    }
-
-    fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse {
-        handle_mcp_http_delete(self, request, authority)
-    }
-}
-
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn handle_named_mcp_operation_status(
     context: &McpHttpServerContext,
     authority: &McpSessionAuthority,
     operation_id: &str,
 ) -> McpHttpResponse {
-    if !authority.allows_scope("mcp:tools") {
-        return insufficient_scope_response(context, "mcp:tools");
-    }
-    let not_found = || mcp_http_json_error_response(404, "Not Found", Value::Null);
-    let (Some(hosted), Some(named)) = (context.hosted.as_ref(), context.named_runtime.as_ref())
-    else {
-        return not_found();
-    };
-    let Some(report) = vulcan_daemon::mcp_hosted::named_mcp_operation_status(
-        &hosted.executor.ledger(),
-        named,
+    vulcan_daemon::mcp_http_driver::handle_named_mcp_operation_status(
+        &mcp_http_driver(context),
         authority,
         operation_id,
-    ) else {
-        return not_found();
-    };
-    McpHttpResponse {
-        status: 200,
-        content_type: Some("application/json"),
-        body: serde_json::to_vec(&report).expect("operation status should serialize"),
-        extra_headers: vec![
-            ("Cache-Control".to_string(), "no-store".to_string()),
-            ("Vary".to_string(), "Authorization".to_string()),
-        ],
-    }
+    )
 }
 
+#[cfg(all(test, feature = "oauth"))]
 fn handle_mcp_http_post(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
     payload: &Value,
 ) -> McpHttpResponse {
-    let resolved = match resolve_mcp_http_session(context, request, payload, authority) {
-        Ok(resolved) => resolved,
-        Err(response) => return response,
-    };
-    let session = Arc::clone(&resolved.session);
-
-    if payload.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
-        return handle_mcp_cancellation_notification(payload, &session);
-    }
-
-    let Some(active_request) = session.start_request(request_id(payload).as_ref()) else {
-        return mcp_http_json_error_response(
-            409,
-            "MCP request ID is already active in this session",
-            Value::Null,
-        );
-    };
-
-    let result = {
-        let mut core = session
-            .core
-            .lock()
-            .expect("mcp core lock should not be poisoned");
-        core.process_http_request_with_timeout(
-            payload.clone(),
-            context.request_timeout,
-            context,
-            request,
-            authority,
-            active_request.cancellation(),
-        )
-    };
-
-    drop(active_request);
-    context.sessions.finish_http_post(resolved, result)
+    vulcan_daemon::mcp_http_driver::handle_mcp_http_post(
+        &mcp_http_driver(context),
+        request,
+        authority,
+        payload,
+    )
 }
 
-fn handle_mcp_cancellation_notification(
-    payload: &Value,
-    session: &McpHttpSession,
-) -> McpHttpResponse {
-    if let Err(error) = session.cancel_notification(payload) {
-        let message = match error {
-            McpCancellationError::MissingRequestId => "MCP cancellation requires params.requestId",
-            McpCancellationError::InvalidRequestId => {
-                "MCP cancellation requestId must be a string or number"
-            }
-        };
-        return mcp_http_json_error_response(400, message, Value::Null);
-    }
-    McpHttpResponse {
-        status: 202,
-        content_type: None,
-        body: Vec::new(),
-        extra_headers: Vec::new(),
-    }
-}
-
-fn insufficient_scope_response(context: &McpHttpServerContext, required: &str) -> McpHttpResponse {
-    let message = format!("OAuth token does not grant required scope `{required}`");
-    #[cfg(feature = "oauth")]
-    if let Some(oauth) = context.oauth.as_ref() {
-        let mut response = oauth_error_response(oauth, &message, "insufficient_scope");
-        response.status = 403;
-        if let Some((_, challenge)) = response
-            .extra_headers
-            .iter_mut()
-            .find(|(name, _)| name == "WWW-Authenticate")
-        {
-            challenge.push_str(", scope=\"");
-            challenge.push_str(required);
-            challenge.push('"');
-        }
-        return response;
-    }
-    #[cfg(not(feature = "oauth"))]
-    let _ = context;
-    mcp_http_json_error_response(403, message, Value::Null)
-}
-
+#[cfg(all(test, feature = "oauth"))]
 fn resolve_mcp_http_session(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     payload: &Value,
     authority: &McpSessionAuthority,
 ) -> Result<ResolvedMcpSession<McpServerCore>, McpHttpResponse> {
-    let resolved = context
-        .sessions
-        .resolve_http(
-            payload,
-            request.headers.get("mcp-session-id").map(String::as_str),
-            authority,
-            || create_mcp_http_core(context, authority),
-        )
-        .map_err(|error| match error {
-            SessionResolutionError::InvalidInitialize(error) => McpHttpResponse {
-                status: 400,
-                content_type: Some("application/json"),
-                body: serde_json::to_vec(&error).expect("JSON-RPC error should serialize"),
-                extra_headers: Vec::new(),
-            },
-            SessionResolutionError::MissingSessionId => {
-                mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null)
-            }
-            SessionResolutionError::Admission(error) => session_admission_response(error),
-            SessionResolutionError::Lookup(error) => session_lookup_response(error),
-            SessionResolutionError::Create(response) => response,
-        })?;
-    Ok(resolved)
-}
-
-fn create_mcp_http_core(
-    context: &McpHttpServerContext,
-    authority: &McpSessionAuthority,
-) -> Result<McpServerCore, McpHttpResponse> {
-    let config = context
-        .inner
-        .protocol_config(authority)
-        .map_err(|error| mcp_http_json_error_response(error.status, error.message, Value::Null))?;
-    McpServerCore::new_resolved(
-        &config.paths,
-        config.permission_profile.as_deref(),
-        config.selected_tool_packs,
-        config.tool_pack_mode,
+    vulcan_daemon::mcp_http_driver::resolve_mcp_http_session(
+        &mcp_http_driver(context),
+        request,
+        payload,
+        authority,
     )
-    .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
 }
 
-fn handle_mcp_http_delete(
-    context: &McpHttpServerContext,
-    request: &McpHttpRequest,
-    authority: &McpSessionAuthority,
-) -> McpHttpResponse {
-    let session_id = request
-        .headers
-        .get("mcp-session-id")
-        .expect("daemon route preflight requires MCP session header");
-    if let Err(response) = authorized_mcp_http_session(context, session_id, authority, false) {
-        return response;
-    }
-    context.sessions.retire(session_id);
-    McpHttpResponse {
-        status: 204,
-        content_type: None,
-        body: Vec::new(),
-        extra_headers: Vec::new(),
-    }
-}
-
+#[cfg(all(test, feature = "oauth"))]
 fn handle_mcp_http_sse(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
     stream: &mut TcpStream,
 ) -> Result<(), CliError> {
-    let session_id = request
-        .headers
-        .get("mcp-session-id")
-        .expect("daemon route preflight requires MCP session header");
-    let session = match authorized_mcp_http_session(context, session_id, authority, true) {
-        Ok(session) => session,
-        Err(response) => {
-            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-            return Ok(());
-        }
-    };
-
-    let end = serve_mcp_sse(
-        &session,
+    vulcan_daemon::mcp_http_driver::handle_mcp_http_sse(
+        &mcp_http_driver(context),
+        request,
+        authority,
         stream,
-        || {
-            authenticate_mcp_http_request(context, request)
-                .is_ok_and(|current| session.authority.matches(&current))
-                && session
-                    .core
-                    .lock()
-                    .expect("mcp core lock should not be poisoned")
-                    .session
-                    .attenuate_profile()
-                    .is_ok()
-        },
-        || {
-            session
-                .core
-                .lock()
-                .expect("mcp core lock should not be poisoned")
-                .list_changed_notifications()
-        },
     )
-    .map_err(CliError::operation)?;
-    if end == McpSseEnd::RetireSession {
-        context.sessions.retire(session_id);
-    }
-    Ok(())
+    .map_err(CliError::operation)
 }
 
+#[cfg(all(test, feature = "oauth"))]
 fn authenticate_mcp_http_request(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Result<McpSessionAuthority, McpHttpResponse> {
-    context
-        .inner
-        .authenticate(&request.headers)
-        .map_err(|error| match error {
-            McpHttpAuthError::Http { status, message } => {
-                mcp_http_json_error_response(status, message, Value::Null)
-            }
-            #[cfg(feature = "oauth")]
-            McpHttpAuthError::OAuth {
-                message,
-                rejected_bearer,
-            } => {
-                if rejected_bearer {
-                    eprintln!("MCP OAuth bearer token rejected: {message}");
-                }
-                oauth_error_response(
-                    context
-                        .oauth
-                        .as_ref()
-                        .expect("OAuth rejection has an issuer"),
-                    message,
-                    "invalid_token",
-                )
-            }
-        })
+    vulcan_daemon::mcp_http_driver::authenticate_mcp_http_request(
+        &mcp_http_driver(context),
+        request,
+    )
 }
 
 impl McpServerCore {
@@ -1473,6 +1183,7 @@ impl McpServerCore {
         self.inner.process_http_request(request)
     }
 
+    #[cfg(all(test, feature = "oauth"))]
     fn process_http_request_with_timeout(
         &mut self,
         request: Value,
@@ -1524,6 +1235,10 @@ impl vulcan_daemon::mcp_execution::McpRequestCore for McpServerCore {
 
     fn attenuate_profile(&mut self) -> Result<(), String> {
         self.session.attenuate_profile()
+    }
+
+    fn list_changed_notifications(&mut self) -> Vec<Value> {
+        McpMethodHandler::list_changed_notifications(self)
     }
 
     fn process_request(&mut self, request: Value) -> Vec<Value> {
@@ -1730,23 +1445,17 @@ fn reject_mcp_oauth_options_when_disabled(options: &McpHttpOptions) -> Result<()
     Ok(())
 }
 
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 fn handle_mcp_oauth_route(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     route: McpHttpRoute<'_>,
 ) -> McpHttpResponse {
-    #[cfg(test)]
-    let exchange = context
-        .indieauth_exchange
-        .unwrap_or(default_indieauth_exchange);
-    #[cfg(not(test))]
-    let exchange = default_indieauth_exchange;
-    context
-        .inner
-        .oauth_routes(exchange)
-        .expect("OAuth route requires issuer")
-        .handle(request, route)
+    vulcan_daemon::mcp_http_driver::handle_mcp_oauth_route(
+        &mcp_http_driver(context),
+        request,
+        route,
+    )
 }
 
 #[cfg(all(test, feature = "oauth"))]
@@ -2134,39 +1843,6 @@ fn oauth_json_error_response(
     }
 }
 
-#[cfg(feature = "oauth")]
-fn oauth_error_response(
-    oauth: &McpOAuthMode,
-    message: impl Into<String>,
-    error: &str,
-) -> McpHttpResponse {
-    let message = message.into();
-    let error_description = escape_www_authenticate_value(&message);
-    let mut response = mcp_http_json_error_response(401, message, Value::Null);
-    response.extra_headers.push((
-        "WWW-Authenticate".to_string(),
-        format!(
-            "Bearer error=\"{error}\", error_description=\"{}\", resource_metadata=\"{}\"",
-            error_description,
-            oauth_protected_resource_metadata_url(oauth),
-        ),
-    ));
-    response
-}
-
-#[cfg(feature = "oauth")]
-fn oauth_protected_resource_metadata_url(oauth: &McpOAuthMode) -> &str {
-    match oauth {
-        McpOAuthMode::External(external) => external.protected_resource_metadata_url(),
-        McpOAuthMode::Local(local) => local.protected_resource_metadata_url(),
-    }
-}
-
-#[cfg(feature = "oauth")]
-fn escape_www_authenticate_value(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 fn normalize_mcp_http_endpoint(endpoint: &str) -> String {
     if endpoint.is_empty() || endpoint == "/" {
         "/mcp".to_string()
@@ -2174,20 +1850,6 @@ fn normalize_mcp_http_endpoint(endpoint: &str) -> String {
         endpoint.to_string()
     } else {
         format!("/{endpoint}")
-    }
-}
-
-fn mcp_http_json_error_response(
-    status: u16,
-    message: impl Into<String>,
-    id: Value,
-) -> McpHttpResponse {
-    let body = jsonrpc_error(id, -32600, message.into(), None);
-    McpHttpResponse {
-        status,
-        content_type: Some("application/json"),
-        body: serde_json::to_vec(&body).expect("json should serialize"),
-        extra_headers: Vec::new(),
     }
 }
 

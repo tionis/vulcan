@@ -25,6 +25,7 @@ pub mod mcp_execution;
 pub mod mcp_hosted;
 pub mod mcp_http_auth;
 pub mod mcp_http_codec;
+pub mod mcp_http_driver;
 pub mod mcp_http_host;
 pub mod mcp_http_routes;
 #[cfg(feature = "oauth")]

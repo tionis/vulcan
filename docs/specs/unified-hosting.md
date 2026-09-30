@@ -335,8 +335,12 @@ profile attenuation, and response deadlines. Its protocol-core contract contains
 Only a completed worker replaces the live session state; timed-out dispatched writes retain
 their operation identity and status path while the executor keeps its permit and outcome monitor.
 The shared `mcp_hosted` lookup projects status only for the exact instance, exposed vault, principal,
-grant, and audience, without exposing stored paths or caller identity. Transport adapters retain
-HTTP headers/status presentation and inject the command-help and custom-tool name catalogs.
+grant, and audience, without exposing stored paths or caller identity.
+`vulcan-daemon::mcp_http_driver` owns HTTP route dispatch, response headers/status presentation,
+authority-bound session initialization, duplicate request admission, cancellation, DELETE cleanup,
+and SSE authorization/notification polling. It borrows the listener's actual host state rather than
+creating another session or authorization store. Both hosting modes supply the same app protocol
+core factory, with command-help and custom-tool name catalogs injected as trusted host data.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the

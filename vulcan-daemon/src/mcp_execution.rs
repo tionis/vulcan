@@ -33,6 +33,7 @@ pub trait McpRequestCore: Clone + Send + 'static {
     fn attenuate_profile(&mut self) -> Result<(), String>;
     fn process_request(&mut self, request: Value) -> Vec<Value>;
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value>;
+    fn list_changed_notifications(&mut self) -> Vec<Value>;
 }
 
 impl McpRequestCore for McpProtocolCore {
@@ -50,6 +51,10 @@ impl McpRequestCore for McpProtocolCore {
     }
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
         McpProtocolCore::process_http_request(self, request)
+    }
+
+    fn list_changed_notifications(&mut self) -> Vec<Value> {
+        vulcan_app::mcp_dispatch::McpMethodHandler::list_changed_notifications(self)
     }
 }
 
@@ -499,6 +504,10 @@ mod tests {
         }
         fn attenuate_profile(&mut self) -> Result<(), String> {
             Ok(())
+        }
+
+        fn list_changed_notifications(&mut self) -> Vec<Value> {
+            Vec::new()
         }
         fn process_request(&mut self, request: Value) -> Vec<Value> {
             self.run();
