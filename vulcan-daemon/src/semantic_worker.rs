@@ -4,21 +4,25 @@ use crate::companion::CompanionSemanticAgent;
 use crate::registry::{DaemonSemanticWorkerConfig, WikiRegistry};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
+use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 use vulcan_app::sync::{GitRefName, GitRemote, SyncCancellationToken};
-use vulcan_app::sync_semantic_auto::{run_semantic_auto, SemanticAutoOptions, SemanticAutoReport};
+use vulcan_app::sync_semantic_auto::{
+    run_semantic_auto_with_reconciliation, SemanticAutoOptions, SemanticAutoReport,
+};
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
-use vulcan_sync::SyncJobState;
+use vulcan_sync::{GitCliEngine, GitEngine, SyncJobState};
 
 pub const SEMANTIC_WORKER_STATUS_VERSION: u32 = 1;
 
@@ -96,20 +100,168 @@ pub fn run_semantic_worker(
     agent: &CompanionSemanticAgent,
     stop: &ShutdownSignal,
 ) -> Result<(), String> {
+    // Native hints avoid Git processes between changes. Missing/failed watches
+    // are covered by reconciliation; neither timestamps nor events authorize work.
+    let changed = Arc::new(AtomicBool::new(true));
+    let mut watched_config = None;
+    let mut watcher = None;
+    let mut jobs = supervisor.subscribe_changes();
+    let reconciliation = Duration::from_secs(config.poll_seconds.max(300));
+    let mut next_reconciliation = Instant::now();
+    let mut next_due = None;
+    let mut last_status = None;
+    stop.register_current_thread();
     loop {
-        let report = execute_semantic_worker_pass(
-            config,
-            registry,
-            supervisor,
-            state_store,
-            agent,
-            unix_time_ms()?,
-        );
-        save_status(&semantic_worker_status_path(daemon_state_root), &report)?;
-        if wait_until_next_poll(stop, Duration::from_secs(config.poll_seconds)) {
+        if stop.is_cancelled() {
             return Ok(());
         }
+        let registrations = registry.poll().ok();
+        if registrations != watched_config {
+            changed.store(true, Ordering::Release);
+            watcher = registrations.as_ref().and_then(|registrations| {
+                semantic_change_watcher(&registrations.vaults, config, Arc::clone(&changed)).ok()
+            });
+            watched_config = registrations;
+        }
+        let now = unix_time_ms()?;
+        let reconcile = Instant::now() >= next_reconciliation;
+        let job_changed = jobs.has_changed().unwrap_or(false);
+        if job_changed {
+            jobs.borrow_and_update();
+        }
+        let local_changed = changed.swap(false, Ordering::AcqRel);
+        if pass_due(reconcile, job_changed, local_changed, next_due, now) {
+            let report = execute_semantic_worker_pass_inner(
+                config,
+                registry,
+                supervisor,
+                state_store,
+                agent,
+                now,
+                reconcile,
+            );
+            next_due = worker_next_due(&report, now, config.poll_seconds);
+            // checked_unix_ms means the most recent persisted evaluation. A heartbeat
+            // at reconciliation bounds staleness without replacing identical reports.
+            if status_needs_save(last_status.as_ref(), &report, reconcile) {
+                save_status(&semantic_worker_status_path(daemon_state_root), &report)?;
+                last_status = Some(report);
+            }
+            if reconcile {
+                next_reconciliation = Instant::now() + reconciliation;
+            }
+        }
+        let now = unix_time_ms()?;
+        let timeout = next_due
+            .map_or(Duration::from_secs(1), |due| {
+                Duration::from_millis(due.saturating_sub(now)).min(Duration::from_secs(1))
+            })
+            .min(next_reconciliation.saturating_duration_since(Instant::now()));
+        // Park is woken immediately by native hints and shutdown. Supervisor and
+        // registration edits are observed within one second without running Git.
+        thread::park_timeout(timeout);
+        let _ = &watcher; // Retain native registrations for the worker lifetime.
     }
+}
+
+fn pass_due(reconcile: bool, jobs: bool, local: bool, deadline: Option<u64>, now: u64) -> bool {
+    reconcile || jobs || local || deadline.is_some_and(|deadline| now >= deadline)
+}
+
+fn status_needs_save(
+    previous: Option<&SemanticWorkerStatus>,
+    current: &SemanticWorkerStatus,
+    heartbeat: bool,
+) -> bool {
+    heartbeat || previous.is_none_or(|previous| previous.entries != current.entries)
+}
+
+fn worker_next_due(report: &SemanticWorkerStatus, now: u64, retry_seconds: u64) -> Option<u64> {
+    report
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            if entry.error.is_some() {
+                Some(now.saturating_add(retry_seconds.saturating_mul(1_000)))
+            } else {
+                entry
+                    .report
+                    .as_ref()
+                    .and_then(|report| report.next_eligible_unix_ms)
+            }
+        })
+        .min()
+}
+
+fn semantic_change_watcher(
+    registrations: &[crate::registry::WikiRegistration],
+    config: &DaemonSemanticWorkerConfig,
+    changed: Arc<AtomicBool>,
+) -> Result<notify::RecommendedWatcher, String> {
+    let worker = thread::current();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.as_ref().map_or(true, |event| {
+            !matches!(event.kind, notify::EventKind::Access(_))
+                && event.paths.iter().any(|path| {
+                    path.components().any(|part| part.as_os_str() == "refs")
+                        || path.file_name().is_some_and(|name| {
+                            matches!(
+                                name.to_str(),
+                                Some(
+                                    "HEAD"
+                                        | "packed-refs"
+                                        | "config"
+                                        | "config.toml"
+                                        | "config.local.toml"
+                                        | "permissions.toml"
+                                )
+                            )
+                        })
+                })
+        }) {
+            changed.store(true, Ordering::Release);
+            worker.unpark();
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    for registration in registrations
+        .iter()
+        .filter(|wiki| config.wikis.contains(&wiki.id))
+    {
+        let paths = VaultPaths::new(&registration.path);
+        let _ = watcher.watch(
+            &registration.path.join(".vulcan"),
+            notify::RecursiveMode::NonRecursive,
+        );
+        if registration.sync_paused || !registration.capabilities().semantic_history {
+            continue;
+        }
+        let permitted = resolve_permission_profile(
+            &paths,
+            Some(
+                registration
+                    .permissions_profile
+                    .as_deref()
+                    .unwrap_or("unrestricted"),
+            ),
+        )
+        .map(|selection| ProfilePermissionGuard::new(&paths, selection))
+        .is_ok_and(|guard| guard.check_git().is_ok());
+        if !permitted {
+            continue;
+        }
+        let repository = vulcan_app::sync_state::sync_work_tree(paths.vault_root())
+            .ok()
+            .and_then(|root| GitCliEngine::default().discover_repository(&root).ok());
+        if let Some(repository) = repository {
+            // Root catches packed-refs/config replacement; refs catches loose refs.
+            for root in [&repository.git_dir, &repository.common_dir] {
+                let _ = watcher.watch(root, notify::RecursiveMode::NonRecursive);
+                let _ = watcher.watch(&root.join("refs"), notify::RecursiveMode::Recursive);
+            }
+        }
+    }
+    Ok(watcher)
 }
 
 pub fn execute_semantic_worker_pass(
@@ -120,7 +272,28 @@ pub fn execute_semantic_worker_pass(
     agent: &CompanionSemanticAgent,
     now_unix_ms: u64,
 ) -> SemanticWorkerStatus {
-    let registrations = match registry.load() {
+    execute_semantic_worker_pass_inner(
+        config,
+        registry,
+        supervisor,
+        state_store,
+        agent,
+        now_unix_ms,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_semantic_worker_pass_inner(
+    config: &DaemonSemanticWorkerConfig,
+    registry: &WikiRegistry,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    agent: &CompanionSemanticAgent,
+    now_unix_ms: u64,
+    reconcile_remote: bool,
+) -> SemanticWorkerStatus {
+    let registrations = match registry.poll() {
         Ok(config) => config.vaults,
         Err(error) => {
             return SemanticWorkerStatus {
@@ -139,7 +312,20 @@ pub fn execute_semantic_worker_pass(
             };
         }
     };
-    let active = supervisor.list().unwrap_or_default();
+    let active = match supervisor.list() {
+        Ok(active) => active,
+        Err(error) => {
+            return SemanticWorkerStatus {
+                version: SEMANTIC_WORKER_STATUS_VERSION,
+                checked_unix_ms: now_unix_ms,
+                entries: config
+                    .wikis
+                    .iter()
+                    .map(|wiki| status_error(wiki.as_str(), error.to_string()))
+                    .collect(),
+            }
+        }
+    };
     let entries = config
         .wikis
         .iter()
@@ -162,7 +348,7 @@ pub fn execute_semantic_worker_pass(
             }) {
                 return status_skipped(wiki_id.as_str(), "a file-tree sync job is active");
             }
-            run_for_registration(config, registration, state_store, agent, now_unix_ms)
+            run_for_registration(config, registration, state_store, agent, now_unix_ms, reconcile_remote)
         })
         .collect();
     SemanticWorkerStatus {
@@ -178,6 +364,7 @@ fn run_for_registration(
     state_store: &SyncStateStore,
     agent: &CompanionSemanticAgent,
     now_unix_ms: u64,
+    reconcile_remote: bool,
 ) -> SemanticWorkerStatusEntry {
     let paths = VaultPaths::new(&registration.path);
     let profile = registration
@@ -209,13 +396,14 @@ fn run_for_registration(
                 maximum_wait_seconds: config.maximum_wait_seconds,
                 dry_run: false,
             };
-            run_semantic_auto(
+            run_semantic_auto_with_reconciliation(
                 &paths,
                 &options,
                 Some(agent.provider()),
                 &SyncCancellationToken::default(),
                 state_store,
                 now_unix_ms,
+                reconcile_remote,
             )
             .map_err(|error| error.to_string())
         });
@@ -266,6 +454,7 @@ fn save_status(path: &Path, report: &SemanticWorkerStatus) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(test)]
 fn wait_until_next_poll(stop: &ShutdownSignal, duration: Duration) -> bool {
     stop.wait_timeout(duration)
 }
@@ -301,6 +490,45 @@ mod tests {
     use vulcan_app::sync_state::SyncStateStore;
 
     struct PanicProvider;
+
+    #[test]
+    fn unchanged_scheduling_has_no_passes_or_status_replacements_before_reconciliation() {
+        let report = SemanticWorkerStatus {
+            version: SEMANTIC_WORKER_STATUS_VERSION,
+            checked_unix_ms: 0,
+            entries: vec![super::status_skipped("personal", "paused")],
+        };
+        let mut passes = 0;
+        let mut writes = 0;
+        for seconds in 1..300 {
+            passes += usize::from(super::pass_due(false, false, false, None, seconds * 1_000));
+            let refreshed = SemanticWorkerStatus {
+                checked_unix_ms: seconds * 1_000,
+                ..report.clone()
+            };
+            writes += usize::from(super::status_needs_save(Some(&report), &refreshed, false));
+        }
+        assert_eq!((passes, writes), (0, 0));
+        assert!(super::pass_due(true, false, false, None, 300_000));
+        assert!(super::status_needs_save(Some(&report), &report, true));
+        eprintln!("semantic schedule: 299 idle seconds: passes=0, status replacements=0 (old 30s poll: 9 each)");
+    }
+
+    #[test]
+    fn changes_deadlines_and_errors_schedule_work() {
+        assert!(super::pass_due(false, true, false, None, 0));
+        assert!(super::pass_due(false, false, true, None, 0));
+        assert!(!super::pass_due(false, false, false, Some(42), 41));
+        assert!(super::pass_due(false, false, false, Some(42), 42));
+        let status = SemanticWorkerStatus {
+            version: SEMANTIC_WORKER_STATUS_VERSION,
+            checked_unix_ms: 0,
+            entries: vec![super::status_error("personal", "offline")],
+        };
+        assert_eq!(super::worker_next_due(&status, 1_000, 30), Some(31_000));
+        assert!(!super::pass_due(false, false, false, Some(31_000), 30_999));
+        assert!(super::pass_due(false, false, false, Some(31_000), 31_000));
+    }
 
     impl SemanticAgentProvider for PanicProvider {
         fn identity(&self) -> SemanticAgentIdentity {

@@ -446,6 +446,12 @@ they commit.
   `vulcan daemon config set-semantic-worker --wiki <id> --quiet-seconds <n> --maximum-wait-seconds <n> --poll-seconds <n>`.
   The allowlist is explicit; paused/busy wikis are skipped. Restart after changing configuration,
   inspect `vulcan daemon semantic-status`, and disable with `daemon config clear-semantic-worker`.
+  Local Git/config hints and sync-job changes wake evaluation; quiet/max-wait deadlines run when
+  due. `--poll-seconds` controls error retry, while remote-only changes and missed hints are
+  reconciled every `max(300, poll_seconds)` seconds, plus any in-flight work. Status
+  `checked_unix_ms` is the last persisted evaluation, not a per-poll liveness timestamp:
+  unchanged reports are retained until the reconciliation heartbeat. Do not interpret an
+  unchanged timestamp between heartbeats as a stalled worker.
 - For a designated unattended resolver, configure the daemon resolution agent, enable
   `sync.agent_auto_accept` only in each selected vault's local config, then preview and apply
   `vulcan daemon config set-conflict-worker --wiki <id> --max-groups-per-run <1..128> --poll-seconds <n>`.
@@ -521,6 +527,10 @@ they commit.
   exits: `deferred` means the accepted live revision has not passed `--quiet-seconds`, `up_to_date`
   means no semantic tree change exists, and `completed` includes application plus leased
   publication. Use `--maximum-wait-seconds` to cap batching and `--dry-run` for a state-free preview.
+  `deferred` and `up_to_date` describe locally accepted refs; idle calls do not query the remote.
+  Due work validates remote agreement before planning, applying, or publishing through the
+  existing guarded workflows. Continuing target changes reset quiet time but retain the first
+  observation for the maximum batching delay across restarts.
 
 ## Non-negotiable safety properties
 

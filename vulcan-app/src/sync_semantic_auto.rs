@@ -81,9 +81,54 @@ pub fn run_semantic_auto(
     store: &SyncStateStore,
     now_unix_ms: u64,
 ) -> Result<SemanticAutoReport, AppError> {
+    run_semantic_auto_with_reconciliation(
+        paths,
+        options,
+        provider,
+        cancellation,
+        store,
+        now_unix_ms,
+        false,
+    )
+}
+
+/// Reconciliation may check remote agreement even for locally idle/deferred
+/// work. Due work always validates the remote, independently of this flag.
+#[allow(clippy::too_many_arguments)]
+pub fn run_semantic_auto_with_reconciliation(
+    paths: &VaultPaths,
+    options: &SemanticAutoOptions,
+    provider: Option<&dyn SemanticAgentProvider>,
+    cancellation: &SyncCancellationToken,
+    store: &SyncStateStore,
+    now_unix_ms: u64,
+    reconcile_remote: bool,
+) -> Result<SemanticAutoReport, AppError> {
+    run_with_engine(
+        paths,
+        options,
+        provider,
+        cancellation,
+        store,
+        now_unix_ms,
+        reconcile_remote,
+        &GitCliEngine::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_with_engine(
+    paths: &VaultPaths,
+    options: &SemanticAutoOptions,
+    provider: Option<&dyn SemanticAgentProvider>,
+    cancellation: &SyncCancellationToken,
+    store: &SyncStateStore,
+    now_unix_ms: u64,
+    reconcile_remote: bool,
+    engine: &dyn GitEngine,
+) -> Result<SemanticAutoReport, AppError> {
     validate_options(options, provider)?;
     let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
-    let engine = GitCliEngine::default();
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
@@ -96,7 +141,10 @@ pub fn run_semantic_auto(
                 options.semantic_ref
             ))
         })?;
-    let target = accepted_target(&engine, &repository, options)?;
+    let target = local_target(engine, &repository, options)?;
+    if reconcile_remote {
+        validate_remote_target(engine, &repository, options, &target)?;
+    }
     let state_path = semantic_auto_state_path(store, &vault);
     if engine
         .tree_oid(&repository, &source)
@@ -127,7 +175,7 @@ pub fn run_semantic_auto(
         options.maximum_wait_seconds,
     ) {
         DebounceDecision::Deferred { stable_ms, next_ms } => {
-            if !options.dry_run {
+            if !options.dry_run && prior.as_ref() != Some(&state) {
                 save_state(&state_path, &state)?;
             }
             Ok(base_report(
@@ -139,17 +187,22 @@ pub fn run_semantic_auto(
                 Some(next_ms),
             ))
         }
-        DebounceDecision::Due { stable_ms } => execute_due(
-            paths,
-            options,
-            provider,
-            cancellation,
-            store,
-            &state_path,
-            &source,
-            &target,
-            stable_ms,
-        ),
+        DebounceDecision::Due { stable_ms } => {
+            if !reconcile_remote {
+                validate_remote_target(engine, &repository, options, &target)?;
+            }
+            execute_due(
+                paths,
+                options,
+                provider,
+                cancellation,
+                store,
+                &state_path,
+                &source,
+                &target,
+                stable_ms,
+            )
+        }
     }
 }
 
@@ -212,7 +265,7 @@ fn execute_due(
     Ok(report)
 }
 
-fn accepted_target(
+fn local_target(
     engine: &dyn GitEngine,
     repository: &vulcan_sync::GitRepository,
     options: &SemanticAutoOptions,
@@ -239,17 +292,26 @@ fn accepted_target(
             ));
         }
     }
+    Ok(local)
+}
+
+fn validate_remote_target(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &SemanticAutoOptions,
+    local: &GitOid,
+) -> Result<(), AppError> {
     if engine
         .remote_ref(repository, &options.remote, &options.live_ref)
         .map_err(AppError::operation)?
         .as_ref()
-        != Some(&local)
+        != Some(local)
     {
         return Err(AppError::operation(
             "remote and local accepted live refs must agree before semantic automation",
         ));
     }
-    Ok(local)
+    Ok(())
 }
 
 fn validate_options(
@@ -280,7 +342,7 @@ fn observed_state(
     SemanticAutoState {
         version: SEMANTIC_AUTO_VERSION,
         target_revision: target.to_string(),
-        first_observed_unix_ms: now_unix_ms,
+        first_observed_unix_ms: prior.map_or(now_unix_ms, |state| state.first_observed_unix_ms),
         last_changed_unix_ms: now_unix_ms,
     }
 }
@@ -382,6 +444,169 @@ mod tests {
     use vulcan_sync::GitOid;
 
     #[test]
+    fn retained_debounce_caps_continuously_changing_targets_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let first = GitOid::parse("1".repeat(40)).unwrap();
+        let second = GitOid::parse("2".repeat(40)).unwrap();
+        let state = observed_state(None, &first, 1_000);
+        super::save_state(&path, &state).unwrap();
+        let retained = super::load_state(&path).unwrap().unwrap();
+        let changed = observed_state(Some(&retained), &second, 60_000);
+        assert_eq!(
+            debounce_decision(&changed, 61_000, 90, 60),
+            DebounceDecision::Due { stable_ms: 1_000 }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::too_many_lines)] // One local-remote fixture measures idle work and both safety gates.
+    fn unchanged_debounce_avoids_remote_requests_and_state_replacements() {
+        use super::*;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::process::Command;
+        let directory = tempfile::tempdir().unwrap();
+        let vault = directory.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(&vault)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        fs::write(vault.join("note.md"), "# Before\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "before"]);
+        let source = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/heads/semantic", &source]);
+        fs::write(vault.join("note.md"), "# After\n").unwrap();
+        git(&["commit", "-qam", "after"]);
+        let target = git(&["rev-parse", "HEAD"]);
+        let refs = GitSyncRefs::for_options(&GitSyncOptions::default()).unwrap();
+        for reference in [&refs.local, &refs.fetched, &refs.pending] {
+            git(&["update-ref", reference.as_str(), &target]);
+        }
+        let remote = directory.path().join("remote.git");
+        git(&["init", "--bare", "-q", remote.to_str().unwrap()]);
+        git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&[
+            "push",
+            "-q",
+            "origin",
+            &format!("{target}:refs/heads/__vulcan-sync/live"),
+        ]);
+        // Per-engine wrapper, no process-global PATH/env mutation in parallel tests.
+        let wrapper = directory.path().join("git-count");
+        let log = directory.path().join("commands");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+        let engine = GitCliEngine::new(&wrapper);
+        let options = SemanticAutoOptions {
+            semantic_ref: GitRefName::parse("refs/heads/semantic").unwrap(),
+            remote: GitRemote::parse("origin").unwrap(),
+            live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").unwrap(),
+            grouping: SemanticGrouping::TopLevel,
+            agent: false,
+            publish: false,
+            quiet_seconds: 900,
+            maximum_wait_seconds: 3_600,
+            dry_run: false,
+        };
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(directory.path().join("state"));
+        let run = |now, reconcile| {
+            run_with_engine(
+                &paths,
+                &options,
+                None,
+                &SyncCancellationToken::default(),
+                &store,
+                now,
+                reconcile,
+                &engine,
+            )
+        };
+        assert_eq!(
+            run(0, false).unwrap().outcome,
+            SemanticAutoOutcome::Deferred
+        );
+        let state = semantic_auto_state_path(&store, &vault);
+        let before = fs::metadata(&state).unwrap();
+        for now in (30_000..=600_000).step_by(30_000) {
+            assert_eq!(
+                run(now, false).unwrap().outcome,
+                SemanticAutoOutcome::Deferred
+            );
+        }
+        let after = fs::metadata(&state).unwrap();
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        let commands = fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|line| line.contains("ls-remote"))
+                .count(),
+            0
+        );
+        eprintln!("semantic: 20 unchanged deferred passes: remote requests=0 (baseline 20), state replacements=0 (baseline 20), local Git commands={}", commands.lines().count());
+        git(&[
+            "push",
+            "-q",
+            "origin",
+            &format!("+{source}:refs/heads/__vulcan-sync/live"),
+        ]);
+        assert!(run(601_000, true)
+            .unwrap_err()
+            .to_string()
+            .contains("remote and local"));
+        assert!(run(900_000, false)
+            .unwrap_err()
+            .to_string()
+            .contains("remote and local"));
+        let commands = fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|line| line.contains("ls-remote"))
+                .count(),
+            2
+        );
+        // Local disagreement fails before making any additional remote request.
+        git(&["update-ref", refs.pending.as_str(), &source]);
+        assert!(run(901_000, true)
+            .unwrap_err()
+            .to_string()
+            .contains("local, fetched, and pending"));
+        assert_eq!(
+            fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .filter(|line| line.contains("ls-remote"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn debounce_waits_for_quiet_and_resets_when_the_target_changes() {
         let first = GitOid::parse("1".repeat(40)).expect("oid");
         let second = GitOid::parse("2".repeat(40)).expect("oid");
@@ -396,7 +621,7 @@ mod tests {
         let unchanged = observed_state(Some(&state), &first, 6_000);
         assert_eq!(unchanged, state);
         let changed = observed_state(Some(&state), &second, 6_000);
-        assert_eq!(changed.first_observed_unix_ms, 6_000);
+        assert_eq!(changed.first_observed_unix_ms, 1_000);
         assert_eq!(changed.last_changed_unix_ms, 6_000);
     }
 
