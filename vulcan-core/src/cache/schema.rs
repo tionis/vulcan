@@ -792,6 +792,7 @@ pub fn apply_schema_v18(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
 }
 
 pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute("DELETE FROM meta WHERE key = 'property_catalog_config'", [])?;
     // Drop all namespaced vector tables and the legacy table.
     let vector_tables: Vec<String> = {
         let mut statement = transaction.prepare(

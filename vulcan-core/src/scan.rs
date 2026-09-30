@@ -5,7 +5,7 @@ use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind
 use crate::periodic::match_periodic_note_path;
 use crate::properties::{
     extract_indexed_properties, indexed_inline_property_value, rebuild_property_catalog,
-    refresh_property_catalog_for_documents, IndexedProperties,
+    refresh_property_catalog_for_keys, IndexedProperties,
 };
 use crate::resolver::{LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink};
 use crate::tasknotes::extract_tasknote;
@@ -205,6 +205,7 @@ struct IncrementalScanResult {
     /// Document IDs that were added, updated, or deleted.
     changed_document_ids: Vec<String>,
     requires_property_catalog_refresh: bool,
+    affected_property_keys: BTreeSet<String>,
     requires_fts_rebuild: bool,
     /// `(old_path, new_path)` pairs whose document identity was preserved.
     renamed: Vec<(String, String)>,
@@ -448,6 +449,7 @@ where
                         },
                     );
                     rebuild_property_catalog(transaction, &config.property_types)?;
+                    sync_property_catalog_config(transaction, &config)?;
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
@@ -512,7 +514,9 @@ where
                     // commit then fails, the files are still at their new paths on disk and the
                     // next scan re-detects the same renames, so the two cannot drift apart.
                     crate::link_feedback::rename_paths(paths, &result.renamed)?;
-                    if result.requires_property_catalog_refresh {
+                    let catalog_config_changed =
+                        sync_property_catalog_config(transaction, &config)?;
+                    if result.requires_property_catalog_refresh || catalog_config_changed {
                         emit_scan_progress(
                             on_progress,
                             ScanProgress {
@@ -526,14 +530,19 @@ where
                                 deleted: result.summary.deleted,
                             },
                         );
-                        if result.target_pool_changed {
-                            // Documents added/deleted — full catalog rebuild is needed.
+                        if result.target_pool_changed || catalog_config_changed {
+                            // Structural or configured-type changes also remove obsolete
+                            // zero-use declarations, including keys absent from every note.
                             rebuild_property_catalog(transaction, &config.property_types)?;
                         } else {
                             // Only updates — refresh catalog entries for changed documents.
-                            refresh_property_catalog_for_documents(
+                            refresh_property_catalog_for_keys(
                                 transaction,
-                                &result.changed_document_ids,
+                                &result
+                                    .affected_property_keys
+                                    .iter()
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
                                 &config.property_types,
                             )?;
                         }
@@ -768,6 +777,51 @@ fn prepare_derived_content(
     }
 }
 
+/// Configuration can add or remove zero-use declarations without changing any
+/// document's observed types. Compare one indexed metadata row on normal scans;
+/// a changed configuration (or a pre-optimization cache) needs one full recount.
+fn sync_property_catalog_config(
+    transaction: &Transaction<'_>,
+    config: &crate::VaultConfig,
+) -> Result<bool, ScanError> {
+    let signature = serde_json::to_string(&config.property_types)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+    let previous: Option<String> = transaction
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'property_catalog_config'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if previous.as_ref() == Some(&signature) {
+        return Ok(false);
+    }
+    transaction.execute(
+        "INSERT INTO meta(key, value) VALUES ('property_catalog_config', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [&signature],
+    )?;
+    Ok(true)
+}
+
+/// Only catalog membership matters here, not property values. Grouping keeps
+/// repeated inline fields' multiplicity and the same namespace rules as rebuild.
+fn catalog_membership(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> Result<Vec<(String, String, String, i64)>, rusqlite::Error> {
+    let mut statement = transaction.prepare_cached(
+        "SELECT key, value_type,
+             CASE WHEN origin = 'frontmatter' THEN 'frontmatter' ELSE 'inline' END AS namespace,
+             COUNT(*) FROM property_values WHERE document_id = ?1
+         GROUP BY key, value_type, namespace ORDER BY key, value_type, namespace",
+    )?;
+    let rows = statement.query_map([id], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?;
+    rows.collect()
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn apply_incremental_scan(
     transaction: &Transaction<'_>,
@@ -792,6 +846,7 @@ fn apply_incremental_scan(
         target_pool_changed: false,
         changed_document_ids: Vec::new(),
         requires_property_catalog_refresh: false,
+        affected_property_keys: BTreeSet::new(),
         requires_fts_rebuild: false,
         renamed: Vec::new(),
     };
@@ -940,6 +995,7 @@ fn apply_incremental_scan(
                         if !is_new && aliases_changed(transaction, &id, &note.parsed.aliases)? {
                             result.target_pool_changed = true;
                         }
+                        let previous_properties = catalog_membership(transaction, &id)?;
                         replace_derived_rows(
                             transaction,
                             &id,
@@ -950,7 +1006,16 @@ fn apply_incremental_scan(
                             note,
                         )?;
                         result.requires_link_resolution = true;
-                        result.requires_property_catalog_refresh = true;
+                        let current_properties = catalog_membership(transaction, &id)?;
+                        if previous_properties != current_properties {
+                            result.requires_property_catalog_refresh = true;
+                            result.affected_property_keys.extend(
+                                previous_properties
+                                    .iter()
+                                    .chain(&current_properties)
+                                    .map(|entry| entry.0.clone()),
+                            );
+                        }
                     }
                     PreparedDerivedContent::Attachment(chunks) => {
                         replace_attachment_rows(
@@ -3303,6 +3368,86 @@ mod tests {
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn property_catalog_skips_body_and_value_edits_and_removes_last_use() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let note = temp.path().join("note.md");
+        fs::write(&note, "---\nstatus: initial\n---\nBody\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        for source in [
+            "---\nstatus: initial\n---\nLonger body\n",
+            "---\nstatus: changed-value\n---\nBody\n",
+        ] {
+            fs::write(&note, source).unwrap();
+            let mut refreshed = false;
+            let result = scan_vault_with_progress(&paths, ScanMode::Incremental, |progress| {
+                refreshed |= progress.phase == ScanPhase::RefreshingPropertyCatalog;
+            })
+            .unwrap();
+            assert_eq!(result.updated, 1);
+            assert!(
+                !refreshed,
+                "unchanged membership must not recount catalog usage"
+            );
+        }
+        fs::write(&note, "No properties remain\n").unwrap();
+        scan_vault(&paths, ScanMode::Incremental).unwrap();
+        let database = CacheDatabase::open(&paths).unwrap();
+        assert_eq!(
+            database
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM property_catalog WHERE key = 'status'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn property_catalog_reconciles_unused_configured_types_without_body_changes() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        fs::write(
+            temp.path().join("note.md"),
+            "---\nstatus: ready\n---\nBody\n",
+        )
+        .unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        fs::create_dir(temp.path().join(".obsidian")).unwrap();
+        let config = temp.path().join(".obsidian/types.json");
+        for source in [r#"{"unused":"text"}"#, r#"{"unused":"number"}"#, "{}"] {
+            fs::write(&config, source).unwrap();
+            scan_vault(&paths, ScanMode::Incremental).unwrap();
+            let before =
+                property_catalog_signature_rows(CacheDatabase::open(&paths).unwrap().connection());
+            assert_eq!(
+                before.iter().any(|row| row["key"] == "unused"),
+                source != "{}"
+            );
+            scan_vault(&paths, ScanMode::Full).unwrap();
+            assert_eq!(
+                before,
+                property_catalog_signature_rows(CacheDatabase::open(&paths).unwrap().connection())
+            );
+        }
+        // An empty vault still exposes configured types after clearing its cache.
+        fs::write(&config, r#"{"unused":"text"}"#).unwrap();
+        fs::remove_file(temp.path().join("note.md")).unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        database.rebuild_with(|_| Ok::<_, CacheError>(())).unwrap();
+        drop(database);
+        scan_vault(&paths, ScanMode::Incremental).unwrap();
+        assert!(property_catalog_signature_rows(CacheDatabase::open(&paths).unwrap().connection())
+            .iter().any(|row| row["key"] == "unused"));
+    }
 
     #[test]
     fn link_free_changes_clear_diagnostics_without_loading_resolver_targets() {

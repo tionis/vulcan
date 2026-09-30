@@ -1465,39 +1465,13 @@ pub(crate) fn rebuild_property_catalog(
     Ok(())
 }
 
-/// Incrementally refresh the property catalog for only the given document IDs.
-/// Instead of a full rebuild, deletes stale catalog entries for keys that appear in the
-/// changed documents and recomputes counts only for those keys.
-pub(crate) fn refresh_property_catalog_for_documents(
+/// Refresh keys whose catalog membership changed. Callers must include keys
+/// removed by the update, which cannot be recovered from the new property rows.
+pub(crate) fn refresh_property_catalog_for_keys(
     transaction: &rusqlite::Transaction<'_>,
-    changed_document_ids: &[String],
+    affected_keys: &[String],
     configured_types: &BTreeMap<String, String>,
 ) -> Result<(), rusqlite::Error> {
-    if changed_document_ids.is_empty() {
-        return Ok(());
-    }
-
-    let placeholders = changed_document_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    // Collect all property keys that appear in the changed documents (before or after update).
-    // We need to refresh counts for these keys.
-    let sql =
-        format!("SELECT DISTINCT key FROM property_values WHERE document_id IN ({placeholders})");
-    let mut statement = transaction.prepare(&sql)?;
-    let rows = statement.query_map(
-        rusqlite::params_from_iter(changed_document_ids.iter()),
-        |row| row.get::<_, String>(0),
-    )?;
-    let affected_keys: Vec<String> = rows.collect::<Result<Vec<_>, _>>()?;
-
-    // Also include keys from the catalog that might now have zero usage
-    // (if the changed documents were the only ones using them).
-    // The simplest correct approach: delete catalog entries for affected keys,
-    // then reinsert with fresh counts.
     if affected_keys.is_empty() {
         return Ok(());
     }
@@ -1506,7 +1480,7 @@ pub(crate) fn refresh_property_catalog_for_documents(
         (1..=affected_keys.len()).map(|i| format!("?{i}")).collect();
     let key_list = key_placeholders.join(", ");
 
-    let params: Vec<String> = affected_keys.clone();
+    let params: Vec<String> = affected_keys.to_vec();
     let delete_sql = format!("DELETE FROM property_catalog WHERE key IN ({key_list})");
     transaction.execute(&delete_sql, rusqlite::params_from_iter(params.iter()))?;
 
@@ -1530,7 +1504,7 @@ pub(crate) fn refresh_property_catalog_for_documents(
                  ELSE ?{{inline_param}}
              END"
     );
-    let mut insert_params: Vec<String> = affected_keys;
+    let mut insert_params: Vec<String> = affected_keys.to_vec();
     let frontmatter_param = insert_params.len() + 1;
     insert_params.push(PROPERTY_NAMESPACE_FRONTMATTER.to_string());
     let inline_param = insert_params.len() + 1;

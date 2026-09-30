@@ -623,6 +623,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Skip resolver target loading for link-free incremental edits, while clearing obsolete unresolved-link diagnostics and retaining full invalidation for target changes.
 
+- [x] Skip property-catalog recounts for unchanged membership, retain removed keys, and reconcile configured types and cache-rebuild recovery.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.
