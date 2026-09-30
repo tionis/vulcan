@@ -99,13 +99,7 @@ impl ProtectedFileSecretStore {
             .map_err(io_error)?;
         regular_file(&file)?;
         owner_only(&file)?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == io::ErrorKind::WouldBlock {
-                SecretStoreError::Locked
-            } else {
-                io_error(error)
-            }
-        })?;
+        file.try_lock_exclusive().map_err(lock_error)?;
         Ok(SecretMutationLock(file))
     }
 
@@ -210,6 +204,20 @@ fn open_protected_input(path: &Path) -> Result<File, SecretStoreError> {
         return Err(SecretStoreError::Invalid);
     }
     Ok(file)
+}
+
+// Result::map_err passes ownership here; never retain or render its raw locator.
+#[allow(clippy::needless_pass_by_value)]
+fn lock_error(error: io::Error) -> SecretStoreError {
+    // fs2 reports Windows contention as ERROR_LOCK_VIOLATION rather than
+    // WouldBlock. Match its platform-specific code, not every Other error.
+    if error.kind() == io::ErrorKind::WouldBlock
+        || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+    {
+        SecretStoreError::Locked
+    } else {
+        io_error(error)
+    }
 }
 
 // Result::map_err passes ownership here; never retain or render its raw locator.
@@ -339,6 +347,26 @@ mod tests {
 
     fn name() -> SecretName {
         SecretName::parse("mcp-issuer").unwrap()
+    }
+
+    #[test]
+    fn lock_contention_uses_the_platform_code_without_masking_other_errors() {
+        assert_eq!(
+            lock_error(fs2::lock_contended_error()),
+            SecretStoreError::Locked
+        );
+        assert_eq!(
+            lock_error(io::Error::from(io::ErrorKind::WouldBlock)),
+            SecretStoreError::Locked
+        );
+        assert_eq!(
+            lock_error(io::Error::from(io::ErrorKind::PermissionDenied)),
+            SecretStoreError::Denied
+        );
+        assert_eq!(
+            lock_error(io::Error::from(io::ErrorKind::Other)),
+            SecretStoreError::Unknown
+        );
     }
 
     #[test]
