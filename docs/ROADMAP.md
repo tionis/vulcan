@@ -637,6 +637,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Stream Git validation blobs through one batch process and publish parsed caches only after complete success, retaining size limits and timeout cleanup.
 
+- [x] Read registry and retained jobs once per companion snapshot and reconstruct per-wiki status from grouped borrowed inputs.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

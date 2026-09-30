@@ -716,19 +716,41 @@ async fn stream_events(mut socket: WebSocket, state: CompanionHttpState, hub: Ar
 }
 
 fn event_snapshot(state: &CompanionHttpState) -> Result<CompanionEventSnapshot, CompanionError> {
-    let vaults = state.service().list_wikis(None)?;
+    event_snapshot_with_inputs(
+        state,
+        || state.service().list_wikis(None),
+        || state.supervisor.list(),
+    )
+}
+
+fn event_snapshot_with_inputs(
+    state: &CompanionHttpState,
+    load_vaults: impl FnOnce() -> Result<Vec<crate::registry::WikiRegistrationStatus>, CompanionError>,
+    load_jobs: impl FnOnce() -> Result<
+        Vec<crate::supervisor::SupervisedSyncJob>,
+        crate::supervisor::SupervisorError,
+    >,
+) -> Result<CompanionEventSnapshot, CompanionError> {
+    let vaults = load_vaults()?;
+    let jobs = load_jobs()
+        .map_err(|error| CompanionError::new(CompanionErrorKind::Internal, error.to_string()))?;
+    let inputs = crate::status::SyncStatusInputs::new(&jobs);
     let statuses = vaults
         .iter()
-        .map(|vault| state.service().sync_status(&vault.registration.id))
+        .map(|vault| {
+            inputs
+                .status(&vault.registration, &state.state_store)
+                .map_err(|error| {
+                    CompanionError::new(CompanionErrorKind::Internal, error.to_string())
+                })
+        })
         .collect::<Result<Vec<_>, CompanionError>>()?;
     Ok(CompanionEventSnapshot {
         version: COMPANION_PROTOCOL_VERSION,
         event: "state_snapshot",
         vaults,
         statuses,
-        jobs: state.supervisor.list().map_err(|error| {
-            CompanionError::new(CompanionErrorKind::Internal, error.to_string())
-        })?,
+        jobs,
         aggregates: state.supervisor.list_aggregates().map_err(|error| {
             CompanionError::new(CompanionErrorKind::Internal, error.to_string())
         })?,
@@ -814,6 +836,75 @@ mod tests {
             .await
             .expect("response body");
         serde_json::from_slice(&body).expect("JSON response")
+    }
+
+    #[test]
+    fn snapshot_reads_shared_inputs_once_as_vault_count_grows() {
+        use std::cell::Cell;
+        for count in [1, 8, 32] {
+            let (temporary, state) = fixture();
+            for index in 1..count {
+                let path = temporary.path().join(format!("vault-{index}"));
+                std::fs::create_dir(&path).unwrap();
+                state
+                    .registry
+                    .add(
+                        &AddWikiRequest {
+                            profile: None,
+                            id: WikiId::parse(format!("wiki-{index}")).unwrap(),
+                            path,
+                            groups: Vec::new(),
+                            git_dir: None,
+                            permissions_profile: None,
+                            sync_backend: Some("git".to_string()),
+                            platform_profile: None,
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            for vault in state.service().list_wikis(None).unwrap() {
+                state
+                    .supervisor
+                    .enqueue(
+                        vault.registration.id.as_str(),
+                        &vault.registration.path,
+                        vulcan_sync::SyncJobTrigger::Watch,
+                    )
+                    .unwrap();
+            }
+            let registry_reads = Cell::new(0);
+            let history_clones = Cell::new(0);
+            let snapshot = event_snapshot_with_inputs(
+                &state,
+                || {
+                    registry_reads.set(registry_reads.get() + 1);
+                    state.service().list_wikis(None)
+                },
+                || {
+                    history_clones.set(history_clones.get() + 1);
+                    state.supervisor.list()
+                },
+            )
+            .unwrap();
+            assert_eq!((registry_reads.get(), history_clones.get()), (1, 1));
+            assert_eq!(snapshot.vaults.len(), count);
+            assert_eq!(snapshot.jobs.len(), count);
+            for (vault, status) in snapshot.vaults.iter().zip(&snapshot.statuses) {
+                assert_eq!(
+                    *status,
+                    state.service().sync_status(&vault.registration.id).unwrap()
+                );
+                assert!(snapshot.jobs.contains(status.job.as_ref().unwrap()));
+            }
+            eprintln!(
+                "{count} vaults: baseline registry/history {}/{}, batched {}/{}",
+                count + 1,
+                count * 2 + 1,
+                registry_reads.get(),
+                history_clones.get()
+            );
+        }
     }
 
     #[tokio::test]

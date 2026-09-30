@@ -3,6 +3,7 @@
 use crate::registry::{RegistryError, WikiId, WikiRegistration, WikiRegistry};
 use crate::supervisor::{SupervisedSyncJob, SupervisorError, SyncSupervisor};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use vulcan_app::sync_conflicts::list_sync_conflicts_with_state_store;
@@ -92,27 +93,49 @@ pub fn wiki_sync_status(
         .into_iter()
         .find(|registration| &registration.id == wiki_id)
         .ok_or_else(|| RegistryError::UnknownWiki(wiki_id.clone()))?;
-    let mut report = reconstruct_sync_status(&registration, supervisor, state_store)?;
-    report.last_attempt_unix_ms = supervisor
-        .list()?
-        .iter()
-        .rev()
-        .find(|job| job.job.wiki_id.as_deref() == Some(wiki_id.as_str()))
-        .and_then(|job| ulid::Ulid::from_string(&job.job.id).ok())
-        .map(|id| id.timestamp_ms());
-    Ok(report)
+    let jobs = supervisor.list()?;
+    SyncStatusInputs::new(&jobs).status(&registration, state_store)
+}
+
+/// Request-local borrowed history, grouped once without cloning job payloads.
+pub(crate) struct SyncStatusInputs<'a> {
+    jobs: BTreeMap<&'a str, Vec<&'a SupervisedSyncJob>>,
+}
+
+impl<'a> SyncStatusInputs<'a> {
+    pub(crate) fn new(jobs: &'a [SupervisedSyncJob]) -> Self {
+        let mut grouped = BTreeMap::<_, Vec<_>>::new();
+        for job in jobs {
+            if let Some(wiki_id) = job.job.wiki_id.as_deref() {
+                grouped.entry(wiki_id).or_default().push(job);
+            }
+        }
+        Self { jobs: grouped }
+    }
+
+    pub(crate) fn status(
+        &self,
+        registration: &WikiRegistration,
+        state_store: &SyncStateStore,
+    ) -> Result<DaemonWikiSyncStatus, DaemonSyncStatusError> {
+        let jobs = self
+            .jobs
+            .get(registration.id.as_str())
+            .map_or(&[][..], Vec::as_slice);
+        let mut report = reconstruct_sync_status(registration, jobs, state_store)?;
+        report.last_attempt_unix_ms = jobs
+            .last()
+            .and_then(|job| ulid::Ulid::from_string(&job.job.id).ok())
+            .map(|id| id.timestamp_ms());
+        Ok(report)
+    }
 }
 
 fn reconstruct_sync_status(
     registration: &WikiRegistration,
-    supervisor: &SyncSupervisor,
+    relevant_jobs: &[&SupervisedSyncJob],
     state_store: &SyncStateStore,
 ) -> Result<DaemonWikiSyncStatus, DaemonSyncStatusError> {
-    let jobs = supervisor.list()?;
-    let relevant_jobs = jobs
-        .iter()
-        .filter(|job| job.job.wiki_id.as_deref() == Some(registration.id.as_str()))
-        .collect::<Vec<_>>();
     if let Some(job) = relevant_jobs
         .iter()
         .rev()
@@ -403,6 +426,208 @@ mod tests {
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
         let state_store = SyncStateStore::at(temporary.path().join("state"));
         (temporary, registry, supervisor, state_store, id)
+    }
+
+    fn assert_batched_matches(
+        registry: &WikiRegistry,
+        supervisor: &SyncSupervisor,
+        state_store: &SyncStateStore,
+        id: &WikiId,
+        expected: DaemonSyncStatusSource,
+    ) -> DaemonWikiSyncStatus {
+        let registration = registry.show(id).unwrap().registration;
+        let jobs = supervisor.list().unwrap();
+        let batched = SyncStatusInputs::new(&jobs)
+            .status(&registration, state_store)
+            .unwrap();
+        let single = wiki_sync_status(registry, supervisor, state_store, id).unwrap();
+        assert_eq!(
+            serde_json::to_value(&batched).unwrap(),
+            serde_json::to_value(single).unwrap()
+        );
+        assert_eq!(batched.source, expected);
+        batched
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn batched_status_preserves_jobs_recovery_conflict_and_error_precedence() {
+        use vulcan_app::sync_state::SyncApplyMarker;
+        let (temporary, registry, supervisor, state_store, id) = setup();
+        let registration = registry.show(&id).unwrap().registration;
+        assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Idle,
+        );
+        let queued = supervisor
+            .enqueue(id.as_str(), &registration.path, SyncJobTrigger::Watch)
+            .unwrap();
+        assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Job,
+        );
+        supervisor.claim_next().unwrap().unwrap();
+        let mut journal =
+            SyncJournal::preparing(&registration.path, "origin", "refs/heads/live").unwrap();
+        journal.phase = SyncJournalPhase::Fetched;
+        let git_dir = temporary.path().join("private-git");
+        std::fs::create_dir(&git_dir).unwrap();
+        journal.git_dir = Some(git_dir.clone());
+        journal.local_snapshot = Some("a".repeat(40));
+        journal.accepted = Some("b".repeat(40));
+        state_store.save(&journal).unwrap();
+        state_store
+            .save_apply_marker(&git_dir, &SyncApplyMarker::from_journal(&journal).unwrap())
+            .unwrap();
+        // Active work wins even over an interrupted application.
+        assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Job,
+        );
+        supervisor
+            .complete(
+                &queued.job.job.id,
+                SyncJobState::Failed,
+                None,
+                Some(SyncError::new(SyncErrorCategory::Network, "offline", true)),
+            )
+            .unwrap();
+        let marker = assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::ApplyMarker,
+        );
+        assert!(marker.recovery_required);
+        assert!(marker.last_attempt_unix_ms.is_some());
+        std::fs::write(git_dir.join("vulcan-sync/apply.json"), b"invalid").unwrap();
+        let broken_marker = assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::ApplyMarker,
+        );
+        assert_eq!(broken_marker.status.state, SyncState::Error);
+        state_store.clear_apply_marker(&git_dir).unwrap();
+        let journal_report = assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Journal,
+        );
+        assert_eq!(journal_report.status.state, SyncState::Fetched);
+        state_store.clear(&journal.repository_key).unwrap();
+        let failed = assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Job,
+        );
+        assert_eq!(failed.status.state, SyncState::Offline);
+        let completed = supervisor
+            .enqueue(id.as_str(), &registration.path, SyncJobTrigger::Manual)
+            .unwrap();
+        supervisor.claim_next().unwrap().unwrap();
+        supervisor
+            .complete(&completed.job.job.id, SyncJobState::Succeeded, None, None)
+            .unwrap();
+        assert_eq!(
+            assert_batched_matches(
+                &registry,
+                &supervisor,
+                &state_store,
+                &id,
+                DaemonSyncStatusSource::Job
+            )
+            .job
+            .unwrap()
+            .job
+            .id,
+            completed.job.job.id
+        );
+
+        // A durable legacy conflict fixture exercises the real conflict reader.
+        let conflict_id = "c".repeat(32);
+        let directory = state_store
+            .root()
+            .join(&journal.repository_key)
+            .join("conflicts")
+            .join(&conflict_id);
+        std::fs::create_dir_all(&directory).unwrap();
+        let conflict = serde_json::json!({
+            "version": 1, "id": conflict_id, "repository_key": journal.repository_key,
+            "work_tree": registration.path, "base_revision": "base", "local_revision": "local",
+            "remote_revision": "remote", "scope": "paths", "policy_version": 1,
+            "policy_hash": "policy", "preserved_base_ref": null,
+            "preserved_local_ref": "refs/local", "preserved_remote_ref": "refs/remote",
+            "paths": [{"path": "Home.md", "base": {"revision": "base"},
+                "local": {"revision": "local"}, "remote": {"revision": "remote"}}],
+            "diagnostics": "conflict"
+        });
+        std::fs::write(
+            directory.join("record.json"),
+            serde_json::to_vec(&conflict).unwrap(),
+        )
+        .unwrap();
+        let conflicted = assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Conflict,
+        );
+        assert_eq!(conflicted.status.unresolved_conflicts, 1);
+        std::fs::write(directory.join("record.json"), b"invalid").unwrap();
+        let jobs = supervisor.list().unwrap();
+        let batch_error = SyncStatusInputs::new(&jobs)
+            .status(&registration, &state_store)
+            .unwrap_err();
+        assert_eq!(
+            batch_error.to_string(),
+            wiki_sync_status(&registry, &supervisor, &state_store, &id)
+                .unwrap_err()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn grouped_history_keeps_input_order_and_latest_attempt_even_with_an_older_active_job() {
+        let (_temporary, registry, supervisor, state_store, id) = setup();
+        let mut registration = registry.show(&id).unwrap().registration;
+        let first = supervisor
+            .enqueue(id.as_str(), &registration.path, SyncJobTrigger::Watch)
+            .unwrap()
+            .job;
+        let mut unrelated = first.clone();
+        unrelated.job.wiki_id = Some("other".to_string());
+        let mut latest = first.clone();
+        latest.job.id = "invalid-ulid".to_string();
+        latest.job.state = SyncJobState::Succeeded;
+        let jobs = [first.clone(), unrelated, latest];
+        let inputs = SyncStatusInputs::new(&jobs);
+        assert_eq!(inputs.jobs["alpha"].len(), 2);
+        let active = inputs.status(&registration, &state_store).unwrap();
+        assert_eq!(active.job.unwrap(), first);
+        assert_eq!(active.last_attempt_unix_ms, None);
+        registration.sync_paused = true;
+        let empty = SyncStatusInputs::new(&[])
+            .status(&registration, &state_store)
+            .unwrap();
+        assert_eq!(empty.source, DaemonSyncStatusSource::Registration);
+        assert_eq!(empty.status.state, SyncState::Paused);
     }
 
     #[test]
