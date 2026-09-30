@@ -4,6 +4,184 @@ use std::cell::RefCell;
 use tempfile::tempdir;
 
 #[test]
+fn type_registry_reuses_one_snapshot_and_keeps_nested_reference_bases() {
+    let dir = tempdir().unwrap();
+    fs::create_dir(dir.path().join("_types")).unwrap();
+    fs::create_dir(dir.path().join("schemas")).unwrap();
+    fs::write(dir.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(dir.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../schemas/task.yaml\n---\n").unwrap();
+    fs::write(
+        dir.path().join("schemas/task.yaml"),
+        "type: object\nproperties:\n  id: {$ref: id.txt}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("schemas/id.txt"),
+        "type: string\nminLength: 3\n",
+    )
+    .unwrap();
+    let collection = load_mdbase_collection(dir.path()).unwrap().unwrap();
+    let types = load_mdbase_type_registry(&collection).unwrap();
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    assert_eq!(
+        types.compiled_schema("TASK").unwrap().dependencies().len(),
+        2
+    );
+    let cloned = types.clone();
+    assert!(std::ptr::eq(
+        types.compiled_schema("task").unwrap(),
+        cloned.compiled_schema("task").unwrap()
+    ));
+    let record = "---\ntype: task\nid: ab\n---\nBody\n";
+    let before = analyze_mdbase_record_source(&collection, &types, "a.md", record);
+    assert!(before
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "schema_min_length"));
+    fs::write(
+        dir.path().join("schemas/id.txt"),
+        "type: string\nminLength: 1\n",
+    )
+    .unwrap();
+    let fresh = load_mdbase_type_registry(&collection).unwrap();
+    assert!(fresh.diagnostics.is_empty());
+    assert!(
+        analyze_mdbase_record_source(&collection, &fresh, "a.md", record)
+            .diagnostics
+            .is_empty()
+    );
+    assert_ne!(types, fresh);
+    dir.close().unwrap();
+    // Reusing the registry cannot silently read a different control revision,
+    // and record validation cannot recompile/reopen schemas per candidate.
+    for _ in 0..10 {
+        assert_eq!(
+            analyze_mdbase_record_source(&collection, &cloned, "a.md", record),
+            before
+        );
+    }
+}
+
+#[test]
+fn wrapper_introspection_and_validator_use_the_same_authorized_bytes() {
+    let dir = tempdir().unwrap();
+    let base = dir.path().join("type.md");
+    fs::write(&base, "placeholder").unwrap();
+    fs::write(
+        dir.path().join("schema.yaml"),
+        "$defs:\n  id: {type: string, minLength: 3}\n",
+    )
+    .unwrap();
+    let calls = RefCell::new(Vec::new());
+    let (value, compiled) = compile_mdbase_schema_wrapper(
+        &json!({"ref": "schema.yaml#/$defs/id"}),
+        &base,
+        dir.path(),
+        &|path| {
+            calls.borrow_mut().push(path.to_path_buf());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(value, json!({"type": "string", "minLength": 3}));
+    assert_eq!(
+        *calls.borrow(),
+        [PathBuf::from("type.md"), PathBuf::from("schema.yaml")]
+    );
+    assert!(!compiled.validate(&json!("x")).is_empty());
+    assert!(compiled.validate(&json!("valid")).is_empty());
+    for invalid in [
+        json!({"ref":"schema.yaml","value":{}}),
+        json!({"ref": 7, "value": {}}),
+        json!({"ref": 7}),
+    ] {
+        assert!(
+            compile_mdbase_schema_wrapper(&invalid, &base, dir.path(), &|_| {
+                panic!("malformed wrappers must fail before file access")
+            })
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn wrapper_fragment_selection_matches_the_pinned_local_pointer_root() {
+    let dir = tempdir().unwrap();
+    let base = dir.path().join("type.md");
+    fs::write(&base, "placeholder").unwrap();
+    fs::write(dir.path().join("schema.json"), r##"{"$defs":{"nested":{"$ref":"#/$defs/only_nested","$defs":{"only_nested":{"type":"string"}}}}}"##).unwrap();
+    // MDB wrapper selection precedes compilation, unlike a JSON Schema $ref.
+    let (_, compiled) = compile_mdbase_schema_wrapper(
+        &json!({"ref":"schema.json#/$defs/nested"}),
+        &base,
+        dir.path(),
+        &|_| Ok(()),
+    )
+    .unwrap();
+    assert!(compiled.validate(&json!("ok")).is_empty());
+    assert!(!compiled.validate(&json!(7)).is_empty());
+    assert!(compile_mdbase_schema_with_local_refs(
+        &json!({"$ref":"schema.json#/$defs/nested"}),
+        &base,
+        dir.path(),
+        &|_| Ok(())
+    )
+    .is_err());
+}
+
+#[test]
+fn fragment_schema_required_diagnostics_identify_the_missing_nested_property() {
+    let dir = tempdir().unwrap();
+    fs::create_dir(dir.path().join("_types")).unwrap();
+    fs::write(dir.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(dir.path().join("_types/contact.md"), "---\nkind: mdbase.type\nname: contact\nschema:\n  dialect: json-schema-2020-12\n  ref: ../schema.json#/$defs/contact\n---\n").unwrap();
+    fs::write(dir.path().join("schema.json"), r#"{"$defs":{"contact":{"type":"object","required":["name"],"properties":{"address":{"type":"object","required":["street"]}}}}}"#).unwrap();
+    let collection = load_mdbase_collection(dir.path()).unwrap().unwrap();
+    let types = load_mdbase_type_registry(&collection).unwrap();
+    assert!(types.diagnostics.is_empty());
+    let record = analyze_mdbase_record_source(
+        &collection,
+        &types,
+        "a.md",
+        "---\ntype: contact\nname: Name\naddress: {}\n---\n",
+    );
+    assert!(
+        record
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema_required"
+                && diagnostic.field == "/address/street"),
+        "{:?}",
+        record.diagnostics
+    );
+}
+
+#[test]
+fn diagnostics_retain_distinct_missing_and_actual_unexpected_properties() {
+    let diagnostics = validate_mdbase_schema_value(
+        &json!({"type":"object", "required":["first", "second"],
+            "patternProperties":{"^allowed_":{}}, "additionalProperties":false}),
+        &json!({"allowed_name":"ok", "unexpected":"bad"}),
+    )
+    .unwrap();
+    let missing = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "schema_required")
+        .filter_map(|diagnostic| diagnostic.property.as_deref())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(missing, BTreeSet::from(["first", "second"]));
+    let additional = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "schema_additional_properties")
+        .unwrap();
+    assert_eq!(additional.property.as_deref(), Some("unexpected"));
+    assert!(serde_json::to_value(additional)
+        .unwrap()
+        .get("property")
+        .is_none());
+}
+
+#[test]
 fn compiled_schema_retains_exact_transitive_sources_and_validates_without_io() {
     fn assert_shareable<T: Send + Sync>() {}
     assert_shareable::<MdbaseCompiledSchema>();

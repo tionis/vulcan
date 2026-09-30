@@ -35306,6 +35306,54 @@ fn mdbase_status_reports_symlinked_schema_and_accepts_direct_reference() {
 }
 
 #[test]
+fn mdbase_read_uses_nested_schema_bases_and_reloads_controls_between_calls() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("_types")).unwrap();
+    fs::create_dir(root.join("schemas")).unwrap();
+    fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(root.join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../schemas/task.json\n---\n").unwrap();
+    fs::write(
+        root.join("schemas/task.json"),
+        r#"{"type":"object","properties":{"title":{"$ref":"title.json"}}}"#,
+    )
+    .unwrap();
+    fs::write(root.join("a.md"), "---\ntype: task\ntitle: Hi\n---\nBody\n").unwrap();
+    for (minimum, valid) in [(3, false), (1, true)] {
+        fs::write(
+            root.join("schemas/title.json"),
+            format!(r#"{{"type":"string","minLength":{minimum}}}"#),
+        )
+        .unwrap();
+        let result = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "mdbase",
+                "read",
+                "a.md",
+                "--output",
+                "json",
+            ])
+            .assert()
+            .success();
+        let report = parse_stdout_json(&result);
+        assert_eq!(report["valid"], valid);
+        if !valid {
+            assert!(report["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic["code"] == "schema_min_length" && diagnostic["field"] == "/title"
+                }));
+        }
+        assert!(!root.join(".vulcan").exists());
+    }
+}
+
+#[test]
 fn mdbase_conformance_command_emits_pinned_machine_readable_evidence() {
     let output = Command::cargo_bin("vulcan")
         .expect("binary")

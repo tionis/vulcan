@@ -129,6 +129,9 @@ pub struct MdbaseSchemaDiagnostic {
     pub message: String,
     pub instance_path: String,
     pub schema_path: String,
+    /// Validator-owned identity, independent of referenced schema bases.
+    #[serde(skip)]
+    pub(crate) property: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +181,31 @@ pub fn validate_mdbase_schema_value_with_local_refs(
 pub struct MdbaseCompiledSchema {
     validator: jsonschema::Validator,
     dependencies: BTreeMap<PathBuf, Vec<u8>>,
+    source: serde_json::Value,
+    collection_root: PathBuf,
+    relative_base: PathBuf,
+}
+
+impl std::fmt::Debug for MdbaseCompiledSchema {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MdbaseCompiledSchema")
+            .field("base", &self.relative_base)
+            .field(
+                "dependencies",
+                &self.dependencies.keys().collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for MdbaseCompiledSchema {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.dependencies == other.dependencies
+            && self.collection_root == other.collection_root
+            && self.relative_base == other.relative_base
+    }
 }
 
 impl MdbaseCompiledSchema {
@@ -203,6 +231,16 @@ pub fn compile_mdbase_schema_with_local_refs(
     collection_root: &Path,
     authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
 ) -> Result<MdbaseCompiledSchema, MdbaseSchemaCompileError> {
+    let (collection_root, relative_base) =
+        authorized_schema_base(base_file, collection_root, authorize)?;
+    compile_schema_at_authorized_base(schema, collection_root, relative_base, authorize)
+}
+
+fn authorized_schema_base(
+    base_file: &Path,
+    collection_root: &Path,
+    authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+) -> Result<(PathBuf, PathBuf), MdbaseSchemaCompileError> {
     let absolute_root = std::path::absolute(collection_root)
         .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
     let absolute_base = std::path::absolute(base_file)
@@ -224,7 +262,16 @@ pub fn compile_mdbase_schema_with_local_refs(
             relative_base.display()
         ))
     })?;
-    let base_file = collection_root.join(relative_base);
+    Ok((collection_root, relative_base))
+}
+
+fn compile_schema_at_authorized_base(
+    schema: &serde_json::Value,
+    collection_root: PathBuf,
+    relative_base: PathBuf,
+    authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+) -> Result<MdbaseCompiledSchema, MdbaseSchemaCompileError> {
+    let base_file = collection_root.join(&relative_base);
 
     let base_uri = schema_file_uri(&base_file)?;
     let mut schemas = HashMap::new();
@@ -258,7 +305,74 @@ pub fn compile_mdbase_schema_with_local_refs(
     Ok(MdbaseCompiledSchema {
         validator,
         dependencies,
+        source: schema.clone(),
+        collection_root,
+        relative_base,
     })
+}
+
+/// Compile a validated schema wrapper without reopening its root reference to
+/// obtain the resolved introspection value. Both outputs share one snapshot.
+pub fn compile_mdbase_schema_wrapper(
+    wrapper: &serde_json::Value,
+    base_file: &Path,
+    collection_root: &Path,
+    authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+) -> Result<(serde_json::Value, MdbaseCompiledSchema), MdbaseSchemaCompileError> {
+    match (wrapper.get("value"), wrapper.get("ref")) {
+        (Some(value), None) => Ok((
+            value.clone(),
+            compile_mdbase_schema_with_local_refs(value, base_file, collection_root, authorize)?,
+        )),
+        (None, Some(serde_json::Value::String(reference))) => {
+            let (file, fragment) = reference.split_once('#').unwrap_or((reference, ""));
+            if file.is_empty()
+                || file.contains("://")
+                || file.starts_with("urn:")
+                || file.contains('?')
+            {
+                return Err(MdbaseSchemaCompileError(
+                    "schema ref must name a local file".to_string(),
+                ));
+            }
+            let (root, base) = authorized_schema_base(base_file, collection_root, authorize)?;
+            let path = schema_reference_path(
+                &root,
+                base.parent().expect("base file has a parent"),
+                Path::new(file),
+            )?;
+            authorize(&path)?;
+            let (document, bytes) = read_local_schema(&root, &path)?;
+            let resolved = if fragment.is_empty() {
+                document
+            } else if fragment.starts_with('/') {
+                document.pointer(fragment).cloned().ok_or_else(|| {
+                    MdbaseSchemaCompileError(format!(
+                        "schema ref fragment does not exist: #{fragment}"
+                    ))
+                })?
+            } else {
+                return Err(MdbaseSchemaCompileError(
+                    "schema ref fragment must be a JSON Pointer".to_string(),
+                ));
+            };
+            // MDB wrapper selection precedes JSON Schema compilation. The pinned
+            // core fixture treats the selected schema as the local-pointer root;
+            // its file still supplies the base for nested file references.
+            let mut compiled =
+                compile_schema_at_authorized_base(&resolved, root, path.clone(), authorize)?;
+            compiled.dependencies.insert(path, bytes);
+            if compiled.dependencies.len() > MDBASE_SCHEMA_MAX_FILES {
+                return Err(MdbaseSchemaCompileError(format!(
+                    "schema reference count exceeds {MDBASE_SCHEMA_MAX_FILES}"
+                )));
+            }
+            Ok((resolved, compiled))
+        }
+        _ => Err(MdbaseSchemaCompileError(
+            "schema wrapper must contain exactly one value or ref".to_string(),
+        )),
+    }
 }
 
 fn schema_diagnostics(
@@ -278,6 +392,15 @@ fn schema_diagnostics(
                 message: error.to_string(),
                 instance_path: error.instance_path().to_string(),
                 schema_path: error.schema_path().to_string(),
+                property: match error.kind() {
+                    jsonschema::error::ValidationErrorKind::Required { property } => {
+                        property.as_str().map(str::to_string)
+                    }
+                    jsonschema::error::ValidationErrorKind::AdditionalProperties { unexpected } => {
+                        unexpected.iter().min().cloned()
+                    }
+                    _ => None,
+                },
             }
         })
         .collect::<Vec<_>>();
@@ -455,19 +578,26 @@ fn read_local_schema(
             path.display()
         )));
     }
-    let yaml: serde_yaml::Value = serde_yaml::from_slice(&contents).map_err(|error| {
+    let value = parse_local_schema(&contents, path)?;
+    Ok((value, contents))
+}
+
+fn parse_local_schema(
+    contents: &[u8],
+    path: &Path,
+) -> Result<serde_json::Value, MdbaseSchemaCompileError> {
+    let yaml: serde_yaml::Value = serde_yaml::from_slice(contents).map_err(|error| {
         MdbaseSchemaCompileError(format!(
             "failed to parse schema reference {}: {error}",
             path.display()
         ))
     })?;
-    let value = serde_json::to_value(yaml).map_err(|error| {
+    serde_json::to_value(yaml).map_err(|error| {
         MdbaseSchemaCompileError(format!(
             "schema reference {} is not JSON-compatible: {error}",
             path.display()
         ))
-    })?;
-    Ok((value, contents))
+    })
 }
 
 fn collect_external_schema_references<'a>(
@@ -670,6 +800,8 @@ pub struct MdbaseTypeDiagnostic {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct MdbaseTypeRegistry {
     types: BTreeMap<String, MdbaseTypeDefinition>,
+    #[serde(skip)]
+    compiled_schemas: BTreeMap<String, std::sync::Arc<MdbaseCompiledSchema>>,
     pub diagnostics: Vec<MdbaseTypeDiagnostic>,
 }
 
@@ -727,6 +859,14 @@ pub struct MdbaseComposedTypeBehavior {
 }
 
 impl MdbaseTypeRegistry {
+    /// Frozen with this registry; loading a new control revision creates a new
+    /// registry. Clones share validators rather than compiling per record.
+    #[must_use]
+    pub fn compiled_schema(&self, name: &str) -> Option<&MdbaseCompiledSchema> {
+        self.compiled_schemas
+            .get(&normalize_type_name(name))
+            .map(std::sync::Arc::as_ref)
+    }
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&MdbaseTypeDefinition> {
         self.types.get(&normalize_type_name(name))
@@ -1945,6 +2085,7 @@ fn build_mdbase_type_registry(
     let type_schema: serde_json::Value = serde_json::from_str(type_schema.json)
         .map_err(|source| MdbaseTypeRegistryError::BundledSchema { source })?;
     let mut candidates = BTreeMap::<String, Vec<MdbaseTypeDefinition>>::new();
+    let mut prepared_by_path = BTreeMap::new();
     let mut diagnostics = Vec::new();
     let mut paths = type_files.to_vec();
     paths.sort();
@@ -1952,10 +2093,13 @@ fn build_mdbase_type_registry(
 
     for path in paths {
         match load_mdbase_type_file(collection, &path, &type_schema)? {
-            TypeFileLoad::Valid(definition) => candidates
-                .entry(definition.normalized_name.clone())
-                .or_default()
-                .push(definition),
+            TypeFileLoad::Valid(definition, compiled) => {
+                prepared_by_path.insert(definition.path.clone(), compiled);
+                candidates
+                    .entry(definition.normalized_name.clone())
+                    .or_default()
+                    .push(definition);
+            }
             TypeFileLoad::Invalid(mut file_diagnostics) => {
                 diagnostics.append(&mut file_diagnostics);
             }
@@ -1963,10 +2107,17 @@ fn build_mdbase_type_registry(
     }
 
     let mut types = BTreeMap::new();
+    let mut compiled_schemas = BTreeMap::new();
     for (normalized_name, mut definitions) in candidates {
         definitions.sort_by(|left, right| left.path.cmp(&right.path));
         if definitions.len() == 1 {
             let definition = definitions.pop().expect("one definition should remain");
+            compiled_schemas.insert(
+                normalized_name.clone(),
+                prepared_by_path
+                    .remove(&definition.path)
+                    .expect("valid type has a compiled schema"),
+            );
             types.insert(normalized_name, definition);
             continue;
         }
@@ -1992,11 +2143,15 @@ fn build_mdbase_type_registry(
         }
     }
     sort_type_diagnostics(&mut diagnostics);
-    Ok(MdbaseTypeRegistry { types, diagnostics })
+    Ok(MdbaseTypeRegistry {
+        types,
+        compiled_schemas,
+        diagnostics,
+    })
 }
 
 enum TypeFileLoad {
-    Valid(MdbaseTypeDefinition),
+    Valid(MdbaseTypeDefinition, std::sync::Arc<MdbaseCompiledSchema>),
     Invalid(Vec<MdbaseTypeDiagnostic>),
 }
 
@@ -2052,52 +2207,46 @@ fn load_mdbase_type_file(
         .get("ref")
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned);
-    let schema =
-        match contracts::resolve_schema_wrapper(wrapped_schema, &absolute_path, &collection.root) {
-            Ok((schema, _)) => schema,
-            Err(error) => {
-                return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(
-                    path,
-                    "schema_invalid",
-                    format!("failed to resolve type schema: {error}"),
-                    "schema",
-                )]));
-            }
-        };
-    if let Err(error) = validate_mdbase_schema_value_with_local_refs(
-        &schema,
-        &serde_json::Value::Null,
+    let (schema, compiled) = match compile_mdbase_schema_wrapper(
+        wrapped_schema,
         &absolute_path,
         &collection.root,
+        &|_| Ok(()),
     ) {
-        return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(
-            path,
-            "schema_invalid",
-            format!("failed to compile type schema: {error}"),
-            "schema",
-        )]));
-    }
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(
+                path,
+                "schema_invalid",
+                format!("failed to resolve or compile type schema: {error}"),
+                "schema",
+            )]));
+        }
+    };
 
     let name = frontmatter
         .get("name")
         .and_then(serde_json::Value::as_str)
         .expect("validated type frontmatter should contain a string name")
         .to_string();
-    Ok(TypeFileLoad::Valid(MdbaseTypeDefinition {
-        normalized_name: normalize_type_name(&name),
-        name,
-        path: path.to_string(),
-        version: frontmatter
-            .get("version")
-            .and_then(serde_json::Value::as_u64),
-        description: frontmatter
-            .get("description")
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned),
-        schema,
-        schema_ref,
-        frontmatter,
-    }))
+    Ok(TypeFileLoad::Valid(
+        MdbaseTypeDefinition {
+            normalized_name: normalize_type_name(&name),
+            name,
+            path: path.to_string(),
+            version: frontmatter
+                .get("version")
+                .and_then(serde_json::Value::as_u64),
+            description: frontmatter
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            schema,
+            schema_ref,
+            frontmatter,
+        },
+        std::sync::Arc::new(compiled),
+    ))
 }
 
 fn parse_type_frontmatter(

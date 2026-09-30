@@ -1,8 +1,8 @@
 use super::{
     compose_mdbase_type_behavior, discover_mdbase_files, match_mdbase_record_types_with_context,
-    mdbase_glob, project_mdbase_contract_view, resolve_match_field,
-    validate_mdbase_schema_value_with_local_refs, MdbaseCelClock, MdbaseCollection,
-    MdbaseContractRegistry, MdbaseContractView, MdbaseTypeRegistry, MdbaseValidationLevel,
+    mdbase_glob, project_mdbase_contract_view, resolve_match_field, MdbaseCelClock,
+    MdbaseCollection, MdbaseContractRegistry, MdbaseContractView, MdbaseTypeRegistry,
+    MdbaseValidationLevel,
 };
 use crate::config::VaultConfig;
 use crate::parser::{parse_document, ParseDiagnosticKind};
@@ -22,9 +22,9 @@ pub use draft::*;
 #[cfg(test)]
 mod snapshot_tests;
 
-// Version 2 rejects symlinked/non-regular schema dependencies and enforces the
-// transitive reference budget before entering another branch.
-pub const MDBASE_RECORD_MODEL_VERSION: u32 = 2;
+// Version 3 preserves referenced schemas' document base and fragment semantics
+// and validates against the registry's immutable compiled type schemas.
+pub const MDBASE_RECORD_MODEL_VERSION: u32 = 3;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
 ///
@@ -201,7 +201,8 @@ pub fn load_mdbase_records_filtered(
 /// constraint scope before assembling this map; a filtered read result is not
 /// write-integrity evidence. Include creations/replacements and omit deletions
 /// so uniqueness and link validation observe the final batch, not intermediates.
-/// Schema references may still be read through the bounded local schema loader.
+/// Type schemas are validated using the supplied registry's compiled snapshot;
+/// this function does not reopen schema references or recompile validators.
 #[must_use]
 pub fn analyze_mdbase_record_set_sources(
     collection: &MdbaseCollection,
@@ -789,17 +790,11 @@ fn validate_record_schemas(
         let Some(definition) = types.get(type_name) else {
             continue;
         };
-        let type_path = collection.root.join(&definition.path);
-        match validate_mdbase_schema_value_with_local_refs(
-            &definition.schema,
-            frontmatter,
-            &type_path,
-            &collection.root,
-        ) {
-            Ok(schema_diagnostics) => {
+        match types.compiled_schema(type_name) {
+            Some(schema) => {
+                let schema_diagnostics = schema.validate(frontmatter);
                 diagnostics.extend(schema_diagnostics.into_iter().map(|diagnostic| {
-                    let field =
-                        schema_diagnostic_field(&definition.schema, frontmatter, &diagnostic);
+                    let field = schema_diagnostic_field(&diagnostic);
                     MdbaseRecordDiagnostic {
                         severity,
                         code: diagnostic.code,
@@ -812,11 +807,11 @@ fn validate_record_schemas(
                     }
                 }));
             }
-            Err(error) => diagnostics.push(MdbaseRecordDiagnostic {
+            None => diagnostics.push(MdbaseRecordDiagnostic {
                 severity,
                 code: "schema_invalid".to_string(),
                 message: format!(
-                    "failed to compile schema for type `{}`: {error}",
+                    "compiled schema is unavailable for type `{}`",
                     definition.name
                 ),
                 path: path.to_string(),
@@ -829,51 +824,16 @@ fn validate_record_schemas(
     }
 }
 
-fn schema_diagnostic_field(
-    schema: &serde_json::Value,
-    instance: &serde_json::Value,
-    diagnostic: &crate::mdbase::MdbaseSchemaDiagnostic,
-) -> String {
-    let keyword_path = diagnostic.schema_path.as_str();
-    let schema_parent_path = keyword_path
-        .rsplit_once('/')
-        .map(|(parent, _)| parent)
-        .unwrap_or_default();
-    let schema_parent = schema.pointer(schema_parent_path).unwrap_or(schema);
-    let instance_object = instance
-        .pointer(&diagnostic.instance_path)
-        .unwrap_or(instance)
-        .as_object();
-    let qualify = |field: &str| {
+fn schema_diagnostic_field(diagnostic: &crate::mdbase::MdbaseSchemaDiagnostic) -> String {
+    if let Some(field) = &diagnostic.property {
         let escaped = field.replace('~', "~0").replace('/', "~1");
         if diagnostic.instance_path.is_empty() {
             escaped
         } else {
             format!("{}/{escaped}", diagnostic.instance_path)
         }
-    };
-    match diagnostic.code.as_str() {
-        "schema_required" => schema_parent
-            .get("required")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .find(|field| instance_object.is_none_or(|object| !object.contains_key(*field)))
-            .map(qualify)
-            .unwrap_or_default(),
-        "schema_additional_properties" => instance_object
-            .into_iter()
-            .flat_map(|object| object.keys())
-            .find(|field| {
-                schema_parent
-                    .get("properties")
-                    .and_then(serde_json::Value::as_object)
-                    .is_none_or(|properties| !properties.contains_key(*field))
-            })
-            .map(|field| qualify(field))
-            .unwrap_or_default(),
-        _ => diagnostic.instance_path.clone(),
+    } else {
+        diagnostic.instance_path.clone()
     }
 }
 
