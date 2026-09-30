@@ -32,6 +32,8 @@ mod record_cache;
 pub use record_cache::*;
 mod links;
 pub use links::*;
+mod lifecycle;
+pub use lifecycle::*;
 mod write_authorization;
 pub use write_authorization::*;
 mod write_preview;
