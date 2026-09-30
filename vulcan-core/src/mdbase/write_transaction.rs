@@ -1,8 +1,9 @@
 use super::{
-    mdbase_content_revision, verify_mdbase_write_preview, MdbaseWritePreview,
+    mdbase_content_revision, verify_mdbase_write_preview_with_control_filter, MdbaseWritePreview,
     MdbaseWritePreviewChange, MdbaseWritePreviewVerification,
 };
 use crate::paths::{ensure_vulcan_dir, secure_read_to_string, VaultPaths};
+use crate::permissions::PermissionFilter;
 use crate::write_lock::{acquire_read_lock, acquire_write_lock, ReadLockGuard};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -217,6 +218,31 @@ where
     apply_with_preflight_boundary_hook(paths, collection, request, preflight, reconcile, |_| Ok(()))
 }
 
+/// Apply with control-read authorization at both dependency rechecks. The
+/// application still owns record/write authority and recovery-service authority.
+pub fn apply_mdbase_write_transaction_with_control_filter<P, F>(
+    paths: &VaultPaths,
+    collection: &super::MdbaseCollection,
+    request: &MdbaseWriteApplyRequest<'_>,
+    control_filter: Option<&PermissionFilter>,
+    preflight: P,
+    reconcile: F,
+) -> Result<MdbaseWriteOutcome, MdbaseWriteTransactionError>
+where
+    P: FnOnce() -> Result<(), String>,
+    F: FnMut(&MdbaseWriteOutboxEvent) -> Result<(), String>,
+{
+    apply_with_control_filter_boundary_hook(
+        paths,
+        collection,
+        request,
+        control_filter,
+        preflight,
+        reconcile,
+        |_| Ok(()),
+    )
+}
+
 /// Recover the single vault-wide mdbase write journal, if present.
 ///
 /// Cooperating reads, scans, mutations, and sync entrypoints call this while
@@ -403,6 +429,25 @@ fn apply_with_preflight_boundary_hook<P, F, H>(
     collection: &super::MdbaseCollection,
     request: &MdbaseWriteApplyRequest<'_>,
     preflight: P,
+    reconcile: F,
+    boundary: H,
+) -> Result<MdbaseWriteOutcome, MdbaseWriteTransactionError>
+where
+    P: FnOnce() -> Result<(), String>,
+    F: FnMut(&MdbaseWriteOutboxEvent) -> Result<(), String>,
+    H: FnMut(&str) -> Result<(), MdbaseWriteTransactionError>,
+{
+    apply_with_control_filter_boundary_hook(
+        paths, collection, request, None, preflight, reconcile, boundary,
+    )
+}
+
+fn apply_with_control_filter_boundary_hook<P, F, H>(
+    paths: &VaultPaths,
+    collection: &super::MdbaseCollection,
+    request: &MdbaseWriteApplyRequest<'_>,
+    control_filter: Option<&PermissionFilter>,
+    preflight: P,
     mut reconcile: F,
     mut boundary: H,
 ) -> Result<MdbaseWriteOutcome, MdbaseWriteTransactionError>
@@ -422,7 +467,7 @@ where
         receipt.outcome.replayed = true;
         return Ok(receipt.outcome);
     }
-    validate_apply(paths, collection, request)?;
+    validate_apply(paths, collection, request, control_filter)?;
     #[cfg(target_os = "android")]
     verify_android_directory_sync(&collection.root)?;
     preflight().map_err(|error| {
@@ -454,9 +499,12 @@ where
     save_journal(paths, &mut journal)?;
     boundary("replacements_staged")?;
 
-    if let Err(error) =
-        verify_mdbase_write_preview(collection, request.preview, &request.verification)
-    {
+    if let Err(error) = verify_mdbase_write_preview_with_control_filter(
+        collection,
+        request.preview,
+        &request.verification,
+        control_filter,
+    ) {
         clear_transaction(paths, &journal.transaction_id)?;
         return Err(MdbaseWriteTransactionError::from_preview(error));
     }
@@ -607,6 +655,7 @@ fn validate_apply(
     paths: &VaultPaths,
     collection: &super::MdbaseCollection,
     request: &MdbaseWriteApplyRequest<'_>,
+    control_filter: Option<&PermissionFilter>,
 ) -> Result<(), MdbaseWriteTransactionError> {
     if request.idempotency_key.is_empty()
         || request.idempotency_key.len() > 256
@@ -639,8 +688,13 @@ fn validate_apply(
         ));
     }
     ensure_collection_belongs_to_vault(paths, collection)?;
-    verify_mdbase_write_preview(collection, request.preview, &request.verification)
-        .map_err(MdbaseWriteTransactionError::from_preview)
+    verify_mdbase_write_preview_with_control_filter(
+        collection,
+        request.preview,
+        &request.verification,
+        control_filter,
+    )
+    .map_err(MdbaseWriteTransactionError::from_preview)
 }
 
 fn operation_identity(
@@ -1676,6 +1730,77 @@ mod tests {
             permission_revision: "grant:v1",
             config_revision: "config:v1",
             now: Utc.with_ymd_and_hms(2026, 9, 13, 12, 1, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn control_filter_is_enforced_at_both_transaction_rechecks() {
+        use crate::permissions::{PathPermission, ResourceSpecifier};
+        for staged in [false, true] {
+            for hidden in [None, Some("invalid: [SECRET"), Some("type: object\n")] {
+                let (directory, paths, collection) = fixture();
+                let preview = preview(
+                    &collection,
+                    vec![MdbaseWritePreviewChangeRequest {
+                        path: "records/a.md".into(),
+                        after: Some("after\n".into()),
+                        if_revision: None,
+                    }],
+                );
+                let filter = PermissionFilter::new(PathPermission {
+                    allow: vec![ResourceSpecifier::All],
+                    deny: vec![ResourceSpecifier::Note("hidden.txt".into())],
+                });
+                if let Some(contents) = hidden {
+                    write(directory.path(), "hidden.txt", contents);
+                }
+                let change_control = || {
+                    write(
+                        directory.path(),
+                        "_types/task.md",
+                        "---\nschema: {ref: ../hidden.txt}\n---\n",
+                    );
+                };
+                if !staged {
+                    change_control();
+                }
+                let request = MdbaseWriteApplyRequest {
+                    preview: &preview,
+                    verification: verification(),
+                    idempotency_key: "control-recheck",
+                };
+                let mut preflight_called = false;
+                let error = apply_with_control_filter_boundary_hook(
+                    &paths,
+                    &collection,
+                    &request,
+                    Some(&filter),
+                    || {
+                        preflight_called = true;
+                        Ok(())
+                    },
+                    |_| panic!("denied controls must not reconcile"),
+                    |boundary| {
+                        if staged && boundary == "replacements_staged" {
+                            change_control();
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(error.code, "permission_denied");
+                assert_eq!(
+                    error.message,
+                    "permission denied for required mdbase controls"
+                );
+                assert_eq!(preflight_called, staged);
+                assert_eq!(
+                    fs::read_to_string(directory.path().join("records/a.md")).unwrap(),
+                    "before a\n"
+                );
+                assert!(list_mdbase_write_outbox(&paths).unwrap().is_empty());
+                assert!(acquire_mdbase_consistent_read(&paths).is_ok());
+            }
         }
     }
 

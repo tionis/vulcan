@@ -12,16 +12,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
-    apply_mdbase_write_transaction_with_preflight, authorize_mdbase_write_validation_scope,
-    build_mdbase_write_preview, compile_mdbase_query, discover_mdbase_files, execute_mdbase_query,
-    is_mdbase_record_path, load_mdbase_collection, load_mdbase_records_with_contracts_filtered,
-    mdbase_content_revision, MdbaseAuthorizedValidationScope, MdbaseCollection,
-    MdbaseConsistentReadGuard, MdbaseContractDefinition, MdbaseContractImplementation,
-    MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult,
-    MdbaseRecordDiagnostic, MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry,
-    MdbaseWriteApplyRequest, MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome,
-    MdbaseWritePreview, MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest,
-    MdbaseWritePreviewVerification,
+    apply_mdbase_write_transaction_with_control_filter, authorize_mdbase_write_validation_scope,
+    build_mdbase_write_preview_with_control_filter, compile_mdbase_query, discover_mdbase_files,
+    execute_mdbase_query, is_mdbase_record_path, load_mdbase_collection,
+    load_mdbase_records_with_contracts_filtered, mdbase_content_revision,
+    MdbaseAuthorizedValidationScope, MdbaseCollection, MdbaseConsistentReadGuard,
+    MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
+    MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult, MdbaseRecordDiagnostic,
+    MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry, MdbaseWriteApplyRequest,
+    MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome, MdbaseWritePreview,
+    MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
 };
 use vulcan_core::{
     auto_commit, initialize_vulcan_dir, load_vault_config, resolve_permission_profile,
@@ -264,9 +264,24 @@ pub struct MdbaseReadReport {
 
 struct LoadedCollection {
     read_guard: Option<MdbaseConsistentReadGuard>,
+    control_filter: Option<PermissionFilter>,
     collection: MdbaseCollection,
     types: MdbaseTypeRegistry,
     contracts: MdbaseContractRegistry,
+}
+
+impl LoadedCollection {
+    fn capture_preview(
+        &self,
+        request: MdbaseWritePreviewRequest,
+    ) -> Result<MdbaseWritePreview, AppError> {
+        build_mdbase_write_preview_with_control_filter(
+            &self.collection,
+            request,
+            self.control_filter.as_ref(),
+        )
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))
+    }
 }
 
 pub fn build_mdbase_status_report(
@@ -506,7 +521,11 @@ fn plan_mdbase_write_in_mode(
     mode: MdbaseManagedWriteMode,
 ) -> Result<MdbaseWritePlanReport, AppError> {
     validate_plan_request(request)?;
-    let mut loaded = load_collection(paths)?;
+    let selection = resolve_permission_profile(paths, request.permission_profile.as_deref())
+        .map_err(AppError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    let filter = write_control_filter(&guard)?;
+    let mut loaded = load_collection_authorized(paths, Some(&filter))?;
     for type_name in &request.matched_types {
         if loaded.types.get(type_name).is_none() {
             return Err(AppError::operation(format!(
@@ -514,10 +533,7 @@ fn plan_mdbase_write_in_mode(
             )));
         }
     }
-    let selection = resolve_permission_profile(paths, request.permission_profile.as_deref())
-        .map_err(AppError::operation)?;
     let config = load_write_config(paths)?;
-    let guard = ProfilePermissionGuard::new(paths, selection);
     let affected_paths = request
         .changes
         .iter()
@@ -549,8 +565,7 @@ fn plan_mdbase_write_in_mode(
         relevant_record_namespaces: Vec::new(),
         generated_values: request.generated_values.clone(),
     };
-    let initial = build_mdbase_write_preview(&loaded.collection, preview_request.clone())
-        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    let initial = loaded.capture_preview(preview_request.clone())?;
     validate_operation_shape(&request.operation, &initial)?;
     write_validation::reload_controls(&mut loaded)?;
     let clock = vulcan_core::mdbase::MdbaseCelClock::new(
@@ -581,8 +596,7 @@ fn plan_mdbase_write_in_mode(
     preview_request
         .relevant_record_namespaces
         .clone_from(&authorization.collection_record_namespaces);
-    let preview = build_mdbase_write_preview(&loaded.collection, preview_request.clone())
-        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    let preview = loaded.capture_preview(preview_request.clone())?;
     write_validation::check_snapshot_stability(&initial, &preview)?;
     let preview = write_lifecycle::prepare_preview(
         &loaded,
@@ -622,6 +636,19 @@ fn authorize_affected_paths(
     Ok(())
 }
 
+fn write_control_filter(guard: &ProfilePermissionGuard) -> Result<PermissionFilter, AppError> {
+    // Dynamic hooks cannot currently prove complete control-namespace coverage.
+    // Do not fall back to a static ceiling that would bypass those decisions.
+    let filter = guard.read_filter();
+    if guard.has_policy_hook()
+        || !filter.is_allowed("mdbase.yaml")
+        || !filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME)
+    {
+        return Err(control_permission_denied());
+    }
+    Ok(filter)
+}
+
 /// Apply an exact reviewed plan through the crash-safe mdbase transaction.
 /// Cache refresh is part of consistency; plugin delivery and opt-in Git occur
 /// only after the canonical transaction commits and are never repeated for an
@@ -635,10 +662,11 @@ pub fn apply_mdbase_write(
     if !plan.dry_run {
         return Err(AppError::operation("invalid mdbase write plan"));
     }
-    let mut loaded = load_collection(paths)?;
     let selection = resolve_permission_profile(paths, Some(&plan.permission_profile))
         .map_err(AppError::operation)?;
     let guard = ProfilePermissionGuard::new(paths, selection);
+    let filter = write_control_filter(&guard)?;
+    let mut loaded = load_collection_authorized(paths, Some(&filter))?;
     let affected_paths = plan
         .preview
         .changes
@@ -692,10 +720,11 @@ pub fn apply_mdbase_write(
         },
         idempotency_key: &options.idempotency_key,
     };
-    let outcome = apply_mdbase_write_transaction_with_preflight(
+    let outcome = apply_mdbase_write_transaction_with_control_filter(
         paths,
         &loaded.collection,
         &apply_request,
+        Some(&filter),
         || {
             plugins::dispatch_plugin_event(
                 paths,
@@ -1051,6 +1080,7 @@ fn apply_auto_commit(
     }
 }
 
+#[cfg(test)]
 fn load_collection(paths: &VaultPaths) -> Result<LoadedCollection, AppError> {
     load_collection_authorized(paths, None)
 }
@@ -1067,7 +1097,21 @@ fn load_collection_authorized(
     let collection = load_mdbase_collection(paths.vault_root())
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("not an mdbase collection: missing mdbase.yaml"))?;
-    let types = vulcan_core::mdbase::load_mdbase_type_registry_authorized(&collection, filter)
+    let (types, contracts) = load_control_registries(&collection, filter)?;
+    Ok(LoadedCollection {
+        read_guard,
+        control_filter: filter.cloned(),
+        collection,
+        types,
+        contracts,
+    })
+}
+
+fn load_control_registries(
+    collection: &MdbaseCollection,
+    filter: Option<&PermissionFilter>,
+) -> Result<(MdbaseTypeRegistry, MdbaseContractRegistry), AppError> {
+    let types = vulcan_core::mdbase::load_mdbase_type_registry_authorized(collection, filter)
         .map_err(|error| match error {
             vulcan_core::mdbase::MdbaseTypeRegistryError::PermissionDenied => {
                 control_permission_denied()
@@ -1075,19 +1119,14 @@ fn load_collection_authorized(
             error => AppError::operation(error),
         })?;
     let contracts =
-        vulcan_core::mdbase::load_mdbase_contract_registry_authorized(&collection, &types, filter)
+        vulcan_core::mdbase::load_mdbase_contract_registry_authorized(collection, &types, filter)
             .map_err(|error| match error {
-                vulcan_core::mdbase::MdbaseContractRegistryError::PermissionDenied => {
-                    control_permission_denied()
-                }
-                error => AppError::operation(error),
-            })?;
-    Ok(LoadedCollection {
-        read_guard,
-        collection,
-        types,
-        contracts,
-    })
+            vulcan_core::mdbase::MdbaseContractRegistryError::PermissionDenied => {
+                control_permission_denied()
+            }
+            error => AppError::operation(error),
+        })?;
+    Ok((types, contracts))
 }
 
 fn control_permission_denied() -> AppError {
@@ -1656,7 +1695,7 @@ mod tests {
         let source = "An untyped target.\n";
         fs::write(directory.path().join("tasks/public.md"), source).unwrap();
         fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
-        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:tasks/public.md\", \"folder:_types/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:tasks/public.md\"] }\n").unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:tasks/public.md\", \"folder:_types/**\", \"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_contracts/**\"] }\nwrite = { allow = [\"note:tasks/public.md\"] }\n").unwrap();
         let mut request = write_plan_request(
             MdbaseWriteOperation::Delete,
             vec![MdbaseWriteChangeRequest {
@@ -1683,6 +1722,143 @@ mod tests {
             source
         );
         assert!(list_mdbase_write_outbox(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn write_planning_and_apply_require_control_authority_before_config_reads() {
+        let (directory, paths) = fixture();
+        fs::create_dir(directory.path().join(".vulcan")).unwrap();
+        let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_types/**\", \"folder:_contracts/**\", \"folder:tasks/**\"] }\nwrite = { allow = [\"folder:tasks/**\"] }\n";
+        fs::write(paths.config_file(), config).unwrap();
+        let mut request = write_plan_request(
+            MdbaseWriteOperation::Update,
+            vec![MdbaseWriteChangeRequest {
+                path: "tasks/public.md".into(),
+                after: Some("---\ntype: task\ntitle: Updated\n---\n".into()),
+                if_revision: None,
+            }],
+        );
+        request.permission_profile = Some("scoped".into());
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let plan = plan_mdbase_write(&paths, &request, now).unwrap();
+        let options = MdbaseWriteExecutionOptions {
+            idempotency_key: "denied-controls".into(),
+            no_commit: true,
+            quiet: true,
+        };
+        for denied in [
+            "note:mdbase.yaml",
+            "note:mdbase.lock.yaml",
+            "folder:_types/**",
+            "folder:_contracts/**",
+        ] {
+            fs::write(
+                paths.config_file(),
+                config.replace(&format!("\"{denied}\", "), ""),
+            )
+            .unwrap();
+            assert_eq!(
+                plan_mdbase_write(&paths, &request, now).unwrap_err().code(),
+                Some("permission_denied")
+            );
+            assert_eq!(
+                apply_mdbase_write(&paths, &plan, &options, now)
+                    .unwrap_err()
+                    .code(),
+                Some("permission_denied")
+            );
+        }
+        fs::write(
+            paths.config_file(),
+            config.replace("\"note:mdbase.yaml\", ", ""),
+        )
+        .unwrap();
+        for contents in [
+            None,
+            Some("invalid: [SECRET"),
+            Some("spec_version: 0.3.0\n"),
+        ] {
+            if let Some(contents) = contents {
+                fs::write(directory.path().join("mdbase.yaml"), contents).unwrap();
+            } else {
+                fs::remove_file(directory.path().join("mdbase.yaml")).unwrap();
+            }
+            for error in [
+                plan_mdbase_write(&paths, &request, now).unwrap_err(),
+                apply_mdbase_write(&paths, &plan, &options, now).unwrap_err(),
+            ] {
+                assert_eq!(error.code(), Some("permission_denied"));
+                assert_eq!(
+                    error.message(),
+                    "permission denied for required mdbase controls"
+                );
+            }
+        }
+        assert!(!paths.cache_db().exists());
+        assert!(fs::read_to_string(directory.path().join("tasks/public.md"))
+            .unwrap()
+            .contains("title: Public"));
+    }
+
+    #[test]
+    fn write_controls_deny_hidden_schema_bytes_and_dynamic_policy_hooks() {
+        let (directory, paths) = fixture();
+        fs::create_dir(directory.path().join(".vulcan")).unwrap();
+        let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_types/**\", \"folder:_contracts/**\", \"folder:tasks/**\"] }\nwrite = { allow = [\"folder:tasks/**\"] }\n";
+        fs::write(paths.config_file(), config).unwrap();
+        let mut request = write_plan_request(
+            MdbaseWriteOperation::Update,
+            vec![MdbaseWriteChangeRequest {
+                path: "tasks/public.md".into(),
+                after: Some("---\ntype: task\ntitle: Updated\n---\n".into()),
+                if_revision: None,
+            }],
+        );
+        request.permission_profile = Some("scoped".into());
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let plan = plan_mdbase_write(&paths, &request, now).unwrap();
+        fs::write(directory.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../hidden.txt\n---\n").unwrap();
+        for contents in [None, Some("invalid: [SECRET"), Some("type: object\n")] {
+            if let Some(contents) = contents {
+                fs::write(directory.path().join("hidden.txt"), contents).unwrap();
+            }
+            let error = plan_mdbase_write(&paths, &request, now).unwrap_err();
+            assert_eq!(error.code(), Some("permission_denied"));
+            assert_eq!(
+                error.message(),
+                "permission denied for required mdbase controls"
+            );
+            let error = apply_mdbase_write(
+                &paths,
+                &plan,
+                &MdbaseWriteExecutionOptions {
+                    idempotency_key: "hidden-schema".into(),
+                    no_commit: true,
+                    quiet: true,
+                },
+                now,
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), Some("permission_denied"));
+        }
+        let config = config.replace(
+            "\"note:mdbase.yaml\"",
+            "\"note:mdbase.yaml\", \"note:hidden.txt\"",
+        );
+        fs::write(paths.config_file(), &config).unwrap();
+        assert!(plan_mdbase_write(&paths, &request, now).is_ok());
+        fs::write(
+            paths.config_file(),
+            format!("{config}policy_hook = 'policy.js'\n"),
+        )
+        .unwrap();
+        let error = plan_mdbase_write(&paths, &request, now).unwrap_err();
+        assert_eq!(error.code(), Some("permission_denied"));
+        assert_eq!(
+            error.message(),
+            "permission denied for required mdbase controls"
+        );
+        assert!(!paths.cache_db().exists());
     }
 
     #[test]

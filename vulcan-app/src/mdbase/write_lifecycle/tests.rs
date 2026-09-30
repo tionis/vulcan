@@ -311,7 +311,7 @@ fn link_guards_require_complete_visibility_and_receive_authorized_metadata() {
     fs::write(dir.path().join("a.md"), SOURCE).unwrap();
     fs::write(dir.path().join("target.md"), "Target\n").unwrap();
     fs::create_dir(dir.path().join(".vulcan")).unwrap();
-    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\", \"note:mdbase.yaml\", \"folder:_types/**\"] }\nwrite = { allow = [\"note:a.md\"] }\n").unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\", \"note:mdbase.yaml\", \"folder:_types/**\", \"note:mdbase.lock.yaml\", \"folder:_contracts/**\"] }\nwrite = { allow = [\"note:a.md\"] }\n").unwrap();
     let mut draft = request(MdbaseWriteOperation::Update, &[("a.md", Some(SOURCE))]);
     draft.permission_profile = Some("scoped".to_string());
     assert_eq!(

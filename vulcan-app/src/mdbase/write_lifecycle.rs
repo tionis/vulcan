@@ -9,10 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 use vulcan_core::mdbase::{
     analyze_mdbase_record_set_sources, analyze_mdbase_record_source_with_clock,
-    build_mdbase_write_preview, compose_mdbase_type_behavior, is_mdbase_record_path,
-    mdbase_cel_file_value, mdbase_lifecycle_requires_link_index, prepare_mdbase_record_draft,
-    MdbaseCelClock, MdbaseCelEngine, MdbaseCelLinkIndex, MdbaseLifecycleProviderError,
-    MdbaseRecordDiagnostic, MdbaseRecordDraftRequest, MdbaseRecordSet,
+    compose_mdbase_type_behavior, is_mdbase_record_path, mdbase_cel_file_value,
+    mdbase_lifecycle_requires_link_index, prepare_mdbase_record_draft, MdbaseCelClock,
+    MdbaseCelEngine, MdbaseCelLinkIndex, MdbaseLifecycleProviderError, MdbaseRecordDiagnostic,
+    MdbaseRecordDraftRequest, MdbaseRecordSet,
 };
 use vulcan_core::paths::secure_open_read;
 
@@ -90,8 +90,7 @@ pub(super) fn prepare_preview(
         return Ok(scoped);
     }
     request.generated_values = generated;
-    let prepared = build_mdbase_write_preview(&loaded.collection, request)
-        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    let prepared = loaded.capture_preview(request)?;
     write_validation::check_snapshot_stability(&scoped, &prepared)?;
     if scoped.accepted_revisions != prepared.accepted_revisions
         || scoped.directory_memberships != prepared.directory_memberships

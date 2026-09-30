@@ -35354,6 +35354,81 @@ fn mdbase_read_uses_nested_schema_bases_and_reloads_controls_between_calls() {
 }
 
 #[test]
+fn managed_mdbase_cli_write_requires_lockfile_read_authority_even_when_absent() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join(".vulcan")).unwrap();
+    fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(root.join("a.md"), "Original\n").unwrap();
+    let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"folder:_types/**\", \"folder:_contracts/**\", \"note:a.md\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
+    fs::write(root.join(".vulcan/config.toml"), config).unwrap();
+    run_scan(root);
+    let mut denial = None;
+    for contents in [None, Some("SECRET invalid: ["), Some("{}\n")] {
+        if let Some(contents) = contents {
+            fs::write(root.join("mdbase.lock.yaml"), contents).unwrap();
+        }
+        let result = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "scoped",
+                "--output",
+                "json",
+                "note",
+                "append",
+                "a.md",
+                "Added",
+                "--no-commit",
+            ])
+            .assert()
+            .failure();
+        let report = parse_stdout_json(&result);
+        assert_eq!(
+            report["error"],
+            "permission denied for required mdbase controls"
+        );
+        if let Some(expected) = &denial {
+            assert_eq!(&report, expected);
+        } else {
+            denial = Some(report);
+        }
+        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "Original\n");
+    }
+    fs::remove_file(root.join("mdbase.lock.yaml")).unwrap();
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        config.replace(
+            "\"note:mdbase.yaml\"",
+            "\"note:mdbase.yaml\", \"note:mdbase.lock.yaml\"",
+        ),
+    )
+    .unwrap();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--permissions",
+            "scoped",
+            "--output",
+            "json",
+            "note",
+            "append",
+            "a.md",
+            "Added",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    assert!(fs::read_to_string(root.join("a.md"))
+        .unwrap()
+        .contains("Added"));
+}
+
+#[test]
 fn mdbase_cli_checks_control_grants_before_reading_referenced_schema_files() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();

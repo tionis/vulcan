@@ -1,8 +1,9 @@
 use super::{
-    discover_mdbase_files, mdbase_content_revision, mdbase_control_revisions, mdbase_glob,
-    MdbaseCollection, MdbaseControlRevisions,
+    discover_mdbase_files, mdbase_content_revision, mdbase_control_revisions_authorized,
+    mdbase_glob, MdbaseCollection, MdbaseControlRevisions, MdbaseRecordCacheError,
 };
 use crate::paths::secure_read_to_string;
+use crate::permissions::PermissionFilter;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -138,6 +139,13 @@ impl Display for MdbaseWritePreviewError {
 
 impl std::error::Error for MdbaseWritePreviewError {}
 
+fn control_permission_denied() -> MdbaseWritePreviewError {
+    MdbaseWritePreviewError::new(
+        "permission_denied",
+        "permission denied for required mdbase controls",
+    )
+}
+
 /// Capture exact write bytes and every current dependency needed to recheck a
 /// preview before persistence. This function does not mutate the collection or
 /// write derived cache state.
@@ -145,11 +153,23 @@ pub fn build_mdbase_write_preview(
     collection: &MdbaseCollection,
     request: MdbaseWritePreviewRequest,
 ) -> Result<MdbaseWritePreview, MdbaseWritePreviewError> {
+    build_mdbase_write_preview_with_control_filter(collection, request, None)
+}
+
+/// Capture a preview with a collection-relative control-read ceiling. Callers
+/// must separately authorize affected paths and complete record namespaces.
+pub fn build_mdbase_write_preview_with_control_filter(
+    collection: &MdbaseCollection,
+    request: MdbaseWritePreviewRequest,
+    control_filter: Option<&PermissionFilter>,
+) -> Result<MdbaseWritePreview, MdbaseWritePreviewError> {
     validate_request(&request)?;
     let collection_root = canonical_collection_root(collection)?;
-    let control_revisions = mdbase_control_revisions(collection).map_err(|error| {
-        MdbaseWritePreviewError::new("preview_dependency_error", error.to_string())
-    })?;
+    let control_revisions = mdbase_control_revisions_authorized(collection, control_filter)
+        .map_err(|error| match error {
+            MdbaseRecordCacheError::PermissionDenied => control_permission_denied(),
+            error => MdbaseWritePreviewError::new("preview_dependency_error", error.to_string()),
+        })?;
     let mut seen = BTreeSet::new();
     let mut changes = Vec::with_capacity(request.changes.len());
     let mut absence_preconditions = Vec::new();
@@ -226,6 +246,17 @@ pub fn verify_mdbase_write_preview(
     preview: &MdbaseWritePreview,
     verification: &MdbaseWritePreviewVerification<'_>,
 ) -> Result<(), MdbaseWritePreviewError> {
+    verify_mdbase_write_preview_with_control_filter(collection, preview, verification, None)
+}
+
+/// Recheck control authority before recapturing dependencies. Record authority
+/// is an application responsibility, as for preview creation.
+pub fn verify_mdbase_write_preview_with_control_filter(
+    collection: &MdbaseCollection,
+    preview: &MdbaseWritePreview,
+    verification: &MdbaseWritePreviewVerification<'_>,
+    control_filter: Option<&PermissionFilter>,
+) -> Result<(), MdbaseWritePreviewError> {
     if preview.version != MDBASE_WRITE_PREVIEW_VERSION
         || preview.validation_policy_version != MDBASE_VALIDATION_POLICY_VERSION
         || preview.digest != preview_digest(preview)?
@@ -259,7 +290,12 @@ pub fn verify_mdbase_write_preview(
             != canonical_collection_root(collection)
                 .map_err(|_| MdbaseWritePreviewError::stale())?
         || preview.control_revisions
-            != mdbase_control_revisions(collection).map_err(|_| MdbaseWritePreviewError::stale())?
+            != mdbase_control_revisions_authorized(collection, control_filter).map_err(|error| {
+                match error {
+                    MdbaseRecordCacheError::PermissionDenied => control_permission_denied(),
+                    _ => MdbaseWritePreviewError::stale(),
+                }
+            })?
     {
         return Err(MdbaseWritePreviewError::stale());
     }
@@ -521,6 +557,75 @@ mod tests {
             .expect("collection loads")
             .expect("collection exists");
         (directory, collection)
+    }
+
+    #[test]
+    fn preview_capture_and_verification_enforce_control_filter() {
+        use crate::permissions::{PathPermission, ResourceSpecifier};
+        let (directory, collection) = fixture();
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let complete = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: Vec::new(),
+        });
+        let plan = build_mdbase_write_preview_with_control_filter(
+            &collection,
+            request(now),
+            Some(&complete),
+        )
+        .unwrap();
+        assert_eq!(
+            plan,
+            build_mdbase_write_preview(&collection, request(now)).unwrap()
+        );
+        let denied = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("schemas/task.json".into())],
+        });
+        let verification = MdbaseWritePreviewVerification {
+            caller_id: "caller",
+            instance_id: "instance",
+            operation: "update",
+            permission_revision: "grant:v1",
+            config_revision: "config:v1",
+            now,
+        };
+        for contents in [None, Some("invalid: [SECRET"), Some("{}\n")] {
+            let path = directory.path().join("schemas/task.json");
+            if let Some(contents) = contents {
+                fs::write(path, contents).unwrap();
+            } else {
+                fs::remove_file(path).unwrap();
+            }
+            for error in [
+                build_mdbase_write_preview_with_control_filter(
+                    &collection,
+                    request(now),
+                    Some(&denied),
+                )
+                .unwrap_err(),
+                verify_mdbase_write_preview_with_control_filter(
+                    &collection,
+                    &plan,
+                    &verification,
+                    Some(&denied),
+                )
+                .unwrap_err(),
+            ] {
+                assert_eq!(error.code, "permission_denied");
+                assert_eq!(
+                    error.message,
+                    "permission denied for required mdbase controls"
+                );
+            }
+        }
+        verify_mdbase_write_preview_with_control_filter(
+            &collection,
+            &plan,
+            &verification,
+            Some(&complete),
+        )
+        .unwrap();
     }
 
     fn request(now: DateTime<Utc>) -> MdbaseWritePreviewRequest {

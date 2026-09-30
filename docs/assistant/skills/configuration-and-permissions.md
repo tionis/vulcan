@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 30
+version: 31
 tools:
   - config_show
   - config_get
@@ -86,6 +86,7 @@ permission profiles, or diagnoses permission and trust failures.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Managed mdbase writes can require scope-complete read access for uniqueness and incoming link constraints declared by other types, even when editing an untyped note. `permission_denied` does not imply that a hidden conflicting record exists. Do not probe hidden paths, silently borrow an unrestricted grant, or bypass validation with a raw edit; request an explicit authorized grant change if needed.
 - Restricted MDB reads (`status`, `types`, `contracts`, `validate`, `read`, and `query`) also need read access to `mdbase.yaml`, the complete configured type and contract folders, and every referenced local schema. Control-folder coverage is required even when a folder is empty. A denied control makes the operation unavailable; do not omit it or widen the profile implicitly. Keep ordinary record visibility scoped separately.
+- MDB write planning and apply require those control grants plus read authority for `mdbase.lock.yaml`, even when it is absent. Lifecycle recaptures and apply-time dependency rechecks keep the same control ceiling; explicit raw repair does not bypass it. Profiles with dynamic policy hooks are currently denied because complete control-namespace visibility cannot be proved. Do not disable a policy hook or broaden a grant merely to force the write through.
 - Local mdbase schema references must resolve to regular files inside the collection, without symlinked files or parent directories. Diagnose rejected references with `vulcan mdbase status --output json`; a symlink to an in-collection schema is still rejected. Use a directly addressed canonical schema file instead of disabling validation.
 - Type and contract schema-wrapper `ref` paths start from their control-file folder; nested file references start from the containing schema's folder. In the pinned MDB profile, a wrapper fragment selects the schema before compilation, so its fragment-only `$ref` pointers address that selected schema. This differs from an ordinary JSON Schema `$ref` with a fragment. After editing a schema, rerun the direct MDB command to load the new controls.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.

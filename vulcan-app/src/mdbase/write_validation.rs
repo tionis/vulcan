@@ -11,6 +11,9 @@ use vulcan_core::paths::secure_read_to_string;
 /// Reusing registries loaded before the first snapshot could validate old rules
 /// while binding the plan to newer control bytes.
 pub(super) fn reload_controls(loaded: &mut LoadedCollection) -> Result<(), AppError> {
+    if !super::allowed(loaded.control_filter.as_ref(), "mdbase.yaml") {
+        return Err(super::control_permission_denied());
+    }
     let collection = vulcan_core::mdbase::load_mdbase_collection(&loaded.collection.root)
         .map_err(AppError::operation)?
         .ok_or_else(|| {
@@ -19,10 +22,8 @@ pub(super) fn reload_controls(loaded: &mut LoadedCollection) -> Result<(), AppEr
                 "mdbase collection disappeared while planning",
             )
         })?;
-    let types =
-        vulcan_core::mdbase::load_mdbase_type_registry(&collection).map_err(AppError::operation)?;
-    let contracts = vulcan_core::mdbase::load_mdbase_contract_registry(&collection, &types)
-        .map_err(AppError::operation)?;
+    let (types, contracts) =
+        super::load_control_registries(&collection, loaded.control_filter.as_ref())?;
     loaded.collection = collection;
     loaded.types = types;
     loaded.contracts = contracts;
@@ -255,6 +256,29 @@ mod tests {
     }
 
     #[test]
+    fn control_reload_keeps_the_original_read_ceiling() {
+        use vulcan_core::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
+        let (dir, paths) = fixture("");
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("hidden.txt".into())],
+        });
+        let mut loaded = super::super::load_collection_authorized(&paths, Some(&filter)).unwrap();
+        fs::write(dir.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../hidden.txt\n---\n").unwrap();
+        for contents in [None, Some("invalid: [SECRET"), Some("type: object\n")] {
+            if let Some(contents) = contents {
+                fs::write(dir.path().join("hidden.txt"), contents).unwrap();
+            }
+            let error = reload_controls(&mut loaded).unwrap_err();
+            assert_eq!(error.code(), Some("permission_denied"));
+            assert_eq!(
+                error.message(),
+                "permission denied for required mdbase controls"
+            );
+        }
+    }
+
+    #[test]
     fn controls_are_reloaded_inside_the_revision_capture_window() {
         let (dir, paths) = fixture("  unique: [{field: id, scope: collection}]\n");
         let mut loaded = super::super::load_collection(&paths).unwrap();
@@ -305,7 +329,7 @@ mod tests {
         )
         .unwrap();
         fs::create_dir(dir.path().join(".vulcan")).unwrap();
-        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:published/**\", \"folder:_types/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:published/**\"] }\n").unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:published/**\", \"folder:_types/**\", \"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_contracts/**\"] }\nwrite = { allow = [\"folder:published/**\"] }\n").unwrap();
         let mut draft = request(&[("published/two.md", Some(source("two")))]);
         draft.permission_profile = Some("scoped".to_string());
         let plan = plan_mdbase_write(&paths, &draft, now()).unwrap();
@@ -412,7 +436,7 @@ mod tests {
     fn missing_caller_type_hints_cannot_hide_old_or_proposed_membership() {
         let (dir, paths) = fixture("  unique: [{field: id, scope: type}]\n");
         fs::create_dir(dir.path().join(".vulcan")).unwrap();
-        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\", \"folder:_types/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:a.md\"] }\n").unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\", \"folder:_types/**\", \"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_contracts/**\"] }\nwrite = { allow = [\"note:a.md\"] }\n").unwrap();
         let mut proposed = request(&[("a.md", Some(source("one")))]);
         proposed.permission_profile = Some("scoped".to_string());
         assert_eq!(
