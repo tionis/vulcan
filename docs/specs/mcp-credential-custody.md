@@ -17,6 +17,8 @@ The protected store is under the device's Vulcan state directory, outside vaults
 `cache.db`. Its files are owner-only, immutable through ordinary create, and contain bounded
 opaque values. This is exportable, unattended file custody, not encryption, a native keychain,
 or hardware protection. Provider errors fail closed without fallback or permission repair.
+Mutation locks explicitly release at the operation boundary; cloned or fork-inherited descriptors
+cannot retain a completed operation's lock. A competing live mutation still reports `Locked`.
 
 An immutable, owner-only fingerprint receipt for each loaded issuer/signing reference lives in
 the separate device-state `mcp-credential-bindings` directory. Once bound, a missing or different

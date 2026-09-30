@@ -17,6 +17,16 @@ pub struct ProtectedFileSecretStore {
     directory: PathBuf,
 }
 
+struct SecretMutationLock(File);
+
+impl Drop for SecretMutationLock {
+    fn drop(&mut self) {
+        // Closing our handle alone can retain a flock through a fork-inherited
+        // or cloned descriptor. Release at the operation boundary instead.
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
 impl std::fmt::Debug for ProtectedFileSecretStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ProtectedFileSecretStore([PRIVATE LOCATOR])")
@@ -75,7 +85,7 @@ impl ProtectedFileSecretStore {
         }
     }
 
-    fn mutation_lock(&self) -> Result<File, SecretStoreError> {
+    fn mutation_lock(&self) -> Result<SecretMutationLock, SecretStoreError> {
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         no_follow(&mut options);
@@ -96,7 +106,7 @@ impl ProtectedFileSecretStore {
                 io_error(error)
             }
         })?;
-        Ok(file)
+        Ok(SecretMutationLock(file))
     }
 
     fn open_value(&self, name: &SecretName) -> Result<File, SecretStoreError> {
@@ -473,5 +483,25 @@ mod tests {
         assert_eq!(store.get(&name()).unwrap_err(), SecretStoreError::Invalid);
         assert_eq!(store.delete(&name()), Err(SecretStoreError::Invalid));
         assert_eq!(fs::read(outside).unwrap(), b"outside credential");
+    }
+    #[test]
+    fn mutation_lock_release_is_not_delayed_by_a_cloned_handle() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = ProtectedFileSecretStore::at(temporary.path().join("secrets"));
+        let _directory = store.prepare_directory().unwrap();
+        let owner = store.mutation_lock().unwrap();
+        let inherited = owner.0.try_clone().unwrap();
+        assert!(matches!(
+            store.mutation_lock(),
+            Err(SecretStoreError::Locked)
+        ));
+        drop(owner);
+        let next = store.mutation_lock();
+        assert!(
+            next.is_ok(),
+            "the completed owner's lock must be released even while a clone lives"
+        );
+        drop(next);
+        drop(inherited);
     }
 }
