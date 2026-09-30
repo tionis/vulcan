@@ -245,7 +245,7 @@ impl MdbaseCelEngine {
             &mut context,
             &evaluation.clock,
             evaluation.path.as_deref(),
-            evaluation.link_index.as_deref(),
+            evaluation.link_index.as_ref(),
             self.link_budget(),
         );
         match program.program.execute(&context) {
@@ -938,7 +938,7 @@ fn add_mdbase_functions(
     context: &mut Context<'_>,
     clock: &MdbaseCelClock,
     source_path: Option<&str>,
-    link_index: Option<&MdbaseCelLinkIndex>,
+    link_index: Option<&Arc<MdbaseCelLinkIndex>>,
     link_budget: MdbaseCelLinkBudget,
 ) {
     let now: DateTime<FixedOffset> = clock.now_utc.fixed_offset();
@@ -952,7 +952,9 @@ fn add_mdbase_functions(
     context.add_function("asLink", file_as_link);
 
     let source_path = source_path.unwrap_or_default().to_string();
-    let index = Arc::new(link_index.cloned().unwrap_or_default());
+    // The index is an immutable, caller-authorized snapshot. Capturing its Arc
+    // keeps each expression from copying every target's metadata and links.
+    let index = link_index.cloned().unwrap_or_default();
     let link_index = Arc::clone(&index);
     let link_source = source_path.clone();
     context.add_function("link", move |value: Arc<String>| {
@@ -1730,6 +1732,120 @@ mod tests {
                 .value,
             true
         );
+    }
+
+    #[test]
+    #[ignore = "release component benchmark; run serialized with --nocapture"]
+    fn link_registration_component_benchmark() {
+        let records = MdbaseRecordSet {
+            records: (0..10_000)
+                .map(|i| {
+                    let mut record = record();
+                    record.path = format!("tasks/{i:05}.md");
+                    record.file.path = record.path.clone();
+                    record.file.basename = format!("{i:05}");
+                    record.file.name = format!("{i:05}.md");
+                    record
+                })
+                .collect(),
+        };
+        let index = Arc::new(MdbaseCelLinkIndex::new(&records, "id"));
+        let engine = MdbaseCelEngine::default();
+        let clock = fixed_clock();
+        for legacy in [true, false] {
+            let mut samples = Vec::new();
+            for iteration in 0..1020 {
+                let start = std::time::Instant::now();
+                {
+                    let mut context = Context::default();
+                    // Reproduce the previous registration's full snapshot copy.
+                    let captured = if legacy {
+                        Arc::new((*index).clone())
+                    } else {
+                        Arc::clone(&index)
+                    };
+                    add_mdbase_functions(
+                        &mut context,
+                        &clock,
+                        Some("tasks/00000.md"),
+                        Some(&captured),
+                        engine.link_budget(),
+                    );
+                    std::hint::black_box(&context);
+                }
+                if iteration >= 20 {
+                    samples.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "{}",
+                json!({"mode": if legacy {"deep_copy"} else {"shared_arc"},
+                "records": 10000, "links_per_record": 0, "samples": samples.len(),
+                "warmup": 20, "unit": "microseconds", "p50": samples[499],
+                "p95": samples[949], "p99": samples[989]})
+            );
+        }
+    }
+
+    #[test]
+    fn function_registration_retains_the_same_index_and_releases_it() {
+        let records = MdbaseRecordSet {
+            records: vec![record()],
+        };
+        let index = Arc::new(MdbaseCelLinkIndex::new(&records, "id"));
+        for _ in 0..128 {
+            let mut context = Context::default();
+            add_mdbase_functions(
+                &mut context,
+                &fixed_clock(),
+                Some("tasks/open.md"),
+                Some(&index),
+                MdbaseCelEngine::default().link_budget(),
+            );
+            // Both closures must own this exact allocation, not deep copies.
+            assert_eq!(Arc::strong_count(&index), 3);
+            let value = cel_interpreter::Program::compile("link('[[open]]').asFile().path")
+                .expect("compile")
+                .execute(&context)
+                .expect("resolve");
+            assert_eq!(value.json().expect("JSON"), "tasks/open.md");
+            drop(context);
+            assert_eq!(Arc::strong_count(&index), 1);
+        }
+    }
+
+    #[test]
+    fn reused_link_context_resets_traversal_budget_per_evaluation() {
+        let record = record();
+        let index = Arc::new(MdbaseCelLinkIndex::new(
+            &MdbaseRecordSet {
+                records: vec![record.clone()],
+            },
+            "id",
+        ));
+        let context = MdbaseCelContext::query(
+            MdbaseCelContextKind::QueryFilter,
+            &record,
+            std::iter::empty(),
+            json!({}),
+            None,
+            fixed_clock(),
+        )
+        .expect("context")
+        .with_link_index(Arc::clone(&index));
+        let engine = engine_with(|limits| limits.max_link_traversal = 1);
+        let program = engine
+            .compile("link('[[open]]').asFile().path")
+            .expect("compile");
+        for _ in 0..128 {
+            let result = engine
+                .evaluate_context(&program, &context)
+                .expect("evaluate");
+            assert_eq!(result.value, "tasks/open.md");
+            assert!(result.diagnostics.is_empty());
+            assert_eq!(Arc::strong_count(&index), 2);
+        }
     }
 
     #[test]

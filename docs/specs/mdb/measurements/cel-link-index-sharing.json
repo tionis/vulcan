@@ -1,0 +1,53 @@
+{
+  "measurement": "cel_link_function_registration_shared_index",
+  "recorded_at_utc": "2026-09-30T21:56:39Z",
+  "acceptance_gate_result": "not_evaluated",
+  "scope": "CEL context construction, built-in function registration, and destruction only; excludes bindings, expression compilation/execution, source loading, authorization, queries, and serialization",
+  "build": {
+    "base_commit": "0374780f",
+    "patch": "Shared index capture and benchmark committed with this artifact",
+    "compiler": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+    "profile": "Cargo release defaults; no profile overrides or RUSTFLAGS",
+    "crate": "vulcan-core",
+    "features": ["js_runtime", "oauth", "vectors", "web"],
+    "cargo_lock_sha256": "034bc9a0659b5d52accdb6bb4a73410d422e4794d4618d9aa0cd038fe5b1aa68",
+    "benchmark_source_sha256": "b047bbcf45fa9e1578f3cdd61e6cf42a91c81c9364f0d15bd70326e9eb34f057",
+    "test_binary_sha256": "665dd216f9720a8f0c3c50b81472a42fd2d8ebb2e8f608dbb0cf3d360f102dbe"
+  },
+  "machine": {
+    "cpu": "Intel Core i7-8650U @ 1.90GHz",
+    "physical_cores": 4,
+    "logical_cpus": 8,
+    "memory_bytes": 33534963712,
+    "os_kernel": "Linux 6.12.107+deb13-amd64",
+    "architecture": "x86_64",
+    "acceptance_reference_machine": false
+  },
+  "reproduce": "cargo +1.88.0 test --release -p vulcan-core mdbase::cel::tests --lib -- --include-ignored --nocapture --test-threads=1",
+  "method": {
+    "fixture_generator": "vulcan-core/src/mdbase/cel.rs::tests::link_registration_component_benchmark",
+    "fixture": "10000 deterministic in-memory file targets, tasks/00000.md through tasks/09999.md, using the CEL unit record metadata; zero links per record",
+    "seed": "none; sequential inputs",
+    "cache_state": "one prebuilt immutable index; no disk cache or result memoization",
+    "concurrency": 1,
+    "order": ["deep_copy", "shared_arc"],
+    "warmup_per_mode": 20,
+    "samples_per_mode": 1000,
+    "percentile": "nearest rank",
+    "deep_copy": "Clone the entire index before registration to reproduce the previous function-registration path",
+    "shared_arc": "Capture the caller's original Arc without copying targets",
+    "other_cargo_workloads": "none during measurement",
+    "memory_growth": "not measured",
+    "throughput": "not measured"
+  },
+  "results": [
+    {"mode": "deep_copy", "samples": 1000, "errors": 0, "p50_us": 35284.972, "p95_us": 38171.717, "p99_us": 42297.03},
+    {"mode": "shared_arc", "samples": 1000, "errors": 0, "p50_us": 6.647, "p95_us": 7.610, "p99_us": 12.301}
+  ],
+  "limitations": [
+    "Component fixture is not the public 10K/100K Markdown acceptance corpus",
+    "No end-to-end latency, write durability, concurrent reader/writer, memory, or scaling gate evaluated",
+    "CPU frequency, power state, and unrelated host activity uncontrolled; one sequential development-machine run",
+    "Registration measurements do not execute CEL; separate semantic and ownership tests verify link resolution, traversal-budget reset, and release of captured references"
+  ]
+}
