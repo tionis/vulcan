@@ -1,0 +1,55 @@
+{
+  "measurement": "pinned_control_envelope_validator_reuse",
+  "recorded_at_utc": "2026-09-30T21:27:37Z",
+  "acceptance_gate_result": "not_evaluated",
+  "scope": "Schema-envelope validation only, excluding control discovery/source parsing, record derivation, authorization, queries, response serialization, CLI startup, and writes.",
+  "build": {
+    "base_commit": "85a98a8e",
+    "patch": "Envelope reuse implementation and benchmark committed with this artifact",
+    "compiler": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+    "profile": "Cargo release defaults; optimized; no RUSTFLAGS or profile overrides",
+    "crate": "vulcan-core",
+    "features": ["js_runtime", "oauth", "vectors", "web"],
+    "cargo_lock_sha256": "034bc9a0659b5d52accdb6bb4a73410d422e4794d4618d9aa0cd038fe5b1aa68",
+    "benchmark_source_sha256": "56063c664acd8c4e393370b380b1fb9180417e1fdff56975a052934ea0c2de5b",
+    "test_binary_sha256": "39682911ca0c361b4a6e0be5e3c7e5836ca123d282915e521179d8667ebe9b0b"
+  },
+  "machine": {
+    "cpu": "Intel Core i7-8650U @ 1.90GHz",
+    "physical_cores": 4,
+    "logical_cpus": 8,
+    "memory_bytes": 33534963712,
+    "os_kernel": "Linux 6.12.107+deb13-amd64",
+    "architecture": "x86_64",
+    "fixture_filesystem": "btrfs",
+    "acceptance_reference_machine": false
+  },
+  "reproduce": "cargo +1.88.0 test --release -p vulcan-core mdbase::envelope_schema --lib -- --include-ignored --nocapture --test-threads=1",
+  "method": {
+    "fixture": "32 deterministic valid type/contract envelope values, cycling task_0..31 and example.note_0..31; inline object record schemas; temporary control.md base containing an empty frontmatter envelope",
+    "fixture_generator": "vulcan-core/src/mdbase/envelope_schema.rs::tests::envelope_schema_component_benchmark",
+    "seed": "none; sequential deterministic inputs",
+    "warmup_per_mode": 20,
+    "measured_per_mode": 1000,
+    "concurrency": 1,
+    "order": ["type legacy", "type retained", "contract legacy", "contract retained"],
+    "legacy": "Previous local-reference compilation path, including secure base-file checks and bundled-schema compilation on every call",
+    "retained": "Process-wide immutable envelope validator; actual validation for each input; no result memoization",
+    "percentile": "nearest rank",
+    "other_cargo_workloads": "none during measurement",
+    "memory_growth": "not measured",
+    "throughput": "not measured"
+  },
+  "results": [
+    {"schema": "type-file.schema.json", "mode": "legacy_compile_per_file", "samples": 1000, "errors": 0, "p50_us": 2832.517, "p95_us": 3233.26, "p99_us": 4381.224},
+    {"schema": "type-file.schema.json", "mode": "retained", "samples": 1000, "errors": 0, "p50_us": 1.467, "p95_us": 2.364, "p99_us": 2.921},
+    {"schema": "data-contract.schema.json", "mode": "legacy_compile_per_file", "samples": 1000, "errors": 0, "p50_us": 1264.902, "p95_us": 1386.761, "p99_us": 1748.54},
+    {"schema": "data-contract.schema.json", "mode": "retained", "samples": 1000, "errors": 0, "p50_us": 1.63, "p95_us": 1.739, "p99_us": 1.818}
+  ],
+  "limitations": [
+    "Development-machine component comparison, not the 10K/100K acceptance fixture or end-to-end gate",
+    "CPU frequency, power state, and unrelated host activity were not controlled",
+    "One sequential run; no variance study or process cold-start timing",
+    "No concurrent read/write workload, memory-growth evidence, or write-durability measurements"
+  ]
+}

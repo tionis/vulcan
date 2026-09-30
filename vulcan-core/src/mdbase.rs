@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 mod contracts;
 mod control_access;
 mod control_snapshot;
+mod envelope_schema;
 pub use contracts::*;
 mod cel;
 pub use cel::*;
@@ -2196,12 +2197,6 @@ fn build_mdbase_type_registry_with_access(
     type_files: &[String],
     access: &control_access::ControlAccess<'_>,
 ) -> Result<MdbaseTypeRegistry, MdbaseTypeRegistryError> {
-    let type_schema = bundled_mdbase_schema(&format!(
-        "{MDBASE_CANONICAL_SCHEMA_BASE}type-file.schema.json"
-    ))
-    .expect("the type-file schema is part of the pinned bundle");
-    let type_schema: serde_json::Value = serde_json::from_str(type_schema.json)
-        .map_err(|source| MdbaseTypeRegistryError::BundledSchema { source })?;
     let mut candidates = BTreeMap::<String, Vec<MdbaseTypeDefinition>>::new();
     let mut prepared_by_path = BTreeMap::new();
     let mut diagnostics = Vec::new();
@@ -2213,7 +2208,7 @@ fn build_mdbase_type_registry_with_access(
         if !access.path_allowed(&path) {
             return Err(MdbaseTypeRegistryError::PermissionDenied);
         }
-        let result = load_mdbase_type_file(collection, &path, &type_schema, access)?;
+        let result = load_mdbase_type_file(collection, &path, access)?;
         if access.denied() {
             return Err(MdbaseTypeRegistryError::PermissionDenied);
         }
@@ -2285,7 +2280,6 @@ enum TypeFileLoad {
 fn load_mdbase_type_file(
     collection: &MdbaseCollection,
     path: &str,
-    type_schema: &serde_json::Value,
     access: &control_access::ControlAccess<'_>,
 ) -> Result<TypeFileLoad, MdbaseTypeRegistryError> {
     let source = secure_read_to_string(&collection.root, Path::new(path)).map_err(|source| {
@@ -2300,12 +2294,7 @@ fn load_mdbase_type_file(
         Err(diagnostic) => return Ok(TypeFileLoad::Invalid(vec![diagnostic])),
     };
     let absolute_path = collection.root.join(path);
-    let schema_diagnostics = match validate_mdbase_schema_value_with_local_refs(
-        type_schema,
-        &frontmatter,
-        &absolute_path,
-        &collection.root,
-    ) {
+    let schema_diagnostics = match envelope_schema::EnvelopeSchema::Type.validate(&frontmatter) {
         Ok(diagnostics) => diagnostics,
         Err(error) => {
             return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(

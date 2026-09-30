@@ -1,7 +1,6 @@
 use super::{
-    bundled_mdbase_schema, compile_mdbase_schema_wrapper_observed, discover_control_files,
-    validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseCompiledSchema,
-    MdbaseTypeDefinition, MdbaseTypeRegistry, MDBASE_CANONICAL_SCHEMA_BASE,
+    compile_mdbase_schema_wrapper_observed, discover_control_files, MdbaseCollection,
+    MdbaseCompiledSchema, MdbaseTypeDefinition, MdbaseTypeRegistry,
 };
 use crate::config::VaultConfig;
 use crate::parser::parse_document;
@@ -203,10 +202,6 @@ fn build_mdbase_contract_registry(
     contract_files: &[String],
     access: &super::control_access::ControlAccess<'_>,
 ) -> Result<MdbaseContractRegistry, MdbaseContractRegistryError> {
-    let canonical = format!("{MDBASE_CANONICAL_SCHEMA_BASE}data-contract.schema.json");
-    let bundled = bundled_mdbase_schema(&canonical).expect("data-contract schema is bundled");
-    let contract_schema = serde_json::from_str::<serde_json::Value>(bundled.json)
-        .map_err(MdbaseContractRegistryError::BundledSchema)?;
     let mut candidates = BTreeMap::<MdbaseContractIdentity, Vec<MdbaseContractDefinition>>::new();
     let mut diagnostics = Vec::new();
     let mut paths = contract_files.to_vec();
@@ -216,7 +211,7 @@ fn build_mdbase_contract_registry(
         if !access.path_allowed(&path) {
             return Err(MdbaseContractRegistryError::PermissionDenied);
         }
-        let result = load_contract_file(collection, &path, &contract_schema, access)?;
+        let result = load_contract_file(collection, &path, access)?;
         if access.denied() {
             return Err(MdbaseContractRegistryError::PermissionDenied);
         }
@@ -288,7 +283,6 @@ fn build_mdbase_contract_registry(
 fn load_contract_file(
     collection: &MdbaseCollection,
     path: &str,
-    contract_schema: &serde_json::Value,
     access: &super::control_access::ControlAccess<'_>,
 ) -> Result<Result<MdbaseContractDefinition, MdbaseContractDiagnostic>, MdbaseContractRegistryError>
 {
@@ -304,13 +298,7 @@ fn load_contract_file(
         Err(diagnostic) => return Ok(Err(*diagnostic)),
     };
     let absolute_path = collection.root.join(path);
-    if let Some(diagnostic) = validate_contract_envelope(
-        collection,
-        path,
-        &absolute_path,
-        contract_schema,
-        &frontmatter,
-    ) {
+    if let Some(diagnostic) = validate_contract_envelope(path, &frontmatter) {
         return Ok(Err(diagnostic));
     }
     let identity = contract_identity_from_value(&frontmatter)
@@ -350,18 +338,10 @@ fn load_contract_file(
 }
 
 fn validate_contract_envelope(
-    collection: &MdbaseCollection,
     path: &str,
-    absolute_path: &Path,
-    contract_schema: &serde_json::Value,
     frontmatter: &serde_json::Value,
 ) -> Option<MdbaseContractDiagnostic> {
-    match validate_mdbase_schema_value_with_local_refs(
-        contract_schema,
-        frontmatter,
-        absolute_path,
-        &collection.root,
-    ) {
+    match super::envelope_schema::EnvelopeSchema::Contract.validate(frontmatter) {
         Ok(diagnostics) if !diagnostics.is_empty() => Some(contract_diagnostic(
             "invalid_data_contract",
             diagnostics
