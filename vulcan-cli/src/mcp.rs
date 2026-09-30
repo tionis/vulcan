@@ -32,18 +32,14 @@ use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_app::execution::ExecutionCancellationToken;
-#[cfg(feature = "oauth")]
+#[cfg(all(test, feature = "oauth"))]
 use vulcan_app::execution::{
-    ExecutionAuthority, ExecutionContext, ExecutionDeadline, ExecutionIdentity,
-    ExecutionRetryClass, ExecutionVaultIdentity,
+    ExecutionAuthority, ExecutionIdentity, ExecutionRetryClass, ExecutionVaultIdentity,
 };
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_app::execution::{ExecutionContext, ExecutionDeadline};
 use vulcan_app::mcp_assistant;
-#[cfg(feature = "oauth")]
-use vulcan_app::mcp_dispatch::tool_error_response;
-use vulcan_app::mcp_dispatch::{
-    jsonrpc_error, request_id, timeout_http_result, timeout_response_for_request,
-    McpHttpProcessResult, McpMethodHandler,
-};
+use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult, McpMethodHandler};
 use vulcan_app::mcp_help;
 use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION};
 use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
@@ -66,16 +62,22 @@ use vulcan_core::{resolve_permission_profile, watch_vault, VaultPaths, WatchOpti
 use vulcan_daemon::host::{
     RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration, ServiceScope,
 };
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::hosted_executor::HostedExecutionError;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::hosted_executor::{HostedExecutionError, HostedExecutor};
+use vulcan_daemon::hosted_executor::HostedExecutor;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 #[cfg(feature = "oauth")]
-use vulcan_daemon::mcp_hosted::{
-    prepare_hosted_mcp_request, run_hosted_mcp_request, scheduled_operation, HostedMcpRunError,
+use vulcan_daemon::mcp_execution::HostedMcpExecution;
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_execution::{
+    attenuate_mcp_core_profile, hosted_mcp_execution_error, hosted_mcp_unknown_result,
 };
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mcp_hosted::scheduled_operation;
 use vulcan_daemon::mcp_http_auth::McpHttpAuthError;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_http_auth::McpOAuthMode;
@@ -132,13 +134,12 @@ use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TI
 use vulcan_daemon::mcp_sse::{serve_mcp_sse, McpSseEnd};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::McpAuthorizationStore;
-use vulcan_daemon::mcp_worker::{run_mcp_worker, McpWorkerResult};
+#[cfg(feature = "oauth")]
+use vulcan_daemon::mutation_scheduler::MutationScheduler;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mutation_scheduler::MutationSchedulerConfig;
-#[cfg(feature = "oauth")]
-use vulcan_daemon::mutation_scheduler::{
-    MutationScheduleError, MutationScheduler, ScheduledOperation,
-};
+#[cfg(all(test, feature = "oauth"))]
+use vulcan_daemon::mutation_scheduler::ScheduledOperation;
 use vulcan_daemon::process::DaemonProcessContext;
 use vulcan_daemon::shutdown::ShutdownSignal;
 
@@ -208,198 +209,12 @@ impl DerefMut for McpServerCore {
 }
 
 type McpHttpSession = HostedMcpHttpSession<McpServerCore>;
-#[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-struct HostedMcpExecution {
-    scheduler: Arc<MutationScheduler>,
-    executor: Arc<HostedExecutor>,
-    runtime: tokio::runtime::Handle,
-}
 
 #[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 struct ResidentMcpScheduling {
     scheduler: Arc<MutationScheduler>,
     runtime: tokio::runtime::Handle,
-}
-
-#[cfg(feature = "oauth")]
-struct HostedMcpDispatch {
-    http: McpHttpServerContext,
-    inbound: McpHttpRequest,
-    authority: McpSessionAuthority,
-    execution: ExecutionContext,
-}
-
-#[cfg(feature = "oauth")]
-impl HostedMcpExecution {
-    fn prepare(
-        &self,
-        core: &McpServerCore,
-        payload: &Value,
-        authority: &McpSessionAuthority,
-        cancellation: ExecutionCancellationToken,
-        deadline: ExecutionDeadline,
-    ) -> Result<ExecutionContext, Value> {
-        prepare_hosted_mcp_request(
-            &self.executor,
-            &self.runtime,
-            core.session.paths().vault_root(),
-            core.session.selection().grant.clone(),
-            payload,
-            authority,
-            cancellation,
-            deadline,
-        )
-        .map_err(|message| {
-            jsonrpc_error(
-                request_id(payload).unwrap_or(Value::Null),
-                -32603,
-                message,
-                None,
-            )
-        })
-    }
-
-    fn execute(
-        &self,
-        core: &mut McpServerCore,
-        payload: &Value,
-        dispatch: &HostedMcpDispatch,
-    ) -> Result<McpHttpProcessResult, Value> {
-        let http = dispatch.http.clone();
-        let inbound = dispatch.inbound.clone();
-        let authority = dispatch.authority.clone();
-        match run_hosted_mcp_request(
-            &self.scheduler,
-            &self.executor,
-            &self.runtime,
-            core.clone(),
-            payload.clone(),
-            dispatch.execution.clone(),
-            move |_| revalidate_hosted_mcp_authority(&http, &inbound, &authority),
-            attenuate_mcp_core_profile,
-            McpServerCore::process_http_request,
-        ) {
-            Ok((next, response)) => {
-                *core = next;
-                response
-            }
-            Err(HostedMcpRunError::BeforeDispatch(message)) => {
-                Err(hosted_mcp_json_error(payload, message, None))
-            }
-            Err(HostedMcpRunError::Execution(error)) => hosted_mcp_execution_error(
-                payload,
-                &dispatch.execution,
-                &dispatch.http.endpoint,
-                error,
-            ),
-        }
-    }
-}
-
-#[cfg(feature = "oauth")]
-fn revalidate_hosted_mcp_authority(
-    http: &McpHttpServerContext,
-    inbound: &McpHttpRequest,
-    authority: &McpSessionAuthority,
-) -> Result<(), MutationScheduleError> {
-    let current = authenticate_mcp_http_request(http, inbound).map_err(|_| {
-        MutationScheduleError::Revalidation("MCP authority is no longer valid".to_string())
-    })?;
-    if !current.matches(authority) {
-        return Err(MutationScheduleError::Revalidation(
-            "MCP authority changed while queued".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "oauth")]
-fn hosted_mcp_json_error(payload: &Value, message: String, operation_id: Option<&str>) -> Value {
-    jsonrpc_error(
-        request_id(payload).unwrap_or(Value::Null),
-        -32603,
-        message,
-        operation_id.map(|id| serde_json::json!({ "operation_id": id })),
-    )
-}
-
-#[cfg(feature = "oauth")]
-fn hosted_mcp_unknown_result(
-    payload: &Value,
-    operation_id: &str,
-    detail: &str,
-    endpoint: &str,
-) -> McpHttpProcessResult {
-    let response = request_id(payload).map(|id| {
-        let structured = serde_json::json!({
-            "error": detail,
-            "operation_id": operation_id,
-            "status_path": format!("{}/operations/{operation_id}", endpoint.trim_end_matches('/')),
-            "outcome": "indeterminate",
-            "retry": "check_operation_status_first",
-        });
-        if payload.get("method").and_then(Value::as_str) == Some("tools/call") {
-            tool_error_response(id, detail.to_string(), Some(structured))
-        } else {
-            jsonrpc_error(id, -32000, detail.to_string(), Some(structured))
-        }
-    });
-    McpHttpProcessResult {
-        accepted_notification: response.is_none(),
-        response,
-        notifications: Vec::new(),
-        session_stale: true,
-    }
-}
-
-#[cfg(feature = "oauth")]
-fn hosted_mcp_execution_error(
-    payload: &Value,
-    execution: &ExecutionContext,
-    endpoint: &str,
-    error: HostedExecutionError,
-) -> Result<McpHttpProcessResult, Value> {
-    let operation_id = &execution.identity.operation_id;
-    match error {
-        HostedExecutionError::BeforeDispatch { detail, .. } => Err(jsonrpc_error(
-            request_id(payload).unwrap_or(Value::Null),
-            -32603,
-            detail,
-            Some(serde_json::json!({
-                "operation_id": operation_id,
-                "status_path": format!("{}/operations/{operation_id}", endpoint.trim_end_matches('/')),
-                "dispatched": false,
-            })),
-        )),
-        HostedExecutionError::Operation {
-            detail,
-            committed: Some(false),
-            ..
-        } => Err(jsonrpc_error(
-            request_id(payload).unwrap_or(Value::Null),
-            -32603,
-            detail,
-            Some(serde_json::json!({
-                "operation_id": operation_id,
-                "status_path": format!("{}/operations/{operation_id}", endpoint.trim_end_matches('/')),
-                "dispatched": true,
-                "committed": false,
-            })),
-        )),
-        other => Ok(hosted_mcp_unknown_result(
-            payload,
-            operation_id,
-            &other.to_string(),
-            endpoint,
-        )),
-    }
-}
-
-#[cfg(feature = "oauth")]
-fn attenuate_mcp_core_profile(core: &mut McpServerCore) -> Result<(), String> {
-    core.session.attenuate_profile()
 }
 
 #[derive(Debug, Clone)]
@@ -1348,63 +1163,22 @@ fn handle_named_mcp_operation_status(
         return insufficient_scope_response(context, "mcp:tools");
     }
     let not_found = || mcp_http_json_error_response(404, "Not Found", Value::Null);
-    let (Some(hosted), Some(named), Some(grant_id), Some(wiki_id)) = (
-        context.hosted.as_ref(),
-        context.named_runtime.as_ref(),
-        authority.grant_id,
-        authority.wiki_id.as_ref(),
-    ) else {
-        return not_found();
-    };
-    let Some(vault) = named.vaults.get(wiki_id) else {
-        return not_found();
-    };
-    let Ok(record) = hosted.executor.ledger().load(operation_id) else {
-        return not_found();
-    };
-    let Ok(selection) =
-        resolve_permission_profile(&vault.paths, authority.permission_profile.as_deref())
+    let (Some(hosted), Some(named)) = (context.hosted.as_ref(), context.named_runtime.as_ref())
     else {
         return not_found();
     };
-    let grant = selection.grant;
-    let caller = ExecutionContext::new(
-        match ExecutionVaultIdentity::resolve(vault.paths.vault_root(), None, None) {
-            Ok(vault) => vault,
-            Err(_) => return not_found(),
-        },
-        ExecutionAuthority::Caller {
-            principal_id: authority
-                .subject
-                .clone()
-                .or_else(|| authority.client_id.clone())
-                .unwrap_or_default(),
-            credential_id: Some(grant_id.to_string()),
-            permission_ceiling: grant.clone(),
-        },
-        grant,
-        ExecutionIdentity::new(format!("mcp:{}", authority.remote_instance_id)),
-        authority.audience.clone(),
-        ExecutionRetryClass::ReadOnly,
-        ExecutionCancellationToken::default(),
-        None,
-    );
-    if !caller.is_ok_and(|caller| record.matches_caller(&caller)) {
+    let Some(report) = vulcan_daemon::mcp_hosted::named_mcp_operation_status(
+        &hosted.executor.ledger(),
+        named,
+        authority,
+        operation_id,
+    ) else {
         return not_found();
-    }
-    let body = serde_json::json!({
-        "operation_id": record.operation_id,
-        "state": record.state,
-        "dispatched": record.dispatched,
-        "committed": record.committed,
-        "retry_disposition": record.retry_disposition,
-        "updated_unix_ms": record.updated_unix_ms,
-        "detail": record.detail,
-    });
+    };
     McpHttpResponse {
         status: 200,
         content_type: Some("application/json"),
-        body: serde_json::to_vec(&body).expect("operation status should serialize"),
+        body: serde_json::to_vec(&report).expect("operation status should serialize"),
         extra_headers: vec![
             ("Cache-Control".to_string(), "no-store".to_string()),
             ("Vary".to_string(), "Authorization".to_string()),
@@ -1686,54 +1460,19 @@ impl McpServerCore {
     }
 
     fn process_request_with_timeout(&mut self, request: Value, timeout: Duration) -> Vec<Value> {
-        if timeout.is_zero() {
-            return timeout_response_for_request(&request, timeout)
-                .into_iter()
-                .collect();
-        }
-        let timeout_request = request.clone();
-        let mut worker = self.clone();
-        match run_mcp_worker("vulcan-mcp-request", timeout, None, move || {
-            let messages = worker.process_request(request);
-            (worker, messages)
-        }) {
-            McpWorkerResult::Completed((next, messages)) => {
-                *self = next;
-                messages
-            }
-            McpWorkerResult::TimedOut => timeout_response_for_request(&timeout_request, timeout)
-                .into_iter()
-                .collect(),
-            McpWorkerResult::Disconnected => {
-                let id = request_id(&timeout_request).unwrap_or(Value::Null);
-                vec![jsonrpc_error(
-                    id,
-                    -32603,
-                    "MCP request worker stopped before producing a response".to_string(),
-                    None,
-                )]
-            }
-            McpWorkerResult::SpawnFailed => {
-                let id = request_id(&timeout_request).unwrap_or(Value::Null);
-                vec![jsonrpc_error(
-                    id,
-                    -32603,
-                    "MCP request worker could not be started".to_string(),
-                    None,
-                )]
-            }
-        }
+        vulcan_daemon::mcp_execution::process_request_with_timeout(self, request, timeout)
     }
 
+    #[cfg(test)]
     fn process_request(&mut self, request: Value) -> Vec<Value> {
         self.inner.process_request(request)
     }
 
+    #[cfg(test)]
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
         self.inner.process_http_request(request)
     }
 
-    #[allow(clippy::too_many_lines)] // Registration must precede the worker, and all timeout branches share its ID.
     fn process_http_request_with_timeout(
         &mut self,
         request: Value,
@@ -1743,166 +1482,20 @@ impl McpServerCore {
         authority: &McpSessionAuthority,
         cancellation: ExecutionCancellationToken,
     ) -> Result<McpHttpProcessResult, Value> {
-        if cancellation.is_cancelled() {
-            return Err(jsonrpc_error(
-                request_id(&request).unwrap_or(Value::Null),
-                -32800,
-                "MCP request cancelled before dispatch".to_string(),
-                None,
-            ));
-        }
-        if timeout.is_zero() {
-            return Ok(timeout_http_result(&request, timeout));
-        }
-        let timeout_request = request.clone();
-        let mut worker = self.clone();
         #[cfg(feature = "oauth")]
-        let hosted = http_context.hosted.clone();
-        // One deadline shared by the scheduler and this response wait, so a queued mutation whose
-        // pre-dispatch deadline fires before the worker wait still gets the durable status response.
-        #[cfg(feature = "oauth")]
-        let dispatch_deadline = ExecutionDeadline::after(timeout);
-        #[cfg(feature = "oauth")]
-        let dispatch = hosted
-            .as_ref()
-            .map(|hosted| {
-                hosted
-                    .prepare(
-                        self,
-                        &request,
-                        authority,
-                        cancellation.clone(),
-                        dispatch_deadline,
-                    )
-                    .map(|execution| HostedMcpDispatch {
-                        http: http_context.clone(),
-                        inbound: inbound.clone(),
-                        authority: authority.clone(),
-                        execution,
-                    })
-            })
-            .transpose()?;
-        #[cfg(feature = "oauth")]
-        let operation_id = dispatch
-            .as_ref()
-            .filter(|_| scheduled_operation(&request) == ScheduledOperation::Mutation)
-            .map(|dispatch| dispatch.execution.identity.operation_id.clone());
-        #[cfg(feature = "oauth")]
-        let failed_ledger = hosted.as_ref().map(|hosted| hosted.executor.ledger());
-        #[cfg(feature = "oauth")]
-        let named_runtime = http_context.named_runtime.is_some();
+        let hosted = http_context.hosted.as_ref();
         #[cfg(not(feature = "oauth"))]
-        let _ = (http_context, inbound, authority);
-        let worker_cancellation = cancellation.clone();
-        let worker_result = run_mcp_worker(
-            "vulcan-mcp-http-request",
+        let hosted = None;
+        vulcan_daemon::mcp_execution::process_http_request_with_timeout(
+            self,
+            request,
             timeout,
-            Some(&cancellation),
-            move || {
-                #[cfg(feature = "oauth")]
-                let result = if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
-                    // A hosted mutation is already durably registered. Let its executor
-                    // record pre-dispatch cancellation and retain the operation ID.
-                    hosted.execute(&mut worker, &request, &dispatch)
-                } else if worker_cancellation.is_cancelled() {
-                    Err(jsonrpc_error(
-                        request_id(&request).unwrap_or(Value::Null),
-                        -32800,
-                        "MCP request cancelled before dispatch".to_string(),
-                        None,
-                    ))
-                } else if named_runtime {
-                    attenuate_mcp_core_profile(&mut worker)
-                        .map_err(|message| {
-                            jsonrpc_error(
-                                request_id(&request).unwrap_or(Value::Null),
-                                -32603,
-                                message,
-                                None,
-                            )
-                        })
-                        .and_then(|()| worker.process_http_request(&request))
-                } else {
-                    worker.process_http_request(&request)
-                };
-                #[cfg(not(feature = "oauth"))]
-                let result = if worker_cancellation.is_cancelled() {
-                    Err(jsonrpc_error(
-                        request_id(&request).unwrap_or(Value::Null),
-                        -32800,
-                        "MCP request cancelled before dispatch".to_string(),
-                        None,
-                    ))
-                } else {
-                    worker.process_http_request(&request)
-                };
-                (worker, result)
-            },
-        );
-        if matches!(worker_result, McpWorkerResult::SpawnFailed) {
-            #[cfg(feature = "oauth")]
-            if let (Some(operation_id), Some(ledger)) = (&operation_id, failed_ledger) {
-                let _ = ledger.mark_failed(
-                    operation_id,
-                    Some(false),
-                    "MCP request worker could not be started",
-                    current_unix_millis(),
-                );
-            }
-            return Err(jsonrpc_error(
-                request_id(&timeout_request).unwrap_or(Value::Null),
-                -32603,
-                "MCP request worker could not be started".to_string(),
-                None,
-            ));
-        }
-        match worker_result {
-            McpWorkerResult::Completed((next, result)) => {
-                *self = next;
-                #[cfg(feature = "oauth")]
-                if let (Err(_), Some(operation_id)) = (&result, operation_id.as_deref()) {
-                    if dispatch_deadline.is_expired_at(SystemTime::now()) {
-                        return Ok(hosted_mcp_unknown_result(
-                            &timeout_request,
-                            operation_id,
-                            "MCP response deadline expired; write outcome is not yet known",
-                            &http_context.endpoint,
-                        ));
-                    }
-                }
-                result
-            }
-            McpWorkerResult::TimedOut => {
-                #[cfg(feature = "oauth")]
-                if let Some(operation_id) = operation_id.as_deref() {
-                    return Ok(hosted_mcp_unknown_result(
-                        &timeout_request,
-                        operation_id,
-                        "MCP response deadline expired; write outcome is not yet known",
-                        &http_context.endpoint,
-                    ));
-                }
-                Ok(timeout_http_result(&timeout_request, timeout))
-            }
-            McpWorkerResult::Disconnected => {
-                #[cfg(feature = "oauth")]
-                if let Some(operation_id) = operation_id.as_deref() {
-                    return Ok(hosted_mcp_unknown_result(
-                        &timeout_request,
-                        operation_id,
-                        "MCP request worker stopped; write outcome is not yet known",
-                        &http_context.endpoint,
-                    ));
-                }
-                Err(jsonrpc_error(
-                    request_id(&timeout_request).unwrap_or(Value::Null),
-                    -32603,
-                    "MCP request worker stopped before producing a response".to_string(),
-                    None,
-                ))
-            }
-            McpWorkerResult::SpawnFailed => unreachable!("handled before result dispatch"),
-        }
+            &http_context.inner,
+            inbound,
+            authority,
+            &cancellation,
+            hosted,
+        )
     }
 }
 
@@ -1917,6 +1510,28 @@ impl McpMethodHandler for McpServerCore {
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
         self.inner.list_changed_notifications()
+    }
+}
+
+impl vulcan_daemon::mcp_execution::McpRequestCore for McpServerCore {
+    fn vault_paths(&self) -> &VaultPaths {
+        self.session.paths()
+    }
+
+    fn permission_grant(&self) -> vulcan_core::PermissionGrant {
+        self.session.selection().grant.clone()
+    }
+
+    fn attenuate_profile(&mut self) -> Result<(), String> {
+        self.session.attenuate_profile()
+    }
+
+    fn process_request(&mut self, request: Value) -> Vec<Value> {
+        self.inner.process_request(request)
+    }
+
+    fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
+        self.inner.process_http_request(request)
     }
 }
 

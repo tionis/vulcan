@@ -3,8 +3,11 @@
 use crate::hosted_executor::{
     HostedExecutionError, HostedExecutor, HostedOperationCompletion, HostedOperationFailure,
 };
+use crate::hosted_jobs::{HostedJobLedger, HostedJobState, HostedRetryDisposition};
+use crate::mcp_remote_runtime::NamedMcpRuntime;
 use crate::mcp_session::McpSessionAuthority;
 use crate::mutation_scheduler::{MutationScheduleError, MutationScheduler, ScheduledOperation};
+use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 use vulcan_app::execution::{
@@ -13,6 +16,73 @@ use vulcan_app::execution::{
 };
 use vulcan_app::mcp_dispatch::{request_is_read_only, McpHttpProcessResult};
 use vulcan_core::PermissionGrant;
+
+/// Public status projection, deliberately excluding stored paths and caller identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct McpOperationStatusReport {
+    pub operation_id: String,
+    pub state: HostedJobState,
+    pub dispatched: bool,
+    pub committed: Option<bool>,
+    pub retry_disposition: HostedRetryDisposition,
+    pub updated_unix_ms: u64,
+    pub detail: Option<String>,
+}
+
+/// Inspect an operation only after the transport authenticates its authority.
+/// Missing, invalid, legacy-unbound, and foreign records all remain indistinguishable.
+#[must_use]
+pub fn named_mcp_operation_status(
+    ledger: &HostedJobLedger,
+    named: &NamedMcpRuntime,
+    authority: &McpSessionAuthority,
+    operation_id: &str,
+) -> Option<McpOperationStatusReport> {
+    if !authority.allows_scope("mcp:tools")
+        || authority.remote_id.as_ref() != Some(&named.remote_id)
+    {
+        return None;
+    }
+    let grant_id = authority.grant_id?;
+    let vault = named.vaults.get(authority.wiki_id.as_ref()?)?;
+    let record = ledger.load(operation_id).ok()?;
+    let grant = vulcan_core::resolve_permission_profile(
+        &vault.paths,
+        authority.permission_profile.as_deref(),
+    )
+    .ok()?
+    .grant;
+    let caller = ExecutionContext::new(
+        ExecutionVaultIdentity::resolve(vault.paths.vault_root(), None, None).ok()?,
+        ExecutionAuthority::Caller {
+            principal_id: authority
+                .subject
+                .clone()
+                .or_else(|| authority.client_id.clone())
+                .unwrap_or_default(),
+            credential_id: Some(grant_id.to_string()),
+            permission_ceiling: grant.clone(),
+        },
+        grant,
+        ExecutionIdentity::new(format!("mcp:{}", authority.remote_instance_id)),
+        authority.audience.clone(),
+        ExecutionRetryClass::ReadOnly,
+        ExecutionCancellationToken::default(),
+        None,
+    )
+    .ok()?;
+    record
+        .matches_caller(&caller)
+        .then_some(McpOperationStatusReport {
+            operation_id: record.operation_id,
+            state: record.state,
+            dispatched: record.dispatched,
+            committed: record.committed,
+            retry_disposition: record.retry_disposition,
+            updated_unix_ms: record.updated_unix_ms,
+            detail: record.detail,
+        })
+}
 
 /// Build one caller-bound execution and register its mutation before launching
 /// the request worker. Reads retain the same identity without durable logging.
@@ -161,8 +231,8 @@ fn build_execution_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_execution_context, prepare_hosted_mcp_request, run_hosted_mcp_request,
-        scheduled_operation, HostedMcpRunError,
+        build_execution_context, named_mcp_operation_status, prepare_hosted_mcp_request,
+        run_hosted_mcp_request, scheduled_operation, HostedMcpRunError,
     };
     use crate::hosted_executor::HostedExecutor;
     use crate::hosted_jobs::{HostedJobLedger, HostedJobState};
@@ -179,6 +249,82 @@ mod tests {
     };
     use vulcan_app::mcp_dispatch::McpHttpProcessResult;
     use vulcan_core::{PermissionGrant, PermissionProfile};
+
+    #[test]
+    fn operation_status_is_bound_to_named_instance_vault_subject_and_grant() {
+        use crate::mcp_remote::McpRemoteId;
+        use crate::mcp_remote_runtime::{NamedMcpRuntime, NamedMcpVaultRuntime};
+        use crate::mcp_state::McpAuthorizationStore;
+        use crate::registry::WikiId;
+        use std::collections::BTreeMap;
+        use vulcan_core::VaultPaths;
+
+        let vault = tempdir().unwrap();
+        let paths = VaultPaths::new(vault.path());
+        let wiki = WikiId::parse("personal").unwrap();
+        let remote = McpRemoteId::parse("personal").unwrap();
+        let named = NamedMcpRuntime {
+            remote_id: remote.clone(),
+            vaults: BTreeMap::from([(
+                wiki.clone(),
+                NamedMcpVaultRuntime {
+                    paths,
+                    ceiling_profile: "readonly".into(),
+                    default_profile: "readonly".into(),
+                    eligible_tool_packs: vec!["notes-read".into()],
+                },
+            )]),
+            authorization_store: McpAuthorizationStore::at(vault.path()),
+        };
+        let authority = McpSessionAuthority::granted(
+            remote,
+            Ulid::new(),
+            Ulid::new(),
+            "client".into(),
+            "https://identity.example.test/alice".into(),
+            wiki,
+            "https://mcp.example.test/mcp".into(),
+            "readonly".into(),
+            vec!["notes-read".into()],
+            vec!["mcp:tools".into()],
+            "private-token-marker",
+        );
+        let execution = build_execution_context(
+            vault.path(),
+            PermissionGrant::from_profile(&PermissionProfile::readonly()),
+            &authority,
+            ExecutionCancellationToken::default(),
+            ExecutionDeadline::after(std::time::Duration::from_secs(5)),
+            ScheduledOperation::Mutation,
+        )
+        .unwrap();
+        let ledger = HostedJobLedger::at(vault.path().join("operations"));
+        ledger.register(&execution, 1000).unwrap();
+        let id = &execution.identity.operation_id;
+        let report = named_mcp_operation_status(&ledger, &named, &authority, id).unwrap();
+        assert_eq!(report.state, HostedJobState::Queued);
+        assert!(!report.dispatched);
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 7);
+        let text = json.to_string();
+        assert!(!text.contains("private-token-marker"));
+        assert!(!text.contains(&vault.path().display().to_string()));
+        assert!(!text.contains("alice"));
+        for dimension in 0..7 {
+            let mut other = authority.clone();
+            match dimension {
+                0 => other.grant_id = Some(Ulid::new()),
+                1 => other.remote_instance_id = Ulid::new(),
+                2 => other.subject = Some("https://identity.example.test/bob".into()),
+                3 => other.audience = Some("https://other.example.test/mcp".into()),
+                4 => other.wiki_id = Some(WikiId::parse("other").unwrap()),
+                5 => other.remote_id = Some(McpRemoteId::parse("other").unwrap()),
+                _ => other.scopes.clear(),
+            }
+            assert!(named_mcp_operation_status(&ledger, &named, &other, id).is_none());
+        }
+        assert!(named_mcp_operation_status(&ledger, &named, &authority, "invalid").is_none());
+    }
 
     #[test]
     fn hosted_context_binds_principal_grant_and_retry_class() {

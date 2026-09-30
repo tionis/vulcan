@@ -329,6 +329,14 @@ tokens outside its busy executor lock. Queued hosted work can cancel before disp
 of a dispatched write is not proof of rollback and retains the durable operation-status contract.
 A live hosted-queue regression confirms a same-session HTTP cancellation yields a terminal
 non-dispatched operation record and leaves the requested note absent.
+`vulcan-daemon::mcp_execution` owns request-worker orchestration for both stdio and HTTP,
+including hosted mutation registration before worker launch, post-queue authority revalidation,
+profile attenuation, and response deadlines. Its protocol-core contract contains no CLI types.
+Only a completed worker replaces the live session state; timed-out dispatched writes retain
+their operation identity and status path while the executor keeps its permit and outcome monitor.
+The shared `mcp_hosted` lookup projects status only for the exact instance, exposed vault, principal,
+grant, and audience, without exposing stored paths or caller identity. Transport adapters retain
+HTTP headers/status presentation and inject the command-help and custom-tool name catalogs.
 `vulcan-app::mcp_help` owns built-in help topics, their report types, and help-resource response
 shaping, with command-specific help supplied by the host.
 `vulcan-app::mcp_completion` owns permission-filtered completion and response shaping with the
