@@ -120,6 +120,11 @@ impl MigrationRegistry {
                 "index mdbase record type membership",
                 schema::apply_schema_v20,
             ),
+            Migration::new(
+                21,
+                "retain persisted mdbase record metadata",
+                schema::apply_schema_v21,
+            ),
         ])
     }
 
@@ -278,6 +283,39 @@ mod tests {
             MigrationRegistry::schema_v1().target_version(),
             SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn mdbase_metadata_migration_does_not_invent_persisted_values() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let mut old = MigrationRegistry::schema_v1();
+        old.migrations.retain(|migration| migration.version <= 20);
+        old.migrate(&mut connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO mdbase_record_cache VALUES ('root','a.md','revision','controls',5,
+             '[\"task\"]','{\"status\":\"open\"}',NULL,'[]','[]')",
+                [],
+            )
+            .unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        let (effective, metadata): (String, Option<String>) = connection
+            .query_row(
+                "SELECT effective_frontmatter_json, metadata_json FROM mdbase_record_cache",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(effective, r#"{"status":"open"}"#);
+        assert!(metadata.is_none());
+        let memberships: i64 = connection
+            .query_row("SELECT count(*) FROM mdbase_record_types", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(memberships, 1);
     }
 
     #[test]

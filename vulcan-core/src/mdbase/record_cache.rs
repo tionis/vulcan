@@ -1,8 +1,8 @@
 use super::control_access::ControlAccess;
 use super::{
     load_mdbase_records_with_contracts, MdbaseCollection, MdbaseContractRegistry,
-    MdbaseContractView, MdbaseRecordDiagnostic, MdbaseRecordError, MdbaseTypeRegistry,
-    MDBASE_LOCK_FILE_NAME, MDBASE_RECORD_MODEL_VERSION,
+    MdbaseContractView, MdbaseRecordDiagnostic, MdbaseRecordError, MdbaseRecordFileMetadata,
+    MdbaseTypeRegistry, MDBASE_LOCK_FILE_NAME, MDBASE_RECORD_MODEL_VERSION,
 };
 use crate::cache::{CacheDatabase, CacheError};
 use crate::paths::secure_read_to_string;
@@ -26,9 +26,11 @@ const TYPE_CANDIDATE_SQL: &str = "SELECT DISTINCT membership.path
       ON record.collection_root = membership.collection_root AND record.path = membership.path
     WHERE membership.collection_root = ?1 AND membership.type_name = wanted.value
       AND record.dependency_digest = ?2 AND record.record_model_version = ?3
+      AND record.metadata_json IS NOT NULL
     ORDER BY membership.path";
 const ALL_CANDIDATE_SQL: &str = "SELECT path FROM mdbase_record_cache
     WHERE collection_root = ?1 AND dependency_digest = ?2 AND record_model_version = ?3
+      AND metadata_json IS NOT NULL
     ORDER BY path";
 
 /// Select cached candidate paths for the type-membership part of a structured
@@ -78,6 +80,14 @@ pub fn select_cached_mdbase_candidate_paths(
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MdbaseCachedMetadata {
+    /// Authored values only; missing properties remain absent. Never fill these
+    /// from effective defaults or projected contract fields.
+    pub frontmatter: serde_json::Value,
+    pub file: MdbaseRecordFileMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MdbaseCachedRecord {
     pub collection_root: String,
     pub path: String,
@@ -89,6 +99,11 @@ pub struct MdbaseCachedRecord {
     pub display: Option<serde_json::Value>,
     pub contract_views: Vec<MdbaseContractView>,
     pub diagnostics: Vec<MdbaseRecordDiagnostic>,
+    /// Absent on migrated legacy rows until source-derived refresh. This is not
+    /// a complete record: body, exact source, and permission-scoped links are not
+    /// included. Collection diagnostics still require scope-aware evaluation.
+    #[serde(default)]
+    pub metadata: Option<MdbaseCachedMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -471,41 +486,55 @@ fn update_mdbase_record_cache_with_boundary(
     let controls = verify_mdbase_control_snapshots(collection, types, contracts, None)?;
     let dependency_digest = controls.combined.clone();
     let collection_root = cache_collection_root(collection)?;
-    let records = load_mdbase_records_with_contracts(collection, types, contracts, false)?;
-    let next = records
-        .records
-        .into_iter()
-        .map(|record| {
-            let path = record.path.clone();
-            (
-                path,
-                MdbaseCachedRecord {
-                    collection_root: collection_root.clone(),
-                    path: record.path,
-                    revision: record.revision,
-                    dependency_digest: dependency_digest.clone(),
-                    record_model_version: MDBASE_RECORD_MODEL_VERSION,
-                    types: record.types,
-                    effective_frontmatter: record.effective_frontmatter,
-                    display: record.display,
-                    contract_views: record.contract_views,
-                    diagnostics: record.diagnostics,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let previous = load_collection_cache(database.connection(), &collection_root)?;
-    let dependency_changed = previous.values().any(|record| {
-        record.dependency_digest != dependency_digest
-            || record.record_model_version != MDBASE_RECORD_MODEL_VERSION
+    let next = derive_collection_cache(
+        collection,
+        types,
+        contracts,
+        &collection_root,
+        &dependency_digest,
+    )?;
+    // Rebuild must not deserialize disposable payloads: damaged JSON is one of
+    // the reasons callers need it. Only headers are needed for change counts.
+    let previous = if rebuild {
+        BTreeMap::new()
+    } else {
+        load_collection_cache(database.connection(), &collection_root)?
+    };
+    let previous_headers = if rebuild {
+        let mut statement = database.connection().prepare(
+            "SELECT path, dependency_digest, record_model_version FROM mdbase_record_cache WHERE collection_root = ?1",
+        )?;
+        let rows = statement.query_map([&collection_root], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, String>(1)?, row.get::<_, u32>(2)?),
+            ))
+        })?;
+        rows.collect::<Result<BTreeMap<_, _>, _>>()?
+    } else {
+        previous
+            .iter()
+            .map(|(path, record)| {
+                (
+                    path.clone(),
+                    (
+                        record.dependency_digest.clone(),
+                        record.record_model_version,
+                    ),
+                )
+            })
+            .collect()
+    };
+    let dependency_changed = previous_headers.values().any(|(digest, version)| {
+        digest != &dependency_digest || *version != MDBASE_RECORD_MODEL_VERSION
     });
-    let deleted = previous
+    let deleted = previous_headers
         .keys()
         .filter(|path| !next.contains_key(*path))
         .count();
     let added = next
         .keys()
-        .filter(|path| !previous.contains_key(*path))
+        .filter(|path| !previous_headers.contains_key(*path))
         .count();
     let updated = if rebuild {
         next.len().saturating_sub(added)
@@ -557,6 +586,42 @@ fn update_mdbase_record_cache_with_boundary(
     })
 }
 
+fn derive_collection_cache(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    collection_root: &str,
+    dependency_digest: &str,
+) -> Result<BTreeMap<String, MdbaseCachedRecord>, MdbaseRecordCacheError> {
+    let records = load_mdbase_records_with_contracts(collection, types, contracts, false)?;
+    Ok(records
+        .records
+        .into_iter()
+        .map(|record| {
+            let path = record.path.clone();
+            (
+                path,
+                MdbaseCachedRecord {
+                    collection_root: collection_root.to_string(),
+                    path: record.path,
+                    revision: record.revision,
+                    dependency_digest: dependency_digest.to_string(),
+                    record_model_version: MDBASE_RECORD_MODEL_VERSION,
+                    types: record.types,
+                    effective_frontmatter: record.effective_frontmatter,
+                    display: record.display,
+                    contract_views: record.contract_views,
+                    diagnostics: record.diagnostics,
+                    metadata: Some(MdbaseCachedMetadata {
+                        frontmatter: record.frontmatter,
+                        file: record.file,
+                    }),
+                },
+            )
+        })
+        .collect())
+}
+
 /// Read a projection only when both its source revision and dependency set are current.
 pub fn get_cached_mdbase_record(
     connection: &Connection,
@@ -570,10 +635,11 @@ pub fn get_cached_mdbase_record(
         .query_row(
             "SELECT collection_root, path, revision, dependency_digest, record_model_version,
                     types_json, effective_frontmatter_json, display_json,
-                    contract_views_json, diagnostics_json
+                    contract_views_json, diagnostics_json, metadata_json
              FROM mdbase_record_cache
              WHERE collection_root = ?1 AND path = ?2 AND revision = ?3
-               AND dependency_digest = ?4 AND record_model_version = ?5",
+               AND dependency_digest = ?4 AND record_model_version = ?5
+               AND metadata_json IS NOT NULL",
             params![
                 collection_root,
                 path,
@@ -594,7 +660,7 @@ fn load_collection_cache(
     let mut statement = connection.prepare(
         "SELECT collection_root, path, revision, dependency_digest, record_model_version,
                 types_json, effective_frontmatter_json, display_json,
-                contract_views_json, diagnostics_json
+                contract_views_json, diagnostics_json, metadata_json
          FROM mdbase_record_cache WHERE collection_root = ?1 ORDER BY path",
     )?;
     let rows = statement.query_map([collection_root], cached_record_from_row)?;
@@ -612,6 +678,7 @@ fn cached_record_from_row(row: &rusqlite::Row<'_>) -> Result<MdbaseCachedRecord,
     let display_json = row.get::<_, Option<String>>(7)?;
     let contract_views_json = row.get::<_, String>(8)?;
     let diagnostics_json = row.get::<_, String>(9)?;
+    let metadata_json = row.get::<_, Option<String>>(10)?;
     Ok(MdbaseCachedRecord {
         collection_root: row.get(0)?,
         path: row.get(1)?,
@@ -626,6 +693,10 @@ fn cached_record_from_row(row: &rusqlite::Row<'_>) -> Result<MdbaseCachedRecord,
             .transpose()?,
         contract_views: parse_json_column(8, &contract_views_json)?,
         diagnostics: parse_json_column(9, &diagnostics_json)?,
+        metadata: metadata_json
+            .as_deref()
+            .map(|value| parse_json_column(10, value))
+            .transpose()?,
     })
 }
 
@@ -655,12 +726,17 @@ fn store_cached_record(
         .transpose()?;
     let contract_views = serde_json::to_string(&record.contract_views)?;
     let diagnostics = serde_json::to_string(&record.diagnostics)?;
+    let metadata = record
+        .metadata
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     transaction.execute(
         "INSERT INTO mdbase_record_cache (
             collection_root, path, revision, dependency_digest, record_model_version,
             types_json, effective_frontmatter_json, display_json,
-            contract_views_json, diagnostics_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            contract_views_json, diagnostics_json, metadata_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(collection_root, path) DO UPDATE SET
             revision = excluded.revision,
             dependency_digest = excluded.dependency_digest,
@@ -669,7 +745,8 @@ fn store_cached_record(
             effective_frontmatter_json = excluded.effective_frontmatter_json,
             display_json = excluded.display_json,
             contract_views_json = excluded.contract_views_json,
-            diagnostics_json = excluded.diagnostics_json",
+            diagnostics_json = excluded.diagnostics_json,
+            metadata_json = excluded.metadata_json",
         params![
             record.collection_root,
             record.path,
@@ -681,6 +758,7 @@ fn store_cached_record(
             display,
             contract_views,
             diagnostics,
+            metadata,
         ],
     )?;
     Ok(())
@@ -724,6 +802,172 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_repairs_unreadable_disposable_payloads_without_rewriting_notes() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        let source = "---\nempty: ''\n---\nExact body\n";
+        write(&directory.path().join("a.md"), source);
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        let first =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let record = load_mdbase_record(&collection, &types, "a.md", false).unwrap();
+        for column in [
+            "metadata_json",
+            "effective_frontmatter_json",
+            "diagnostics_json",
+        ] {
+            database
+                .connection()
+                .execute(
+                    &format!("UPDATE mdbase_record_cache SET {column} = '{{'"),
+                    [],
+                )
+                .unwrap();
+            assert!(get_cached_mdbase_record(
+                database.connection(),
+                &collection,
+                "a.md",
+                &record.revision,
+                &first.dependency_digest
+            )
+            .is_err());
+            let rebuilt =
+                rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts)
+                    .unwrap();
+            assert_eq!((rebuilt.added, rebuilt.updated, rebuilt.deleted), (0, 1, 0));
+            let cached = get_cached_mdbase_record(
+                database.connection(),
+                &collection,
+                "a.md",
+                &record.revision,
+                &rebuilt.dependency_digest,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(cached.metadata.unwrap().frontmatter, record.frontmatter);
+            assert_eq!(
+                fs::read_to_string(directory.path().join("a.md")).unwrap(),
+                source
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One snapshot progresses through metadata drift and payload repair.
+    fn cached_metadata_preserves_persisted_values_and_tracks_metadata_only_changes() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  read_defaults: {status: open}\n---\n");
+        let source = "---\ntype: task\nnull_value: null\nempty: ''\nzero: 0\nflag: false\nlist: []\nnested: {key: value}\n---\nCanonical body\n";
+        write(&directory.path().join("a.md"), source);
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        let first =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let record = load_mdbase_record(&collection, &types, "a.md", false).unwrap();
+        let cached = get_cached_mdbase_record(
+            database.connection(),
+            &collection,
+            "a.md",
+            &record.revision,
+            &first.dependency_digest,
+        )
+        .unwrap()
+        .unwrap();
+        let metadata = cached.metadata.unwrap();
+        assert_eq!(metadata.frontmatter, record.frontmatter);
+        assert_eq!(metadata.file, record.file);
+        assert!(!metadata
+            .frontmatter
+            .as_object()
+            .unwrap()
+            .contains_key("status"));
+        assert_eq!(cached.effective_frontmatter["status"], "open");
+        assert!(metadata.frontmatter["null_value"].is_null());
+        assert_eq!(metadata.frontmatter["empty"], "");
+        let encoded = serde_json::to_value(&metadata).unwrap();
+        assert!(encoded.get("body").is_none());
+        assert!(encoded.get("document").is_none());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("a.md")).unwrap(),
+            source
+        );
+
+        fs::File::options()
+            .write(true)
+            .open(directory.path().join("a.md"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100))
+            .unwrap();
+        let changed =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(changed.updated, 1);
+        let next = get_cached_mdbase_record(
+            database.connection(),
+            &collection,
+            "a.md",
+            &record.revision,
+            &changed.dependency_digest,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(next.revision, record.revision);
+        assert_ne!(next.metadata.unwrap().file.mtime, metadata.file.mtime);
+
+        // A legacy or damaged incomplete payload must not be returned as current.
+        database
+            .connection()
+            .execute("UPDATE mdbase_record_cache SET metadata_json = NULL", [])
+            .unwrap();
+        assert!(get_cached_mdbase_record(
+            database.connection(),
+            &collection,
+            "a.md",
+            &record.revision,
+            &changed.dependency_digest
+        )
+        .unwrap()
+        .is_none());
+        let plan =
+            super::super::compile_mdbase_query(&serde_json::json!({"types": ["task"]})).unwrap();
+        assert!(select_cached_mdbase_candidate_paths(
+            database.connection(),
+            &collection,
+            &plan,
+            &changed.dependency_digest,
+            None
+        )
+        .unwrap()
+        .is_empty());
+        let repaired =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(repaired.updated, 1);
+        assert!(get_cached_mdbase_record(
+            database.connection(),
+            &collection,
+            "a.md",
+            &record.revision,
+            &repaired.dependency_digest
+        )
+        .unwrap()
+        .unwrap()
+        .metadata
+        .is_some());
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)] // One indexed corpus exercises plan, scope, and clearing together.
     fn indexed_candidates_preserve_membership_scope_and_leave_other_work_residual() {
         use crate::permissions::{PathPermission, ResourceSpecifier};
@@ -758,6 +1002,19 @@ mod tests {
                             display: None,
                             contract_views: vec![],
                             diagnostics: vec![],
+                            metadata: Some(MdbaseCachedMetadata {
+                                frontmatter: serde_json::json!({"status": "open"}),
+                                file: MdbaseRecordFileMetadata {
+                                    path: format!("record-{i:05}.md"),
+                                    name: format!("record-{i:05}.md"),
+                                    basename: format!("record-{i:05}"),
+                                    ext: "md".to_string(),
+                                    folder: String::new(),
+                                    size: 0,
+                                    mtime: None,
+                                    ctime: None,
+                                },
+                            }),
                         },
                     )?;
                 }
@@ -773,7 +1030,7 @@ mod tests {
             .execute(
                 "INSERT INTO mdbase_record_cache SELECT collection_root || '/other', path,
              revision, dependency_digest, record_model_version, types_json,
-             effective_frontmatter_json, display_json, contract_views_json, diagnostics_json
+             effective_frontmatter_json, display_json, contract_views_json, diagnostics_json, metadata_json
              FROM mdbase_record_cache WHERE path = 'record-00000.md'",
                 [],
             )

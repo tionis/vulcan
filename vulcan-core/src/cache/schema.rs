@@ -1,5 +1,11 @@
 use rusqlite::Transaction;
 
+/// Legacy projections lack persisted values and cannot become complete metadata
+/// snapshots through migration alone. Null payloads are repaired from the vault.
+pub fn apply_schema_v21(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch("ALTER TABLE mdbase_record_cache ADD COLUMN metadata_json TEXT;")
+}
+
 /// Derived type membership for indexed MDB candidate selection. Triggers keep
 /// membership and the source projection in the same `SQLite` transaction.
 pub fn apply_schema_v20(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {

@@ -22,9 +22,9 @@ pub use draft::*;
 #[cfg(test)]
 mod snapshot_tests;
 
-// Version 4 validates contract projections with immutable compiled snapshots
-// and applies the same wrapper-selection semantics to type and contract schemas.
-pub const MDBASE_RECORD_MODEL_VERSION: u32 = 5;
+// Version 6 retains persisted frontmatter and file metadata in cache projections;
+// older rows cannot supply the metadata needed by indexed query execution.
+pub const MDBASE_RECORD_MODEL_VERSION: u32 = 6;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
 ///
