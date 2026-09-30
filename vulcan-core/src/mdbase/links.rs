@@ -69,14 +69,55 @@ struct LinkRule<'a> {
     validate_exists: bool,
 }
 
+/// Resolution-only data from the caller's visible snapshot. Never retain note
+/// bodies, exact source, arbitrary fields, diagnostics, or contract views here.
+struct LinkTargetIndex {
+    types_by_path: BTreeMap<String, Vec<String>>,
+    paths_by_basename: BTreeMap<String, Vec<String>>,
+    paths_by_id: BTreeMap<String, Vec<String>>,
+}
+
+impl LinkTargetIndex {
+    fn new(records: &[MdbaseRecordDocument], id_field: &str) -> Self {
+        let mut index = Self {
+            types_by_path: BTreeMap::new(),
+            paths_by_basename: BTreeMap::new(),
+            paths_by_id: BTreeMap::new(),
+        };
+        for record in records {
+            index
+                .types_by_path
+                .entry(record.path.clone())
+                .or_insert_with(|| record.types.clone());
+            index
+                .paths_by_basename
+                .entry(record.file.basename.clone())
+                .or_default()
+                .push(record.path.clone());
+            // IDs intentionally come from authored values, never read defaults.
+            if let Some(id) = record
+                .frontmatter
+                .get(id_field)
+                .and_then(serde_json::Value::as_str)
+            {
+                index
+                    .paths_by_id
+                    .entry(id.to_string())
+                    .or_default()
+                    .push(record.path.clone());
+            }
+        }
+        index
+    }
+}
+
 pub(crate) fn resolve_collection_links(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
     records: &mut [MdbaseRecordDocument],
 ) {
     let id_field = collection.config.settings.id_field.as_str();
-    let ids = id_index(records, id_field);
-    let snapshot = records.to_vec();
+    let index = LinkTargetIndex::new(records, id_field);
     for record in records {
         let behavior = compose_mdbase_type_behavior(types, &record.types);
         let mut links = Vec::new();
@@ -87,7 +128,7 @@ pub(crate) fn resolve_collection_links(
                 for value in selected.values {
                     for value in link_strings(value) {
                         if let Some(parsed) = parse_link_value(value) {
-                            links.push(resolve_link(parsed, record, Some(rule), &snapshot, &ids));
+                            links.push(resolve_link(parsed, record, Some(rule), &index));
                         }
                     }
                 }
@@ -95,7 +136,7 @@ pub(crate) fn resolve_collection_links(
         }
         let parsed = parse_document(&record.body, &VaultConfig::default());
         links.extend(parsed.links.iter().filter_map(|link| {
-            parsed_body_link(link).map(|parsed| resolve_link(parsed, record, None, &snapshot, &ids))
+            parsed_body_link(link).map(|parsed| resolve_link(parsed, record, None, &index))
         }));
         links.sort_by(|left, right| {
             left.source
@@ -210,24 +251,19 @@ fn resolve_link(
     parsed: ParsedLink,
     source: &MdbaseRecordDocument,
     rule: Option<LinkRule<'_>>,
-    records: &[MdbaseRecordDocument],
-    ids: &BTreeMap<String, Vec<String>>,
+    index: &LinkTargetIndex,
 ) -> MdbaseLink {
     let is_relative = !parsed.target.starts_with('/');
-    let (resolved_path, mut resolution) = resolve_target(&parsed, &source.path, records, ids);
+    let (resolved_path, mut resolution) = resolve_target(&parsed, &source.path, index);
     if let (Some(target_type), Some(path)) =
         (rule.and_then(|rule| rule.target_type), &resolved_path)
     {
         let matches = target_type == "any"
-            || records
-                .iter()
-                .find(|record| &record.path == path)
-                .is_some_and(|record| {
-                    record
-                        .types
-                        .iter()
-                        .any(|name| name.eq_ignore_ascii_case(target_type))
-                });
+            || index.types_by_path.get(path).is_some_and(|types| {
+                types
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(target_type))
+            });
         if !matches {
             resolution = MdbaseLinkResolution::TargetTypeMismatch;
         }
@@ -256,31 +292,30 @@ fn resolve_link(
 fn resolve_target(
     parsed: &ParsedLink,
     source_path: &str,
-    records: &[MdbaseRecordDocument],
-    ids: &BTreeMap<String, Vec<String>>,
+    index: &LinkTargetIndex,
 ) -> (Option<String>, MdbaseLinkResolution) {
     let simple_wikilink = parsed.format == MdbaseLinkFormat::Wikilink
         && !parsed.target.contains('/')
         && !parsed.target.starts_with('.');
     if simple_wikilink {
-        if let Some(paths) = ids.get(&parsed.target) {
+        if let Some(paths) = index.paths_by_id.get(&parsed.target) {
             return match paths.as_slice() {
                 [path] => (Some(path.clone()), MdbaseLinkResolution::Resolved),
                 [] => unreachable!("ID index never stores empty entries"),
                 _ => (None, MdbaseLinkResolution::Ambiguous),
             };
         }
-        return resolve_filename(&parsed.target, source_path, records);
+        return resolve_filename(&parsed.target, source_path, index);
     }
     let Some(candidate) = normalize_target_path(source_path, &parsed.target) else {
         return (None, MdbaseLinkResolution::Invalid);
     };
-    resolve_exact(candidate, records)
+    resolve_exact(candidate, index)
 }
 
 fn resolve_exact(
     candidate: String,
-    records: &[MdbaseRecordDocument],
+    index: &LinkTargetIndex,
 ) -> (Option<String>, MdbaseLinkResolution) {
     let candidates = if std::path::Path::new(&candidate)
         .extension()
@@ -292,7 +327,7 @@ fn resolve_exact(
     };
     candidates
         .into_iter()
-        .find(|candidate| records.iter().any(|record| record.path == *candidate))
+        .find(|candidate| index.types_by_path.contains_key(candidate))
         .map_or((None, MdbaseLinkResolution::NotFound), |path| {
             (Some(path), MdbaseLinkResolution::Resolved)
         })
@@ -301,30 +336,27 @@ fn resolve_exact(
 fn resolve_filename(
     target: &str,
     source_path: &str,
-    records: &[MdbaseRecordDocument],
+    index: &LinkTargetIndex,
 ) -> (Option<String>, MdbaseLinkResolution) {
     let wanted = target.strip_suffix(".md").unwrap_or(target);
     let source_folder = source_path
         .rsplit_once('/')
         .map_or("", |(folder, _)| folder);
-    let mut candidates = records
-        .iter()
-        .filter(|record| record.file.basename == wanted)
-        .map(|record| record.path.clone())
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        let left_folder = left.rsplit_once('/').map_or("", |(folder, _)| folder);
-        let right_folder = right.rsplit_once('/').map_or("", |(folder, _)| folder);
-        (left_folder != source_folder)
-            .cmp(&(right_folder != source_folder))
-            .then_with(|| left.len().cmp(&right.len()))
-            .then_with(|| left.cmp(right))
-    });
-    candidates
+    index
+        .paths_by_basename
+        .get(wanted)
         .into_iter()
-        .next()
+        .flatten()
+        .min_by(|left, right| {
+            let left_folder = left.rsplit_once('/').map_or("", |(folder, _)| folder);
+            let right_folder = right.rsplit_once('/').map_or("", |(folder, _)| folder);
+            (left_folder != source_folder)
+                .cmp(&(right_folder != source_folder))
+                .then_with(|| left.len().cmp(&right.len()))
+                .then_with(|| left.cmp(right))
+        })
         .map_or((None, MdbaseLinkResolution::NotFound), |path| {
-            (Some(path), MdbaseLinkResolution::Resolved)
+            (Some(path.clone()), MdbaseLinkResolution::Resolved)
         })
 }
 
@@ -346,22 +378,6 @@ fn normalize_target_path(source_path: &str, target: &str) -> Option<String> {
         }
     }
     (!components.is_empty()).then(|| components.join("/"))
-}
-
-fn id_index(records: &[MdbaseRecordDocument], id_field: &str) -> BTreeMap<String, Vec<String>> {
-    let mut ids = BTreeMap::<String, Vec<String>>::new();
-    for record in records {
-        if let Some(id) = record
-            .frontmatter
-            .get(id_field)
-            .and_then(serde_json::Value::as_str)
-        {
-            ids.entry(id.to_string())
-                .or_default()
-                .push(record.path.clone());
-        }
-    }
-    ids
 }
 
 fn add_link_diagnostics(
@@ -446,6 +462,242 @@ fn normalize_tag(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn target(path: &str, id: serde_json::Value) -> MdbaseRecordDocument {
+        MdbaseRecordDocument {
+            path: path.to_string(),
+            revision: String::new(),
+            types: vec!["task".to_string()],
+            frontmatter: serde_json::Value::Object(serde_json::Map::from_iter([(
+                "key".to_string(),
+                id,
+            )])),
+            effective_frontmatter: serde_json::json!({"key": "default-id"}),
+            body: String::new(),
+            document: None,
+            file: super::super::records::file_metadata(path, 0, None),
+            links: vec![],
+            tags: vec![],
+            display: None,
+            contract_views: vec![],
+            diagnostics: vec![],
+        }
+    }
+
+    // Independent scan-based oracle matching the pre-index resolution policy.
+    fn scan_target(
+        parsed: &ParsedLink,
+        source: &str,
+        records: &[MdbaseRecordDocument],
+    ) -> (Option<String>, MdbaseLinkResolution) {
+        if parsed.format == MdbaseLinkFormat::Wikilink
+            && !parsed.target.contains('/')
+            && !parsed.target.starts_with('.')
+        {
+            let ids = records
+                .iter()
+                .filter(|record| {
+                    record
+                        .frontmatter
+                        .get("key")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(parsed.target.as_str())
+                })
+                .collect::<Vec<_>>();
+            if ids.len() > 1 {
+                return (None, MdbaseLinkResolution::Ambiguous);
+            }
+            if let Some(record) = ids.first() {
+                return (Some(record.path.clone()), MdbaseLinkResolution::Resolved);
+            }
+            let wanted = parsed.target.strip_suffix(".md").unwrap_or(&parsed.target);
+            let folder = source.rsplit_once('/').map_or("", |(folder, _)| folder);
+            let mut candidates = records
+                .iter()
+                .filter(|record| record.file.basename == wanted)
+                .map(|record| record.path.clone())
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|path| {
+                (
+                    path.rsplit_once('/').map_or("", |(parent, _)| parent) != folder,
+                    path.len(),
+                    path.clone(),
+                )
+            });
+            return candidates
+                .into_iter()
+                .next()
+                .map_or((None, MdbaseLinkResolution::NotFound), |path| {
+                    (Some(path), MdbaseLinkResolution::Resolved)
+                });
+        }
+        let Some(candidate) = normalize_target_path(source, &parsed.target) else {
+            return (None, MdbaseLinkResolution::Invalid);
+        };
+        let candidates = if std::path::Path::new(&candidate)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            vec![candidate]
+        } else {
+            vec![candidate.clone(), format!("{candidate}.md")]
+        };
+        candidates
+            .into_iter()
+            .find(|path| records.iter().any(|record| &record.path == path))
+            .map_or((None, MdbaseLinkResolution::NotFound), |path| {
+                (Some(path), MdbaseLinkResolution::Resolved)
+            })
+    }
+
+    #[test]
+    fn indexed_targets_match_scan_precedence_ties_scope_and_type_rules() {
+        let records = vec![
+            target("long-folder/item.md", serde_json::json!("unique")),
+            target("a/item.md", serde_json::json!("duplicate")),
+            target("b/item.md", serde_json::json!("duplicate")),
+            target("item.md", serde_json::Value::Null),
+            target("unique.md", serde_json::json!(42)),
+            target("Case.MD", serde_json::Value::Null),
+            target("other/α.md", serde_json::json!("unicode")),
+            target("a/direct", serde_json::Value::Null),
+            target("a/direct.md", serde_json::Value::Null),
+        ];
+        for visible in [records.as_slice(), &records[1..], &records[..0]] {
+            let index = LinkTargetIndex::new(visible, "key");
+            for source in [
+                "a/source.md",
+                "b/source.md",
+                "source.md",
+                "long-folder/source.md",
+            ] {
+                for raw in [
+                    "[[unique|Alias]]",
+                    "[[duplicate]]",
+                    "[[item]]",
+                    "[[item.md#Anchor]]",
+                    "[[Case.MD]]",
+                    "[[case]]",
+                    "[[unicode]]",
+                    "[[default-id]]",
+                    "[[42]]",
+                    "[[missing]]",
+                    "[[../item]]",
+                    "[x](/a/direct)",
+                    "[x](direct)",
+                    "[x](/Case.MD)",
+                    "[x](../../escape.md)",
+                    "[x](/other/α.md)",
+                ] {
+                    let parsed = parse_link_value(raw).unwrap();
+                    let expected = scan_target(&parsed, source, visible);
+                    assert_eq!(
+                        resolve_target(&parsed, source, &index),
+                        expected,
+                        "{source} {raw}"
+                    );
+                    for wanted_type in ["task", "TASK", "contact", "any"] {
+                        let link = resolve_link(
+                            parsed.clone(),
+                            &target(source, serde_json::Value::Null),
+                            Some(LinkRule {
+                                field: "parent",
+                                target_type: Some(wanted_type),
+                                validate_exists: true,
+                            }),
+                            &index,
+                        );
+                        let status = if expected.0.is_some() && wanted_type == "contact" {
+                            MdbaseLinkResolution::TargetTypeMismatch
+                        } else {
+                            expected.1
+                        };
+                        assert_eq!(
+                            (link.resolved_path, link.resolution),
+                            (expected.0.clone(), status)
+                        );
+                        assert_eq!(link.raw, parsed.raw);
+                        assert_eq!(link.alias, parsed.alias);
+                        assert_eq!(link.anchor, parsed.anchor);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ten_thousand_targets_index_only_matching_basename_candidates() {
+        let mut records = (0..10_000)
+            .map(|i| {
+                target(
+                    &format!("notes/n{i:05}.md"),
+                    serde_json::json!(format!("id-{i}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        records[9999].body = "body must not be retained".repeat(4096);
+        let index = LinkTargetIndex::new(&records, "key");
+        assert_eq!(index.types_by_path.len(), 10_000);
+        assert_eq!(
+            index.paths_by_basename.get("n09999").unwrap(),
+            &["notes/n09999.md"]
+        );
+        assert_eq!(
+            index.paths_by_id.get("id-9999").unwrap(),
+            &["notes/n09999.md"]
+        );
+        // The index owns only resolution keys; record lifetimes/body size do not
+        // constrain it. A new visible snapshot rebuilds its own index.
+        drop(records);
+        assert_eq!(
+            resolve_filename("n09999", "source.md", &index).0.as_deref(),
+            Some("notes/n09999.md")
+        );
+        assert!(
+            resolve_filename("n09999", "source.md", &LinkTargetIndex::new(&[], "key"))
+                .0
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[ignore = "release component benchmark; run serialized with --nocapture"]
+    fn link_target_index_component_benchmark() {
+        let records = (0..10_000)
+            .map(|i| {
+                let mut record = target(&format!("notes/n{i:05}.md"), serde_json::Value::Null);
+                record.body = "x".repeat(4096);
+                record
+            })
+            .collect::<Vec<_>>();
+        let index = LinkTargetIndex::new(&records, "key");
+        let targets = (9990..10_000)
+            .map(|i| parse_link_value(&format!("[Target](/notes/n{i:05}.md)")).unwrap())
+            .collect::<Vec<_>>();
+        for indexed in [false, true] {
+            let mut samples = Vec::new();
+            for iteration in 0..1020 {
+                let start = std::time::Instant::now();
+                for parsed in &targets {
+                    let result = if indexed {
+                        resolve_target(std::hint::black_box(parsed), "source.md", &index)
+                    } else {
+                        scan_target(std::hint::black_box(parsed), "source.md", &records)
+                    };
+                    assert_eq!(result.1, MdbaseLinkResolution::Resolved);
+                    std::hint::black_box(result);
+                }
+                if iteration >= 20 {
+                    samples.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "{}",
+                serde_json::json!({"mode": if indexed {"indexed"} else {"linear_scan"}, "records": 10000, "targets_per_sample": 10, "samples": 1000, "warmup": 20, "unit": "microseconds", "p50": samples[499], "p95": samples[949], "p99": samples[989]})
+            );
+        }
+    }
 
     #[test]
     fn parses_all_portable_link_value_forms() {
