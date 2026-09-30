@@ -4633,6 +4633,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "fs2",
+ "getrandom 0.3.4",
  "globset",
  "libc",
  "pulldown-cmark",

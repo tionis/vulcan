@@ -90,6 +90,12 @@ impl MdbaseCelProgram {
     pub fn projection_dependencies(&self) -> impl Iterator<Item = &str> {
         self.projection_dependencies.iter().map(String::as_str)
     }
+
+    /// Static dependency, including calls in branches that may not execute.
+    #[must_use]
+    pub fn requires_link_index(&self) -> bool {
+        self.program.references().functions().contains(&"asFile")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -838,7 +844,9 @@ fn presence_map(value: &serde_json::Value, known_fields: &BTreeSet<String>) -> s
     serde_json::Value::Object(fields)
 }
 
-fn file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
+/// Shared file binding for query and authorized mutation-time CEL contexts.
+#[must_use]
+pub fn mdbase_cel_file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
     let links = record
         .links
         .iter()
@@ -863,6 +871,10 @@ fn file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
         "links": links,
         "embeds": embeds,
     })
+}
+
+fn file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
+    mdbase_cel_file_value(record)
 }
 
 fn candidate_file_value(
@@ -1498,6 +1510,27 @@ fn inspect_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_index_dependency_uses_calls_not_literal_text_or_branch_results() {
+        let engine = MdbaseCelEngine::default();
+        assert!(!engine
+            .compile("'asFile' == 'asFile'")
+            .unwrap()
+            .requires_link_index());
+        assert!(!engine
+            .compile("file.basename == 'asFile'")
+            .unwrap()
+            .requires_link_index());
+        assert!(engine
+            .compile("false && link('target').asFile() != null")
+            .unwrap()
+            .requires_link_index());
+        assert!(engine
+            .compile("[link('target')].exists(item, item.asFile() != null)")
+            .unwrap()
+            .requires_link_index());
+    }
     use crate::mdbase::MdbaseRecordFileMetadata;
     use serde_json::json;
 

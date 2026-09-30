@@ -4803,8 +4803,16 @@ globalThis.Function = undefined;
 
         begin_transaction(state)?;
         match apply_js_mutation_inner(state, kind, payload) {
-            Ok(value) => {
+            Ok(mut value) => {
                 commit_transaction(state)?;
+                if let Some(path) = value
+                    .pointer("/note/file/path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                {
+                    let authoritative = mutation_note_response(state, &path)?;
+                    value["note"] = authoritative["note"].clone();
+                }
                 Ok(value)
             }
             Err(error) => {

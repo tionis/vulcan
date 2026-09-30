@@ -954,7 +954,7 @@ pub fn apply_note_create(
     } else {
         render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?
     };
-    persist_note_create_with_template_effects(
+    let content = persist_note_create_with_template_effects(
         paths,
         &final_path,
         &content,
@@ -996,7 +996,7 @@ fn persist_note_create_with_template_effects(
     staged_creates: &StagedTemplateCreates,
     permission_profile: Option<&str>,
     quiet: bool,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let staged = staged_template_create_snapshot(staged_creates)?;
     if staged.is_empty() {
         persist_note_create_content(paths, path, content, permission_profile, quiet)
@@ -1008,7 +1008,8 @@ fn persist_note_create_with_template_effects(
             &staged,
             permission_profile,
             quiet,
-        )
+        )?;
+        Ok(content.to_string())
     }
 }
 
@@ -1018,9 +1019,9 @@ fn persist_note_create_content(
     content: &str,
     permission_profile: Option<&str>,
     quiet: bool,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     if note_path_is_mdbase_managed(paths, path)? {
-        if !apply_mdbase_note_change(
+        return apply_mdbase_note_content_change(
             paths,
             &MdbaseManagedNoteWriteRequest {
                 path,
@@ -1032,25 +1033,20 @@ fn persist_note_create_content(
                 permission_profile,
                 quiet,
             },
-        )? {
-            return Err(AppError::operation(
-                "mdbase collection changed during note create; retry the operation",
-            ));
-        }
-    } else {
-        dispatch_note_write_plugin_hooks(
-            paths,
-            permission_profile,
-            path,
-            "create",
-            None,
-            content,
-            quiet,
-        )?;
-        write_ordinary_note_if_unchanged(paths, path, None, content, "create")?;
-        dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, quiet);
+        );
     }
-    Ok(())
+    dispatch_note_write_plugin_hooks(
+        paths,
+        permission_profile,
+        path,
+        "create",
+        None,
+        content,
+        quiet,
+    )?;
+    write_ordinary_note_if_unchanged(paths, path, None, content, "create")?;
+    dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, quiet);
+    Ok(content.to_string())
 }
 
 fn persist_note_create_with_staged_creates(
@@ -1205,7 +1201,7 @@ pub fn apply_note_append(
     warnings.extend(rendered.warnings);
     warnings.extend(rendered.diagnostics);
 
-    let content = match request.mode {
+    let mut content = match request.mode {
         NoteAppendMode::Append => append_entry_at_end(&target.existing, &rendered.content),
         NoteAppendMode::Prepend => {
             prepend_entry_after_frontmatter(&target.existing, &rendered.content)
@@ -1218,7 +1214,7 @@ pub fn apply_note_append(
     };
 
     if note_path_is_mdbase_managed(paths, &target.path)? {
-        if !apply_mdbase_note_change(
+        content = apply_mdbase_note_content_change(
             paths,
             &MdbaseManagedNoteWriteRequest {
                 path: &target.path,
@@ -1234,11 +1230,7 @@ pub fn apply_note_append(
                 permission_profile,
                 quiet,
             },
-        )? {
-            return Err(AppError::operation(
-                "mdbase collection changed during note append; retry the operation",
-            ));
-        }
+        )?;
     } else {
         dispatch_note_write_plugin_hooks(
             paths,
@@ -1292,13 +1284,13 @@ pub fn apply_note_set(
     let managed = note_path_is_mdbase_managed(paths, &path)?;
     let existing =
         secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
-    let content = if request.preserve_frontmatter {
+    let mut content = if request.preserve_frontmatter {
         preserve_existing_frontmatter(&existing, &request.replacement)
     } else {
         request.replacement.clone()
     };
     if managed {
-        if !apply_mdbase_note_change(
+        content = apply_mdbase_note_content_change(
             paths,
             &MdbaseManagedNoteWriteRequest {
                 path: &path,
@@ -1310,11 +1302,7 @@ pub fn apply_note_set(
                 permission_profile,
                 quiet,
             },
-        )? {
-            return Err(AppError::operation(
-                "mdbase collection changed during note set; retry the operation",
-            ));
-        }
+        )?;
     } else {
         // Hooks may dispatch their own managed mutations, so they must not run
         // under the ordinary-note lock. Recheck the source after locking to
@@ -1460,7 +1448,7 @@ pub fn apply_note_patch(
         )?
     };
 
-    persist_note_patch_content(
+    let content = persist_note_patch_content(
         paths,
         request,
         &source,
@@ -1487,7 +1475,7 @@ pub fn apply_note_patch(
             .clone()
             .into_iter()
             .collect(),
-        content: application.updated_content,
+        content,
     })
 }
 
@@ -1498,10 +1486,10 @@ fn persist_note_patch_content(
     content: &str,
     permission_profile: Option<&str>,
     quiet: bool,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
         if note_path_is_mdbase_managed(paths, relative_path)? {
-            if !apply_mdbase_note_change(
+            return apply_mdbase_note_content_change(
                 paths,
                 &MdbaseManagedNoteWriteRequest {
                     path: relative_path,
@@ -1513,11 +1501,7 @@ fn persist_note_patch_content(
                     permission_profile,
                     quiet,
                 },
-            )? {
-                return Err(AppError::operation(
-                    "mdbase collection changed during note patch; retry the operation",
-                ));
-            }
+            );
         } else if !request.dry_run {
             dispatch_note_write_plugin_hooks(
                 paths,
@@ -1533,7 +1517,7 @@ fn persist_note_patch_content(
     } else if !request.dry_run {
         fs::write(&request.target.absolute_path, content).map_err(AppError::operation)?;
     }
-    Ok(())
+    Ok(content.to_string())
 }
 
 pub fn apply_note_delete(
@@ -1589,6 +1573,23 @@ fn apply_mdbase_note_change(
     request: &MdbaseManagedNoteWriteRequest<'_>,
 ) -> Result<bool, AppError> {
     apply_managed_mdbase_note_write(paths, request).map(|report| report.is_some())
+}
+
+fn apply_mdbase_note_content_change(
+    paths: &VaultPaths,
+    request: &MdbaseManagedNoteWriteRequest<'_>,
+) -> Result<String, AppError> {
+    let report = apply_managed_mdbase_note_write(paths, request)?.ok_or_else(|| {
+        AppError::operation("mdbase collection changed during note write; retry the operation")
+    })?;
+    report
+        .plan
+        .preview
+        .changes
+        .into_iter()
+        .find(|change| change.path == request.path)
+        .and_then(|change| change.after)
+        .ok_or_else(|| AppError::operation("mdbase note write did not return authoritative source"))
 }
 
 pub fn diagnose_note_contents(

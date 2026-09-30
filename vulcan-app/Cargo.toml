@@ -36,6 +36,7 @@ tempfile.workspace = true
 tar.workspace = true
 toml.workspace = true
 ulid.workspace = true
+getrandom.workspace = true
 unicode-normalization.workspace = true
 vulcan-core = { path = "../vulcan-core", version = "0.2.1", default-features = false }
 vulcan-sync = { path = "../vulcan-sync", version = "0.2.1" }

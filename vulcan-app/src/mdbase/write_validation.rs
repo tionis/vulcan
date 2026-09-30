@@ -62,7 +62,18 @@ pub(super) fn check_snapshot_stability(
     initial: &MdbaseWritePreview,
     scoped: &MdbaseWritePreview,
 ) -> Result<(), AppError> {
-    if initial.changes != scoped.changes {
+    if initial.changes.len() != scoped.changes.len()
+        || initial
+            .changes
+            .iter()
+            .zip(&scoped.changes)
+            .any(|(left, right)| {
+                left.path != right.path
+                    || left.before != right.before
+                    || left.before_revision != right.before_revision
+                    || left.if_revision != right.if_revision
+            })
+    {
         return Err(AppError::operation_with_code(
             "concurrent_modification",
             "mdbase affected sources changed while planning",
@@ -105,6 +116,20 @@ pub(super) fn final_diagnostics(
     preview: &MdbaseWritePreview,
     clock: &MdbaseCelClock,
 ) -> Result<Vec<MdbaseRecordDiagnostic>, AppError> {
+    let sources = proposed_sources(loaded, preview)?;
+    Ok(
+        analyze_mdbase_record_set_sources(&loaded.collection, &loaded.types, &sources, clock)
+            .records
+            .into_iter()
+            .flat_map(|record| record.diagnostics)
+            .collect(),
+    )
+}
+
+pub(super) fn proposed_sources(
+    loaded: &LoadedCollection,
+    preview: &MdbaseWritePreview,
+) -> Result<BTreeMap<String, String>, AppError> {
     let mut sources = BTreeMap::new();
     for (path, revision) in &preview.accepted_revisions {
         if !is_mdbase_record_path(&loaded.collection, path).map_err(AppError::operation)? {
@@ -135,13 +160,7 @@ pub(super) fn final_diagnostics(
             sources.remove(&change.path);
         }
     }
-    Ok(
-        analyze_mdbase_record_set_sources(&loaded.collection, &loaded.types, &sources, clock)
-            .records
-            .into_iter()
-            .flat_map(|record| record.diagnostics)
-            .collect(),
-    )
+    Ok(sources)
 }
 
 fn snapshot_changed(path: &str) -> AppError {

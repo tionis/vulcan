@@ -1,5 +1,6 @@
 //! Reusable mdbase collection read and journaled write workflows.
 
+mod write_lifecycle;
 mod write_validation;
 
 use crate::{plugins, AppError};
@@ -73,6 +74,7 @@ pub struct MdbaseWritePlanRequest {
     pub changes: Vec<MdbaseWriteChangeRequest>,
     /// Legacy caller hints; authoritative membership is derived from exact sources.
     pub matched_types: Vec<String>,
+    /// Reserved input: generated values are owned by the planner; must be empty.
     pub generated_values: BTreeMap<String, serde_json::Value>,
     pub permission_profile: Option<String>,
     pub ttl_seconds: Option<i64>,
@@ -522,19 +524,7 @@ fn plan_mdbase_write_in_mode(
         .iter()
         .map(|change| change.path.clone())
         .collect::<Vec<_>>();
-    // Before-images are part of every reviewed plan, including absence
-    // preconditions for creates, so affected paths require both capabilities.
-    for path in &affected_paths {
-        guard
-            .check_read_path(path)
-            .and_then(|()| guard.check_write_path(path))
-            .map_err(|_| {
-                AppError::operation_with_code(
-                    "permission_denied",
-                    "permission denied for mdbase affected paths",
-                )
-            })?;
-    }
+    authorize_affected_paths(&guard, &affected_paths)?;
     let ttl = request
         .ttl_seconds
         .unwrap_or(DEFAULT_WRITE_PREVIEW_TTL_SECONDS);
@@ -592,9 +582,17 @@ fn plan_mdbase_write_in_mode(
     preview_request
         .relevant_record_namespaces
         .clone_from(&authorization.collection_record_namespaces);
-    let preview = build_mdbase_write_preview(&loaded.collection, preview_request)
+    let preview = build_mdbase_write_preview(&loaded.collection, preview_request.clone())
         .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     write_validation::check_snapshot_stability(&initial, &preview)?;
+    let preview = write_lifecycle::prepare_preview(
+        &loaded,
+        preview,
+        preview_request,
+        &request.operation,
+        &clock,
+        mode,
+    )?;
     let diagnostics = write_validation::validate_final_state(&loaded, &preview, &clock, mode)?;
     Ok(MdbaseWritePlanReport {
         dry_run: true,
@@ -603,6 +601,26 @@ fn plan_mdbase_write_in_mode(
         preview,
         diagnostics,
     })
+}
+
+fn authorize_affected_paths(
+    guard: &ProfilePermissionGuard,
+    affected_paths: &[String],
+) -> Result<(), AppError> {
+    // Before-images are part of every reviewed plan, including absence
+    // preconditions for creates, so affected paths require both capabilities.
+    for path in affected_paths {
+        guard
+            .check_read_path(path)
+            .and_then(|()| guard.check_write_path(path))
+            .map_err(|_| {
+                AppError::operation_with_code(
+                    "permission_denied",
+                    "permission denied for mdbase affected paths",
+                )
+            })?;
+    }
+    Ok(())
 }
 
 /// Apply an exact reviewed plan through the crash-safe mdbase transaction.
@@ -847,6 +865,12 @@ fn validation_error_summary(diagnostics: &[MdbaseRecordDiagnostic]) -> String {
 }
 
 fn validate_plan_request(request: &MdbaseWritePlanRequest) -> Result<(), AppError> {
+    if !request.generated_values.is_empty() {
+        return Err(AppError::operation_with_code(
+            "invalid_input",
+            "mdbase generated values must be produced by the write planner",
+        ));
+    }
     let ttl = request
         .ttl_seconds
         .unwrap_or(DEFAULT_WRITE_PREVIEW_TTL_SECONDS);

@@ -1,7 +1,7 @@
 ---
 name: js-api-guide
 description: Orient an external harness around Vulcan's JS runtime and sandbox boundaries.
-version: 2
+version: 3
 tools:
   - help
   - describe
@@ -40,6 +40,7 @@ Use this skill when the workflow genuinely needs scripting or multi-step logic r
 - `host.exec()` and `host.shell()` require `none`; projected skill commands cannot declare that
   sandbox. Prefer `host.exec()` over shell parsing on eligible runtime surfaces.
 - In an mdbase collection, each standalone write is an implicit validated commit, while `vault.transaction()` sends the complete proposed change set through one journal batch. A validation failure restores every original and creates no write journal; fix the proposed records instead of bypassing the transaction.
+- Managed mdbase lifecycle policies run at commit and may generate fields before validation. Standalone mutation results reflect the persisted note. Values returned inside a `vault.transaction()` callback are provisional: read the note again with `dv.page(path)` after the transaction returns to obtain generated fields. Do not copy provisional IDs into other records and assume commit will rewrite those references.
 - Treat the sandbox and permission profile as intersecting boundaries. Neither one widens the
   other, and trust is a separate execution gate for vault-owned code.
 

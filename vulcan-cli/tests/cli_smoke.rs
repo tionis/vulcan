@@ -16602,6 +16602,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let note_operations =
         fs::read_to_string(vault_root.join(".agents/skills/note-operations/SKILL.md"))
             .expect("bundled skill should be readable");
+    assert_eq!(
+        note_operations,
+        include_str!("../../docs/assistant/skills/note-operations.md")
+    );
     assert!(note_operations.contains("managed: true"));
     assert!(note_operations.contains("- note_info"));
     assert!(note_operations.contains("- note_delete"));
@@ -16626,6 +16630,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(daily_notes.contains("Direct CLI and MCP daily list, show, and latest reads refuse"));
     let js_api = fs::read_to_string(vault_root.join(".agents/skills/js-api-guide/SKILL.md"))
         .expect("JS API skill should be readable");
+    assert_eq!(
+        js_api,
+        include_str!("../../docs/assistant/skills/js-api-guide.md")
+    );
     assert!(js_api.contains("Use `--sandbox none` only for a trusted local script"));
     assert!(js_api.contains("projected skill commands cannot declare"));
     assert!(js_api.contains("standalone write is an implicit validated commit"));
@@ -26288,10 +26296,14 @@ fn run_transaction_uses_mdbase_validation_and_one_journal_batch() {
             "  dialect: json-schema-2020-12\n",
             "  value:\n",
             "    type: object\n",
-            "    required: [type, title]\n",
+            "    required: [type, title, created_id]\n",
             "    properties:\n",
             "      type: {const: task}\n",
             "      title: {type: string}\n",
+            "lifecycle:\n",
+            "  on_create:\n",
+            "    set:\n",
+            "      created_id: {ulid: true}\n",
             "---\n",
         ),
     )
@@ -26305,7 +26317,7 @@ fn run_transaction_uses_mdbase_validation_and_one_journal_batch() {
           tx.create("tasks/one", { frontmatter: { type: "task", title: "One" } });
           tx.create("tasks/two", { frontmatter: { type: "task", title: "Two" } });
         });
-        "committed";
+        [dv.page("tasks/one").created_id, dv.page("tasks/two").created_id];
         "#,
     )
     .expect("script");
@@ -26324,7 +26336,13 @@ fn run_transaction_uses_mdbase_validation_and_one_journal_batch() {
         ])
         .assert()
         .success();
-    assert_eq!(parse_stdout_json(&result)["value"], "committed");
+    let json = parse_stdout_json(&result);
+    let ids = json["value"].as_array().unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+    for id in ids {
+        assert!(ulid::Ulid::from_string(id.as_str().unwrap()).is_ok());
+    }
 
     let outbox = list_mdbase_write_outbox(&VaultPaths::new(&vault_root)).expect("outbox");
     assert_eq!(outbox.len(), 1);

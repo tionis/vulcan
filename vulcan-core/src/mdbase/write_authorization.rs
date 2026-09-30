@@ -110,7 +110,7 @@ fn required_record_namespaces(
     matched_types: &[String],
 ) -> Vec<String> {
     let mut namespaces = BTreeSet::new();
-    let mut collection_wide = false;
+    let mut collection_wide = mdbase_lifecycle_requires_link_index(types, matched_types);
     // A changed record can be a candidate in another type's uniqueness rule,
     // or a target of its declared links, even when the changed record is untyped.
     // Do not inspect existing owners or inbound links to decide whether this
@@ -167,6 +167,42 @@ fn required_record_namespaces(
         namespaces.extend(collection_record_namespaces(collection));
     }
     namespaces.into_iter().collect()
+}
+
+/// Prove potential lifecycle link dependencies from declarations, never hidden
+/// records or branch outcomes. Malformed guards conservatively require scope;
+/// the lifecycle evaluator will return their expression diagnostic afterward.
+#[must_use]
+pub fn mdbase_lifecycle_requires_link_index(
+    types: &MdbaseTypeRegistry,
+    matched_types: &[String],
+) -> bool {
+    let engine = super::MdbaseCelEngine::default();
+    types
+        .iter()
+        .filter(|definition| {
+            matched_types
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&definition.name))
+        })
+        .filter_map(|definition| {
+            definition
+                .frontmatter
+                .get("lifecycle")
+                .and_then(serde_json::Value::as_object)
+        })
+        .flat_map(|lifecycle| lifecycle.values())
+        .flat_map(|actions| {
+            actions
+                .as_array()
+                .map_or_else(|| vec![actions], |actions| actions.iter().collect())
+        })
+        .filter_map(|action| action.get("if").and_then(serde_json::Value::as_str))
+        .any(|guard| {
+            engine
+                .compile(guard)
+                .map_or(true, |program| program.requires_link_index())
+        })
 }
 
 fn collection_record_namespaces(collection: &MdbaseCollection) -> Vec<String> {
@@ -434,6 +470,41 @@ mod tests {
         )
         .expect("prefixed collection namespace is visible");
         assert_eq!(scope.record_namespaces, ["collections/work/published/**"]);
+    }
+
+    #[test]
+    fn lifecycle_link_guards_require_scope_independently_of_branch_outcomes() {
+        let (directory, collection, _) = fixture("  read_defaults: {status: open}\n", "");
+        let path = directory.path().join("_types/task.md");
+        let base = fs::read_to_string(&path).unwrap();
+        let exact = PathPermission {
+            allow: vec![ResourceSpecifier::Note("tasks/public.md".to_string())],
+            deny: Vec::new(),
+        };
+        let narrow = guard(directory.path(), exact.clone(), exact);
+        for (expression, needs_scope) in [
+            ("false && link('target').asFile() != null", true),
+            ("'asFile' == 'asFile'", false),
+        ] {
+            fs::write(&path, format!("{}lifecycle:\n  on_update:\n    - if: {}\n      set: {{stamp: {{now: true}}}}\n---\n", base.trim_end_matches("---\n"), serde_json::to_string(expression).unwrap())).unwrap();
+            let types = load_mdbase_type_registry(&collection).unwrap();
+            assert!(types.diagnostics.is_empty());
+            assert_eq!(
+                mdbase_lifecycle_requires_link_index(&types, &["task".to_string()]),
+                needs_scope
+            );
+            assert_eq!(
+                authorize_mdbase_write_validation_scope(
+                    &collection,
+                    &types,
+                    "",
+                    &request(),
+                    &narrow
+                )
+                .is_err(),
+                needs_scope
+            );
+        }
     }
 
     #[test]
