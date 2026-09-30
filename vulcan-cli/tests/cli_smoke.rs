@@ -35354,6 +35354,76 @@ fn mdbase_read_uses_nested_schema_bases_and_reloads_controls_between_calls() {
 }
 
 #[test]
+fn mdbase_cli_checks_control_grants_before_reading_referenced_schema_files() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join(".vulcan")).unwrap();
+    fs::create_dir(root.join("_types")).unwrap();
+    fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(root.join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../hidden.yaml\n---\n").unwrap();
+    let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"folder:_types/**\", \"folder:_contracts/**\"] }\n";
+    fs::write(root.join(".vulcan/config.toml"), config).unwrap();
+    let mut denial = None;
+    for contents in [None, Some("invalid: [SECRET"), Some("type: object\n")] {
+        if let Some(contents) = contents {
+            fs::write(root.join("hidden.yaml"), contents).unwrap();
+        }
+        let result = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "scoped",
+                "mdbase",
+                "status",
+                "--output",
+                "json",
+            ])
+            .assert()
+            .failure();
+        let output = result.get_output();
+        assert!(output.stderr.is_empty());
+        let report = parse_stdout_json(&result);
+        assert_eq!(
+            report["error"],
+            "permission denied for required mdbase controls"
+        );
+        let serialized = report.to_string();
+        assert!(!serialized.contains("hidden.yaml") && !serialized.contains("SECRET"));
+        if let Some(expected) = &denial {
+            assert_eq!(&report, expected);
+        } else {
+            denial = Some(report);
+        }
+    }
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        config.replace(
+            "\"note:mdbase.yaml\"",
+            "\"note:mdbase.yaml\", \"note:hidden.yaml\"",
+        ),
+    )
+    .unwrap();
+    let result = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--permissions",
+            "scoped",
+            "mdbase",
+            "status",
+            "--output",
+            "json",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&result)["valid"], true);
+    assert!(!root.join(".vulcan/cache.db").exists());
+}
+
+#[test]
 fn mdbase_contract_bindings_use_nested_schema_bases_and_reload_controls() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();

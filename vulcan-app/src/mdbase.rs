@@ -14,8 +14,7 @@ use std::time::SystemTime;
 use vulcan_core::mdbase::{
     apply_mdbase_write_transaction_with_preflight, authorize_mdbase_write_validation_scope,
     build_mdbase_write_preview, compile_mdbase_query, discover_mdbase_files, execute_mdbase_query,
-    is_mdbase_record_path, load_mdbase_collection, load_mdbase_contract_registry,
-    load_mdbase_records_with_contracts_filtered, load_mdbase_type_registry,
+    is_mdbase_record_path, load_mdbase_collection, load_mdbase_records_with_contracts_filtered,
     mdbase_content_revision, MdbaseAuthorizedValidationScope, MdbaseCollection,
     MdbaseConsistentReadGuard, MdbaseContractDefinition, MdbaseContractImplementation,
     MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult,
@@ -274,7 +273,7 @@ pub fn build_mdbase_status_report(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseStatusReport, AppError> {
-    let loaded = load_collection(paths)?;
+    let loaded = load_collection_authorized(paths, filter)?;
     let discovery = discover_mdbase_files(&loaded.collection).map_err(AppError::operation)?;
     let records = discovery
         .records
@@ -310,7 +309,7 @@ pub fn build_mdbase_types_report(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseTypesReport, AppError> {
-    let loaded = load_collection(paths)?;
+    let loaded = load_collection_authorized(paths, filter)?;
     Ok(MdbaseTypesReport {
         types: loaded
             .types
@@ -332,7 +331,7 @@ pub fn build_mdbase_contracts_report(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseContractsReport, AppError> {
-    let loaded = load_collection(paths)?;
+    let loaded = load_collection_authorized(paths, filter)?;
     let contracts = loaded
         .contracts
         .iter()
@@ -366,7 +365,7 @@ pub fn build_mdbase_validate_report(
     path: Option<&str>,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseValidateReport, AppError> {
-    let loaded = load_collection(paths)?;
+    let loaded = load_collection_authorized(paths, filter)?;
     if let Some(path) = path {
         ensure_allowed(filter, path)?;
     }
@@ -421,7 +420,7 @@ pub fn build_mdbase_read_report(
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseReadReport, AppError> {
     ensure_allowed(filter, path)?;
-    let loaded = load_collection(paths)?;
+    let loaded = load_collection_authorized(paths, filter)?;
     // Use the filtered collection read so cross-record validation and contract
     // projections have the same visibility semantics as `validate`.
     let records = load_mdbase_records_with_contracts_filtered(
@@ -457,7 +456,7 @@ pub fn build_mdbase_query_report(
     query: &serde_json::Value,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseQueryResult, AppError> {
-    let loaded = load_collection(paths)?;
+    let loaded = load_collection_authorized(paths, filter)?;
     let plan = compile_mdbase_query(query).map_err(AppError::operation)?;
     let records = load_mdbase_records_with_contracts_filtered(
         &loaded.collection,
@@ -1053,20 +1052,49 @@ fn apply_auto_commit(
 }
 
 fn load_collection(paths: &VaultPaths) -> Result<LoadedCollection, AppError> {
+    load_collection_authorized(paths, None)
+}
+
+fn load_collection_authorized(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<LoadedCollection, AppError> {
+    if !allowed(filter, "mdbase.yaml") {
+        return Err(control_permission_denied());
+    }
     let read_guard =
         vulcan_core::mdbase::acquire_mdbase_consistent_read(paths).map_err(AppError::operation)?;
     let collection = load_mdbase_collection(paths.vault_root())
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("not an mdbase collection: missing mdbase.yaml"))?;
-    let types = load_mdbase_type_registry(&collection).map_err(AppError::operation)?;
+    let types = vulcan_core::mdbase::load_mdbase_type_registry_authorized(&collection, filter)
+        .map_err(|error| match error {
+            vulcan_core::mdbase::MdbaseTypeRegistryError::PermissionDenied => {
+                control_permission_denied()
+            }
+            error => AppError::operation(error),
+        })?;
     let contracts =
-        load_mdbase_contract_registry(&collection, &types).map_err(AppError::operation)?;
+        vulcan_core::mdbase::load_mdbase_contract_registry_authorized(&collection, &types, filter)
+            .map_err(|error| match error {
+                vulcan_core::mdbase::MdbaseContractRegistryError::PermissionDenied => {
+                    control_permission_denied()
+                }
+                error => AppError::operation(error),
+            })?;
     Ok(LoadedCollection {
         read_guard,
         collection,
         types,
         contracts,
     })
+}
+
+fn control_permission_denied() -> AppError {
+    AppError::operation_with_code(
+        "permission_denied",
+        "permission denied for required mdbase controls",
+    )
 }
 
 fn registry_diagnostics(
@@ -1194,7 +1222,7 @@ mod tests {
     fn read_surface_filters_records_before_validation_and_source_is_opt_in() {
         let (_directory, paths) = fixture();
         let filter = PermissionFilter::new(PathPermission {
-            allow: vec![ResourceSpecifier::Folder("tasks/**".to_string())],
+            allow: read_control_grant(),
             deny: vec![ResourceSpecifier::Folder("tasks/private/**".to_string())],
         });
         let status = build_mdbase_status_report(&paths, Some(&filter)).expect("status");
@@ -1221,6 +1249,94 @@ mod tests {
         );
     }
 
+    fn read_control_grant() -> Vec<ResourceSpecifier> {
+        vec![
+            ResourceSpecifier::Note("mdbase.yaml".to_string()),
+            ResourceSpecifier::Folder("_types/**".to_string()),
+            ResourceSpecifier::Folder("_contracts/**".to_string()),
+            ResourceSpecifier::Folder("tasks/**".to_string()),
+        ]
+    }
+
+    fn assert_read_controls_denied(paths: &VaultPaths, filter: &PermissionFilter) {
+        let attempts = [
+            build_mdbase_status_report(paths, Some(filter)).map(|_| ()),
+            build_mdbase_types_report(paths, Some(filter)).map(|_| ()),
+            build_mdbase_contracts_report(paths, Some(filter)).map(|_| ()),
+            build_mdbase_validate_report(paths, None, Some(filter)).map(|_| ()),
+            build_mdbase_read_report(paths, "tasks/public.md", false, Some(filter)).map(|_| ()),
+            build_mdbase_query_report(paths, &serde_json::json!({}), Some(filter)).map(|_| ()),
+        ];
+        for result in attempts {
+            let error = result.unwrap_err();
+            assert_eq!(error.code(), Some("permission_denied"));
+            assert_eq!(
+                error.to_string(),
+                "permission denied for required mdbase controls"
+            );
+        }
+    }
+
+    #[test]
+    fn read_control_denials_precede_config_parsing_and_namespace_discovery() {
+        let (dir, paths) = fixture();
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("tasks/**".to_string())],
+            deny: Vec::new(),
+        });
+        for contents in [None, Some("invalid: ["), Some("spec_version: '0.3.0'\n")] {
+            if let Some(contents) = contents {
+                fs::write(dir.path().join("mdbase.yaml"), contents).unwrap();
+            } else {
+                fs::remove_file(dir.path().join("mdbase.yaml")).unwrap();
+            }
+            assert_read_controls_denied(&paths, &filter);
+        }
+        let filter = PermissionFilter::new(PathPermission {
+            allow: read_control_grant(),
+            deny: vec![ResourceSpecifier::Note("_types/secret.md".to_string())],
+        });
+        assert_read_controls_denied(&paths, &filter);
+        fs::write(dir.path().join("_types/secret.md"), "invalid: [").unwrap();
+        assert_read_controls_denied(&paths, &filter);
+        assert!(!dir.path().join(".vulcan").exists());
+    }
+
+    #[test]
+    fn read_schema_denials_are_fatal_and_independent_of_hidden_file_contents() {
+        for contract in [false, true] {
+            let (dir, paths) = fixture();
+            if contract {
+                fs::create_dir(dir.path().join("_contracts")).unwrap();
+                fs::write(dir.path().join("_contracts/task.md"), "---\nkind: mdbase.contract\ncontract_type: record\nid: example.task\nversion: 1.0.0\nrecord_schema:\n  dialect: json-schema-2020-12\n  ref: ../hidden.yaml\n---\n").unwrap();
+            } else {
+                fs::write(dir.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {$ref: ../hidden.yaml}\n---\n").unwrap();
+            }
+            let filter = PermissionFilter::new(PathPermission {
+                allow: read_control_grant(),
+                deny: Vec::new(),
+            });
+            for contents in [None, Some("invalid: ["), Some("type: object\n")] {
+                if let Some(contents) = contents {
+                    fs::write(dir.path().join("hidden.yaml"), contents).unwrap();
+                }
+                assert_read_controls_denied(&paths, &filter);
+            }
+            let mut allow = read_control_grant();
+            allow.push(ResourceSpecifier::Note("hidden.yaml".to_string()));
+            let filter = PermissionFilter::new(PathPermission {
+                allow,
+                deny: Vec::new(),
+            });
+            assert!(
+                build_mdbase_status_report(&paths, Some(&filter))
+                    .unwrap()
+                    .valid
+            );
+            assert!(!dir.path().join(".vulcan").exists());
+        }
+    }
+
     #[test]
     fn registry_read_surfaces_are_deterministic_and_non_mutating() {
         let (directory, paths) = fixture();
@@ -1241,7 +1357,7 @@ mod tests {
     fn query_filters_effective_values_and_never_leaks_denied_records() {
         let (_directory, paths) = fixture();
         let filter = PermissionFilter::new(PathPermission {
-            allow: vec![ResourceSpecifier::Folder("tasks/**".to_string())],
+            allow: read_control_grant(),
             deny: vec![ResourceSpecifier::Folder("tasks/private/**".to_string())],
         });
         let report = build_mdbase_query_report(

@@ -20,6 +20,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 mod contracts;
+mod control_access;
 pub use contracts::*;
 mod cel;
 pub use cel::*;
@@ -889,6 +890,7 @@ impl MdbaseTypeRegistry {
 
 #[derive(Debug)]
 pub enum MdbaseTypeRegistryError {
+    PermissionDenied,
     Discovery(MdbaseDiscoveryError),
     Read {
         path: PathBuf,
@@ -902,6 +904,9 @@ pub enum MdbaseTypeRegistryError {
 impl Display for MdbaseTypeRegistryError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PermissionDenied => {
+                formatter.write_str("permission denied for required mdbase controls")
+            }
             Self::Discovery(error) => error.fmt(formatter),
             Self::Read { path, source } => {
                 write!(
@@ -923,6 +928,7 @@ impl Display for MdbaseTypeRegistryError {
 impl std::error::Error for MdbaseTypeRegistryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::PermissionDenied => None,
             Self::Discovery(error) => Some(error),
             Self::Read { source, .. } => Some(source),
             Self::BundledSchema { source } => Some(source),
@@ -1235,9 +1241,24 @@ fn ancestor_is_excluded_or_nested(
 pub fn load_mdbase_type_registry(
     collection: &MdbaseCollection,
 ) -> Result<MdbaseTypeRegistry, MdbaseTypeRegistryError> {
-    let discovery =
-        discover_mdbase_files(collection).map_err(MdbaseTypeRegistryError::Discovery)?;
-    build_mdbase_type_registry(collection, &discovery.type_files)
+    load_mdbase_type_registry_authorized(collection, None)
+}
+
+/// Load all required type controls under a collection-relative read ceiling.
+/// Incomplete control namespace coverage is denied before filesystem discovery.
+pub fn load_mdbase_type_registry_authorized(
+    collection: &MdbaseCollection,
+    filter: Option<&crate::permissions::PermissionFilter>,
+) -> Result<MdbaseTypeRegistry, MdbaseTypeRegistryError> {
+    let access = control_access::ControlAccess::new(filter);
+    let folder = &collection.config.settings.types_folder;
+    if !access.folder_allowed(folder) {
+        return Err(MdbaseTypeRegistryError::PermissionDenied);
+    }
+    let mut paths = Vec::new();
+    discover_control_files(&collection.root, folder, &mut paths)
+        .map_err(MdbaseTypeRegistryError::Discovery)?;
+    build_mdbase_type_registry_with_access(collection, &paths, &access)
 }
 
 /// Resolve the types for one record using raw persisted frontmatter.
@@ -2074,9 +2095,22 @@ fn sort_match_diagnostics(diagnostics: &mut [MdbaseTypeMatchDiagnostic]) {
     });
 }
 
+#[cfg(test)]
 fn build_mdbase_type_registry(
     collection: &MdbaseCollection,
     type_files: &[String],
+) -> Result<MdbaseTypeRegistry, MdbaseTypeRegistryError> {
+    build_mdbase_type_registry_with_access(
+        collection,
+        type_files,
+        &control_access::ControlAccess::new(None),
+    )
+}
+
+fn build_mdbase_type_registry_with_access(
+    collection: &MdbaseCollection,
+    type_files: &[String],
+    access: &control_access::ControlAccess<'_>,
 ) -> Result<MdbaseTypeRegistry, MdbaseTypeRegistryError> {
     let type_schema = bundled_mdbase_schema(&format!(
         "{MDBASE_CANONICAL_SCHEMA_BASE}type-file.schema.json"
@@ -2092,7 +2126,14 @@ fn build_mdbase_type_registry(
     paths.dedup();
 
     for path in paths {
-        match load_mdbase_type_file(collection, &path, &type_schema)? {
+        if !access.path_allowed(&path) {
+            return Err(MdbaseTypeRegistryError::PermissionDenied);
+        }
+        let result = load_mdbase_type_file(collection, &path, &type_schema, access)?;
+        if access.denied() {
+            return Err(MdbaseTypeRegistryError::PermissionDenied);
+        }
+        match result {
             TypeFileLoad::Valid(definition, compiled) => {
                 prepared_by_path.insert(definition.path.clone(), compiled);
                 candidates
@@ -2159,6 +2200,7 @@ fn load_mdbase_type_file(
     collection: &MdbaseCollection,
     path: &str,
     type_schema: &serde_json::Value,
+    access: &control_access::ControlAccess<'_>,
 ) -> Result<TypeFileLoad, MdbaseTypeRegistryError> {
     let source = secure_read_to_string(&collection.root, Path::new(path)).map_err(|source| {
         MdbaseTypeRegistryError::Read {
@@ -2211,7 +2253,7 @@ fn load_mdbase_type_file(
         wrapped_schema,
         &absolute_path,
         &collection.root,
-        &|_| Ok(()),
+        &|path| access.schema(path),
     ) {
         Ok(prepared) => prepared,
         Err(error) => {

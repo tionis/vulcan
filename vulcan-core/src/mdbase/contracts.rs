@@ -1,5 +1,5 @@
 use super::{
-    bundled_mdbase_schema, compile_mdbase_schema_wrapper, discover_mdbase_files,
+    bundled_mdbase_schema, compile_mdbase_schema_wrapper, discover_control_files,
     validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseCompiledSchema,
     MdbaseTypeDefinition, MdbaseTypeRegistry, MDBASE_CANONICAL_SCHEMA_BASE,
 };
@@ -118,6 +118,7 @@ impl MdbaseContractRegistry {
 
 #[derive(Debug)]
 pub enum MdbaseContractRegistryError {
+    PermissionDenied,
     Discovery(super::MdbaseDiscoveryError),
     Read {
         path: PathBuf,
@@ -129,6 +130,9 @@ pub enum MdbaseContractRegistryError {
 impl Display for MdbaseContractRegistryError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PermissionDenied => {
+                formatter.write_str("permission denied for required mdbase controls")
+            }
             Self::Discovery(error) => {
                 write!(formatter, "failed to discover mdbase contracts: {error}")
             }
@@ -167,15 +171,31 @@ pub fn load_mdbase_contract_registry(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
 ) -> Result<MdbaseContractRegistry, MdbaseContractRegistryError> {
-    let discovery =
-        discover_mdbase_files(collection).map_err(MdbaseContractRegistryError::Discovery)?;
-    build_mdbase_contract_registry(collection, types, &discovery.contract_files)
+    load_mdbase_contract_registry_authorized(collection, types, None)
+}
+
+/// Load complete contract controls with pre-discovery and pre-read checks.
+pub fn load_mdbase_contract_registry_authorized(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    filter: Option<&crate::permissions::PermissionFilter>,
+) -> Result<MdbaseContractRegistry, MdbaseContractRegistryError> {
+    let access = super::control_access::ControlAccess::new(filter);
+    let folder = &collection.config.settings.contracts_folder;
+    if !access.folder_allowed(folder) {
+        return Err(MdbaseContractRegistryError::PermissionDenied);
+    }
+    let mut paths = Vec::new();
+    discover_control_files(&collection.root, folder, &mut paths)
+        .map_err(MdbaseContractRegistryError::Discovery)?;
+    build_mdbase_contract_registry(collection, types, &paths, &access)
 }
 
 fn build_mdbase_contract_registry(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
     contract_files: &[String],
+    access: &super::control_access::ControlAccess<'_>,
 ) -> Result<MdbaseContractRegistry, MdbaseContractRegistryError> {
     let canonical = format!("{MDBASE_CANONICAL_SCHEMA_BASE}data-contract.schema.json");
     let bundled = bundled_mdbase_schema(&canonical).expect("data-contract schema is bundled");
@@ -187,7 +207,14 @@ fn build_mdbase_contract_registry(
     paths.sort();
     paths.dedup();
     for path in paths {
-        match load_contract_file(collection, &path, &contract_schema)? {
+        if !access.path_allowed(&path) {
+            return Err(MdbaseContractRegistryError::PermissionDenied);
+        }
+        let result = load_contract_file(collection, &path, &contract_schema, access)?;
+        if access.denied() {
+            return Err(MdbaseContractRegistryError::PermissionDenied);
+        }
+        match result {
             Ok(contract) => candidates
                 .entry(contract.identity.clone())
                 .or_default()
@@ -253,6 +280,7 @@ fn load_contract_file(
     collection: &MdbaseCollection,
     path: &str,
     contract_schema: &serde_json::Value,
+    access: &super::control_access::ControlAccess<'_>,
 ) -> Result<Result<MdbaseContractDefinition, MdbaseContractDiagnostic>, MdbaseContractRegistryError>
 {
     let source = secure_read_to_string(&collection.root, Path::new(path)).map_err(|source| {
@@ -277,11 +305,17 @@ fn load_contract_file(
     }
     let identity = contract_identity_from_value(&frontmatter)
         .expect("validated contract should have an identity");
-    let (contract_type, schemas, validation_schemas, compiled_schemas) =
-        match load_contract_schemas(collection, path, &absolute_path, &frontmatter, &identity) {
-            Ok(schemas) => schemas,
-            Err(diagnostic) => return Ok(Err(*diagnostic)),
-        };
+    let (contract_type, schemas, validation_schemas, compiled_schemas) = match load_contract_schemas(
+        collection,
+        path,
+        &absolute_path,
+        &frontmatter,
+        &identity,
+        access,
+    ) {
+        Ok(schemas) => schemas,
+        Err(diagnostic) => return Ok(Err(*diagnostic)),
+    };
     let behavior = frontmatter.get("behavior").cloned();
     let digest = contract_digest(contract_type, &identity, &schemas, behavior.as_ref());
     Ok(Ok(MdbaseContractDefinition {
@@ -357,6 +391,7 @@ fn load_contract_schemas(
     absolute_path: &Path,
     frontmatter: &serde_json::Value,
     identity: &MdbaseContractIdentity,
+    access: &super::control_access::ControlAccess<'_>,
 ) -> Result<LoadedContractSchemas, Box<MdbaseContractDiagnostic>> {
     let contract_type = match frontmatter["contract_type"].as_str() {
         Some("record") => MdbaseContractType::Record,
@@ -372,18 +407,20 @@ fn load_contract_schemas(
             continue;
         };
         let (resolved, compiled) =
-            compile_mdbase_schema_wrapper(wrapper, absolute_path, &collection.root, &|_| Ok(()))
-                .map_err(|error| {
-                    Box::new(contract_diagnostic(
-                        "invalid_data_contract",
-                        format!("failed to resolve or compile `{key}`: {error}"),
-                        path,
-                        key,
-                        Some(identity),
-                        None,
-                        Vec::new(),
-                    ))
-                })?;
+            compile_mdbase_schema_wrapper(wrapper, absolute_path, &collection.root, &|path| {
+                access.schema(path)
+            })
+            .map_err(|error| {
+                Box::new(contract_diagnostic(
+                    "invalid_data_contract",
+                    format!("failed to resolve or compile `{key}`: {error}"),
+                    path,
+                    key,
+                    Some(identity),
+                    None,
+                    Vec::new(),
+                ))
+            })?;
         // Preserve the existing report representation; execution uses only the
         // compiled snapshot, never this serialized wrapper.
         let validation_schema = wrapper
