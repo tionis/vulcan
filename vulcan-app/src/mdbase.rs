@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
     apply_mdbase_write_transaction_with_control_filter, authorize_mdbase_write_validation_scope,
-    build_mdbase_write_preview_with_control_filter, compile_mdbase_query, discover_mdbase_files,
-    execute_mdbase_query, is_mdbase_record_path, load_mdbase_collection,
+    build_mdbase_write_preview_with_control_filter, compile_mdbase_prepared_query,
+    discover_mdbase_files, is_mdbase_record_path, load_mdbase_collection,
     load_mdbase_records_with_contracts_filtered, mdbase_content_revision,
     MdbaseAuthorizedValidationScope, MdbaseCollection, MdbaseConsistentReadGuard,
     MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
@@ -494,7 +494,7 @@ pub fn build_mdbase_query_report(
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseQueryResult, AppError> {
     let loaded = load_collection_authorized(paths, filter)?;
-    let plan = compile_mdbase_query(query).map_err(AppError::operation)?;
+    let prepared = compile_mdbase_prepared_query(query).map_err(AppError::operation)?;
     let records = load_mdbase_records_with_contracts_filtered(
         &loaded.collection,
         &loaded.types,
@@ -503,15 +503,15 @@ pub fn build_mdbase_query_report(
         filter,
     )
     .map_err(AppError::operation)?;
-    let mut report = execute_mdbase_query(
-        &records,
-        &loaded.types,
-        &plan,
-        &loaded.collection.config.settings.id_field,
-        loaded.collection.config.settings.timezone.as_deref(),
-        DateTime::<Utc>::from(SystemTime::now()),
-    )
-    .map_err(AppError::operation)?;
+    let mut report = prepared
+        .execute(
+            &records,
+            &loaded.types,
+            &loaded.collection.config.settings.id_field,
+            loaded.collection.config.settings.timezone.as_deref(),
+            DateTime::<Utc>::from(SystemTime::now()),
+        )
+        .map_err(AppError::operation)?;
     report
         .diagnostics
         .splice(0..0, registry_diagnostics(&loaded, filter));

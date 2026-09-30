@@ -156,6 +156,15 @@ struct PortableSummary {
 pub fn compile_mdbase_query(
     value: &serde_json::Value,
 ) -> Result<StructuredQueryPlan, MdbaseQueryError> {
+    compile_mdbase_prepared_query(value).map(|prepared| prepared.plan)
+}
+
+/// Validate canonical syntax and retain the same distinct CEL programs for
+/// execution. Unlike preparing an already structured plan, canonical validation
+/// is eager, including expressions that no candidate will execute.
+pub fn compile_mdbase_prepared_query(
+    value: &serde_json::Value,
+) -> Result<MdbasePreparedQuery, MdbaseQueryError> {
     validate_query_schema(value)?;
     let query = serde_json::from_value::<PortableQuery>(value.clone())
         .map_err(|error| query_error("invalid_query", error.to_string(), None, None))?;
@@ -170,22 +179,23 @@ pub fn compile_mdbase_query(
         })?;
     }
 
-    let engine = MdbaseCelEngine::default();
-    let named_projections = order_named_expressions(&engine, query.projections, "projections")?;
+    let mut programs = QueryPrograms::default();
+    let named_projections =
+        order_named_expressions(&mut programs, query.projections, "projections")?;
     let summary_functions =
-        order_named_expressions(&engine, query.summary_functions, "summary_functions")?;
+        order_named_expressions(&mut programs, query.summary_functions, "summary_functions")?;
     let filter = query
         .filter
-        .map(|source| compile_expression(&engine, source, "where"))
+        .map(|source| compile_expression(&mut programs, source, "where"))
         .transpose()?;
 
     let selection = query
         .select
-        .map(|selections| compile_selections(&engine, selections))
+        .map(|selections| compile_selections(&mut programs, selections))
         .transpose()?;
     let summaries = compile_summaries(query.summaries)?;
 
-    Ok(StructuredQueryPlan {
+    let plan = StructuredQueryPlan {
         source: QuerySource::Notes,
         types: query.types,
         timezone: query.timezone,
@@ -201,7 +211,8 @@ pub fn compile_mdbase_query(
         include_body: query.include_body,
         limit: query.limit,
         offset: query.offset,
-    })
+    };
+    Ok(MdbasePreparedQuery { plan, programs })
 }
 
 /// Reusable execution preparation over the existing structured query plan.
@@ -216,6 +227,12 @@ pub struct MdbasePreparedQuery {
 }
 
 impl MdbasePreparedQuery {
+    /// Inspect the immutable plan without invalidating its retained programs.
+    #[must_use]
+    pub fn plan(&self) -> &StructuredQueryPlan {
+        &self.plan
+    }
+
     #[must_use]
     pub fn new(plan: &StructuredQueryPlan) -> Self {
         let sources = plan
@@ -274,6 +291,7 @@ impl MdbasePreparedQuery {
     }
 }
 
+#[derive(Default)]
 struct QueryPrograms {
     engine: MdbaseCelEngine,
     slots: BTreeMap<String, OnceLock<Result<MdbaseCelProgram, MdbaseCelError>>>,
@@ -284,6 +302,25 @@ struct QueryPrograms {
 }
 
 impl QueryPrograms {
+    fn compile(&mut self, source: &str) -> Result<&MdbaseCelProgram, MdbaseCelError> {
+        self.slots.entry(source.to_string()).or_default();
+        self.program(source)
+    }
+
+    fn program(&self, source: &str) -> Result<&MdbaseCelProgram, MdbaseCelError> {
+        self.slots
+            .get(source)
+            .expect("expression belongs to owned plan")
+            .get_or_init(|| {
+                #[cfg(test)]
+                self.compilations
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.engine.compile(source)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
     fn evaluate_context(
         &self,
         source: &str,
@@ -297,18 +334,7 @@ impl QueryPrograms {
         }
         // Lazy compilation preserves the previous execution error ordering,
         // including unused expressions and empty/filtered collections.
-        let program = self
-            .slots
-            .get(source)
-            .expect("expression belongs to owned plan")
-            .get_or_init(|| {
-                #[cfg(test)]
-                self.compilations
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                self.engine.compile(source)
-            })
-            .as_ref()
-            .map_err(Clone::clone)?;
+        let program = self.program(source)?;
         self.engine.evaluate_context(program, context)
     }
 }
@@ -845,7 +871,7 @@ fn cel_query_error(error: super::MdbaseCelError) -> MdbaseQueryError {
 }
 
 fn compile_selections(
-    engine: &MdbaseCelEngine,
+    engine: &mut QueryPrograms,
     selections: Vec<PortableSelection>,
 ) -> Result<Vec<QuerySelection>, MdbaseQueryError> {
     let mut output_names = BTreeSet::new();
@@ -938,7 +964,7 @@ fn validate_query_schema(value: &serde_json::Value) -> Result<(), MdbaseQueryErr
 }
 
 fn order_named_expressions(
-    engine: &MdbaseCelEngine,
+    engine: &mut QueryPrograms,
     expressions: BTreeMap<String, PortableExpression>,
     field: &str,
 ) -> Result<Vec<QueryNamedExpression>, MdbaseQueryError> {
@@ -993,7 +1019,7 @@ fn order_named_expressions(
 }
 
 fn compile_expression(
-    engine: &MdbaseCelEngine,
+    engine: &mut QueryPrograms,
     source: String,
     field: &str,
 ) -> Result<QueryExpressionSpec, MdbaseQueryError> {
@@ -1201,6 +1227,99 @@ mod tests {
                 "unit": "microseconds", "p50": samples[499], "p95": samples[949], "p99": samples[989]})
             );
         }
+    }
+
+    #[test]
+    fn canonical_preparation_reuses_preflight_programs_across_roles_and_executions() {
+        let query = serde_json::json!({
+            "projections": {"open": {"expr": "status == 'open'"}},
+            "where": "status == 'open'",
+            "select": [{"name": "open", "expr": "status == 'open'"},
+                {"name": "day", "expr": "today()"},
+                {"name": "failure", "expr": "1 / 0"}, "title"],
+            "group_by": [{"field": "title"}],
+            "summary_functions": {"counted": {"expr": "values.size()"},
+                "unused": {"expr": "42"}},
+            "summaries": [{"field": "title", "function": "counted", "name": "count"}],
+            "limit": 2
+        });
+        let prepared = compile_mdbase_prepared_query(&query).unwrap();
+        assert_eq!(prepared.plan(), &compile_mdbase_query(&query).unwrap());
+        let count = || {
+            prepared
+                .programs
+                .compilations
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(count(), 5); // includes the unused summary, excludes duplicate sources
+        assert_eq!(prepared.programs.slots.len(), 5);
+        let mut uncached = MdbasePreparedQuery::new(prepared.plan());
+        uncached.programs.uncached = true;
+        let types = MdbaseTypeRegistry::default();
+        for (size, timestamp, timezone) in [
+            (0, "2026-06-14T23:15:00Z", "UTC"),
+            (20, "2026-06-14T23:15:00Z", "Europe/Berlin"),
+            (3, "2026-06-16T08:15:00Z", "UTC"),
+        ] {
+            let now = DateTime::parse_from_rfc3339(timestamp)
+                .unwrap()
+                .with_timezone(&Utc);
+            let records = MdbaseRecordSet {
+                records: (0..size)
+                    .map(|i| record(&format!("{i}.md"), &format!("Title {i}"), "open"))
+                    .collect(),
+            };
+            let actual = prepared
+                .execute(&records, &types, "id", Some(timezone), now)
+                .unwrap();
+            assert_eq!(
+                actual,
+                uncached
+                    .execute(&records, &types, "id", Some(timezone), now)
+                    .unwrap()
+            );
+            assert_eq!(actual.meta.total_count, size);
+            assert_eq!(actual.results.len(), size.min(2));
+            assert_eq!(actual.diagnostics.len(), size);
+            assert_eq!(count(), 5); // no execution-time compilation, even after empty execution
+        }
+    }
+
+    #[test]
+    fn canonical_preparation_keeps_eager_error_locations_and_projection_order() {
+        for (query, field) in [
+            (
+                serde_json::json!({"projections": {"bad": {"expr": "broken("}}, "where": "also("}),
+                "projections",
+            ),
+            (
+                serde_json::json!({"summary_functions": {"unused": {"expr": "broken("}}}),
+                "summary_functions",
+            ),
+            (serde_json::json!({"where": "broken("}), "where"),
+            (
+                serde_json::json!({"select": [{"name": "bad", "expr": "broken("}]}),
+                "select",
+            ),
+            (
+                serde_json::json!({"projections": {"a": {"expr": "projection.b"}, "b": {"expr": "projection.a"}}}),
+                "projections",
+            ),
+        ] {
+            let error = compile_mdbase_prepared_query(&query).err().unwrap();
+            assert_eq!(
+                error.diagnostics,
+                compile_mdbase_query(&query).unwrap_err().diagnostics
+            );
+            assert_eq!(error.diagnostics[0].code, "invalid_query");
+            assert_eq!(error.diagnostics[0].field.as_deref(), Some(field));
+        }
+        let prepared = compile_mdbase_prepared_query(&serde_json::json!({
+            "projections": {"first": {"expr": "projection.second + 1"}, "second": {"expr": "1"}}
+        }))
+        .unwrap();
+        assert_eq!(prepared.plan().named_projections[0].name, "second");
+        assert_eq!(prepared.plan().named_projections[1].name, "first");
     }
 
     #[test]
