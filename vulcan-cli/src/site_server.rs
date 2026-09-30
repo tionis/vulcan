@@ -779,6 +779,10 @@ mod tests {
     use serde_json::Value;
     use std::fs;
     use tempfile::TempDir;
+
+    // Native filesystem events are hints. Leave time for the watcher's 30-second
+    // safety reconciliation and the rebuild on hosts that silently lose events.
+    const WATCH_REBUILD_TIMEOUT: Duration = Duration::from_secs(45);
     use vulcan_core::{scan_vault, ScanMode};
 
     #[cfg(unix)]
@@ -901,7 +905,8 @@ graph = true
         .expect("updated note should be written");
 
         let mut reloaded_html = None;
-        for _ in 0..120 {
+        let deadline = std::time::Instant::now() + WATCH_REBUILD_TIMEOUT;
+        while std::time::Instant::now() < deadline {
             let live = get_json(handle.addr(), "/__vulcan_site/live-reload.json");
             if live["version"].as_u64().unwrap_or_default() > initial_version {
                 let html = get_text(handle.addr(), "/notes/home/");
@@ -995,7 +1000,7 @@ Strict preview should block this. See [[Private]].
         )
         .expect("updated note should be written");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + WATCH_REBUILD_TIMEOUT;
         let mut observed_error = None;
         while std::time::Instant::now() < deadline {
             let live = get_json(handle.addr(), "/__vulcan_site/live-reload.json");
@@ -1132,7 +1137,7 @@ graph = true
         )
         .expect("updated note should be written");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + WATCH_REBUILD_TIMEOUT;
         let mut updated_version = None;
         while std::time::Instant::now() < deadline {
             let live = get_json(handle.addr(), "/__vulcan_site/live-reload.json");
