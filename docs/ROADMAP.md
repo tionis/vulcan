@@ -631,6 +631,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Schedule semantic automation from ref/config/job changes and debounce deadlines, suppress unchanged state writes, and retain bounded remote reconciliation.
 
+- [x] Prune internal directories before fallback polling traversal and hashing while preserving configuration events, content comparison, and reconciliation.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

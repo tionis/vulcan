@@ -1,9 +1,10 @@
 use crate::{scan_vault, ScanError, ScanMode, ScanSummary, VaultPaths};
-use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -168,15 +169,7 @@ where
     E: Display,
 {
     let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher = PollWatcher::new(
-        move |event| {
-            let _ = sender.send(event);
-        },
-        Config::default()
-            .with_poll_interval(poll_interval)
-            .with_compare_contents(true),
-    )?;
-    watcher.watch(paths.vault_root(), RecursiveMode::Recursive)?;
+    let watcher = PrunedPoller::start(paths.vault_root(), poll_interval, sender)?;
     // Registration builds the initial comparison snapshot synchronously; the
     // startup scan observes any edits made while that snapshot was assembled.
     watch_vault_until_with_registered_watcher(
@@ -203,7 +196,6 @@ where
     F: FnMut(WatchReport) -> Result<(), E>,
     S: Fn() -> bool,
     E: Display,
-    W: Watcher,
 {
     let startup_summary = scan_vault(paths, ScanMode::Incremental)?;
     on_report(WatchReport {
@@ -293,6 +285,172 @@ where
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PollFingerprint {
+    directory: bool,
+    modified: Option<std::time::SystemTime>,
+    hash: Option<blake3::Hash>,
+}
+
+type PollInventory = BTreeMap<PathBuf, PollFingerprint>;
+
+// notify 8.2's PollWatcher has no pre-traversal exclusion hook. Keep a
+// content-comparing inventory of canonical paths instead, with streaming reads.
+fn polling_inventory(
+    root: &Path,
+    stopped: &std::sync::atomic::AtomicBool,
+    mut visited: impl FnMut(&Path, bool),
+) -> notify::Result<PollInventory> {
+    let mut inventory = PollInventory::new();
+    let walker = ignore::WalkBuilder::new(root)
+        .standard_filters(false)
+        .follow_links(true)
+        .filter_entry(|entry| {
+            entry.depth() == 0 || !matches!(entry.file_name().to_str(), Some(".git" | ".vulcan"))
+        })
+        .build();
+    let mut paths = Vec::new();
+    // These configuration files are canonical inputs inside an otherwise private
+    // directory. Probe them directly without enumerating cache/history contents.
+    for name in ["config.toml", "config.local.toml"] {
+        paths.push(root.join(".vulcan").join(name));
+    }
+    let entries = walker.map(|entry| {
+        entry.map(ignore::DirEntry::into_path).map_err(|error| {
+            notify::Error::generic(&error.to_string()).add_path(root.to_path_buf())
+        })
+    });
+    for path in entries.chain(paths.into_iter().map(Ok)) {
+        if stopped.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+        let path = path?;
+        visited(&path, false);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(notify::Error::io(error).add_path(path)),
+        };
+        let hash = if metadata.is_file() {
+            visited(&path, true);
+            let mut file = std::fs::File::open(&path)
+                .map_err(|error| notify::Error::io(error).add_path(path.clone()))?;
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = [0; 16 * 1024];
+            loop {
+                if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(inventory);
+                }
+                let count = match file.read(&mut buffer) {
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    result => {
+                        result.map_err(|error| notify::Error::io(error).add_path(path.clone()))?
+                    }
+                };
+                if count == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..count]);
+            }
+            Some(hasher.finalize())
+        } else {
+            None
+        };
+        inventory.insert(
+            path,
+            PollFingerprint {
+                directory: metadata.is_dir(),
+                modified: metadata.modified().ok(),
+                hash,
+            },
+        );
+    }
+    Ok(inventory)
+}
+
+fn inventory_events(previous: &PollInventory, current: &PollInventory) -> Vec<Event> {
+    use notify::event::{CreateKind, ModifyKind, RemoveKind};
+    let mut events = Vec::new();
+    for (path, fingerprint) in current {
+        let kind = match previous.get(path) {
+            None => EventKind::Create(CreateKind::Any),
+            Some(old) if old != fingerprint => EventKind::Modify(ModifyKind::Any),
+            _ => continue,
+        };
+        events.push(Event::new(kind).add_path(path.clone()));
+    }
+    for path in previous.keys().filter(|path| !current.contains_key(*path)) {
+        events.push(Event::new(EventKind::Remove(RemoveKind::Any)).add_path(path.clone()));
+    }
+    events
+}
+
+struct PrunedPoller {
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake: mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PrunedPoller {
+    fn start(
+        root: &Path,
+        interval: Duration,
+        sender: mpsc::Sender<notify::Result<Event>>,
+    ) -> notify::Result<Self> {
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut previous = polling_inventory(root, &stopped, |_, _| {})?;
+        let root = root.to_path_buf();
+        let worker_stop = stopped.clone();
+        let (wake, receiver) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("vulcan-poll".into())
+            .spawn(move || {
+                while matches!(
+                    receiver.recv_timeout(interval),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    let result = polling_inventory(&root, &worker_stop, |_, _| {});
+                    if worker_stop.load(std::sync::atomic::Ordering::Acquire) {
+                        break;
+                    }
+                    match result {
+                        Ok(current) => {
+                            for event in inventory_events(&previous, &current) {
+                                if sender.send(Ok(event)).is_err() {
+                                    return;
+                                }
+                            }
+                            previous = current;
+                        }
+                        Err(error) => {
+                            // Do not install a partial inventory or infer deletions.
+                            if sender.send(Err(error)).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(notify::Error::io)?;
+        Ok(Self {
+            stopped,
+            wake,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for PrunedPoller {
+    fn drop(&mut self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.wake.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 fn scan_summary_changed(summary: &ScanSummary) -> bool {
     summary.added != 0 || summary.updated != 0 || summary.deleted != 0
 }
@@ -320,6 +478,13 @@ impl WatchBatch {
         let created = matches!(event.kind, EventKind::Create(_));
         let mut added = rescan;
         for path in event.paths {
+            if relative_watch_path(paths, &path).is_some_and(|relative| {
+                relative == Path::new(".vulcan").join("config.toml")
+                    || relative == Path::new(".vulcan").join("config.local.toml")
+            }) {
+                self.safety_rescan = true;
+                added = true;
+            }
             let Some(relative_path) = normalize_watch_path(paths, &path) else {
                 continue;
             };
@@ -357,10 +522,14 @@ fn normalize_watch_path(paths: &VaultPaths, path: &Path) -> Option<String> {
             other => Some(other.as_os_str().to_string_lossy().into_owned()),
         })
         .collect::<Vec<_>>();
+    let configuration = normalized.len() == 2
+        && normalized[0] == ".vulcan"
+        && matches!(normalized[1].as_str(), "config.toml" | "config.local.toml");
     if normalized.is_empty()
-        || normalized
-            .first()
-            .is_some_and(|part| matches!(part.as_str(), ".vulcan" | ".git"))
+        || (!configuration
+            && normalized
+                .first()
+                .is_some_and(|part| matches!(part.as_str(), ".vulcan" | ".git")))
     {
         return None;
     }
@@ -396,7 +565,221 @@ fn strip_windows_verbatim_prefix(path: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, CreateKind, ModifyKind};
+    use notify::Config;
     use tempfile::TempDir;
+
+    #[test]
+    fn config_events_reconcile_on_both_backends_without_admitting_transients() {
+        let temporary = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        for name in ["config.toml", "config.local.toml"] {
+            let path = temporary.path().join(".vulcan").join(name);
+            let mut batch = WatchBatch::default();
+            assert!(batch.push(
+                &paths,
+                Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path.clone())
+            ));
+            assert!(batch.safety_rescan);
+            assert_eq!(batch.paths, [format!(".vulcan/{name}")].into());
+            assert!(!notify_error_is_internal(
+                &paths,
+                &notify::Error::generic("configuration unreadable").add_path(path)
+            ));
+        }
+        let transient = temporary.path().join(".vulcan/cache.db-wal");
+        let mut batch = WatchBatch::default();
+        assert!(!batch.push(
+            &paths,
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(transient.clone())
+        ));
+        assert!(!batch.safety_rescan);
+        assert!(notify_error_is_internal(
+            &paths,
+            &notify::Error::generic("transient").add_path(transient)
+        ));
+    }
+
+    #[test]
+    fn pruned_poller_reconciles_registration_gap_and_joins_on_shutdown() {
+        let temporary = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        std::fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        let note = temporary.path().join("Home.md");
+        std::fs::write(&note, "old").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let watcher =
+            PrunedPoller::start(temporary.path(), Duration::from_secs(30), sender).unwrap();
+        std::fs::write(note, "changed during registration").unwrap();
+        let mut reports = Vec::new();
+        watch_vault_until_with_registered_watcher(
+            &paths,
+            WatchOptions::default(),
+            || true,
+            |report| {
+                reports.push(report);
+                Ok::<_, std::convert::Infallible>(())
+            },
+            watcher,
+            &receiver,
+            WATCH_SAFETY_RESCAN_INTERVAL,
+        )
+        .unwrap();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].startup);
+        assert_eq!(reports[0].summary.updated, 1);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn polling_inventory_prunes_internal_io_before_hashing() {
+        let temporary = TempDir::new().unwrap();
+        let root = temporary.path();
+        for directory in [".git/objects", ".vulcan/history", ".obsidian/plugins/test"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        for index in 0..512 {
+            for directory in [".git/objects", ".vulcan/history"] {
+                std::fs::write(root.join(format!("{directory}/{index}")), vec![b'x'; 4096])
+                    .unwrap();
+            }
+        }
+        for path in [
+            "Home.md",
+            ".gitignore",
+            ".obsidian/plugins/test/data.json",
+            ".vulcan/config.toml",
+            ".vulcan/config.local.toml",
+        ] {
+            std::fs::write(root.join(path), "test").unwrap();
+        }
+        let baseline = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = baseline.clone();
+        let mut old = notify::PollWatcher::with_initial_scan(
+            |_| {},
+            Config::default()
+                .with_manual_polling()
+                .with_compare_contents(true),
+            move |path: notify::Result<PathBuf>| {
+                observed.lock().unwrap().push(path.unwrap());
+            },
+        )
+        .unwrap();
+        old.watch(root, RecursiveMode::Recursive).unwrap();
+        let old_files = baseline
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|path| path.is_file())
+            .count();
+        let mut visited = Vec::new();
+        let mut hashed = Vec::new();
+        let inventory = polling_inventory(root, &false.into(), |path, read| {
+            if read {
+                hashed.push(path.to_path_buf());
+            } else {
+                visited.push(path.to_path_buf());
+            }
+        })
+        .unwrap();
+        assert_eq!(old_files, 1029);
+        assert_eq!(hashed.len(), 5);
+        assert_eq!(visited.len(), 9); // root, three Obsidian dirs, five files
+        assert_eq!(inventory.len(), 9);
+        assert!(!visited
+            .iter()
+            .any(|path| path.starts_with(root.join(".git/objects"))
+                || path.starts_with(root.join(".vulcan/history"))));
+        eprintln!("poll fixture: 1024 internal x 4096 bytes; hash reads {old_files} -> {}; visited {} -> {}", hashed.len(), baseline.lock().unwrap().len(), visited.len());
+    }
+
+    #[test]
+    fn polling_inventory_detects_preserved_mtime_atomic_and_structural_changes() {
+        let temporary = TempDir::new().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join(".vulcan")).unwrap();
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        for path in [
+            "Home.md",
+            "Atomic.md",
+            "Delete.md",
+            "Rename.md",
+            ".gitignore",
+            ".obsidian/app.json",
+            ".vulcan/config.toml",
+        ] {
+            std::fs::write(root.join(path), "old").unwrap();
+        }
+        let before = polling_inventory(root, &false.into(), |_, _| {}).unwrap();
+        let home = root.join("Home.md");
+        let mtime = std::fs::metadata(&home).unwrap().modified().unwrap();
+        std::fs::write(&home, "new").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&home)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        std::fs::write(root.join("replacement"), "replacement").unwrap();
+        std::fs::remove_file(root.join("Atomic.md")).unwrap();
+        std::fs::rename(root.join("replacement"), root.join("Atomic.md")).unwrap();
+        std::fs::remove_file(root.join("Delete.md")).unwrap();
+        std::fs::rename(root.join("Rename.md"), root.join("Renamed.md")).unwrap();
+        std::fs::create_dir(root.join("new-dir")).unwrap();
+        std::fs::write(root.join("new-dir/New.md"), "new").unwrap();
+        for path in [".gitignore", ".obsidian/app.json", ".vulcan/config.toml"] {
+            std::fs::write(root.join(path), "new").unwrap();
+        }
+        let after = polling_inventory(root, &false.into(), |_, _| {}).unwrap();
+        let events = inventory_events(&before, &after);
+        for path in [
+            "Home.md",
+            "Atomic.md",
+            "Delete.md",
+            "Rename.md",
+            "Renamed.md",
+            "new-dir",
+            "new-dir/New.md",
+            ".gitignore",
+            ".obsidian/app.json",
+            ".vulcan/config.toml",
+        ] {
+            assert!(
+                events.iter().any(|event| event.paths == [root.join(path)]),
+                "{path}"
+            );
+        }
+        let paths = VaultPaths::new(root);
+        let mut batch = WatchBatch::default();
+        for event in events {
+            batch.push(&paths, event);
+        }
+        assert!(batch.safety_rescan);
+        assert!(batch.created_paths.contains("new-dir/New.md"));
+        assert!(inventory_events(&after, &after).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polling_inventory_follows_root_and_file_symlinks_like_notify() {
+        let temporary = TempDir::new().unwrap();
+        let root = temporary.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(temporary.path().join("outside.md"), "old").unwrap();
+        std::os::unix::fs::symlink(temporary.path().join("outside.md"), root.join("Link.md"))
+            .unwrap();
+        let alias = temporary.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let before = polling_inventory(&alias, &false.into(), |_, _| {}).unwrap();
+        std::fs::write(temporary.path().join("outside.md"), "new").unwrap();
+        let after = polling_inventory(&alias, &false.into(), |_, _| {}).unwrap();
+        assert!(inventory_events(&before, &after)
+            .iter()
+            .any(|event| event.paths == [alias.join("Link.md")]));
+    }
 
     #[test]
     fn continuous_changes_have_a_bounded_batch_age() {
