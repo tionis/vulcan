@@ -577,7 +577,10 @@ mod tests {
         .expect("updated note should be written");
 
         let mut refreshed = None;
-        for _ in 0..100 {
+        // Native events may be lost; allow the watcher's 30-second safety
+        // reconciliation to complete before asserting that refresh failed.
+        let deadline = std::time::Instant::now() + Duration::from_secs(45);
+        while std::time::Instant::now() < deadline {
             if let Some(candidate) = try_get_json(handle.addr(), "/search?q=moonshot", None) {
                 let hits = candidate["result"]["hits"]
                     .as_array()
