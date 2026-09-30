@@ -9,7 +9,7 @@ The default workspace suite passes with strict plural CIMD negotiation and unsup
 rejection, including all 367 daemon tests and the live foreground/resident regression.
 Workspace/all-target linting and no-default CLI/all-target linting pass. Additional
 no-default CLI runs pass 13 MCP unit tests and 40 MCP CLI smoke tests. Ignored workspace tests
-remain ignored; these results do not establish native Windows execution or live ChatGPT acceptance.
+remain ignored. Native Windows evidence is recorded below; live ChatGPT acceptance is deferred.
 
 | Requirement | Current implementation and covering evidence |
 | --- | --- |
@@ -33,23 +33,37 @@ remain ignored; these results do not establish native Windows execution or live 
 | Durable, protected and secret-free state; migrations | `vulcan-secrets` and `mcp_credentials.rs` provide instance-bound references, version-2 reference-only clients, immutable binding receipts and explicit locked legacy migration. Tests cover dry-run immutability, partial-copy replay, lost/changed credentials, exact-key restoration and preserved grants. Reports/debug/error paths omit credential values. See [credential custody](mcp-credential-custody.md). |
 | Help, configuration, permissions, proxy examples and bundled skills | CLI lifecycle/help/describe tests and installed-agent payload tests cover shipped command/workflow availability. `mcp-setup` documents consent, grant boundaries, proxy transport, revocation, operation-status recovery and exact-key custody recovery. The skill installs in `.agents/skills/mcp-setup/SKILL.md`; its existing Vulcan-specific frontmatter is checked by repository tests rather than the generic Codex skill validator. |
 
-## Open gates and limits
+## Scope decisions, native verification and limits
+
+On 2026-09-30 the user authorized pushing to `main`, confirmed that Phase 11 auto-commit
+is separate, and deferred the real ChatGPT connection test until after implementation.
+The implementation revision `e7d3aa67` is pushed. Its
+[CI run](https://github.com/tionis/vulcan/actions/runs/36716657867) passed all jobs, including
+native Windows core and CLI tests, Linux/macOS tests, linting, MSRV and supply-chain checks.
+[CodeQL](https://github.com/tionis/vulcan/actions/runs/36716657994) also passed.
+The earlier run for `af9662ed` exposed two Windows secret-store contention failures;
+`e7d3aa67` corrects the mapping of fs2's native contention code to `Locked` and adds a
+regression without masking permission or unknown failures. Local workspace checks and
+Windows-target compilation also pass. The final acceptance update changes documentation only.
 
 - Current ChatGPT-shaped CIMD metadata is covered by regression fixtures following
   [official OpenAI authentication guidance](https://developers.openai.com/plugins/build/auth).
   This proves public-method negotiation locally, not live ChatGPT acceptance. JWT assertions
   remain unsupported and rejected; no JWT support is advertised.
-- Roadmap 10.10's resident-hosting checkbox explicitly depends on 10.7.1–10.7.6. The MCP dispatch,
-  HTTP-hosting and stdio items are verified and checked. Section 10.7.6 still includes adaptation
-  of conflict/semantic automation and new Phase 11 supervised auto-commit plus its integration tests.
-  Those items are not marked complete. The accepted [hosting contract](unified-hosting.md) explicitly
-  lists new Phase 11 behavior as a non-goal. This scope discrepancy needs an explicit decision;
-  this audit does not silently remove the dependency or redefine the goal.
-- Native Windows execution of the current commits is unverified. Linux tests and earlier protected-store
-  cross-target checks are not substitutes. Full daemon cross-compilation is unavailable without the
-  required Windows C compiler. No changes have been pushed or remote CI dispatched by this work.
+- Roadmap 10.10 depends on 10.7.1–10.7.5 and the MCP items of 10.7.6. MCP dispatch,
+  HTTP hosting, stdio and conformance are implemented and verified locally. Remaining automation
+  integration and Phase 11 supervised auto-commit retain separate unchecked roadmap items.
+  This matches the accepted [hosting contract](unified-hosting.md), which lists new Phase 11
+  behavior as a non-goal, and the user's explicit Phase 11 scope decision.
+- Native Windows verification is established by the passing core and CLI jobs for the corrected
+  implementation, not inferred from Linux or cross-target compilation. The secret-store contention,
+  concurrent-create and cloned-handle regressions pass on that native runner.
 - Live ChatGPT connection acceptance is not proved by fake-client conformance. The hosted-client
   protocol contract is covered locally, but a real connection requires the user's public ingress,
-  IndieAuth identity and client account. Reverse proxies/tunnels remain transport, not authority.
+  IndieAuth identity and client account. The user explicitly deferred this check; it is not claimed
+  complete and does not gate the implementation goal. Reverse proxies/tunnels remain transport,
+  not authority.
 
-The goal remains open until its remaining requirements are verified and the dependency scope is resolved.
+All named-MCP implementation requirements in Roadmap 10.10 have covering implementation and
+verification evidence under the user-confirmed scope. Live ChatGPT acceptance and separate
+automation work remain follow-ups, not claims of completion.
