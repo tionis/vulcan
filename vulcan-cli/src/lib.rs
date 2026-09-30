@@ -5134,6 +5134,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     oauth_local_user: oauth_local_user.clone(),
                     instance_id: None,
                     oauth_storage_dir: None,
+                    oauth_credentials: None,
                     request_timeout,
                 },
             )

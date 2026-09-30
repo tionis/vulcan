@@ -33,6 +33,7 @@ ulid.workspace = true
 url.workspace = true
 vulcan-app = { path = "../vulcan-app", version = "0.2.1", default-features = false }
 vulcan-core = { path = "../vulcan-core", version = "0.2.1", default-features = false }
+vulcan-secrets = { path = "../vulcan-secrets", version = "0.2.1" }
 vulcan-sync = { path = "../vulcan-sync", version = "0.2.1" }
 
 [lints]

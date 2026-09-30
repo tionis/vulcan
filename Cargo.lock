@@ -4759,6 +4759,7 @@ dependencies = [
  "url",
  "vulcan-app",
  "vulcan-core",
+ "vulcan-secrets",
  "vulcan-sync",
 ]
 

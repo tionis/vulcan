@@ -100,23 +100,7 @@ impl ProtectedFileSecretStore {
     }
 
     fn open_value(&self, name: &SecretName) -> Result<File, SecretStoreError> {
-        let path = self.path(name);
-        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-        reject_link(&metadata)?;
-        if !metadata.is_file() {
-            return Err(SecretStoreError::Invalid);
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        no_follow(&mut options);
-        let file = options.open(path).map_err(io_error)?;
-        regular_file(&file)?;
-        owner_only(&file)?;
-        let length = file.metadata().map_err(io_error)?.len();
-        if length == 0 || length > MAX_SECRET_BYTES as u64 {
-            return Err(SecretStoreError::Invalid);
-        }
-        Ok(file)
+        open_protected_input(&self.path(name))
     }
 }
 
@@ -168,12 +152,7 @@ impl SecretStore for ProtectedFileSecretStore {
 
     fn get(&self, name: &SecretName) -> Result<SecretBytes, SecretStoreError> {
         let _directory = self.directory()?;
-        let file = self.open_value(name)?;
-        let mut bytes = Zeroizing::new(Vec::new());
-        file.take(MAX_SECRET_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(io_error)?;
-        SecretBytes::from_zeroizing(bytes)
+        read_protected_secret_input(&self.path(name))
     }
 
     fn delete(&self, name: &SecretName) -> Result<(), SecretStoreError> {
@@ -183,6 +162,44 @@ impl SecretStore for ProtectedFileSecretStore {
         fs::remove_file(self.path(name)).map_err(io_error)?;
         sync_directory(&directory).map_err(|_| SecretStoreError::Unknown)
     }
+}
+
+/// Metadata-only inspection for explicit trusted application import workflows.
+/// It never creates files, repairs permissions, or reads the secret's bytes.
+#[must_use]
+pub fn inspect_protected_secret_input(path: &Path) -> SecretStoreState {
+    open_protected_input(path).map_or_else(SecretStoreError::state, |_| SecretStoreState::Available)
+}
+
+/// Read one bounded owner-only source for an explicitly authorized import.
+/// The application selects this trusted path; it is not a provider fallback or
+/// a filesystem-read API for remote clients, plugins, or JavaScript.
+pub fn read_protected_secret_input(path: &Path) -> Result<SecretBytes, SecretStoreError> {
+    let file = open_protected_input(path)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(MAX_SECRET_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    SecretBytes::from_zeroizing(bytes)
+}
+
+fn open_protected_input(path: &Path) -> Result<File, SecretStoreError> {
+    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
+    reject_link(&metadata)?;
+    if !metadata.is_file() {
+        return Err(SecretStoreError::Invalid);
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    no_follow(&mut options);
+    let file = options.open(path).map_err(io_error)?;
+    regular_file(&file)?;
+    owner_only(&file)?;
+    let length = file.metadata().map_err(io_error)?.len();
+    if length == 0 || length > MAX_SECRET_BYTES as u64 {
+        return Err(SecretStoreError::Invalid);
+    }
+    Ok(file)
 }
 
 // Result::map_err passes ownership here; never retain or render its raw locator.

@@ -18884,6 +18884,38 @@
                 "subcommands": []
               },
               {
+                "about": "Migrate a stopped remote's credentials into device-local secret custody",
+                "name": "migrate-credentials",
+                "options": [
+                  {
+                    "help": "Named remote whose legacy credentials should migrate",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Inspect migration sources and references without reading secrets or writing state",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Remove a named MCP remote and revoke its connections",
                 "name": "remove",
                 "options": [

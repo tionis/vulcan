@@ -5309,6 +5309,16 @@ pub enum McpRemoteCommand {
         #[arg(help = "Named remote to run")]
         name: String,
     },
+    #[command(about = "Migrate a stopped remote's credentials into device-local secret custody")]
+    MigrateCredentials {
+        #[arg(help = "Named remote whose legacy credentials should migrate")]
+        name: String,
+        #[arg(
+            long,
+            help = "Inspect migration sources and references without reading secrets or writing state"
+        )]
+        dry_run: bool,
+    },
     #[command(about = "Remove a named MCP remote and revoke its connections")]
     Remove {
         #[arg(help = "Named remote to remove")]

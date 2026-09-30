@@ -70,9 +70,30 @@ grant types; malformed client metadata is not silently discarded.
 Named definitions are device-global in Vulcan's user configuration, not in synced
 `.vulcan/config.toml`. They reference registered wikis and vault-defined permission profiles. Grant,
 refresh-family, last-use, and revocation state is device-local under Vulcan's user state directory;
-OAuth secrets are stored per named remote there as owner-only files. `remote set` preserves the
+Issuer keys and confidential OAuth client secrets use the device-local `SecretStore` with
+instance-bound `file_v1` references. Init/show JSON exposes only those non-secret references;
+OAuth client metadata stores references instead of inline secrets. `file_v1` uses protected
+owner-only files, not a native keychain, encryption, or hardware custody. Public OAuth clients
+require no stored secret. `remote set` preserves the
 instance identity, and different remotes can run concurrently when their loopback binds and public
 URLs do not conflict.
+
+Existing named remotes using legacy issuer files or inline OAuth client secrets require explicit
+migration while stopped:
+
+```sh
+vulcan mcp remote migrate-credentials personal-chatgpt --dry-run
+vulcan mcp remote migrate-credentials personal-chatgpt
+```
+
+Preview checks source metadata and destination references without reading secret bytes or writing
+state. Applying copies and verifies credentials before publishing reference-only client metadata.
+It preserves signing-key bytes, OAuth client IDs, and existing grants; interrupted copies resume
+only when immutable destination values match their source. Legacy issuer files remain inactive,
+protected recovery material. Do not delete them to bypass migration or generate a replacement key.
+A mismatched, unavailable, or malformed credential fails closed without provider fallback or
+automatic permission repair. Ordinary local stdio and advanced direct HTTP configurations retain
+their existing storage behavior; migration does not ingest environment-variable credentials.
 
 The long-form direct flags remain available for debugging, generic local HTTP clients, external
 OIDC, and compatibility. `vulcan mcp` without a management subcommand remains the daemon-independent

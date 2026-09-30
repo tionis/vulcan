@@ -5,7 +5,9 @@
 //! transports and scripts must not expose a raw store to callers.
 
 mod file;
-pub use file::ProtectedFileSecretStore;
+pub use file::{
+    inspect_protected_secret_input, read_protected_secret_input, ProtectedFileSecretStore,
+};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

@@ -66,7 +66,10 @@ never creates storage or reads secret bytes. File custody is exportable and unat
 native-keychain-backed, or hardware protected; no provider fallback or permission repair is implicit.
 Unix publication/deletion syncs the parent directory; a failed post-publication sync reports an unknown
 outcome rather than authorizing replacement. Windows uses the shared current-user/SYSTEM ACL adapter.
-This foundation alone does not migrate device keys, connector credentials, or MCP issuer/client secrets.
+The foundation alone does not migrate device keys or connector credentials. Named MCP issuer/client
+credentials use an explicit typed consumer and migration described in
+[Named MCP Credential Custody](mcp-credential-custody.md); that integration does not implement native
+keychains or device-key custody migration.
 
 Every provider reports a structured state rather than flattening failures into “missing”:
 

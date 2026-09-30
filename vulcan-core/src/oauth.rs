@@ -29,7 +29,7 @@ pub struct OAuthResourceServerConfig {
     pub public_url: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LocalOAuthIssuerConfig {
     pub public_url: String,
     pub client_id: String,
@@ -177,7 +177,7 @@ pub struct OAuthResourceServer {
     jwks: JwkSet,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LocalOAuthIssuer {
     public_url: String,
     client_id: String,
@@ -189,6 +189,26 @@ pub struct LocalOAuthIssuer {
     users: Vec<LocalOAuthUserConfig>,
     protected_resource_metadata_url: String,
     authorization_server_metadata: Value,
+}
+
+impl fmt::Debug for LocalOAuthIssuerConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalOAuthIssuerConfig")
+            .field("client_id", &self.client_id)
+            .field("credentials", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for LocalOAuthIssuer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalOAuthIssuer")
+            .field("client_id", &self.client_id)
+            .field("credentials", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl OAuthResourceServer {
@@ -1035,6 +1055,28 @@ fn oauth_algorithm_allowed(algorithm: Algorithm) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_issuer_configuration_and_runtime_debug_never_expose_credentials() {
+        let config = LocalOAuthIssuerConfig {
+            public_url: "https://mcp.example.test/mcp".into(),
+            client_id: "public-client-id".into(),
+            client_secret: "private-client-marker".into(),
+            signing_key: "private-signing-marker".into(),
+            approval_token: "private-approval-marker".into(),
+            subject: "https://identity.example.test/me".into(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: true,
+        };
+        let config_debug = format!("{config:?}");
+        let issuer_debug = format!("{:?}", LocalOAuthIssuer::from_config(config).unwrap());
+        for rendered in [config_debug, issuer_debug] {
+            assert!(rendered.contains("[REDACTED]"));
+            assert!(rendered.contains("public-client-id"));
+            assert!(!rendered.contains("private-"));
+        }
+    }
 
     #[test]
     fn indieauth_response_reader_rejects_oversized_profile_and_metadata() {

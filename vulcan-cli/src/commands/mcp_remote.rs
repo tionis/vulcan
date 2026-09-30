@@ -9,6 +9,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_core::{resolve_permission_profile, PermissionGrant, VaultPaths};
+use vulcan_daemon::mcp_credentials::{McpRemoteCredentialReferences, McpRemoteCredentials};
 use vulcan_daemon::mcp_remote::{
     AddMcpRemoteRequest, McpRemoteAuthentication, McpRemoteDefinition, McpRemoteId, McpRemoteVault,
     UpdateMcpRemoteRequest,
@@ -21,6 +22,7 @@ use vulcan_daemon::registry::{WikiId, WikiRegistration};
 struct RemoteMutationReport {
     dry_run: bool,
     remote: McpRemoteDefinition,
+    credential_references: McpRemoteCredentialReferences,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     revoked_connections: Vec<ConnectionGrantReport>,
 }
@@ -40,6 +42,47 @@ fn handle_remote(
     command: &McpRemoteCommand,
 ) -> Result<(), CliError> {
     match command {
+        McpRemoteCommand::MigrateCredentials { name, dry_run } => {
+            let remote = show_remote(context, name)?;
+            let _runtime_lock = if *dry_run {
+                None
+            } else {
+                Some(mcp::acquire_named_remote_runtime_lock(
+                    &context
+                        .state_root
+                        .join("mcp-remotes")
+                        .join(remote.id.as_str()),
+                    &remote,
+                )?)
+            };
+            if context
+                .registry
+                .show_mcp_remote(&remote.id)
+                .map_err(CliError::operation)?
+                != remote
+            {
+                return Err(CliError::operation(
+                    "named MCP definition changed while preparing credential migration; retry",
+                ));
+            }
+            let report = McpRemoteCredentials::at(&context.state_root, &remote)
+                .migrate(*dry_run)
+                .map_err(CliError::operation)?;
+            if cli.output == OutputFormat::Json {
+                return print_json(&report);
+            }
+            println!(
+                "{} credential custody for remote `{}`",
+                if *dry_run {
+                    "Would migrate"
+                } else {
+                    "Migrated"
+                },
+                remote.id
+            );
+            println!("Legacy issuer files are retained as inactive protected recovery material; no vault content or grants were changed.");
+            Ok(())
+        }
         McpRemoteCommand::Init {
             name,
             public_url,
@@ -479,7 +522,16 @@ fn tool_pack_names(packs: &[McpToolPackArg]) -> Vec<String> {
 
 fn print_remote(output: OutputFormat, remote: &McpRemoteDefinition) -> Result<(), CliError> {
     if output == OutputFormat::Json {
-        return print_json(remote);
+        #[derive(Serialize)]
+        struct RemoteInspection<'a> {
+            #[serde(flatten)]
+            remote: &'a McpRemoteDefinition,
+            credential_references: McpRemoteCredentialReferences,
+        }
+        return print_json(&RemoteInspection {
+            remote,
+            credential_references: McpRemoteCredentialReferences::for_instance(remote.instance_id),
+        });
     }
     println!("Remote: {}", remote.id);
     println!("MCP URL: {}", remote.public_url);
@@ -503,6 +555,7 @@ fn print_remote_mutation(
 ) -> Result<(), CliError> {
     let report = RemoteMutationReport {
         dry_run,
+        credential_references: McpRemoteCredentialReferences::for_instance(remote.instance_id),
         remote,
         revoked_connections,
     };

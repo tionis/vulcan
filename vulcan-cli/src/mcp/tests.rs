@@ -279,6 +279,7 @@ fn oauth_options() -> McpHttpOptions {
         oauth_local_user: Vec::new(),
         instance_id: None,
         oauth_storage_dir: None,
+        oauth_credentials: None,
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     }
 }
@@ -608,6 +609,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             .state_root
             .join("mcp-remotes")
             .join(remote.id.as_str()),
+    );
+    token_options.oauth_credentials = Some(
+        vulcan_daemon::mcp_credentials::McpRemoteCredentials::at(&process.state_root, &remote),
     );
     token_options.oauth_local_subject = Some("https://identity.example.test/alice".to_string());
     token_options.oauth_local_client_secret = Some("test-client-secret".to_string());

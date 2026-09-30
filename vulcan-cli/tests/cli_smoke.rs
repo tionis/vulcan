@@ -8479,6 +8479,185 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 }
 
 #[test]
+fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
+    use fs2::FileExt;
+    use vulcan_daemon::mcp_credentials::McpRemoteCredentials;
+    use vulcan_daemon::mcp_oauth_clients::{OAuthClientRegistry, RegisteredOAuthClient};
+    let temporary = TempDir::new().unwrap();
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vault = temporary.path().join("vault");
+    fs::create_dir(&vault).unwrap();
+    let binary = assert_cmd::cargo::cargo_bin("vulcan");
+    let run = |arguments: &[&str]| {
+        ProcessCommand::new(&binary)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(arguments)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["vault", "add", "personal", vault.to_str().unwrap()])
+        .status
+        .success());
+    let initialized = successful_process_json(&run(&[
+        "--vault",
+        vault.to_str().unwrap(),
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "init",
+        "personal",
+        "--public-url",
+        "https://mcp.example.test/personal",
+        "--identity",
+        "https://identity.example.test/me",
+    ]));
+    let remote: vulcan_daemon::mcp_remote::McpRemoteDefinition =
+        serde_json::from_value(initialized["remote"].clone()).unwrap();
+    let state_root = state_home.join("vulcan");
+    let legacy = state_root.join("mcp-remotes/personal");
+    fs::create_dir_all(&legacy).unwrap();
+    #[cfg(windows)]
+    vulcan_app::windows_acl::repair_private_path(&legacy, true).unwrap();
+    for (file, secret) in [
+        ("oauth-issuer-secret", "legacy-issuer-private-marker\n"),
+        ("oauth-signing-key", "legacy-signing-private-marker\n"),
+    ] {
+        let path = legacy.join(file);
+        fs::write(&path, secret).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+    let client_path = legacy.join("oauth-clients.json");
+    let registered = RegisteredOAuthClient {
+        client_id: "legacy-client".into(),
+        client_secret: "legacy-client-private-marker".into(),
+        redirect_uris: vec!["https://chatgpt.com/callback".into()],
+        client_name: Some("Client".into()),
+        token_endpoint_auth_method: "client_secret_post".into(),
+        client_id_issued_at: 1,
+    };
+    OAuthClientRegistry::at(client_path.clone())
+        .unwrap()
+        .register(registered.clone())
+        .unwrap();
+    let before = fs::read(&client_path).unwrap();
+    let authorization = vulcan_daemon::mcp_state::McpAuthorizationStore::at(&state_root);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let grant = authorization
+        .create_grant(
+            vulcan_daemon::mcp_state::CreateConnectionGrant {
+                remote_id: remote.id.clone(),
+                remote_instance_id: remote.instance_id,
+                client_id: registered.client_id.clone(),
+                subject: "https://identity.example.test/me".into(),
+                wiki_id: remote.vaults[0].wiki_id.clone(),
+                permission_profile: "readonly".into(),
+                approved_permissions: vulcan_core::permissions::resolve_permission_profile(
+                    &vulcan_core::paths::VaultPaths::new(&vault),
+                    Some("readonly"),
+                )
+                .unwrap()
+                .grant,
+                tool_packs: vec!["notes-read".into()],
+                scopes: vec!["mcp:tools".into()],
+                audience: remote.public_url.clone(),
+                created_at: now,
+                expires_at: now + 3600,
+            },
+            false,
+        )
+        .unwrap();
+    let _refresh = authorization
+        .issue_refresh_token(grant.id, now + 3600, now)
+        .unwrap();
+    let authorization_before = fs::read(authorization.path()).unwrap();
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options.open(legacy.join("runtime.lock")).unwrap();
+    lock.lock_exclusive().unwrap();
+    let preview = run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "migrate-credentials",
+        "personal",
+        "--dry-run",
+    ]);
+    let report = successful_process_json(&preview);
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["clients"]["migrated_clients"], Value::Null);
+    assert!(!state_root.join("secrets").exists());
+    let blocked = run(&["mcp", "remote", "migrate-credentials", "personal"]);
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("already running"));
+    assert_eq!(fs::read(&client_path).unwrap(), before);
+    drop(lock);
+    let applied = run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "migrate-credentials",
+        "personal",
+    ]);
+    let report = successful_process_json(&applied);
+    assert_eq!(report["clients"]["migrated_clients"], 1);
+    for output in [
+        &preview.stdout,
+        &preview.stderr,
+        &blocked.stdout,
+        &blocked.stderr,
+        &applied.stdout,
+        &applied.stderr,
+    ] {
+        assert!(!String::from_utf8_lossy(output).contains("private-marker"));
+    }
+    assert!(!fs::read_to_string(&client_path)
+        .unwrap()
+        .contains("private-marker"));
+    let credentials = McpRemoteCredentials::at(&state_root, &remote);
+    assert_eq!(
+        credentials.signing_key().unwrap(),
+        "legacy-signing-private-marker"
+    );
+    assert_eq!(
+        credentials.issuer_secret().unwrap(),
+        "legacy-issuer-private-marker"
+    );
+    assert_eq!(
+        OAuthClientRegistry::with_secret_store(client_path, credentials.client_custody().unwrap())
+            .unwrap()
+            .get("legacy-client")
+            .unwrap(),
+        Some(registered)
+    );
+    assert!(legacy.join("oauth-signing-key").exists());
+    assert_eq!(
+        fs::read(authorization.path()).unwrap(),
+        authorization_before
+    );
+    let connections =
+        successful_process_json(&run(&["--output", "json", "mcp", "connections", "list"]));
+    assert_eq!(connections.as_array().unwrap().len(), 1);
+    assert_eq!(connections[0]["id"], grant.id.to_string());
+}
+
+#[test]
 fn named_mcp_remote_cli_lifecycle_is_device_global_and_dry_run_safe() {
     let temporary = TempDir::new().expect("temporary directory");
     let config_home = temporary.path().join("config");
@@ -8542,6 +8721,33 @@ fn named_mcp_remote_cli_lifecycle_is_device_global_and_dry_run_safe() {
         .as_str()
         .expect("instance ID")
         .to_string();
+    assert_eq!(
+        created["credential_references"]["issuer"]["provider"],
+        "file_v1"
+    );
+    let shown = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "show",
+        "personal-chatgpt",
+    ]));
+    assert_eq!(
+        shown["credential_references"],
+        created["credential_references"]
+    );
+    let migration = successful_process_json(&run(&[
+        "--output",
+        "json",
+        "mcp",
+        "remote",
+        "migrate-credentials",
+        "personal-chatgpt",
+        "--dry-run",
+    ]));
+    assert_eq!(migration["dry_run"], true);
+    assert_eq!(migration["clients"]["registry_present"], false);
     let updated = successful_process_json(&run(&[
         "--output",
         "json",
@@ -16580,6 +16786,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
+    assert!(mcp_skill.contains("vulcan mcp remote migrate-credentials <name> --dry-run"));
+    assert!(mcp_skill.contains("never delete legacy key files to make startup succeed"));
     assert!(mcp_skill.contains("Local stdio and loopback HTTP"));
     assert!(mcp_skill.contains("leave that flag unset to use the authenticated identity"));
     assert!(mcp_skill.contains("vulcan daemon start --detach"));

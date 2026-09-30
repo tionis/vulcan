@@ -183,6 +183,8 @@ pub(crate) struct McpHttpOptions {
     pub instance_id: Option<Ulid>,
     #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_storage_dir: Option<PathBuf>,
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
+    pub oauth_credentials: Option<vulcan_daemon::mcp_credentials::McpRemoteCredentials>,
     pub request_timeout: Duration,
 }
 
@@ -637,6 +639,10 @@ fn run_named_mcp_remote_with_endpoints(
         oauth_local_user: Vec::new(),
         instance_id: Some(remote.instance_id),
         oauth_storage_dir: Some(storage_dir),
+        oauth_credentials: Some(vulcan_daemon::mcp_credentials::McpRemoteCredentials::at(
+            &process.state_root,
+            remote,
+        )),
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     };
     run_mcp_http_server_with_named_runtime(
@@ -1094,8 +1100,14 @@ fn run_mcp_http_server_inner(
             oauth_codes: Arc::new(McpAuthorizationCodeMap::default()),
             #[cfg(feature = "oauth")]
             oauth_clients: Arc::new(
-                OAuthClientRegistry::at(oauth_clients_path(paths, options))
-                    .map_err(CliError::operation)?,
+                match options.oauth_credentials.as_ref() {
+                    Some(credentials) => OAuthClientRegistry::with_secret_store(
+                        oauth_clients_path(paths, options),
+                        credentials.client_custody().map_err(CliError::operation)?,
+                    ),
+                    None => OAuthClientRegistry::at(oauth_clients_path(paths, options)),
+                }
+                .map_err(CliError::operation)?,
             ),
             #[cfg(feature = "oauth")]
             oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
@@ -2291,6 +2303,9 @@ fn load_or_create_local_oauth_issuer_secret(
     paths: &VaultPaths,
     options: &McpHttpOptions,
 ) -> Result<String, CliError> {
+    if let Some(credentials) = options.oauth_credentials.as_ref() {
+        return credentials.issuer_secret().map_err(CliError::operation);
+    }
     let path = oauth_issuer_secret_path(paths, options);
     if path.exists() {
         let secret = fs::read_to_string(&path).map_err(CliError::operation)?;
@@ -2316,6 +2331,9 @@ fn load_or_create_local_oauth_signing_key(
     paths: &VaultPaths,
     options: &McpHttpOptions,
 ) -> Result<String, CliError> {
+    if let Some(credentials) = options.oauth_credentials.as_ref() {
+        return credentials.signing_key().map_err(CliError::operation);
+    }
     load_or_create_secret_file(&oauth_signing_key_path(paths, options), "OAuth signing key")
 }
 
