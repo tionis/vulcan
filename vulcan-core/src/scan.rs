@@ -3055,10 +3055,6 @@ fn resolve_changed_links(
         delete_diag_statement.execute([doc_id])?;
     }
 
-    // Build the full resolver index (needed to resolve against all targets).
-    let documents = load_resolver_documents(transaction)?;
-    let index = ResolverIndex::build(&documents);
-
     // Load only links from changed documents.
     let placeholders = changed_document_ids
         .iter()
@@ -3087,6 +3083,15 @@ fn resolve_changed_links(
         })
     })?;
     let links = rows.collect::<Result<Vec<_>, _>>()?;
+
+    // A prose-only note (including one whose last link was removed) has no
+    // targets to resolve. Clear its old diagnostics above, but avoid loading
+    // every document and alias in the vault.
+    if links.is_empty() {
+        return Ok(());
+    }
+    let documents = load_resolver_documents(transaction)?;
+    let index = ResolverIndex::build(&documents);
 
     let mut update_statement =
         transaction.prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
@@ -3298,6 +3303,38 @@ mod tests {
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn link_free_changes_clear_diagnostics_without_loading_resolver_targets() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        // Deliberately omit the aliases table and target-only document columns:
+        // attempting to construct the full resolver would fail this test.
+        connection
+            .execute_batch(
+                "CREATE TABLE documents (id TEXT, path TEXT);
+             CREATE TABLE links (id TEXT, source_document_id TEXT,
+                target_path_candidate TEXT, link_kind TEXT, byte_offset INTEGER);
+             CREATE TABLE diagnostics (document_id TEXT, kind TEXT);
+             INSERT INTO documents VALUES ('changed', 'changed.md');
+             INSERT INTO diagnostics VALUES ('changed', 'unresolved_link'),
+                 ('other', 'unresolved_link'), ('changed', 'parse_error');",
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        resolve_changed_links(
+            &transaction,
+            LinkResolutionMode::default(),
+            &["changed".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(
+            transaction
+                .query_row("SELECT COUNT(*) FROM diagnostics", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
 
     type DashboardListItemRow = (
         String,

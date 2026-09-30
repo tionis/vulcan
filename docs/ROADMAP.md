@@ -619,6 +619,10 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 **Baseline:** On a 13,389-file vault, scan performance was improved from ~300s to ~30s (10x) in Phase 6.3 via parallel file preparation, prepared statement caching, FTS trigger deferral, SQLite pragmas, and indexed link resolution. The improvements below target other commands.
 
+### Background and large-vault follow-up (September 2026)
+
+- [x] Skip resolver target loading for link-free incremental edits, while clearing obsolete unresolved-link diagnostics and retaining full invalidation for target changes.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.
