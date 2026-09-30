@@ -45,6 +45,7 @@ impl McpRemoteCredentialReferences {
 #[derive(Clone)]
 pub struct McpRemoteCredentials {
     store: Arc<dyn SecretStore>,
+    bindings: ProtectedFileSecretStore,
     references: McpRemoteCredentialReferences,
     legacy_directory: PathBuf,
 }
@@ -89,7 +90,7 @@ impl std::fmt::Display for McpCredentialError {
             Self::Clients(error) => std::fmt::Display::fmt(error, formatter),
             Self::MigrationRequired => formatter.write_str("named MCP credentials require explicit migration: preview `vulcan mcp remote migrate-credentials <name> --dry-run`, then apply without --dry-run while the instance is stopped"),
             Self::Invalid => formatter.write_str("MCP credential is invalid; no replacement was generated"),
-            Self::DifferentCredential => formatter.write_str("existing MCP credential differs from its migration source; replacement refused"),
+            Self::DifferentCredential => formatter.write_str("MCP credential differs from its established binding or migration source; replacement refused"),
             Self::RandomUnavailable => formatter.write_str("MCP credential randomness is unavailable"),
         }
     }
@@ -111,6 +112,7 @@ impl McpRemoteCredentials {
     pub fn at(state_root: &Path, remote: &McpRemoteDefinition) -> Self {
         Self {
             store: Arc::new(ProtectedFileSecretStore::at(state_root.join("secrets"))),
+            bindings: ProtectedFileSecretStore::at(state_root.join("mcp-credential-bindings")),
             references: McpRemoteCredentialReferences::for_instance(remote.instance_id),
             legacy_directory: state_root.join("mcp-remotes").join(remote.id.as_str()),
         }
@@ -140,6 +142,14 @@ impl McpRemoteCredentials {
     /// requires migration. Existing references are authoritative, never files.
     fn preflight(&self) -> Result<(), McpCredentialError> {
         for (reference, source) in self.sources() {
+            match self.bindings.get(&reference.name) {
+                Ok(binding) => {
+                    let value = self.store.get(&reference.name)?;
+                    check_same_secret(&binding, &credential_binding(&value)?)?;
+                }
+                Err(SecretStoreError::Missing) => {}
+                Err(error) => return Err(error.into()),
+            }
             match self.store.inspect(&reference.name) {
                 SecretStoreState::Available => {}
                 SecretStoreState::Missing => match inspect_protected_secret_input(&source) {
@@ -167,18 +177,49 @@ impl McpRemoteCredentials {
     fn load_or_create(&self, reference: &SecretReference) -> Result<String, McpCredentialError> {
         self.preflight()?;
         match self.store.get(&reference.name) {
-            Ok(value) => secret_text(&value),
+            Ok(value) => self.bind_value(reference, &value),
             Err(SecretStoreError::Missing) => {
                 let mut random = [0_u8; 32];
                 getrandom::fill(&mut random).map_err(|_| McpCredentialError::RandomUnavailable)?;
                 let value = SecretBytes::new(BASE64_URL_SAFE_NO_PAD.encode(random).into_bytes())?;
                 match self.store.create(&reference.name, &value) {
-                    Ok(()) => secret_text(&value),
+                    Ok(()) => self.bind_value(reference, &value),
                     Err(SecretStoreError::AlreadyExists) => {
-                        secret_text(&self.store.get(&reference.name)?)
+                        self.bind_value(reference, &self.store.get(&reference.name)?)
                     }
                     Err(error) => Err(error.into()),
                 }
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    // Separate, immutable non-secret receipts distinguish first use from lost
+    // provider values. Interrupted creation can adopt its existing value, but
+    // an established reference cannot be silently replaced or rotated.
+    fn check_binding(
+        &self,
+        reference: &SecretReference,
+        value: &SecretBytes,
+    ) -> Result<(), McpCredentialError> {
+        match self.bindings.get(&reference.name) {
+            Ok(binding) => check_same_secret(&binding, &credential_binding(value)?),
+            Err(SecretStoreError::Missing) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn bind_value(
+        &self,
+        reference: &SecretReference,
+        value: &SecretBytes,
+    ) -> Result<String, McpCredentialError> {
+        let text = secret_text(value)?;
+        let binding = credential_binding(value)?;
+        match self.bindings.create(&reference.name, &binding) {
+            Ok(()) | Err(SecretStoreError::AlreadyExists) => {
+                check_same_secret(&self.bindings.get(&reference.name)?, &binding)?;
+                Ok(text)
             }
             Err(error) => Err(error.into()),
         }
@@ -220,9 +261,21 @@ impl McpRemoteCredentials {
                     Err(error) => return Err(McpCredentialError::Custody(error)),
                 };
                 if let Some(value) = value.as_ref() {
+                    self.check_binding(reference, value)?;
                     match self.store.get(&reference.name) {
                         Ok(existing) => check_same_secret(&existing, value)?,
                         Err(SecretStoreError::Missing) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                if value.is_none() {
+                    match self.store.get(&reference.name) {
+                        Ok(existing) => self.check_binding(reference, &existing)?,
+                        Err(SecretStoreError::Missing) => {
+                            if self.bindings.inspect(&reference.name) != SecretStoreState::Missing {
+                                return Err(SecretStoreError::Missing.into());
+                            }
+                        }
                         Err(error) => return Err(error.into()),
                     }
                 }
@@ -234,7 +287,16 @@ impl McpRemoteCredentials {
                 match self.store.create(&reference.name, &value) {
                     Ok(()) | Err(SecretStoreError::AlreadyExists) => {
                         check_same_secret(&self.store.get(&reference.name)?, &value)?;
+                        self.bind_value(&reference, &value)?;
                     }
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                match self.store.get(&reference.name) {
+                    Ok(existing) => {
+                        self.bind_value(&reference, &existing)?;
+                    }
+                    Err(SecretStoreError::Missing) => {}
                     Err(error) => return Err(error.into()),
                 }
             }
@@ -245,6 +307,18 @@ impl McpRemoteCredentials {
         }
         Ok(report)
     }
+}
+
+fn credential_binding(value: &SecretBytes) -> Result<SecretBytes, McpCredentialError> {
+    // Bind semantic issuer bytes, matching the established UTF-8/trim loader.
+    let text = secret_text(value)?;
+    Ok(SecretBytes::new(
+        format!(
+            "mcp-credential-binding-v1:{}",
+            blake3::hash(text.as_bytes())
+        )
+        .into_bytes(),
+    )?)
 }
 
 fn secret_text(value: &SecretBytes) -> Result<String, McpCredentialError> {
@@ -340,6 +414,151 @@ mod tests {
             assert!(!rendered.contains(&signing));
             assert!(!rendered.contains(&temporary.path().display().to_string()));
         }
+    }
+
+    #[test]
+    fn lost_initialized_credentials_fail_closed_without_replacement() {
+        for signing in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let definition = remote();
+            let credentials = McpRemoteCredentials::at(temporary.path(), &definition);
+            credentials.issuer_secret().unwrap();
+            credentials.signing_key().unwrap();
+            let reference = if signing {
+                &credentials.references.signing
+            } else {
+                &credentials.references.issuer
+            };
+            credentials.store.delete(&reference.name).unwrap();
+            let restarted = McpRemoteCredentials::at(temporary.path(), &definition);
+            let result = if signing {
+                restarted.signing_key()
+            } else {
+                restarted.issuer_secret()
+            };
+            assert!(
+                result.is_err(),
+                "a lost initialized credential must not rotate silently"
+            );
+            assert_eq!(
+                credentials.store.inspect(&reference.name),
+                SecretStoreState::Missing
+            );
+        }
+    }
+
+    #[test]
+    fn both_lost_credentials_and_changed_values_refuse_automatic_repair() {
+        let temporary = tempfile::tempdir().unwrap();
+        let definition = remote();
+        let credentials = McpRemoteCredentials::at(temporary.path(), &definition);
+        credentials.issuer_secret().unwrap();
+        credentials.signing_key().unwrap();
+        for reference in [
+            &credentials.references.issuer,
+            &credentials.references.signing,
+        ] {
+            credentials.store.delete(&reference.name).unwrap();
+        }
+        assert!(credentials.issuer_secret().is_err());
+        assert!(credentials.signing_key().is_err());
+        assert!(credentials.migrate(false).is_err());
+        credentials
+            .store
+            .create(
+                &credentials.references.issuer.name,
+                &SecretBytes::new(b"replacement".to_vec()).unwrap(),
+            )
+            .unwrap();
+        assert!(credentials.issuer_secret().is_err());
+    }
+
+    #[test]
+    fn interrupted_creation_adopts_existing_keys_but_never_changes_them() {
+        let temporary = tempfile::tempdir().unwrap();
+        let credentials = McpRemoteCredentials::at(temporary.path(), &remote());
+        let original = SecretBytes::new(b"already-created-key".to_vec()).unwrap();
+        credentials
+            .store
+            .create(&credentials.references.issuer.name, &original)
+            .unwrap();
+        assert_eq!(credentials.issuer_secret().unwrap(), "already-created-key");
+        credentials
+            .store
+            .delete(&credentials.references.issuer.name)
+            .unwrap();
+        assert!(credentials.issuer_secret().is_err());
+    }
+
+    #[test]
+    fn retained_legacy_keys_can_restore_only_the_exact_established_credentials() {
+        let temporary = tempfile::tempdir().unwrap();
+        let credentials = McpRemoteCredentials::at(temporary.path(), &remote());
+        legacy_files(&credentials, b"issuer", b"signing");
+        credentials.migrate(false).unwrap();
+        credentials
+            .store
+            .delete(&credentials.references.issuer.name)
+            .unwrap();
+        legacy_files(&credentials, b"different issuer", b"signing");
+        assert!(matches!(
+            credentials.migrate(false),
+            Err(McpCredentialError::DifferentCredential)
+        ));
+        assert_eq!(
+            credentials
+                .store
+                .inspect(&credentials.references.issuer.name),
+            SecretStoreState::Missing
+        );
+        legacy_files(&credentials, b"issuer", b"signing");
+        let before = credentials
+            .store
+            .inspect(&credentials.references.issuer.name);
+        credentials.migrate(true).unwrap();
+        assert_eq!(
+            credentials
+                .store
+                .inspect(&credentials.references.issuer.name),
+            before
+        );
+        credentials.migrate(false).unwrap();
+        assert_eq!(credentials.issuer_secret().unwrap(), "issuer");
+        assert_eq!(credentials.signing_key().unwrap(), "signing");
+    }
+
+    #[test]
+    fn malformed_binding_is_not_replaced_and_preview_never_creates_receipts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let credentials = McpRemoteCredentials::at(temporary.path(), &remote());
+        credentials.migrate(true).unwrap();
+        assert!(!temporary.path().join("mcp-credential-bindings").exists());
+        credentials.issuer_secret().unwrap();
+        credentials
+            .bindings
+            .delete(&credentials.references.issuer.name)
+            .unwrap();
+        let invalid = SecretBytes::new(b"invalid binding".to_vec()).unwrap();
+        credentials
+            .bindings
+            .create(&credentials.references.issuer.name, &invalid)
+            .unwrap();
+        assert!(credentials.issuer_secret().is_err());
+        assert!(credentials.migrate(false).is_err());
+        assert_eq!(
+            credentials
+                .bindings
+                .get(&credentials.references.issuer.name)
+                .unwrap()
+                .expose(),
+            invalid.expose()
+        );
+        assert_eq!(
+            credentials
+                .store
+                .inspect(&credentials.references.signing.name),
+            SecretStoreState::Missing
+        );
     }
 
     #[test]

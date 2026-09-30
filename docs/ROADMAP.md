@@ -5712,6 +5712,7 @@ session authority -> PermissionGuard -> PermissionFilter
   integrated help, configuration reference, and migration examples in every user-facing slice.
   Document proxy examples without treating NetBird, Tailscale, tunnels, or TLS termination as the
   authorization layer.
+  - Named issuer/signing custody now retains separate immutable fingerprint receipts, so a lost or changed initialized provider value fails closed instead of silently generating a replacement. Explicit legacy migration can restore only the exact established value; source-less migration cannot invent it. Interrupted first creation and earlier custody formats adopt existing bytes without rotation. Unit regressions cover one/both missing values, changed values, invalid receipts, partial creation, exact legacy restoration, and mutation-free preview; bundled MCP setup guidance describes recovery and forbids deleting receipts to bypass failure.
 
 **Acceptance:** Several named remote MCP instances can run concurrently with isolated audiences,
 grants, sessions, packs, and vault ceilings; the ordinary remote setup path requires only durable

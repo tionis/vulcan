@@ -8481,8 +8481,9 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 #[test]
 fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
     use fs2::FileExt;
-    use vulcan_daemon::mcp_credentials::McpRemoteCredentials;
+    use vulcan_daemon::mcp_credentials::{McpRemoteCredentialReferences, McpRemoteCredentials};
     use vulcan_daemon::mcp_oauth_clients::{OAuthClientRegistry, RegisteredOAuthClient};
+    use vulcan_secrets::{ProtectedFileSecretStore, SecretStore, SecretStoreState};
     let temporary = TempDir::new().unwrap();
     let config_home = temporary.path().join("config");
     let state_home = temporary.path().join("state");
@@ -8655,6 +8656,37 @@ fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
         successful_process_json(&run(&["--output", "json", "mcp", "connections", "list"]));
     assert_eq!(connections.as_array().unwrap().len(), 1);
     assert_eq!(connections[0]["id"], grant.id.to_string());
+    // Provider loss cannot rotate an established issuer. The explicit management
+    // command restores only the retained original key without changing approvals.
+    let store = ProtectedFileSecretStore::at(state_root.join("secrets"));
+    let references = McpRemoteCredentialReferences::for_instance(remote.instance_id);
+    store.delete(&references.issuer.name).unwrap();
+    assert!(credentials.issuer_secret().is_err());
+    let preview = run(&[
+        "mcp",
+        "remote",
+        "migrate-credentials",
+        "personal",
+        "--dry-run",
+    ]);
+    assert!(preview.status.success());
+    assert_eq!(
+        store.inspect(&references.issuer.name),
+        SecretStoreState::Missing
+    );
+    let restored = run(&["mcp", "remote", "migrate-credentials", "personal"]);
+    assert!(restored.status.success());
+    assert_eq!(
+        credentials.issuer_secret().unwrap(),
+        "legacy-issuer-private-marker"
+    );
+    assert_eq!(
+        fs::read(authorization.path()).unwrap(),
+        authorization_before
+    );
+    for output in [&restored.stdout, &restored.stderr] {
+        assert!(!String::from_utf8_lossy(output).contains("private-marker"));
+    }
 }
 
 #[test]
@@ -16788,6 +16820,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
     assert!(mcp_skill.contains("vulcan mcp remote migrate-credentials <name> --dry-run"));
     assert!(mcp_skill.contains("never delete legacy key files to make startup succeed"));
+    assert!(mcp_skill.contains("Never delete fingerprint receipts"));
+    assert!(mcp_skill.contains("restore the exact protected credential"));
     assert!(mcp_skill.contains("Local stdio and loopback HTTP"));
     assert!(mcp_skill.contains("leave that flag unset to use the authenticated identity"));
     assert!(mcp_skill.contains("vulcan daemon start --detach"));

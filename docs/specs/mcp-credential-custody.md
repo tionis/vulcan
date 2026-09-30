@@ -18,6 +18,15 @@ The protected store is under the device's Vulcan state directory, outside vaults
 opaque values. This is exportable, unattended file custody, not encryption, a native keychain,
 or hardware protection. Provider errors fail closed without fallback or permission repair.
 
+An immutable, owner-only fingerprint receipt for each loaded issuer/signing reference lives in
+the separate device-state `mcp-credential-bindings` directory. Once bound, a missing or different
+provider value stops startup before either credential can be generated. Preserve these receipts
+with credential backups; deleting them is not a supported rotation or recovery procedure.
+An existing unbound value (including an interrupted first creation or an upgrade from the earlier
+custody format) is adopted without changing its bytes. Receipts cannot detect historical loss
+before their first creation, or deliberate deletion of both custody and binding state by the
+device owner; they are repair evidence, not protection against filesystem administrators.
+
 OAuth client registry version 2 stores client metadata, a bound namespace, and optional secret
 references, never inline client secrets. Public clients declaring `none` have no secret reference.
 Confidential clients declare `client_secret_basic` or `client_secret_post` and require the exact
@@ -54,6 +63,10 @@ material; they are not runtime fallback. Client migration atomically supersedes 
 only after custody succeeds. Signing-key bytes, client IDs, grants, refresh families, and vault
 content are unchanged. Never delete old keys to bypass migration. An absent source is not invented
 during migration; fresh normal startup may initialize a genuinely new credential without replacement.
+Explicit migration may restore a lost credential from its retained protected legacy file only when
+the source matches the established fingerprint. A changed source is rejected before either copy.
+Migration without a source cannot invent a lost bound credential. Preview never creates receipts;
+apply records/verifies them before publishing migrated client metadata.
 
 ## Limits and diagnostics
 

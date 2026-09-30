@@ -4688,6 +4688,7 @@ dependencies = [
  "vulcan-app",
  "vulcan-core",
  "vulcan-daemon",
+ "vulcan-secrets",
  "zip",
 ]
 

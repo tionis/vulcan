@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, tool packs, remote HTTPS setup, credential migration, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 6
+version: 7
 tools:
   - mcp
   - describe
@@ -57,6 +57,7 @@ debugging, tool pack selection, and permission-profile questions.
 - Reject the consent page if its client, identity, resource, vault, permission profile, or tool packs are unexpected. IndieAuth login authenticates the person; the separate Vulcan consent action authorizes the MCP connection.
 - Named remote definitions are device-global and never copied through vault sync. Vault permission profiles remain in `.vulcan/config.toml`; grants, refresh-token families, revocations, and per-remote OAuth secrets remain device-local outside the rebuildable cache.
 - Named issuer keys and confidential OAuth client secrets use the device-local `SecretStore` with stable instance-bound `file_v1` references. Init/show JSON reports references, never values. If an existing remote needs migration, stop it, preview `vulcan mcp remote migrate-credentials <name> --dry-run`, then apply without `--dry-run`. Preview inspects metadata without reading secret values or writing state. Migration preserves key bytes and client identities; interrupted copies resume only when existing destination bytes match. It retains legacy issuer files as inactive protected recovery material; never delete legacy key files to make startup succeed or bypass a mismatched credential. Public OAuth clients do not need a stored secret. Protected-file custody is not a native keychain or hardware-backed store.
+- Established issuer/signing credentials have separate device-local fingerprint receipts. A missing or changed value stops startup instead of rotating keys. Stop the remote and restore the exact protected credential from a reviewed device backup, or preview/apply `vulcan mcp remote migrate-credentials <name>` when its retained legacy source is unchanged. Never delete fingerprint receipts to bypass a missing or mismatched credential; do not recreate the remote as an implicit repair.
 - Stop the remote before `remote set` or `remote remove`; the instance lock rejects configuration changes while its listener is running. Restart the daemon after changing definitions to reload resident listeners. `remote set <name> --remove-wiki <id>` removes only that vault and revokes its connection grants and refresh families; it cannot remove the last vault. Use `remote remove` to remove the whole instance.
 - A named remote ceiling cannot be `unrestricted`. A connection used or refreshed while its profile is narrower is durably narrowed; widening that profile later cannot restore the grant's former authority. Obtain fresh consent for any expansion, including after restarting the remote.
 - A scoped `note_create` grant also applies to template-created files, template moves/renames and their backlink rewrites, and a template-selected final note path. If a template needs paths outside the approved profile, review those paths and obtain fresh consent rather than retrying with a broader server ceiling.
