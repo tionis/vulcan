@@ -5,8 +5,9 @@ This is an evidence record, not a declaration that every dependency or platform 
 
 ## Implementation and verification evidence
 
-The default workspace suite passes after `383832cb`, including the live foreground/resident
-regression. Workspace/all-target linting and no-default CLI/all-target linting pass. Additional
+The default workspace suite passes with strict plural CIMD negotiation and unsupported-assertion
+rejection, including all 367 daemon tests and the live foreground/resident regression.
+Workspace/all-target linting and no-default CLI/all-target linting pass. Additional
 no-default CLI runs pass 13 MCP unit tests and 40 MCP CLI smoke tests. Ignored workspace tests
 remain ignored; these results do not establish native Windows execution or live ChatGPT acceptance.
 
@@ -28,19 +29,16 @@ remain ignored; these results do not establish native Windows execution or live 
 | Resident supervision, scheduler and shutdown | `process.rs` supplies the same scheduler to the resident host and MCP ingress factories. `HostedMcpExecution` revalidates original authority after queueing and retains permits until workers finish. Live tests use the daemon supervisor; readiness/failure tests cancel and join listeners, while shutdown tests close sessions and SSE. |
 | Mutation coordination and unknown-write recovery | Shared vault gates exclude cooperating processes; app note/task/template workflows stale-check writes and journal coordinated effects. Named mutations register in the durable hosted-operation ledger before worker launch. Timeout tests retain the operation ID and caller-bound status path, retire stale sessions, and distinguish never-dispatched from indeterminate writes. Ordinary-write recovery tests refuse partial reads and preserve repair evidence. Plugin/host-process effects are not claimed to be rollback-atomic. |
 | Bounded HTTP and browser state | Codec/transport/session/browser tests cover body/header limits, duplicate security headers, framing rejection, total read deadline, write timeout, connection/session admission, idle expiry, queue limits, and bounded single-use login/consent/code state. |
-| Confidential/public clients, DCR and advanced compatibility; current CIMD remains incomplete | Shared client/policy/token modules enforce exact redirect URIs, allowlisted hosts, declared Basic/post/none methods and public-client PKCE. Unit/live tests exercise confidential/public clients, legacy CIMD rejection cases and one-time code exchange. The current plural CIMD method contract is an open compatibility gap below. Direct OAuth/OIDC flags remain separate from the named-remote registry. |
+| Confidential/public clients, CIMD, DCR and advanced compatibility | Shared client/policy/token modules enforce exact redirect URIs, allowlisted hosts, declared Basic/post/none methods and public-client PKCE. CIMD intersects a strict plural method list with public `none`, using the legacy field only when the list is absent. Core/daemon regressions cover both list orders, unsupported legacy preferences, malformed/empty lists and unsupported assertions without consuming a code. Existing unit/live tests retain confidential/public clients, DCR and one-time code exchange. Direct OAuth/OIDC flags remain separate from the named-remote registry. |
 | Durable, protected and secret-free state; migrations | `vulcan-secrets` and `mcp_credentials.rs` provide instance-bound references, version-2 reference-only clients, immutable binding receipts and explicit locked legacy migration. Tests cover dry-run immutability, partial-copy replay, lost/changed credentials, exact-key restoration and preserved grants. Reports/debug/error paths omit credential values. See [credential custody](mcp-credential-custody.md). |
 | Help, configuration, permissions, proxy examples and bundled skills | CLI lifecycle/help/describe tests and installed-agent payload tests cover shipped command/workflow availability. `mcp-setup` documents consent, grant boundaries, proxy transport, revocation, operation-status recovery and exact-key custody recovery. The skill installs in `.agents/skills/mcp-setup/SKILL.md`; its existing Vulcan-specific frontmatter is checked by repository tests rather than the generic Codex skill validator. |
 
 ## Open gates and limits
 
-- Current ChatGPT CIMD compatibility is incomplete. [Official OpenAI authentication guidance](https://developers.openai.com/plugins/build/auth)
-  advertises a plural method list including `none` while the legacy singular preference may be
-  `private_key_jwt`. Vulcan currently reads only the singular field and rejects that otherwise
-  usable public-client document. Add strict plural-field parsing and public-method intersection,
-  retaining legacy fallback only when the plural field is absent; do not advertise JWT support
-  without implementing assertion verification. This is a concrete implementation gap, not a claim
-  that live ChatGPT was tested.
+- Current ChatGPT-shaped CIMD metadata is covered by regression fixtures following
+  [official OpenAI authentication guidance](https://developers.openai.com/plugins/build/auth).
+  This proves public-method negotiation locally, not live ChatGPT acceptance. JWT assertions
+  remain unsupported and rejected; no JWT support is advertised.
 - Roadmap 10.10's resident-hosting checkbox explicitly depends on 10.7.1–10.7.6. The MCP dispatch,
   HTTP-hosting and stdio items are verified and checked. Section 10.7.6 still includes adaptation
   of conflict/semantic automation and new Phase 11 supervised auto-commit plus its integration tests.

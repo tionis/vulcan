@@ -219,7 +219,7 @@ pub fn validate_client_id_metadata(
     allowed_redirect_hosts: &[String],
 ) -> bool {
     metadata.client_id == client_id
-        && metadata.token_endpoint_auth_method == "none"
+        && metadata.supports_public_client_auth()
         && !metadata.redirect_uris.is_empty()
         && metadata
             .redirect_uris
@@ -331,6 +331,17 @@ mod tests {
                 "https://client.example.test/callback".to_string(),
             ),
         ]);
+        let mut assertion = params.clone();
+        assertion.insert("client_assertion".into(), "unsupported-jwt".into());
+        assertion.insert(
+            "client_assertion_type".into(),
+            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer".into(),
+        );
+        let rejected = endpoint.handle(&request(), &assertion);
+        assert_eq!(rejected.status, 401);
+        let rejected_body: Value = serde_json::from_slice(&rejected.body).unwrap();
+        assert_eq!(rejected_body["error"], "invalid_client");
+        // Refusing an unsupported method must not consume the bound code.
         let success = endpoint.handle(&request(), &params);
         assert_eq!(success.status, 200);
         let body: Value = serde_json::from_slice(&success.body).expect("token JSON");
@@ -341,12 +352,32 @@ mod tests {
     }
 
     #[test]
+    fn client_id_metadata_accepts_a_supported_public_method_despite_a_legacy_jwt_preference() {
+        let client_id = "https://chatgpt.com/oauth/client.json";
+        let redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+        let metadata: ClientIdMetadataDocument = serde_json::from_value(serde_json::json!({
+            "client_id": client_id,
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "token_endpoint_auth_method": "private_key_jwt"
+        }))
+        .unwrap();
+        assert!(validate_client_id_metadata(
+            client_id,
+            Some(redirect),
+            &metadata,
+            &["chatgpt.com".into()],
+        ));
+    }
+
+    #[test]
     fn client_id_metadata_requires_public_method_exact_id_and_allowed_redirects() {
         let hosts = ["client.example.test".to_string()];
         let metadata = ClientIdMetadataDocument {
             client_id: "https://client.example.test/client.json".to_string(),
             redirect_uris: vec!["https://client.example.test/callback".to_string()],
             token_endpoint_auth_method: "none".to_string(),
+            token_endpoint_auth_methods_supported: None,
         };
         assert!(validate_client_id_metadata(
             &metadata.client_id,

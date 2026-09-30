@@ -3081,6 +3081,7 @@ fn client_id_metadata_documents_require_exact_public_client_metadata() {
         client_id: client_id.to_string(),
         redirect_uris: vec!["https://client.example.test/callback".to_string()],
         token_endpoint_auth_method: "none".to_string(),
+        token_endpoint_auth_methods_supported: None,
     };
     assert!(vulcan_daemon::mcp_oauth_token::validate_client_id_metadata(
         client_id,

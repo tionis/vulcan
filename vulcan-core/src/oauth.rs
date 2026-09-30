@@ -55,6 +55,29 @@ pub struct ClientIdMetadataDocument {
     pub redirect_uris: Vec<String>,
     #[serde(default = "default_public_client_auth_method")]
     pub token_endpoint_auth_method: String,
+    #[serde(default, deserialize_with = "deserialize_client_auth_methods")]
+    pub token_endpoint_auth_methods_supported: Option<Vec<String>>,
+}
+
+impl ClientIdMetadataDocument {
+    /// Negotiate only the public method this implementation verifies. A plural
+    /// declaration is authoritative; its legacy preference cannot widen it.
+    #[must_use]
+    pub fn supports_public_client_auth(&self) -> bool {
+        match &self.token_endpoint_auth_methods_supported {
+            Some(methods) => methods.iter().any(|method| method == "none"),
+            None => self.token_endpoint_auth_method == "none",
+        }
+    }
+}
+
+fn deserialize_client_auth_methods<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Only absence permits legacy fallback. Explicit null and malformed values
+    // must not deserialize to None and silently enable public authentication.
+    Vec::<String>::deserialize(deserializer).map(Some)
 }
 
 fn default_public_client_auth_method() -> String {
@@ -1443,6 +1466,53 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn client_id_metadata_public_method_intersection_is_order_independent_and_fail_closed() {
+        let base = serde_json::json!({
+            "client_id": "https://client.example.test/client.json",
+            "redirect_uris": ["https://client.example.test/callback"]
+        });
+        for (plural, legacy, public) in [
+            (None, "none", true),
+            (None, "private_key_jwt", false),
+            (
+                Some(serde_json::json!(["none", "private_key_jwt"])),
+                "private_key_jwt",
+                true,
+            ),
+            (
+                Some(serde_json::json!(["private_key_jwt", "none"])),
+                "private_key_jwt",
+                true,
+            ),
+            (Some(serde_json::json!(["private_key_jwt"])), "none", false),
+            (Some(serde_json::json!([])), "none", false),
+            (
+                Some(serde_json::json!(["client_secret_post"])),
+                "none",
+                false,
+            ),
+        ] {
+            let mut value = base.clone();
+            value["token_endpoint_auth_method"] = serde_json::json!(legacy);
+            if let Some(plural) = plural {
+                value["token_endpoint_auth_methods_supported"] = plural;
+            }
+            let metadata: ClientIdMetadataDocument = serde_json::from_value(value).unwrap();
+            assert_eq!(metadata.supports_public_client_auth(), public);
+        }
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("none"),
+            serde_json::json!(["none", 1]),
+            serde_json::json!({"none": true}),
+        ] {
+            let mut value = base.clone();
+            value["token_endpoint_auth_methods_supported"] = invalid;
+            assert!(serde_json::from_value::<ClientIdMetadataDocument>(value).is_err());
+        }
     }
 
     #[test]

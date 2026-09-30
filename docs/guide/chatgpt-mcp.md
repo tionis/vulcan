@@ -67,6 +67,14 @@ advertises all three; mixed header/form credentials are rejected.
 Dynamic registration also rejects mixed or duplicate redirect URI entries and unsupported response or
 grant types; malformed client metadata is not silently discarded.
 
+For CIMD, a present `token_endpoint_auth_methods_supported` list must include `none`.
+The legacy singular preference does not override that list; only an absent list uses
+the legacy field. Empty or malformed lists fail validation. This supports ChatGPT's
+public-client method negotiation described in the [official authentication guidance](https://developers.openai.com/plugins/build/auth).
+Vulcan does not implement `private_key_jwt`; token requests containing client assertions
+are rejected rather than treated as public requests. Exact client IDs, redirect checks
+and PKCE remain required.
+
 Named definitions are device-global in Vulcan's user configuration, not in synced
 `.vulcan/config.toml`. They reference registered wikis and vault-defined permission profiles. Grant,
 refresh-family, last-use, and revocation state is device-local under Vulcan's user state directory;

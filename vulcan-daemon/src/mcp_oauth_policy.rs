@@ -162,6 +162,11 @@ pub fn parse_mcp_token_client_credentials(
     authorization: Option<&str>,
     params: &BTreeMap<String, String>,
 ) -> Option<McpTokenClientCredentials> {
+    // Signed assertions are not implemented. Never silently reinterpret one
+    // as a public-client request or mix it with a supported secret method.
+    if params.contains_key("client_assertion") || params.contains_key("client_assertion_type") {
+        return None;
+    }
     if let Some(authorization) = authorization {
         if params.contains_key("client_id") || params.contains_key("client_secret") {
             return None;
@@ -336,6 +341,32 @@ mod tests {
             validate_mcp_dcr_registration(&valid, &hosts, false),
             Err(McpDcrError::InvalidGrantTypes)
         );
+    }
+
+    #[test]
+    fn unsupported_client_assertions_never_fall_back_to_public_or_secret_authentication() {
+        let basic = format!("Basic {}", BASE64_STANDARD.encode("client:secret"));
+        for (authorization, mut params) in [
+            (
+                None,
+                BTreeMap::from([("client_id".into(), "client".into())]),
+            ),
+            (
+                None,
+                BTreeMap::from([
+                    ("client_id".into(), "client".into()),
+                    ("client_secret".into(), "secret".into()),
+                ]),
+            ),
+            (Some(basic.as_str()), BTreeMap::new()),
+        ] {
+            assert!(parse_mcp_token_client_credentials(authorization, &params).is_some());
+            for field in ["client_assertion", "client_assertion_type"] {
+                params.insert(field.into(), "unsupported-assertion".into());
+                assert!(parse_mcp_token_client_credentials(authorization, &params).is_none());
+                params.remove(field);
+            }
+        }
     }
 
     #[test]
