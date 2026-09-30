@@ -521,7 +521,7 @@ pub fn plan_mdbase_write(
         },
         &guard,
     )
-    .map_err(AppError::operation)?;
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     let ttl = request
         .ttl_seconds
         .unwrap_or(DEFAULT_WRITE_PREVIEW_TTL_SECONDS);
@@ -594,7 +594,7 @@ pub fn apply_mdbase_write(
         },
         &guard,
     )
-    .map_err(AppError::operation)?;
+    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     if authorization != plan.authorization {
         return Err(AppError::operation(
             "mdbase write authorization changed; create and review a new preview",
@@ -1521,6 +1521,45 @@ mod tests {
         assert_eq!(batch.preview.changes.len(), 2);
         assert!(!directory.path().join("tasks/new.md").exists());
         assert!(directory.path().join("tasks/public.md").exists());
+    }
+
+    #[test]
+    fn untyped_write_requires_visibility_for_other_types_incoming_constraints() {
+        let (directory, paths) = fixture();
+        fs::write(
+            directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  links:\n    related: {target_type: any, validate_exists: true}\n---\n",
+        ).unwrap();
+        let source = "An untyped target.\n";
+        fs::write(directory.path().join("tasks/public.md"), source).unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:tasks/public.md\", \"folder:_types/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:tasks/public.md\"] }\n").unwrap();
+        let mut request = write_plan_request(
+            MdbaseWriteOperation::Delete,
+            vec![MdbaseWriteChangeRequest {
+                path: "tasks/public.md".to_string(),
+                after: None,
+                if_revision: None,
+            }],
+        );
+        request.matched_types.clear();
+        request.permission_profile = Some("scoped".to_string());
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let before = plan_mdbase_write(&paths, &request, now).unwrap_err();
+        fs::write(
+            directory.path().join("tasks/private/secret.md"),
+            "---\ntype: task\nrelated: '[[tasks/public]]'\n---\n",
+        )
+        .unwrap();
+        let after = plan_mdbase_write(&paths, &request, now).unwrap_err();
+        assert_eq!(before.code(), Some("permission_denied"));
+        assert_eq!(before.message(), after.message());
+        assert!(!after.message().contains("secret"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).unwrap(),
+            source
+        );
+        assert!(list_mdbase_write_outbox(&paths).unwrap().is_empty());
     }
 
     #[test]

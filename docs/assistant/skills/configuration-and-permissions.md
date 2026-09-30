@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 25
+version: 26
 tools:
   - config_show
   - config_get
@@ -84,6 +84,7 @@ permission profiles, or diagnoses permission and trust failures.
   publish-only webhook URL directly in the forge.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
+- Managed mdbase writes can require scope-complete read access for uniqueness and incoming link constraints declared by other types, even when editing an untyped note. `permission_denied` does not imply that a hidden conflicting record exists. Do not probe hidden paths, silently borrow an unrestricted grant, or bypass validation with a raw edit; request an explicit authorized grant change if needed.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.
 - Importing folder-note settings configures the convention; it does not auto-detect or move existing folder notes. Use `vulcan refactor folder-notes --dry-run` for a layout conversion.
 - `vulcan sync status` and `vulcan sync run` both inspect repository and remote state and therefore require the selected profile's Git permission; `--dry-run` prevents mutation but does not bypass that permission boundary.

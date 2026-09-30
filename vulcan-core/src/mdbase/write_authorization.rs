@@ -12,7 +12,7 @@ pub struct MdbaseWriteAuthorizationRequest {
     pub read_paths: Vec<String>,
     /// Vault-relative paths the operation may create, replace, rename, or delete.
     pub write_paths: Vec<String>,
-    /// Type membership computed from the proposed draft.
+    /// Union of old and proposed type memberships across all affected records.
     pub matched_types: Vec<String>,
 }
 
@@ -111,10 +111,11 @@ fn required_record_namespaces(
 ) -> Vec<String> {
     let mut namespaces = BTreeSet::new();
     let mut collection_wide = false;
-    for type_name in matched_types {
-        let Some(definition) = types.get(type_name) else {
-            continue;
-        };
+    // A changed record can be a candidate in another type's uniqueness rule,
+    // or a target of its declared links, even when the changed record is untyped.
+    // Do not inspect existing owners or inbound links to decide whether this
+    // namespace proof is required: that would disclose hidden record state.
+    for definition in types.iter() {
         if definition
             .frontmatter
             .pointer("/collection/links")
@@ -144,6 +145,10 @@ fn required_record_namespaces(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("collection")
             {
+                "type"
+                    if !matched_types
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(&definition.name)) => {}
                 "path_glob" => {
                     if let Some(pattern) = rule.get("path_glob").and_then(serde_json::Value::as_str)
                     {
@@ -429,5 +434,106 @@ mod tests {
         )
         .expect("prefixed collection namespace is visible");
         assert_eq!(scope.record_namespaces, ["collections/work/published/**"]);
+    }
+
+    #[test]
+    fn incoming_collection_rules_require_visibility_for_untyped_writes_without_probing_owners() {
+        for (unique, links) in [
+            ("  unique:\n    - {field: id, scope: collection}\n", ""),
+            (
+                "",
+                "  links:\n    related: {target_type: any, validate_exists: true}\n",
+            ),
+            (
+                "",
+                "  links:\n    related: {target_type: task, validate_exists: false}\n",
+            ),
+        ] {
+            let (directory, collection, types) = fixture(unique, links);
+            let exact = PathPermission {
+                allow: vec![ResourceSpecifier::Note("tasks/public.md".to_string())],
+                deny: Vec::new(),
+            };
+            let narrow = guard(directory.path(), exact.clone(), exact);
+            let mut request = request();
+            request.matched_types.clear();
+            let absent =
+                authorize_mdbase_write_validation_scope(&collection, &types, "", &request, &narrow)
+                    .unwrap_err();
+            fs::create_dir_all(directory.path().join("private")).unwrap();
+            fs::write(
+                directory.path().join("private/owner.md"),
+                "---\ntype: task\nid: shared\nrelated: '[[tasks/public]]'\n---\n",
+            )
+            .unwrap();
+            let present =
+                authorize_mdbase_write_validation_scope(&collection, &types, "", &request, &narrow)
+                    .unwrap_err();
+            assert_eq!(absent, present);
+            assert_eq!(present.code, "permission_denied");
+            assert!(!present.message.contains("owner"));
+            let all = PathPermission {
+                allow: vec![ResourceSpecifier::All],
+                deny: Vec::new(),
+            };
+            let unrestricted = guard(directory.path(), all.clone(), all);
+            let scope = authorize_mdbase_write_validation_scope(
+                &collection,
+                &types,
+                "",
+                &request,
+                &unrestricted,
+            )
+            .unwrap();
+            assert_eq!(scope.collection_record_namespaces, ["**/*.md", "*.md"]);
+        }
+    }
+
+    #[test]
+    fn incoming_path_scoped_uniqueness_keeps_its_bounded_namespace() {
+        let (directory, collection, types) = fixture(
+            "  unique:\n    - {field: slug, scope: path_glob, path_glob: 'published/**'}\n",
+            "",
+        );
+        let mut request = request();
+        request.matched_types.clear();
+        let paths = PathPermission {
+            allow: vec![
+                ResourceSpecifier::Note("tasks/public.md".to_string()),
+                ResourceSpecifier::Folder("published/**".to_string()),
+            ],
+            deny: Vec::new(),
+        };
+        let allowed = guard(directory.path(), paths.clone(), paths);
+        let scope =
+            authorize_mdbase_write_validation_scope(&collection, &types, "", &request, &allowed)
+                .unwrap();
+        assert_eq!(scope.collection_record_namespaces, ["published/**"]);
+    }
+
+    #[test]
+    fn unmatched_type_scoped_uniqueness_and_advisory_links_do_not_expand_scope() {
+        let (directory, collection, types) = fixture(
+            "  unique:\n    - {field: id, scope: type}\n",
+            "  links:\n    related: {target_type: any, validate_exists: false}\n",
+        );
+        let exact = PathPermission {
+            allow: vec![ResourceSpecifier::Note("tasks/public.md".to_string())],
+            deny: Vec::new(),
+        };
+        let allowed = guard(directory.path(), exact.clone(), exact);
+        let mut request = request();
+        request.matched_types.clear();
+        let scope =
+            authorize_mdbase_write_validation_scope(&collection, &types, "", &request, &allowed)
+                .unwrap();
+        assert!(scope.collection_record_namespaces.is_empty());
+        request.matched_types.push("TASK".to_string());
+        assert_eq!(
+            authorize_mdbase_write_validation_scope(&collection, &types, "", &request, &allowed)
+                .unwrap_err()
+                .code,
+            "permission_denied"
+        );
     }
 }

@@ -16924,6 +16924,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     .expect("permission skill should be readable");
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
+    assert!(permission_skill.contains("Managed mdbase writes"));
+    assert!(permission_skill.contains("incoming link constraints"));
     assert!(permission_skill.contains("mcp remote init/list/show/set/run/remove"));
     assert!(permission_skill.contains("hosts configured remotes"));
     assert!(permission_skill.contains("remote set --add-wiki <id>"));
