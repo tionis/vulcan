@@ -2,11 +2,11 @@
 
 Current recommendation for Phase 9.12: use an external agent runtime instead of building an in-process Rust assistant. `pi` is a useful reference implementation, but it is not the architectural center of the design.
 
-This document is specifically about **subprocess-style runtimes** that can preload vault files such as `AGENTS.md`, the configured prompts folder, and `.agents/skills/`. It is not the MCP integration design by itself. Generic MCP clients do not get that same out-of-band bootstrap, so MCP needs its own server-native discovery surface (`resources`, `prompts`, filtered tool exposure, and later HTTP transport) rather than assuming the exact same pattern.
+This document covers **subprocess-style runtimes** that can preload vault files such as `AGENTS.md`, the configured prompts folder, and `.agents/skills/`. Generic MCP clients use Vulcan's implemented server-native discovery surface (`resources`, `prompts`, and filtered tools) over stdio or Streamable HTTP. See [named MCP remotes](../guide/mcp-remotes.md), also available through `vulcan help mcp-remotes`, for hosted clients and per-connection consent.
 
 The older native assistant and chat-runtime steering was not discarded; it was moved to [`native_runtime_deferred.md`](./native_runtime_deferred.md) so the runtime-agnostic decision does not erase those ideas.
 
-Vulcan supports one integration shape in the current roadmap:
+This guide describes the subprocess integration shape:
 
 - **External runtime host.** The runtime hosts the conversation and
   shells out to Vulcan commands in JSON mode. This is the Phase 9.12 contract

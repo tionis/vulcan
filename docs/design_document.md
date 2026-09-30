@@ -13,7 +13,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 
 - **Binary name:** `vulcan`
 - **Primary language:** Rust (edition 2021, MSRV 1.88, pinned by `rust-toolchain.toml`) — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration. CI compiles the full workspace on the MSRV so transitive dependency updates cannot raise it silently.
-- **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model, cache, query/search/graph/task semantics), `vulcan-app` (reusable synchronous workflow orchestration over core), `vulcan-embed` (embedding provider trait and vector store implementations), and `vulcan-cli` (CLI binary, command handlers, TUI/editor integration, and current MCP transports). Keep reusable business logic in `vulcan-core` or `vulcan-app`; keep terminal/runtime shells outside those crates.
+- **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model, cache, query/search/graph/task semantics), `vulcan-app` (reusable synchronous workflows and MCP dispatch), `vulcan-embed` (embedding providers and vector stores), `vulcan-cli` (CLI, TUI/editor integration, and stdio adapter), `vulcan-daemon` (async hosting, MCP HTTP/OAuth, and supervision), `vulcan-sync` (synchronous sync engine), and `vulcan-secrets` (device-local custody). Keep reusable business logic in `vulcan-core` or `vulcan-app`; keep terminal/runtime shells outside those crates.
 - **Internal identifiers:** ULIDs — sortable by creation time, compact, no hyphens. Use the `ulid` crate. Cryptographic device identities are the deliberate exception: they are derived from an Ed25519 SSH public key as specified in `docs/specs/device-identity.md`.
 - **Device identity:** One cryptographic installation is one Ed25519 SSH keypair; a physical machine or friendly name is not that identity. Its versioned, Git-ref-safe ID is the full SHA-256 digest of the canonical SSH public-key wire blob encoded as lowercase unpadded Base32. A different key is a different device. Explicit replacement and independent re-enrollment must ship before device-key-backed access becomes required; no identity continuity is inferred. Initial identity does not imply trust, ownership, authorization, transport configuration, or signature verification.
 - **Device key custody:** Identity, custody, usage, and trust are separate. A protected OpenSSH file is the portable unattended baseline; native stores are opt-in, and generic external agents are interactive-only under `docs/specs/device-key-custody.md`. Moving the same key preserves the ID and checks dependent operations before switching; migration retains the old copy for separate cleanup. Unknown prompt capabilities prevent unattended use, and unavailable custody never triggers fallback or replacement.
@@ -1550,7 +1550,19 @@ That means Vulcan should treat MCP as a **server-native discovery surface**, not
 - Startup-selected packs are pinned for the session, so model-initiated adaptive changes cannot remove the navigation contract the server advertised at initialization. Adaptive control uses one `tool_packs` operation tool; the former four names remain hidden call aliases for cached clients.
 - `graph_communities` and `suggest_links` live in an optional `graph` pack rather than the default navigation surface. A compact `capabilities` tool bridges routing and pack discovery for tools-only hosts.
 - MCP list/query results use row limits and compact projections, while every tool response also has a serialized structured-content byte ceiling. Oversized results omit `structuredContent` and are retrieved through a session resource link instead of being duplicated into model context.
-- The current Phase 9 implementation may expose the MCP registry over a minimal single-vault Streamable HTTP listener, but the future axum daemon/router should reuse the same registry, auth constraints, and session semantics rather than redefining the MCP contract.
+- The shared MCP registry and dispatcher live in `vulcan-app`; HTTP/OAuth hosting lives in `vulcan-daemon`. Foreground CLI hosting and resident daemon listeners reuse that implementation. Local stdio remains daemon-independent.
+
+Named remote definitions are device-global and may expose several registered vaults through one
+URL, with separate ceilings/defaults/packs per vault. IndieAuth authenticates the approving human;
+Vulcan consent binds each connection and session to one selected vault and an attenuated profile.
+Requests and refreshes revalidate current policy, and used narrower grants cannot regain authority
+without fresh consent. These implemented device-local grants are separate from the future
+vault-canonical capability model in §4.3. Issuer keys and confidential client secrets use
+`vulcan-secrets` references with protected-file custody and fingerprint receipts; migration and
+recovery never silently rotate established credentials. Durable hosted-write status supports
+investigation after a timeout, independently of Git auto-commit. See the
+[remote operations guide](guide/mcp-remotes.md) and
+[acceptance record](specs/named-mcp-acceptance.md).
 
 This keeps the subprocess harness story and the MCP story aligned in spirit while acknowledging that they have different discovery constraints.
 

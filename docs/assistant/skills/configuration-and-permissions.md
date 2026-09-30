@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 24
+version: 25
 tools:
   - config_show
   - config_get
@@ -53,13 +53,16 @@ permission profiles, or diagnoses permission and trust failures.
     `set-notification-command <name> --program <path> [--arg <literal>]... --dry-run`. Restart after
     applying configuration and inspect the secret-minimal queue with `daemon alert-status`. Remove
     either kind with `daemon config remove-notification-sink <name> --dry-run`.
-18. Manage hosted-client MCP exposure with `vulcan mcp remote init/list/show/set/run/remove`.
+18. Read `vulcan help mcp-remotes` and manage hosted-client MCP exposure with `vulcan mcp remote init/list/show/set/run/remove`.
     Definitions live in device-global daemon configuration and reference registered wikis plus
     vault-defined permission profiles; they never live in synced `.vulcan/config.toml`. Inspect and
     revoke the separate durable approval state with `vulcan mcp connections list/show/revoke`.
     `vulcan daemon start --detach` hosts configured remotes. Stop the remote before `remote set`
     or `remote remove`, then restart the daemon. Use `remote set --add-wiki <id>`, `--wiki <id>`
     for vault-specific policy changes, or `--remove-wiki <id>` to revoke one vault's grants.
+    Named issuer/client credentials use device-local SecretStore references, not local vault
+    config. Stop legacy remotes and preview `remote migrate-credentials <name> --dry-run` before
+    applying; never replace keys or delete fingerprint receipts to bypass a custody failure.
 
 ## Guardrails
 

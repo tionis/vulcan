@@ -41,7 +41,7 @@ Use the CLI directly from shell or Python scripts, request JSON output, or run J
 | MCP | Tool clients using permission profiles and selected tool packs |
 | Rust crates | Native integration with shared semantics and application workflows |
 
-Read the [automation overview](docs/guide/automation-surfaces.md), [scripting guide](docs/guide/scripting.md), [JavaScript API](docs/reference/js-api/index.md), and [sandbox guide](docs/guide/sandbox.md). For remote agent access, see the [ChatGPT MCP setup guide](docs/guide/chatgpt-mcp.md).
+Read the [automation overview](docs/guide/automation-surfaces.md), [scripting guide](docs/guide/scripting.md), [JavaScript API](docs/reference/js-api/index.md), and [sandbox guide](docs/guide/sandbox.md). For remote agent access with per-connection consent, see [named MCP remotes](docs/guide/mcp-remotes.md) (`vulcan help mcp-remotes`) and the [ChatGPT MCP setup guide](docs/guide/chatgpt-mcp.md).
 
 ### Publish and synchronize
 
@@ -164,8 +164,9 @@ The Rust workspace separates reusable synchronous semantics and workflows from U
 | --- | --- |
 | `vulcan-core` | Parsing, indexing, SQLite cache, queries, graph, tasks, permissions, and compatibility semantics |
 | `vulcan-app` | Reusable application workflows, including mutations, publication, configuration, and plugin dispatch |
-| `vulcan-cli` | CLI, terminal UIs, output formatting, and MCP transports |
-| `vulcan-daemon` | Async service, multi-vault registry, and background scheduling |
+| `vulcan-cli` | CLI, terminal UIs, output formatting, and local MCP stdio adapter |
+| `vulcan-daemon` | Async service, multi-vault registry, MCP HTTP/OAuth hosting, and background scheduling |
+| `vulcan-secrets` | Device-local secret custody and protected-file storage |
 | `vulcan-sync` | Synchronous Git synchronization engine and backend boundaries |
 | `vulcan-embed` | Embedding providers and vector-store abstractions |
 

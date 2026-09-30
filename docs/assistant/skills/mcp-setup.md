@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, tool packs, remote HTTPS setup, credential migration, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 8
+version: 9
 tools:
   - mcp
   - describe
@@ -22,7 +22,7 @@ debugging, tool pack selection, and permission-profile questions.
 
 ## Recommended Flow
 
-1. For a local harness, use `vulcan mcp --transport stdio` (the default) or direct loopback HTTP. No daemon, browser, or named remote is required.
+1. Read `vulcan help mcp-remotes` for client-independent setup, lifecycle, and recovery. For a local harness, use `vulcan mcp --transport stdio` (the default) or direct loopback HTTP. No daemon, browser, or named remote is required.
 2. For ChatGPT or another hosted client, register the vault and preview `vulcan mcp remote init <name> --public-url <https-url> --identity <indieauth-url> --dry-run`. Apply it after reviewing the vault, loopback bind, ceiling/default profiles, and eligible packs.
 3. To expose another registered vault through the same URL, stop the remote and use `vulcan mcp remote set <name> --add-wiki <id> --dry-run`, then apply without `--dry-run`. Use `--wiki <id>` when updating one vault's ceiling, default profile, or packs. Start it with `vulcan mcp remote run <name>`, or use `vulcan daemon start --detach` to host configured remotes as resident listeners. Give the client the single public MCP URL printed by init/show. Proxy the MCP path and its `/operations/<id>` subpath, OAuth metadata paths, and `/oauth/*` to that loopback listener.
 4. Sign in with IndieAuth, then review and explicitly approve Vulcan's separate consent page. For a remote exposing multiple vaults, explicitly select one vault and its profile and eligible packs; each grant and MCP session stays bound to that selection. IndieAuth login alone grants no vault authority.

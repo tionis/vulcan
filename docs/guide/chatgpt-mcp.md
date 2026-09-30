@@ -46,7 +46,7 @@ Recommended setup:
    request has a three-second timeout and a bounded response; redirects are not followed. If
    discovery reports a redirect, configure `--identity` with the final canonical HTTPS URL.
 
-2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
+2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/mcp/operations/*`, `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. In ChatGPT, open **Settings → Security and login**, enable **Developer mode**, then open **ChatGPT Plugins**, add a connection, and enter the public MCP URL including `/mcp`.
 4. Sign in through IndieAuth. On Vulcan's consent page, verify the client, identity, exact MCP URL,
    vault, permission profile, tool packs, scopes, and expiry before approving.
@@ -85,6 +85,9 @@ owner-only files, not a native keychain, encryption, or hardware custody. Public
 require no stored secret. `remote set` preserves the
 instance identity, and different remotes can run concurrently when their loopback binds and public
 URLs do not conflict.
+
+For the minimal read-only setup, multi-instance lifecycle, fingerprint-based credential recovery,
+and write-status handling, see [named MCP remotes](mcp-remotes.md) or `vulcan help mcp-remotes`.
 
 Existing named remotes using legacy issuer files or inline OAuth client secrets require explicit
 migration while stopped:

@@ -3207,6 +3207,23 @@ fn config_list_includes_creatable_optional_and_dynamic_keys() {
 }
 
 #[test]
+fn help_named_remotes_matches_the_published_guide() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "mcp-remotes", "--output", "json"])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&assert);
+    assert_eq!(report["name"], "mcp-remotes");
+    assert_eq!(
+        report["body"].as_str().unwrap().replace("\r\n", "\n"),
+        include_str!("../../docs/guide/mcp-remotes.md")
+            .trim()
+            .replace("\r\n", "\n")
+    );
+}
+
+#[test]
 fn help_config_json_matches_generated_snapshot() {
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -16815,6 +16832,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("scan recovers an ordinary-write batch before indexing"));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
+    assert!(mcp_skill.contains("vulcan help mcp-remotes"));
     assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));

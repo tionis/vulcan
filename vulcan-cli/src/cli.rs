@@ -1177,7 +1177,8 @@ Notes:
   `--tool-pack <name>` may be repeated or comma-separated to compose the exposed tool surface.
   `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.
-  `mcp remote init|list|show|set|run|remove` manages device-global hosted-client instances.
+  `mcp remote init|list|show|set|run|migrate-credentials|remove` manages device-global hosted-client instances.
+  `vulcan help mcp-remotes` explains read-only setup, multi-vault hosting, consent, and recovery.
   Stop an instance before `remote set` or `remote remove`; `set --add-wiki`, `--wiki`, and `--remove-wiki` manage per-vault exposure and ceilings.
   `mcp connections list|show|revoke` manages their durable consent grants.
   Non-loopback HTTP binds require `--auth-token` or OAuth.
@@ -5270,7 +5271,7 @@ pub enum McpRemoteCommand {
         #[arg(help = "Named remote to inspect")]
         name: String,
     },
-    #[command(about = "Update one named MCP remote")]
+    #[command(about = "Update a stopped named MCP remote and its per-vault policy")]
     Set {
         #[arg(help = "Named remote to update")]
         name: String,
@@ -5319,7 +5320,7 @@ pub enum McpRemoteCommand {
         )]
         dry_run: bool,
     },
-    #[command(about = "Remove a named MCP remote and revoke its connections")]
+    #[command(about = "Remove a stopped named MCP remote and revoke its connections")]
     Remove {
         #[arg(help = "Named remote to remove")]
         name: String,
@@ -7775,7 +7776,7 @@ Examples:
     )]
     Status,
     #[command(
-        about = "Start an MCP (Model Context Protocol) server over stdio or Streamable HTTP",
+        about = "Serve MCP over stdio or Streamable HTTP, or manage named remotes and connections",
         after_help = MCP_COMMAND_AFTER_HELP
     )]
     Mcp {
@@ -7800,7 +7801,7 @@ Examples:
             long,
             value_enum,
             default_value_t = McpTransportArg::Stdio,
-            help = "MCP transport to serve: stdio for local clients or http for remote clients"
+            help = "MCP transport: local subprocess stdio or local/remote Streamable HTTP"
         )]
         transport: McpTransportArg,
         #[arg(

@@ -35,6 +35,11 @@
 
 ### Added
 
+- Named MCP remotes with device-global definitions, concurrent instances, foreground/resident
+  multi-vault hosting, IndieAuth login and per-connection consent, attenuated grants, and revocation.
+  Legacy credentials migrate explicitly into protected-file SecretStore custody. Hosted writes
+  expose durable operation status for timeout recovery. See `vulcan help mcp-remotes` for setup
+  and recovery, and `vulcan help chatgpt-mcp` for the hosted-client workflow.
 - Added Container Core v1, the rules shared by MDAF and wiki packages. The rules moved from
   MDAF v1 without changes, so existing artifacts stay valid.
 - Added Knowledge v1, a source-neutral snapshot of cited entities and claims.

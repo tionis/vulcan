@@ -692,7 +692,7 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
     lines.push("direct flags remain supported and are not imported automatically.".to_string());
     lines.push(String::new());
     lines.push(
-        "For resident one-vault remotes, `vulcan daemon start --detach` loads all named definitions at"
+        "For resident remotes, `vulcan daemon start --detach` loads all named definitions at"
             .to_string(),
     );
     lines.push(
@@ -704,9 +704,11 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
             .to_string(),
     );
     lines.push(
-        "simultaneously. Multi-vault routing within one remote is not yet supported by the resident host."
+        "simultaneously. Both foreground and resident hosts support multiple vaults per remote; each grant selects one vault."
             .to_string(),
     );
+    lines.push(String::new());
+    lines.push("Issuer keys and confidential client secrets use device-local SecretStore references with protected-file custody. For legacy named remotes, stop the listener and preview `vulcan mcp remote migrate-credentials <name> --dry-run` before applying. See `vulcan help mcp-remotes` for setup, consent, credential recovery, and indeterminate write handling.".to_string());
     lines.push(String::new());
     lines.push(
         "Derived from Vulcan's config descriptor registry. `config set`, `config unset`, `config list`, the settings TUI, and this help surface share the same supported key metadata.".to_string(),

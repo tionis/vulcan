@@ -86,7 +86,8 @@ The CLI is designed to be self-describing at runtime.
 - MCP HTTP accepts a single unambiguous `Content-Length` for request bodies; duplicate framing or authorization headers, malformed header lines, and chunked request transfer encoding are rejected before dispatch. Configure a reverse proxy to forward a normal length-delimited request body.
 - MCP query pages default to 50 compact rows, daily list/range pages default to 20 rows, and oversized structured results are returned through session resource links.
 - A named remote write that outlives its response deadline returns an indeterminate tool error with `operation_id` and `status_path`. Query `GET <public-origin><status_path>` with a current bearer token for the same connection grant; the response reports whether dispatch occurred, the retained state, and any known commit outcome. Known terminal status is retained for 30 days and unknown terminal status for 90 days; after expiry, inspect the vault. The timed-out MCP session is retired. Never replay an unknown write merely because its HTTP response timed out; proxy the `/operations/<id>` subpath alongside the MCP resource path.
-- `vulcan help chatgpt-mcp` documents the private ChatGPT Developer Mode setup, including Authentik/OIDC OAuth, the `daily-wiki-agent` profile, and daily/task packs.
+- `vulcan help mcp-remotes` documents named remote initialization, concurrent instances, multi-vault hosting, per-connection consent, credential migration, and recovery. Definitions are device-global; vault profiles remain in shared/local vault configuration. Local stdio and loopback HTTP still work without a daemon or named remote.
+- `vulcan help chatgpt-mcp` documents the private ChatGPT Developer Mode setup with named IndieAuth remotes, the `daily-wiki-agent` profile, and daily/task packs; advanced external OIDC remains available.
 - `vulcan completions <shell>` generates shell completions.
 
 Useful starting points:

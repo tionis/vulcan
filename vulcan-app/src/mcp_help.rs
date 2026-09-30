@@ -377,6 +377,13 @@ fn static_help_topic(
 pub fn builtin_help_topics() -> Vec<HelpTopicReport> {
     vec![
         static_help_topic(
+            "mcp-remotes",
+            HelpTopicKind::Guide,
+            "Named MCP remote setup, consent, multi-vault hosting, credentials, and recovery.",
+            include_str!("../../docs/guide/mcp-remotes.md"),
+            &["mcp", "chatgpt-mcp", "config", "permissions"],
+        ),
+        static_help_topic(
             "assistant-integration",
             HelpTopicKind::Guide,
             "External runtime contract for AGENTS.md, skill discovery, permissions, and wrappers.",
@@ -688,6 +695,25 @@ mod tests {
         assert_eq!(
             help_completion_candidates(&[], "chatgpt"),
             vec!["chatgpt-mcp".to_string()]
+        );
+    }
+
+    #[test]
+    fn named_remote_guide_is_available_as_a_completed_mcp_resource() {
+        assert_eq!(
+            help_completion_candidates(&[], "mcp-rem"),
+            vec!["mcp-remotes".to_string()]
+        );
+        let resource = read_help_resource("vulcan://help/mcp-remotes", |_| {
+            panic!("remote guide should be available without a CLI host")
+        })
+        .unwrap()
+        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(resource["contents"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            report["body"].as_str().unwrap(),
+            include_str!("../../docs/guide/mcp-remotes.md").trim()
         );
     }
 

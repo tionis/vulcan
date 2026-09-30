@@ -27,7 +27,7 @@ Automation conventions:
 - Use `--dry-run` before bulk or destructive mutations.
 - Note names may be ambiguous; pass a full relative path when precision matters.
 - When you need repeatable public exports, prefer `export profile create` for the profile-wide settings and `export profile rule ...` for the ordered transform rules stored in `.vulcan/config.toml`.
-- For ChatGPT or another remote MCP client, expose Vulcan behind HTTPS with OAuth/IndieAuth and a narrow permission profile. Do not publish a no-auth private vault endpoint.
+- For ChatGPT or another remote MCP client, start with `vulcan help mcp-remotes`: register a vault, initialize a read-only named remote, and expose its loopback listener through HTTPS. IndieAuth login and separate per-connection consent govern access. See [named MCP remotes](./mcp-remotes.md) for lifecycle and credential recovery. Do not publish a no-auth private vault endpoint.
 
 See also: `vulcan help examples`, `vulcan help filters`, `vulcan help query-dsl`, `vulcan help assistant-integration`, `vulcan export --help`, [Git-backed synchronization](./git-sync.md), [installation and portable updates](../installation.md), and [ChatGPT MCP setup](./chatgpt-mcp.md).
 

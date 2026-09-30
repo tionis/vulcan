@@ -101,10 +101,12 @@ into eligible packs, initialize the remote with the old exact `--public-url` and
 then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing
 direct flags remain supported and are not imported automatically.
 
-For resident one-vault remotes, `vulcan daemon start --detach` loads all named definitions at
+For resident remotes, `vulcan daemon start --detach` loads all named definitions at
 startup and supervises them under `listener.mcp-remotes`; restart the daemon after a remote
 definition changes. A foreground `remote run` and the resident daemon cannot own the same remote
-simultaneously. Multi-vault routing within one remote is not yet supported by the resident host.
+simultaneously. Both foreground and resident hosts support multiple vaults per remote; each grant selects one vault.
+
+Issuer keys and confidential client secrets use device-local SecretStore references with protected-file custody. For legacy named remotes, stop the listener and preview `vulcan mcp remote migrate-credentials <name> --dry-run` before applying. See `vulcan help mcp-remotes` for setup, consent, credential recovery, and indeterminate write handling.
 
 Derived from Vulcan's config descriptor registry. `config set`, `config unset`, `config list`, the settings TUI, and this help surface share the same supported key metadata.
 
