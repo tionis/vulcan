@@ -641,6 +641,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Skip identical progress writes and persist ordered supervisor mutations outside the reader mutex, with failure rollback and durable cancellation ordering.
 
+- [x] Reuse section-search contexts within an 8 MiB request budget and assemble headings with indexed slots while preserving cross-chunk predicates and ranking.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

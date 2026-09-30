@@ -645,8 +645,9 @@ fn keyword_search_hits(
         })
     })?;
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut section_contexts = SectionContextCache::new(SECTION_CONTEXT_CACHE_BYTES);
     let mut hits = collect_filtered_batches(rows, limit, |candidates| {
-        filter_search_candidates(connection, candidates, prepared)
+        filter_search_candidates(connection, candidates, prepared, &mut section_contexts)
     })?;
 
     if query.explain {
@@ -703,6 +704,7 @@ fn filter_search_candidates(
     connection: &Connection,
     candidates: &mut Vec<SearchCandidate>,
     prepared: &PreparedSearchQuery,
+    section_contexts: &mut SectionContextCache,
 ) -> Result<(), SearchError> {
     let default_case_sensitive = prepared.match_case.unwrap_or(false);
     apply_content_filters(candidates, &prepared.content_terms, default_case_sensitive);
@@ -711,6 +713,7 @@ fn filter_search_candidates(
         candidates,
         prepared.expression.as_ref(),
         default_case_sensitive,
+        section_contexts,
     )?;
     apply_task_filters(
         candidates,
@@ -753,6 +756,7 @@ fn apply_scope_filters(
     candidates: &mut Vec<SearchCandidate>,
     expression: Option<&SearchExpr>,
     default_case_sensitive: bool,
+    section_contexts: &mut SectionContextCache,
 ) -> Result<(), SearchError> {
     let Some(expression) =
         expression.filter(|expression| expression_requires_post_filter(expression))
@@ -760,22 +764,39 @@ fn apply_scope_filters(
         return Ok(());
     };
 
-    let section_contexts = if expression_contains_section_scope(expression) {
-        load_document_section_contexts(connection, candidates)?
+    if expression_contains_section_scope(expression) {
+        // Evaluate one document at a time, including oversized (uncached)
+        // contexts. Only candidate indexes, not document bodies, span the batch.
+        let mut documents = HashMap::<&str, Vec<usize>>::new();
+        for (index, candidate) in candidates.iter().enumerate() {
+            documents
+                .entry(&candidate.hit.document_path)
+                .or_default()
+                .push(index);
+        }
+        let mut keep = vec![false; candidates.len()];
+        for (path, indexes) in documents {
+            let sections = section_contexts.get(connection, path)?;
+            for index in indexes {
+                keep[index] = candidate_matches_scope_filters(
+                    expression,
+                    &candidates[index],
+                    Some(&sections),
+                    default_case_sensitive,
+                );
+            }
+        }
+        let mut index = 0;
+        candidates.retain(|_| {
+            let retain = keep[index];
+            index += 1;
+            retain
+        });
     } else {
-        HashMap::new()
-    };
-
-    candidates.retain(|candidate| {
-        candidate_matches_scope_filters(
-            expression,
-            candidate,
-            section_contexts
-                .get(candidate.hit.document_path.as_str())
-                .map(Vec::as_slice),
-            default_case_sensitive,
-        )
-    });
+        candidates.retain(|candidate| {
+            candidate_matches_scope_filters(expression, candidate, None, default_case_sensitive)
+        });
+    }
     Ok(())
 }
 
@@ -919,78 +940,106 @@ fn split_scope_segments(scope: SearchScope, content: &str) -> Vec<&str> {
     }
 }
 
-fn load_document_section_contexts(
-    connection: &Connection,
-    candidates: &[SearchCandidate],
-) -> Result<HashMap<String, Vec<String>>, SearchError> {
-    let document_paths = candidates
-        .iter()
-        .map(|candidate| candidate.hit.document_path.clone())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    if document_paths.is_empty() {
-        return Ok(HashMap::new());
+const SECTION_CONTEXT_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+struct SectionContextCache {
+    entries: HashMap<String, (std::rc::Rc<Vec<String>>, usize)>,
+    order: std::collections::VecDeque<String>,
+    bytes: usize,
+    budget: usize,
+    #[cfg(test)]
+    loads: usize,
+    #[cfg(test)]
+    peak_bytes: usize,
+}
+
+impl SectionContextCache {
+    fn new(budget: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: std::collections::VecDeque::default(),
+            bytes: 0,
+            budget,
+            #[cfg(test)]
+            loads: 0,
+            #[cfg(test)]
+            peak_bytes: 0,
+        }
     }
 
-    let placeholders = vec!["?"; document_paths.len()].join(", ");
-    let sql = format!(
+    fn get(
+        &mut self,
+        connection: &Connection,
+        path: &str,
+    ) -> Result<std::rc::Rc<Vec<String>>, SearchError> {
+        if let Some((sections, _)) = self.entries.get(path) {
+            return Ok(sections.clone());
+        }
+        #[cfg(test)]
+        {
+            self.loads += 1;
+        }
+        let sections = std::rc::Rc::new(load_document_section_context(connection, path)?);
+        // Charge allocated string/vector capacities and conservative per-entry
+        // bookkeeping, including both owned path copies. Allocator overhead and
+        // the current document under construction are outside this reuse budget.
+        let bytes = sections.iter().map(String::capacity).sum::<usize>()
+            + sections.capacity() * std::mem::size_of::<String>()
+            + path.len() * 2
+            + 256;
+        if bytes <= self.budget {
+            while self.bytes + bytes > self.budget {
+                let oldest = self.order.pop_front().expect("nonempty context cache");
+                self.bytes -= self.entries.remove(&oldest).expect("cached context").1;
+            }
+            self.order.push_back(path.to_owned());
+            self.entries
+                .insert(path.to_owned(), (sections.clone(), bytes));
+            self.bytes += bytes;
+            #[cfg(test)]
+            {
+                self.peak_bytes = self.peak_bytes.max(self.bytes);
+            }
+        }
+        Ok(sections)
+    }
+}
+
+fn load_document_section_context(
+    connection: &Connection,
+    path: &str,
+) -> Result<Vec<String>, SearchError> {
+    let mut statement = connection.prepare_cached(
         "
         SELECT
-            documents.path,
             chunks.heading_path,
             search_chunk_content.content
         FROM search_chunk_content
         JOIN chunks ON chunks.id = search_chunk_content.chunk_id
         JOIN documents ON documents.id = search_chunk_content.document_id
-        WHERE documents.path IN ({placeholders})
-        ORDER BY documents.path ASC, chunks.sequence_index ASC
-        "
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(document_paths.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
+        WHERE documents.path = ?1
+        ORDER BY chunks.sequence_index ASC
+        ",
+    )?;
+    let rows = statement.query_map([path], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-
-    let mut grouped = HashMap::<String, Vec<(String, String)>>::new();
+    let mut slots = HashMap::<String, usize>::new();
+    let mut sections = Vec::<String>::new();
     for row in rows {
-        let (path, heading_path, content) = row?;
-        grouped
-            .entry(path)
-            .or_default()
-            .push((heading_path, content));
-    }
-
-    Ok(grouped
-        .into_iter()
-        .map(|(path, rows)| {
-            let mut sections = Vec::<(String, String)>::new();
-            for (heading_path, content) in rows {
-                if let Some((_, existing)) = sections
-                    .iter_mut()
-                    .find(|(existing_heading_path, _)| existing_heading_path == &heading_path)
-                {
-                    if !existing.is_empty() {
-                        existing.push_str("\n\n");
-                    }
-                    existing.push_str(&content);
-                } else {
-                    sections.push((heading_path, content));
-                }
+        let (heading_path, content) = row?;
+        if let Some(&slot) = slots.get(&heading_path) {
+            let existing = &mut sections[slot];
+            if !existing.is_empty() {
+                existing.push_str("\n\n");
             }
-            (
-                path,
-                sections
-                    .into_iter()
-                    .map(|(_, content)| content)
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect())
+            existing.push_str(&content);
+        } else {
+            slots.insert(heading_path, sections.len());
+            sections.push(content);
+        }
+    }
+    Ok(sections)
 }
 
 fn text_expression_matches(
@@ -3124,6 +3173,121 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    fn section_context_fixture() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "
+            CREATE TABLE documents (id INTEGER PRIMARY KEY, path TEXT);
+            CREATE TABLE chunks (id INTEGER PRIMARY KEY, heading_path TEXT, sequence_index INTEGER);
+            CREATE TABLE search_chunk_content (chunk_id INTEGER, document_id INTEGER, content TEXT);
+            INSERT INTO documents VALUES (1, 'Large.md'), (2, 'Other.md');
+        ",
+            )
+            .unwrap();
+        for index in 0..1024 {
+            connection
+                .execute(
+                    "INSERT INTO chunks VALUES (?1, ?2, ?1)",
+                    rusqlite::params![index, format!("[\"Heading {}\"]", index % 512)],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO search_chunk_content VALUES (?1, 1, ?2)",
+                    rusqlite::params![
+                        index,
+                        format!(
+                            "{} {}",
+                            if index < 512 { "alpha" } else { "beta" },
+                            index % 512
+                        )
+                    ],
+                )
+                .unwrap();
+        }
+        connection.execute("INSERT INTO search_chunk_content SELECT chunk_id, 2, content FROM search_chunk_content WHERE document_id = 1", []).unwrap();
+        connection
+    }
+
+    #[test]
+    fn section_context_reuse_bounds_bytes_and_preserves_repeated_heading_order() {
+        let connection = section_context_fixture();
+        let mut cache = SectionContextCache::new(SECTION_CONTEXT_CACHE_BYTES);
+        let start = std::time::Instant::now();
+        for _ in 0..8 {
+            let sections = cache.get(&connection, "Large.md").unwrap();
+            assert_eq!(sections.len(), 512);
+            for (index, section) in sections.iter().enumerate() {
+                assert_eq!(section, &format!("alpha {index}\n\nbeta {index}"));
+            }
+        }
+        assert_eq!(cache.loads, 1);
+        assert!(cache.peak_bytes <= cache.budget);
+        let charge = cache.bytes;
+        let mut bounded = SectionContextCache::new(charge);
+        for path in ["Large.md", "Other.md", "Large.md"] {
+            assert_eq!(bounded.get(&connection, path).unwrap().len(), 512);
+            assert!(bounded.bytes <= charge);
+            assert_eq!(bounded.entries.len(), 1);
+        }
+        assert_eq!(bounded.loads, 3); // Evicted contexts reload correctly.
+        let mut oversized = SectionContextCache::new(charge - 1);
+        assert_eq!(oversized.get(&connection, "Large.md").unwrap().len(), 512);
+        assert_eq!(oversized.bytes, 0);
+        assert!(oversized.entries.is_empty());
+        eprintln!("section fixture: 1024 chunks, 512 headings, 8 batches; loads 8 -> {}; retained charge {charge} bytes; elapsed {:?}", cache.loads, start.elapsed());
+    }
+
+    #[test]
+    fn section_context_reuse_survives_rejected_batches_and_zero_limit() {
+        let connection = section_context_fixture();
+        let prepared = prepare_search_query(&SearchQuery {
+            text: "section:(alpha beta) /accept/".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let run = |budget, limit| {
+            let mut cache = SectionContextCache::new(budget);
+            let rows = (0..1024).map(|index| {
+                Ok(SearchCandidate {
+                    hit: SearchHit {
+                        document_path: "Large.md".into(),
+                        chunk_id: index.to_string(),
+                        heading_path: vec![],
+                        snippet: String::new(),
+                        matched_line: None,
+                        section_id: None,
+                        line_spans: vec![],
+                        rank: f64::from(index),
+                        explain: None,
+                    },
+                    content: if index < 900 { "reject" } else { "accept" }.into(),
+                    document_title: String::new(),
+                    aliases: String::new(),
+                    headings: String::new(),
+                })
+            });
+            let hits = collect_filtered_batches(rows, limit, |candidates| {
+                filter_search_candidates(&connection, candidates, &prepared, &mut cache)
+            })
+            .unwrap();
+            (hits, cache)
+        };
+        let (baseline, uncached) = run(0, usize::MAX);
+        let (all, cached) = run(SECTION_CONTEXT_CACHE_BYTES, usize::MAX);
+        assert_eq!(all, baseline);
+        assert_eq!(all.len(), 124);
+        assert_eq!(uncached.loads, 8);
+        assert_eq!(cached.loads, 1);
+        let (limited, cache) = run(SECTION_CONTEXT_CACHE_BYTES, 3);
+        assert_eq!(limited, all[..3]);
+        assert_eq!(cache.loads, 1);
+        let (zero, cache) = run(SECTION_CONTEXT_CACHE_BYTES, 0);
+        assert!(zero.is_empty());
+        assert_eq!(cache.loads, 0);
+    }
 
     #[test]
     fn candidate_stream_is_bounded_and_continues_after_rejected_batches() {
