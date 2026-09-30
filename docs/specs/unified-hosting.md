@@ -226,8 +226,10 @@ mutation scheduler before ingress registration and supplies
 that same instance to adapter factories and the hosted executor. Resident MCP request workers
 acquire per-vault read/write permits, revalidate their original OAuth/grant authority after the
 queue wait, and retain permits until execution ends even if the HTTP caller times out. Named
-sessions apply current profile narrowing but reject widening without fresh consent. Cross-process
-write-lock coverage and durable unknown-write recovery still need migration.
+sessions apply current profile narrowing but reject widening without fresh consent. MCP mutations
+also hold the cross-process vault write gate. Named mutation workers durably register operations
+before dispatch and retain their permits/outcome monitor after a response timeout; caller-bound
+operation status distinguishes never-dispatched, completed, and indeterminate writes.
 The initial extraction places transport-neutral request types and protocol constants in
 `vulcan-app::mcp_protocol`, tool input/output JSON Schemas in `vulcan-app::mcp_schemas`, and
 built-in tool metadata, pack selection, and permission visibility in `vulcan-app::mcp_catalog`.
@@ -242,16 +244,17 @@ wakeable listener shutdown for both modes. The daemon classifies OAuth, metadata
 and MCP endpoint paths before dispatch. `vulcan-daemon::mcp_session` owns HTTP session lifecycle,
 including idle expiry, per-request cancellation, scope-filtered SSE subscribers, and close cleanup.
 The same daemon module owns each listener's bounded session registry, expiry reclamation,
-authority-bound lookup, and shutdown closure. The CLI host still supplies the protocol core,
-initialization, OAuth validation, and method handlers; those dispatch workflows remain to be
-extracted.
+authority-bound lookup, and shutdown closure. The shared daemon HTTP driver supplies initialization,
+OAuth validation/routing, and response presentation over the app protocol core. The CLI supplies
+only parsed configuration and trusted command-help/custom-tool catalog data.
 Named consent grant selection and persistence now live in `vulcan-daemon::mcp_remote_runtime`:
 the selected vault must be exposed by the instance, the selected profile must fit its ceiling,
-and only checked eligible packs enter the durable grant. The CLI still renders the consent form.
+and only checked eligible packs enter the durable grant. The shared daemon browser/consent modules
+render and validate the consent form.
 Each named or direct HTTP listener has a 64-connection admission ceiling, counting SSE streams.
 Excess connections receive HTTP 503 with `Retry-After: 1` before a worker is spawned; completed
 connections release admission capacity.
-The daemon listener parses bounded requests before calling the CLI's OAuth/MCP route handler and
+The daemon listener parses bounded requests before calling the shared daemon OAuth/MCP driver and
 returns the existing JSON-RPC invalid-request shape for malformed HTTP framing. The host callback
 only receives successfully parsed requests.
 Parsing has a five-second total deadline for headers and body, rather than a timeout refreshed by
@@ -277,13 +280,13 @@ The listener accepts HTTP/1.1 origin-form request targets with CRLF-delimited he
 HTTP/1.0, absolute-form targets, fragments, extra request-line fields, and mixed line endings before
 authentication or route dispatch.
 The MCP sync pack's permission checks, dry-run target selection, doctor platform choice, and
-conflict report selection are shared app workflows. The CLI transport retains argument decoding and
-MCP presentation; moving these workflows does not grant Git access or enable sync mutation.
+conflict report selection are shared app workflows. The app MCP executor owns typed argument
+decoding and MCP presentation; these workflows do not grant Git access or enable sync mutation.
 Hosted `web_fetch` uses the read lane and has no MCP save argument; the direct CLI's optional
 `web fetch --save` is a separate write-capable workflow. Unknown and custom MCP tools remain on the
 mutation lane until their effects can be proved read-only.
 The MCP config pack likewise uses shared app workflows for permission checks, show, dry-run plan,
-apply, changed-file selection, and optional auto-commit. The CLI transport retains argument decoding
+apply, changed-file selection, and optional auto-commit. The app MCP executor owns argument decoding
 and response presentation; the per-vault config file and trust rules remain unchanged.
 Live MCP config-set planning and publication hold the cross-process vault lock, so separately
 hosted remotes targeting one vault do not lose each other's config updates. Publication stages a
@@ -294,9 +297,10 @@ The shared auto-commit policy now lives in `vulcan-app::commit`. Both CLI mutati
 mutations use its configuration/trigger and Git checks and its plugin pre/post-commit workflow;
 the CLI retains a compatibility re-export until its remaining command dependencies move.
 MCP custom-tool lookup, listing, and execution call `vulcan-app::tools` directly; the host still
-supplies its CLI-derived reserved-name registry until registry construction is shared.
+supplies its reserved command names as trusted catalog data. Runtime discovery, filtering, and
+dispatch do not depend on CLI command handlers or argument enums.
 MCP config show/set use `vulcan-app::config` directly. Their profile checks, dry-run planning,
-apply step, and optional auto-commit remain transport-level composition around the app reports.
+apply step, and optional auto-commit are app-level composition around the shared reports.
 The app config workflow also supplies the auto-commit file list, including a newly created
 `.vulcan/.gitignore` only when the config write created it.
 Requested CLI and MCP scans now use one `vulcan-app::scan` workflow for scan execution,
@@ -371,10 +375,11 @@ entry points. `vulcan-daemon::mcp_http_host` owns per-listener state, authentica
 endpoint composition, and authority-bound protocol configuration for new HTTP sessions. Named
 sessions use the consent-bound vault, profile, and packs, never listener defaults when a binding
 is missing or invalid; direct sessions retain invocation-selected packs and profile precedence.
-The CLI constructs the shared protocol wrapper and renders typed configuration failures without
-converting grant pack names through CLI argument enums. Shared-host tests cover binding failures,
-direct defaults, removed vaults, and static/adaptive pack selection. CLI-derived command-help
-catalog injection and remaining HTTP request orchestration remain adapter work under 10.7.6.
+The CLI factory constructs the shared protocol wrapper without converting grant pack names through
+CLI argument enums; the daemon driver renders configuration failures. Shared-host tests cover
+binding failures, direct defaults, removed vaults, and static/adaptive pack selection. Command-help
+and reserved-name catalog injection remain presentation data, not another protocol dispatcher.
+See [the named MCP acceptance audit](named-mcp-acceptance.md) for current evidence and open gates.
 
 ## Preserved compatibility contracts
 
