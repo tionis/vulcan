@@ -625,6 +625,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Skip property-catalog recounts for unchanged membership, retain removed keys, and reconcile configured types and cache-rebuild recovery.
 
+- [x] Bound incremental parsed-document retention to one batch while preserving global rename matching and transactional rollback.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

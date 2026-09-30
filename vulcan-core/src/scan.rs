@@ -897,22 +897,22 @@ fn apply_incremental_scan(
         }
     }
 
-    // Phase 2: Prepare files needing work in parallel (read + hash + parse).
-    let batch_size = full_scan_prepare_batch_size();
-    let mut prepared_results: Vec<IncrementalPrepResult> = Vec::with_capacity(work_items.len());
-    for batch in work_items.chunks(batch_size) {
-        let mut batch_results = batch
-            .par_iter()
-            .map(|item| prepare_incremental_file(item.file, config, item.cached))
-            .collect::<Result<Vec<_>, _>>()?;
-        prepared_results.append(&mut batch_results);
-    }
-
-    // Phase 2b: Keep document identity across renames so dependent rows (chunks, vectors,
-    // suggestion feedback) survive moves instead of being deleted and recreated.
+    // Rename matching needs global uniqueness, but only hashes of new files,
+    // never their parsed contents. Ordinary edits need no extra reads here.
+    let rename_hashes = work_items
+        .iter()
+        .map(|item| {
+            if deleted_paths.is_empty() || item.cached.is_some() {
+                Ok(None)
+            } else {
+                fs::read(&item.file.absolute_path)
+                    .map(|bytes| Some(blake3::hash(&bytes).as_bytes().to_vec()))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let renamed_from = match_renamed_documents(
         &work_items,
-        &mut prepared_results,
+        &rename_hashes,
         existing,
         deleted_paths,
         rename_hints,
@@ -945,115 +945,148 @@ fn apply_incremental_scan(
         },
     );
 
-    for ((item, prep), renamed_from) in work_items.iter().zip(prepared_results).zip(renamed_from) {
-        if let (Some(old_path), IncrementalPrepResult::Reindex { id, .. }) = (&renamed_from, &prep)
-        {
-            rename_document_path(transaction, id, old_path, item.file)?;
-            result
-                .renamed
-                .push((old_path.clone(), item.file.relative_path.clone()));
-            result.requires_link_resolution = true;
-            result.target_pool_changed = true;
-        }
-        match prep {
-            IncrementalPrepResult::MetadataOnly { cached_id } => {
-                update_document_metadata(transaction, &cached_id, item.file)?;
-                result.summary.unchanged += 1;
-            }
-            IncrementalPrepResult::Reindex {
+    let batch_size = full_scan_prepare_batch_size();
+    for (batch_index, batch) in work_items.chunks(batch_size).enumerate() {
+        // Apply and drop this batch before parsing the next. The surrounding
+        // transaction still rolls every batch back on a later read/parse error.
+        let prepared = batch
+            .par_iter()
+            .map(|item| prepare_incremental_file(item.file, config, item.cached))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (index, (item, mut prep)) in batch.iter().zip(prepared).enumerate() {
+            let offset = batch_index * batch_size + index;
+            let renamed_from = &renamed_from[offset];
+            if let IncrementalPrepResult::Reindex {
                 id,
-                content_hash,
-                derived,
                 is_new,
-            } => {
-                let current_version = document_index_version(item.file.kind, config);
-                insert_or_update_document(
-                    transaction,
-                    &id,
-                    item.file,
-                    &content_hash,
+                content_hash,
+                ..
+            } = &mut prep
+            {
+                if rename_hashes[offset]
+                    .as_ref()
+                    .is_some_and(|hash| hash != content_hash)
+                {
+                    return Err(ScanError::Io(std::io::Error::other(format!(
+                        "file changed during rename detection: {}",
+                        item.file.relative_path
+                    ))));
+                }
+                if let Some(old_path) = renamed_from {
+                    id.clone_from(&existing[old_path].id);
+                    *is_new = false;
+                }
+            }
+            if let (Some(old_path), IncrementalPrepResult::Reindex { id, .. }) =
+                (renamed_from, &prep)
+            {
+                rename_document_path(transaction, id, old_path, item.file)?;
+                result
+                    .renamed
+                    .push((old_path.clone(), item.file.relative_path.clone()));
+                result.requires_link_resolution = true;
+                result.target_pool_changed = true;
+            }
+            match prep {
+                IncrementalPrepResult::MetadataOnly { cached_id } => {
+                    update_document_metadata(transaction, &cached_id, item.file)?;
+                    result.summary.unchanged += 1;
+                }
+                IncrementalPrepResult::Reindex {
+                    id,
+                    content_hash,
+                    derived,
+                    is_new,
+                } => {
+                    let current_version = document_index_version(item.file.kind, config);
+                    insert_or_update_document(
+                        transaction,
+                        &id,
+                        item.file,
+                        &content_hash,
+                        match &derived {
+                            PreparedDerivedContent::Note(note) => {
+                                note.parsed.raw_frontmatter.as_deref()
+                            }
+                            PreparedDerivedContent::Attachment(_)
+                            | PreparedDerivedContent::None => None,
+                        },
+                        match &derived {
+                            PreparedDerivedContent::Note(note) => note.periodic.as_ref(),
+                            PreparedDerivedContent::Attachment(_)
+                            | PreparedDerivedContent::None => None,
+                        },
+                        current_version,
+                    )?;
                     match &derived {
                         PreparedDerivedContent::Note(note) => {
-                            note.parsed.raw_frontmatter.as_deref()
+                            // Aliases are resolution targets for links in *other* notes, so an
+                            // alias change on an existing note invalidates the whole target pool.
+                            if !is_new && aliases_changed(transaction, &id, &note.parsed.aliases)? {
+                                result.target_pool_changed = true;
+                            }
+                            let previous_properties = catalog_membership(transaction, &id)?;
+                            replace_derived_rows(
+                                transaction,
+                                &id,
+                                &item.file.relative_path,
+                                &item.file.filename,
+                                is_new,
+                                config,
+                                note,
+                            )?;
+                            result.requires_link_resolution = true;
+                            let current_properties = catalog_membership(transaction, &id)?;
+                            if previous_properties != current_properties {
+                                result.requires_property_catalog_refresh = true;
+                                result.affected_property_keys.extend(
+                                    previous_properties
+                                        .iter()
+                                        .chain(&current_properties)
+                                        .map(|entry| entry.0.clone()),
+                                );
+                            }
                         }
-                        PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => {
-                            None
+                        PreparedDerivedContent::Attachment(chunks) => {
+                            replace_attachment_rows(
+                                transaction,
+                                &id,
+                                &item.file.filename,
+                                is_new,
+                                chunks,
+                            )?;
                         }
-                    },
-                    match &derived {
-                        PreparedDerivedContent::Note(note) => note.periodic.as_ref(),
-                        PreparedDerivedContent::Attachment(_) | PreparedDerivedContent::None => {
-                            None
-                        }
-                    },
-                    current_version,
-                )?;
-                match &derived {
-                    PreparedDerivedContent::Note(note) => {
-                        // Aliases are resolution targets for links in *other* notes, so an
-                        // alias change on an existing note invalidates the whole target pool.
-                        if !is_new && aliases_changed(transaction, &id, &note.parsed.aliases)? {
-                            result.target_pool_changed = true;
-                        }
-                        let previous_properties = catalog_membership(transaction, &id)?;
-                        replace_derived_rows(
-                            transaction,
-                            &id,
-                            &item.file.relative_path,
-                            &item.file.filename,
-                            is_new,
-                            config,
-                            note,
-                        )?;
+                        PreparedDerivedContent::None => {}
+                    }
+                    result.changed_document_ids.push(id);
+                    if is_new {
+                        result.summary.added += 1;
                         result.requires_link_resolution = true;
-                        let current_properties = catalog_membership(transaction, &id)?;
-                        if previous_properties != current_properties {
-                            result.requires_property_catalog_refresh = true;
-                            result.affected_property_keys.extend(
-                                previous_properties
-                                    .iter()
-                                    .chain(&current_properties)
-                                    .map(|entry| entry.0.clone()),
-                            );
-                        }
+                        result.target_pool_changed = true;
+                        result.requires_property_catalog_refresh |=
+                            matches!(item.file.kind, DocumentKind::Note);
+                    } else {
+                        result.summary.updated += 1;
                     }
-                    PreparedDerivedContent::Attachment(chunks) => {
-                        replace_attachment_rows(
-                            transaction,
-                            &id,
-                            &item.file.filename,
-                            is_new,
-                            chunks,
-                        )?;
-                    }
-                    PreparedDerivedContent::None => {}
-                }
-                result.changed_document_ids.push(id);
-                if is_new {
-                    result.summary.added += 1;
-                    result.requires_link_resolution = true;
-                    result.target_pool_changed = true;
-                    result.requires_property_catalog_refresh |=
-                        matches!(item.file.kind, DocumentKind::Note);
-                } else {
-                    result.summary.updated += 1;
                 }
             }
-        }
 
-        emit_scan_progress(
-            on_progress,
-            ScanProgress {
-                mode,
-                phase: ScanPhase::ScanningFiles,
-                discovered: discovered.len(),
-                processed: result.summary.unchanged + result.summary.added + result.summary.updated,
-                added: result.summary.added,
-                updated: result.summary.updated,
-                unchanged: result.summary.unchanged,
-                deleted: result.summary.deleted,
-            },
-        );
+            emit_scan_progress(
+                on_progress,
+                ScanProgress {
+                    mode,
+                    phase: ScanPhase::ScanningFiles,
+                    discovered: discovered.len(),
+                    processed: result.summary.unchanged
+                        + result.summary.added
+                        + result.summary.updated,
+                    added: result.summary.added,
+                    updated: result.summary.updated,
+                    unchanged: result.summary.unchanged,
+                    deleted: result.summary.deleted,
+                },
+            );
+        }
     }
 
     for path in deleted_paths {
@@ -1091,11 +1124,11 @@ fn apply_incremental_scan(
 /// An explicit hint (new path -> old path) always wins when the old path really disappeared and
 /// has the same extension. Otherwise a new file inherits a deleted document's identity only when
 /// the content hash and extension match exactly one deleted document and exactly one new file,
-/// so duplicated or empty files never merge identities by guesswork. Matched preparations are
-/// rewritten to reuse the cached id; the returned vector gives each work item's old path.
+/// so duplicated or empty files never merge identities by guesswork. The returned
+/// vector gives each work item's old path without retaining parsed documents.
 fn match_renamed_documents(
     work_items: &[IncrementalWorkItem<'_>],
-    prepared: &mut [IncrementalPrepResult],
+    hashes: &[Option<Vec<u8>>],
     existing: &HashMap<String, CachedDocument>,
     deleted_paths: &[String],
     rename_hints: &HashMap<String, String>,
@@ -1115,13 +1148,7 @@ fn match_renamed_documents(
             .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default()
     };
-    let is_new_file = |index: usize| {
-        work_items[index].cached.is_none()
-            && matches!(
-                prepared[index],
-                IncrementalPrepResult::Reindex { is_new: true, .. }
-            )
-    };
+    let is_new_file = |index: usize| work_items[index].cached.is_none() && hashes[index].is_some();
 
     for index in 0..work_items.len() {
         if !is_new_file(index) {
@@ -1158,7 +1185,7 @@ fn match_renamed_documents(
         {
             continue;
         }
-        if let IncrementalPrepResult::Reindex { content_hash, .. } = &prepared[index] {
+        if let Some(content_hash) = &hashes[index] {
             new_by_hash
                 .entry((
                     content_hash.clone(),
@@ -1180,15 +1207,6 @@ fn match_renamed_documents(
         }
     }
 
-    for (index, old_path) in renamed_from.iter().enumerate() {
-        let Some(old_path) = old_path else {
-            continue;
-        };
-        if let IncrementalPrepResult::Reindex { id, is_new, .. } = &mut prepared[index] {
-            id.clone_from(&existing[old_path].id);
-            *is_new = false;
-        }
-    }
     renamed_from
 }
 
@@ -3370,6 +3388,51 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn incremental_preparation_is_batched_and_late_errors_roll_back() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let count = full_scan_prepare_batch_size() + 1;
+        for index in 0..count {
+            fs::write(
+                temp.path().join(format!("note-{index:05}.md")),
+                "# Searchable\ncontent\n",
+            )
+            .unwrap();
+        }
+        let discovered = discover_files(temp.path()).unwrap();
+        let last = discovered.last().unwrap().absolute_path.clone();
+        let mut injected = false;
+        let result = scan_vault_with_progress(&paths, ScanMode::Incremental, |progress| {
+            if progress.phase == ScanPhase::ScanningFiles && progress.added == 1 && !injected {
+                // If all files had already been prepared this would go unnoticed.
+                fs::write(&last, [0xff, 0xfe]).unwrap();
+                injected = true;
+            }
+        });
+        assert!(injected);
+        assert!(result.is_err());
+        let database = CacheDatabase::open(&paths).unwrap();
+        assert_eq!(count_rows(database.connection(), "documents"), 0);
+        drop(database);
+        fs::write(&last, "# Searchable\nrepaired\n").unwrap();
+        assert_eq!(
+            scan_vault(&paths, ScanMode::Incremental).unwrap().added,
+            count
+        );
+        assert_eq!(
+            scan_vault(&paths, ScanMode::Incremental).unwrap().unchanged,
+            count
+        );
+        let database = CacheDatabase::open(&paths).unwrap();
+        assert!(database.connection().query_row(
+            "SELECT COUNT(*) FROM search_chunks_fts WHERE search_chunks_fts MATCH 'Searchable'", [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap() > 0);
+    }
+
+    #[test]
     fn property_catalog_skips_body_and_value_edits_and_removes_last_use() {
         let temp = TempDir::new().unwrap();
         let paths = VaultPaths::new(temp.path());
@@ -3445,8 +3508,11 @@ mod tests {
         database.rebuild_with(|_| Ok::<_, CacheError>(())).unwrap();
         drop(database);
         scan_vault(&paths, ScanMode::Incremental).unwrap();
-        assert!(property_catalog_signature_rows(CacheDatabase::open(&paths).unwrap().connection())
-            .iter().any(|row| row["key"] == "unused"));
+        assert!(
+            property_catalog_signature_rows(CacheDatabase::open(&paths).unwrap().connection())
+                .iter()
+                .any(|row| row["key"] == "unused")
+        );
     }
 
     #[test]
