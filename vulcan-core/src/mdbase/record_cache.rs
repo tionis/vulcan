@@ -19,6 +19,64 @@ use std::path::{Path, PathBuf};
 mod control_dependencies;
 type ControlSources = Vec<(PathBuf, String)>;
 
+const TYPE_CANDIDATE_SQL: &str = "SELECT DISTINCT membership.path
+    FROM json_each(?4) AS wanted
+    CROSS JOIN mdbase_record_types AS membership
+    CROSS JOIN mdbase_record_cache AS record
+      ON record.collection_root = membership.collection_root AND record.path = membership.path
+    WHERE membership.collection_root = ?1 AND membership.type_name = wanted.value
+      AND record.dependency_digest = ?2 AND record.record_model_version = ?3
+    ORDER BY membership.path";
+const ALL_CANDIDATE_SQL: &str = "SELECT path FROM mdbase_record_cache
+    WHERE collection_root = ?1 AND dependency_digest = ?2 AND record_model_version = ?3
+    ORDER BY path";
+
+/// Select cached candidate paths for the type-membership part of a structured
+/// plan. All other predicates, diagnostics, sorting, grouping and pagination
+/// remain residual: this is NOT a query result or a freshness/authority proof.
+///
+/// Callers must establish a complete coherent current cache snapshot and control
+/// authority before use, then apply the rest of the plan to authorized records.
+/// Paths are filtered before returning and no record JSON is hydrated. Cache
+/// diagnostics cannot be reused blindly across permission scopes. The canonical
+/// source-derived query service does not yet use this primitive.
+pub fn select_cached_mdbase_candidate_paths(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    plan: &crate::query::StructuredQueryPlan,
+    dependency_digest: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<Vec<String>, MdbaseRecordCacheError> {
+    let mut parameters = vec![
+        rusqlite::types::Value::Text(cache_collection_root(collection)?),
+        rusqlite::types::Value::Text(dependency_digest.to_string()),
+        rusqlite::types::Value::Integer(i64::from(MDBASE_RECORD_MODEL_VERSION)),
+    ];
+    let sql = if plan.types.is_empty() {
+        ALL_CANDIDATE_SQL
+    } else {
+        let types = plan
+            .types
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        parameters.push(rusqlite::types::Value::Text(serde_json::to_string(&types)?));
+        TYPE_CANDIDATE_SQL
+    };
+    let mut statement = connection.prepare_cached(sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut paths = Vec::new();
+    for row in rows {
+        let path = row?;
+        if filter.is_none_or(|filter| filter.is_allowed(&path)) {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MdbaseCachedRecord {
     pub collection_root: String,
@@ -666,6 +724,145 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One indexed corpus exercises plan, scope, and clearing together.
+    fn indexed_candidates_preserve_membership_scope_and_leave_other_work_residual() {
+        use crate::permissions::{PathPermission, ResourceSpecifier};
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, _, _) = load_registries(directory.path());
+        let root = cache_collection_root(&collection).unwrap();
+        database
+            .with_transaction(|transaction| {
+                for i in 0..10_000 {
+                    let types = if i % 100 == 0 {
+                        vec!["Task".to_string(), "task".to_string()]
+                    } else {
+                        vec!["contact".to_string()]
+                    };
+                    store_cached_record(
+                        transaction,
+                        &MdbaseCachedRecord {
+                            collection_root: root.clone(),
+                            path: format!("record-{i:05}.md"),
+                            revision: "revision".to_string(),
+                            dependency_digest: "controls".to_string(),
+                            record_model_version: MDBASE_RECORD_MODEL_VERSION,
+                            types,
+                            effective_frontmatter: serde_json::json!({"status": "open"}),
+                            display: None,
+                            contract_views: vec![],
+                            diagnostics: vec![],
+                        },
+                    )?;
+                }
+                Ok::<_, MdbaseRecordCacheError>(())
+            })
+            .unwrap();
+        let mut plan = super::super::compile_mdbase_query(&serde_json::json!({
+            "types": ["TASK", "task"], "where": "false", "limit": 1, "offset": 9
+        }))
+        .unwrap();
+        database
+            .connection()
+            .execute(
+                "INSERT INTO mdbase_record_cache SELECT collection_root || '/other', path,
+             revision, dependency_digest, record_model_version, types_json,
+             effective_frontmatter_json, display_json, contract_views_json, diagnostics_json
+             FROM mdbase_record_cache WHERE path = 'record-00000.md'",
+                [],
+            )
+            .unwrap();
+        let select = |plan: &crate::query::StructuredQueryPlan,
+                      filter: Option<&PermissionFilter>| {
+            select_cached_mdbase_candidate_paths(
+                database.connection(),
+                &collection,
+                plan,
+                "controls",
+                filter,
+            )
+            .unwrap()
+        };
+        let candidates = select(&plan, None);
+        assert_eq!(candidates.len(), 100); // no residual predicate or pagination pushed prematurely
+        assert_eq!(candidates[0], "record-00000.md");
+        assert_eq!(candidates[99], "record-09900.md");
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("record-00000.md".to_string())],
+        });
+        assert_eq!(select(&plan, Some(&filter)).len(), 99);
+        let details = database
+            .connection()
+            .prepare(&format!("EXPLAIN QUERY PLAN {TYPE_CANDIDATE_SQL}"))
+            .unwrap()
+            .query_map(
+                params![root, "controls", MDBASE_RECORD_MODEL_VERSION, "[\"task\"]"],
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            details.iter().any(
+                |detail| detail.contains("SEARCH membership USING PRIMARY KEY")
+                    && detail.contains("collection_root=? AND type_name=?")
+            ),
+            "{details:?}"
+        );
+        {
+            let mut statement = database.connection().prepare(TYPE_CANDIDATE_SQL).unwrap();
+            let selected = statement
+                .query_map(
+                    params![root, "controls", MDBASE_RECORD_MODEL_VERSION, "[\"task\"]"],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(selected, candidates);
+            assert_eq!(
+                statement.get_status(rusqlite::StatementStatus::FullscanStep),
+                0
+            );
+            let steps = statement.get_status(rusqlite::StatementStatus::VmStep);
+            assert!(
+                steps < 5_000,
+                "selection visited unrelated rows: {steps} VM steps"
+            );
+        }
+        plan.types = vec!["task'); DROP TABLE mdbase_record_cache; --".to_string()];
+        assert!(select(&plan, None).is_empty());
+        plan.types.clear();
+        assert_eq!(select(&plan, None).len(), 10_000);
+        assert!(select_cached_mdbase_candidate_paths(
+            database.connection(),
+            &collection,
+            &plan,
+            "stale",
+            None
+        )
+        .unwrap()
+        .is_empty());
+        database.connection().execute("UPDATE mdbase_record_cache SET record_model_version = 0 WHERE path = 'record-00000.md'", []).unwrap();
+        assert_eq!(select(&plan, None).len(), 9_999);
+        database.clear_all().unwrap();
+        let count: i64 = database
+            .connection()
+            .query_row("SELECT count(*) FROM mdbase_record_types", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn stale_control_snapshots_never_replace_published_cache_rows() {
         for target in [
             "mdbase.yaml",
@@ -867,6 +1064,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Sequential refresh/rebuild lifecycle shares the same cache state.
     fn refresh_reuses_records_and_invalidates_record_and_dependency_changes() {
         let directory = tempdir().expect("collection directory");
         write(
@@ -891,6 +1089,19 @@ mod tests {
 
         let first = refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts)
             .expect("first refresh");
+        let type_plan =
+            super::super::compile_mdbase_query(&serde_json::json!({"types": ["task"]})).unwrap();
+        assert_eq!(
+            select_cached_mdbase_candidate_paths(
+                database.connection(),
+                &collection,
+                &type_plan,
+                &first.dependency_digest,
+                None
+            )
+            .unwrap(),
+            ["a.md", "b.md"]
+        );
         assert_eq!(
             (first.added, first.updated, first.unchanged, first.deleted),
             (2, 0, 0, 0)
@@ -961,6 +1172,29 @@ mod tests {
             (rebuilt.added, rebuilt.updated, rebuilt.unchanged),
             (0, 1, 0)
         );
+        assert_eq!(
+            select_cached_mdbase_candidate_paths(
+                database.connection(),
+                &collection,
+                &type_plan,
+                &rebuilt.dependency_digest,
+                None
+            )
+            .unwrap(),
+            ["a.md"]
+        );
+        write(&directory.path().join("a.md"), "Now untyped\n");
+        let untyped =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert!(select_cached_mdbase_candidate_paths(
+            database.connection(),
+            &collection,
+            &type_plan,
+            &untyped.dependency_digest,
+            None
+        )
+        .unwrap()
+        .is_empty());
         database.clear_all().expect("cache clear");
         let count: i64 = database
             .connection()

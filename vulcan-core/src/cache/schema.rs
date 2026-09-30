@@ -1,5 +1,37 @@
 use rusqlite::Transaction;
 
+/// Derived type membership for indexed MDB candidate selection. Triggers keep
+/// membership and the source projection in the same `SQLite` transaction.
+pub fn apply_schema_v20(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TABLE mdbase_record_types (
+            collection_root TEXT NOT NULL,
+            type_name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY (collection_root, type_name, path),
+            FOREIGN KEY (collection_root, path)
+                REFERENCES mdbase_record_cache(collection_root, path) ON DELETE CASCADE
+         ) WITHOUT ROWID;
+         CREATE INDEX idx_mdbase_record_types_path ON mdbase_record_types(collection_root, path);
+         INSERT OR IGNORE INTO mdbase_record_types
+            SELECT record.collection_root, lower(member.value), record.path
+            FROM mdbase_record_cache AS record, json_each(record.types_json) AS member;
+         CREATE TRIGGER mdbase_record_types_insert AFTER INSERT ON mdbase_record_cache BEGIN
+            INSERT OR IGNORE INTO mdbase_record_types
+                SELECT new.collection_root, lower(value), new.path FROM json_each(new.types_json);
+         END;
+         CREATE TRIGGER mdbase_record_types_update
+         AFTER UPDATE OF collection_root, path, types_json ON mdbase_record_cache BEGIN
+            DELETE FROM mdbase_record_types WHERE collection_root = old.collection_root AND path = old.path;
+            INSERT OR IGNORE INTO mdbase_record_types
+                SELECT new.collection_root, lower(value), new.path FROM json_each(new.types_json);
+         END;
+         CREATE TRIGGER mdbase_record_types_delete AFTER DELETE ON mdbase_record_cache BEGIN
+            DELETE FROM mdbase_record_types WHERE collection_root = old.collection_root AND path = old.path;
+         END;",
+    )
+}
+
 /// Old snapshots remain self-contained and readable. New automatic snapshots use
 /// half-open version intervals; they never depend on the lifetime of a header.
 pub fn apply_schema_v19(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {

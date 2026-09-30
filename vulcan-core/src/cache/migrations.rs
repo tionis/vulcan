@@ -115,6 +115,11 @@ impl MigrationRegistry {
                 "share automatic checkpoint document versions",
                 schema::apply_schema_v19,
             ),
+            Migration::new(
+                20,
+                "index mdbase record type membership",
+                schema::apply_schema_v20,
+            ),
         ])
     }
 
@@ -276,10 +281,76 @@ mod tests {
     }
 
     #[test]
+    fn mdbase_membership_migration_backfills_and_tracks_atomic_changes() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .unwrap();
+        let mut old = MigrationRegistry::schema_v1();
+        old.migrations.retain(|migration| migration.version <= 19);
+        old.migrate(&mut connection).unwrap();
+        connection.execute(
+            "INSERT INTO mdbase_record_cache VALUES ('root','a.md','revision','controls',5,?1,'{}',NULL,'[]','[]')",
+            [r#"["Task","task","Ä","ä"]"#],
+        ).unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        let memberships = |connection: &Connection| {
+            connection
+                .prepare("SELECT type_name FROM mdbase_record_types ORDER BY type_name")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(memberships(&connection), ["task", "Ä", "ä"]);
+        let original: String = connection
+            .query_row("SELECT types_json FROM mdbase_record_cache", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(original, r#"["Task","task","Ä","ä"]"#);
+        {
+            let transaction = connection.transaction().unwrap();
+            transaction
+                .execute(
+                    "UPDATE mdbase_record_cache SET types_json = '[\"project\"]'",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(memberships(&transaction), ["project"]);
+            transaction.rollback().unwrap();
+        }
+        assert_eq!(memberships(&connection), ["task", "Ä", "ä"]);
+        connection
+            .execute(
+                "UPDATE mdbase_record_cache SET path = 'b.md', types_json = '[\"Project\"]'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(memberships(&connection), ["project"]);
+        let path: String = connection
+            .query_row("SELECT path FROM mdbase_record_types", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(path, "b.md");
+        connection
+            .execute("DELETE FROM mdbase_record_cache", [])
+            .unwrap();
+        assert!(memberships(&connection).is_empty());
+    }
+
+    #[test]
     fn checkpoint_versions_migrate_without_rewriting_legacy_snapshots() {
         let mut connection = Connection::open_in_memory().unwrap();
         let mut old_registry = MigrationRegistry::schema_v1();
-        old_registry.migrations.pop();
+        old_registry
+            .migrations
+            .retain(|migration| migration.version <= 18);
         assert_eq!(old_registry.target_version(), 18);
         old_registry.migrate(&mut connection).unwrap();
         connection.execute_batch(
@@ -291,7 +362,7 @@ mod tests {
         MigrationRegistry::schema_v1()
             .migrate(&mut connection)
             .unwrap();
-        assert_eq!(current_user_version(&connection).unwrap(), 19);
+        assert_eq!(current_user_version(&connection).unwrap(), SCHEMA_VERSION);
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM checkpoint_documents", [], |row| row
