@@ -1,8 +1,8 @@
 use super::{
     bundled_mdbase_schema, validate_mdbase_schema_value, MdbaseCelClock, MdbaseCelContext,
-    MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelLinkIndex, MdbaseDiagnostic,
-    MdbaseDiagnosticLevel, MdbaseRecordDocument, MdbaseRecordSet, MdbaseTypeRegistry,
-    MDBASE_CANONICAL_SCHEMA_BASE,
+    MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelError, MdbaseCelEvaluation, MdbaseCelLinkIndex,
+    MdbaseCelProgram, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseRecordDocument,
+    MdbaseRecordSet, MdbaseTypeRegistry, MDBASE_CANONICAL_SCHEMA_BASE,
 };
 use crate::query::{
     QueryDirection, QueryExpressionLanguage, QueryExpressionSpec, QueryFrontmatterMode,
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MdbaseQueryError {
@@ -204,6 +204,115 @@ pub fn compile_mdbase_query(
     })
 }
 
+/// Reusable execution preparation over the existing structured query plan.
+///
+/// Only immutable expression programs are retained, never records, results,
+/// clocks, registries, or authorization. Callers must supply a fresh authorized
+/// coherent record/type snapshot on every execution. Memory is bounded by the
+/// distinct expressions in this owned plan; there is no process-wide cache.
+pub struct MdbasePreparedQuery {
+    plan: StructuredQueryPlan,
+    programs: QueryPrograms,
+}
+
+impl MdbasePreparedQuery {
+    #[must_use]
+    pub fn new(plan: &StructuredQueryPlan) -> Self {
+        let sources = plan
+            .named_projections
+            .iter()
+            .chain(&plan.summary_functions)
+            .map(|expression| expression.expression.source.as_str())
+            .chain(
+                plan.filter
+                    .iter()
+                    .map(|expression| expression.source.as_str()),
+            )
+            .chain(
+                plan.selection
+                    .iter()
+                    .flatten()
+                    .filter_map(|selection| match selection {
+                        QuerySelection::Expression { expression, .. } => {
+                            Some(expression.source.as_str())
+                        }
+                        QuerySelection::Field { .. } => None,
+                    }),
+            );
+        Self {
+            plan: plan.clone(),
+            programs: QueryPrograms {
+                engine: MdbaseCelEngine::default(),
+                slots: sources
+                    .map(|source| (source.to_string(), OnceLock::new()))
+                    .collect(),
+                #[cfg(test)]
+                compilations: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(test)]
+                uncached: false,
+            },
+        }
+    }
+
+    pub fn execute(
+        &self,
+        records: &MdbaseRecordSet,
+        types: &MdbaseTypeRegistry,
+        id_field: &str,
+        collection_timezone: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<MdbaseQueryResult, MdbaseQueryError> {
+        execute_prepared_query(
+            records,
+            types,
+            &self.plan,
+            id_field,
+            collection_timezone,
+            now,
+            &self.programs,
+        )
+    }
+}
+
+struct QueryPrograms {
+    engine: MdbaseCelEngine,
+    slots: BTreeMap<String, OnceLock<Result<MdbaseCelProgram, MdbaseCelError>>>,
+    #[cfg(test)]
+    compilations: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    uncached: bool,
+}
+
+impl QueryPrograms {
+    fn evaluate_context(
+        &self,
+        source: &str,
+        context: &MdbaseCelContext,
+    ) -> Result<MdbaseCelEvaluation, MdbaseCelError> {
+        #[cfg(test)]
+        if self.uncached {
+            return self
+                .engine
+                .evaluate_context(&self.engine.compile(source)?, context);
+        }
+        // Lazy compilation preserves the previous execution error ordering,
+        // including unused expressions and empty/filtered collections.
+        let program = self
+            .slots
+            .get(source)
+            .expect("expression belongs to owned plan")
+            .get_or_init(|| {
+                #[cfg(test)]
+                self.compilations
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.engine.compile(source)
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        self.engine.evaluate_context(program, context)
+    }
+}
+
 pub fn execute_mdbase_query(
     records: &MdbaseRecordSet,
     types: &MdbaseTypeRegistry,
@@ -211,6 +320,18 @@ pub fn execute_mdbase_query(
     id_field: &str,
     collection_timezone: Option<&str>,
     now: DateTime<Utc>,
+) -> Result<MdbaseQueryResult, MdbaseQueryError> {
+    MdbasePreparedQuery::new(plan).execute(records, types, id_field, collection_timezone, now)
+}
+
+fn execute_prepared_query(
+    records: &MdbaseRecordSet,
+    types: &MdbaseTypeRegistry,
+    plan: &StructuredQueryPlan,
+    id_field: &str,
+    collection_timezone: Option<&str>,
+    now: DateTime<Utc>,
+    engine: &QueryPrograms,
 ) -> Result<MdbaseQueryResult, MdbaseQueryError> {
     let timezone = plan
         .timezone
@@ -233,13 +354,12 @@ pub fn execute_mdbase_query(
             })
         })
         .transpose()?;
-    let engine = MdbaseCelEngine::default();
     let link_index = Arc::new(MdbaseCelLinkIndex::new(records, id_field));
     let mut diagnostics = Vec::new();
     let mut candidates = Vec::new();
     for record in &records.records {
         if let Some(candidate) = evaluate_query_candidate(
-            &engine,
+            engine,
             plan,
             record,
             types,
@@ -253,7 +373,7 @@ pub fn execute_mdbase_query(
     }
     candidates.sort_by(|left, right| compare_candidates(left, right, &plan.order_by));
     let total_count = candidates.len();
-    let groups = build_groups(&engine, &candidates, plan, &clock, &mut diagnostics)?;
+    let groups = build_groups(engine, &candidates, plan, &clock, &mut diagnostics)?;
     let start = plan.offset.min(total_count);
     let end = plan.limit.map_or(total_count, |limit| {
         start.saturating_add(limit).min(total_count)
@@ -284,7 +404,7 @@ struct QueryCandidate<'a> {
 
 #[allow(clippy::too_many_arguments)]
 fn evaluate_query_candidate<'a>(
-    engine: &MdbaseCelEngine,
+    engine: &QueryPrograms,
     plan: &StructuredQueryPlan,
     record: &'a MdbaseRecordDocument,
     types: &MdbaseTypeRegistry,
@@ -320,12 +440,7 @@ fn evaluate_query_candidate<'a>(
         .map_err(cel_query_error)?;
         let context = context.with_link_index(Arc::clone(link_index));
         let result = engine
-            .evaluate_context(
-                &engine
-                    .compile(&named.expression.source)
-                    .map_err(cel_query_error)?,
-                &context,
-            )
+            .evaluate_context(&named.expression.source, &context)
             .map_err(cel_query_error)?;
         projection.insert(named.name.clone(), result.value);
         diagnostics.extend(result.diagnostics);
@@ -342,10 +457,7 @@ fn evaluate_query_candidate<'a>(
         .map_err(cel_query_error)?;
         let context = context.with_link_index(Arc::clone(link_index));
         let result = engine
-            .evaluate_context(
-                &engine.compile(&filter.source).map_err(cel_query_error)?,
-                &context,
-            )
+            .evaluate_context(&filter.source, &context)
             .map_err(cel_query_error)?;
         diagnostics.extend(result.diagnostics);
         if !result.value.is_boolean() && !result.value.is_null() {
@@ -391,7 +503,7 @@ fn known_fields(record: &MdbaseRecordDocument, types: &MdbaseTypeRegistry) -> BT
 
 #[allow(clippy::too_many_arguments)]
 fn evaluate_selection(
-    engine: &MdbaseCelEngine,
+    engine: &QueryPrograms,
     plan: &StructuredQueryPlan,
     record: &MdbaseRecordDocument,
     known_fields: &BTreeSet<String>,
@@ -427,12 +539,7 @@ fn evaluate_selection(
                 .map_err(cel_query_error)?;
                 let context = context.with_link_index(Arc::clone(link_index));
                 let result = engine
-                    .evaluate_context(
-                        &engine
-                            .compile(&expression.source)
-                            .map_err(cel_query_error)?,
-                        &context,
-                    )
+                    .evaluate_context(&expression.source, &context)
                     .map_err(cel_query_error)?;
                 values.insert(name.clone(), result.value);
                 diagnostics.extend(result.diagnostics);
@@ -518,7 +625,7 @@ fn compare_json(
 }
 
 fn build_groups(
-    engine: &MdbaseCelEngine,
+    engine: &QueryPrograms,
     candidates: &[QueryCandidate<'_>],
     plan: &StructuredQueryPlan,
     clock: &MdbaseCelClock,
@@ -590,7 +697,7 @@ fn compare_group_values(
 }
 
 fn evaluate_summaries(
-    engine: &MdbaseCelEngine,
+    engine: &QueryPrograms,
     members: &[&QueryCandidate<'_>],
     plan: &StructuredQueryPlan,
     clock: &MdbaseCelClock,
@@ -622,7 +729,7 @@ fn evaluate_summaries(
             )
             .map_err(cel_query_error)?;
             let result = engine
-                .evaluate_context(&engine.compile(source).map_err(cel_query_error)?, &context)
+                .evaluate_context(source, &context)
                 .map_err(cel_query_error)?;
             diagnostics.extend(result.diagnostics);
             result.value
@@ -1050,6 +1157,222 @@ mod tests {
             let error = compile_mdbase_query(&query).expect_err("query should be invalid");
             assert_eq!(error.diagnostics[0].code, "invalid_query");
         }
+    }
+
+    #[test]
+    #[ignore = "release component benchmark; run serialized with --nocapture"]
+    fn prepared_query_component_benchmark() {
+        let plan = compile_mdbase_query(&serde_json::json!({
+            "where": "status == 'open'", "select": ["title"],
+            "order_by": [{"field": "title"}], "limit": 50
+        }))
+        .unwrap();
+        let records = MdbaseRecordSet {
+            records: (0..100)
+                .map(|i| record(&format!("{i}.md"), &format!("Task {i:03}"), "open"))
+                .collect(),
+        };
+        let types = MdbaseTypeRegistry::default();
+        let now = DateTime::parse_from_rfc3339("2026-06-14T08:15:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for uncached in [true, false] {
+            let mut prepared = MdbasePreparedQuery::new(&plan);
+            prepared.programs.uncached = uncached;
+            let mut samples = Vec::new();
+            for iteration in 0..1020 {
+                let start = std::time::Instant::now();
+                let result = prepared
+                    .execute(std::hint::black_box(&records), &types, "id", None, now)
+                    .unwrap();
+                assert_eq!(result.meta.total_count, 100);
+                assert_eq!(result.results.len(), 50);
+                assert!(result.diagnostics.is_empty());
+                std::hint::black_box(&result);
+                if iteration >= 20 {
+                    samples.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "{}",
+                serde_json::json!({"mode": if uncached {"compile_per_candidate"} else {"prepared"},
+                "records": 100, "samples": samples.len(), "warmup": 20,
+                "unit": "microseconds", "p50": samples[499], "p95": samples[949], "p99": samples[989]})
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_execution_compiles_distinct_sources_once_and_matches_uncached() {
+        let plan = compile_mdbase_query(&serde_json::json!({
+            "projections": {"open": {"expr": "status == 'open'"}},
+            "where": "status == 'open'",
+            "select": [{"name": "open", "expr": "status == 'open'"}, "title"],
+            "group_by": [{"field": "title"}],
+            "summary_functions": {"counted": {"expr": "values.size()"}},
+            "summaries": [{"field": "title", "function": "counted", "name": "count"}],
+            "limit": 2
+        }))
+        .expect("plan");
+        let prepared = MdbasePreparedQuery::new(&plan);
+        let mut uncached = MdbasePreparedQuery::new(&plan);
+        uncached.programs.uncached = true;
+        let types = MdbaseTypeRegistry::default();
+        let now = DateTime::parse_from_rfc3339("2026-06-14T08:15:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for count in [0, 1, 20, 3, 0] {
+            let records = MdbaseRecordSet {
+                records: (0..count)
+                    .map(|i| record(&format!("{i}.md"), &format!("Title {i}"), "open"))
+                    .collect(),
+            };
+            let actual = prepared
+                .execute(&records, &types, "id", None, now)
+                .expect("execute");
+            assert_eq!(
+                actual,
+                uncached.execute(&records, &types, "id", None, now).unwrap()
+            );
+            assert_eq!(actual.meta.total_count, count);
+            assert_eq!(actual.results.len(), count.min(2));
+        }
+        assert_eq!(
+            prepared
+                .programs
+                .compilations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        assert_eq!(prepared.programs.slots.len(), 2);
+    }
+
+    #[test]
+    fn prepared_execution_refreshes_clock_records_and_context_diagnostics() {
+        let plan = compile_mdbase_query(&serde_json::json!({
+            "select": ["title", {"name": "day", "expr": "today()"},
+                {"name": "failure", "expr": "1 / 0"}]
+        }))
+        .unwrap();
+        let prepared = MdbasePreparedQuery::new(&plan);
+        let mut uncached = MdbasePreparedQuery::new(&plan);
+        uncached.programs.uncached = true;
+        let types = MdbaseTypeRegistry::default();
+        for (timestamp, title, timezone) in [
+            ("2026-06-14T23:15:00Z", "Before", "UTC"),
+            ("2026-06-14T23:15:00Z", "Changed", "Europe/Berlin"),
+            ("2026-06-16T08:15:00Z", "New", "UTC"),
+        ] {
+            let now = DateTime::parse_from_rfc3339(timestamp)
+                .unwrap()
+                .with_timezone(&Utc);
+            let records = MdbaseRecordSet {
+                records: vec![record("visible.md", title, "open")],
+            };
+            let actual = prepared
+                .execute(&records, &types, "id", Some(timezone), now)
+                .unwrap();
+            assert_eq!(
+                actual,
+                uncached
+                    .execute(&records, &types, "id", Some(timezone), now)
+                    .unwrap()
+            );
+            assert_eq!(actual.results[0].values.as_ref().unwrap()["title"], title);
+            assert_eq!(actual.diagnostics.len(), 1);
+        }
+        assert_eq!(
+            prepared
+                .programs
+                .compilations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn prepared_execution_never_retains_invocation_records() {
+        let plan = compile_mdbase_query(&serde_json::json!({
+            "context": {"this": {"path": "context.md"}},
+            "select": [{"name": "context_title", "expr": "this.title"}]
+        }))
+        .unwrap();
+        let prepared = MdbasePreparedQuery::new(&plan);
+        let types = MdbaseTypeRegistry::default();
+        let now = Utc::now();
+        let mut records = MdbaseRecordSet {
+            records: vec![record("context.md", "Visible", "open")],
+        };
+        let first = prepared.execute(&records, &types, "id", None, now).unwrap();
+        assert_eq!(
+            first.results[0].values.as_ref().unwrap()["context_title"],
+            "Visible"
+        );
+        records.records.clear();
+        let error = prepared
+            .execute(&records, &types, "id", None, now)
+            .unwrap_err();
+        assert_eq!(error.diagnostics[0].code, "context_not_found");
+        records
+            .records
+            .push(record("context.md", "Replacement", "open"));
+        let next = prepared.execute(&records, &types, "id", None, now).unwrap();
+        assert_eq!(
+            next.results[0].values.as_ref().unwrap()["context_title"],
+            "Replacement"
+        );
+        assert_eq!(
+            prepared
+                .programs
+                .compilations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn prepared_execution_does_not_move_lazy_compile_errors_ahead_of_selection() {
+        let mut plan = compile_mdbase_query(&serde_json::json!({"types": ["task"]})).unwrap();
+        plan.filter = Some(cel_expression("broken(".to_string()));
+        let prepared = MdbasePreparedQuery::new(&plan);
+        let types = MdbaseTypeRegistry::default();
+        let now = Utc::now();
+        prepared
+            .execute(
+                &MdbaseRecordSet { records: vec![] },
+                &types,
+                "id",
+                None,
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            prepared
+                .programs
+                .compilations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        let records = MdbaseRecordSet {
+            records: vec![record("a.md", "A", "open")],
+        };
+        let first = prepared
+            .execute(&records, &types, "id", None, now)
+            .unwrap_err();
+        assert_eq!(
+            first,
+            prepared
+                .execute(&records, &types, "id", None, now)
+                .unwrap_err()
+        );
+        assert_eq!(
+            prepared
+                .programs
+                .compilations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]

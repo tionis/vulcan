@@ -1,0 +1,55 @@
+{
+  "measurement": "prepared_query_execution_program_reuse",
+  "recorded_at_utc": "2026-09-30T22:13:45Z",
+  "acceptance_gate_result": "not_evaluated",
+  "scope": "Source-derived in-memory query execution over 100 prebuilt records, including clock/context construction, link-index construction, evaluation, sorting, exact totals, and 50 result rows; excludes source loading, authorization, canonical request preflight, serialization, and process startup",
+  "build": {
+    "base_commit": "b627fcdf",
+    "patch": "Prepared execution programs and benchmark committed with this artifact",
+    "compiler": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+    "profile": "Cargo release defaults; no profile overrides or RUSTFLAGS",
+    "crate": "vulcan-core",
+    "features": ["js_runtime", "oauth", "vectors", "web"],
+    "cargo_lock_sha256": "034bc9a0659b5d52accdb6bb4a73410d422e4794d4618d9aa0cd038fe5b1aa68",
+    "benchmark_source_sha256": "02fa4a3caeec03338da9bf9304310552b707cafacdccaf153b4bde126cdead29",
+    "test_binary_sha256": "88d42267ddc4a10734919f1c03fa696b4fdde450b91f302a58a9dea3106065c7"
+  },
+  "machine": {
+    "cpu": "Intel Core i7-8650U @ 1.90GHz",
+    "physical_cores": 4,
+    "logical_cpus": 8,
+    "memory_bytes": 33534963712,
+    "os_kernel": "Linux 6.12.107+deb13-amd64",
+    "architecture": "x86_64",
+    "acceptance_reference_machine": false
+  },
+  "reproduce": "cargo +1.88.0 test --release -p vulcan-core mdbase::query::tests --lib -- --include-ignored --nocapture --test-threads=1",
+  "method": {
+    "fixture_generator": "vulcan-core/src/mdbase/query.rs::tests::prepared_query_component_benchmark",
+    "fixture": "100 deterministic in-memory task records, open status, ascending titles, no links; status equality filter, title selection/order, limit 50 and exact total 100",
+    "seed": "none; sequential inputs",
+    "cache_state": "prebuilt records and structured plan; no disk cache; no result memoization",
+    "concurrency": 1,
+    "order": ["compile_per_candidate", "prepared"],
+    "warmup_per_mode": 20,
+    "samples_per_mode": 1000,
+    "percentile": "nearest rank",
+    "compile_per_candidate": "Test-only uncached evaluator compiles the expression at every evaluation, matching the prior execution path",
+    "prepared": "One execution compilation during warmup, reused across candidates and requests; all candidates still evaluated",
+    "timing_end": "After checking count, row count, and diagnostics; before result destruction",
+    "other_cargo_workloads": "none during measurement",
+    "memory_growth": "not measured",
+    "throughput": "not measured"
+  },
+  "results": [
+    {"mode": "compile_per_candidate", "samples": 1000, "errors": 0, "p50_us": 11782.895, "p95_us": 17898.374, "p99_us": 21461.116},
+    {"mode": "prepared", "samples": 1000, "errors": 0, "p50_us": 5812.458, "p95_us": 9799.833, "p99_us": 11287.915}
+  ],
+  "limitations": [
+    "Not the public 10K/100K acceptance corpus or end-to-end host/CLI gate",
+    "Canonical request preflight still separately compiles expressions for validation",
+    "Not SQLite execution, incremental derivation, selective hydration, or a retained authorized collection session",
+    "CPU frequency, power state, and unrelated host activity uncontrolled; one sequential development-machine run",
+    "No memory-growth, concurrency, cold-start, or durable-write evidence"
+  ]
+}
