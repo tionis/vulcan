@@ -633,6 +633,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Prune internal directories before fallback polling traversal and hashing while preserving configuration events, content comparison, and reconciliation.
 
+- [x] Use shared version intervals for automatic checkpoints with migration, retention, rollback, indirect graph updates, and targeted property/vector hashing.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

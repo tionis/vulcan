@@ -1,5 +1,51 @@
 use rusqlite::Transaction;
 
+/// Old snapshots remain self-contained and readable. New automatic snapshots use
+/// half-open version intervals; they never depend on the lifetime of a header.
+pub fn apply_schema_v19(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "ALTER TABLE checkpoints ADD COLUMN generation INTEGER;
+         CREATE UNIQUE INDEX idx_checkpoint_generation ON checkpoints(generation);
+         CREATE TABLE checkpoint_document_versions (
+             path TEXT NOT NULL,
+             valid_from INTEGER NOT NULL,
+             valid_to INTEGER CHECK(valid_to > valid_from),
+             document_kind TEXT NOT NULL,
+             content_hash TEXT NOT NULL,
+             link_hash TEXT NOT NULL,
+             property_hash TEXT NOT NULL,
+             embedding_hash TEXT NOT NULL,
+             orphan INTEGER NOT NULL,
+             stale INTEGER NOT NULL,
+             PRIMARY KEY(path, valid_from)
+         );
+         CREATE UNIQUE INDEX idx_checkpoint_version_current
+             ON checkpoint_document_versions(path) WHERE valid_to IS NULL;
+         CREATE INDEX idx_checkpoint_version_end
+             ON checkpoint_document_versions(valid_to) WHERE valid_to IS NOT NULL;
+         CREATE TABLE checkpoint_dirty_documents (document_id TEXT PRIMARY KEY);
+         CREATE TRIGGER checkpoint_property_insert AFTER INSERT ON properties BEGIN
+             INSERT OR IGNORE INTO checkpoint_dirty_documents VALUES (new.document_id);
+         END;
+         CREATE TRIGGER checkpoint_property_delete AFTER DELETE ON properties BEGIN
+             INSERT OR IGNORE INTO checkpoint_dirty_documents VALUES (old.document_id);
+         END;
+         CREATE TRIGGER checkpoint_property_update AFTER UPDATE ON properties
+         WHEN old.canonical_json IS NOT new.canonical_json OR old.document_id IS NOT new.document_id BEGIN
+             INSERT OR IGNORE INTO checkpoint_dirty_documents VALUES (old.document_id);
+             INSERT OR IGNORE INTO checkpoint_dirty_documents VALUES (new.document_id);
+         END;
+         CREATE TABLE checkpoint_vector_inputs (
+             chunk_id TEXT PRIMARY KEY,
+             document_id TEXT NOT NULL,
+             content_hash BLOB NOT NULL,
+             sequence_index INTEGER NOT NULL,
+             model TEXT NOT NULL
+         );
+         CREATE INDEX idx_checkpoint_vector_document ON checkpoint_vector_inputs(document_id);",
+    )
+}
+
 pub const TABLES_TO_CLEAR: &[&str] = &[
     "mdbase_record_cache",
     "link_suggestions",
@@ -812,6 +858,26 @@ pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite:
     for table_name in TABLES_TO_CLEAR {
         let statement = format!("DELETE FROM {table_name}");
         transaction.execute(&statement, [])?;
+    }
+
+    // Keep historical versions, just like legacy checkpoint_documents. Property
+    // deletes enqueue dirty IDs, so clear live tracking only after projections.
+    // Older migration registries can rebuild before v19 has introduced these.
+    for table in ["checkpoint_dirty_documents", "checkpoint_vector_inputs"] {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if exists {
+            transaction.execute(&format!("DELETE FROM {table}"), [])?;
+            // If checkpointing after the rebuild fails, the next changed scan
+            // must not reuse hashes whose invalidation inputs were just cleared.
+            transaction.execute(
+                "INSERT OR IGNORE INTO meta(key, value) VALUES ('checkpoint_reset', '1')",
+                [],
+            )?;
+        }
     }
 
     Ok(())

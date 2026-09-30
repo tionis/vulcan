@@ -110,6 +110,11 @@ impl MigrationRegistry {
                 "add versioned mdbase record projections",
                 schema::apply_schema_v18,
             ),
+            Migration::new(
+                19,
+                "share automatic checkpoint document versions",
+                schema::apply_schema_v19,
+            ),
         ])
     }
 
@@ -267,6 +272,62 @@ mod tests {
         assert_eq!(
             MigrationRegistry::schema_v1().target_version(),
             SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn checkpoint_versions_migrate_without_rewriting_legacy_snapshots() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let mut old_registry = MigrationRegistry::schema_v1();
+        old_registry.migrations.pop();
+        assert_eq!(old_registry.target_version(), 18);
+        old_registry.migrate(&mut connection).unwrap();
+        connection.execute_batch(
+            "INSERT INTO checkpoints VALUES ('scan', NULL, 'scan', 1, 1, 1, 0, 0);
+             INSERT INTO checkpoints VALUES ('named', 'baseline', 'manual', 2, 1, 1, 0, 0);
+             INSERT INTO checkpoint_documents VALUES ('scan', 'old.md', 'note', 'hash', '', '', '', 1, 0);
+             INSERT INTO checkpoint_documents VALUES ('named', 'old.md', 'note', 'hash', '', '', '', 1, 0);",
+        ).unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        assert_eq!(current_user_version(&connection).unwrap(), 19);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM checkpoint_documents", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM checkpoints WHERE generation IS NULL",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
+        crate::history::record_scan_checkpoint(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM checkpoints", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT path FROM checkpoint_documents WHERE checkpoint_id = 'named'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "old.md"
         );
     }
 
