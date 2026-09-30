@@ -16,6 +16,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+mod draft;
+pub use draft::*;
+
 pub const MDBASE_RECORD_MODEL_VERSION: u32 = 1;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
@@ -853,7 +856,9 @@ fn record_body(source: &str) -> &str {
             return &without_bom[offset..];
         }
     }
-    ""
+    // An opening thematic break without a closing metadata delimiter is body,
+    // not an empty record. In particular, write preparation must not drop it.
+    source
 }
 
 fn file_metadata(path: &str, metadata: &fs::Metadata) -> MdbaseRecordFileMetadata {

@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 #[cfg(test)]
 mod action_tests;
+mod assignments;
+pub use assignments::apply_mdbase_lifecycle_assignments;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdbaseLifecycleEvent {
