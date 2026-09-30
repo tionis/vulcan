@@ -16989,6 +16989,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
     .expect("configuration skill should be readable");
+    assert_eq!(
+        configuration_skill,
+        include_str!("../../docs/assistant/skills/configuration-and-permissions.md")
+    );
     assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
     assert!(configuration_skill.contains("--no-sync"));
     assert!(configuration_skill.contains("vulcan vault recover-git"));
@@ -35266,6 +35270,39 @@ fn mdbase_query_executes_canonical_yaml_with_direct_json_output() {
     assert_eq!(report["results"][0]["file"]["path"], "record.md");
     assert_eq!(report["results"][0]["values"]["title"], "Test");
     assert!(report["results"][0].get("body").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn mdbase_status_reports_symlinked_schema_and_accepts_direct_reference() {
+    use std::os::unix::fs::symlink;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("_types")).unwrap();
+    fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(root.join("schema.yaml"), "type: object\n").unwrap();
+    symlink("schema.yaml", root.join("alias.yaml")).unwrap();
+    for (reference, valid) in [("alias.yaml", false), ("schema.yaml", true)] {
+        fs::write(root.join("_types/task.md"), format!(
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../{reference}\n---\n",
+        )).unwrap();
+        let result = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "mdbase",
+                "status",
+                "--output",
+                "json",
+            ])
+            .assert()
+            .success();
+        let report = parse_stdout_json(&result);
+        assert_eq!(report["valid"], valid);
+        assert_eq!(report["result"]["types"], usize::from(valid));
+        assert!(!root.join(".vulcan").exists());
+    }
 }
 
 #[test]

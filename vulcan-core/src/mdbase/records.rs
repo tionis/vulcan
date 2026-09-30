@@ -22,7 +22,9 @@ pub use draft::*;
 #[cfg(test)]
 mod snapshot_tests;
 
-pub const MDBASE_RECORD_MODEL_VERSION: u32 = 1;
+// Version 2 rejects symlinked/non-regular schema dependencies and enforces the
+// transitive reference budget before entering another branch.
+pub const MDBASE_RECORD_MODEL_VERSION: u32 = 2;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
 ///

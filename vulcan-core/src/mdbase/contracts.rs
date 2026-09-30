@@ -458,25 +458,16 @@ pub(super) fn resolve_schema_wrapper(
     let root = fs::canonicalize(collection_root).map_err(|error| {
         MdbaseSchemaCompileError(format!("failed to resolve collection root: {error}"))
     })?;
-    let owner = fs::canonicalize(owner_file).map_err(|error| {
-        MdbaseSchemaCompileError(format!("failed to resolve schema owner file: {error}"))
+    let owner = owner_file.strip_prefix(collection_root).map_err(|_| {
+        MdbaseSchemaCompileError("schema owner file escapes collection root".to_string())
     })?;
-    let path = fs::canonicalize(
-        owner
-            .parent()
-            .expect("contract file should have a parent")
-            .join(file_reference),
-    )
-    .map_err(|error| {
-        MdbaseSchemaCompileError(format!("failed to resolve `{reference}`: {error}"))
-    })?;
-    if !path.starts_with(&root) {
-        return Err(MdbaseSchemaCompileError(format!(
-            "schema ref escapes collection root: {}",
-            path.display()
-        )));
-    }
-    let document = read_local_schema(&path)?;
+    let owner = super::schema_relative_path(Path::new(""), owner)?;
+    let path = super::schema_reference_path(
+        &root,
+        owner.parent().expect("contract file should have a parent"),
+        Path::new(file_reference),
+    )?;
+    let (document, _) = read_local_schema(&root, &path)?;
     let resolved = if fragment.is_empty() {
         document
     } else if let Some(pointer) = fragment.strip_prefix('/') {

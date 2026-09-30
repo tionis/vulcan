@@ -16,6 +16,7 @@ use serde_yaml::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 mod contracts;
@@ -42,6 +43,8 @@ mod write_transaction;
 pub use write_transaction::*;
 mod tasknotes_migration;
 pub use tasknotes_migration::*;
+#[cfg(test)]
+mod schema_snapshot_tests;
 
 pub const MDBASE_CONFIG_FILE_NAME: &str = "mdbase.yaml";
 pub const MDBASE_LOCK_FILE_NAME: &str = "mdbase.lock.yaml";
@@ -162,19 +165,66 @@ pub fn validate_mdbase_schema_value_with_local_refs(
     base_file: &Path,
     collection_root: &Path,
 ) -> Result<Vec<MdbaseSchemaDiagnostic>, MdbaseSchemaCompileError> {
+    Ok(
+        compile_mdbase_schema_with_local_refs(schema, base_file, collection_root, &|_| Ok(()))?
+            .validate(value),
+    )
+}
+
+/// An immutable validator and the exact local reference bytes it compiled.
+/// Validation performs no filesystem or network access. Callers may share this
+/// object across records, but must reauthorize and check dependency revisions
+/// before reusing it for a new operation.
+pub struct MdbaseCompiledSchema {
+    validator: jsonschema::Validator,
+    dependencies: BTreeMap<PathBuf, Vec<u8>>,
+}
+
+impl MdbaseCompiledSchema {
+    #[must_use]
+    pub fn validate(&self, value: &serde_json::Value) -> Vec<MdbaseSchemaDiagnostic> {
+        schema_diagnostics(&self.validator, value)
+    }
+
+    /// Collection-relative reference paths, including transitive references of
+    /// any extension. The caller owns the revision of the supplied base schema.
+    #[must_use]
+    pub fn dependencies(&self) -> &BTreeMap<PathBuf, Vec<u8>> {
+        &self.dependencies
+    }
+}
+
+/// Compile once from authorized, securely opened local references. The callback
+/// receives collection-relative paths before inspecting the base file or each
+/// referenced file. Denials propagate without probing existence or contents.
+pub fn compile_mdbase_schema_with_local_refs(
+    schema: &serde_json::Value,
+    base_file: &Path,
+    collection_root: &Path,
+    authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+) -> Result<MdbaseCompiledSchema, MdbaseSchemaCompileError> {
+    let absolute_root = std::path::absolute(collection_root)
+        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+    let absolute_base = std::path::absolute(base_file)
+        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+    let relative_base = absolute_base.strip_prefix(&absolute_root).map_err(|_| {
+        MdbaseSchemaCompileError("schema base file escapes collection root".to_string())
+    })?;
+    let relative_base = schema_relative_path(Path::new(""), relative_base)?;
+    authorize(&relative_base)?;
     let collection_root = fs::canonicalize(collection_root).map_err(|error| {
         MdbaseSchemaCompileError(format!(
             "failed to resolve mdbase collection root {}: {error}",
             collection_root.display()
         ))
     })?;
-    let base_file = fs::canonicalize(base_file).map_err(|error| {
+    crate::paths::secure_open_regular_read(&collection_root, &relative_base).map_err(|error| {
         MdbaseSchemaCompileError(format!(
-            "failed to resolve schema base file {}: {error}",
-            base_file.display()
+            "failed to open schema base file {}: {error}",
+            relative_base.display()
         ))
     })?;
-    ensure_schema_path_is_contained(&base_file, &collection_root)?;
+    let base_file = collection_root.join(relative_base);
 
     let base_uri = schema_file_uri(&base_file)?;
     let mut schemas = HashMap::new();
@@ -193,8 +243,11 @@ pub fn validate_mdbase_schema_value_with_local_refs(
         schemas: &mut schemas,
         loaded_paths: BTreeSet::new(),
         visiting: vec![base_file.clone()],
+        authorize,
+        dependencies: BTreeMap::new(),
     };
     loader.load_references(schema, &base_file, 0)?;
+    let dependencies = loader.dependencies;
 
     let validator = jsonschema::draft202012::options()
         .should_validate_formats(true)
@@ -202,7 +255,10 @@ pub fn validate_mdbase_schema_value_with_local_refs(
         .with_retriever(MdbaseSchemaRetriever { schemas })
         .build(schema)
         .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
-    Ok(schema_diagnostics(&validator, value))
+    Ok(MdbaseCompiledSchema {
+        validator,
+        dependencies,
+    })
 }
 
 fn schema_diagnostics(
@@ -256,6 +312,8 @@ struct LocalSchemaLoader<'a> {
     schemas: &'a mut HashMap<String, serde_json::Value>,
     loaded_paths: BTreeSet<PathBuf>,
     visiting: Vec<PathBuf>,
+    authorize: &'a dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+    dependencies: BTreeMap<PathBuf, Vec<u8>>,
 }
 
 impl LocalSchemaLoader<'_> {
@@ -285,12 +343,17 @@ impl LocalSchemaLoader<'_> {
             if self.loaded_paths.contains(&resolved) {
                 continue;
             }
-            if self.loaded_paths.len() >= MDBASE_SCHEMA_MAX_FILES {
+            if self.dependencies.len() >= MDBASE_SCHEMA_MAX_FILES {
                 return Err(MdbaseSchemaCompileError(format!(
                     "schema reference count exceeds {MDBASE_SCHEMA_MAX_FILES}"
                 )));
             }
-            let referenced_schema = read_local_schema(&resolved)?;
+            let relative = resolved
+                .strip_prefix(self.collection_root)
+                .expect("resolved schema is collection confined");
+            (self.authorize)(relative)?;
+            let (referenced_schema, contents) = read_local_schema(self.collection_root, relative)?;
+            self.dependencies.insert(relative.to_path_buf(), contents);
             let uri = schema_file_uri(&resolved)?;
             self.schemas.insert(uri, referenced_schema.clone());
             self.visiting.push(resolved.clone());
@@ -326,14 +389,14 @@ impl LocalSchemaLoader<'_> {
                 source_file.display()
             ))
         })?;
-        let resolved = fs::canonicalize(parent.join(reference)).map_err(|error| {
-            MdbaseSchemaCompileError(format!(
-                "failed to resolve schema reference {reference} from {}: {error}",
-                source_file.display()
-            ))
-        })?;
-        ensure_schema_path_is_contained(&resolved, self.collection_root)?;
-        Ok(Some(resolved))
+        let parent = parent
+            .strip_prefix(self.collection_root)
+            .expect("schema source is collection confined");
+        Ok(Some(self.collection_root.join(schema_reference_path(
+            self.collection_root,
+            parent,
+            Path::new(reference),
+        )?)))
     }
 
     fn cycle_error(&self, cycle_start: usize, resolved: &Path) -> MdbaseSchemaCompileError {
@@ -349,8 +412,17 @@ impl LocalSchemaLoader<'_> {
     }
 }
 
-fn read_local_schema(path: &Path) -> Result<serde_json::Value, MdbaseSchemaCompileError> {
-    let metadata = fs::metadata(path).map_err(|error| {
+fn read_local_schema(
+    root: &Path,
+    path: &Path,
+) -> Result<(serde_json::Value, Vec<u8>), MdbaseSchemaCompileError> {
+    let file = crate::paths::secure_open_regular_read(root, path).map_err(|error| {
+        MdbaseSchemaCompileError(format!(
+            "failed to open schema reference {}: {error}",
+            path.display()
+        ))
+    })?;
+    let metadata = file.metadata().map_err(|error| {
         MdbaseSchemaCompileError(format!(
             "failed to inspect schema reference {}: {error}",
             path.display()
@@ -368,24 +440,34 @@ fn read_local_schema(path: &Path) -> Result<serde_json::Value, MdbaseSchemaCompi
             path.display()
         )));
     }
-    let contents = fs::read(path).map_err(|error| {
-        MdbaseSchemaCompileError(format!(
-            "failed to read schema reference {}: {error}",
+    let mut contents = Vec::new();
+    file.take(MDBASE_SCHEMA_MAX_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(|error| {
+            MdbaseSchemaCompileError(format!(
+                "failed to read schema reference {}: {error}",
+                path.display()
+            ))
+        })?;
+    if contents.len() as u64 > MDBASE_SCHEMA_MAX_BYTES {
+        return Err(MdbaseSchemaCompileError(format!(
+            "schema reference exceeds {MDBASE_SCHEMA_MAX_BYTES} bytes: {}",
             path.display()
-        ))
-    })?;
+        )));
+    }
     let yaml: serde_yaml::Value = serde_yaml::from_slice(&contents).map_err(|error| {
         MdbaseSchemaCompileError(format!(
             "failed to parse schema reference {}: {error}",
             path.display()
         ))
     })?;
-    serde_json::to_value(yaml).map_err(|error| {
+    let value = serde_json::to_value(yaml).map_err(|error| {
         MdbaseSchemaCompileError(format!(
             "schema reference {} is not JSON-compatible: {error}",
             path.display()
         ))
-    })
+    })?;
+    Ok((value, contents))
 }
 
 fn collect_external_schema_references<'a>(
@@ -410,17 +492,39 @@ fn collect_external_schema_references<'a>(
     }
 }
 
-fn ensure_schema_path_is_contained(
-    path: &Path,
-    collection_root: &Path,
-) -> Result<(), MdbaseSchemaCompileError> {
-    if path.starts_with(collection_root) {
-        Ok(())
+fn schema_relative_path(
+    parent: &Path,
+    reference: &Path,
+) -> Result<PathBuf, MdbaseSchemaCompileError> {
+    use std::path::Component;
+    let mut result = parent.to_path_buf();
+    for component in reference.components() {
+        match component {
+            Component::Normal(part) => result.push(part),
+            Component::CurDir => {}
+            Component::ParentDir if result.pop() => {}
+            _ => {
+                return Err(MdbaseSchemaCompileError(
+                    "schema reference escapes collection root".to_string(),
+                ))
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn schema_reference_path(
+    root: &Path,
+    parent: &Path,
+    reference: &Path,
+) -> Result<PathBuf, MdbaseSchemaCompileError> {
+    if reference.is_absolute() {
+        let relative = reference.strip_prefix(root).map_err(|_| {
+            MdbaseSchemaCompileError("schema reference escapes collection root".to_string())
+        })?;
+        schema_relative_path(Path::new(""), relative)
     } else {
-        Err(MdbaseSchemaCompileError(format!(
-            "schema reference escapes collection root: {}",
-            path.display()
-        )))
+        schema_relative_path(parent, reference)
     }
 }
 

@@ -637,6 +637,50 @@ mod tests {
     }
 
     #[test]
+    fn old_record_models_are_rejected_and_rederived() {
+        let dir = tempdir().unwrap();
+        write(&dir.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n");
+        write(&dir.path().join("a.md"), "Body\n");
+        let paths = VaultPaths::new(dir.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(dir.path());
+        let first =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let record = load_mdbase_record(&collection, &types, "a.md", false).unwrap();
+        database
+            .connection()
+            .execute(
+                "UPDATE mdbase_record_cache SET record_model_version = ?1",
+                [MDBASE_RECORD_MODEL_VERSION - 1],
+            )
+            .unwrap();
+        assert!(get_cached_mdbase_record(
+            database.connection(),
+            &collection,
+            "a.md",
+            &record.revision,
+            &first.dependency_digest
+        )
+        .unwrap()
+        .is_none());
+        let refreshed =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert!(refreshed.dependency_changed);
+        assert_eq!((refreshed.updated, refreshed.unchanged), (1, 0));
+        let cached = get_cached_mdbase_record(
+            database.connection(),
+            &collection,
+            "a.md",
+            &record.revision,
+            &refreshed.dependency_digest,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cached.record_model_version, MDBASE_RECORD_MODEL_VERSION);
+    }
+
+    #[test]
     fn dependency_digest_tracks_config_types_contracts_and_external_schemas() {
         let directory = tempdir().expect("collection directory");
         write(

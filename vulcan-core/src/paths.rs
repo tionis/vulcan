@@ -489,6 +489,23 @@ pub fn secure_open_read(root: &Path, relative_path: &Path) -> Result<fs::File, s
     secure_open(root, relative_path, SecureOpenMode::Read)
 }
 
+/// Open only a regular file without following symlinks. On Unix the initial
+/// open is nonblocking so an untrusted FIFO cannot wait for a writer before
+/// descriptor metadata rejects it. `O_NONBLOCK` has no effect on regular files.
+pub fn secure_open_regular_read(
+    root: &Path,
+    relative_path: &Path,
+) -> Result<fs::File, std::io::Error> {
+    let file = secure_open(root, relative_path, SecureOpenMode::ReadRegular)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "expected a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 /// Remove an existing regular file below `root` without following symlinked
 /// path components. Callers serialize cooperating writers and check the
 /// expected content before calling this function.
@@ -975,6 +992,7 @@ fn secure_write_with_mode(
 #[derive(Clone, Copy)]
 enum SecureOpenMode {
     Read,
+    ReadRegular,
     Write,
     CreateNew,
 }
@@ -1087,6 +1105,7 @@ fn secure_open(
     let file_name = c_string(components.last().expect("validated path has a file name"))?;
     let flags = match mode {
         SecureOpenMode::Read => libc::O_RDONLY,
+        SecureOpenMode::ReadRegular => libc::O_RDONLY | libc::O_NONBLOCK,
         SecureOpenMode::Write => libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
         SecureOpenMode::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
     } | libc::O_CLOEXEC
@@ -1146,7 +1165,7 @@ fn secure_open(
     }
     let mut options = OpenOptions::new();
     match mode {
-        SecureOpenMode::Read => {
+        SecureOpenMode::Read | SecureOpenMode::ReadRegular => {
             options.read(true);
         }
         SecureOpenMode::Write => {
@@ -1164,6 +1183,40 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn regular_read_preserves_bytes_and_rejects_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "body").unwrap();
+        fs::create_dir(dir.path().join("folder")).unwrap();
+        let mut file = secure_open_regular_read(dir.path(), Path::new("note.md")).unwrap();
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "body");
+        assert!(secure_open_regular_read(dir.path(), Path::new("folder")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_read_rejects_fifo_without_waiting_for_a_writer() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipe");
+        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the C string is NUL-terminated and names our temporary fixture.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let root = dir.path().to_path_buf();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = secure_open_regular_read(&root, Path::new("pipe"));
+            let _ = sender.send(result.map(|_| ()));
+        });
+        assert!(receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("regular read must not block on a FIFO")
+            .is_err());
+    }
     use tempfile::TempDir;
 
     fn path_segment_strategy() -> impl Strategy<Value = String> {
