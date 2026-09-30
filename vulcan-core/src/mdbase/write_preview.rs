@@ -508,7 +508,11 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, MdbaseCollection) {
         let directory = tempdir().expect("temp directory");
         write(directory.path(), "mdbase.yaml", "spec_version: 0.3.0\n");
-        write(directory.path(), "_types/task.md", "type v1\n");
+        write(
+            directory.path(),
+            "_types/task.md",
+            "---\nkind: mdbase.type\nschema: {ref: ../schemas/task.json}\n---\ntype v1\n",
+        );
         write(directory.path(), "_contracts/task.md", "contract v1\n");
         write(directory.path(), "schemas/task.json", "{}\n");
         write(directory.path(), "tasks/a.md", "---\ntype: task\n---\na\n");
@@ -621,6 +625,50 @@ mod tests {
         })
         .expect_err("empty revision must be invalid");
         assert_eq!(error.code, "preview_invalid");
+    }
+
+    #[test]
+    fn previews_track_transitive_non_json_and_missing_schema_references_not_unrelated_json() {
+        let (directory, collection) = fixture();
+        write(
+            directory.path(),
+            "schemas/task.json",
+            r#"{"$ref":"details.yaml"}"#,
+        );
+        write(
+            directory.path(),
+            "schemas/details.yaml",
+            "$ref: constraint.txt\n",
+        );
+        let now = "2026-09-08T12:00:00Z".parse().unwrap();
+        let preview = build_mdbase_write_preview(&collection, request(now)).unwrap();
+        write(
+            directory.path(),
+            "other/unrelated.json",
+            "not even valid JSON",
+        );
+        verify(&collection, &preview, now).unwrap();
+        write(directory.path(), "schemas/constraint.txt", "type: object\n");
+        assert_eq!(
+            verify(&collection, &preview, now).unwrap_err().code,
+            "stale_state"
+        );
+        let preview = build_mdbase_write_preview(&collection, request(now)).unwrap();
+        write(
+            directory.path(),
+            "schemas/constraint.txt",
+            "required: [title]\n",
+        );
+        assert_eq!(
+            verify(&collection, &preview, now).unwrap_err().code,
+            "stale_state"
+        );
+        let preview = build_mdbase_write_preview(&collection, request(now)).unwrap();
+        fs::remove_file(directory.path().join("schemas/constraint.txt")).unwrap();
+        assert_eq!(
+            verify(&collection, &preview, now).unwrap_err().code,
+            "stale_state"
+        );
     }
 
     #[test]

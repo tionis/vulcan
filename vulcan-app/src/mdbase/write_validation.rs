@@ -217,6 +217,44 @@ mod tests {
     }
 
     #[test]
+    fn apply_rejects_transitive_text_schema_drift_before_changing_records() {
+        let (dir, paths) = fixture("  unique: [{field: id, scope: type}]\n");
+        let type_path = dir.path().join("_types/task.md");
+        let definition = fs::read_to_string(&type_path).unwrap();
+        fs::write(
+            type_path,
+            definition.replace(
+                "value: {type: object, required: [id]}",
+                "ref: ../schema.yaml",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("schema.yaml"),
+            "type: object\nproperties:\n  id: {$ref: id.txt}\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("id.txt"), "type: string\n").unwrap();
+        let plan =
+            plan_mdbase_write(&paths, &request(&[("a.md", Some(source("one")))]), now()).unwrap();
+        fs::write(dir.path().join("id.txt"), "type: string\nminLength: 2\n").unwrap();
+        let error = apply_mdbase_write(
+            &paths,
+            &plan,
+            &MdbaseWriteExecutionOptions {
+                idempotency_key: "schema-drift".to_string(),
+                no_commit: true,
+                quiet: true,
+            },
+            now(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), Some("stale_state"));
+        assert!(!dir.path().join("a.md").exists());
+        assert!(list_mdbase_write_outbox(&paths).unwrap().is_empty());
+    }
+
+    #[test]
     fn controls_are_reloaded_inside_the_revision_capture_window() {
         let (dir, paths) = fixture("  unique: [{field: id, scope: collection}]\n");
         let mut loaded = super::super::load_collection(&paths).unwrap();

@@ -14,6 +14,9 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod control_dependencies;
+type ControlSources = Vec<(PathBuf, String)>;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MdbaseCachedRecord {
     pub collection_root: String,
@@ -125,23 +128,38 @@ pub fn mdbase_control_revisions(
     collect_dependency_tree(
         &collection.root,
         Path::new(&collection.config.settings.types_folder),
-        true,
         &mut type_paths,
     )?;
     let mut contract_paths = BTreeSet::new();
     collect_dependency_tree(
         &collection.root,
         Path::new(&collection.config.settings.contracts_folder),
-        true,
         &mut contract_paths,
     )?;
-    let mut schema_paths = BTreeSet::new();
-    collect_dependency_tree(&collection.root, Path::new(""), false, &mut schema_paths)?;
-
-    let config = digest_dependency_paths(&collection.root, "config", &config_paths)?;
-    let types = digest_dependency_paths(&collection.root, "types", &type_paths)?;
-    let contracts = digest_dependency_paths(&collection.root, "contracts", &contract_paths)?;
-    let schemas = digest_dependency_paths(&collection.root, "schemas", &schema_paths)?;
+    let (config, _) = digest_dependency_paths(&collection.root, "config", &config_paths)?;
+    let (types, type_sources) = digest_dependency_paths(&collection.root, "types", &type_paths)?;
+    let (contracts, contract_sources) =
+        digest_dependency_paths(&collection.root, "contracts", &contract_paths)?;
+    let sources = control_dependencies::schema_sources(
+        &collection.root,
+        type_sources.into_iter().chain(contract_sources),
+    )?;
+    let mut schema_digest = Sha256::new();
+    schema_digest.update(b"referenced-schemas-v1");
+    for (path, source) in sources {
+        let path = path.to_string_lossy().replace('\\', "/");
+        schema_digest.update((path.len() as u64).to_be_bytes());
+        schema_digest.update(path.as_bytes());
+        match source {
+            Some(bytes) => {
+                schema_digest.update([1]);
+                schema_digest.update((bytes.len() as u64).to_be_bytes());
+                schema_digest.update(bytes);
+            }
+            None => schema_digest.update([0]),
+        }
+    }
+    let schemas = format!("sha256:{:x}", schema_digest.finalize());
 
     let mut digest = Sha256::new();
     digest.update(MDBASE_RECORD_MODEL_VERSION.to_be_bytes());
@@ -166,8 +184,9 @@ fn digest_dependency_paths(
     root: &Path,
     domain: &str,
     paths: &BTreeSet<PathBuf>,
-) -> Result<String, MdbaseRecordCacheError> {
+) -> Result<(String, ControlSources), MdbaseRecordCacheError> {
     let mut digest = Sha256::new();
+    let mut sources = Vec::new();
     digest.update(domain.as_bytes());
     for path in paths {
         let contents =
@@ -175,23 +194,27 @@ fn digest_dependency_paths(
                 path: root.join(path),
                 source,
             })?;
-        let path = path.to_string_lossy().replace('\\', "/");
-        digest.update(u64::try_from(path.len()).unwrap_or(u64::MAX).to_be_bytes());
-        digest.update(path.as_bytes());
+        let normalized_path = path.to_string_lossy().replace('\\', "/");
+        digest.update(
+            u64::try_from(normalized_path.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        digest.update(normalized_path.as_bytes());
         digest.update(
             u64::try_from(contents.len())
                 .unwrap_or(u64::MAX)
                 .to_be_bytes(),
         );
         digest.update(contents.as_bytes());
+        sources.push((path.clone(), contents));
     }
-    Ok(format!("sha256:{:x}", digest.finalize()))
+    Ok((format!("sha256:{:x}", digest.finalize()), sources))
 }
 
 fn collect_dependency_tree(
     root: &Path,
     relative: &Path,
-    include_all_files: bool,
     paths: &mut BTreeSet<PathBuf>,
 ) -> Result<(), MdbaseRecordCacheError> {
     let directory = root.join(relative);
@@ -222,16 +245,13 @@ fn collect_dependency_tree(
                 source,
             })?;
         if file_type.is_symlink() {
-            if include_all_files {
-                return Err(MdbaseRecordCacheError::Read {
-                    path: entry_path,
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "symlinked control dependencies are not allowed",
-                    ),
-                });
-            }
-            continue;
+            return Err(MdbaseRecordCacheError::Read {
+                path: entry_path,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "symlinked control dependencies are not allowed",
+                ),
+            });
         }
         if file_type.is_dir() {
             let name = entry.file_name();
@@ -243,11 +263,8 @@ fn collect_dependency_tree(
             if !child.as_os_str().is_empty() && entry_path.join("mdbase.yaml").is_file() {
                 continue;
             }
-            collect_dependency_tree(root, &child, include_all_files, paths)?;
-        } else if file_type.is_file()
-            && (include_all_files
-                || child.extension().and_then(|extension| extension.to_str()) == Some("json"))
-        {
+            collect_dependency_tree(root, &child, paths)?;
+        } else if file_type.is_file() {
             paths.insert(child);
         }
     }
@@ -687,7 +704,9 @@ mod tests {
             &directory.path().join("mdbase.yaml"),
             "spec_version: 0.3.0\n",
         );
-        write(&directory.path().join("_types/type.md"), "type v1\n");
+        let type_source =
+            "---\nkind: mdbase.type\nschema: {ref: ../schemas/value.json}\n---\ntype v1\n";
+        write(&directory.path().join("_types/type.md"), type_source);
         write(
             &directory.path().join("_contracts/contract.md"),
             "contract v1\n",
@@ -709,7 +728,10 @@ mod tests {
         assert_eq!(initial.schemas, config.schemas);
         assert_ne!(initial.combined, config.combined);
 
-        write(&directory.path().join("_types/type.md"), "type v2\n");
+        write(
+            &directory.path().join("_types/type.md"),
+            &type_source.replace("type v1", "type v2"),
+        );
         let type_file = mdbase_control_revisions(&collection).expect("type revisions");
         assert_ne!(config.types, type_file.types);
         assert_eq!(config.contracts, type_file.contracts);
