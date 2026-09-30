@@ -22,9 +22,9 @@ pub use draft::*;
 #[cfg(test)]
 mod snapshot_tests;
 
-// Version 3 preserves referenced schemas' document base and fragment semantics
-// and validates against the registry's immutable compiled type schemas.
-pub const MDBASE_RECORD_MODEL_VERSION: u32 = 3;
+// Version 4 validates contract projections with immutable compiled snapshots
+// and applies the same wrapper-selection semantics to type and contract schemas.
+pub const MDBASE_RECORD_MODEL_VERSION: u32 = 4;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
 ///

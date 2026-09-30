@@ -35354,6 +35354,63 @@ fn mdbase_read_uses_nested_schema_bases_and_reloads_controls_between_calls() {
 }
 
 #[test]
+fn mdbase_contract_bindings_use_nested_schema_bases_and_reload_controls() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("_types")).unwrap();
+    fs::create_dir_all(root.join("_contracts/schemas")).unwrap();
+    fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(root.join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object, properties: {title: {type: string}}}\nimplements:\n  - contract: example.task\n    version: 1.0.0\n    fields: {title: title}\n    binding: {mode: personal}\n---\n").unwrap();
+    fs::write(root.join("_contracts/task.md"), "---\nkind: mdbase.contract\ncontract_type: record\nid: example.task\nversion: 1.0.0\nrecord_schema:\n  dialect: json-schema-2020-12\n  value: {type: object, properties: {title: {type: string}}}\nbinding_schema:\n  dialect: json-schema-2020-12\n  ref: schemas/binding.yaml\n---\n").unwrap();
+    fs::write(
+        root.join("_contracts/schemas/binding.yaml"),
+        "type: object\nproperties:\n  mode: {$ref: mode.txt}\n",
+    )
+    .unwrap();
+    for (allowed, expected_count) in [("work", 0), ("personal", 1)] {
+        fs::write(
+            root.join("_contracts/schemas/mode.txt"),
+            format!("enum: [{allowed}]\n"),
+        )
+        .unwrap();
+        let result = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "mdbase",
+                "contracts",
+                "--output",
+                "json",
+            ])
+            .assert()
+            .success();
+        let report = parse_stdout_json(&result);
+        assert_eq!(
+            report["result"]["contracts"][0]["implementations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            expected_count
+        );
+        assert!(report["result"]["contracts"][0]["contract"]
+            .get("compiled_schemas")
+            .is_none());
+        assert_eq!(
+            report["diagnostics"].as_array().unwrap().len(),
+            usize::from(expected_count == 0)
+        );
+        if expected_count == 0 {
+            assert_eq!(
+                report["diagnostics"][0]["code"],
+                "data_contract_binding_invalid"
+            );
+        }
+        assert!(!root.join(".vulcan").exists());
+    }
+}
+
+#[test]
 fn mdbase_conformance_command_emits_pinned_machine_readable_evidence() {
     let output = Command::cargo_bin("vulcan")
         .expect("binary")

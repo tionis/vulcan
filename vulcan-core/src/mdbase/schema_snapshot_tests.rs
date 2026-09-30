@@ -344,10 +344,13 @@ fn schema_snapshot_rejects_symlinked_files_and_parent_directories() {
             &|_| Ok(())
         )
         .is_err());
-        assert!(
-            contracts::resolve_schema_wrapper(&json!({"ref": reference}), &base, dir.path(),)
-                .is_err()
-        );
+        assert!(compile_mdbase_schema_wrapper(
+            &json!({"ref": reference}),
+            &base,
+            dir.path(),
+            &|_| Ok(())
+        )
+        .is_err());
     }
     assert!(compile_mdbase_schema_with_local_refs(
         &json!({}),

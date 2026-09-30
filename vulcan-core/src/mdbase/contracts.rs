@@ -1,6 +1,6 @@
 use super::{
-    bundled_mdbase_schema, discover_mdbase_files, read_local_schema,
-    validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseSchemaCompileError,
+    bundled_mdbase_schema, compile_mdbase_schema_wrapper, discover_mdbase_files,
+    validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseCompiledSchema,
     MdbaseTypeDefinition, MdbaseTypeRegistry, MDBASE_CANONICAL_SCHEMA_BASE,
 };
 use crate::config::VaultConfig;
@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,6 +39,16 @@ pub struct MdbaseContractDefinition {
     pub digest: String,
     pub frontmatter: serde_json::Value,
     validation_schemas: BTreeMap<String, serde_json::Value>,
+    #[serde(skip)]
+    compiled_schemas: BTreeMap<String, Arc<MdbaseCompiledSchema>>,
+}
+
+impl MdbaseContractDefinition {
+    /// Immutable validator and exact reference dependencies captured at load.
+    #[must_use]
+    pub fn compiled_schema(&self, name: &str) -> Option<&MdbaseCompiledSchema> {
+        self.compiled_schemas.get(name).map(Arc::as_ref)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -227,7 +237,7 @@ fn build_mdbase_contract_registry(
         implementations: BTreeMap::new(),
         diagnostics,
     };
-    validate_type_implementations(collection, types, &conflicted, &mut registry);
+    validate_type_implementations(types, &conflicted, &mut registry);
     for implementations in registry.implementations.values_mut() {
         implementations.sort_by(|left, right| {
             left.type_name
@@ -267,7 +277,7 @@ fn load_contract_file(
     }
     let identity = contract_identity_from_value(&frontmatter)
         .expect("validated contract should have an identity");
-    let (contract_type, schemas, validation_schemas) =
+    let (contract_type, schemas, validation_schemas, compiled_schemas) =
         match load_contract_schemas(collection, path, &absolute_path, &frontmatter, &identity) {
             Ok(schemas) => schemas,
             Err(diagnostic) => return Ok(Err(*diagnostic)),
@@ -291,6 +301,7 @@ fn load_contract_file(
         digest,
         frontmatter,
         validation_schemas,
+        compiled_schemas,
     }))
 }
 
@@ -337,6 +348,7 @@ type LoadedContractSchemas = (
     MdbaseContractType,
     BTreeMap<String, serde_json::Value>,
     BTreeMap<String, serde_json::Value>,
+    BTreeMap<String, Arc<MdbaseCompiledSchema>>,
 );
 
 fn load_contract_schemas(
@@ -354,43 +366,35 @@ fn load_contract_schemas(
     };
     let mut schemas = BTreeMap::new();
     let mut validation_schemas = BTreeMap::new();
+    let mut compiled_schemas = BTreeMap::new();
     for key in subject_schema_keys(contract_type) {
         let Some(wrapper) = frontmatter.get(key) else {
             continue;
         };
-        let (resolved, validation_schema) =
-            resolve_schema_wrapper(wrapper, absolute_path, &collection.root).map_err(|error| {
-                Box::new(contract_diagnostic(
-                    "invalid_data_contract",
-                    format!("failed to resolve `{key}`: {error}"),
-                    path,
-                    key,
-                    Some(identity),
-                    None,
-                    Vec::new(),
-                ))
-            })?;
-        validate_mdbase_schema_value_with_local_refs(
-            &validation_schema,
-            &serde_json::Value::Null,
-            absolute_path,
-            &collection.root,
-        )
-        .map_err(|error| {
-            Box::new(contract_diagnostic(
-                "invalid_data_contract",
-                format!("failed to compile `{key}`: {error}"),
-                path,
-                key,
-                Some(identity),
-                None,
-                Vec::new(),
-            ))
-        })?;
+        let (resolved, compiled) =
+            compile_mdbase_schema_wrapper(wrapper, absolute_path, &collection.root, &|_| Ok(()))
+                .map_err(|error| {
+                    Box::new(contract_diagnostic(
+                        "invalid_data_contract",
+                        format!("failed to resolve or compile `{key}`: {error}"),
+                        path,
+                        key,
+                        Some(identity),
+                        None,
+                        Vec::new(),
+                    ))
+                })?;
+        // Preserve the existing report representation; execution uses only the
+        // compiled snapshot, never this serialized wrapper.
+        let validation_schema = wrapper
+            .get("value")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"$ref":wrapper["ref"]}));
         schemas.insert((*key).to_string(), resolved);
         validation_schemas.insert((*key).to_string(), validation_schema);
+        compiled_schemas.insert((*key).to_string(), Arc::new(compiled));
     }
-    Ok((contract_type, schemas, validation_schemas))
+    Ok((contract_type, schemas, validation_schemas, compiled_schemas))
 }
 
 fn parse_contract_frontmatter(
@@ -431,58 +435,6 @@ fn parse_contract_frontmatter(
             Vec::new(),
         ))
     })
-}
-
-pub(super) fn resolve_schema_wrapper(
-    wrapper: &serde_json::Value,
-    owner_file: &Path,
-    collection_root: &Path,
-) -> Result<(serde_json::Value, serde_json::Value), MdbaseSchemaCompileError> {
-    if let Some(value) = wrapper.get("value") {
-        return Ok((value.clone(), value.clone()));
-    }
-    let reference = wrapper
-        .get("ref")
-        .and_then(serde_json::Value::as_str)
-        .expect("validated schema wrapper should contain ref");
-    let (file_reference, fragment) = reference.split_once('#').unwrap_or((reference, ""));
-    if file_reference.is_empty()
-        || file_reference.contains("://")
-        || file_reference.starts_with("urn:")
-        || file_reference.contains('?')
-    {
-        return Err(MdbaseSchemaCompileError(format!(
-            "schema ref must name a local file: {reference}"
-        )));
-    }
-    let root = fs::canonicalize(collection_root).map_err(|error| {
-        MdbaseSchemaCompileError(format!("failed to resolve collection root: {error}"))
-    })?;
-    let owner = owner_file.strip_prefix(collection_root).map_err(|_| {
-        MdbaseSchemaCompileError("schema owner file escapes collection root".to_string())
-    })?;
-    let owner = super::schema_relative_path(Path::new(""), owner)?;
-    let path = super::schema_reference_path(
-        &root,
-        owner.parent().expect("contract file should have a parent"),
-        Path::new(file_reference),
-    )?;
-    let (document, _) = read_local_schema(&root, &path)?;
-    let resolved = if fragment.is_empty() {
-        document
-    } else if let Some(pointer) = fragment.strip_prefix('/') {
-        document
-            .pointer(&format!("/{pointer}"))
-            .cloned()
-            .ok_or_else(|| {
-                MdbaseSchemaCompileError(format!("schema ref fragment does not exist: #{fragment}"))
-            })?
-    } else {
-        return Err(MdbaseSchemaCompileError(format!(
-            "schema ref fragment must be a JSON Pointer: #{fragment}"
-        )));
-    };
-    Ok((resolved, serde_json::json!({"$ref": reference})))
 }
 
 fn subject_schema_keys(contract_type: MdbaseContractType) -> &'static [&'static str] {
@@ -537,7 +489,6 @@ fn sha256_jcs(value: &serde_json::Value) -> String {
 }
 
 fn validate_type_implementations(
-    collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
     conflicted: &BTreeSet<MdbaseContractIdentity>,
     registry: &mut MdbaseContractRegistry,
@@ -593,7 +544,7 @@ fn validate_type_implementations(
                 ));
                 continue;
             };
-            match validate_implementation(collection, definition, contract, entry, &field) {
+            match validate_implementation(definition, contract, entry, &field) {
                 Ok(implementation) => registry
                     .implementations
                     .entry(identity)
@@ -606,7 +557,6 @@ fn validate_type_implementations(
 }
 
 fn validate_implementation(
-    collection: &MdbaseCollection,
     definition: &MdbaseTypeDefinition,
     contract: &MdbaseContractDefinition,
     entry: &serde_json::Value,
@@ -638,30 +588,10 @@ fn validate_implementation(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let type_schema = resolve_schema_wrapper(
-        definition
-            .frontmatter
-            .get("schema")
-            .expect("validated type should contain schema"),
-        &collection.root.join(&definition.path),
-        &collection.root,
-    )
-    .map(|(schema, _)| schema)
-    .map_err(|error| {
-        vec![contract_diagnostic(
-            "data_contract_field_invalid",
-            error.to_string(),
-            &definition.path,
-            field,
-            Some(identity),
-            Some(&definition.name),
-            Vec::new(),
-        )]
-    })?;
-    let mut diagnostics = validate_field_map(definition, contract, &type_schema, &fields, field);
+    let mut diagnostics =
+        validate_field_map(definition, contract, &definition.schema, &fields, field);
     let binding = entry.get("binding");
-    if let Some(diagnostic) =
-        validate_implementation_binding(collection, definition, contract, binding, field)
+    if let Some(diagnostic) = validate_implementation_binding(definition, contract, binding, field)
     {
         diagnostics.push(diagnostic);
     }
@@ -674,22 +604,17 @@ fn validate_implementation(
 }
 
 fn validate_implementation_binding(
-    collection: &MdbaseCollection,
     definition: &MdbaseTypeDefinition,
     contract: &MdbaseContractDefinition,
     binding: Option<&serde_json::Value>,
     field: &str,
 ) -> Option<MdbaseContractDiagnostic> {
     let identity = &contract.identity;
-    if let Some(binding_schema) = contract.validation_schemas.get("binding_schema") {
+    if let Some(binding_schema) = contract.compiled_schema("binding_schema") {
         let empty = serde_json::json!({});
-        return match validate_mdbase_schema_value_with_local_refs(
-            binding_schema,
-            binding.unwrap_or(&empty),
-            &collection.root.join(&contract.path),
-            &collection.root,
-        ) {
-            Ok(errors) if !errors.is_empty() => Some(contract_diagnostic(
+        let errors = binding_schema.validate(binding.unwrap_or(&empty));
+        return (!errors.is_empty()).then(|| {
+            contract_diagnostic(
                 "data_contract_binding_invalid",
                 errors
                     .iter()
@@ -701,18 +626,8 @@ fn validate_implementation_binding(
                 Some(identity),
                 Some(&definition.name),
                 Vec::new(),
-            )),
-            Err(error) => Some(contract_diagnostic(
-                "data_contract_binding_invalid",
-                error.to_string(),
-                &definition.path,
-                &format!("{field}.binding"),
-                Some(identity),
-                Some(&definition.name),
-                Vec::new(),
-            )),
-            Ok(_) => None,
-        };
+            )
+        });
     }
     binding
         .is_some_and(|binding| {
@@ -904,7 +819,7 @@ fn implementation_field_diagnostic(
 /// Project one implementing type's normalized view from effective frontmatter.
 #[must_use]
 pub fn project_mdbase_contract_view(
-    collection: &MdbaseCollection,
+    _collection: &MdbaseCollection,
     registry: &MdbaseContractRegistry,
     id: &str,
     version: &str,
@@ -965,34 +880,20 @@ pub fn project_mdbase_contract_view(
             ));
         }
     }
-    let schema = &contract.validation_schemas["record_schema"];
-    match validate_mdbase_schema_value_with_local_refs(
-        schema,
-        &view,
-        &collection.root.join(&contract.path),
-        &collection.root,
-    ) {
-        Ok(errors) => diagnostics.extend(errors.into_iter().map(|error| {
-            contract_diagnostic(
-                "data_contract_record_invalid",
-                error.message,
-                "",
-                &error.instance_path,
-                Some(&identity),
-                Some(&implementation.type_name),
-                Vec::new(),
-            )
-        })),
-        Err(error) => diagnostics.push(contract_diagnostic(
+    let schema = contract
+        .compiled_schema("record_schema")
+        .expect("valid record contract has a compiled record schema");
+    diagnostics.extend(schema.validate(&view).into_iter().map(|error| {
+        contract_diagnostic(
             "data_contract_record_invalid",
-            error.to_string(),
+            error.message,
             "",
-            "",
+            &error.instance_path,
             Some(&identity),
             Some(&implementation.type_name),
             Vec::new(),
-        )),
-    }
+        )
+    }));
     sort_contract_diagnostics(&mut diagnostics);
     MdbaseContractView {
         contract: identity,
@@ -1158,6 +1059,131 @@ implements:
       category: kind
     binding: {mode: personal}
 ";
+
+    #[test]
+    fn contract_snapshots_share_validators_and_freeze_transitive_reference_bytes() {
+        let (directory, collection, types) = setup_collection(
+            &[(
+                "_contracts/note.md",
+                r"kind: mdbase.contract
+contract_type: record
+id: example.note
+version: 1.0.0
+record_schema:
+  dialect: json-schema-2020-12
+  ref: schemas/record.yaml#/$defs/view
+binding_schema:
+  dialect: json-schema-2020-12
+  ref: schemas/binding.yaml
+",
+            )],
+            &[("_types/personal.md", PERSONAL_TYPE)],
+        );
+        write_file(&collection.root, "_contracts/schemas/record.yaml", "$defs:\n  view:\n    type: object\n    properties:\n      title: {$ref: '#/$defs/title'}\n      category: {type: string}\n    $defs:\n      title: {$ref: title.txt}\n");
+        write_file(
+            &collection.root,
+            "_contracts/schemas/title.txt",
+            "type: string\nminLength: 3\n",
+        );
+        write_file(
+            &collection.root,
+            "_contracts/schemas/binding.yaml",
+            "type: object\nproperties:\n  mode: {enum: [personal]}\n",
+        );
+        let registry = load_mdbase_contract_registry(&collection, &types).unwrap();
+        assert!(
+            registry.diagnostics.is_empty(),
+            "{:?}",
+            registry.diagnostics
+        );
+        let cloned = registry.clone();
+        let contract = registry.get("example.note", "1.0.0").unwrap();
+        let schema = contract.compiled_schema("record_schema").unwrap();
+        assert_eq!(schema.dependencies().len(), 2);
+        assert!(std::ptr::eq(
+            schema,
+            cloned
+                .get("example.note", "1.0.0")
+                .unwrap()
+                .compiled_schema("record_schema")
+                .unwrap()
+        ));
+        assert!(serde_json::to_value(contract)
+            .unwrap()
+            .get("compiled_schemas")
+            .is_none());
+        let project = |registry: &MdbaseContractRegistry| {
+            project_mdbase_contract_view(
+                &collection,
+                registry,
+                "example.note",
+                "1.0.0",
+                "personal_note",
+                &serde_json::json!({"headline":"Hi"}),
+            )
+        };
+        let before = project(&registry);
+        assert_eq!(before.diagnostics.len(), 1);
+        assert_eq!(before.diagnostics[0].code, "data_contract_record_invalid");
+        write_file(
+            &collection.root,
+            "_contracts/schemas/title.txt",
+            "type: string\nminLength: 1\n",
+        );
+        let fresh = load_mdbase_contract_registry(&collection, &types).unwrap();
+        assert!(project(&fresh).diagnostics.is_empty());
+        assert_ne!(registry, fresh);
+        // Both binding validation and per-record projection are now pure reads
+        // of the captured control snapshots, even after files disappear.
+        directory.close().unwrap();
+        assert!(validate_implementation_binding(
+            types.get("personal_note").unwrap(),
+            contract,
+            Some(&serde_json::json!({"mode":"personal"})),
+            "implements[0]"
+        )
+        .is_none());
+        assert!(validate_implementation_binding(
+            types.get("personal_note").unwrap(),
+            contract,
+            Some(&serde_json::json!({"mode":"other"})),
+            "implements[0]"
+        )
+        .is_some());
+        for _ in 0..10 {
+            assert_eq!(project(&cloned), before);
+        }
+    }
+
+    #[test]
+    fn implementation_checks_use_the_existing_type_snapshot() {
+        let (_directory, collection, _) =
+            setup_collection(&[("_contracts/note.md", NOTE_CONTRACT)], &[]);
+        let value: serde_yaml::Value = serde_yaml::from_str(PERSONAL_TYPE).unwrap();
+        let mut value = serde_json::to_value(value).unwrap();
+        let schema = value["schema"]["value"].take();
+        value["schema"] = serde_json::json!({"dialect":"json-schema-2020-12","ref":"shape.yaml"});
+        write_file(
+            &collection.root,
+            "_types/shape.yaml",
+            &serde_yaml::to_string(&schema).unwrap(),
+        );
+        write_file(
+            &collection.root,
+            "_types/personal.md",
+            &frontmatter(&serde_yaml::to_string(&value).unwrap()),
+        );
+        let types = load_mdbase_type_registry(&collection).unwrap();
+        assert!(types.diagnostics.is_empty());
+        fs::remove_file(collection.root.join("_types/shape.yaml")).unwrap();
+        let contracts = load_mdbase_contract_registry(&collection, &types).unwrap();
+        assert!(
+            contracts.diagnostics.is_empty(),
+            "{:?}",
+            contracts.diagnostics
+        );
+        assert_eq!(contracts.implementations("example.note", "1.0.0").len(), 1);
+    }
 
     #[test]
     fn registry_loads_exact_versions_and_valid_implementations() {
