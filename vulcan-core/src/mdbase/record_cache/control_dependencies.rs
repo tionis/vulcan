@@ -22,7 +22,7 @@ pub(super) fn schema_sources(
 ) -> Result<SchemaSources, MdbaseRecordCacheError> {
     let mut sources = BTreeMap::new();
     for (path, source) in controls {
-        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+        if !crate::mdbase::has_extension(&path, "md") {
             continue;
         }
         let parsed = crate::parser::parse_document(&source, &crate::config::VaultConfig::default());

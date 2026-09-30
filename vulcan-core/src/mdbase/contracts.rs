@@ -1,5 +1,5 @@
 use super::{
-    bundled_mdbase_schema, compile_mdbase_schema_wrapper, discover_control_files,
+    bundled_mdbase_schema, compile_mdbase_schema_wrapper_observed, discover_control_files,
     validate_mdbase_schema_value_with_local_refs, MdbaseCollection, MdbaseCompiledSchema,
     MdbaseTypeDefinition, MdbaseTypeRegistry, MDBASE_CANONICAL_SCHEMA_BASE,
 };
@@ -79,6 +79,12 @@ pub struct MdbaseContractRegistry {
     contracts: BTreeMap<MdbaseContractIdentity, MdbaseContractDefinition>,
     implementations: BTreeMap<MdbaseContractIdentity, Vec<MdbaseContractImplementation>>,
     pub diagnostics: Vec<MdbaseContractDiagnostic>,
+    #[serde(skip)]
+    pub(super) snapshot: super::control_snapshot::ControlSnapshot,
+    #[serde(skip)]
+    pub(super) type_snapshot: super::control_snapshot::ControlSnapshot,
+    #[serde(skip)]
+    pub(super) config_revision: String,
 }
 
 impl MdbaseContractRegistry {
@@ -263,6 +269,9 @@ fn build_mdbase_contract_registry(
         contracts,
         implementations: BTreeMap::new(),
         diagnostics,
+        snapshot: access.snapshot(),
+        type_snapshot: types.snapshot.clone(),
+        config_revision: collection.source_revision.clone(),
     };
     validate_type_implementations(types, &conflicted, &mut registry);
     for implementations in registry.implementations.values_mut() {
@@ -289,6 +298,7 @@ fn load_contract_file(
             source,
         }
     })?;
+    access.control(Path::new(path), source.as_bytes());
     let frontmatter = match parse_contract_frontmatter(&source, path) {
         Ok(frontmatter) => frontmatter,
         Err(diagnostic) => return Ok(Err(*diagnostic)),
@@ -406,21 +416,24 @@ fn load_contract_schemas(
         let Some(wrapper) = frontmatter.get(key) else {
             continue;
         };
-        let (resolved, compiled) =
-            compile_mdbase_schema_wrapper(wrapper, absolute_path, &collection.root, &|path| {
-                access.schema(path)
-            })
-            .map_err(|error| {
-                Box::new(contract_diagnostic(
-                    "invalid_data_contract",
-                    format!("failed to resolve or compile `{key}`: {error}"),
-                    path,
-                    key,
-                    Some(identity),
-                    None,
-                    Vec::new(),
-                ))
-            })?;
+        let (resolved, compiled) = compile_mdbase_schema_wrapper_observed(
+            wrapper,
+            absolute_path,
+            &collection.root,
+            &|path| access.schema(path),
+            &|path, observation| access.observe_schema(path, observation),
+        )
+        .map_err(|error| {
+            Box::new(contract_diagnostic(
+                "invalid_data_contract",
+                format!("failed to resolve or compile `{key}`: {error}"),
+                path,
+                key,
+                Some(identity),
+                None,
+                Vec::new(),
+            ))
+        })?;
         // Preserve the existing report representation; execution uses only the
         // compiled snapshot, never this serialized wrapper.
         let validation_schema = wrapper

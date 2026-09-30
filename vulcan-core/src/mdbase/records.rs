@@ -24,7 +24,7 @@ mod snapshot_tests;
 
 // Version 4 validates contract projections with immutable compiled snapshots
 // and applies the same wrapper-selection semantics to type and contract schemas.
-pub const MDBASE_RECORD_MODEL_VERSION: u32 = 4;
+pub const MDBASE_RECORD_MODEL_VERSION: u32 = 5;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
 ///

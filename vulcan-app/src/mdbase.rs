@@ -275,12 +275,34 @@ impl LoadedCollection {
         &self,
         request: MdbaseWritePreviewRequest,
     ) -> Result<MdbaseWritePreview, AppError> {
-        build_mdbase_write_preview_with_control_filter(
+        let preview = build_mdbase_write_preview_with_control_filter(
             &self.collection,
             request,
             self.control_filter.as_ref(),
         )
-        .map_err(|error| AppError::operation_with_code(error.code, error.message))
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+        let controls = vulcan_core::mdbase::verify_mdbase_control_snapshots(
+            &self.collection,
+            &self.types,
+            &self.contracts,
+            self.control_filter.as_ref(),
+        )
+        .map_err(|error| match error {
+            vulcan_core::mdbase::MdbaseRecordCacheError::PermissionDenied => {
+                control_permission_denied()
+            }
+            vulcan_core::mdbase::MdbaseRecordCacheError::StaleControls => {
+                AppError::operation_with_code("stale_state", error)
+            }
+            error => AppError::operation(error),
+        })?;
+        if preview.control_revisions != controls {
+            return Err(AppError::operation_with_code(
+                "stale_state",
+                "mdbase controls changed while binding the validated snapshots",
+            ));
+        }
+        Ok(preview)
     }
 }
 
@@ -1438,6 +1460,45 @@ mod tests {
             parse_mdbase_query(r#"{"where":"true"}"#).expect("JSON"),
             serde_json::json!({"where": "true"})
         );
+    }
+
+    #[test]
+    fn preview_refuses_new_revisions_when_loaded_control_bytes_are_stale() {
+        let (directory, paths) = fixture();
+        let mut loaded = load_collection(&paths).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let request = MdbaseWritePreviewRequest {
+            plan_id: "stale-controls".into(),
+            caller_id: "caller".into(),
+            instance_id: "instance".into(),
+            operation: "update".into(),
+            issued_at: now,
+            expires_at: now + TimeDelta::minutes(5),
+            permission_revision: "grant".into(),
+            config_revision: "config".into(),
+            changes: vec![MdbaseWritePreviewChangeRequest {
+                path: "tasks/public.md".into(),
+                after: Some("---\ntype: task\ntitle: Updated\n---\n".into()),
+                if_revision: None,
+            }],
+            matched_types: vec!["task".into()],
+            relevant_record_namespaces: Vec::new(),
+            generated_values: BTreeMap::new(),
+        };
+        loaded.capture_preview(request.clone()).unwrap();
+        let path = directory.path().join("_types/task.md");
+        let source = fs::read_to_string(&path).unwrap();
+        fs::write(&path, source.replace("status: open", "status: closed")).unwrap();
+        // A fresh standalone capture succeeds; it must not certify the old
+        // registry merely because its digest describes current disk contents.
+        build_mdbase_write_preview(&loaded.collection, request.clone()).unwrap();
+        assert_eq!(
+            loaded.capture_preview(request.clone()).unwrap_err().code(),
+            Some("stale_state")
+        );
+        write_validation::reload_controls(&mut loaded).unwrap();
+        loaded.capture_preview(request).unwrap();
+        assert!(!paths.cache_db().exists());
     }
 
     #[test]

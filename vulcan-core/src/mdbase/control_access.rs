@@ -1,6 +1,6 @@
 use super::MdbaseSchemaCompileError;
 use crate::permissions::PermissionFilter;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 
 /// A load-local authorization ceiling. A schema denial must abort the registry
@@ -8,6 +8,7 @@ use std::path::Path;
 pub(super) struct ControlAccess<'a> {
     filter: Option<&'a PermissionFilter>,
     denied: Cell<bool>,
+    snapshot: RefCell<super::control_snapshot::ControlSnapshot>,
 }
 
 impl<'a> ControlAccess<'a> {
@@ -15,6 +16,7 @@ impl<'a> ControlAccess<'a> {
         Self {
             filter,
             denied: Cell::new(false),
+            snapshot: RefCell::new(super::control_snapshot::ControlSnapshot::default()),
         }
     }
 
@@ -41,6 +43,36 @@ impl<'a> ControlAccess<'a> {
 
     pub(super) fn denied(&self) -> bool {
         self.denied.get()
+    }
+
+    pub(super) fn observe(&self, path: &Path, bytes: Option<&[u8]>) {
+        self.snapshot.borrow_mut().observe(path, bytes);
+    }
+
+    pub(super) fn observe_schema(
+        &self,
+        path: &Path,
+        observation: super::SchemaReadObservation<'_>,
+    ) {
+        match observation {
+            super::SchemaReadObservation::Present(bytes) => self.observe(path, Some(bytes)),
+            super::SchemaReadObservation::Missing => self.observe(path, None),
+            super::SchemaReadObservation::Unavailable => {
+                self.snapshot.borrow_mut().conflicted = true;
+            }
+        }
+    }
+
+    pub(super) fn control(&self, path: &Path, bytes: &[u8]) {
+        self.observe(path, Some(bytes));
+        self.snapshot
+            .borrow_mut()
+            .controls
+            .insert(path.to_path_buf());
+    }
+
+    pub(super) fn snapshot(&self) -> super::control_snapshot::ControlSnapshot {
+        self.snapshot.borrow().clone()
     }
 }
 

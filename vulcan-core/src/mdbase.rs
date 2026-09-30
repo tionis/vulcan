@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 mod contracts;
 mod control_access;
+mod control_snapshot;
 pub use contracts::*;
 mod cel;
 pub use cel::*;
@@ -234,7 +235,13 @@ pub fn compile_mdbase_schema_with_local_refs(
 ) -> Result<MdbaseCompiledSchema, MdbaseSchemaCompileError> {
     let (collection_root, relative_base) =
         authorized_schema_base(base_file, collection_root, authorize)?;
-    compile_schema_at_authorized_base(schema, collection_root, relative_base, authorize)
+    compile_schema_at_authorized_base(
+        schema,
+        collection_root,
+        relative_base,
+        authorize,
+        &|_, _| {},
+    )
 }
 
 fn authorized_schema_base(
@@ -271,6 +278,7 @@ fn compile_schema_at_authorized_base(
     collection_root: PathBuf,
     relative_base: PathBuf,
     authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+    observe: &SchemaObserver<'_>,
 ) -> Result<MdbaseCompiledSchema, MdbaseSchemaCompileError> {
     let base_file = collection_root.join(&relative_base);
 
@@ -292,6 +300,7 @@ fn compile_schema_at_authorized_base(
         loaded_paths: BTreeSet::new(),
         visiting: vec![base_file.clone()],
         authorize,
+        observe,
         dependencies: BTreeMap::new(),
     };
     loader.load_references(schema, &base_file, 0)?;
@@ -320,11 +329,39 @@ pub fn compile_mdbase_schema_wrapper(
     collection_root: &Path,
     authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
 ) -> Result<(serde_json::Value, MdbaseCompiledSchema), MdbaseSchemaCompileError> {
+    compile_mdbase_schema_wrapper_observed(
+        wrapper,
+        base_file,
+        collection_root,
+        authorize,
+        &|_, _| {},
+    )
+}
+
+#[derive(Clone, Copy)]
+enum SchemaReadObservation<'a> {
+    Present(&'a [u8]),
+    Missing,
+    Unavailable,
+}
+
+type SchemaObserver<'a> = dyn Fn(&Path, SchemaReadObservation<'_>) + 'a;
+
+fn compile_mdbase_schema_wrapper_observed(
+    wrapper: &serde_json::Value,
+    base_file: &Path,
+    collection_root: &Path,
+    authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+    observe: &SchemaObserver<'_>,
+) -> Result<(serde_json::Value, MdbaseCompiledSchema), MdbaseSchemaCompileError> {
     match (wrapper.get("value"), wrapper.get("ref")) {
-        (Some(value), None) => Ok((
-            value.clone(),
-            compile_mdbase_schema_with_local_refs(value, base_file, collection_root, authorize)?,
-        )),
+        (Some(value), None) => {
+            let (root, base) = authorized_schema_base(base_file, collection_root, authorize)?;
+            Ok((
+                value.clone(),
+                compile_schema_at_authorized_base(value, root, base, authorize, observe)?,
+            ))
+        }
         (None, Some(serde_json::Value::String(reference))) => {
             let (file, fragment) = reference.split_once('#').unwrap_or((reference, ""));
             if file.is_empty()
@@ -343,7 +380,7 @@ pub fn compile_mdbase_schema_wrapper(
                 Path::new(file),
             )?;
             authorize(&path)?;
-            let (document, bytes) = read_local_schema(&root, &path)?;
+            let (document, bytes) = read_local_schema(&root, &path, observe)?;
             let resolved = if fragment.is_empty() {
                 document
             } else if fragment.starts_with('/') {
@@ -360,8 +397,13 @@ pub fn compile_mdbase_schema_wrapper(
             // MDB wrapper selection precedes JSON Schema compilation. The pinned
             // core fixture treats the selected schema as the local-pointer root;
             // its file still supplies the base for nested file references.
-            let mut compiled =
-                compile_schema_at_authorized_base(&resolved, root, path.clone(), authorize)?;
+            let mut compiled = compile_schema_at_authorized_base(
+                &resolved,
+                root,
+                path.clone(),
+                authorize,
+                observe,
+            )?;
             compiled.dependencies.insert(path, bytes);
             if compiled.dependencies.len() > MDBASE_SCHEMA_MAX_FILES {
                 return Err(MdbaseSchemaCompileError(format!(
@@ -437,6 +479,7 @@ struct LocalSchemaLoader<'a> {
     loaded_paths: BTreeSet<PathBuf>,
     visiting: Vec<PathBuf>,
     authorize: &'a dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
+    observe: &'a SchemaObserver<'a>,
     dependencies: BTreeMap<PathBuf, Vec<u8>>,
 }
 
@@ -476,7 +519,8 @@ impl LocalSchemaLoader<'_> {
                 .strip_prefix(self.collection_root)
                 .expect("resolved schema is collection confined");
             (self.authorize)(relative)?;
-            let (referenced_schema, contents) = read_local_schema(self.collection_root, relative)?;
+            let (referenced_schema, contents) =
+                read_local_schema(self.collection_root, relative, self.observe)?;
             self.dependencies.insert(relative.to_path_buf(), contents);
             let uri = schema_file_uri(&resolved)?;
             self.schemas.insert(uri, referenced_schema.clone());
@@ -539,27 +583,59 @@ impl LocalSchemaLoader<'_> {
 fn read_local_schema(
     root: &Path,
     path: &Path,
+    observe: &SchemaObserver<'_>,
 ) -> Result<(serde_json::Value, Vec<u8>), MdbaseSchemaCompileError> {
-    let file = crate::paths::secure_open_regular_read(root, path).map_err(|error| {
-        MdbaseSchemaCompileError(format!(
-            "failed to open schema reference {}: {error}",
-            path.display()
-        ))
-    })?;
+    let result = read_local_schema_bytes(root, path);
+    observe(
+        path,
+        match &result {
+            Ok(bytes) => SchemaReadObservation::Present(bytes),
+            Err(error) if error.missing => SchemaReadObservation::Missing,
+            Err(_) => SchemaReadObservation::Unavailable,
+        },
+    );
+    let contents = result.map_err(|failure| failure.error)?;
+    let value = parse_local_schema(&contents, path)?;
+    Ok((value, contents))
+}
+
+struct SchemaReadFailure {
+    error: MdbaseSchemaCompileError,
+    missing: bool,
+}
+
+impl SchemaReadFailure {
+    fn unavailable(message: String) -> Self {
+        Self {
+            error: MdbaseSchemaCompileError(message),
+            missing: false,
+        }
+    }
+}
+
+fn read_local_schema_bytes(root: &Path, path: &Path) -> Result<Vec<u8>, SchemaReadFailure> {
+    let file =
+        crate::paths::secure_open_regular_read(root, path).map_err(|error| SchemaReadFailure {
+            missing: error.kind() == std::io::ErrorKind::NotFound,
+            error: MdbaseSchemaCompileError(format!(
+                "failed to open schema reference {}: {error}",
+                path.display()
+            )),
+        })?;
     let metadata = file.metadata().map_err(|error| {
-        MdbaseSchemaCompileError(format!(
+        SchemaReadFailure::unavailable(format!(
             "failed to inspect schema reference {}: {error}",
             path.display()
         ))
     })?;
     if !metadata.is_file() {
-        return Err(MdbaseSchemaCompileError(format!(
+        return Err(SchemaReadFailure::unavailable(format!(
             "schema reference is not a regular file: {}",
             path.display()
         )));
     }
     if metadata.len() > MDBASE_SCHEMA_MAX_BYTES {
-        return Err(MdbaseSchemaCompileError(format!(
+        return Err(SchemaReadFailure::unavailable(format!(
             "schema reference exceeds {MDBASE_SCHEMA_MAX_BYTES} bytes: {}",
             path.display()
         )));
@@ -568,19 +644,18 @@ fn read_local_schema(
     file.take(MDBASE_SCHEMA_MAX_BYTES + 1)
         .read_to_end(&mut contents)
         .map_err(|error| {
-            MdbaseSchemaCompileError(format!(
+            SchemaReadFailure::unavailable(format!(
                 "failed to read schema reference {}: {error}",
                 path.display()
             ))
         })?;
     if contents.len() as u64 > MDBASE_SCHEMA_MAX_BYTES {
-        return Err(MdbaseSchemaCompileError(format!(
+        return Err(SchemaReadFailure::unavailable(format!(
             "schema reference exceeds {MDBASE_SCHEMA_MAX_BYTES} bytes: {}",
             path.display()
         )));
     }
-    let value = parse_local_schema(&contents, path)?;
-    Ok((value, contents))
+    Ok(contents)
 }
 
 fn parse_local_schema(
@@ -763,6 +838,8 @@ pub struct MdbaseCollection {
     pub config_path: PathBuf,
     pub config: MdbaseConfig,
     pub diagnostics: Vec<MdbaseConfigDiagnostic>,
+    source_revision: String,
+    loaded_config: MdbaseConfig,
 }
 
 /// Files that participate in mdbase semantics for one collection root.
@@ -804,6 +881,10 @@ pub struct MdbaseTypeRegistry {
     #[serde(skip)]
     compiled_schemas: BTreeMap<String, std::sync::Arc<MdbaseCompiledSchema>>,
     pub diagnostics: Vec<MdbaseTypeDiagnostic>,
+    #[serde(skip)]
+    snapshot: control_snapshot::ControlSnapshot,
+    #[serde(skip)]
+    config_revision: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1086,13 +1167,16 @@ pub fn load_mdbase_collection(
         settings.1,
     ));
 
+    let config = MdbaseConfig {
+        spec_version,
+        settings: settings.0,
+    };
     Ok(Some(MdbaseCollection {
         root: collection_root.to_path_buf(),
         config_path,
-        config: MdbaseConfig {
-            spec_version,
-            settings: settings.0,
-        },
+        loaded_config: config.clone(),
+        config,
+        source_revision: control_snapshot::revision(contents.as_bytes()),
         diagnostics,
     }))
 }
@@ -2188,6 +2272,8 @@ fn build_mdbase_type_registry_with_access(
         types,
         compiled_schemas,
         diagnostics,
+        snapshot: access.snapshot(),
+        config_revision: collection.source_revision.clone(),
     })
 }
 
@@ -2208,6 +2294,7 @@ fn load_mdbase_type_file(
             source,
         }
     })?;
+    access.control(Path::new(path), source.as_bytes());
     let frontmatter = match parse_type_frontmatter(&source, path) {
         Ok(frontmatter) => frontmatter,
         Err(diagnostic) => return Ok(TypeFileLoad::Invalid(vec![diagnostic])),
@@ -2249,11 +2336,12 @@ fn load_mdbase_type_file(
         .get("ref")
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned);
-    let (schema, compiled) = match compile_mdbase_schema_wrapper(
+    let (schema, compiled) = match compile_mdbase_schema_wrapper_observed(
         wrapped_schema,
         &absolute_path,
         &collection.root,
         &|path| access.schema(path),
+        &|path, observation| access.observe_schema(path, observation),
     ) {
         Ok(prepared) => prepared,
         Err(error) => {

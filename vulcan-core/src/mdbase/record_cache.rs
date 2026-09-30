@@ -56,6 +56,7 @@ pub struct MdbaseControlRevisions {
 #[derive(Debug)]
 pub enum MdbaseRecordCacheError {
     PermissionDenied,
+    StaleControls,
     Records(MdbaseRecordError),
     Cache(CacheError),
     Database(rusqlite::Error),
@@ -69,6 +70,10 @@ pub enum MdbaseRecordCacheError {
 impl Display for MdbaseRecordCacheError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::StaleControls => write!(
+                formatter,
+                "mdbase control snapshots are stale; reload the collection and registries"
+            ),
             Self::PermissionDenied => {
                 write!(formatter, "permission denied for required mdbase controls")
             }
@@ -136,6 +141,52 @@ pub fn mdbase_control_revisions_authorized(
     collection: &MdbaseCollection,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseControlRevisions, MdbaseRecordCacheError> {
+    Ok(capture_control_revisions(collection, filter)?.revisions)
+}
+
+struct ControlCapture {
+    revisions: MdbaseControlRevisions,
+    snapshot: super::control_snapshot::ControlSnapshot,
+    types: BTreeSet<PathBuf>,
+    contracts: BTreeSet<PathBuf>,
+}
+
+/// Bind the actual registry inputs (including invalid/missing schemas) to a
+/// current authorized revision capture, without recompiling any schema.
+pub fn verify_mdbase_control_snapshots(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    filter: Option<&PermissionFilter>,
+) -> Result<MdbaseControlRevisions, MdbaseRecordCacheError> {
+    // Public settings can be changed by a library caller. Do not use altered
+    // control-folder paths for discovery before rejecting the unbound config.
+    if collection.config != collection.loaded_config {
+        return Err(MdbaseRecordCacheError::StaleControls);
+    }
+    let capture = capture_control_revisions(collection, filter)?;
+    if capture.snapshot.conflicted
+        || capture.snapshot.observed.get(Path::new("mdbase.yaml"))
+            != Some(&Some(collection.source_revision.clone()))
+        || types.config_revision != collection.source_revision
+        || contracts.config_revision != collection.source_revision
+        || contracts.type_snapshot != types.snapshot
+        || !types
+            .snapshot
+            .matches(&capture.snapshot.observed, &capture.types)
+        || !contracts
+            .snapshot
+            .matches(&capture.snapshot.observed, &capture.contracts)
+    {
+        return Err(MdbaseRecordCacheError::StaleControls);
+    }
+    Ok(capture.revisions)
+}
+
+fn capture_control_revisions(
+    collection: &MdbaseCollection,
+    filter: Option<&PermissionFilter>,
+) -> Result<ControlCapture, MdbaseRecordCacheError> {
     let access = ControlAccess::new(filter);
     if !access.path_allowed("mdbase.yaml")
         || !access.path_allowed(MDBASE_LOCK_FILE_NAME)
@@ -162,11 +213,20 @@ pub fn mdbase_control_revisions_authorized(
         Path::new(&collection.config.settings.contracts_folder),
         &mut contract_paths,
     )?;
-    let (config, _) = digest_dependency_paths(&collection.root, "config", &config_paths, &access)?;
+    let (config, config_sources) =
+        digest_dependency_paths(&collection.root, "config", &config_paths, &access)?;
     let (types, type_sources) =
         digest_dependency_paths(&collection.root, "types", &type_paths, &access)?;
     let (contracts, contract_sources) =
         digest_dependency_paths(&collection.root, "contracts", &contract_paths, &access)?;
+    let mut snapshot = super::control_snapshot::ControlSnapshot::default();
+    for (path, source) in config_sources
+        .iter()
+        .chain(&type_sources)
+        .chain(&contract_sources)
+    {
+        snapshot.observe(path, Some(source.as_bytes()));
+    }
     let sources = control_dependencies::schema_sources(
         &collection.root,
         type_sources.into_iter().chain(contract_sources),
@@ -175,6 +235,7 @@ pub fn mdbase_control_revisions_authorized(
     let mut schema_digest = Sha256::new();
     schema_digest.update(b"referenced-schemas-v1");
     for (path, source) in sources {
+        snapshot.observe(&path, source.as_deref());
         let path = path.to_string_lossy().replace('\\', "/");
         schema_digest.update((path.len() as u64).to_be_bytes());
         schema_digest.update(path.as_bytes());
@@ -199,12 +260,23 @@ pub fn mdbase_control_revisions_authorized(
         );
         digest.update(revision.as_bytes());
     }
-    Ok(MdbaseControlRevisions {
-        config,
-        types,
-        contracts,
-        schemas,
-        combined: format!("sha256:{:x}", digest.finalize()),
+    Ok(ControlCapture {
+        snapshot,
+        types: type_paths
+            .into_iter()
+            .filter(|path| super::has_extension(path, "md"))
+            .collect(),
+        contracts: contract_paths
+            .into_iter()
+            .filter(|path| super::has_extension(path, "md"))
+            .collect(),
+        revisions: MdbaseControlRevisions {
+            config,
+            types,
+            contracts,
+            schemas,
+            combined: format!("sha256:{:x}", digest.finalize()),
+        },
     })
 }
 
@@ -292,9 +364,6 @@ fn collect_dependency_tree(
             {
                 continue;
             }
-            if !child.as_os_str().is_empty() && entry_path.join("mdbase.yaml").is_file() {
-                continue;
-            }
             collect_dependency_tree(root, &child, paths)?;
         } else if file_type.is_file() {
             paths.insert(child);
@@ -330,7 +399,19 @@ fn update_mdbase_record_cache(
     contracts: &MdbaseContractRegistry,
     rebuild: bool,
 ) -> Result<MdbaseRecordCacheRefresh, MdbaseRecordCacheError> {
-    let dependency_digest = mdbase_record_dependency_digest(collection)?;
+    update_mdbase_record_cache_with_boundary(database, collection, types, contracts, rebuild, || {})
+}
+
+fn update_mdbase_record_cache_with_boundary(
+    database: &mut CacheDatabase,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    rebuild: bool,
+    before_publication: impl FnOnce(),
+) -> Result<MdbaseRecordCacheRefresh, MdbaseRecordCacheError> {
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, None)?;
+    let dependency_digest = controls.combined.clone();
     let collection_root = cache_collection_root(collection)?;
     let records = load_mdbase_records_with_contracts(collection, types, contracts, false)?;
     let next = records
@@ -381,6 +462,10 @@ fn update_mdbase_record_cache(
         next.len().saturating_sub(added + updated)
     };
 
+    before_publication();
+    if verify_mdbase_control_snapshots(collection, types, contracts, None)? != controls {
+        return Err(MdbaseRecordCacheError::StaleControls);
+    }
     database.with_transaction(|transaction| {
         if rebuild {
             transaction.execute(
@@ -578,6 +663,207 @@ mod tests {
         let contracts =
             load_mdbase_contract_registry(&collection, &types).expect("contracts should load");
         (collection, types, contracts)
+    }
+
+    #[test]
+    fn stale_control_snapshots_never_replace_published_cache_rows() {
+        for target in [
+            "mdbase.yaml",
+            "_types/task.md",
+            "_types/added.md",
+            "_contracts/added.md",
+            "schema.txt",
+        ] {
+            for rebuild in [false, true] {
+                let directory = tempdir().unwrap();
+                write(
+                    &directory.path().join("mdbase.yaml"),
+                    "spec_version: 0.3.0\n",
+                );
+                write(&directory.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../schema.txt\ncollection:\n  read_defaults: {status: open}\n---\n");
+                write(&directory.path().join("schema.txt"), "type: object\n");
+                write(&directory.path().join("a.md"), "---\ntype: task\n---\n");
+                let paths = VaultPaths::new(directory.path());
+                crate::initialize_vulcan_dir(&paths).unwrap();
+                let mut database = CacheDatabase::open(&paths).unwrap();
+                let (collection, types, contracts) = load_registries(directory.path());
+                refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts)
+                    .unwrap();
+                let root = cache_collection_root(&collection).unwrap();
+                let before = load_collection_cache(database.connection(), &root).unwrap();
+                let path = directory.path().join(target);
+                let source = fs::read_to_string(&path).unwrap_or_default();
+                write(&path, &format!("{source}\n# changed\n"));
+                assert!(
+                    matches!(
+                        update_mdbase_record_cache(
+                            &mut database,
+                            &collection,
+                            &types,
+                            &contracts,
+                            rebuild
+                        ),
+                        Err(MdbaseRecordCacheError::StaleControls)
+                    ),
+                    "{target}"
+                );
+                assert_eq!(
+                    load_collection_cache(database.connection(), &root).unwrap(),
+                    before
+                );
+                let (fresh, fresh_types, fresh_contracts) = load_registries(directory.path());
+                update_mdbase_record_cache(
+                    &mut database,
+                    &fresh,
+                    &fresh_types,
+                    &fresh_contracts,
+                    rebuild,
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn missing_malformed_and_nested_uppercase_schema_controls_are_bound() {
+        for initial in [None, Some("invalid: ["), Some("type: object\n")] {
+            let directory = tempdir().unwrap();
+            write(
+                &directory.path().join("mdbase.yaml"),
+                "spec_version: 0.3.0\n",
+            );
+            write(
+                &directory.path().join("_types/nested/mdbase.yaml"),
+                "spec_version: 0.3.0\n",
+            );
+            write(&directory.path().join("_types/nested/task.MD"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../../schema.txt\n---\n");
+            if let Some(initial) = initial {
+                write(&directory.path().join("schema.txt"), initial);
+            }
+            let (collection, types, contracts) = load_registries(directory.path());
+            verify_mdbase_control_snapshots(&collection, &types, &contracts, None).unwrap();
+            write(
+                &directory.path().join("schema.txt"),
+                "type: object\nrequired: [title]\n",
+            );
+            assert!(matches!(
+                verify_mdbase_control_snapshots(&collection, &types, &contracts, None),
+                Err(MdbaseRecordCacheError::StaleControls)
+            ));
+            let fresh_types = load_mdbase_type_registry(&collection).unwrap();
+            assert!(matches!(
+                verify_mdbase_control_snapshots(&collection, &fresh_types, &contracts, None),
+                Err(MdbaseRecordCacheError::StaleControls)
+            ));
+            let fresh_contracts = load_mdbase_contract_registry(&collection, &fresh_types).unwrap();
+            verify_mdbase_control_snapshots(&collection, &fresh_types, &fresh_contracts, None)
+                .unwrap();
+            fs::remove_file(directory.path().join("_types/nested/task.MD")).unwrap();
+            assert!(matches!(
+                verify_mdbase_control_snapshots(&collection, &fresh_types, &fresh_contracts, None),
+                Err(MdbaseRecordCacheError::StaleControls)
+            ));
+        }
+    }
+
+    #[test]
+    fn failed_schema_reads_are_not_evidence_of_absence() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../schema.txt\n---\n");
+        fs::create_dir(directory.path().join("schema.txt")).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        assert!(!types.diagnostics.is_empty());
+        fs::remove_dir(directory.path().join("schema.txt")).unwrap();
+        assert!(matches!(
+            verify_mdbase_control_snapshots(&collection, &types, &contracts, None),
+            Err(MdbaseRecordCacheError::StaleControls)
+        ));
+        let types = load_mdbase_type_registry(&collection).unwrap();
+        let contracts = load_mdbase_contract_registry(&collection, &types).unwrap();
+        verify_mdbase_control_snapshots(&collection, &types, &contracts, None).unwrap();
+        let mut altered = collection.clone();
+        altered.config.settings.types_folder = "mdbase.yaml".into();
+        assert!(matches!(
+            verify_mdbase_control_snapshots(&altered, &types, &contracts, None),
+            Err(MdbaseRecordCacheError::StaleControls)
+        ));
+    }
+
+    #[test]
+    fn contract_schema_observations_survive_failed_compilation_and_repair() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("_contracts/note.md"), "---\nkind: mdbase.contract\ncontract_type: record\nid: example.note\nversion: 1.0.0\nrecord_schema:\n  dialect: json-schema-2020-12\n  ref: ../contract.txt\n---\n");
+        let (collection, types, contracts) = load_registries(directory.path());
+        assert!(!contracts.diagnostics.is_empty());
+        verify_mdbase_control_snapshots(&collection, &types, &contracts, None).unwrap();
+        write(&directory.path().join("contract.txt"), "type: object\n");
+        assert!(matches!(
+            verify_mdbase_control_snapshots(&collection, &types, &contracts, None),
+            Err(MdbaseRecordCacheError::StaleControls)
+        ));
+        let contracts = load_mdbase_contract_registry(&collection, &types).unwrap();
+        assert!(
+            contracts.diagnostics.is_empty(),
+            "{:?}",
+            contracts.diagnostics
+        );
+        verify_mdbase_control_snapshots(&collection, &types, &contracts, None).unwrap();
+        write(&directory.path().join("contract.txt"), "type: string\n");
+        assert!(matches!(
+            verify_mdbase_control_snapshots(&collection, &types, &contracts, None),
+            Err(MdbaseRecordCacheError::StaleControls)
+        ));
+    }
+
+    #[test]
+    fn control_drift_during_derivation_aborts_before_cache_publication() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("a.md"), "A\n");
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let root = cache_collection_root(&collection).unwrap();
+        let before = load_collection_cache(database.connection(), &root).unwrap();
+        write(&directory.path().join("a.md"), "Changed record\n");
+        for rebuild in [false, true] {
+            let error = update_mdbase_record_cache_with_boundary(
+                &mut database,
+                &collection,
+                &types,
+                &contracts,
+                rebuild,
+                || {
+                    write(
+                        &directory.path().join("mdbase.yaml"),
+                        "spec_version: 0.3.0\n# external edit\n",
+                    );
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(error, MdbaseRecordCacheError::StaleControls));
+            assert_eq!(
+                load_collection_cache(database.connection(), &root).unwrap(),
+                before
+            );
+            write(
+                &directory.path().join("mdbase.yaml"),
+                "spec_version: 0.3.0\n",
+            );
+        }
     }
 
     #[test]
