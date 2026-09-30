@@ -30,6 +30,28 @@ fn source(id: &str) -> String {
 }
 
 #[test]
+fn single_source_analysis_uses_the_supplied_clock_for_inferred_membership() {
+    let (directory, collection, _) = fixture();
+    fs::write(directory.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nmatch:\n  expr: {$expr: \"today() == '2026-09-08'\"}\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object, required: [id]}\n---\n").unwrap();
+    let types = load_mdbase_type_registry(&collection).unwrap();
+    assert!(types.diagnostics.is_empty());
+    let clock = MdbaseCelClock::new("2026-09-08T12:00:00Z".parse().unwrap(), "UTC").unwrap();
+    let matched =
+        analyze_mdbase_record_source_with_clock(&collection, &types, "new.md", "Body\n", &clock);
+    assert_eq!(matched.types, ["task"]);
+    assert!(matched
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "schema_required"));
+    let later = MdbaseCelClock::new("2026-09-09T12:00:00Z".parse().unwrap(), "UTC").unwrap();
+    let unmatched =
+        analyze_mdbase_record_source_with_clock(&collection, &types, "new.md", "Body\n", &later);
+    assert!(unmatched.types.is_empty());
+    assert!(unmatched.diagnostics.is_empty());
+    assert!(!directory.path().join("new.md").exists());
+}
+
+#[test]
 fn intra_batch_uniqueness_uses_only_the_supplied_snapshot() {
     let (directory, collection, types) = fixture();
     fs::write(directory.path().join("hidden.md"), source("same")).unwrap();

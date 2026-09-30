@@ -1,5 +1,7 @@
 //! Reusable mdbase collection read and journaled write workflows.
 
+mod write_validation;
+
 use crate::{plugins, AppError};
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
@@ -9,17 +11,17 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
-    analyze_mdbase_record_source, apply_mdbase_write_transaction_with_preflight,
-    authorize_mdbase_write_validation_scope, build_mdbase_write_preview, compile_mdbase_query,
-    discover_mdbase_files, execute_mdbase_query, is_mdbase_record_path, load_mdbase_collection,
-    load_mdbase_contract_registry, load_mdbase_records_with_contracts_filtered,
-    load_mdbase_type_registry, mdbase_content_revision, MdbaseAuthorizedValidationScope,
-    MdbaseCollection, MdbaseConsistentReadGuard, MdbaseContractDefinition,
-    MdbaseContractImplementation, MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel,
-    MdbaseQueryResult, MdbaseRecordDiagnostic, MdbaseRecordDocument, MdbaseTypeDefinition,
-    MdbaseTypeRegistry, MdbaseWriteApplyRequest, MdbaseWriteAuthorizationRequest,
-    MdbaseWriteOutcome, MdbaseWritePreview, MdbaseWritePreviewChangeRequest,
-    MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
+    apply_mdbase_write_transaction_with_preflight, authorize_mdbase_write_validation_scope,
+    build_mdbase_write_preview, compile_mdbase_query, discover_mdbase_files, execute_mdbase_query,
+    is_mdbase_record_path, load_mdbase_collection, load_mdbase_contract_registry,
+    load_mdbase_records_with_contracts_filtered, load_mdbase_type_registry,
+    mdbase_content_revision, MdbaseAuthorizedValidationScope, MdbaseCollection,
+    MdbaseConsistentReadGuard, MdbaseContractDefinition, MdbaseContractImplementation,
+    MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult,
+    MdbaseRecordDiagnostic, MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry,
+    MdbaseWriteApplyRequest, MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome,
+    MdbaseWritePreview, MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest,
+    MdbaseWritePreviewVerification,
 };
 use vulcan_core::{
     auto_commit, initialize_vulcan_dir, load_vault_config, resolve_permission_profile,
@@ -69,6 +71,7 @@ pub struct MdbaseWritePlanRequest {
     pub instance_id: String,
     pub operation: MdbaseWriteOperation,
     pub changes: Vec<MdbaseWriteChangeRequest>,
+    /// Legacy caller hints; authoritative membership is derived from exact sources.
     pub matched_types: Vec<String>,
     pub generated_values: BTreeMap<String, serde_json::Value>,
     pub permission_profile: Option<String>,
@@ -81,6 +84,8 @@ pub struct MdbaseWritePlanReport {
     pub permission_profile: String,
     pub authorization: MdbaseAuthorizedValidationScope,
     pub preview: MdbaseWritePreview,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<MdbaseRecordDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -490,8 +495,17 @@ pub fn plan_mdbase_write(
     request: &MdbaseWritePlanRequest,
     now: DateTime<Utc>,
 ) -> Result<MdbaseWritePlanReport, AppError> {
+    plan_mdbase_write_in_mode(paths, request, now, MdbaseManagedWriteMode::Validated)
+}
+
+fn plan_mdbase_write_in_mode(
+    paths: &VaultPaths,
+    request: &MdbaseWritePlanRequest,
+    now: DateTime<Utc>,
+    mode: MdbaseManagedWriteMode,
+) -> Result<MdbaseWritePlanReport, AppError> {
     validate_plan_request(request)?;
-    let loaded = load_collection(paths)?;
+    let mut loaded = load_collection(paths)?;
     for type_name in &request.matched_types {
         if loaded.types.get(type_name).is_none() {
             return Err(AppError::operation(format!(
@@ -510,6 +524,58 @@ pub fn plan_mdbase_write(
         .collect::<Vec<_>>();
     // Before-images are part of every reviewed plan, including absence
     // preconditions for creates, so affected paths require both capabilities.
+    for path in &affected_paths {
+        guard
+            .check_read_path(path)
+            .and_then(|()| guard.check_write_path(path))
+            .map_err(|_| {
+                AppError::operation_with_code(
+                    "permission_denied",
+                    "permission denied for mdbase affected paths",
+                )
+            })?;
+    }
+    let ttl = request
+        .ttl_seconds
+        .unwrap_or(DEFAULT_WRITE_PREVIEW_TTL_SECONDS);
+    let mut preview_request = MdbaseWritePreviewRequest {
+        plan_id: ulid::Ulid::new().to_string().to_lowercase(),
+        caller_id: request.caller_id.clone(),
+        instance_id: request.instance_id.clone(),
+        operation: request.operation.name().to_string(),
+        issued_at: now,
+        expires_at: now + TimeDelta::seconds(ttl),
+        permission_revision: permission_revision(guard.selection())?,
+        config_revision: config_revision(&config)?,
+        changes: request
+            .changes
+            .iter()
+            .map(|change| MdbaseWritePreviewChangeRequest {
+                path: change.path.clone(),
+                after: change.after.clone(),
+                if_revision: change.if_revision.clone(),
+            })
+            .collect(),
+        matched_types: Vec::new(),
+        relevant_record_namespaces: Vec::new(),
+        generated_values: request.generated_values.clone(),
+    };
+    let initial = build_mdbase_write_preview(&loaded.collection, preview_request.clone())
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    validate_operation_shape(&request.operation, &initial)?;
+    write_validation::reload_controls(&mut loaded)?;
+    let clock = vulcan_core::mdbase::MdbaseCelClock::new(
+        now,
+        loaded
+            .collection
+            .config
+            .settings
+            .timezone
+            .as_deref()
+            .unwrap_or("UTC"),
+    )
+    .map_err(AppError::operation)?;
+    let matched_types = write_validation::affected_membership(&loaded, &initial, &clock)?;
     let authorization = authorize_mdbase_write_validation_scope(
         &loaded.collection,
         &loaded.types,
@@ -517,46 +583,25 @@ pub fn plan_mdbase_write(
         &MdbaseWriteAuthorizationRequest {
             read_paths: affected_paths.clone(),
             write_paths: affected_paths,
-            matched_types: request.matched_types.clone(),
+            matched_types: matched_types.clone(),
         },
         &guard,
     )
     .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-    let ttl = request
-        .ttl_seconds
-        .unwrap_or(DEFAULT_WRITE_PREVIEW_TTL_SECONDS);
-    let preview = build_mdbase_write_preview(
-        &loaded.collection,
-        MdbaseWritePreviewRequest {
-            plan_id: ulid::Ulid::new().to_string().to_lowercase(),
-            caller_id: request.caller_id.clone(),
-            instance_id: request.instance_id.clone(),
-            operation: request.operation.name().to_string(),
-            issued_at: now,
-            expires_at: now + TimeDelta::seconds(ttl),
-            permission_revision: permission_revision(guard.selection())?,
-            config_revision: config_revision(&config)?,
-            changes: request
-                .changes
-                .iter()
-                .map(|change| MdbaseWritePreviewChangeRequest {
-                    path: change.path.clone(),
-                    after: change.after.clone(),
-                    if_revision: change.if_revision.clone(),
-                })
-                .collect(),
-            matched_types: request.matched_types.clone(),
-            relevant_record_namespaces: authorization.collection_record_namespaces.clone(),
-            generated_values: request.generated_values.clone(),
-        },
-    )
-    .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-    validate_operation_shape(&request.operation, &preview)?;
+    preview_request.matched_types = matched_types;
+    preview_request
+        .relevant_record_namespaces
+        .clone_from(&authorization.collection_record_namespaces);
+    let preview = build_mdbase_write_preview(&loaded.collection, preview_request)
+        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    write_validation::check_snapshot_stability(&initial, &preview)?;
+    let diagnostics = write_validation::validate_final_state(&loaded, &preview, &clock, mode)?;
     Ok(MdbaseWritePlanReport {
         dry_run: true,
         permission_profile: guard.selection().name.clone(),
         authorization,
         preview,
+        diagnostics,
     })
 }
 
@@ -729,7 +774,6 @@ pub fn apply_managed_mdbase_note_writes(
             "managed mdbase write batches cannot mix collection records with ordinary Markdown paths",
         ));
     }
-    let types = load_mdbase_type_registry(&collection).map_err(AppError::operation)?;
     let selection = resolve_permission_profile(paths, request.permission_profile)
         .map_err(AppError::operation)?;
     let guard = ProfilePermissionGuard::new(paths, selection);
@@ -742,15 +786,8 @@ pub fn apply_managed_mdbase_note_writes(
             .map_err(AppError::operation)?;
     }
 
-    let drafts = analyze_managed_write_drafts(&collection, &types, request.changes, &managed);
-    if request.mode == MdbaseManagedWriteMode::Validated && drafts.invalid {
-        let summary = validation_error_summary(&drafts.diagnostics);
-        return Err(AppError::operation(format!(
-            "mdbase validation rejected the managed note write: {summary}; use explicit raw repair only when preserving invalid source is intentional"
-        )));
-    }
     let now = DateTime::<Utc>::from(SystemTime::now());
-    let plan = plan_mdbase_write(
+    let plan = plan_mdbase_write_in_mode(
         paths,
         &MdbaseWritePlanRequest {
             caller_id: "vulcan-app.managed-write".to_string(),
@@ -765,12 +802,13 @@ pub fn apply_managed_mdbase_note_writes(
                     if_revision: change.before.map(mdbase_content_revision),
                 })
                 .collect(),
-            matched_types: drafts.matched_types,
+            matched_types: Vec::new(),
             generated_values: BTreeMap::new(),
             permission_profile: request.permission_profile.map(str::to_string),
             ttl_seconds: None,
         },
         now,
+        request.mode,
     )?;
     let apply = if request.dry_run {
         None
@@ -790,65 +828,10 @@ pub fn apply_managed_mdbase_note_writes(
     };
     Ok(Some(MdbaseManagedNoteWriteReport {
         mode: request.mode,
+        diagnostics: plan.diagnostics.clone(),
         plan,
         apply,
-        diagnostics: drafts.diagnostics,
     }))
-}
-
-struct ManagedWriteDrafts {
-    diagnostics: Vec<MdbaseRecordDiagnostic>,
-    matched_types: Vec<String>,
-    invalid: bool,
-}
-
-fn analyze_managed_write_drafts(
-    collection: &MdbaseCollection,
-    types: &MdbaseTypeRegistry,
-    changes: &[MdbaseManagedNoteWriteChange<'_>],
-    managed: &[bool],
-) -> ManagedWriteDrafts {
-    let analyses = changes
-        .iter()
-        .zip(managed)
-        .map(|(change, managed)| {
-            if !managed {
-                return (None, None);
-            }
-            let before = change
-                .before
-                .map(|source| analyze_mdbase_record_source(collection, types, change.path, source));
-            let after = change
-                .after
-                .map(|source| analyze_mdbase_record_source(collection, types, change.path, source));
-            (before, after)
-        })
-        .collect::<Vec<_>>();
-    let diagnostics = analyses
-        .iter()
-        .flat_map(|(_, after)| {
-            after
-                .iter()
-                .flat_map(|analysis| analysis.diagnostics.clone())
-        })
-        .collect::<Vec<_>>();
-    let invalid = analyses
-        .iter()
-        .any(|(_, after)| after.as_ref().is_some_and(|analysis| !analysis.is_valid()));
-    let mut matched_types = analyses
-        .iter()
-        .flat_map(|(before, after)| before.iter().chain(after.iter()))
-        .flat_map(|analysis| analysis.types.iter())
-        .filter(|type_name| types.get(type_name).is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    matched_types.sort();
-    matched_types.dedup();
-    ManagedWriteDrafts {
-        diagnostics,
-        matched_types,
-        invalid,
-    }
 }
 
 fn validation_error_summary(diagnostics: &[MdbaseRecordDiagnostic]) -> String {

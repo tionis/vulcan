@@ -40,6 +40,8 @@ The core draft preparer applies assignments to a copy of raw frontmatter, perfor
 
 An apply request includes plan ID, accepted revision set, and idempotency key. The durable operation identity binds key to caller, instance, plan digest, and exact input. Repeating the same apply returns its recorded outcome; reusing a key with different input fails. Direct single-record upstream `if_revision` operations can plan/apply internally under the same lock while retaining the upstream `concurrent_modification` envelope. App preview drift maps to `stale_state`. Never replace existing Vulcan/upstream wire envelopes globally.
 
+The shared App planner currently derives old/proposed memberships from exact affected sources at a fixed operation clock, authorizes the resulting constraint scope, and validates its whole proposed final snapshot before returning a plan. Candidate sources must match accepted revisions; control or affected-source drift between membership and scoped preview capture fails closed. Generic managed edits use this same validation. Explicit raw repair retains diagnostics without silently falling back from a failed validated write. Lifecycle preparation and complete control-dependency authorization are still integration work; this boundary alone does not advertise record-write or lifecycle feature support.
+
 ## 4. Batch and rename transaction boundary
 
 `vulcan.record_write.v1` batches and rename-with-reference-rewrites are all-or-nothing for cooperating Vulcan readers, mutations, scans, and managed sync. Version 1 has no best-effort batch mode. Reject plans over 1,000 changed files or 64 MiB combined before/after bytes with `limit_exceeded`; never split an accepted batch into unreviewed commits.

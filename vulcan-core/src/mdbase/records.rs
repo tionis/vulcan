@@ -284,6 +284,18 @@ pub fn analyze_mdbase_record_source(
     analyze_record_source(collection, types, path, source, &clock)
 }
 
+/// Analyze an authorized draft using the planner's fixed operation clock.
+#[must_use]
+pub fn analyze_mdbase_record_source_with_clock(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    source: &str,
+    clock: &MdbaseCelClock,
+) -> MdbaseRecordDraftAnalysis {
+    analyze_record_source(collection, types, path, source, clock)
+}
+
 fn load_mdbase_record_at_clock(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,

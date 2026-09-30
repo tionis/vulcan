@@ -1,7 +1,7 @@
 ---
 name: note-operations
 description: Read, create, append, and patch notes safely through Vulcan instead of raw filesystem edits.
-version: 1
+version: 2
 tools:
   - note_outline
   - note_get
@@ -40,6 +40,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - Prefer section, heading, block-ref, or `--match`-based targeting over whole-note rewrites.
 - Keep frontmatter changes structured. If the task is really metadata work, use `update` or `unset` instead of editing YAML by hand.
 - Note creates, replacements, appends, patches, and deletes targeting an mdbase record path use the collection's validated, journaled write boundary. Treat validation errors as blockers and do not bypass them with raw filesystem edits; explicit repair is a separate workflow that must be intentionally requested.
+- Managed mdbase batches validate the proposed final state: duplicate values and broken declared incoming links can reject the entire edit before any file changes. A valid unique-value swap must be submitted together in one supported batch, not as sequential writes. `stale_state` means a validation dependency changed; reread and rebuild the preview instead of reusing it.
 - On Android, mdbase journals, staging, receipts, and outbox live in per-vault Termux-private state. A write returns `unsupported_storage` before changing records when shared storage cannot sync canonical directories; keep the worktree canonical and use a supported filesystem for that write workflow.
 - If a managed write reports `concurrent_modification`, reread the current note and rebuild the intended edit from its new revision. Never replay a stale whole-note replacement blindly.
 - If an ordinary `note set`, `note append`, `note patch`, or `note delete` reports that the note changed during editing, reread it and rebuild the edit; Vulcan leaves the newer content untouched. A create or periodic append also refuses to replace a file created concurrently.

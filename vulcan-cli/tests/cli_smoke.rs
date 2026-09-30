@@ -16610,6 +16610,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("A scoped preview is not proof"));
     assert!(note_operations.contains("mdbase record path"));
     assert!(note_operations.contains("validated, journaled write boundary"));
+    assert!(note_operations.contains("batches validate the proposed final state"));
     assert!(note_operations.contains("`note append`, `note patch`, or `note delete`"));
     assert!(note_operations.contains("created concurrently"));
     assert!(note_operations.contains("explicit repair is a separate workflow"));
@@ -26331,6 +26332,40 @@ fn run_transaction_uses_mdbase_validation_and_one_journal_batch() {
     assert_eq!(outbox[0].paths.len(), 2);
     assert!(vault_root.join("tasks/one.md").exists());
     assert!(vault_root.join("tasks/two.md").exists());
+    let type_path = vault_root.join("_types/task.md");
+    let definition = fs::read_to_string(&type_path).unwrap();
+    fs::write(&type_path, definition.replace("      title: {type: string}\n", "      title: {type: string}\ncollection:\n  unique: [{field: title, scope: collection}]\n")).unwrap();
+    fs::write(
+        vault_root.join(".vulcan/scripts/mdb-transaction.js"),
+        r#"
+        vault.transaction((tx) => {
+          tx.create("tasks/three", { frontmatter: { type: "task", title: "Collision" } });
+          tx.create("tasks/four", { frontmatter: { type: "task", title: "Collision" } });
+        });
+    "#,
+    )
+    .unwrap();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            vault_root.to_str().unwrap(),
+            "run",
+            "mdb-transaction",
+            "--sandbox",
+            "fs",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("duplicate_value"));
+    assert!(!vault_root.join("tasks/three.md").exists());
+    assert!(!vault_root.join("tasks/four.md").exists());
+    assert_eq!(
+        list_mdbase_write_outbox(&VaultPaths::new(&vault_root))
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -27357,7 +27392,7 @@ fn note_property_commands_validate_and_batch_mdbase_records() {
         .expect("collection config");
     fs::write(
         vault_root.join("_types/task.md"),
-        "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [type, title]\n    properties:\n      type: {const: task}\n      title: {type: string}\n      status: {type: string}\n---\n",
+        "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [type, title]\n    properties:\n      type: {const: task}\n      title: {type: string}\n      status: {type: string}\ncollection:\n  unique: [{field: title, scope: collection}]\n---\n",
     )
     .expect("task type");
     for (path, title) in [("tasks/one.md", "One"), ("tasks/two.md", "Two")] {
@@ -27395,6 +27430,30 @@ fn note_property_commands_validate_and_batch_mdbase_records() {
 
     let before_one = fs::read_to_string(vault_root.join("tasks/one.md")).expect("record");
     let before_two = fs::read_to_string(vault_root.join("tasks/two.md")).expect("record");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("tasks/one.md\ntasks/two.md\n")
+        .args([
+            "--vault",
+            vault,
+            "note",
+            "update",
+            "--stdin",
+            "--key",
+            "title",
+            "--value",
+            "Same",
+            "--no-commit",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("duplicate_value"));
+    assert_eq!(
+        list_mdbase_write_outbox(&VaultPaths::new(&vault_root))
+            .unwrap()
+            .len(),
+        1
+    );
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .write_stdin("tasks/one.md\ntasks/two.md\n")
