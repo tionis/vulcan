@@ -1,3 +1,4 @@
+use super::control_access::ControlAccess;
 use super::{
     load_mdbase_records_with_contracts, MdbaseCollection, MdbaseContractRegistry,
     MdbaseContractView, MdbaseRecordDiagnostic, MdbaseRecordError, MdbaseTypeRegistry,
@@ -5,6 +6,7 @@ use super::{
 };
 use crate::cache::{CacheDatabase, CacheError};
 use crate::paths::secure_read_to_string;
+use crate::permissions::PermissionFilter;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -53,6 +55,7 @@ pub struct MdbaseControlRevisions {
 
 #[derive(Debug)]
 pub enum MdbaseRecordCacheError {
+    PermissionDenied,
     Records(MdbaseRecordError),
     Cache(CacheError),
     Database(rusqlite::Error),
@@ -66,6 +69,9 @@ pub enum MdbaseRecordCacheError {
 impl Display for MdbaseRecordCacheError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PermissionDenied => {
+                write!(formatter, "permission denied for required mdbase controls")
+            }
             Self::Records(error) => write!(formatter, "failed to derive mdbase records: {error}"),
             Self::Cache(error) => write!(formatter, "failed to update the Vulcan cache: {error}"),
             Self::Database(error) => {
@@ -118,6 +124,26 @@ pub fn mdbase_record_dependency_digest(
 pub fn mdbase_control_revisions(
     collection: &MdbaseCollection,
 ) -> Result<MdbaseControlRevisions, MdbaseRecordCacheError> {
+    mdbase_control_revisions_authorized(collection, None)
+}
+
+/// Capture controls under a collection-relative read ceiling. Required namespace
+/// coverage and config/lockfile authority are checked before filesystem probes,
+/// including when those files or folders do not exist. Every transitive schema
+/// reference is authorized before opening it or observing its absence.
+/// This does not implement dynamic policy hooks or authorize ordinary records.
+pub fn mdbase_control_revisions_authorized(
+    collection: &MdbaseCollection,
+    filter: Option<&PermissionFilter>,
+) -> Result<MdbaseControlRevisions, MdbaseRecordCacheError> {
+    let access = ControlAccess::new(filter);
+    if !access.path_allowed("mdbase.yaml")
+        || !access.path_allowed(MDBASE_LOCK_FILE_NAME)
+        || !access.folder_allowed(&collection.config.settings.types_folder)
+        || !access.folder_allowed(&collection.config.settings.contracts_folder)
+    {
+        return Err(MdbaseRecordCacheError::PermissionDenied);
+    }
     let mut config_paths = BTreeSet::new();
     config_paths.insert(PathBuf::from("mdbase.yaml"));
     if collection.root.join(MDBASE_LOCK_FILE_NAME).is_file() {
@@ -136,13 +162,15 @@ pub fn mdbase_control_revisions(
         Path::new(&collection.config.settings.contracts_folder),
         &mut contract_paths,
     )?;
-    let (config, _) = digest_dependency_paths(&collection.root, "config", &config_paths)?;
-    let (types, type_sources) = digest_dependency_paths(&collection.root, "types", &type_paths)?;
+    let (config, _) = digest_dependency_paths(&collection.root, "config", &config_paths, &access)?;
+    let (types, type_sources) =
+        digest_dependency_paths(&collection.root, "types", &type_paths, &access)?;
     let (contracts, contract_sources) =
-        digest_dependency_paths(&collection.root, "contracts", &contract_paths)?;
+        digest_dependency_paths(&collection.root, "contracts", &contract_paths, &access)?;
     let sources = control_dependencies::schema_sources(
         &collection.root,
         type_sources.into_iter().chain(contract_sources),
+        &access,
     )?;
     let mut schema_digest = Sha256::new();
     schema_digest.update(b"referenced-schemas-v1");
@@ -184,11 +212,15 @@ fn digest_dependency_paths(
     root: &Path,
     domain: &str,
     paths: &BTreeSet<PathBuf>,
+    access: &ControlAccess<'_>,
 ) -> Result<(String, ControlSources), MdbaseRecordCacheError> {
     let mut digest = Sha256::new();
     let mut sources = Vec::new();
     digest.update(domain.as_bytes());
     for path in paths {
+        if !access.path_allowed(&path.to_string_lossy().replace('\\', "/")) {
+            return Err(MdbaseRecordCacheError::PermissionDenied);
+        }
         let contents =
             secure_read_to_string(root, path).map_err(|source| MdbaseRecordCacheError::Read {
                 path: root.join(path),
@@ -695,6 +727,136 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(cached.record_model_version, MDBASE_RECORD_MODEL_VERSION);
+    }
+
+    fn control_filter(extra: &[&str], denied: &[&str]) -> PermissionFilter {
+        use crate::permissions::{PathPermission, ResourceSpecifier};
+        PermissionFilter::new(PathPermission {
+            allow: ["mdbase.yaml", MDBASE_LOCK_FILE_NAME]
+                .into_iter()
+                .chain(extra.iter().copied())
+                .map(|path| ResourceSpecifier::Note(path.to_string()))
+                .chain(
+                    ["_types/**", "_contracts/**"]
+                        .into_iter()
+                        .map(|path| ResourceSpecifier::Folder(path.to_string())),
+                )
+                .collect(),
+            deny: denied
+                .iter()
+                .copied()
+                .map(|path| ResourceSpecifier::Note(path.to_string()))
+                .collect(),
+        })
+    }
+
+    fn assert_control_capture_denied(collection: &MdbaseCollection, filter: &PermissionFilter) {
+        let error = mdbase_control_revisions_authorized(collection, Some(filter)).unwrap_err();
+        assert!(matches!(error, MdbaseRecordCacheError::PermissionDenied));
+        assert_eq!(
+            error.to_string(),
+            "permission denied for required mdbase controls"
+        );
+    }
+
+    #[test]
+    fn authorized_revisions_deny_config_lock_and_namespaces_before_probing() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        let collection = load_mdbase_collection(directory.path()).unwrap().unwrap();
+        // These inputs are required even when absent. Malformed or newly present
+        // hidden bytes must not change the error or reveal the hidden path.
+        for path in [
+            "mdbase.yaml",
+            MDBASE_LOCK_FILE_NAME,
+            "_types/hidden.md",
+            "_contracts/hidden.md",
+        ] {
+            let filter = control_filter(&[], &[path]);
+            let absolute = directory.path().join(path);
+            if absolute.is_file() {
+                fs::remove_file(&absolute).unwrap();
+            }
+            assert_control_capture_denied(&collection, &filter);
+            write(&absolute, "SECRET invalid: [");
+            assert_control_capture_denied(&collection, &filter);
+            write(&absolute, "{}");
+            assert_control_capture_denied(&collection, &filter);
+        }
+        assert!(!directory.path().join(".vulcan").exists());
+    }
+
+    #[test]
+    fn authorized_revisions_require_configured_not_default_control_namespaces() {
+        use crate::permissions::{PathPermission, ResourceSpecifier};
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\nsettings:\n  types_folder: Schema/Types\n  contracts_folder: Schema/Contracts\n",
+        );
+        let collection = load_mdbase_collection(directory.path()).unwrap().unwrap();
+        assert_control_capture_denied(&collection, &control_filter(&[], &[]));
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![
+                ResourceSpecifier::Note("mdbase.yaml".into()),
+                ResourceSpecifier::Note(MDBASE_LOCK_FILE_NAME.into()),
+                ResourceSpecifier::Folder("Schema/**".into()),
+            ],
+            deny: Vec::new(),
+        });
+        assert_eq!(
+            mdbase_control_revisions_authorized(&collection, Some(&filter)).unwrap(),
+            mdbase_control_revisions(&collection).unwrap()
+        );
+        write(&directory.path().join("Schema/Types/new.md"), "new control");
+        assert_eq!(
+            mdbase_control_revisions_authorized(&collection, Some(&filter)).unwrap(),
+            mdbase_control_revisions(&collection).unwrap()
+        );
+    }
+
+    #[test]
+    fn authorized_revisions_check_transitive_references_and_match_unrestricted_digest() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        let collection = load_mdbase_collection(directory.path()).unwrap().unwrap();
+        write(
+            &directory.path().join("schemas/main.yaml"),
+            "$ref: hidden.txt\n",
+        );
+        for (control, wrapper) in [
+            ("_types/task.md", "schema"),
+            ("_contracts/task.md", "data_schema"),
+        ] {
+            write(
+                &directory.path().join(control),
+                &format!("---\n{wrapper}: {{ref: ../schemas/main.yaml}}\n---\n"),
+            );
+            let filter = control_filter(&["schemas/main.yaml"], &[]);
+            let hidden = directory.path().join("schemas/hidden.txt");
+            assert_control_capture_denied(&collection, &filter);
+            for source in ["SECRET invalid: [", "{\"type\":\"string\"}"] {
+                write(&hidden, source);
+                assert_control_capture_denied(&collection, &filter);
+            }
+            let complete = control_filter(&["schemas/main.yaml", "schemas/hidden.txt"], &[]);
+            let captured =
+                mdbase_control_revisions_authorized(&collection, Some(&complete)).unwrap();
+            assert_eq!(captured, mdbase_control_revisions(&collection).unwrap());
+            fs::remove_file(&hidden).unwrap();
+            let missing =
+                mdbase_control_revisions_authorized(&collection, Some(&complete)).unwrap();
+            assert_ne!(captured.schemas, missing.schemas);
+            assert_eq!(missing, mdbase_control_revisions(&collection).unwrap());
+            fs::remove_file(directory.path().join(control)).unwrap();
+        }
+        assert!(!directory.path().join(".vulcan").exists());
     }
 
     #[test]

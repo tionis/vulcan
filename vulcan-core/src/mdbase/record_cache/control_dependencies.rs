@@ -1,4 +1,5 @@
 use super::MdbaseRecordCacheError;
+use crate::mdbase::control_access::ControlAccess;
 use crate::mdbase::{
     bundled_mdbase_schema, collect_external_schema_references, parse_local_schema,
     schema_reference_path, MDBASE_SCHEMA_MAX_BYTES, MDBASE_SCHEMA_MAX_DEPTH,
@@ -17,6 +18,7 @@ pub(super) type SchemaSources = BTreeMap<PathBuf, Option<Vec<u8>>>;
 pub(super) fn schema_sources(
     root: &Path,
     controls: impl Iterator<Item = (PathBuf, String)>,
+    access: &ControlAccess<'_>,
 ) -> Result<SchemaSources, MdbaseRecordCacheError> {
     let mut sources = BTreeMap::new();
     for (path, source) in controls {
@@ -49,6 +51,7 @@ pub(super) fn schema_sources(
             };
             let mut walker = Walker {
                 root,
+                access,
                 sources: &mut sources,
                 visited: BTreeSet::new(),
             };
@@ -64,6 +67,7 @@ pub(super) fn schema_sources(
 
 struct Walker<'a> {
     root: &'a Path,
+    access: &'a ControlAccess<'a>,
     sources: &'a mut SchemaSources,
     visited: BTreeSet<PathBuf>,
 }
@@ -108,6 +112,12 @@ impl Walker<'_> {
         ) else {
             return Ok(());
         };
+        if !self
+            .access
+            .path_allowed(&path.to_string_lossy().replace('\\', "/"))
+        {
+            return Err(MdbaseRecordCacheError::PermissionDenied);
+        }
         if !self.visited.insert(path.clone()) {
             return Ok(());
         }
@@ -186,6 +196,7 @@ mod tests {
                 format!("---\nschema: {wrapper}\n---\n"),
             )]
             .into_iter(),
+            &ControlAccess::new(None),
         )
     }
 
@@ -289,6 +300,7 @@ mod tests {
         let sources = schema_sources(
             dir.path(),
             [(PathBuf::from("_contracts/contract.md"), source)].into_iter(),
+            &ControlAccess::new(None),
         )
         .unwrap();
         assert_eq!(sources.len(), 8);
