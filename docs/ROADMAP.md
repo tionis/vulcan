@@ -635,6 +635,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Use shared version intervals for automatic checkpoints with migration, retention, rollback, indirect graph updates, and targeted property/vector hashing.
 
+- [x] Stream Git validation blobs through one batch process and publish parsed caches only after complete success, retaining size limits and timeout cleanup.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.

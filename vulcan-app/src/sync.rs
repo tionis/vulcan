@@ -2147,60 +2147,70 @@ fn cache_tree_content(
             )));
         }
     }
-    let missing = markdown_entries
+    let markdown = markdown_entries
         .iter()
         .filter(|entry| !cache.markdown.contains_key(&entry.oid))
-        .chain(
-            canvas_entries
-                .iter()
-                .filter(|entry| !cache.canvas.contains_key(&entry.oid)),
-        )
-        .map(|entry| entry.oid.clone())
+        .map(|entry| (entry.oid.clone(), *entry))
+        .collect::<BTreeMap<_, _>>();
+    let canvas = canvas_entries
+        .iter()
+        .filter(|entry| !cache.canvas.contains_key(&entry.oid))
+        .map(|entry| (entry.oid.clone(), *entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut missing = markdown
+        .keys()
+        .chain(canvas.keys())
+        .cloned()
         .collect::<BTreeSet<_>>();
-    let blobs = engine
-        .read_blobs(repository, &missing.into_iter().collect::<Vec<_>>())
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let objects = missing.iter().cloned().collect::<Vec<_>>();
+    // Parsing may succeed for a prefix before the stream or Git process fails.
+    // Publish projections atomically so a retry cannot skip unvalidated input.
+    let mut additions = GitTreeAnalysisCache::default();
+    engine
+        .visit_blobs(repository, &objects, &mut |oid, data| {
+            let invalid = |detail| vulcan_sync::GitEngineError::InvalidOutput {
+                operation: "validate Git tree content",
+                detail,
+            };
+            if !missing.remove(oid) {
+                return Err(invalid(format!("unexpected or duplicate blob `{oid}`")));
+            }
+            if let Some(entry) = markdown.get(oid) {
+                let source = std::str::from_utf8(&data).map_err(|_| {
+                    invalid(format!("Markdown path `{}` is not valid UTF-8", entry.path))
+                })?;
+                additions.markdown.insert(
+                    oid.clone(),
+                    CachedMarkdown {
+                        bytes: data.len(),
+                        parsed: parse_document(source, config),
+                    },
+                );
+            }
+            if let Some(entry) = canvas.get(oid) {
+                additions.canvas.insert(
+                    oid.clone(),
+                    CachedCanvas {
+                        bytes: data.len(),
+                        references: parse_canvas_file_references(&entry.path, &data)
+                            .map_err(|error| invalid(error.to_string()))?,
+                    },
+                );
+            }
+            Ok(())
+        })
         .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-
-    for entry in markdown_entries {
-        if cache.markdown.contains_key(&entry.oid) {
-            continue;
-        }
-        let data = require_cached_blob(&blobs, entry)?;
-        let source = std::str::from_utf8(data).map_err(|_| {
-            GitSyncObserverError::new(format!("Markdown path `{}` is not valid UTF-8", entry.path))
-        })?;
-        cache.markdown.insert(
-            entry.oid.clone(),
-            CachedMarkdown {
-                bytes: data.len(),
-                parsed: parse_document(source, config),
-            },
-        );
+    if let Some(oid) = missing.first() {
+        return Err(GitSyncObserverError::new(format!(
+            "blob `{oid}` has no data"
+        )));
     }
-    for entry in canvas_entries {
-        if cache.canvas.contains_key(&entry.oid) {
-            continue;
-        }
-        let data = require_cached_blob(&blobs, entry)?;
-        cache.canvas.insert(
-            entry.oid.clone(),
-            CachedCanvas {
-                bytes: data.len(),
-                references: parse_canvas_file_references(&entry.path, data)?,
-            },
-        );
-    }
+    cache.markdown.extend(additions.markdown);
+    cache.canvas.extend(additions.canvas);
     Ok(())
-}
-
-fn require_cached_blob<'a>(
-    blobs: &'a BTreeMap<vulcan_sync::GitOid, Vec<u8>>,
-    entry: &vulcan_sync::GitTreeEntry,
-) -> Result<&'a [u8], GitSyncObserverError> {
-    blobs
-        .get(&entry.oid)
-        .map(Vec::as_slice)
-        .ok_or_else(|| GitSyncObserverError::new(format!("blob `{}` has no data", entry.path)))
 }
 
 fn resolve_document_links(
@@ -3296,6 +3306,181 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             1,
             "commands:\n{commands}"
         );
+    }
+
+    #[test]
+    fn whole_tree_blob_cache_shares_oids_across_paths_types_and_passes() {
+        let temporary = tempdir().unwrap();
+        git(temporary.path(), &["init", "--quiet"]);
+        let engine = vulcan_sync::GitCliEngine::default();
+        let repository = engine.discover_repository(temporary.path()).unwrap();
+        let oid = engine
+            .write_blob(&repository, br#"{"nodes":[],"edges":[]}"#)
+            .unwrap();
+        let entry = |path: &str| vulcan_sync::GitTreeEntry {
+            path: path.to_string(),
+            oid: oid.clone(),
+            mode: "100644".to_string(),
+            kind: "blob".to_string(),
+        };
+        let first = entry("first.md");
+        let second = entry("second.md");
+        let canvas = entry("board.canvas");
+        let config = VaultConfig::default();
+        let mut cache = GitTreeAnalysisCache::default();
+        let before = engine.subprocess_count().unwrap();
+        for _ in 0..3 {
+            cache_tree_content(
+                &engine,
+                &repository,
+                &[&first, &second],
+                &[&canvas],
+                &config,
+                &mut cache,
+            )
+            .unwrap();
+        }
+        assert_eq!(cache.markdown.len(), 1);
+        assert_eq!(cache.canvas.len(), 1);
+        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn whole_tree_blob_cache_publishes_nothing_after_late_stream_or_process_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempdir().unwrap();
+        git(temporary.path(), &["init", "--quiet"]);
+        let real_engine = vulcan_sync::GitCliEngine::default();
+        let repository = real_engine.discover_repository(temporary.path()).unwrap();
+        let entry = |path: &str, digit: char| vulcan_sync::GitTreeEntry {
+            path: path.to_string(),
+            oid: vulcan_sync::GitOid::parse(digit.to_string().repeat(40)).unwrap(),
+            mode: "100644".to_string(),
+            kind: "blob".to_string(),
+        };
+        let existing = entry("existing.md", '0');
+        let markdown = entry("new.md", '1');
+        let canvas = entry("new.canvas", '2');
+        let last = entry("last.md", '3');
+        let wrapper = temporary.path().join("git-wrapper");
+        let engine = vulcan_sync::GitCliEngine::new(&wrapper);
+        let config = VaultConfig::default();
+        let mut cache = GitTreeAnalysisCache::default();
+        cache.markdown.insert(
+            existing.oid.clone(),
+            CachedMarkdown {
+                bytes: 4,
+                parsed: parse_document("keep", &config),
+            },
+        );
+        let prefix = format!(
+            "{} blob 2\\nhi\\n{} blob 12\\n{{\"nodes\":[]}}\\n",
+            markdown.oid, canvas.oid
+        );
+        for suffix in [
+            format!("printf '{} blob 4\\nab'; exit 0", last.oid),
+            format!("printf '{} blob 4\\nlast\\n'; exit 7", last.oid),
+        ] {
+            fs::write(
+                &wrapper,
+                format!("#!/bin/sh\ncat >/dev/null\nprintf '{prefix}'\n{suffix}\n"),
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+            let error = cache_tree_content(
+                &engine,
+                &repository,
+                &[&existing, &markdown, &last],
+                &[&canvas],
+                &config,
+                &mut cache,
+            )
+            .expect_err("late failure");
+            assert!(
+                error.to_string().contains("blob content") || error.to_string().contains('7'),
+                "{error}"
+            );
+            assert_eq!(
+                cache.markdown.keys().collect::<Vec<_>>(),
+                vec![&existing.oid]
+            );
+            assert_eq!(cache.markdown[&existing.oid].bytes, 4);
+            assert!(cache.canvas.is_empty());
+        }
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '{prefix}{} blob 4\\nlast\\n'\n",
+                last.oid
+            ),
+        )
+        .unwrap();
+        cache_tree_content(
+            &engine,
+            &repository,
+            &[&existing, &markdown, &last],
+            &[&canvas],
+            &config,
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(cache.markdown.len(), 3);
+        assert_eq!(cache.canvas.len(), 1);
+        assert_eq!(engine.subprocess_count(), Some(3));
+    }
+
+    #[test]
+    fn whole_tree_blob_cache_rejects_invalid_content_and_missing_objects() {
+        let temporary = tempdir().unwrap();
+        git(temporary.path(), &["init", "--quiet"]);
+        let engine = vulcan_sync::GitCliEngine::default();
+        let repository = engine.discover_repository(temporary.path()).unwrap();
+        for (path, data, message) in [
+            ("bad.md", b"\xff".as_slice(), "not valid UTF-8"),
+            ("bad.canvas", b"\xff".as_slice(), "not valid UTF-8"),
+            ("bad.canvas", b"{".as_slice(), "not valid JSON"),
+            ("bad.canvas", b"{}".as_slice(), "no nodes array"),
+        ] {
+            let entry = vulcan_sync::GitTreeEntry {
+                path: path.to_string(),
+                oid: engine.write_blob(&repository, data).unwrap(),
+                mode: "100644".to_string(),
+                kind: "blob".to_string(),
+            };
+            let entries = [&entry];
+            let (markdown, canvas) = if markdown_path(path) {
+                (entries.as_slice(), &[][..])
+            } else {
+                (&[][..], entries.as_slice())
+            };
+            let error = cache_tree_content(
+                &engine,
+                &repository,
+                markdown,
+                canvas,
+                &VaultConfig::default(),
+                &mut GitTreeAnalysisCache::default(),
+            )
+            .expect_err("invalid content");
+            assert!(error.to_string().contains(message), "{error}");
+        }
+        let missing = vulcan_sync::GitTreeEntry {
+            path: "missing.md".to_string(),
+            oid: vulcan_sync::GitOid::parse("1111111111111111111111111111111111111111").unwrap(),
+            mode: "100644".to_string(),
+            kind: "blob".to_string(),
+        };
+        assert!(cache_tree_content(
+            &engine,
+            &repository,
+            &[&missing],
+            &[],
+            &VaultConfig::default(),
+            &mut GitTreeAnalysisCache::default()
+        )
+        .is_err());
     }
 
     #[test]

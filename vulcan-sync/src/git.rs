@@ -17,6 +17,10 @@ use tempfile::{NamedTempFile, TempDir};
 use ulid::Ulid;
 use wait_timeout::ChildExt;
 
+/// A synchronous blob consumer. Drop each payload after processing to retain
+/// only one raw blob; callbacks may run on the scoped Git stdout reader thread.
+pub type GitBlobVisitor<'a> = dyn FnMut(&GitOid, Vec<u8>) -> Result<(), GitEngineError> + Send + 'a;
+
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
@@ -270,6 +274,23 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
         objects: &[GitOid],
     ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError>;
+
+    /// Visits each unique blob once. The CLI engine retains only one raw payload
+    /// at a time, with the same individual/aggregate limits as `read_blobs`.
+    /// Visitors must not publish results until this method succeeds: later input
+    /// or process failures can invalidate an otherwise successful prefix.
+    /// The compatibility default for alternate engines still collects a map.
+    fn visit_blobs(
+        &self,
+        repository: &GitRepository,
+        objects: &[GitOid],
+        visitor: &mut GitBlobVisitor<'_>,
+    ) -> Result<(), GitEngineError> {
+        for (oid, data) in self.read_blobs(repository, objects)? {
+            visitor(&oid, data)?;
+        }
+        Ok(())
+    }
 
     /// Reads known blobs while enforcing individual and aggregate byte limits.
     /// Engines should reject declared oversize objects before materializing
@@ -1797,12 +1818,34 @@ impl GitCliEngine {
 
     fn read_batch_blobs_with_limits(
         &self,
-        mut command: Command,
+        command: Command,
         input: &[u8],
         expected: &[GitOid],
         per_blob_limit: usize,
         total_limit: usize,
     ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+        let mut blobs = BTreeMap::new();
+        self.visit_batch_blobs_with_limits(
+            command,
+            input,
+            expected,
+            (per_blob_limit, total_limit),
+            &mut |oid, data| {
+                blobs.insert(oid.clone(), data);
+                Ok(())
+            },
+        )?;
+        Ok(blobs)
+    }
+
+    fn visit_batch_blobs_with_limits(
+        &self,
+        mut command: Command,
+        input: &[u8],
+        expected: &[GitOid],
+        limits: (usize, usize),
+        visitor: &mut GitBlobVisitor<'_>,
+    ) -> Result<(), GitEngineError> {
         const OPERATION: &str = "read Git blobs in a batch";
         command
             .stdin(Stdio::piped())
@@ -1834,16 +1877,21 @@ impl GitCliEngine {
             .expect("piped Git stdin must be available");
         std::thread::scope(|scope| {
             let stdout_reader = scope.spawn(move || {
-                parse_batch_blobs_reader(
+                visit_batch_blobs_reader(
                     expected,
                     BufReader::new(stdout),
-                    per_blob_limit,
-                    total_limit,
+                    limits.0,
+                    limits.1,
+                    visitor,
                 )
             });
             let stderr_reader = scope.spawn(move || {
                 let mut bytes = Vec::new();
-                stderr.read_to_end(&mut bytes).map(|_| bytes)
+                (&mut stderr)
+                    .take(MAX_ERROR_BYTES as u64)
+                    .read_to_end(&mut bytes)?;
+                std::io::copy(&mut stderr, &mut std::io::sink())?;
+                Ok(bytes)
             });
             let stdin_writer = scope.spawn(move || stdin.write_all(input));
             let (status, timed_out) =
@@ -1872,10 +1920,10 @@ impl GitCliEngine {
                     timeout: self.command_timeout,
                 });
             }
-            let blobs = blobs?;
+            blobs?;
             if status.success() {
                 write_result?;
-                Ok(blobs)
+                Ok(())
             } else {
                 Err(command_failed(
                     OPERATION,
@@ -2826,6 +2874,31 @@ impl GitEngine for GitCliEngine {
             &objects.into_iter().collect::<Vec<_>>(),
             per_blob_limit,
             total_limit,
+        )
+    }
+
+    fn visit_blobs(
+        &self,
+        repository: &GitRepository,
+        objects: &[GitOid],
+        visitor: &mut GitBlobVisitor<'_>,
+    ) -> Result<(), GitEngineError> {
+        let objects = objects.iter().cloned().collect::<BTreeSet<_>>();
+        if objects.is_empty() {
+            return Ok(());
+        }
+        let mut input = String::new();
+        for object in &objects {
+            writeln!(input, "{object}").expect("writing to a String cannot fail");
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["cat-file", "--batch"]);
+        self.visit_batch_blobs_with_limits(
+            command,
+            input.as_bytes(),
+            &objects.into_iter().collect::<Vec<_>>(),
+            (MAX_CONFLICT_BLOB_BYTES, MAX_CONFLICT_BLOB_BATCH_BYTES),
+            visitor,
         )
     }
 
@@ -5311,14 +5384,35 @@ fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<GitTreeEntry>, GitEngineError>
     Ok(entries)
 }
 
+#[cfg(test)]
 fn parse_batch_blobs_reader(
+    expected: &[GitOid],
+    reader: impl BufRead,
+    per_blob_limit: usize,
+    total_limit: usize,
+) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+    let mut blobs = BTreeMap::new();
+    visit_batch_blobs_reader(
+        expected,
+        reader,
+        per_blob_limit,
+        total_limit,
+        &mut |oid, data| {
+            blobs.insert(oid.clone(), data);
+            Ok(())
+        },
+    )?;
+    Ok(blobs)
+}
+
+fn visit_batch_blobs_reader(
     expected: &[GitOid],
     mut reader: impl BufRead,
     per_blob_limit: usize,
     total_limit: usize,
-) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError> {
+    visitor: &mut GitBlobVisitor<'_>,
+) -> Result<(), GitEngineError> {
     const OPERATION: &str = "read Git blobs in a batch";
-    let mut blobs = BTreeMap::new();
     let mut total = 0_usize;
     for expected_oid in expected {
         let mut header = Vec::new();
@@ -5386,7 +5480,7 @@ fn parse_batch_blobs_reader(
                 detail: "batch response omitted a blob content terminator".to_string(),
             });
         }
-        blobs.insert(expected_oid.clone(), data);
+        visitor(expected_oid, data)?;
     }
     if !reader.fill_buf().map_err(GitEngineError::Io)?.is_empty() {
         return Err(GitEngineError::InvalidOutput {
@@ -5394,7 +5488,7 @@ fn parse_batch_blobs_reader(
             detail: "batch response contained unexpected trailing data".to_string(),
         });
     }
-    Ok(blobs)
+    Ok(())
 }
 
 fn blob_limit_error(oid: &GitOid, limit: usize) -> GitEngineError {
@@ -7717,6 +7811,193 @@ mod tests {
             blobs.get(&second).map(Vec::as_slice),
             Some(b"second blob".as_slice())
         );
+        let before = engine.subprocess_count().unwrap();
+        let mut visited = BTreeMap::new();
+        engine
+            .visit_blobs(
+                &repository,
+                &[first.clone(), second, first],
+                &mut |oid, data| {
+                    assert!(visited.insert(oid.clone(), data).is_none());
+                    Ok(())
+                },
+            )
+            .expect("visit blobs");
+        assert_eq!(visited, blobs);
+        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
+        engine
+            .visit_blobs(&repository, &[], &mut |_, _| panic!("empty batch"))
+            .expect("empty batch");
+        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
+    }
+
+    #[test]
+    fn batch_blob_visitor_rejects_incomplete_and_malformed_protocol() {
+        let oid = GitOid::parse("1111111111111111111111111111111111111111").unwrap();
+        for response in [
+            String::new(),
+            format!("{oid} missing\n"),
+            format!("{oid} tree 0\n\n"),
+            format!("{oid} blob invalid\n"),
+            format!("{oid} blob 4\nabc"),
+            format!("{oid} blob 3\nabc!"),
+            format!("{oid} blob 0\n\nextra"),
+            "x".repeat(1025),
+        ] {
+            assert!(visit_batch_blobs_reader(
+                std::slice::from_ref(&oid),
+                std::io::Cursor::new(response),
+                100,
+                100,
+                &mut |_, _| Ok(())
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn batch_blob_visitor_delivers_before_reading_next_payload() {
+        let oid = GitOid::parse("1111111111111111111111111111111111111111").unwrap();
+        let first = format!("{oid} blob 3\nabc\n");
+        // The second header exists but its payload is absent. Delivery of the
+        // complete prefix proves the reader did not collect the batch first.
+        let response = format!("{first}{oid} blob 8\n");
+        let mut delivered = 0;
+        let result = visit_batch_blobs_reader(
+            &[oid.clone(), oid],
+            std::io::Cursor::new(response),
+            100,
+            100,
+            &mut |_, data| {
+                assert_eq!(data, b"abc");
+                delivered += 1;
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(delivered, 1);
+    }
+
+    #[test]
+    fn batch_blob_visitor_handles_large_and_many_small_blobs_and_early_rejection() {
+        let temporary = TempDir::new().unwrap();
+        init_repo(temporary.path());
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(temporary.path()).unwrap();
+        let large = vec![42; 8 * 1024 * 1024];
+        let mut objects = vec![engine.write_blob(&repository, &large).unwrap()];
+        drop(large);
+        for index in 0..128 {
+            objects.push(
+                engine
+                    .write_blob(&repository, format!("small {index}").as_bytes())
+                    .unwrap(),
+            );
+        }
+        let before = engine.subprocess_count().unwrap();
+        let mut count = 0;
+        let mut maximum = 0;
+        engine
+            .visit_blobs(&repository, &objects, &mut |_, data| {
+                maximum = maximum.max(data.len());
+                count += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(maximum, 8 * 1024 * 1024);
+        assert_eq!(count, 129);
+        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
+        let mut rejected = 0;
+        let error = engine
+            .visit_blobs(&repository, &objects, &mut |_, _| {
+                rejected += 1;
+                Err(GitEngineError::InvalidOutput {
+                    operation: "test visitor",
+                    detail: "consumer rejected blob".to_string(),
+                })
+            })
+            .unwrap_err();
+        assert_eq!(rejected, 1);
+        assert!(error.to_string().contains("consumer rejected blob"));
+        assert_eq!(engine.subprocess_count().unwrap() - before, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_blob_visitor_drains_stderr_and_times_out_process_groups() {
+        let oid = GitOid::parse("1111111111111111111111111111111111111111").unwrap();
+        let engine = GitCliEngine::default().with_command_timeout(Duration::from_millis(100));
+        for script in ["sleep 10", "printf 'broken\\n'; sleep 10"] {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]);
+            assert!(matches!(
+                engine.visit_batch_blobs_with_limits(
+                    command,
+                    b"",
+                    std::slice::from_ref(&oid),
+                    (100, 100),
+                    &mut |_, _| Ok(())
+                ),
+                Err(GitEngineError::CommandTimedOut { .. })
+            ));
+        }
+        let engine = GitCliEngine::default();
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            &format!("head -c 1048576 /dev/zero >&2; printf '{oid} blob 0\\n\\n'; exit 7"),
+        ]);
+        let error = engine
+            .visit_batch_blobs_with_limits(command, b"", &[oid], (100, 100), &mut |_, _| Ok(()))
+            .unwrap_err();
+        match error {
+            GitEngineError::CommandFailed {
+                exit_code, stderr, ..
+            } => {
+                assert_eq!(exit_code, Some(7));
+                assert!(stderr.len() <= MAX_ERROR_BYTES);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "manual RSS comparison: run separately with VULCAN_BLOB_BASELINE=1 and without"]
+    fn batch_blob_memory_measurement() {
+        let temporary = TempDir::new().unwrap();
+        init_repo(temporary.path());
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(temporary.path()).unwrap();
+        let mut objects = Vec::new();
+        for index in 0..48 {
+            let mut data = vec![b'a'; 2 * 1024 * 1024];
+            data[0] = index;
+            objects.push(engine.write_blob(&repository, &data).unwrap());
+        }
+        let before = engine.subprocess_count().unwrap();
+        let mut bytes = 0;
+        let mut maximum_payload = 0;
+        let mut count = 0;
+        if std::env::var_os("VULCAN_BLOB_BASELINE").is_some() {
+            let blobs = engine.read_blobs(&repository, &objects).unwrap();
+            bytes = blobs.values().map(Vec::len).sum();
+            maximum_payload = bytes;
+            count = blobs.len();
+        } else {
+            engine
+                .visit_blobs(&repository, &objects, &mut |_, data| {
+                    bytes += data.len();
+                    maximum_payload = maximum_payload.max(data.len());
+                    count += 1;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(maximum_payload, 2 * 1024 * 1024);
+        }
+        assert_eq!(bytes, 96 * 1024 * 1024);
+        assert_eq!(count, 48);
+        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
+        eprintln!("blobs={count} bytes={bytes} peak_retained_raw={maximum_payload} subprocesses=1");
     }
 
     #[test]
