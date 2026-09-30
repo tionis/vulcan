@@ -431,6 +431,9 @@ struct SupervisorProgressObserver<'a> {
 
 impl GitSyncObserver for SupervisorProgressObserver<'_> {
     fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+        // The application has already retained its recovery journal. The
+        // supervisor durably publishes changed projections and skips identical
+        // ones (e.g. Applying -> Verifying with the same revisions).
         let state = match progress.phase {
             GitSyncPhase::Preparing => SyncState::CapturePending,
             GitSyncPhase::Capturing => SyncState::Capturing,
@@ -789,6 +792,60 @@ mod tests {
             .status()
             .expect("Git should launch");
         assert!(status.success(), "Git failed: {arguments:?}");
+    }
+
+    #[test]
+    fn observer_coalesces_equivalent_phases_and_propagates_persistence_failure() {
+        let temporary = tempdir().unwrap();
+        let ledger = temporary.path().join("jobs.json");
+        let supervisor = SyncSupervisor::at(&ledger).unwrap();
+        supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        let claimed = supervisor.claim_next().unwrap().unwrap();
+        let mut observer = SupervisorProgressObserver {
+            supervisor: &supervisor,
+            job_id: &claimed.job.job.id,
+            vault: temporary.path(),
+        };
+        let mut progress = GitSyncProgress {
+            phase: GitSyncPhase::BackingUp,
+            attempt: 1,
+            repository: vulcan_sync::GitRepository {
+                git_dir: temporary.path().join(".git"),
+                common_dir: temporary.path().join(".git"),
+                work_tree: Some(temporary.path().to_path_buf()),
+                layout: vulcan_sync::GitRepositoryLayout::Colocated,
+                object_format: vulcan_sync::GitObjectFormat::Sha1,
+            },
+            local_snapshot: None,
+            local_tree: None,
+            accepted: None,
+        };
+        observer.progress(&progress).unwrap();
+        let mut changes = supervisor.subscribe_changes();
+        progress.phase = GitSyncPhase::Pushing;
+        observer.progress(&progress).unwrap();
+        assert!(!changes.has_changed().unwrap());
+        progress.phase = GitSyncPhase::Applying;
+        observer.progress(&progress).unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        progress.phase = GitSyncPhase::Verifying;
+        observer.progress(&progress).unwrap();
+        assert!(!changes.has_changed().unwrap());
+        let before = supervisor.list().unwrap();
+        assert_eq!(
+            SyncSupervisor::inspect_at(&ledger).unwrap().list().unwrap(),
+            before
+        );
+        // Fail the actual atomic replacement, after serialization/temp-file I/O.
+        fs::rename(&ledger, temporary.path().join("saved-jobs.json")).unwrap();
+        fs::create_dir(&ledger).unwrap();
+        progress.phase = GitSyncPhase::Completed;
+        assert!(observer.progress(&progress).is_err());
+        assert_eq!(supervisor.list().unwrap(), before);
+        assert!(!changes.has_changed().unwrap());
     }
 
     #[test]

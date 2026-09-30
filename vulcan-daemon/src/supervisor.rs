@@ -28,6 +28,34 @@ const MAX_AGGREGATE_CHILDREN: usize = 256;
 const MAX_RETAINED_AGGREGATE_CHILDREN: usize = 256;
 const MAX_IDEMPOTENCY_COMPONENT_BYTES: usize = 128;
 
+#[cfg(test)]
+type PersistenceGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct PersistenceProbe {
+    writes: std::sync::atomic::AtomicUsize,
+    fail: std::sync::atomic::AtomicBool,
+    gate: Mutex<Option<PersistenceGate>>,
+}
+
+#[cfg(test)]
+impl PersistenceProbe {
+    fn before_write(&self) -> Result<(), SupervisorError> {
+        use std::sync::atomic::Ordering;
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        let gate = self.gate.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            entered.send(()).unwrap();
+            release.recv().unwrap();
+        }
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("injected persistence failure").into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncWatchMetadata {
     pub event_count: usize,
@@ -108,7 +136,7 @@ struct AggregateSyncIdempotencyRecord {
     aggregate_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SupervisorInner {
     state: PersistedSupervisorState,
     queue: VecDeque<String>,
@@ -119,6 +147,11 @@ struct SupervisorInner {
 pub struct SyncSupervisor {
     state_path: PathBuf,
     inner: Mutex<SupervisorInner>,
+    /// Serializes complete read/modify/persist/publish transactions. Readers
+    /// only take `inner`; serialization and disk I/O never hold that lock.
+    writer: Mutex<()>,
+    #[cfg(test)]
+    persistence_probe: PersistenceProbe,
     changes: tokio::sync::watch::Sender<u64>,
     worker: Mutex<Option<std::thread::Thread>>,
 }
@@ -238,8 +271,14 @@ impl SyncSupervisor {
         *self.worker.lock().expect("worker registration lock") = Some(std::thread::current());
     }
 
-    fn persist(&self, state: &PersistedSupervisorState) -> Result<(), SupervisorError> {
-        persist_state(&self.state_path, state)?;
+    // Caller holds `writer` throughout. Publish only after durable replacement:
+    // failed writes leave the committed ledger and idempotency records intact.
+    // No asynchronous writes are pending at return, including during shutdown.
+    fn persist(&self, inner: &SupervisorInner) -> Result<(), SupervisorError> {
+        #[cfg(test)]
+        self.persistence_probe.before_write()?;
+        persist_state(&self.state_path, &inner.state)?;
+        *self.inner.lock().map_err(|_| SupervisorError::Poisoned)? = inner.clone();
         self.notify_change();
         Ok(())
     }
@@ -272,6 +311,9 @@ impl SyncSupervisor {
         }
         Ok(Self {
             state_path,
+            writer: Mutex::new(()),
+            #[cfg(test)]
+            persistence_probe: PersistenceProbe::default(),
             changes: tokio::sync::watch::channel(0).0,
             worker: Mutex::new(None),
             inner: Mutex::new(SupervisorInner {
@@ -289,6 +331,9 @@ impl SyncSupervisor {
         let state = load_state(&state_path)?;
         Ok(Self {
             state_path,
+            writer: Mutex::new(()),
+            #[cfg(test)]
+            persistence_probe: PersistenceProbe::default(),
             changes: tokio::sync::watch::channel(0).0,
             worker: Mutex::new(None),
             inner: Mutex::new(SupervisorInner {
@@ -334,7 +379,12 @@ impl SyncSupervisor {
         validate_idempotency_component("key", key)?;
         let wiki_id = wiki_id.into();
         let vault = vault.into();
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| SupervisorError::Poisoned)?
+            .clone();
         if inner
             .state
             .aggregate_idempotency
@@ -386,7 +436,7 @@ impl SyncSupervisor {
             job_id: enqueue.job.job.id.clone(),
         });
         trim_supervisor_state(&mut inner.state);
-        self.persist(&inner.state)?;
+        self.persist(&inner)?;
         Ok(IdempotentEnqueueSyncReport {
             enqueue,
             replay: false,
@@ -406,7 +456,12 @@ impl SyncSupervisor {
         let selection = selection.into();
         validate_idempotency_component("selection", &selection)?;
         let children = normalize_aggregate_children(children)?;
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| SupervisorError::Poisoned)?
+            .clone();
         if inner
             .state
             .idempotency
@@ -475,7 +530,7 @@ impl SyncSupervisor {
                 aggregate_id: id.clone(),
             });
         trim_supervisor_state(&mut inner.state);
-        self.persist(&inner.state)?;
+        self.persist(&inner)?;
         let persisted = inner
             .state
             .aggregates
@@ -495,10 +550,15 @@ impl SyncSupervisor {
         trigger: SyncJobTrigger,
         watch: Option<SyncWatchMetadata>,
     ) -> Result<EnqueueSyncReport, SupervisorError> {
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| SupervisorError::Poisoned)?
+            .clone();
         let report = enqueue_locked(&mut inner, wiki_id, vault, trigger, watch);
         trim_supervisor_state(&mut inner.state);
-        self.persist(&inner.state)?;
+        self.persist(&inner)?;
         Ok(report)
     }
 
@@ -531,7 +591,13 @@ impl SyncSupervisor {
     }
 
     pub fn claim_next(&self) -> Result<Option<ClaimedSyncJob>, SupervisorError> {
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let committed = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        if committed.queue.is_empty() {
+            return Ok(None);
+        }
+        let mut inner = committed.clone();
+        drop(committed);
         let mut deferred = VecDeque::new();
         let claimed = loop {
             let Some(id) = inner.queue.pop_front() else {
@@ -572,7 +638,14 @@ impl SyncSupervisor {
         // the in-memory queue. An empty claim must not serialize and fsync the
         // entire retained history on every idle worker iteration.
         if claimed.is_some() {
-            self.persist(&inner.state)?;
+            self.persist(&inner)?;
+        } else {
+            // Queue maintenance is not durable state. Keep stale-ID removal
+            // and deferred ordering without rewriting the unchanged ledger.
+            self.inner
+                .lock()
+                .map_err(|_| SupervisorError::Poisoned)?
+                .queue = inner.queue;
         }
         Ok(claimed)
     }
@@ -589,7 +662,12 @@ impl SyncSupervisor {
                 "completion requires a terminal job state".to_string(),
             ));
         }
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| SupervisorError::Poisoned)?
+            .clone();
         let job = inner
             .state
             .jobs
@@ -601,7 +679,7 @@ impl SyncSupervisor {
         job.job.error = error;
         let completed = job.clone();
         inner.cancellations.remove(id);
-        self.persist(&inner.state)?;
+        self.persist(&inner)?;
         Ok(completed)
     }
 
@@ -610,11 +688,12 @@ impl SyncSupervisor {
         id: &str,
         status: SyncStatus,
     ) -> Result<SupervisedSyncJob, SupervisorError> {
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
-        let job = inner
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let committed = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let job = committed
             .state
             .jobs
-            .iter_mut()
+            .iter()
             .find(|candidate| candidate.job.id == id)
             .ok_or_else(|| SupervisorError::UnknownJob(id.to_string()))?;
         if job.job.state != SyncJobState::Running {
@@ -622,16 +701,35 @@ impl SyncSupervisor {
                 "synchronization job `{id}` is not running"
             )));
         }
+        if job.job.status.as_ref() == Some(&status) {
+            return Ok(job.clone());
+        }
+        let mut inner = committed.clone();
+        drop(committed);
+        let job = inner
+            .state
+            .jobs
+            .iter_mut()
+            .find(|job| job.job.id == id)
+            .expect("validated job in cloned transaction");
         job.job.status = Some(status);
         let updated = job.clone();
-        self.persist(&inner.state)?;
+        self.persist(&inner)?;
         Ok(updated)
     }
 
     pub fn cancel(&self, id: &str) -> Result<SupervisedSyncJob, SupervisorError> {
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
-        let job = cancel_locked(&mut inner, id)?;
-        self.persist(&inner.state)?;
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| SupervisorError::Poisoned)?
+            .clone();
+        let (job, cancellation) = cancel_locked(&mut inner, id)?;
+        self.persist(&inner)?;
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+        }
         Ok(job)
     }
 
@@ -672,7 +770,12 @@ impl SyncSupervisor {
     }
 
     pub fn cancel_aggregate(&self, id: &str) -> Result<AggregateSyncJob, SupervisorError> {
-        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| SupervisorError::Poisoned)?
+            .clone();
         let index = inner
             .state
             .aggregates
@@ -681,6 +784,7 @@ impl SyncSupervisor {
             .ok_or_else(|| SupervisorError::UnknownJob(id.to_string()))?;
         inner.state.aggregates[index].cancelled = true;
         let children = inner.state.aggregates[index].children.clone();
+        let mut cancellations = Vec::new();
         for child in children {
             let requested_elsewhere = inner.state.aggregates.iter().any(|aggregate| {
                 aggregate.id != id
@@ -691,10 +795,14 @@ impl SyncSupervisor {
                         .any(|candidate| candidate.job_id == child.job_id)
             });
             if !requested_elsewhere {
-                cancel_locked(&mut inner, &child.job_id)?;
+                let (_, cancellation) = cancel_locked(&mut inner, &child.job_id)?;
+                cancellations.extend(cancellation);
             }
         }
-        self.persist(&inner.state)?;
+        self.persist(&inner)?;
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
         let aggregate = inner
             .state
             .aggregates
@@ -708,26 +816,23 @@ impl SyncSupervisor {
 fn cancel_locked(
     inner: &mut SupervisorInner,
     id: &str,
-) -> Result<SupervisedSyncJob, SupervisorError> {
+) -> Result<(SupervisedSyncJob, Option<SyncCancellationToken>), SupervisorError> {
     let index = inner
         .state
         .jobs
         .iter()
         .position(|candidate| candidate.job.id == id)
         .ok_or_else(|| SupervisorError::UnknownJob(id.to_string()))?;
-    match inner.state.jobs[index].job.state {
+    let cancellation = match inner.state.jobs[index].job.state {
         SyncJobState::Queued => {
             inner.state.jobs[index].job.state = SyncJobState::Cancelled;
             inner.cancellations.remove(id);
+            None
         }
-        SyncJobState::Running => {
-            if let Some(cancellation) = inner.cancellations.get(id) {
-                cancellation.cancel();
-            }
-        }
-        _ => {}
-    }
-    Ok(inner.state.jobs[index].clone())
+        SyncJobState::Running => inner.cancellations.get(id).cloned(),
+        _ => None,
+    };
+    Ok((inner.state.jobs[index].clone(), cancellation))
 }
 
 fn normalize_aggregate_children(
@@ -1096,6 +1201,315 @@ mod tests {
 
     fn supervisor(root: &Path) -> SyncSupervisor {
         SyncSupervisor::at(root.join("jobs.json")).expect("supervisor")
+    }
+
+    #[test]
+    fn repeated_progress_skips_writes_and_notifications() {
+        use std::sync::atomic::Ordering;
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        let claimed = supervisor.claim_next().unwrap().unwrap();
+        let mut changes = supervisor.subscribe_changes();
+        let before = supervisor.persistence_probe.writes.load(Ordering::SeqCst);
+        let mut status = claimed.job.job.status.unwrap();
+        for _ in 0..100 {
+            supervisor
+                .update_running_status(&claimed.job.job.id, status.clone())
+                .unwrap();
+        }
+        assert_eq!(
+            supervisor.persistence_probe.writes.load(Ordering::SeqCst),
+            before
+        );
+        assert!(!changes.has_changed().unwrap());
+        status.state = SyncState::Fetching;
+        supervisor
+            .update_running_status(&claimed.job.job.id, status.clone())
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        for _ in 0..100 {
+            supervisor
+                .update_running_status(&claimed.job.job.id, status.clone())
+                .unwrap();
+        }
+        assert_eq!(
+            supervisor.persistence_probe.writes.load(Ordering::SeqCst),
+            before + 1
+        );
+        assert!(!changes.has_changed().unwrap());
+        assert_eq!(
+            load_state(&supervisor.state_path).unwrap().jobs[0]
+                .job
+                .status,
+            Some(status)
+        );
+        eprintln!("progress fixture: 201 callbacks, baseline 201 ledger writes, actual 1");
+    }
+
+    #[test]
+    fn empty_claim_retains_queue_cleanup_without_persistence() {
+        use std::sync::atomic::Ordering;
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        supervisor.claim_next().unwrap().unwrap();
+        let follow_up = supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Watch)
+            .unwrap();
+        let cancelled = supervisor
+            .enqueue("beta", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        supervisor.cancel(&cancelled.job.job.id).unwrap();
+        supervisor
+            .inner
+            .lock()
+            .unwrap()
+            .queue
+            .push_front("stale-id".to_string());
+        let writes = supervisor.persistence_probe.writes.load(Ordering::SeqCst);
+        let changes = supervisor.subscribe_changes();
+        assert!(supervisor.claim_next().unwrap().is_none());
+        assert_eq!(
+            supervisor.inner.lock().unwrap().queue,
+            VecDeque::from([follow_up.job.job.id.clone()])
+        );
+        supervisor.cancel(&follow_up.job.job.id).unwrap();
+        assert!(supervisor.claim_next().unwrap().is_none());
+        assert!(supervisor.inner.lock().unwrap().queue.is_empty());
+        assert_eq!(
+            supervisor.persistence_probe.writes.load(Ordering::SeqCst),
+            writes + 1
+        );
+        // Consume only the explicit cancellation, then empty claims stay quiet.
+        let mut changes = changes;
+        changes.borrow_and_update();
+        for _ in 0..100 {
+            assert!(supervisor.claim_next().unwrap().is_none());
+        }
+        assert_eq!(
+            supervisor.persistence_probe.writes.load(Ordering::SeqCst),
+            writes + 1
+        );
+        assert!(!changes.has_changed().unwrap());
+    }
+
+    #[test]
+    fn failed_cancellation_does_not_signal_tokens_or_change_aggregates() {
+        use std::sync::atomic::Ordering;
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        let aggregate = supervisor
+            .enqueue_aggregate_idempotent(
+                "scope",
+                "key",
+                "all",
+                vec![
+                    ("alpha".to_string(), temporary.path().to_path_buf()),
+                    ("beta".to_string(), temporary.path().join("beta")),
+                ],
+                SyncJobTrigger::Manual,
+            )
+            .unwrap()
+            .aggregate;
+        let claimed = supervisor.claim_next().unwrap().unwrap();
+        let before = supervisor.list().unwrap();
+        let changes = supervisor.subscribe_changes();
+        supervisor
+            .persistence_probe
+            .fail
+            .store(true, Ordering::SeqCst);
+        assert!(supervisor.cancel(&claimed.job.job.id).is_err());
+        assert!(supervisor.cancel_aggregate(&aggregate.id).is_err());
+        assert!(!claimed.cancellation.is_cancelled());
+        assert_eq!(supervisor.list().unwrap(), before);
+        assert!(
+            !supervisor
+                .aggregate(&aggregate.id)
+                .unwrap()
+                .unwrap()
+                .cancellation_requested
+        );
+        assert!(!changes.has_changed().unwrap());
+        supervisor
+            .persistence_probe
+            .fail
+            .store(false, Ordering::SeqCst);
+        supervisor.cancel_aggregate(&aggregate.id).unwrap();
+        assert!(claimed.cancellation.is_cancelled());
+        let restarted = SyncSupervisor::inspect_at(&supervisor.state_path).unwrap();
+        assert!(
+            restarted
+                .aggregate(&aggregate.id)
+                .unwrap()
+                .unwrap()
+                .cancellation_requested
+        );
+        assert_eq!(restarted.list().unwrap(), supervisor.list().unwrap());
+    }
+
+    #[test]
+    fn failed_writes_do_not_publish_or_poison_idempotent_retries() {
+        use std::sync::atomic::Ordering;
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        let changes = supervisor.subscribe_changes();
+        supervisor
+            .persistence_probe
+            .fail
+            .store(true, Ordering::SeqCst);
+        assert!(supervisor
+            .enqueue_idempotent(
+                "scope",
+                "key",
+                "alpha",
+                temporary.path(),
+                SyncJobTrigger::Manual
+            )
+            .is_err());
+        assert!(supervisor.list().unwrap().is_empty());
+        assert!(!changes.has_changed().unwrap());
+        supervisor
+            .persistence_probe
+            .fail
+            .store(false, Ordering::SeqCst);
+        let enqueued = supervisor
+            .enqueue_idempotent(
+                "scope",
+                "key",
+                "alpha",
+                temporary.path(),
+                SyncJobTrigger::Manual,
+            )
+            .unwrap();
+        assert!(!enqueued.replay);
+        supervisor
+            .persistence_probe
+            .fail
+            .store(true, Ordering::SeqCst);
+        assert!(supervisor.claim_next().is_err());
+        assert_eq!(
+            supervisor
+                .get(&enqueued.enqueue.job.job.id)
+                .unwrap()
+                .unwrap()
+                .job
+                .state,
+            SyncJobState::Queued
+        );
+        supervisor
+            .persistence_probe
+            .fail
+            .store(false, Ordering::SeqCst);
+        let claimed = supervisor.claim_next().unwrap().unwrap();
+        let before = supervisor.list().unwrap();
+        supervisor
+            .persistence_probe
+            .fail
+            .store(true, Ordering::SeqCst);
+        let status = status_for(&claimed.job.job, SyncState::Applying, None);
+        assert!(supervisor
+            .update_running_status(&claimed.job.job.id, status.clone())
+            .is_err());
+        assert!(supervisor
+            .complete(&claimed.job.job.id, SyncJobState::Succeeded, None, None)
+            .is_err());
+        assert_eq!(supervisor.list().unwrap(), before);
+        assert_eq!(load_state(&supervisor.state_path).unwrap().jobs, before);
+        supervisor
+            .persistence_probe
+            .fail
+            .store(false, Ordering::SeqCst);
+        supervisor
+            .update_running_status(&claimed.job.job.id, status)
+            .unwrap();
+        supervisor
+            .complete(&claimed.job.job.id, SyncJobState::Succeeded, None, None)
+            .unwrap();
+        let restarted = SyncSupervisor::at(&supervisor.state_path).unwrap();
+        assert!(
+            restarted
+                .enqueue_idempotent(
+                    "scope",
+                    "key",
+                    "alpha",
+                    temporary.path(),
+                    SyncJobTrigger::Manual
+                )
+                .unwrap()
+                .replay
+        );
+        assert_eq!(restarted.list().unwrap(), supervisor.list().unwrap());
+    }
+
+    #[test]
+    fn slow_persistence_allows_reads_and_orders_concurrent_mutations() {
+        use std::sync::{mpsc, Arc};
+        let temporary = tempdir().unwrap();
+        let supervisor = Arc::new(supervisor(temporary.path()));
+        supervisor
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
+            .unwrap();
+        let claimed = supervisor.claim_next().unwrap().unwrap();
+        let before = supervisor.list().unwrap();
+        let changes = supervisor.subscribe_changes();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *supervisor.persistence_probe.gate.lock().unwrap() = Some((entered_tx, release_rx));
+        let writer = Arc::clone(&supervisor);
+        let id = claimed.job.job.id.clone();
+        let progress = std::thread::spawn(move || {
+            writer
+                .update_running_status(&id, status_for(&claimed.job.job, SyncState::Fetching, None))
+                .unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Deterministic lock assertion while storage is blocked, not a latency threshold.
+        assert!(supervisor.inner.try_lock().is_ok());
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            assert_eq!(supervisor.list().unwrap(), before);
+            assert!(supervisor.get(&before[0].job.id).unwrap().is_some());
+            assert!(supervisor.list_aggregates().unwrap().is_empty());
+        }
+        eprintln!(
+            "stalled writer: 300 committed-state reads in {:?}; inner try_lock succeeds",
+            started.elapsed()
+        );
+        assert!(!changes.has_changed().unwrap());
+        let enqueue_supervisor = Arc::clone(&supervisor);
+        let vault = temporary.path().to_path_buf();
+        let enqueue = std::thread::spawn(move || {
+            enqueue_supervisor
+                .enqueue("beta", vault, SyncJobTrigger::Manual)
+                .unwrap()
+        });
+        let cancel_supervisor = Arc::clone(&supervisor);
+        let id = before[0].job.id.clone();
+        let cancel = std::thread::spawn(move || cancel_supervisor.cancel(&id).unwrap());
+        release_tx.send(()).unwrap();
+        progress.join().unwrap();
+        let queued = enqueue.join().unwrap();
+        cancel.join().unwrap();
+        assert!(claimed.cancellation.is_cancelled());
+        supervisor.cancel(&queued.job.job.id).unwrap();
+        supervisor
+            .complete(&before[0].job.id, SyncJobState::Cancelled, None, None)
+            .unwrap();
+        let committed = supervisor.list().unwrap();
+        assert_eq!(load_state(&supervisor.state_path).unwrap().jobs, committed);
+        // Synchronous completion means shutdown/drop needs no extra flush worker.
+        let state_path = supervisor.state_path.clone();
+        drop(supervisor);
+        assert_eq!(
+            SyncSupervisor::at(state_path).unwrap().list().unwrap(),
+            committed
+        );
     }
 
     #[test]

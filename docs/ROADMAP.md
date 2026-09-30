@@ -639,6 +639,8 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 
 - [x] Read registry and retained jobs once per companion snapshot and reconstruct per-wiki status from grouped borrowed inputs.
 
+- [x] Skip identical progress writes and persist ordered supervisor mutations outside the reader mutex, with failure rollback and durable cancellation ordering.
+
 ### 8.1 Aho-Corasick mention detection
 
 Replace the per-candidate string search in `suggest_mentions` / `link-mentions` with a single-pass multi-pattern automaton.
