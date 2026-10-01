@@ -6512,6 +6512,42 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ---
 
+### 12.22 Integrated device-key enrollment
+
+**Goal:** Make the device key the normal way a Vulcan installation reaches its vaults' Git remotes: a clone or add ends with the vault bound to the device key when possible, and otherwise in a reported, resumable `pending` state, without ever binding a key the remote does not accept.
+
+**Design contract:** `docs/specs/device-key-enrollment.md`. Default policy is `device-key`; the three entry paths are ambient access, a pre-authorized device key, and dynamic OAuth authority. No step asks a question.
+
+**Depends on:** 12.21 (binding, registrations, forge adapters, OAuth login).
+
+#### 12.22.1 Device-level policy
+
+- [ ] Add a strict, bounded `device.toml` beside `daemon.toml`: `[transport] default` and `[[forge]]` entries (host, kind, OAuth client ID, token variable, per-host transport, `login`). Resolve policy per vault (per-host override, then default, then `device-key`), refuse unknown fields, never read it from a vault or remote, and add `device config show|set-transport|set-forge|remove-forge` with `--dry-run` and JSON.
+- [ ] Tests: defaults and overrides, strictness, atomic writes, dry runs, no secrets stored.
+
+#### 12.22.2 Probe and authorize-self
+
+- [ ] Add a device-key probe (`ls-remote` authenticated with the device key alone, batch mode, bounded time) that distinguishes denied from unreachable, and works on a URL before any clone exists.
+- [ ] Add `sync forge authorize-self`: add this device's key as a `vulcan-device:`-marked deploy key through the forge adapter, idempotently, without needing a registration.
+- [ ] Tests against a local remote and the fake forge, including idempotence and denial.
+
+#### 12.22.3 The `enroll` pipeline
+
+- [ ] Add `vault enroll <wiki> [--login] [--dry-run] [--all-wikis]` implementing policy, identity, probe, authority, re-probe, register, bind, with per-step states and `next_steps`. Bind only after a successful probe; stop as `pending` (not failure) when authority or login is missing; skip non-SSH remotes and `ambient` policy.
+- [ ] Tests for every branch, idempotence, and that bind never precedes a successful probe.
+
+#### 12.22.4 Clone and add integration
+
+- [ ] Make `vault clone`/`sync clone` probe first, authorize through the forge when a path exists, clone with the device key when it works, else ambient, then register and enroll. Add `--no-device-key` and `--login`. Make `vault add` enroll after registering, with `--no-enroll`.
+- [ ] Report enrollment state in `devices list` and `sync doctor`.
+- [ ] Tests for the three entry paths and the fallbacks; update `sync-workflow` and `diagnostics-and-repair` skills.
+
+#### 12.22.5 Lifecycle (next)
+
+- [ ] `device replace` (new key, retain the old public identity and recovery heads, list every enrolled vault) and `devices revoke --everywhere`, so one command revokes a lost device across vaults. Tracked with 12.15.5.
+
+---
+
 ## Phase 13: WebUI — Admin and Browse
 
 **Goal:** A web interface for managing the daemon, browsing vaults, and monitoring sync. Read-only initially, leveraging the existing JSON API and the shared rendering/site contracts established in Phase 9.20.
