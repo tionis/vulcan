@@ -96,17 +96,70 @@ pub(super) fn validate_final_state(
     mode: MdbaseManagedWriteMode,
 ) -> Result<Vec<MdbaseRecordDiagnostic>, AppError> {
     let diagnostics = final_diagnostics(loaded, preview, clock)?;
-    if mode == MdbaseManagedWriteMode::Validated
-        && diagnostics.iter().any(|diagnostic| {
-            diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
-        })
-    {
-        return Err(AppError::operation_with_code("validation_failed", format!(
-            "mdbase validation rejected the managed note write: {}; use explicit raw repair only when preserving invalid source is intentional",
-            super::validation_error_summary(&diagnostics)
-        )));
+    if mode == MdbaseManagedWriteMode::Validated {
+        let blocking = blocking_diagnostics(loaded, preview, clock, &diagnostics)?;
+        if !blocking.is_empty() {
+            return Err(AppError::operation_with_code("validation_failed", format!(
+                "mdbase validation rejected the managed note write: {}; use explicit raw repair only when preserving invalid source is intentional",
+                super::validation_error_summary(&blocking)
+            )));
+        }
     }
     Ok(diagnostics)
+}
+
+/// Records already invalid before a write must not block unrelated writes.
+/// Errors block when they sit on a changed record or did not exist in the
+/// pre-write snapshot (for example a link broken by deleting its target).
+fn blocking_diagnostics(
+    loaded: &LoadedCollection,
+    preview: &MdbaseWritePreview,
+    clock: &MdbaseCelClock,
+    diagnostics: &[MdbaseRecordDiagnostic],
+) -> Result<Vec<MdbaseRecordDiagnostic>, AppError> {
+    let mut before = BTreeMap::new();
+    for (path, revision) in &preview.accepted_revisions {
+        if !is_mdbase_record_path(&loaded.collection, path).map_err(AppError::operation)? {
+            continue;
+        }
+        let source = match preview.changes.iter().find(|change| change.path == *path) {
+            Some(change) => change.before.clone(),
+            None => secure_read_to_string(&loaded.collection.root, Path::new(path)).ok(),
+        };
+        if let Some(source) = source.filter(|source| mdbase_content_revision(source) == *revision) {
+            before.insert(path.clone(), source);
+        }
+    }
+    let existing: BTreeSet<_> =
+        analyze_mdbase_record_set_sources(&loaded.collection, &loaded.types, &before, clock)
+            .records
+            .into_iter()
+            .flat_map(|record| record.diagnostics)
+            .map(|diagnostic| diagnostic_key(&diagnostic))
+            .collect();
+    let changed: BTreeSet<&str> = preview
+        .changes
+        .iter()
+        .map(|change| change.path.as_str())
+        .collect();
+    Ok(diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
+                && (changed.contains(diagnostic.path.as_str())
+                    || !existing.contains(&diagnostic_key(diagnostic)))
+        })
+        .cloned()
+        .collect())
+}
+
+fn diagnostic_key(diagnostic: &MdbaseRecordDiagnostic) -> (String, String, String, String) {
+    (
+        diagnostic.path.clone(),
+        diagnostic.code.clone(),
+        diagnostic.field.clone(),
+        diagnostic.message.clone(),
+    )
 }
 
 /// Assemble the complete authorized validation scope captured by the preview.
@@ -339,6 +392,24 @@ mod tests {
         );
         assert!(plan.diagnostics.is_empty());
         assert!(!plan.preview.accepted_revisions.contains_key("hidden.md"));
+    }
+
+    #[test]
+    fn preexisting_invalid_records_do_not_block_unrelated_valid_writes() {
+        let (dir, paths) = fixture("  unique: [{field: id, scope: collection}]\n");
+        fs::write(
+            dir.path().join("legacy.md"),
+            "---\ntype: task\n---\nAlready invalid\n",
+        )
+        .unwrap();
+        plan_mdbase_write(&paths, &request(&[("new.md", Some(source("new")))]), now()).unwrap();
+        let error = plan_mdbase_write(
+            &paths,
+            &request(&[("bad.md", Some("---\ntype: task\n---\n".to_string()))]),
+            now(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), Some("validation_failed"));
     }
 
     #[test]
