@@ -6475,7 +6475,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 #### 12.21.3 Forge adapters and forge sync
 
-- [ ] Verify against a real Forgejo before building on it: one key as a deploy key on several repositories, a key already registered as a user SSH key, and pushing hidden `__vulcan-sync` refs under branch protection. Record versions and results; report forge-level key conflicts explicitly. Partly done: one key as a deploy key on several repositories is confirmed. Still open: a key already registered as a user SSH key, and pushing hidden `__vulcan-sync` refs under branch protection.
+- [x] Verify against a real Forgejo before building on it: one key as a deploy key on several repositories, a key already registered as a user SSH key, and pushing hidden `__vulcan-sync` refs under branch protection. Record versions and results; report forge-level key conflicts explicitly. Verified on Forgejo `16.0.5+gitea-1.22.0` (Git 2.47.3, OpenSSH 10.0): one key as a deploy key on several repositories; an OAuth token can list and add deploy keys; the bound device key authenticated, and created and deleted `registrations/*` refs, with no agent in the environment. Not exercised: a key already registered as a user SSH key (never uploaded as one), and a live-ref content push through the device key.
 - [x] Add device-local per-vault forge configuration (`sync forge set|show|clear`): kind, API base URL, `owner/repo`, and the name of the token environment variable or secret reference. Never read it from vault or synced files, never persist or print token values, and gate network use on the vault's permission. `sync forge set|show|clear`; HTTPS required except loopback, no credentials/query in the URL, unknown fields in the file refused.
 - [x] Define the synchronous `ForgeDeployKeyAdapter` trait (list/add/remove) and implement Forgejo. Manage only keys with the `vulcan-device:` title marker, match by public key, never touch foreign keys, always add write-capable keys. Forgejo client never follows redirects, bounds responses and error text, and strips control characters.
 - [x] Add `sync forge sync [--dry-run]` implementing the spec's reconciliation table: add keys for `placeholder`/`registered`, remove keys only for explicit `revoked` records, report Vulcan-marked orphans without removing them. A failed or partial fetch or an empty list must delete nothing. Add before remove, converge on retry, report per-key results, JSON output. A read-only managed key is removed and re-added (the same key cannot coexist twice).
@@ -6486,6 +6486,16 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 - [x] Add per-vault transport state (not bound, usable, key unavailable) and this device's registration status to the installation device inventory, separate from backup and recovery state, with no remote contact in offline mode. `vulcan devices list` reports `transport` and `this_device_registration` per vault; offline contacts no remote.
 - [x] Add `devices list --all-wikis` and `forge sync --all-wikis` as independent per-vault iteration with separate credentials, results, and failures; never imply one vault's registrations apply to another. `vulcan devices list` already iterated every registered vault; `forge sync --all-wikis` is new, with independent per-vault settings, tokens, permissions, and failures.
+
+#### 12.21.5 OAuth login for forge adapters
+
+**Why:** a long-lived personal access token in an environment variable or file is the weakest part of `forge sync`. A public OAuth2 client with PKCE and a loopback redirect (RFC 8252, as used by the maintainer's `forge-keys` tool) needs no long-lived secret on disk beyond a revocable, rotating refresh token. Verified: an OAuth token from such a client works with the deploy-key API.
+
+- [ ] Add `sync forge login|logout|status` for Forgejo using authorization code with PKCE (S256), a state check, and a `http://127.0.0.1:<random port>/` loopback listener with a timeout; print the URL when no browser can be opened. Use a separate, non-confidential Vulcan OAuth app per forge (redirect `http://127.0.0.1/`), configured with `sync forge set --oauth-client-id <ID>`.
+- [ ] Store tokens device-locally outside every work tree, one 0600 file per forge origin and client, written atomically under a lock. Refresh on use with rotation; never print or log tokens. Provider order: OAuth login first, then the named environment variable as a fallback, as in `forge-keys`.
+- [ ] Send the token only to the configured forge origin (HTTPS, or loopback for tests), never follow redirects, bound responses, and reject a token endpoint on another host.
+- [ ] Tests with a fake OAuth server: PKCE verifier/challenge, state mismatch, denied consent, timeout, refresh and rotation, expired refresh token, concurrent refresh, file permissions, atomic writes, no token in any output or file under the vault.
+- [ ] Update `sync-workflow` and configuration skills plus installed-skill tests when the commands ship.
 
 #### Extension points (not scheduled)
 

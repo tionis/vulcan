@@ -2,9 +2,8 @@
 
 Status: proposed design for Roadmap 12.21. Slice 12.21.1 (transport binding), the registration
 records of 12.21.2 (self-registration, placeholders, revoke, unregister, listing), and the Forgejo
-adapter with `forge sync` of 12.21.3, and the fleet view of 12.21.4 are implemented. Two Forgejo questions
-remain open for a real run: a key already registered as a user SSH key, and pushing the hidden
-`__vulcan-sync` refs under branch protection. The fleet view of 12.21.4 is implemented. This design is independent of the key-management registry in `key-management.md`
+adapter with `forge sync` of 12.21.3, and the fleet view of 12.21.4 are implemented. The adapter has been exercised against a
+real Forgejo; see the verification notes in section 3. This design is independent of the key-management registry in `key-management.md`
 (12.17). It builds on `device-identity.md` and `device-key-custody.md` and resolves their deferred
 "explicit Git/SSH transport adapter" item.
 
@@ -238,16 +237,22 @@ Repository keys API: `GET`/`POST /api/v1/repos/{owner}/{repo}/keys` and
 `DELETE /api/v1/repos/{owner}/{repo}/keys/{id}`, body `{ key, title, read_only }`. The token needs
 write/administration scope on that repository only.
 
-Open compatibility questions, to settle by testing against the deployed Forgejo, not by assumption:
+Verified against a deployed Forgejo (`16.0.5+gitea-1.22.0`, Git 2.47.3, OpenSSH 10.0) on a real
+vault, with the device key bound and no SSH agent, `GIT_SSH_COMMAND`, or token in the environment:
 
-- **Same key as a deploy key on several repositories.** Verified on a deployed Forgejo: one key can be
-  a deploy key on several repositories, so one device key can serve several vaults there. GitHub does
-  not allow it, so a future GitHub adapter must surface that conflict (per-device keys are out of
-  scope because a device is one key).
-- Whether a key already registered as a user SSH key can also be a deploy key. Expectation: no, so
-  the device key must never be uploaded as a user key.
-- Whether deploy keys can push `refs/heads/__vulcan-sync/**` under branch protection, which is the
-  existing Forgejo hidden-ref conformance gate in `git-sync-architecture.md`.
+- **Same key as a deploy key on several repositories:** supported, so one device key can serve several
+  vaults there. GitHub does not allow it, so a future GitHub adapter must surface that conflict
+  (per-device keys are out of scope because a device is one key).
+- **Deploy-key API with an OAuth token:** a token from a public OAuth2 client (authorization code with
+  PKCE) can list and add repository deploy keys; `forge sync --dry-run` and `forge sync` both worked,
+  and a second run reported the key as present.
+- **Hidden refs through the deploy key:** the bound device key authenticated reads and created and
+  deleted `refs/heads/__vulcan-sync/registrations/*` on a vault whose remote already carried the usual
+  `__vulcan-sync` refs. A content push to the live ref through the device key was not exercised,
+  because there was nothing to push, but it uses the same ref namespace and permission.
+- **Not exercised:** a key that is also registered as a user SSH key. The device key is never uploaded
+  as a user key, so this should not arise; Forgejo would refuse it with its own message, which the
+  adapter reports per key.
 
 Other forges (GitHub, GitLab, plain `authorized_keys`) implement the same trait later. Several of
 them forbid one key as a deploy key on many repositories; the adapter must surface that clearly.
