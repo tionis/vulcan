@@ -529,7 +529,7 @@ fn plan_systemd_service(
     let definition = format!(
         "[Unit]\nDescription=Vulcan multi-wiki synchronization daemon\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={} daemon start\nKillSignal=SIGTERM\nTimeoutStopSec=40s\nRestart=on-failure\nRestartSec=5s\nEnvironmentFile=-{}\n\n[Install]\nWantedBy=default.target\n",
         systemd_quote(executable),
-        systemd_quote(&environment_path)
+        systemd_path(&environment_path)
     );
     let commands = match action {
         DaemonServiceAction::Install => vec![
@@ -601,6 +601,12 @@ fn plan_windows_task(
         definition: (action == DaemonServiceAction::Install).then_some(definition),
         commands,
     })
+}
+
+// EnvironmentFile= takes the rest of the line as a literal path: quotes would
+// become part of the filename and the optional ("-") file would silently be skipped.
+fn systemd_path(path: &Path) -> String {
+    path.to_string_lossy().replace('%', "%%")
 }
 
 fn systemd_quote(path: &Path) -> String {
@@ -837,6 +843,7 @@ mod tests {
         assert!(definition.contains("KillSignal=SIGTERM"));
         assert!(definition.contains("TimeoutStopSec=40s"));
         assert!(definition.contains("EnvironmentFile=-"));
+        assert!(!definition.contains("EnvironmentFile=-\""));
         assert!(!definition.contains("API_KEY="));
         assert_eq!(
             plan.commands[1].arguments,
