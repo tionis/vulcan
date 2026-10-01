@@ -80,6 +80,8 @@ Read one coherent generation. Cooperating Vulcan mutations publish derived state
 
 ## 5. Delivery and evidence
 
+A [production CLI 10K source-path probe](measurements/cli-10k-source-path-probe.json) at commit `6a3075a1` returned the correct 50 rows / 1,556 exact matches in 27,344 bytes, but took 9.35 seconds initially and 6.0–6.8 seconds over six repeated requests, with about 555 MiB peak child RSS. Both `--refresh blocking` and `--refresh off` use source-derived execution here: MDB commands are not in the ordinary cache-refresh dispatcher, so the latter does not switch to cached reads. These seven diagnostic samples are not the required warm indexed acceptance workload or evidence of unreachability. They establish that component improvements have not closed the full-path gap and prioritize coherent incremental SQLite-backed read/query integration. Stage timings, varied/restricted workloads, designated reference host, and full acceptance runs remain outstanding.
+
 Deliver these slices as separate working changes:
 
 1. **Baseline and instrumentation:** deterministic public fixtures, native/DQL/mdbase comparisons, stage timing/work counters, explicit current limitations, and the reference-machine benchmark artifact.

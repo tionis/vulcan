@@ -1,0 +1,79 @@
+{
+  "measurement": "production_cli_public_10k_source_derived_query_probe",
+  "recorded_at_utc": "2026-10-01T00:04:39Z",
+  "acceptance_gate_result": "not_evaluated",
+  "scope": "Complete process wall time through captured stdout/stderr and exit; diagnostic sample only, not the required 1000-sample warm indexed workload",
+  "build": {
+    "commit": "6a3075a104a93a19492d61a3c20e763f78a1ce8b",
+    "command": "cargo +1.88.0 build --release -p vulcan-cli",
+    "profile": "Cargo release defaults; no profile overrides or RUSTFLAGS",
+    "features": ["js_runtime", "oauth", "vectors", "web"],
+    "binary_sha256": "c79e51b8e739769cdf3065c86b05728788b8c6a40f5649e973341bf1a6e4a721"
+  },
+  "machine": {
+    "cpu": "Intel Core i7-8650U @ 1.90GHz",
+    "physical_cores": 4,
+    "logical_cpus": 8,
+    "memory_bytes": 33534963712,
+    "os_kernel": "Linux 6.12.107+deb13-amd64",
+    "architecture": "x86_64",
+    "filesystem": "btrfs",
+    "acceptance_reference_machine": false
+  },
+  "fixture": {
+    "generator": "scripts/generate_mdb_fixture.py",
+    "generator_version": 1,
+    "records": 10000,
+    "seed": 42,
+    "body_bytes_per_record": 4096,
+    "links": 100000,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348",
+    "query": "queries/task-open.json",
+    "permission_profile": "default unrestricted"
+  },
+  "method": {
+    "command_template": "target/release/vulcan mdbase query --file FIXTURE/queries/task-open.json --vault FIXTURE/collection --output json --refresh MODE",
+    "timing": "Python time.perf_counter around subprocess.run(capture_output=True, timeout=180); parse and verify JSON after timing",
+    "concurrency": 1,
+    "timeout_seconds": 180,
+    "order": "one first blocking probe, three repeated blocking probes, three off probes",
+    "cache_state": "existing fixture and .vulcan directory; no MDB indexed query snapshot; OS page-cache state uncontrolled",
+    "important_refresh_semantics": "command_uses_auto_refresh does not include Command::Mdbase. Both flags execute the same source-derived App query service; off is NOT a cached or stale-read mode for this command at this commit.",
+    "memory": "Linux resource.getrusage(RUSAGE_CHILDREN).ru_maxrss in KiB; first probe isolated Python process, subsequent six share another parent and report aggregate maximum",
+    "other_cargo_workloads": "none during probes"
+  },
+  "first_probe": {
+    "refresh_argument": "blocking",
+    "wall_seconds": 9.346735583036207,
+    "user_cpu_seconds": 6.343853,
+    "system_cpu_seconds": 0.921130,
+    "peak_rss_kib": 565760
+  },
+  "repeated_probes": [
+    {"refresh_argument": "blocking", "iteration": 0, "wall_seconds": 6.014388992916793},
+    {"refresh_argument": "blocking", "iteration": 1, "wall_seconds": 6.710544247063808},
+    {"refresh_argument": "blocking", "iteration": 2, "wall_seconds": 6.642938281991519},
+    {"refresh_argument": "off", "iteration": 0, "wall_seconds": 6.7636567710433155},
+    {"refresh_argument": "off", "iteration": 1, "wall_seconds": 6.613131260033697},
+    {"refresh_argument": "off", "iteration": 2, "wall_seconds": 6.223364109988324}
+  ],
+  "repeated_child_peak_rss_kib": 567864,
+  "response_checks_all_seven": {
+    "exit_code": 0,
+    "rows": 50,
+    "exact_total": 1556,
+    "expected_total_method": "count i in range(10000) where i%3==0 and (i%5==0 or (i//3)%3==0), independently from fixture generator rules",
+    "has_more_first_probe": true,
+    "stdout_bytes": 27344,
+    "stderr_bytes": 0,
+    "query_diagnostics": 0
+  },
+  "conclusion": "Current complete source-derived requests remain far above the 100ms CLI target. Flag comparison and source inspection implicate source-derived query preparation/execution, not an optional normal cache refresh. Implement coherent incremental SQLite-backed query services before attempting acceptance.",
+  "limitations": [
+    "Seven diagnostic requests, not 1000 samples per mode; no percentile or acceptance claim",
+    "No warm indexed generation, source-read instrumentation, stage timings, restricted grants, query parameter variation, 100K scale, or concurrent writes in this probe",
+    "Peak RSS is not retained memory growth; no throughput or write budget measured",
+    "CPU frequency, power state, unrelated host activity, and OS page-cache state uncontrolled",
+    "The target is not declared unreachable; required indexed execution architecture is still incomplete"
+  ]
+}
