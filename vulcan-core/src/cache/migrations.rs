@@ -125,6 +125,11 @@ impl MigrationRegistry {
                 "retain persisted mdbase record metadata",
                 schema::apply_schema_v21,
             ),
+            Migration::new(
+                22,
+                "retain local mdbase derivation before collection overlays",
+                schema::apply_schema_v22,
+            ),
         ])
     }
 
@@ -283,6 +288,28 @@ mod tests {
             MigrationRegistry::schema_v1().target_version(),
             SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn mdbase_local_record_migration_preserves_final_rows_without_fabricating_bases() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let mut old = MigrationRegistry::schema_v1();
+        old.migrations.retain(|migration| migration.version <= 21);
+        old.migrate(&mut connection).unwrap();
+        connection.execute("INSERT INTO mdbase_record_cache VALUES ('root','a.md','rev','controls',6,'[]','{}',NULL,'[]','[]','{}')", []).unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        let (revision, metadata, local): (String, String, Option<String>) = connection
+            .query_row(
+                "SELECT revision, metadata_json, local_record_json FROM mdbase_record_cache",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(revision, "rev");
+        assert_eq!(metadata, "{}");
+        assert!(local.is_none());
     }
 
     #[test]

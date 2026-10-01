@@ -1,8 +1,8 @@
 use super::control_access::ControlAccess;
 use super::{
-    load_mdbase_records_with_contracts, MdbaseCollection, MdbaseContractRegistry,
-    MdbaseContractView, MdbaseRecordDiagnostic, MdbaseRecordError, MdbaseRecordFileMetadata,
-    MdbaseTypeRegistry, MDBASE_LOCK_FILE_NAME, MDBASE_RECORD_MODEL_VERSION,
+    MdbaseCollection, MdbaseContractRegistry, MdbaseContractView, MdbaseRecordDiagnostic,
+    MdbaseRecordDocument, MdbaseRecordError, MdbaseRecordFileMetadata, MdbaseTypeRegistry,
+    MDBASE_LOCK_FILE_NAME, MDBASE_RECORD_MODEL_VERSION,
 };
 use crate::cache::{CacheDatabase, CacheError};
 use crate::paths::secure_read_to_string;
@@ -114,6 +114,11 @@ pub struct MdbaseRecordCacheRefresh {
     pub updated: usize,
     pub unchanged: usize,
     pub deleted: usize,
+    /// Local parsing/type/schema derivations, excluding collection overlays.
+    #[serde(default)]
+    pub local_records_derived: usize,
+    #[serde(default)]
+    pub local_records_reused: usize,
 }
 
 /// Content-derived revisions for every authoritative mdbase control class.
@@ -491,13 +496,6 @@ fn update_mdbase_record_cache_with_boundary(
     let controls = verify_mdbase_control_snapshots(collection, types, contracts, None)?;
     let dependency_digest = controls.combined.clone();
     let collection_root = cache_collection_root(collection)?;
-    let next = derive_collection_cache(
-        collection,
-        types,
-        contracts,
-        &collection_root,
-        &dependency_digest,
-    )?;
     // Rebuild must not deserialize disposable payloads: damaged JSON is one of
     // the reasons callers need it. Only headers are needed for change counts.
     let previous = if rebuild {
@@ -505,31 +503,22 @@ fn update_mdbase_record_cache_with_boundary(
     } else {
         load_collection_cache(database.connection(), &collection_root)?
     };
-    let previous_headers = if rebuild {
-        let mut statement = database.connection().prepare(
-            "SELECT path, dependency_digest, record_model_version FROM mdbase_record_cache WHERE collection_root = ?1",
-        )?;
-        let rows = statement.query_map([&collection_root], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get::<_, String>(1)?, row.get::<_, u32>(2)?),
-            ))
-        })?;
-        rows.collect::<Result<BTreeMap<_, _>, _>>()?
+    let previous_local = if rebuild {
+        BTreeMap::new()
     } else {
-        previous
-            .iter()
-            .map(|(path, record)| {
-                (
-                    path.clone(),
-                    (
-                        record.dependency_digest.clone(),
-                        record.record_model_version,
-                    ),
-                )
-            })
-            .collect()
+        load_local_records(database.connection(), &collection_root, &dependency_digest)?
     };
+    let (local_records, local_records_derived, local_records_reused) =
+        derive_local_records(collection, types, previous_local)?;
+    let next = derive_collection_cache(
+        collection,
+        types,
+        contracts,
+        &collection_root,
+        &dependency_digest,
+        &local_records,
+    );
+    let previous_headers = load_collection_headers(database.connection(), &collection_root)?;
     let dependency_changed = previous_headers.values().any(|(digest, version)| {
         digest != &dependency_digest || *version != MDBASE_RECORD_MODEL_VERSION
     });
@@ -574,10 +563,18 @@ fn update_mdbase_record_cache_with_boundary(
             }
         }
         for (path, record) in &next {
-            if !rebuild && previous.get(path) == Some(record) {
-                continue;
+            if rebuild || previous.get(path) != Some(record) {
+                store_cached_record(transaction, record)?;
             }
-            store_cached_record(transaction, record)?;
+            // Local payload publication shares the final projection transaction.
+            // Metadata readers never select this body-bearing column.
+            let local = serde_json::to_string(&local_records[path])?;
+            transaction.execute(
+                "UPDATE mdbase_record_cache SET local_record_json = ?3
+                 WHERE collection_root = ?1 AND path = ?2
+                   AND local_record_json IS NOT ?3",
+                params![collection_root, path, local],
+            )?;
         }
         Ok::<_, MdbaseRecordCacheError>(())
     })?;
@@ -589,6 +586,8 @@ fn update_mdbase_record_cache_with_boundary(
         updated,
         unchanged,
         deleted,
+        local_records_derived,
+        local_records_reused,
     })
 }
 
@@ -641,9 +640,15 @@ fn derive_collection_cache(
     contracts: &MdbaseContractRegistry,
     collection_root: &str,
     dependency_digest: &str,
-) -> Result<BTreeMap<String, MdbaseCachedRecord>, MdbaseRecordCacheError> {
-    let records = load_mdbase_records_with_contracts(collection, types, contracts, false)?;
-    Ok(records
+    local_records: &BTreeMap<String, MdbaseRecordDocument>,
+) -> BTreeMap<String, MdbaseCachedRecord> {
+    let records = super::records::finish_local_record_set(
+        collection,
+        types,
+        contracts,
+        local_records.values().cloned().collect(),
+    );
+    records
         .records
         .into_iter()
         .map(|record| {
@@ -668,7 +673,92 @@ fn derive_collection_cache(
                 },
             )
         })
-        .collect())
+        .collect()
+}
+
+fn load_collection_headers(
+    connection: &Connection,
+    root: &str,
+) -> Result<BTreeMap<String, (String, u32)>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT path, dependency_digest, record_model_version FROM mdbase_record_cache WHERE collection_root = ?1",
+    )?;
+    let rows = statement.query_map([root], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?;
+    rows.collect()
+}
+
+fn load_local_records(
+    connection: &Connection,
+    root: &str,
+    digest: &str,
+) -> Result<BTreeMap<String, MdbaseRecordDocument>, MdbaseRecordCacheError> {
+    let mut statement = connection.prepare(
+        "SELECT path, local_record_json FROM mdbase_record_cache
+         WHERE collection_root = ?1 AND dependency_digest = ?2
+           AND record_model_version = ?3 AND local_record_json IS NOT NULL",
+    )?;
+    let rows = statement.query_map(params![root, digest, MDBASE_RECORD_MODEL_VERSION], |row| {
+        let path: String = row.get(0)?;
+        let json: String = row.get(1)?;
+        Ok((path, parse_json_column(1, &json)?))
+    })?;
+    rows.collect::<Result<_, _>>()
+        .map_err(MdbaseRecordCacheError::Database)
+}
+
+fn derive_local_records(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    mut previous: BTreeMap<String, MdbaseRecordDocument>,
+) -> Result<(BTreeMap<String, MdbaseRecordDocument>, usize, usize), MdbaseRecordCacheError> {
+    let discovery =
+        super::discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
+    let clock = super::records::operation_clock(collection);
+    // CEL inference may depend on now/today. Until dependency classification is
+    // complete, never reuse local membership when any match expression exists.
+    let dynamic = types
+        .iter()
+        .any(|definition| definition.frontmatter.pointer("/match/expr").is_some());
+    let mut records = BTreeMap::new();
+    let mut derived = 0;
+    let mut reused = 0;
+    for path in discovery.records {
+        let error = |source| MdbaseRecordError::Read {
+            path: collection.root.join(&path),
+            source,
+        };
+        let source = secure_read_to_string(&collection.root, Path::new(&path)).map_err(error)?;
+        let metadata = fs::metadata(collection.root.join(&path)).map_err(error)?;
+        let revision = super::mdbase_content_revision(&source);
+        let file = super::records::file_metadata(&path, source.len() as u64, Some(&metadata));
+        let cached = previous.remove(&path).filter(|record| {
+            !dynamic
+                && record.path == path
+                && record.revision == revision
+                && record.file == file
+                && record.document.is_none()
+                && record.links.is_empty()
+                && record.tags.is_empty()
+                && record.contract_views.is_empty()
+        });
+        let record = if let Some(record) = cached {
+            reused += 1;
+            record
+        } else {
+            derived += 1;
+            super::records::build_mdbase_record(
+                collection,
+                types,
+                &path,
+                source,
+                Some(&metadata),
+                false,
+                &clock,
+            )
+        };
+        records.insert(path, record);
+    }
+    Ok((records, derived, reused))
 }
 
 /// Read a projection only when both its source revision and dependency set are current.
@@ -1079,7 +1169,7 @@ mod tests {
             .execute(
                 "INSERT INTO mdbase_record_cache SELECT collection_root || '/other', path,
              revision, dependency_digest, record_model_version, types_json,
-             effective_frontmatter_json, display_json, contract_views_json, diagnostics_json, metadata_json
+             effective_frontmatter_json, display_json, contract_views_json, diagnostics_json, metadata_json, local_record_json
              FROM mdbase_record_cache WHERE path = 'record-00000.md'",
                 [],
             )
@@ -1324,6 +1414,174 @@ mod tests {
             verify_mdbase_control_snapshots(&collection, &types, &contracts, None),
             Err(MdbaseRecordCacheError::StaleControls)
         ));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One cache lifecycle checks overlay invalidation and repair parity.
+    fn local_cache_reuses_unchanged_records_but_refreshes_cross_record_diagnostics() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  unique: [{field: id, scope: type}]\n  links:\n    parent: {target_type: any, validate_exists: true}\n---\n");
+        write(
+            &directory.path().join("a.md"),
+            "---\ntype: task\nid: shared\nparent: '[[target]]'\n---\nA\n",
+        );
+        write(&directory.path().join("b.md"), "B\n");
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        let root = cache_collection_root(&collection).unwrap();
+        let first =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (first.local_records_derived, first.local_records_reused),
+            (2, 0)
+        );
+        let first_rows = load_collection_cache(database.connection(), &root).unwrap();
+        assert!(first_rows["a.md"]
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "link_not_found"));
+        let unchanged =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (
+                unchanged.local_records_derived,
+                unchanged.local_records_reused
+            ),
+            (0, 2)
+        );
+        assert_eq!(
+            load_collection_cache(database.connection(), &root).unwrap(),
+            first_rows
+        );
+        write(
+            &directory.path().join("target.md"),
+            "---\ntype: task\nid: shared\n---\nTarget\n",
+        );
+        let added =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (added.local_records_derived, added.local_records_reused),
+            (1, 2)
+        );
+        let linked = load_collection_cache(database.connection(), &root).unwrap();
+        assert_eq!(linked["a.md"].diagnostics.len(), 1);
+        assert_eq!(linked["a.md"].diagnostics[0].code, "duplicate_value");
+        assert_eq!(linked["a.md"].diagnostics[0].related_paths, ["target.md"]);
+        let locals =
+            load_local_records(database.connection(), &root, &added.dependency_digest).unwrap();
+        assert!(locals["a.md"].links.is_empty());
+        assert!(locals["a.md"].diagnostics.is_empty());
+        assert!(locals["a.md"].document.is_none());
+        assert_eq!(locals["a.md"].body, "A\n");
+        let rebuilt =
+            rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (rebuilt.local_records_derived, rebuilt.local_records_reused),
+            (3, 0)
+        );
+        assert_eq!(
+            load_collection_cache(database.connection(), &root).unwrap(),
+            linked
+        );
+        fs::remove_file(directory.path().join("target.md")).unwrap();
+        let removed =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (removed.local_records_derived, removed.local_records_reused),
+            (0, 2)
+        );
+        assert_eq!(
+            load_collection_cache(database.connection(), &root).unwrap(),
+            first_rows
+        );
+        // A same-size edit with the original timestamp must invalidate by bytes.
+        let path = directory.path().join("b.md");
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        write(&path, "C\n");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let changed =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (changed.local_records_derived, changed.local_records_reused),
+            (1, 1)
+        );
+        // Missing or damaged local payloads must not masquerade as reusable bases.
+        database
+            .connection()
+            .execute("UPDATE mdbase_record_cache SET local_record_json=NULL", [])
+            .unwrap();
+        let missing =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(missing.local_records_derived, 2);
+        database
+            .connection()
+            .execute(
+                "UPDATE mdbase_record_cache SET local_record_json='broken'",
+                [],
+            )
+            .unwrap();
+        // Metadata access must not hydrate the optional body-bearing base.
+        assert!(get_cached_mdbase_record(
+            database.connection(),
+            &collection,
+            "a.md",
+            &first_rows["a.md"].revision,
+            &missing.dependency_digest,
+        )
+        .unwrap()
+        .is_some());
+        assert!(
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).is_err()
+        );
+        rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "C\n");
+    }
+
+    #[test]
+    fn local_cache_invalidates_controls_and_conservatively_rederives_cel_matches() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("a.md"), "A\n");
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        write(&directory.path().join("_types/inferred.md"), "---\nkind: mdbase.type\nname: inferred\nmatch:\n  expr: {$expr: 'true'}\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n---\n");
+        let (collection, types, contracts) = load_registries(directory.path());
+        assert!(types.get("inferred").is_some());
+        for _ in 0..2 {
+            let refreshed =
+                refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts)
+                    .unwrap();
+            assert_eq!(
+                (
+                    refreshed.local_records_derived,
+                    refreshed.local_records_reused
+                ),
+                (1, 0)
+            );
+            let rows = load_collection_cache(
+                database.connection(),
+                &cache_collection_root(&collection).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(rows["a.md"].types, ["inferred"]);
+        }
     }
 
     #[test]

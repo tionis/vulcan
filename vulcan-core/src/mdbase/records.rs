@@ -252,7 +252,28 @@ pub fn load_mdbase_records_with_contracts_filtered(
     include_source: bool,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseRecordSet, MdbaseRecordError> {
-    let mut set = load_mdbase_records_filtered(collection, types, include_source, filter)?;
+    let set = load_mdbase_records_filtered(collection, types, include_source, filter)?;
+    Ok(apply_record_set_contracts(collection, contracts, set))
+}
+
+pub(super) fn finish_local_record_set(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    records: Vec<MdbaseRecordDocument>,
+) -> MdbaseRecordSet {
+    apply_record_set_contracts(
+        collection,
+        contracts,
+        finish_record_set(collection, types, records),
+    )
+}
+
+fn apply_record_set_contracts(
+    collection: &MdbaseCollection,
+    contracts: &MdbaseContractRegistry,
+    mut set: MdbaseRecordSet,
+) -> MdbaseRecordSet {
     for record in &mut set.records {
         apply_contract_views(
             collection,
@@ -261,7 +282,7 @@ pub fn load_mdbase_records_with_contracts_filtered(
             validation_severity(collection.config.settings.validation),
         );
     }
-    Ok(set)
+    set
 }
 
 /// Load one collection-relative record without consulting Dataview inline fields.
@@ -328,7 +349,7 @@ fn load_mdbase_record_at_clock(
     ))
 }
 
-fn build_mdbase_record(
+pub(super) fn build_mdbase_record(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
     path: &str,
@@ -454,7 +475,7 @@ fn analyze_record_source(
     }
 }
 
-fn operation_clock(collection: &MdbaseCollection) -> MdbaseCelClock {
+pub(super) fn operation_clock(collection: &MdbaseCollection) -> MdbaseCelClock {
     MdbaseCelClock::new(
         DateTime::<Utc>::from(SystemTime::now()),
         collection

@@ -1,5 +1,11 @@
 use rusqlite::Transaction;
 
+/// Record-local derivation precedes visibility-sensitive collection overlays.
+/// Legacy rows must derive this payload from source, not from final diagnostics.
+pub fn apply_schema_v22(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch("ALTER TABLE mdbase_record_cache ADD COLUMN local_record_json TEXT;")
+}
+
 /// Legacy projections lack persisted values and cannot become complete metadata
 /// snapshots through migration alone. Null payloads are repaired from the vault.
 pub fn apply_schema_v21(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
