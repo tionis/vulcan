@@ -64,6 +64,13 @@ both execute the same application workflow.
   adopt on the user's behalf without showing them the proposal, and never pass `--allow-other-host`
   unless the user asks: the API URL must be on the Git remote's host, since that is where the
   credential is sent. Adoption keeps device-specific values (the token variable) local.
+- `vulcan device config show|set-transport|set-forge|remove-forge` edits this device's non-secret
+  policy in `device.toml` beside `daemon.toml`: the default transport (`device-key`, or `ambient` to
+  leave SSH to the user), and per-host forge entries (kind, public OAuth client ID, a token variable
+  *name*, an optional per-host transport override, and `login auto|never`). It never holds a secret
+  and is never read from a vault or remote. `vulcan sync forge authorize-self` installs this device's
+  key as a Vulcan-managed deploy key through the forge API using the user's OAuth login or token,
+  with no registration needed; it is idempotent and only ever touches its own key.
 - `vulcan sync forge login` authenticates with the forge's OAuth app instead of a pasted token: it
   needs the OAuth client ID from `sync forge init --oauth-client-id`, prints an authorization URL,
   tries to open a browser, and waits for the redirect to `127.0.0.1`. It is interactive (the user

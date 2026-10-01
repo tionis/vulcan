@@ -9,8 +9,10 @@ use crate::device_identity::{DeviceIdentityStatus, DeviceIdentityStore};
 use crate::sync_state::SyncStateStore;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use vulcan_core::VaultPaths;
 use vulcan_sync::GitCliEngine;
 
@@ -168,7 +170,17 @@ fn path_word(path: &Path) -> String {
 
 /// Exact `GIT_SSH_COMMAND` for Vulcan-spawned Git processes.
 fn ssh_command_for(key: &Path) -> String {
-    let mut parts = vec!["ssh".to_owned(), "-i".to_owned(), path_word(key)];
+    ssh_command_with("ssh", key)
+}
+
+/// As [`ssh_command_for`] with an explicit `ssh` program, which tests replace.
+fn ssh_command_with(program: &str, key: &Path) -> String {
+    let program = if program == "ssh" {
+        program.to_owned()
+    } else {
+        shell_quote(program)
+    };
+    let mut parts = vec![program, "-i".to_owned(), path_word(key)];
     parts.extend(SSH_OPTIONS.iter().map(|option| (*option).to_owned()));
     parts.join(" ")
 }
@@ -242,6 +254,117 @@ fn git_engine_with_store(
             None => engine.with_ssh_command(failing_ssh_command("no device identity directory")),
         },
         Err(error) => engine.with_ssh_command(failing_ssh_command(&error.to_string())),
+    }
+}
+
+/// What a device-key probe found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "result", content = "detail", rename_all = "snake_case")]
+pub enum ProbeOutcome {
+    /// The remote accepted the device key.
+    Accepted,
+    /// The remote answered and refused the key (not authorized, repository not found).
+    Denied(String),
+    /// No answer: DNS, network, timeout, or a missing `git`/`ssh`.
+    Unreachable(String),
+}
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Asks `target` (a remote name inside `repo_dir`, or a URL) whether it accepts
+/// this installation's device key *alone*: one `git ls-remote` authenticated
+/// with that key, batch mode, other credentials excluded. It sends no other
+/// credential and cannot lock a repository out. Binding must follow only an
+/// `Accepted` result, because binding a refused key breaks plain `git`.
+pub fn probe_device_key(
+    store: &DeviceIdentityStore,
+    target: &str,
+    repo_dir: Option<&Path>,
+) -> Result<ProbeOutcome, AppError> {
+    probe_device_key_with(store, "ssh", target, repo_dir, PROBE_TIMEOUT)
+}
+
+pub(crate) fn probe_device_key_with(
+    store: &DeviceIdentityStore,
+    ssh_program: &str,
+    target: &str,
+    repo_dir: Option<&Path>,
+    timeout: Duration,
+) -> Result<ProbeOutcome, AppError> {
+    if target.is_empty() || target.starts_with('-') || target.contains(char::is_control) {
+        return Err(AppError::operation("invalid remote for a device-key probe"));
+    }
+    let (_, key) = eligible_key(store).map_err(AppError::operation)?;
+    let mut command = Command::new("git");
+    if let Some(dir) = repo_dir {
+        command.arg("-C").arg(dir);
+    }
+    command
+        .args(["ls-remote", "--heads", "--", target, "HEAD"])
+        .env_remove("GIT_SSH")
+        .env(
+            "GIT_SSH_COMMAND",
+            format!(
+                "{} -o ConnectTimeout=15",
+                ssh_command_with(ssh_program, &key)
+            ),
+        )
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| AppError::operation(format!("could not run git: {error}")))?;
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait().map_err(AppError::operation)? {
+            Some(status) => break status,
+            None if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(ProbeOutcome::Unreachable("the probe timed out".to_owned()));
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    };
+    if status.success() {
+        return Ok(ProbeOutcome::Accepted);
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = std::io::Read::take(&mut pipe, 8192).read_to_string(&mut stderr);
+    }
+    Ok(classify_probe_failure(&stderr))
+}
+
+/// A single-line, bounded message from Git/ssh output, never anything else.
+fn classify_probe_failure(stderr: &str) -> ProbeOutcome {
+    let lower = stderr.to_ascii_lowercase();
+    let line = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty() && !line.starts_with("fatal:") && !line.contains("Please make sure")
+        })
+        .or_else(|| stderr.lines().map(str::trim).find(|line| !line.is_empty()))
+        .unwrap_or("the remote refused the connection");
+    let message: String = line.chars().filter(|c| !c.is_control()).take(200).collect();
+    let denied = [
+        "permission denied",
+        "not authorized",
+        "authentication failed",
+        "repository not found",
+        "does not appear to be a git repository",
+        "access denied",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if denied {
+        ProbeOutcome::Denied(message)
+    } else {
+        ProbeOutcome::Unreachable(message)
     }
 }
 
@@ -921,5 +1044,200 @@ mod tests {
             .vault_local_dir(&fx.paths)
             .join(BINDING_FILE)
             .is_file());
+    }
+
+    /// A fake `ssh` whose behaviour is chosen per test: it serves a local bare
+    /// repository (accept), refuses, reports an unreachable host, or hangs. It
+    /// logs its arguments so the exact options can be asserted.
+    #[cfg(unix)]
+    struct FakeSsh {
+        dir: PathBuf,
+        program: String,
+    }
+
+    #[cfg(unix)]
+    impl FakeSsh {
+        fn new(root: &Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = root.join("fake-ssh");
+            fs::create_dir_all(&dir).unwrap();
+            let program = dir.join("ssh");
+            fs::write(
+                &program,
+                "#!/bin/sh\n\
+                 echo \"$@\" > \"$(dirname \"$0\")/args.log\"\n\
+                 for last; do :; done\n\
+                 case \"$(cat \"$(dirname \"$0\")/mode\")\" in\n\
+                   accept) exec sh -c \"$(printf '%s' \"$last\" | sed 's/^git-upload-pack/git upload-pack/')\" ;;\n\
+                   deny) echo 'git@forge.example: Permission denied (publickey).' >&2; exit 255 ;;\n\
+                   notfound) echo 'Forgejo: Public (Deploy) Key: 23:x is not authorized to read o/r.' >&2; exit 128 ;;\n\
+                   hang) sleep 20 ;;\n\
+                   *) echo 'ssh: Could not resolve hostname forge.example: Name or service not known' >&2; exit 255 ;;\n\
+                 esac\n",
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            let fake = Self {
+                program: program.to_string_lossy().into_owned(),
+                dir,
+            };
+            fake.mode("accept");
+            fake
+        }
+
+        fn mode(&self, mode: &str) {
+            fs::write(self.dir.join("mode"), mode).unwrap();
+        }
+
+        fn logged_arguments(&self) -> String {
+            fs::read_to_string(self.dir.join("args.log")).unwrap_or_default()
+        }
+    }
+
+    /// A bare repository with one commit, reachable as `git@forge.example:<path>`.
+    #[cfg(unix)]
+    fn bare_remote(root: &Path) -> String {
+        let bare = root.join("served.git");
+        git(root, &["init", "-q", "--bare", bare.to_str().unwrap()]);
+        let work = root.join("seed");
+        fs::create_dir_all(&work).unwrap();
+        git(&work, &["-c", "init.defaultBranch=main", "init", "-q"]);
+        git(&work, &["config", "user.name", "T"]);
+        git(&work, &["config", "user.email", "t@example.invalid"]);
+        fs::write(work.join("a.md"), "x").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "seed"]);
+        git(
+            &work,
+            &["push", "-q", bare.to_str().unwrap(), "HEAD:refs/heads/main"],
+        );
+        format!("git@forge.example:{}", bare.display())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_classifies_accepted_denied_and_unreachable() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        let ssh = FakeSsh::new(fx.dir.path());
+        let url = bare_remote(fx.dir.path());
+        let probe = |url: &str| {
+            probe_device_key_with(&fx.store, &ssh.program, url, None, Duration::from_secs(10))
+                .unwrap()
+        };
+
+        assert_eq!(probe(&url), ProbeOutcome::Accepted);
+        let arguments = ssh.logged_arguments();
+        assert!(
+            arguments.contains("IdentitiesOnly=yes") && arguments.contains("IdentityAgent=none"),
+            "{arguments}"
+        );
+        assert!(
+            arguments.contains("BatchMode=yes") && arguments.contains("ConnectTimeout=15"),
+            "{arguments}"
+        );
+        assert!(arguments.contains(
+            &fx.store
+                .private_key_path()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        ));
+
+        ssh.mode("deny");
+        assert!(
+            matches!(probe(&url), ProbeOutcome::Denied(message) if message.contains("Permission denied"))
+        );
+        ssh.mode("notfound");
+        assert!(
+            matches!(probe(&url), ProbeOutcome::Denied(message) if message.contains("not authorized"))
+        );
+        ssh.mode("unreachable");
+        assert!(
+            matches!(probe(&url), ProbeOutcome::Unreachable(message) if message.contains("Could not resolve"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_times_out_instead_of_hanging() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        let ssh = FakeSsh::new(fx.dir.path());
+        ssh.mode("hang");
+        let started = Instant::now();
+        let outcome = probe_device_key_with(
+            &fx.store,
+            &ssh.program,
+            "git@forge.example:o/r.git",
+            None,
+            Duration::from_millis(400),
+        )
+        .unwrap();
+        assert!(
+            matches!(outcome, ProbeOutcome::Unreachable(message) if message.contains("timed out"))
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_ignores_the_repositorys_own_ssh_configuration() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        let ssh = FakeSsh::new(fx.dir.path());
+        let url = bare_remote(fx.dir.path());
+        git(
+            fx.paths.vault_root(),
+            &["remote", "set-url", "origin", &url],
+        );
+        // A foreign core.sshCommand that would fail must not influence the probe.
+        git(
+            fx.paths.vault_root(),
+            &["config", "core.sshCommand", "false"],
+        );
+        let outcome = probe_device_key_with(
+            &fx.store,
+            &ssh.program,
+            "origin",
+            Some(fx.paths.vault_root()),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(outcome, ProbeOutcome::Accepted);
+    }
+
+    #[test]
+    fn the_probe_refuses_bad_targets_and_needs_an_identity() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        for target in ["", "--upload-pack=evil", "a\nb"] {
+            assert!(
+                probe_device_key(&fx.store, target, None).is_err(),
+                "{target:?}"
+            );
+        }
+        let bare = fixture("git@forge.example:o/r.git", false);
+        let error = probe_device_key(&bare.store, "git@forge.example:o/r.git", None).unwrap_err();
+        assert!(error.to_string().contains("vulcan device init"), "{error}");
+        assert!(
+            bare.store.inspect().device_id.is_none(),
+            "probing never initializes the identity"
+        );
+    }
+
+    #[test]
+    fn failure_text_is_classified_without_leaking_control_characters() {
+        let denied = classify_probe_failure("\x1b[31mPermission denied (publickey).\nfatal: Could not read from remote repository.\n");
+        assert!(
+            matches!(&denied, ProbeOutcome::Denied(message) if message == "[31mPermission denied (publickey)."),
+            "{denied:?}"
+        );
+        assert!(matches!(
+            classify_probe_failure("ssh: connect to host x port 22: Connection refused"),
+            ProbeOutcome::Unreachable(_)
+        ));
+        assert!(matches!(
+            classify_probe_failure(""),
+            ProbeOutcome::Unreachable(_)
+        ));
+        let long = classify_probe_failure(&"x".repeat(1000));
+        assert!(matches!(long, ProbeOutcome::Unreachable(message) if message.len() == 200));
     }
 }

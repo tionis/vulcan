@@ -6522,14 +6522,14 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 #### 12.22.1 Device-level policy
 
-- [ ] Add a strict, bounded `device.toml` beside `daemon.toml`: `[transport] default` and `[[forge]]` entries (host, kind, OAuth client ID, token variable, per-host transport, `login`). Resolve policy per vault (per-host override, then default, then `device-key`), refuse unknown fields, never read it from a vault or remote, and add `device config show|set-transport|set-forge|remove-forge` with `--dry-run` and JSON.
-- [ ] Tests: defaults and overrides, strictness, atomic writes, dry runs, no secrets stored.
+- [x] Add a strict, bounded `device.toml` beside `daemon.toml`: `[transport] default` and `[[forge]]` entries (host, kind, OAuth client ID, token variable, per-host transport, `login`). Resolve policy per vault (per-host override, then default, then `device-key`), refuse unknown fields, never read it from a vault or remote, and add `device config show|set-transport|set-forge|remove-forge` with `--dry-run` and JSON.
+- [x] Tests: defaults and overrides, strictness, atomic writes, dry runs, no secrets stored.
 
 #### 12.22.2 Probe and authorize-self
 
-- [ ] Add a device-key probe (`ls-remote` authenticated with the device key alone, batch mode, bounded time) that distinguishes denied from unreachable, and works on a URL before any clone exists.
-- [ ] Add `sync forge authorize-self`: add this device's key as a `vulcan-device:`-marked deploy key through the forge adapter, idempotently, without needing a registration.
-- [ ] Tests against a local remote and the fake forge, including idempotence and denial.
+- [x] Add a device-key probe (`ls-remote` authenticated with the device key alone, batch mode, bounded time) that distinguishes denied from unreachable, and works on a URL before any clone exists.
+- [x] Add `sync forge authorize-self`: add this device's key as a `vulcan-device:`-marked deploy key through the forge adapter, idempotently, without needing a registration.
+- [x] Tests against a local remote (a fake `ssh` serving a bare repo, denying, hanging) and the fake forge, including idempotence and denial.
 
 #### 12.22.3 The `enroll` pipeline
 

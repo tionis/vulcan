@@ -244,7 +244,7 @@ fn forge_sync_installs_registered_devices_and_removes_revoked_ones() {
 
     // No forge configured yet.
     let error = failure_text(&admin_run(Some(TOKEN), &["forge", "sync"]));
-    assert!(error.contains("sync forge set"), "{error}");
+    assert!(error.contains("sync forge init"), "{error}");
 
     // Settings reject an unsafe destination and never store the token.
     assert!(!admin_run(
@@ -902,4 +902,93 @@ fn reqwest_get(url: &str) -> String {
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
     response
+}
+
+#[test]
+fn authorize_self_installs_this_devices_key_without_any_registration() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let remote = root.join("remote.git");
+    git(root, &["init", "--bare", "--quiet", "remote.git"]);
+    let admin = installation(root, "admin", &remote);
+    let vault = admin.join("vault");
+    let vault_arg = vault.to_str().unwrap().to_owned();
+    let forge = serve();
+    let forge_cmd = |token: Option<&str>, args: &[&str]| {
+        let mut full = vec![
+            "--vault",
+            vault_arg.as_str(),
+            "--output",
+            "json",
+            "sync",
+            "forge",
+        ];
+        full.extend_from_slice(args);
+        run(&admin, token, &full)
+    };
+    json(&forge_cmd(
+        None,
+        &[
+            "init",
+            "--kind",
+            "forgejo",
+            "--url",
+            &forge.url,
+            "--repo",
+            "owner/vault",
+            "--token-env",
+            "FORGE_TOKEN",
+            "--allow-other-host",
+        ],
+    ));
+
+    // Without an identity there is nothing to authorize, and the forge is not asked.
+    let error = failure_text(&forge_cmd(Some(TOKEN), &["authorize-self"]));
+    assert!(error.contains("vulcan device init"), "{error}");
+    assert!(forge.keys.lock().unwrap().is_empty());
+
+    let identity = json(&run(&admin, None, &["device", "init", "--output", "json"]));
+    let device_id = identity["identity"]["device_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let public = json(&run(
+        &admin,
+        None,
+        &["device", "public-key", "--output", "json"],
+    ));
+    let public_key = public["public_key"].as_str().unwrap().to_owned();
+
+    let preview = json(&forge_cmd(Some(TOKEN), &["authorize-self", "--dry-run"]));
+    assert_eq!(
+        (preview["action"].as_str(), preview["dry_run"].as_bool()),
+        (Some("added"), Some(true))
+    );
+    assert!(
+        forge.keys.lock().unwrap().is_empty(),
+        "a dry run adds nothing"
+    );
+
+    let added = json(&forge_cmd(
+        Some(TOKEN),
+        &["authorize-self", "--label", "Laptop"],
+    ));
+    assert_eq!(added["action"], "added");
+    assert_eq!(added["device_id"], device_id);
+    {
+        let keys = forge.keys.lock().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].1, public_key);
+        assert_eq!(keys[0].2, format!("vulcan-device:{device_id} Laptop"));
+    }
+    assert_eq!(
+        json(&forge_cmd(Some(TOKEN), &["authorize-self"]))["action"],
+        "already_present"
+    );
+    assert_eq!(forge.keys.lock().unwrap().len(), 1, "idempotent");
+
+    // No registration exists, yet `forge sync` sees the key as an orphan and removes nothing.
+    let plan = json(&forge_cmd(Some(TOKEN), &["sync", "--dry-run"]));
+    assert_eq!(plan["orphans"].as_array().unwrap().len(), 1);
+    assert!(plan["entries"].as_array().unwrap().is_empty());
 }

@@ -42,6 +42,7 @@ pub mod browse;
 pub mod commit;
 pub mod config;
 pub mod decomposition;
+pub mod device_config;
 pub mod device_identity;
 pub mod execution;
 pub mod export;

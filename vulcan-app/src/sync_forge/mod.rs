@@ -543,6 +543,84 @@ fn apply_entry(adapter: &dyn ForgeDeployKeyAdapter, entry: &mut ForgeSyncEntry) 
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorizeAction {
+    Added,
+    /// A Vulcan-managed read-only key was replaced with a write-capable one.
+    Replaced,
+    AlreadyPresent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ForgeAuthorizeReport {
+    pub version: u32,
+    pub repo: String,
+    pub device_id: String,
+    pub fingerprint: String,
+    pub action: AuthorizeAction,
+    pub dry_run: bool,
+}
+
+/// Installs one device's key as a Vulcan-managed deploy key, without needing a
+/// registration. This is how an administrator-capable user authorizes their own
+/// device before it can reach the repository at all. Idempotent: a key with
+/// this public key already present is left alone, and only a Vulcan-managed
+/// read-only key is replaced.
+pub fn authorize_device(
+    adapter: &dyn ForgeDeployKeyAdapter,
+    repo: &str,
+    device_id: &str,
+    public_key: &str,
+    label: Option<&str>,
+    dry_run: bool,
+) -> Result<ForgeAuthorizeReport, AppError> {
+    let identity = identity_from_public_key(public_key, false)?;
+    if identity.device_id != device_id {
+        return Err(AppError::operation(
+            "the device ID does not match its public key; refusing to authorize it",
+        ));
+    }
+    if let Some(label) = label {
+        crate::sync_devices::validate_device_name(label)?;
+    }
+    let keys = adapter.list_deploy_keys()?;
+    let matching = keys
+        .iter()
+        .filter(|key| key.key_identity().as_deref() == Some(identity.public_key.as_str()))
+        .collect::<Vec<_>>();
+    let title = match label {
+        Some(label) => format!("{DEVICE_KEY_TITLE_PREFIX}{device_id} {label}"),
+        None => format!("{DEVICE_KEY_TITLE_PREFIX}{device_id}"),
+    };
+    let read_only_managed = matching
+        .iter()
+        .find(|key| key.read_only && key.marker_device().is_some());
+    let action = if let Some(key) = read_only_managed {
+        if !dry_run {
+            // The same public key cannot be added twice, so the old one goes first.
+            adapter.remove_deploy_key(key.id)?;
+            adapter.add_deploy_key(&identity.public_key, &title)?;
+        }
+        AuthorizeAction::Replaced
+    } else if matching.is_empty() {
+        if !dry_run {
+            adapter.add_deploy_key(&identity.public_key, &title)?;
+        }
+        AuthorizeAction::Added
+    } else {
+        AuthorizeAction::AlreadyPresent
+    };
+    Ok(ForgeAuthorizeReport {
+        version: SYNC_FORGE_REPORT_VERSION,
+        repo: repo.to_owned(),
+        device_id: device_id.to_owned(),
+        fingerprint: identity.fingerprint,
+        action,
+        dry_run,
+    })
+}
+
 /// Reconciles deploy keys with the remote's registrations.
 ///
 /// Registrations must be observed from the remote: a failed or partial read

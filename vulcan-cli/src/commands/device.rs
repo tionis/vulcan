@@ -1,4 +1,4 @@
-use crate::cli::DeviceCommand;
+use crate::cli::{DeviceCommand, DeviceConfigCommand, LoginModeArg, TransportPolicyArg};
 use crate::output::print_json;
 use crate::{Cli, CliError, OutputFormat};
 use serde::Serialize;
@@ -30,6 +30,7 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
                 .map_err(CliError::operation)?;
             print_device_repair(cli.output, &report)
         }
+        DeviceCommand::Config { command } => handle_device_config(cli, command),
         DeviceCommand::SshCommand { args } => run_device_ssh(&store, args),
         DeviceCommand::PublicKey => {
             let public_key = store.public_key().map_err(CliError::operation)?;
@@ -160,4 +161,87 @@ fn run_device_ssh(identity: &DeviceIdentityStore, args: &[String]) -> Result<(),
         .status()
         .map_err(CliError::operation)?;
     std::process::exit(status.code().unwrap_or(255));
+}
+
+fn policy(arg: TransportPolicyArg) -> vulcan_app::device_config::TransportPolicy {
+    match arg {
+        TransportPolicyArg::DeviceKey => vulcan_app::device_config::TransportPolicy::DeviceKey,
+        TransportPolicyArg::Ambient => vulcan_app::device_config::TransportPolicy::Ambient,
+    }
+}
+
+fn handle_device_config(cli: &Cli, command: &DeviceConfigCommand) -> Result<(), CliError> {
+    use vulcan_app::device_config::{DeviceConfigStore, ForgeEntry, LoginMode};
+    let store = DeviceConfigStore::user_default().map_err(CliError::operation)?;
+    let report = match command {
+        DeviceConfigCommand::Show => store.show(),
+        DeviceConfigCommand::SetTransport {
+            policy: arg,
+            dry_run,
+        } => store.set_transport(policy(*arg), *dry_run),
+        DeviceConfigCommand::SetForge {
+            host,
+            kind,
+            oauth_client_id,
+            token_env,
+            transport,
+            login,
+            dry_run,
+        } => store.set_forge(
+            ForgeEntry {
+                host: host.to_ascii_lowercase(),
+                kind: kind.map(|kind| match kind {
+                    crate::cli::ForgeKindArg::Forgejo => vulcan_app::sync_forge::ForgeKind::Forgejo,
+                }),
+                oauth_client_id: oauth_client_id.clone(),
+                token_env: token_env.clone(),
+                transport: transport.map(policy),
+                login: match login {
+                    LoginModeArg::Auto => LoginMode::Auto,
+                    LoginModeArg::Never => LoginMode::Never,
+                },
+            },
+            *dry_run,
+        ),
+        DeviceConfigCommand::RemoveForge { host, dry_run } => store.remove_forge(host, *dry_run),
+    }
+    .map_err(CliError::operation)?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    if report.dry_run {
+        println!("Dry run: nothing was written.");
+    } else if report.changed {
+        println!("Saved {}", report.path.display());
+    }
+    if !report.exists && !report.changed {
+        println!(
+            "No device.toml yet; the defaults apply ({}).",
+            report.path.display()
+        );
+    }
+    println!(
+        "Default transport: {}",
+        match report.config.transport.default {
+            vulcan_app::device_config::TransportPolicy::DeviceKey => "device-key",
+            vulcan_app::device_config::TransportPolicy::Ambient => "ambient",
+        }
+    );
+    for entry in &report.config.forges {
+        println!("Forge {}:", entry.host);
+        if let Some(kind) = entry.kind {
+            println!("  kind: {kind:?}");
+        }
+        if let Some(client_id) = &entry.oauth_client_id {
+            println!("  OAuth client ID: {client_id}");
+        }
+        if let Some(name) = &entry.token_env {
+            println!("  token variable: ${name}");
+        }
+        if let Some(transport) = entry.transport {
+            println!("  transport override: {transport:?}");
+        }
+        println!("  login: {:?}", entry.login);
+    }
+    Ok(())
 }

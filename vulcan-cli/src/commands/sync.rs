@@ -4374,6 +4374,47 @@ fn handle_forge_clear(cli: &Cli, paths: &VaultPaths, dry_run: bool) -> Result<()
     }
 }
 
+/// Unpacks `sync forge init` and runs it.
+fn handle_forge_init_command(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    command: &SyncForgeCommand,
+) -> Result<(), CliError> {
+    let SyncForgeCommand::Init {
+        kind,
+        url,
+        repo,
+        token_env,
+        oauth_client_id,
+        adopt,
+        publish,
+        allow_other_host,
+        wiki,
+        target,
+        dry_run,
+    } = command
+    else {
+        unreachable!("only `sync forge init` is routed here")
+    };
+    handle_forge_init(
+        cli,
+        selected_paths,
+        wiki.as_deref(),
+        target,
+        &vulcan_app::sync_forge::ForgeInitRequest {
+            kind: kind.map(forge_kind),
+            url: url.clone(),
+            repo: repo.clone(),
+            token_env: token_env.clone(),
+            oauth_client_id: oauth_client_id.clone(),
+            adopt: *adopt,
+            publish: *publish,
+            allow_other_host: *allow_other_host,
+            dry_run: *dry_run,
+        },
+    )
+}
+
 fn handle_sync_forge(
     cli: &Cli,
     selected_paths: &VaultPaths,
@@ -4403,35 +4444,7 @@ fn handle_sync_forge(
                 },
             )
         }
-        SyncForgeCommand::Init {
-            kind,
-            url,
-            repo,
-            token_env,
-            oauth_client_id,
-            adopt,
-            publish,
-            allow_other_host,
-            wiki,
-            target,
-            dry_run,
-        } => handle_forge_init(
-            cli,
-            selected_paths,
-            wiki.as_deref(),
-            target,
-            &vulcan_app::sync_forge::ForgeInitRequest {
-                kind: kind.map(forge_kind),
-                url: url.clone(),
-                repo: repo.clone(),
-                token_env: token_env.clone(),
-                oauth_client_id: oauth_client_id.clone(),
-                adopt: *adopt,
-                publish: *publish,
-                allow_other_host: *allow_other_host,
-                dry_run: *dry_run,
-            },
-        ),
+        SyncForgeCommand::Init { .. } => handle_forge_init_command(cli, selected_paths, command),
         SyncForgeCommand::Show { wiki } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
             handle_forge_show(cli, &paths)
@@ -4446,6 +4459,17 @@ fn handle_sync_forge(
             wiki.as_deref(),
             *no_browser,
             *timeout_seconds,
+        ),
+        SyncForgeCommand::AuthorizeSelf {
+            wiki,
+            label,
+            dry_run,
+        } => handle_forge_authorize_self(
+            cli,
+            selected_paths,
+            wiki.as_deref(),
+            label.as_deref(),
+            *dry_run,
         ),
         SyncForgeCommand::Logout { wiki } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
@@ -4503,34 +4527,116 @@ fn forge_sync_one(
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<vulcan_app::sync_forge::ForgeSyncReport, CliError> {
-    use vulcan_app::sync_forge::{
-        forge_sync, resolve_forge_credential, show_forge_config, ForgejoDeployKeys,
-    };
+    let (config, adapter) = forge_adapter(cli, paths, registration_profile, true)?;
+    let remote = GitRemote::parse(&target.remote).map_err(CliError::operation)?;
+    vulcan_app::sync_forge::forge_sync(paths, &remote, &adapter, &config.repo, dry_run)
+        .map_err(CliError::operation)
+}
+
+/// The vault's forge settings and an authenticated adapter: permissions are
+/// checked, then the credential chain (OAuth login first, then the token
+/// variable) is resolved. `check_git` is false for commands that never touch
+/// the Git remote.
+#[cfg(feature = "web")]
+fn forge_adapter(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+    check_git: bool,
+) -> Result<
+    (
+        vulcan_app::sync_forge::ForgeConfig,
+        vulcan_app::sync_forge::ForgejoDeployKeys,
+    ),
+    CliError,
+> {
+    use vulcan_app::sync_forge::{resolve_forge_credential, show_forge_config, ForgejoDeployKeys};
     let config = show_forge_config(paths)
         .map_err(CliError::operation)?
         .ok_or_else(|| {
             CliError::operation(
-                "no forge is configured for this vault; run `vulcan sync forge set`",
+                "no forge is configured for this vault; run `vulcan sync forge init`",
             )
         })?;
     let profile = cli.permissions.as_deref().or(registration_profile);
     let selection = resolve_permission_profile(paths, profile).map_err(CliError::operation)?;
     let guard = ProfilePermissionGuard::new(paths, selection);
-    guard.check_git().map_err(CliError::operation)?;
+    if check_git {
+        guard.check_git().map_err(CliError::operation)?;
+    }
     guard
         .check_network(&config.url)
         .map_err(CliError::operation)?;
     let credential = resolve_forge_credential(&config, &|name| std::env::var(name).ok())
         .map_err(CliError::operation)?;
-    let token = credential.token.as_str();
     let adapter = match config.kind {
         vulcan_app::sync_forge::ForgeKind::Forgejo => {
-            ForgejoDeployKeys::new(&config, token, Duration::from_secs(30))
+            ForgejoDeployKeys::new(&config, credential.token.as_str(), Duration::from_secs(30))
                 .map_err(CliError::operation)?
         }
     };
-    let remote = GitRemote::parse(&target.remote).map_err(CliError::operation)?;
-    forge_sync(paths, &remote, &adapter, &config.repo, dry_run).map_err(CliError::operation)
+    Ok((config, adapter))
+}
+
+#[cfg(feature = "web")]
+fn handle_forge_authorize_self(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    label: Option<&str>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    use vulcan_app::device_identity::{DeviceIdentityStatus, DeviceIdentityStore};
+    use vulcan_app::sync_forge::AuthorizeAction;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    let identity = DeviceIdentityStore::user_default().map_err(CliError::operation)?;
+    let report = identity.inspect();
+    let (DeviceIdentityStatus::Ready, Some(device_id)) = (report.status, report.device_id) else {
+        return Err(CliError::operation(
+            "this installation has no usable device identity; run `vulcan device init`",
+        ));
+    };
+    let public_key = identity.public_key().map_err(CliError::operation)?;
+    let (config, adapter) = forge_adapter(cli, &paths, registration_profile.as_deref(), false)?;
+    let report = vulcan_app::sync_forge::authorize_device(
+        &adapter,
+        &config.repo,
+        &device_id,
+        &public_key,
+        label,
+        dry_run,
+    )
+    .map_err(CliError::operation)?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    println!(
+        "{} for {}: {} ({})",
+        match (report.action, report.dry_run) {
+            (AuthorizeAction::AlreadyPresent, _) => "Already authorized",
+            (AuthorizeAction::Added, true) => "Would authorize",
+            (AuthorizeAction::Added, false) => "Authorized",
+            (AuthorizeAction::Replaced, true) => "Would replace a read-only key",
+            (AuthorizeAction::Replaced, false) => "Replaced a read-only key",
+        },
+        report.repo,
+        report.device_id,
+        report.fingerprint
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "web"))]
+fn handle_forge_authorize_self(
+    _cli: &Cli,
+    _selected_paths: &VaultPaths,
+    _wiki: Option<&str>,
+    _label: Option<&str>,
+    _dry_run: bool,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "this build has no forge support; rebuild with the `web` feature",
+    ))
 }
 
 #[cfg(feature = "web")]

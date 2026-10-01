@@ -225,6 +225,87 @@ impl ForgeDeployKeyAdapter for FakeForge {
     }
 }
 
+#[test]
+fn authorizing_a_device_is_idempotent_and_touches_only_its_own_key() {
+    let dir = TempDir::new().unwrap();
+    let laptop = identity(dir.path(), "laptop");
+    let forge = FakeForge::seeded(vec![key(1, "ci runner", "ssh-ed25519 AAAAci", false)]);
+
+    let preview =
+        authorize_device(&forge, "o/r", &laptop.0, &laptop.1, Some("Laptop"), true).unwrap();
+    assert_eq!(preview.action, AuthorizeAction::Added);
+    assert!(preview.dry_run);
+    assert!(forge.mutations().is_empty(), "a dry run adds nothing");
+
+    let added =
+        authorize_device(&forge, "o/r", &laptop.0, &laptop.1, Some("Laptop"), false).unwrap();
+    assert_eq!(added.action, AuthorizeAction::Added);
+    assert_eq!(forge.keys.borrow().len(), 2);
+    let installed = forge.keys.borrow()[1].clone();
+    assert_eq!(
+        installed.title,
+        format!("vulcan-device:{} Laptop", laptop.0)
+    );
+    assert!(!installed.read_only);
+    assert!(
+        forge.keys.borrow()[0].title == "ci runner",
+        "the foreign key is untouched"
+    );
+
+    let again = authorize_device(&forge, "o/r", &laptop.0, &laptop.1, None, false).unwrap();
+    assert_eq!(again.action, AuthorizeAction::AlreadyPresent);
+    assert_eq!(forge.keys.borrow().len(), 2, "no duplicate");
+}
+
+#[test]
+fn authorizing_replaces_only_a_managed_read_only_key_and_keeps_a_foreign_one() {
+    let dir = TempDir::new().unwrap();
+    let laptop = identity(dir.path(), "laptop");
+    let managed = FakeForge::seeded(vec![key(1, &marker(&laptop.0), &laptop.1, true)]);
+    let report = authorize_device(&managed, "o/r", &laptop.0, &laptop.1, None, false).unwrap();
+    assert_eq!(report.action, AuthorizeAction::Replaced);
+    assert_eq!(managed.mutations()[0], "remove 1", "the old key goes first");
+    assert!(!managed.keys.borrow()[0].read_only);
+
+    // A hand-added key with the same material is never modified.
+    let foreign = FakeForge::seeded(vec![key(2, "my laptop", &laptop.1, true)]);
+    let report = authorize_device(&foreign, "o/r", &laptop.0, &laptop.1, None, false).unwrap();
+    assert_eq!(report.action, AuthorizeAction::AlreadyPresent);
+    assert!(foreign.mutations().is_empty());
+}
+
+#[test]
+fn authorizing_refuses_a_mismatched_id_and_a_hostile_label() {
+    let dir = TempDir::new().unwrap();
+    let laptop = identity(dir.path(), "laptop");
+    let phone = identity(dir.path(), "phone");
+    let forge = FakeForge::default();
+    let error = authorize_device(&forge, "o/r", &phone.0, &laptop.1, None, false).unwrap_err();
+    assert!(error.to_string().contains("does not match"), "{error}");
+    assert!(authorize_device(
+        &forge,
+        "o/r",
+        &laptop.0,
+        &laptop.1,
+        Some("evil\u{202e}"),
+        false
+    )
+    .is_err());
+    assert!(authorize_device(
+        &forge,
+        "o/r",
+        &laptop.0,
+        "ssh-ed25519 AAAA-not-a-key",
+        None,
+        false
+    )
+    .is_err());
+    assert!(
+        forge.calls.borrow().is_empty(),
+        "nothing was sent to the forge"
+    );
+}
+
 struct Repo {
     dir: TempDir,
     paths: VaultPaths,

@@ -607,3 +607,99 @@ fn placeholder_is_claimed_by_the_device_and_revocation_sticks() {
     let listed = json_output(&devices(admin_vault_arg, &["list"]));
     assert_eq!(listed["registrations"]["count"], 0);
 }
+
+#[test]
+fn device_config_commands_edit_only_the_device_file_and_never_store_secrets() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let config = |args: &[&str]| {
+        let mut full = vec!["--output", "json", "device", "config"];
+        full.extend_from_slice(args);
+        run(root, &full)
+    };
+    let file = root.join("config").join("vulcan").join("device.toml");
+
+    // Defaults apply without a file, and reading never creates one.
+    let shown = json_output(&config(&["show"]));
+    assert_eq!(shown["exists"], false);
+    assert_eq!(shown["config"]["transport"]["default"], "device-key");
+    assert!(!file.exists());
+
+    // A dry run validates and writes nothing.
+    let preview = json_output(&config(&["set-transport", "ambient", "--dry-run"]));
+    assert_eq!(
+        (preview["dry_run"].as_bool(), preview["changed"].as_bool()),
+        (Some(true), Some(true))
+    );
+    assert!(!file.exists());
+
+    json_output(&config(&["set-transport", "ambient"]));
+    json_output(&config(&[
+        "set-forge",
+        "Forge.Example.com",
+        "--kind",
+        "forgejo",
+        "--oauth-client-id",
+        "client-abc",
+        "--token-env",
+        "FORGE_TOKEN",
+        "--transport",
+        "device-key",
+    ]));
+    json_output(&config(&[
+        "set-forge",
+        "github.com",
+        "--transport",
+        "ambient",
+    ]));
+    let shown = json_output(&config(&["show"]));
+    assert_eq!(shown["exists"], true);
+    assert_eq!(shown["config"]["transport"]["default"], "ambient");
+    let forges = shown["config"]["forge"].as_array().expect("forge entries");
+    assert_eq!(forges.len(), 2);
+    assert_eq!(
+        forges[0]["host"], "forge.example.com",
+        "hosts are lowercased and sorted"
+    );
+    assert_eq!(forges[0]["oauth_client_id"], "client-abc");
+    assert_eq!(forges[1]["host"], "github.com");
+    assert!(forges[1].get("kind").is_none());
+
+    // Unsafe input is refused before anything is written.
+    let before = fs::read_to_string(&file).expect("device.toml");
+    assert!(!config(&["set-forge", "https://evil.example"])
+        .status
+        .success());
+    assert!(
+        !config(&["set-forge", "forge.other.example", "--token-env", "TOKEN"])
+            .status
+            .success(),
+        "a credential needs a kind"
+    );
+    assert!(!config(&[
+        "set-forge",
+        "forge.other.example",
+        "--kind",
+        "forgejo",
+        "--token-env",
+        "A B"
+    ])
+    .status
+    .success());
+    assert_eq!(fs::read_to_string(&file).unwrap(), before);
+
+    // Only the variable name is stored; no file other than device.toml appears.
+    assert!(before.contains("FORGE_TOKEN") && !before.to_lowercase().contains("secret"));
+    let entries = fs::read_dir(file.parent().unwrap()).unwrap().count();
+    assert_eq!(entries, 1, "only device.toml was written");
+
+    json_output(&config(&["remove-forge", "github.com"]));
+    assert!(!config(&["remove-forge", "github.com"]).status.success());
+    assert_eq!(
+        json_output(&config(&["show"]))["config"]["forge"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

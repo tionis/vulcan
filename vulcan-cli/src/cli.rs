@@ -4013,6 +4013,22 @@ pub enum SyncForgeCommand {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
         wiki: Option<String>,
     },
+    #[command(
+        name = "authorize-self",
+        about = "Add this device's key as a deploy key on the forge, without needing a registration",
+        long_about = "Install this installation's device key as a Vulcan-managed, write-capable deploy key through the forge API, using your OAuth login or API token. Idempotent: an existing key with the same public key is left alone. This is how you authorize your own device before it can reach the repository at all; `vulcan vault enroll` does it for you."
+    )]
+    AuthorizeSelf {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, help = "Optional display label for the deploy key's title")]
+        label: Option<String>,
+        #[arg(
+            long,
+            help = "Show what would change without calling the forge's write API"
+        )]
+        dry_run: bool,
+    },
     #[command(about = "Show the saved forge settings (never the token)")]
     Show {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
@@ -4134,9 +4150,14 @@ pub enum DeviceCommand {
     },
     #[command(about = "Export this installation's canonical public device key")]
     PublicKey,
+    #[command(about = "Show or edit this device's non-secret transport policy and known forges")]
+    Config {
+        #[command(subcommand)]
+        command: DeviceConfigCommand,
+    },
     #[command(
         hide = true,
-        about = "Run ssh with the device key; used as core.sshCommand by `sync transport bind --git-config`"
+        about = "Run ssh with the device key; used as core.sshCommand by `sync transport bind`"
     )]
     SshCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
@@ -4147,6 +4168,78 @@ pub enum DeviceCommand {
     )]
     RepairPermissions {
         #[arg(long, help = "Preview which artifacts would be restricted")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TransportPolicyArg {
+    DeviceKey,
+    Ambient,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LoginModeArg {
+    Auto,
+    Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DeviceConfigCommand {
+    #[command(about = "Show the effective device configuration, defaults included")]
+    Show,
+    #[command(
+        about = "Set the default transport: the device key (default) or ambient SSH credentials",
+        long_about = "Set how this installation authenticates Git over SSH by default. `device-key` enrolls and binds the device key for SSH remotes; `ambient` leaves authentication to your own SSH setup. A per-host override from `set-forge --transport` wins."
+    )]
+    SetTransport {
+        #[arg(value_enum, help = "device-key or ambient")]
+        policy: TransportPolicyArg,
+        #[arg(long, help = "Validate without saving")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Add or replace what this device knows about a forge host",
+        long_about = "Record a forge host: the adapter kind, a public OAuth client ID, an API token variable (a name, never a token), a per-host transport override, and whether `vault enroll` may start an interactive login. Replaces any existing entry for the host. Stored in device.toml beside daemon.toml; never read from a vault or remote."
+    )]
+    SetForge {
+        #[arg(help = "Hostname only, for example forge.example.com")]
+        host: String,
+        #[arg(long, value_enum, help = "Forge software; required with a credential")]
+        kind: Option<ForgeKindArg>,
+        #[arg(
+            long,
+            value_name = "ID",
+            help = "Public OAuth2 client ID for `sync forge login`"
+        )]
+        oauth_client_id: Option<String>,
+        #[arg(
+            long,
+            value_name = "VAR",
+            help = "Environment variable holding an API token"
+        )]
+        token_env: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            help = "Override the default transport for this host"
+        )]
+        transport: Option<TransportPolicyArg>,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "auto",
+            help = "auto: log in interactively only when attached to a terminal"
+        )]
+        login: LoginModeArg,
+        #[arg(long, help = "Validate without saving")]
+        dry_run: bool,
+    },
+    #[command(about = "Remove a forge host entry")]
+    RemoveForge {
+        #[arg(help = "Hostname of the entry to remove")]
+        host: String,
+        #[arg(long, help = "Validate without saving")]
         dry_run: bool,
     },
 }

@@ -8999,6 +8999,49 @@
                 "subcommands": []
               },
               {
+                "about": "Add this device's key as a deploy key on the forge, without needing a registration",
+                "name": "authorize-self",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Optional display label for the deploy key's title",
+                    "id": "label",
+                    "long": "label",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LABEL"
+                    ]
+                  },
+                  {
+                    "help": "Show what would change without calling the forge's write API",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Show the saved forge settings (never the token)",
                 "name": "show",
                 "options": [
@@ -11902,6 +11945,181 @@
             "name": "public-key",
             "options": [],
             "subcommands": []
+          },
+          {
+            "about": "Show or edit this device's non-secret transport policy and known forges",
+            "name": "config",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Show the effective device configuration, defaults included",
+                "name": "show",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Set the default transport: the device key (default) or ambient SSH credentials",
+                "name": "set-transport",
+                "options": [
+                  {
+                    "help": "device-key or ambient",
+                    "id": "policy",
+                    "long": null,
+                    "possible_values": [
+                      "device-key",
+                      "ambient"
+                    ],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "POLICY"
+                    ]
+                  },
+                  {
+                    "help": "Validate without saving",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Add or replace what this device knows about a forge host",
+                "name": "set-forge",
+                "options": [
+                  {
+                    "help": "Hostname only, for example forge.example.com",
+                    "id": "host",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "HOST"
+                    ]
+                  },
+                  {
+                    "help": "Forge software; required with a credential",
+                    "id": "kind",
+                    "long": "kind",
+                    "possible_values": [
+                      "forgejo"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "KIND"
+                    ]
+                  },
+                  {
+                    "help": "Public OAuth2 client ID for `sync forge login`",
+                    "id": "oauth_client_id",
+                    "long": "oauth-client-id",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  },
+                  {
+                    "help": "Environment variable holding an API token",
+                    "id": "token_env",
+                    "long": "token-env",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "VAR"
+                    ]
+                  },
+                  {
+                    "help": "Override the default transport for this host",
+                    "id": "transport",
+                    "long": "transport",
+                    "possible_values": [
+                      "device-key",
+                      "ambient"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TRANSPORT"
+                    ]
+                  },
+                  {
+                    "help": "auto: log in interactively only when attached to a terminal",
+                    "id": "login",
+                    "long": "login",
+                    "possible_values": [
+                      "auto",
+                      "never"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LOGIN"
+                    ]
+                  },
+                  {
+                    "help": "Validate without saving",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove a forge host entry",
+                "name": "remove-forge",
+                "options": [
+                  {
+                    "help": "Hostname of the entry to remove",
+                    "id": "host",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "HOST"
+                    ]
+                  },
+                  {
+                    "help": "Validate without saving",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           },
           {
             "about": "Restrict existing device identity storage to the current user without touching key material",
