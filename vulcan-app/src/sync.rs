@@ -56,7 +56,20 @@ pub fn recover_detached_git_vault(
 
 /// Clones a Git-backed vault without requiring registration or a daemon.
 pub fn clone_git_vault(request: &GitCloneRequest) -> Result<GitCloneReport, AppError> {
-    let engine = vulcan_sync::GitCliEngine::default();
+    clone_git_vault_with_ssh_command(request, None)
+}
+
+/// As [`clone_git_vault`], authenticating with an exact `GIT_SSH_COMMAND`
+/// (the device key) when given. The command applies to this clone only: it is
+/// not written into the repository's configuration.
+pub fn clone_git_vault_with_ssh_command(
+    request: &GitCloneRequest,
+    ssh_command: Option<&str>,
+) -> Result<GitCloneReport, AppError> {
+    let engine = match ssh_command {
+        Some(command) => vulcan_sync::GitCliEngine::default().with_ssh_command(command),
+        None => vulcan_sync::GitCliEngine::default(),
+    };
     let installation = engine.installation().map_err(AppError::operation)?;
     let repository = engine
         .clone_repository(request)
@@ -337,7 +350,7 @@ fn doctor_git_vault_with_optional_state(
         policy_detail,
     );
     doctor_device_identity(state_store, &mut report);
-    doctor_transport(paths, &mut report);
+    doctor_transport(paths, &options.remote, &mut report);
 
     match engine.installation() {
         Ok(installation) => {
@@ -581,7 +594,7 @@ fn doctor_device_identity(state_store: Option<&SyncStateStore>, report: &mut Syn
 
 /// Reports a device-key transport binding. Unbound vaults add no check, so
 /// ambient SSH setups keep their existing doctor output.
-fn doctor_transport(paths: &VaultPaths, report: &mut SyncDoctorReport) {
+fn doctor_transport(paths: &VaultPaths, remote: &GitRemote, report: &mut SyncDoctorReport) {
     use crate::sync_transport::{transport_status, GitConfigState, GitTransportState};
     let status = match transport_status(paths) {
         Ok(status) => status,
@@ -596,7 +609,20 @@ fn doctor_transport(paths: &VaultPaths, report: &mut SyncDoctorReport) {
         }
     };
     match status.state {
-        GitTransportState::NotBound => {}
+        GitTransportState::NotBound => {
+            // Not an error: the user may deliberately use ambient SSH. A hint is
+            // given only where the device-key policy applies to this remote.
+            let config = crate::device_config::DeviceConfigStore::user_default()
+                .and_then(|store| store.load())
+                .unwrap_or_default();
+            let url = crate::sync_transport::remote_url(paths.vault_root(), remote.as_str());
+            if let Some(hint) = url
+                .ok()
+                .and_then(|url| crate::vault_enroll::enrollment_hint(&url, &config))
+            {
+                doctor_check(report, "sync.transport", SyncDoctorSeverity::Info, hint);
+            }
+        }
         GitTransportState::DeviceKeyUnavailable => doctor_check(
             report,
             "sync.transport",

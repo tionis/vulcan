@@ -4421,6 +4421,16 @@ pub enum SyncCommand {
         platform: Option<ClonePlatformArg>,
         #[arg(long, help = "Permission profile used by future daemon requests")]
         permissions_profile: Option<String>,
+        #[arg(
+            long,
+            help = "Skip device-key enrollment (treat the transport policy as ambient) for this run"
+        )]
+        no_device_key: bool,
+        #[arg(
+            long,
+            help = "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)"
+        )]
+        login: bool,
         #[arg(long, help = "Validate and report without cloning or registering")]
         dry_run: bool,
     },
@@ -5333,6 +5343,16 @@ pub enum VaultCommand {
         platform: ClonePlatformArg,
         #[arg(long, help = "Permission profile used by future daemon requests")]
         permissions_profile: Option<String>,
+        #[arg(
+            long,
+            help = "Skip device-key enrollment (treat the transport policy as ambient) for this run"
+        )]
+        no_device_key: bool,
+        #[arg(
+            long,
+            help = "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)"
+        )]
+        login: bool,
         #[arg(long, help = "Validate and report without cloning or registering")]
         dry_run: bool,
     },
@@ -5377,6 +5397,16 @@ pub enum VaultCommand {
             help = "Register without a file-tree sync backend"
         )]
         no_sync: bool,
+        #[arg(
+            long,
+            help = "Skip device-key enrollment (treat the transport policy as ambient) for this run"
+        )]
+        no_device_key: bool,
+        #[arg(
+            long,
+            help = "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)"
+        )]
+        login: bool,
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },

@@ -6538,9 +6538,9 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 #### 12.22.4 Clone and add integration
 
-- [ ] Make `vault clone`/`sync clone` probe first, authorize through the forge when a path exists, clone with the device key when it works, else ambient, then register and enroll. Add `--no-device-key` and `--login`. Make `vault add` enroll after registering, with `--no-enroll`.
-- [ ] Report enrollment state in `devices list` and `sync doctor`.
-- [ ] Tests for the three entry paths and the fallbacks; update `sync-workflow` and `diagnostics-and-repair` skills.
+- [x] Make `vault clone`/`sync clone` probe first, authorize through the forge when a path exists, clone with the device key when it works, else ambient, then register and enroll. Add `--no-device-key` and `--login`. Make `vault add` enroll after registering, with `--no-enroll`.
+- [x] Report enrollment state: `devices list` already reports per-vault `transport` and `this_device_registration`, and `sync doctor` now hints (info, not a warning) when a vault with an SSH remote is not enrolled and the policy expects the device key.
+- [x] Tests for the three entry paths and the fallbacks; update `sync-workflow` and `diagnostics-and-repair` skills. The pre-authorized path and the ambient fallback are covered end to end through the CLI with a fake `ssh`; the dynamic forge-authorization path is covered at the app level with a scripted authority, because a clone derives an `https://` forge URL that a local fake forge cannot serve.
 
 #### 12.22.5 Lifecycle (next)
 

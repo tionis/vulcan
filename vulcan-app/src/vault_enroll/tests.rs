@@ -778,3 +778,266 @@ fn a_foreign_core_ssh_command_never_blocks_enrollment() {
         .as_deref()
         .is_some_and(|detail| detail.contains("left alone")));
 }
+
+const CLONE_URL: &str = "git@forge.example.com:eric/mimir.git";
+
+fn prepare(
+    fx: &Fixture,
+    config: &DeviceConfig,
+    probe: &ScriptedProbe<'_>,
+    authority: &FakeAuthority,
+    request: &CloneTransportRequest<'_>,
+) -> CloneTransportReport {
+    let probe_fn = |_: &str, _: Option<&Path>| probe.probe();
+    let sleep_fn = |_: Duration| {};
+    let env = EnrollEnvironment {
+        device_config: config,
+        identity: &fx.identity,
+        state: &fx.state,
+        executable: &fx.exe,
+        probe: &probe_fn,
+        authority,
+        sleep: &sleep_fn,
+        remote_url_override: None,
+    };
+    prepare_clone_transport(&env, request).unwrap()
+}
+
+fn clone_request(source: &str) -> CloneTransportRequest<'_> {
+    CloneTransportRequest {
+        source,
+        wiki: "mimir",
+        no_device_key: false,
+        login: LoginPolicy::Never,
+        dry_run: false,
+    }
+}
+
+#[test]
+fn a_pre_authorized_device_key_clones_with_the_device_key() {
+    let fx = Fixture::new(true);
+    let probe = ScriptedProbe::new(&fx, vec![ProbeOutcome::Accepted]);
+    let authority = FakeAuthority::default();
+    let report = prepare(
+        &fx,
+        &DeviceConfig::default(),
+        &probe,
+        &authority,
+        &clone_request(CLONE_URL),
+    );
+    assert!(report.device_key);
+    let command = report.ssh_command.expect("the clone gets an ssh command");
+    assert!(
+        command.contains("IdentitiesOnly=yes") && command.contains("IdentityAgent=none"),
+        "{command}"
+    );
+    assert!(authority.calls.borrow().is_empty());
+}
+
+#[test]
+fn the_forge_authorizes_the_device_before_the_clone_when_this_machine_can() {
+    let fx = Fixture::new(true);
+    let probe = ScriptedProbe::new(
+        &fx,
+        vec![
+            ProbeOutcome::Denied("no".to_owned()),
+            ProbeOutcome::Accepted,
+        ],
+    );
+    let authority = FakeAuthority::returning(Ok(AuthorizeAction::Added));
+    let report = prepare(
+        &fx,
+        &config_with_forge(),
+        &probe,
+        &authority,
+        &clone_request(CLONE_URL),
+    );
+    assert!(report.device_key && report.ssh_command.is_some());
+    let calls = authority.calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].0, "eric/mimir",
+        "the repository comes from the clone URL"
+    );
+}
+
+#[test]
+fn without_authority_the_clone_falls_back_to_the_users_own_credentials() {
+    let fx = Fixture::new(true);
+    let probe = ScriptedProbe::new(&fx, vec![ProbeOutcome::Denied("no".to_owned())]);
+    let authority = FakeAuthority::default();
+    let report = prepare(
+        &fx,
+        &DeviceConfig::default(),
+        &probe,
+        &authority,
+        &clone_request(CLONE_URL),
+    );
+    assert!(
+        !report.device_key && report.ssh_command.is_none(),
+        "an ambient clone"
+    );
+    assert!(authority.calls.borrow().is_empty());
+
+    // A forge that needs a login reports the exact command and still falls back.
+    let probe = ScriptedProbe::new(&fx, vec![ProbeOutcome::Denied("no".to_owned())]);
+    let authority = FakeAuthority::returning(Err(AuthorityError::NeedsLogin));
+    let report = prepare(
+        &fx,
+        &config_with_forge(),
+        &probe,
+        &authority,
+        &clone_request(CLONE_URL),
+    );
+    assert!(!report.device_key);
+    assert!(report
+        .next_steps
+        .iter()
+        .any(|step| step.contains("sync forge login --wiki mimir")));
+
+    // An unreachable remote never asks the forge.
+    let probe = ScriptedProbe::new(&fx, vec![ProbeOutcome::Unreachable("timeout".to_owned())]);
+    let authority = FakeAuthority::returning(Ok(AuthorizeAction::Added));
+    let report = prepare(
+        &fx,
+        &config_with_forge(),
+        &probe,
+        &authority,
+        &clone_request(CLONE_URL),
+    );
+    assert!(!report.device_key && authority.calls.borrow().is_empty());
+}
+
+#[test]
+fn ambient_policy_non_ssh_sources_and_opt_out_never_touch_the_network() {
+    let fx = Fixture::new(true);
+    let probe = ScriptedProbe::new(&fx, vec![ProbeOutcome::Accepted]);
+    let authority = FakeAuthority::default();
+    let ambient = DeviceConfig {
+        transport: crate::device_config::TransportSection {
+            default: TransportPolicy::Ambient,
+        },
+        ..DeviceConfig::default()
+    };
+    assert!(!prepare(&fx, &ambient, &probe, &authority, &clone_request(CLONE_URL)).device_key);
+    let opt_out = CloneTransportRequest {
+        no_device_key: true,
+        ..clone_request(CLONE_URL)
+    };
+    assert!(!prepare(&fx, &DeviceConfig::default(), &probe, &authority, &opt_out).device_key);
+    for source in [
+        "https://forge.example.com/eric/mimir.git",
+        "/srv/git/mimir.git",
+        "file:///srv/mimir.git",
+    ] {
+        assert!(
+            !prepare(
+                &fx,
+                &DeviceConfig::default(),
+                &probe,
+                &authority,
+                &clone_request(source)
+            )
+            .device_key,
+            "{source}"
+        );
+    }
+    assert_eq!(probe.calls.get(), 0);
+}
+
+#[test]
+fn a_clone_creates_the_identity_but_a_dry_run_only_plans_it() {
+    let fx = Fixture::new(false);
+    let probe = ScriptedProbe::new(&fx, vec![ProbeOutcome::Accepted]);
+    let dry = CloneTransportRequest {
+        dry_run: true,
+        ..clone_request(CLONE_URL)
+    };
+    let report = prepare(
+        &fx,
+        &DeviceConfig::default(),
+        &probe,
+        &FakeAuthority::default(),
+        &dry,
+    );
+    assert!(!report.device_key && report.ssh_command.is_none());
+    assert!(
+        fx.identity.inspect().device_id.is_none(),
+        "a dry run never initializes the identity"
+    );
+    assert_eq!(probe.calls.get(), 0);
+
+    let report = prepare(
+        &fx,
+        &DeviceConfig::default(),
+        &probe,
+        &FakeAuthority::default(),
+        &clone_request(CLONE_URL),
+    );
+    assert!(report.device_key);
+    assert!(fx.identity.inspect().device_id.is_some());
+}
+
+#[test]
+fn a_dry_run_with_a_working_key_plans_a_device_key_clone_without_an_ssh_command() {
+    let fx = Fixture::new(true);
+    let probe = ScriptedProbe::new(&fx, vec![ProbeOutcome::Accepted]);
+    let dry = CloneTransportRequest {
+        dry_run: true,
+        ..clone_request(CLONE_URL)
+    };
+    let report = prepare(
+        &fx,
+        &DeviceConfig::default(),
+        &probe,
+        &FakeAuthority::default(),
+        &dry,
+    );
+    assert!(report.device_key);
+    assert!(
+        report.ssh_command.is_none(),
+        "nothing is configured for a clone that will not run"
+    );
+}
+
+#[test]
+fn the_doctor_hint_appears_only_where_the_device_key_is_expected() {
+    let ambient_default = DeviceConfig {
+        transport: crate::device_config::TransportSection {
+            default: TransportPolicy::Ambient,
+        },
+        ..DeviceConfig::default()
+    };
+    let ambient_host = DeviceConfig {
+        forges: vec![ForgeEntry {
+            transport: Some(TransportPolicy::Ambient),
+            ..forge_entry("forge.example.com")
+        }],
+        ..DeviceConfig::default()
+    };
+    assert!(enrollment_hint(URL, &DeviceConfig::default())
+        .is_some_and(|hint| hint.contains("vulcan vault enroll")));
+    assert!(enrollment_hint(
+        "ssh://git@forge.example.com/eric/mimir",
+        &DeviceConfig::default()
+    )
+    .is_some());
+    assert!(
+        enrollment_hint("/srv/git/mimir.git", &DeviceConfig::default()).is_none(),
+        "a local path is not SSH"
+    );
+    assert!(enrollment_hint(
+        "https://forge.example.com/eric/mimir.git",
+        &DeviceConfig::default()
+    )
+    .is_none());
+    assert!(enrollment_hint(URL, &ambient_default).is_none());
+    assert!(
+        enrollment_hint(URL, &ambient_host).is_none(),
+        "a per-host override wins"
+    );
+    assert!(
+        enrollment_hint("git@other.example:o/r.git", &ambient_host).is_some(),
+        "other hosts keep the default"
+    );
+}

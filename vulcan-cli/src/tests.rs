@@ -2265,6 +2265,8 @@ fn parses_sync_clone_command() {
                 git_dir: None,
                 platform: Some(ClonePlatformArg::AndroidShared),
                 permissions_profile: None,
+                no_device_key: false,
+                login: false,
                 dry_run: true,
             },
         }
@@ -3427,6 +3429,8 @@ fn parses_vault_registry_commands() {
                 git_dir: Some(PathBuf::from("/data/git/wiki")),
                 platform: ClonePlatformArg::AndroidShared,
                 permissions_profile: None,
+                no_device_key: false,
+                login: false,
                 dry_run: true,
             },
         }
@@ -3477,6 +3481,8 @@ fn parses_vault_registry_commands() {
                 permissions_profile: None,
                 sync_backend: None,
                 no_sync: false,
+                no_device_key: false,
+                login: false,
                 dry_run: true,
             },
         }

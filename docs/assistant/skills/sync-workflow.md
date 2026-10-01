@@ -74,6 +74,14 @@ both execute the same application workflow.
   and still exits successfully. `--dry-run` probes read-only and reports what it would do;
   `--all-wikis` gives each vault its own result. Interactive login only starts with `--login` (or on a
   terminal when the forge entry allows it), so never pass `--login` unattended.
+- `vulcan vault clone`, `vulcan sync clone`, and `vulcan vault add` now run that enrollment for you
+  when the transport policy is `device-key` (the default) and the remote is SSH. A clone first probes
+  the URL: if the device key is accepted, or this machine can authorize it through the forge, the clone
+  itself uses the device key; otherwise it uses the user's own credentials exactly as before and
+  enrollment finishes afterwards as `pending`. The clone or add never fails because of enrollment; the
+  result is in the `transport` and `enroll` fields (or `enroll_error`). Pass `--no-device-key` for the
+  old behaviour, and never pass `--login` unattended. A vault added or cloned before this existed is
+  enrolled with `vulcan vault enroll <wiki>`.
 - `vulcan device config show|set-transport|set-forge|remove-forge` edits this device's non-secret
   policy in `device.toml` beside `daemon.toml`: the default transport (`device-key`, or `ambient` to
   leave SSH to the user), and per-host forge entries (kind, public OAuth client ID, a token variable

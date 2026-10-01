@@ -1027,6 +1027,8 @@ fn fake_ssh(dir: &Path) -> PathBuf {
     fs::write(
         &program,
         r#"#!/bin/sh
+echo "$*" >> "$(dirname "$0")/calls.log"
+cd "$(dirname "$0")/srv" 2>/dev/null
 for last; do :; done
 case "$*" in *IdentitiesOnly=yes*) mode=$(cat "$(dirname "$0")/device_mode") ;; *) mode=accept ;; esac
 if [ "$mode" = accept ]; then
@@ -1096,9 +1098,16 @@ fn vault_enroll_walks_every_branch_end_to_end() {
             .unwrap();
         String::from_utf8_lossy(&output.stdout).lines().count()
     };
-    assert!(cmd(&["vault", "add", "wiki", vault.to_str().unwrap()])
-        .status
-        .success());
+    // Registering with `--no-device-key` leaves enrollment to the explicit command under test.
+    assert!(cmd(&[
+        "vault",
+        "add",
+        "wiki",
+        vault.to_str().unwrap(),
+        "--no-device-key"
+    ])
+    .status
+    .success());
 
     // A dry run probes (read-only) but never creates the identity, binds, or registers.
     let preview = json(&enroll(None, &["wiki", "--dry-run"]));
@@ -1226,4 +1235,243 @@ fn vault_enroll_walks_every_branch_end_to_end() {
         ssh_command().contains("device ssh-command"),
         "the binding is the user's to remove"
     );
+}
+
+/// A bare repository served by the fake ssh at a relative `owner/name` path,
+/// seeded with one commit so it can be cloned.
+#[cfg(unix)]
+fn seeded_remote(root: &Path, ssh_dir: &Path) -> PathBuf {
+    let bare = ssh_dir.join("srv").join("eric").join("mimir.git");
+    fs::create_dir_all(&bare).unwrap();
+    git(&bare, &["init", "--bare", "--quiet"]);
+    let seed = root.join("seed");
+    fs::create_dir_all(&seed).unwrap();
+    git(&seed, &["-c", "init.defaultBranch=main", "init", "--quiet"]);
+    git(&seed, &["config", "user.name", "Test"]);
+    git(&seed, &["config", "user.email", "test@example.invalid"]);
+    fs::write(seed.join("Home.md"), "note\n").unwrap();
+    git(&seed, &["add", "Home.md"]);
+    git(&seed, &["commit", "--quiet", "-m", "initial"]);
+    git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            bare.to_str().unwrap(),
+            "HEAD:refs/heads/main",
+        ],
+    );
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    bare
+}
+
+#[cfg(unix)]
+fn ssh_calls(ssh_dir: &Path) -> Vec<String> {
+    fs::read_to_string(ssh_dir.join("calls.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[cfg(unix)]
+fn registration_count(bare: &Path) -> usize {
+    let output = ProcessCommand::new("git")
+        .current_dir(bare)
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/__vulcan-sync/registrations",
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).lines().count()
+}
+
+#[cfg(unix)]
+#[test]
+#[allow(clippy::too_many_lines)] // One ordered clone story reads best unbroken.
+fn vault_clone_uses_the_device_key_when_it_works_and_falls_back_to_the_users_credentials() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let admin = root.join("admin");
+    fs::create_dir_all(&admin).unwrap();
+    let ssh_dir = fake_ssh(&root.join("fake-ssh"));
+    let bare = seeded_remote(root, &ssh_dir);
+    let path = format!(
+        "{}:{}",
+        ssh_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let url = "git@forge.example.com:eric/mimir.git";
+    let clone = |dest: &str, id: &str, extra: &[&str]| {
+        let dest = admin.join(dest);
+        let mut args = vec![
+            "--output",
+            "json",
+            "vault",
+            "clone",
+            url,
+            dest.to_str().unwrap(),
+            "--id",
+            id,
+        ];
+        args.extend_from_slice(extra);
+        run_with(&admin, None, &[("PATH", path.as_str())], &args)
+    };
+    let ssh_command = |dest: &str| {
+        let output = ProcessCommand::new("git")
+            .current_dir(admin.join(dest))
+            .args(["config", "--local", "--get", "core.sshCommand"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let uses_device_key = |line: &String| line.contains("IdentitiesOnly=yes");
+
+    // 1. A pre-authorized device key: the clone itself authenticates with it,
+    //    and enrollment finishes by binding it.
+    fs::write(ssh_dir.join("device_mode"), "accept").unwrap();
+    let cloned = json(&clone("one", "one", &[]));
+    assert_eq!(cloned["transport"]["device_key"], true, "{cloned}");
+    assert_eq!(cloned["enroll"]["state"], "bound", "{cloned}");
+    assert!(admin.join("one/Home.md").is_file(), "the content arrived");
+    assert!(
+        ssh_command("one").contains("device ssh-command"),
+        "plain git uses the device key"
+    );
+    assert!(
+        uses_device_key(&ssh_calls(&ssh_dir)[0]),
+        "the very first connection was the clone, with the device key"
+    );
+    assert_eq!(registration_count(&bare), 1);
+
+    // 2. The key is refused and nothing can authorize it: the clone falls back to
+    //    the user's own credentials, binds nothing, and reports what is pending.
+    fs::write(ssh_dir.join("device_mode"), "deny").unwrap();
+    fs::write(ssh_dir.join("calls.log"), "").unwrap();
+    let fallback = json(&clone("two", "two", &[]));
+    assert_eq!(fallback["transport"]["device_key"], false, "{fallback}");
+    assert_eq!(fallback["enroll"]["state"], "pending", "{fallback}");
+    assert!(
+        admin.join("two/Home.md").is_file(),
+        "the clone still worked, via ambient access"
+    );
+    assert!(ssh_command("two").is_empty(), "nothing was bound");
+    assert!(fallback["enroll"]["next_steps"]
+        .to_string()
+        .contains("vault enroll two"));
+    let calls = ssh_calls(&ssh_dir);
+    assert!(uses_device_key(&calls[0]), "the device key was tried first");
+    assert!(
+        calls.iter().any(|line| !uses_device_key(line)),
+        "then ambient access cloned it"
+    );
+
+    // 3. A known forge without a credential reports that precisely and still clones.
+    json(&run_with(
+        &admin,
+        None,
+        &[("PATH", path.as_str())],
+        &[
+            "--output",
+            "json",
+            "device",
+            "config",
+            "set-forge",
+            "forge.example.com",
+            "--kind",
+            "forgejo",
+            "--token-env",
+            "FORGE_TOKEN",
+        ],
+    ));
+    let no_credential = json(&clone("three", "three", &[]));
+    let steps = no_credential["transport"]["steps"].to_string();
+    assert!(
+        steps.contains("authority") && steps.contains("FORGE_TOKEN"),
+        "{steps}"
+    );
+    assert!(admin.join("three/Home.md").is_file());
+
+    // 4. `--no-device-key` is exactly the old behaviour: no probe, no enrollment.
+    fs::write(ssh_dir.join("calls.log"), "").unwrap();
+    let plain = json(&clone("four", "four", &["--no-device-key"]));
+    assert!(
+        plain.get("transport").is_none() && plain.get("enroll").is_none(),
+        "{plain}"
+    );
+    assert!(ssh_calls(&ssh_dir)
+        .iter()
+        .all(|line| !uses_device_key(line)));
+
+    // 5. A dry run probes read-only and creates nothing.
+    let before = registration_count(&bare);
+    let dry = json(&clone("five", "five", &["--dry-run"]));
+    assert_eq!(dry["dry_run"], true);
+    assert!(!admin.join("five").exists());
+    assert_eq!(registration_count(&bare), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn vault_add_enrolls_a_vault_that_already_has_an_ssh_remote() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let admin = root.join("admin");
+    fs::create_dir_all(&admin).unwrap();
+    let ssh_dir = fake_ssh(&root.join("fake-ssh"));
+    let bare = seeded_remote(root, &ssh_dir);
+    let path = format!(
+        "{}:{}",
+        ssh_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    fs::write(ssh_dir.join("device_mode"), "accept").unwrap();
+    let local = |name: &str| {
+        let dir = admin.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["-c", "init.defaultBranch=main", "init", "--quiet"]);
+        git(
+            &dir,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@forge.example.com:eric/mimir.git",
+            ],
+        );
+        dir
+    };
+    let add = |id: &str, dir: &Path, extra: &[&str]| {
+        let mut args = vec![
+            "--output",
+            "json",
+            "vault",
+            "add",
+            id,
+            dir.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        run_with(&admin, None, &[("PATH", path.as_str())], &args)
+    };
+
+    let enrolled = json(&add("wiki", &local("wiki"), &[]));
+    assert_eq!(enrolled["enroll"]["state"], "bound", "{enrolled}");
+    assert_eq!(registration_count(&bare), 1);
+
+    // Opting out, a dry run, and a vault with no sync backend never enroll.
+    let opted_out = json(&add("plain", &local("plain"), &["--no-device-key"]));
+    assert!(opted_out.get("enroll").is_none());
+    let dry = json(&add("dry", &local("dry"), &["--dry-run"]));
+    assert!(dry.get("enroll").is_none());
+    let no_sync = json(&add("nosync", &local("nosync"), &["--no-sync"]));
+    assert!(no_sync.get("enroll").is_none());
+
+    // A vault without a remote is added normally; enrollment is simply skipped.
+    let bare_dir = admin.join("noremote");
+    fs::create_dir_all(&bare_dir).unwrap();
+    git(&bare_dir, &["init", "--quiet"]);
+    let skipped = json(&add("noremote", &bare_dir, &[]));
+    assert_eq!(skipped["enroll"]["state"], "skipped");
 }

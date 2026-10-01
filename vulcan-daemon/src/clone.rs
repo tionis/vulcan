@@ -10,7 +10,7 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_app::sync::{
-    clone_git_vault, recover_detached_git_vault, GitCloneReport, GitCloneRequest,
+    clone_git_vault_with_ssh_command, recover_detached_git_vault, GitCloneReport, GitCloneRequest,
     GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitPlatformPolicy, GitPlatformProfile,
 };
 use vulcan_sync::local_recovery_ref_namespaces;
@@ -168,6 +168,17 @@ pub fn clone_registered_wiki(
     request: &CloneWikiRequest,
     dry_run: bool,
 ) -> Result<CloneWikiReport, CloneWikiError> {
+    clone_registered_wiki_with_ssh_command(registry, request, dry_run, None)
+}
+
+/// As [`clone_registered_wiki`], cloning with an exact `GIT_SSH_COMMAND` (the
+/// device key) when given.
+pub fn clone_registered_wiki_with_ssh_command(
+    registry: &WikiRegistry,
+    request: &CloneWikiRequest,
+    dry_run: bool,
+    ssh_command: Option<&str>,
+) -> Result<CloneWikiReport, CloneWikiError> {
     let work_tree = prospective_directory(&request.work_tree)?;
     let git_dir = request
         .git_dir
@@ -228,7 +239,8 @@ pub fn clone_registered_wiki(
             detail: format!("cannot create detached Git parent directory: {error}"),
         })?;
     }
-    let clone = clone_git_vault(&clone_request).map_err(CloneWikiError::Git)?;
+    let clone = clone_git_vault_with_ssh_command(&clone_request, ssh_command)
+        .map_err(CloneWikiError::Git)?;
     let wiki = registry
         .add(
             &AddWikiRequest {

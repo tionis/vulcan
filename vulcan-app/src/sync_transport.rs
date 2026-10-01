@@ -196,6 +196,13 @@ fn failing_ssh_command(reason: &str) -> String {
     format!("sh -c {} --", shell_quote(&script))
 }
 
+/// The exact `GIT_SSH_COMMAND` that authenticates with the device key alone,
+/// for operations that begin before any binding exists, such as a clone.
+pub fn device_git_ssh_command(store: &DeviceIdentityStore) -> Result<String, AppError> {
+    let (_, key) = eligible_key(store).map_err(AppError::operation)?;
+    Ok(ssh_command_for(&key))
+}
+
 /// Argv for the `vulcan device ssh-command` wrapper: `ssh` with the device
 /// key and the pinned options, followed by Git's own arguments.
 pub fn device_ssh_argv(store: &DeviceIdentityStore) -> Result<Vec<String>, AppError> {

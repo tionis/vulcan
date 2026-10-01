@@ -14,7 +14,8 @@ use vulcan_app::sync_forge::{ForgeAuthorizeReport, ForgeConfig};
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_app::sync_transport::probe_device_key;
 use vulcan_app::vault_enroll::{
-    enroll_vault, AuthorityError, EnrollEnvironment, EnrollReport, EnrollRequest, EnrollState,
+    enroll_vault, prepare_clone_transport, AuthorityError, CloneTransportReport,
+    CloneTransportRequest, EnrollEnvironment, EnrollReport, EnrollRequest, EnrollState,
     ForgeAuthority, LoginPolicy, StepStatus,
 };
 use vulcan_core::{
@@ -141,13 +142,7 @@ pub(crate) fn handle_vault_enroll(
         unreachable!("only `vault enroll` is routed here")
     };
     let remote = GitRemote::parse(remote).map_err(CliError::operation)?;
-    let policy = if *login {
-        LoginPolicy::Forced
-    } else if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
-        LoginPolicy::Interactive
-    } else {
-        LoginPolicy::Never
-    };
+    let policy = login_policy(*login);
     let template = |wiki: &str| EnrollRequest {
         wiki: wiki.to_owned(),
         remote: remote.clone(),
@@ -163,7 +158,7 @@ pub(crate) fn handle_vault_enroll(
         let status = registry
             .show(&WikiId::parse(id).map_err(CliError::operation)?)
             .map_err(CliError::operation)?;
-        let report = enroll_one(cli, id, &status.registration, &template(id))?;
+        let report = enroll_registered(cli, &status.registration, &template(id))?;
         return print_one(cli.output, &report);
     }
 
@@ -174,7 +169,7 @@ pub(crate) fn handle_vault_enroll(
             continue;
         }
         let wiki = registration.id.to_string();
-        match enroll_one(cli, &wiki, &registration, &template(&wiki)) {
+        match enroll_registered(cli, &registration, &template(&wiki)) {
             Ok(report) => entries.push(EnrollAllEntry {
                 wiki,
                 report: Some(report),
@@ -232,22 +227,27 @@ pub(crate) fn handle_vault_enroll(
     Ok(())
 }
 
-fn enroll_one(
-    cli: &Cli,
-    id: &str,
-    registration: &WikiRegistration,
-    request: &EnrollRequest,
-) -> Result<EnrollReport, CliError> {
-    let paths = VaultPaths::new(&registration.path);
-    let profile = cli
-        .permissions
-        .as_deref()
-        .or(registration.permissions_profile.as_deref());
-    let selection = resolve_permission_profile(&paths, profile).map_err(CliError::operation)?;
-    ProfilePermissionGuard::new(&paths, selection)
-        .check_git()
-        .map_err(CliError::operation)?;
+/// The login behaviour for this run: explicit with `--login`, otherwise only
+/// when attached to a terminal. Never prompts either way.
+pub(crate) fn login_policy(login_flag: bool) -> LoginPolicy {
+    if login_flag {
+        LoginPolicy::Forced
+    } else if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        LoginPolicy::Interactive
+    } else {
+        LoginPolicy::Never
+    }
+}
 
+/// Builds the injected environment (policy, identity, probe, forge authority)
+/// and runs `run` with it. `paths` and `permissions_profile` scope the
+/// permission checks the forge authority applies.
+fn with_environment<R>(
+    cli: &Cli,
+    paths: &VaultPaths,
+    permissions_profile: Option<&str>,
+    run: impl FnOnce(&EnrollEnvironment<'_>) -> Result<R, vulcan_app::AppError>,
+) -> Result<R, CliError> {
     let device_config = DeviceConfigStore::user_default()
         .and_then(|store| store.load())
         .map_err(CliError::operation)?;
@@ -256,8 +256,8 @@ fn enroll_one(
     let executable = std::env::current_exe().map_err(CliError::operation)?;
     let authority = CliAuthority {
         cli,
-        paths: &paths,
-        registration_profile: registration.permissions_profile.as_deref(),
+        paths,
+        registration_profile: permissions_profile,
     };
     let probe =
         |target: &str, directory: Option<&Path>| probe_device_key(&identity, target, directory);
@@ -272,8 +272,43 @@ fn enroll_one(
         sleep: &sleep,
         remote_url_override: None,
     };
-    let _ = id;
-    enroll_vault(&paths, &environment, request).map_err(CliError::operation)
+    run(&environment).map_err(CliError::operation)
+}
+
+/// Enrolls one registered vault, after checking the Git permission.
+pub(crate) fn enroll_registered(
+    cli: &Cli,
+    registration: &WikiRegistration,
+    request: &EnrollRequest,
+) -> Result<EnrollReport, CliError> {
+    let paths = VaultPaths::new(&registration.path);
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration.permissions_profile.as_deref());
+    let selection = resolve_permission_profile(&paths, profile).map_err(CliError::operation)?;
+    ProfilePermissionGuard::new(&paths, selection)
+        .check_git()
+        .map_err(CliError::operation)?;
+    with_environment(
+        cli,
+        &paths,
+        registration.permissions_profile.as_deref(),
+        |environment| enroll_vault(&paths, environment, request),
+    )
+}
+
+/// Decides, before a clone, whether it can use the device key.
+pub(crate) fn prepare_clone(
+    cli: &Cli,
+    request: &CloneTransportRequest<'_>,
+    vault_path: &Path,
+    permissions_profile: Option<&str>,
+) -> Result<CloneTransportReport, CliError> {
+    let paths = VaultPaths::new(vault_path);
+    with_environment(cli, &paths, permissions_profile, |environment| {
+        prepare_clone_transport(environment, request)
+    })
 }
 
 fn print_one(output: OutputFormat, report: &EnrollReport) -> Result<(), CliError> {
@@ -284,7 +319,7 @@ fn print_one(output: OutputFormat, report: &EnrollReport) -> Result<(), CliError
     Ok(())
 }
 
-fn print_report(report: &EnrollReport) {
+pub(crate) fn print_report(report: &EnrollReport) {
     println!(
         "\nWiki {}: {}{}",
         report.wiki,

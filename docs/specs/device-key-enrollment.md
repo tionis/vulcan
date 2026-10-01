@@ -1,9 +1,9 @@
 # Integrated Device-Key Enrollment
 
 Status: proposed design for Roadmap 12.22. Builds on `device-transport-auth.md` (transport binding,
-registrations, forge adapters, OAuth login). Implemented so far: the device-level policy file, the
-probe, `sync forge authorize-self`, and the `vault enroll` pipeline (12.22.1-12.22.3). The clone and add
-integration (12.22.4) is next.
+registrations, forge adapters, OAuth login). Implemented: the device-level policy file, the probe,
+`sync forge authorize-self`, the `vault enroll` pipeline, and the clone/add integration (12.22.1-12.22.4).
+Lifecycle work (12.22.5) is next.
 
 ## Goal
 

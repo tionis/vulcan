@@ -6,8 +6,8 @@ use std::path::Path;
 use vulcan_app::sync::GitPlatformProfile;
 use vulcan_core::vault_discovery::VAULT_POINTER_FILE_NAME;
 use vulcan_daemon::clone::{
-    clone_registered_wiki, recover_registered_wiki_git, CloneWikiReport, CloneWikiRequest,
-    RecoverWikiGitReport, RecoverWikiGitRequest,
+    clone_registered_wiki_with_ssh_command, recover_registered_wiki_git, CloneWikiReport,
+    CloneWikiRequest, RecoverWikiGitReport, RecoverWikiGitRequest,
 };
 use vulcan_daemon::registry::{
     AddWikiRequest, ManagedDirectoryProfile, UpdateWikiRequest, WikiId, WikiRegistration,
@@ -22,6 +22,10 @@ struct VaultMutationReport<'a> {
     wiki: &'a WikiRegistration,
     #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<vulcan_daemon::registry::ManagedDirectoryCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enroll: Option<&'a vulcan_app::vault_enroll::EnrollReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enroll_error: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,36 +58,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             .map_err(CliError::operation)?;
             print_recovery(cli.output, &report)
         }
-        VaultCommand::Add {
-            id,
-            path,
-            profile,
-            group,
-            git_dir,
-            permissions_profile,
-            sync_backend,
-            no_sync,
-            dry_run,
-        } => {
-            let request = AddWikiRequest {
-                id: parse_id(id)?,
-                path: path.clone(),
-                profile: Some(managed_profile(*profile)),
-                groups: group.clone(),
-                git_dir: git_dir.clone(),
-                permissions_profile: permissions_profile.clone(),
-                sync_backend: if *no_sync {
-                    Some("none".to_string())
-                } else {
-                    Some(sync_backend.clone().unwrap_or_else(|| "git".to_string()))
-                },
-                platform_profile: None,
-            };
-            let wiki = registry
-                .add(&request, *dry_run)
-                .map_err(CliError::operation)?;
-            print_mutation(cli.output, "add", *dry_run, &registry, &wiki)
-        }
+        VaultCommand::Add { .. } => handle_add(cli, &registry, command),
         VaultCommand::List { group } => {
             let wikis = registry
                 .list(group.as_deref())
@@ -121,13 +96,13 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                     *dry_run,
                 )
                 .map_err(CliError::operation)?;
-            print_mutation(cli.output, "set", *dry_run, &registry, &wiki)
+            print_mutation(cli.output, "set", *dry_run, &registry, &wiki, None, None)
         }
         VaultCommand::Remove { id, dry_run } => {
             let wiki = registry
                 .remove(&parse_id(id)?, *dry_run)
                 .map_err(CliError::operation)?;
-            print_mutation(cli.output, "remove", *dry_run, &registry, &wiki)
+            print_mutation(cli.output, "remove", *dry_run, &registry, &wiki, None, None)
         }
     }
 }
@@ -152,6 +127,73 @@ fn print_recovery(output: OutputFormat, report: &RecoverWikiGitReport) -> Result
     Ok(())
 }
 
+fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Result<(), CliError> {
+    let VaultCommand::Add {
+        id,
+        path,
+        profile,
+        group,
+        git_dir,
+        permissions_profile,
+        sync_backend,
+        no_sync,
+        no_device_key,
+        login,
+        dry_run,
+    } = command
+    else {
+        unreachable!("add handler requires an add command")
+    };
+    let request = AddWikiRequest {
+        id: parse_id(id)?,
+        path: path.clone(),
+        profile: Some(managed_profile(*profile)),
+        groups: group.clone(),
+        git_dir: git_dir.clone(),
+        permissions_profile: permissions_profile.clone(),
+        sync_backend: if *no_sync {
+            Some("none".to_string())
+        } else {
+            Some(sync_backend.clone().unwrap_or_else(|| "git".to_string()))
+        },
+        platform_profile: None,
+    };
+    let wiki = registry
+        .add(&request, *dry_run)
+        .map_err(CliError::operation)?;
+    // A registered Git vault is enrolled with the device key when policy
+    // says so; this never fails the add.
+    let (enroll, enroll_error) =
+        if *dry_run || *no_device_key || wiki.sync_backend.as_deref() != Some("git") {
+            (None, None)
+        } else {
+            match crate::commands::enroll::enroll_registered(
+                cli,
+                &wiki,
+                &vulcan_app::vault_enroll::EnrollRequest {
+                    wiki: wiki.id.to_string(),
+                    remote: vulcan_app::sync::GitRemote::parse("origin")
+                        .map_err(CliError::operation)?,
+                    no_device_key: false,
+                    login: crate::commands::enroll::login_policy(*login),
+                    dry_run: false,
+                },
+            ) {
+                Ok(report) => (Some(report), None),
+                Err(error) => (None, Some(error.to_string())),
+            }
+        };
+    print_mutation(
+        cli.output,
+        "add",
+        *dry_run,
+        registry,
+        &wiki,
+        enroll.as_ref(),
+        enroll_error.as_deref(),
+    )
+}
+
 fn handle_clone(
     cli: &Cli,
     registry: &WikiRegistry,
@@ -166,6 +208,8 @@ fn handle_clone(
         git_dir,
         platform,
         permissions_profile,
+        no_device_key,
+        login,
         dry_run,
     } = command
     else {
@@ -197,6 +241,8 @@ fn handle_clone(
                 ClonePlatformArg::AndroidShared => GitPlatformProfile::AndroidShared,
             },
             permissions_profile: permissions_profile.as_deref(),
+            no_device_key: *no_device_key,
+            login: *login,
             dry_run: *dry_run,
         },
     )
@@ -211,6 +257,9 @@ pub(crate) struct CloneCliRequest<'a> {
     pub(crate) git_dir: Option<&'a Path>,
     pub(crate) platform: GitPlatformProfile,
     pub(crate) permissions_profile: Option<&'a str>,
+    /// Treat the transport policy as ambient for this clone.
+    pub(crate) no_device_key: bool,
+    pub(crate) login: bool,
     pub(crate) dry_run: bool,
 }
 
@@ -219,7 +268,43 @@ pub(crate) fn clone_wiki(
     registry: &WikiRegistry,
     request: CloneCliRequest<'_>,
 ) -> Result<(), CliError> {
-    let report = clone_registered_wiki(
+    use crate::commands::enroll::{enroll_registered, login_policy, prepare_clone};
+    use vulcan_app::vault_enroll::{CloneTransportRequest, EnrollRequest};
+    let wiki_id = request.id.to_string();
+    let login = login_policy(request.login);
+
+    // 1. Decide how to authenticate the clone. This never blocks the clone: any
+    //    trouble means the user's own credentials are used, as before.
+    let transport = if request.no_device_key {
+        None
+    } else {
+        match prepare_clone(
+            cli,
+            &CloneTransportRequest {
+                source: request.remote,
+                wiki: &wiki_id,
+                no_device_key: false,
+                login,
+                dry_run: request.dry_run,
+            },
+            request.path,
+            request.permissions_profile,
+        ) {
+            Ok(report) => Some(report),
+            Err(error) => {
+                eprintln!(
+                    "note: could not prepare device-key transport ({error}); cloning with your own credentials"
+                );
+                None
+            }
+        }
+    };
+    let ssh_command = transport
+        .as_ref()
+        .and_then(|report| report.ssh_command.clone());
+
+    // 2. Clone and register, with the device key when it is accepted.
+    let report = clone_registered_wiki_with_ssh_command(
         registry,
         &CloneWikiRequest {
             id: request.id,
@@ -232,14 +317,84 @@ pub(crate) fn clone_wiki(
             permissions_profile: request.permissions_profile.map(str::to_string),
         },
         request.dry_run,
+        ssh_command.as_deref(),
     )
     .map_err(CliError::operation)?;
-    print_clone(cli.output, &report)
+
+    // 3. Finish enrollment (bind, register) or report what is pending. A failure
+    //    here never undoes the clone.
+    let (mut enroll, mut enroll_error) = (None, None);
+    if !request.dry_run && !request.no_device_key {
+        if let Some(wiki) = &report.wiki {
+            match enroll_registered(
+                cli,
+                wiki,
+                &EnrollRequest {
+                    wiki: wiki_id.clone(),
+                    remote: vulcan_app::sync::GitRemote::parse("origin")
+                        .map_err(CliError::operation)?,
+                    no_device_key: false,
+                    login,
+                    dry_run: false,
+                },
+            ) {
+                Ok(done) => enroll = Some(done),
+                Err(error) => enroll_error = Some(error.to_string()),
+            }
+        }
+    }
+    print_clone(
+        cli.output,
+        &report,
+        transport.as_ref(),
+        enroll.as_ref(),
+        enroll_error.as_deref(),
+    )
 }
 
-fn print_clone(output: OutputFormat, report: &CloneWikiReport) -> Result<(), CliError> {
+#[derive(Serialize)]
+struct CloneOutput<'a> {
+    #[serde(flatten)]
+    clone: &'a CloneWikiReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport: Option<&'a vulcan_app::vault_enroll::CloneTransportReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enroll: Option<&'a vulcan_app::vault_enroll::EnrollReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enroll_error: Option<&'a str>,
+}
+
+/// Human output for an enrollment that ran after a clone or add: quiet when
+/// there was nothing to do, otherwise the steps and what is left.
+fn print_enrollment(
+    enroll: Option<&vulcan_app::vault_enroll::EnrollReport>,
+    enroll_error: Option<&str>,
+    wiki: &str,
+) {
+    use vulcan_app::vault_enroll::EnrollState;
+    if let Some(error) = enroll_error {
+        println!("Device-key enrollment did not finish: {error}");
+        println!("Re-run it with: vulcan vault enroll {wiki}");
+    }
+    if let Some(report) = enroll.filter(|report| report.state != EnrollState::Skipped) {
+        crate::commands::enroll::print_report(report);
+    }
+}
+
+fn print_clone(
+    output: OutputFormat,
+    report: &CloneWikiReport,
+    transport: Option<&vulcan_app::vault_enroll::CloneTransportReport>,
+    enroll: Option<&vulcan_app::vault_enroll::EnrollReport>,
+    enroll_error: Option<&str>,
+) -> Result<(), CliError> {
     if output == OutputFormat::Json {
-        return print_json(report);
+        return print_json(&CloneOutput {
+            clone: report,
+            transport,
+            enroll,
+            enroll_error,
+        });
     }
     let verb = if report.dry_run {
         "Would clone and register"
@@ -265,6 +420,26 @@ fn print_clone(output: OutputFormat, report: &CloneWikiReport) -> Result<(), Cli
     if let Some(git_dir) = &report.proposed_registration.git_dir {
         println!("Git directory: {}", git_dir.display());
     }
+    if let Some(transport) = transport {
+        if transport.device_key {
+            println!(
+                "{} with the device key.",
+                if report.dry_run {
+                    "Would clone"
+                } else {
+                    "Cloned"
+                }
+            );
+        }
+        for next in &transport.next_steps {
+            println!("  next: {next}");
+        }
+    }
+    print_enrollment(
+        enroll,
+        enroll_error,
+        &report.proposed_registration.id.to_string(),
+    );
     Ok(())
 }
 
@@ -351,6 +526,8 @@ fn print_mutation(
     dry_run: bool,
     registry: &WikiRegistry,
     wiki: &WikiRegistration,
+    enroll: Option<&vulcan_app::vault_enroll::EnrollReport>,
+    enroll_error: Option<&str>,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(&VaultMutationReport {
@@ -360,11 +537,14 @@ fn print_mutation(
             wiki,
             capabilities: (wiki.profile == ManagedDirectoryProfile::FilesOnly)
                 .then(|| wiki.capabilities()),
+            enroll,
+            enroll_error,
         }),
         OutputFormat::Human | OutputFormat::Markdown => {
             let qualifier = if dry_run { "Would update" } else { "Updated" };
             println!("{qualifier} wiki `{}`: {}", wiki.id, wiki.path.display());
             print_work_tree(wiki);
+            print_enrollment(enroll, enroll_error, &wiki.id.to_string());
             Ok(())
         }
     }

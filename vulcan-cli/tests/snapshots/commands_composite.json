@@ -10047,6 +10047,34 @@
                 ]
               },
               {
+                "help": "Skip device-key enrollment (treat the transport policy as ambient) for this run",
+                "id": "no_device_key",
+                "long": "no-device-key",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_DEVICE_KEY"
+                ]
+              },
+              {
+                "help": "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)",
+                "id": "login",
+                "long": "login",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LOGIN"
+                ]
+              },
+              {
                 "help": "Validate and report without cloning or registering",
                 "id": "dry_run",
                 "long": "dry-run",
@@ -13053,6 +13081,34 @@
                 ]
               },
               {
+                "help": "Skip device-key enrollment (treat the transport policy as ambient) for this run",
+                "id": "no_device_key",
+                "long": "no-device-key",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_DEVICE_KEY"
+                ]
+              },
+              {
+                "help": "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)",
+                "id": "login",
+                "long": "login",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LOGIN"
+                ]
+              },
+              {
                 "help": "Validate and report without cloning or registering",
                 "id": "dry_run",
                 "long": "dry-run",
@@ -13209,6 +13265,34 @@
                 "short": null,
                 "value_names": [
                   "NO_SYNC"
+                ]
+              },
+              {
+                "help": "Skip device-key enrollment (treat the transport policy as ambient) for this run",
+                "id": "no_device_key",
+                "long": "no-device-key",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_DEVICE_KEY"
+                ]
+              },
+              {
+                "help": "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)",
+                "id": "login",
+                "long": "login",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LOGIN"
                 ]
               },
               {

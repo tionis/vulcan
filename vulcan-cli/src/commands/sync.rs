@@ -222,6 +222,8 @@ fn handle_sync_clone(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
         git_dir,
         platform,
         permissions_profile,
+        no_device_key,
+        login,
         dry_run,
     } = command
     else {
@@ -266,6 +268,8 @@ fn handle_sync_clone(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
             git_dir,
             platform,
             permissions_profile: permissions_profile.as_deref(),
+            no_device_key: *no_device_key,
+            login: *login,
             dry_run: *dry_run,
         },
     )

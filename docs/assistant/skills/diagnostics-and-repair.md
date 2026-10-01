@@ -88,3 +88,16 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - Explain why a wikilink is unresolved and propose the safest rename/move/link fix.
 - Distinguish malformed frontmatter from a cache migration issue.
 - Run doctor, apply a targeted repair, then re-run diagnostics to verify.
+
+## Device-key enrollment hints
+
+`vulcan sync doctor` reports `sync.transport`. An `info` line saying the vault "is not enrolled with the
+device key" is a hint, not a fault: the transport policy defaults to `device-key`, so run
+`vulcan vault enroll <wiki>` to set it up, or `vulcan device config set-transport ambient` if the user
+wants to keep their own SSH setup. A `stale` value means the `vulcan` executable named by the
+repository's `core.sshCommand` is gone: plain `git` quietly falls back to ordinary `ssh`, and re-running
+`vulcan sync transport bind` repairs it. An `error` that the bound device key cannot authenticate means
+the remote no longer accepts it (for example after a revocation); Vulcan never unbinds for the user, so
+explain the options (`vulcan vault enroll <wiki>` after the key is authorized again, or
+`vulcan sync transport unbind`) and let them choose.
+
