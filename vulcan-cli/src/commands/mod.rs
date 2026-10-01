@@ -11,6 +11,7 @@ pub(crate) mod device;
 pub(crate) mod devices;
 pub(crate) mod docs;
 pub(crate) mod edit;
+pub(crate) mod enroll;
 pub(crate) mod graph;
 pub(crate) mod inbox;
 pub(crate) mod index;

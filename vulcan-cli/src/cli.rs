@@ -5390,6 +5390,41 @@ pub enum VaultCommand {
         #[arg(help = "Registered wiki ID")]
         id: String,
     },
+    #[command(
+        about = "Enroll a vault with this device's key: authorize it, bind the transport, and register (idempotent)",
+        long_about = "Take a vault from reachable-some-way to bound to this installation's device key, or report exactly what is missing. Steps: check the transport policy, ensure the device identity, probe whether the remote accepts the device key, authorize it through the forge when this machine holds the authority (an OAuth login or API token), then bind the transport (including core.sshCommand for plain git) and publish this device's registration. It never binds a key the remote has not accepted, never asks a question, and is safe to re-run. When authority is missing it stops as `pending` with the exact next steps and still exits successfully."
+    )]
+    Enroll {
+        #[arg(help = "Registered wiki ID")]
+        id: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "id",
+            help = "Enroll every registered Git vault; each has its own result"
+        )]
+        all_wikis: bool,
+        #[arg(
+            long,
+            help = "Permit an interactive forge login (otherwise only when attached to a terminal and the forge allows it)"
+        )]
+        login: bool,
+        #[arg(
+            long,
+            help = "Skip device-key enrollment for this run (treat the policy as ambient)"
+        )]
+        no_device_key: bool,
+        #[arg(
+            long,
+            default_value = "origin",
+            help = "Git remote the vault syncs with"
+        )]
+        remote: String,
+        #[arg(
+            long,
+            help = "Probe and report what would happen without changing anything"
+        )]
+        dry_run: bool,
+    },
     #[command(about = "Update device-local wiki metadata")]
     Set {
         #[arg(help = "Registered wiki ID")]

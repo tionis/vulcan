@@ -835,6 +835,18 @@ impl Context<'_> {
     }
 }
 
+/// Publishes this device's registration with whatever credentials the vault's
+/// engine uses now (the device key once bound, otherwise ambient). `Ok(None)`
+/// means the installation has no identity yet.
+pub(crate) fn register_self(
+    paths: &VaultPaths,
+    remote: &GitRemote,
+    store: &DeviceIdentityStore,
+) -> Result<Option<SelfRegistrationOutcome>, AppError> {
+    let (engine, repository) = open(paths)?;
+    self_register_with_store(&engine, &repository, remote, store, None, now_unix())
+}
+
 fn self_register_with_store(
     engine: &dyn GitEngine,
     repository: &GitRepository,

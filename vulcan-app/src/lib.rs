@@ -101,6 +101,7 @@ pub mod textbundle;
 pub mod tools;
 pub mod trust;
 pub mod update;
+pub mod vault_enroll;
 pub mod vault_layout;
 #[cfg(feature = "web")]
 pub mod web;

@@ -64,6 +64,16 @@ both execute the same application workflow.
   adopt on the user's behalf without showing them the proposal, and never pass `--allow-other-host`
   unless the user asks: the API URL must be on the Git remote's host, since that is where the
   credential is sent. Adoption keeps device-specific values (the token variable) local.
+- `vulcan vault enroll <wiki>` takes one vault to "bound to this device's key", or says exactly what is
+  missing. It checks the transport policy (the default is the device key; `device config set-transport
+  ambient` or `--no-device-key` skips it), ensures the device identity, probes whether the remote
+  accepts the device key, authorizes it through the forge when this machine has the authority (an OAuth
+  login or the token variable), then binds the transport (including `core.sshCommand`) and publishes
+  this device's registration. It never binds a key the remote has not accepted, never asks a question,
+  and is safe to re-run; when authority or a login is missing it reports `pending` with `next_steps`
+  and still exits successfully. `--dry-run` probes read-only and reports what it would do;
+  `--all-wikis` gives each vault its own result. Interactive login only starts with `--login` (or on a
+  terminal when the forge entry allows it), so never pass `--login` unattended.
 - `vulcan device config show|set-transport|set-forge|remove-forge` edits this device's non-secret
   policy in `device.toml` beside `daemon.toml`: the default transport (`device-key`, or `ambient` to
   leave SSH to the user), and per-host forge entries (kind, public OAuth client ID, a token variable

@@ -6533,8 +6533,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 #### 12.22.3 The `enroll` pipeline
 
-- [ ] Add `vault enroll <wiki> [--login] [--dry-run] [--all-wikis]` implementing policy, identity, probe, authority, re-probe, register, bind, with per-step states and `next_steps`. Bind only after a successful probe; stop as `pending` (not failure) when authority or login is missing; skip non-SSH remotes and `ambient` policy.
-- [ ] Tests for every branch, idempotence, and that bind never precedes a successful probe.
+- [x] Add `vault enroll <wiki> [--login] [--no-device-key] [--dry-run] [--all-wikis]` implementing policy, identity, probe, authority, re-probe, register, bind, with per-step states and `next_steps`. Bind only after a successful probe; stop as `pending` (not failure) when authority or login is missing; skip non-SSH remotes and `ambient` policy.
+- [x] Tests for every branch, idempotence, and that bind never precedes a successful probe. A scripted-probe/fake-authority suite asserts nothing is bound at the time of any probe, and a CLI end-to-end test drives a fake `ssh` and fake forge through dry run, refused key, missing login, token authorization, re-run, opt-out, `--all-wikis`, and a later revocation.
 
 #### 12.22.4 Clone and add integration
 

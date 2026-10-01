@@ -35,6 +35,9 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
     let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
     match command {
         VaultCommand::Clone { .. } => handle_clone(cli, &registry, command),
+        VaultCommand::Enroll { .. } => {
+            crate::commands::enroll::handle_vault_enroll(cli, &registry, command)
+        }
         VaultCommand::RecoverGit {
             id,
             remote,

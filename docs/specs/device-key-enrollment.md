@@ -1,7 +1,9 @@
 # Integrated Device-Key Enrollment
 
 Status: proposed design for Roadmap 12.22. Builds on `device-transport-auth.md` (transport binding,
-registrations, forge adapters, OAuth login). Nothing here is implemented yet.
+registrations, forge adapters, OAuth login). Implemented so far: the device-level policy file, the
+probe, `sync forge authorize-self`, and the `vault enroll` pipeline (12.22.1-12.22.3). The clone and add
+integration (12.22.4) is next.
 
 ## Goal
 
@@ -69,8 +71,8 @@ ambient ──▶ registered ──▶ authorized ──▶ bound
 
 **Probe before bind** is the central safety rule. Binding sets `core.sshCommand` and makes sync fail
 closed, so binding a key the forge does not accept would immediately break plain `git`. Binding
-therefore happens only after a successful probe, never before. A dry run never probes the network
-unless asked, and never binds.
+therefore happens only after a successful probe, never before. A dry run does probe (one read-only `ls-remote`),
+and reports what it would do, but never creates the identity, authorizes, registers, or binds.
 
 ## The pipeline: `vault enroll`
 

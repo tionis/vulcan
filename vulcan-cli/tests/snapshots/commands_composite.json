@@ -13265,6 +13265,91 @@
             "subcommands": []
           },
           {
+            "about": "Enroll a vault with this device's key: authorize it, bind the transport, and register (idempotent)",
+            "name": "enroll",
+            "options": [
+              {
+                "help": "Registered wiki ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Enroll every registered Git vault; each has its own result",
+                "id": "all_wikis",
+                "long": "all-wikis",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALL_WIKIS"
+                ]
+              },
+              {
+                "help": "Permit an interactive forge login (otherwise only when attached to a terminal and the forge allows it)",
+                "id": "login",
+                "long": "login",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LOGIN"
+                ]
+              },
+              {
+                "help": "Skip device-key enrollment for this run (treat the policy as ambient)",
+                "id": "no_device_key",
+                "long": "no-device-key",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_DEVICE_KEY"
+                ]
+              },
+              {
+                "help": "Git remote the vault syncs with",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Probe and report what would happen without changing anything",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Update device-local wiki metadata",
             "name": "set",
             "options": [

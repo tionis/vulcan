@@ -30,14 +30,21 @@ impl Drop for FakeForgejo {
     }
 }
 
-#[allow(clippy::too_many_lines)] // A small self-contained HTTP fake reads best unbroken.
 fn serve() -> FakeForgejo {
+    serve_with(None)
+}
+
+/// `on_add` is written "accept" whenever a deploy key is added, the way a real
+/// forge starts accepting a key.
+#[allow(clippy::too_many_lines)] // A small self-contained HTTP fake reads best unbroken.
+fn serve_with(on_add: Option<PathBuf>) -> FakeForgejo {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let url = format!("http://{}", listener.local_addr().unwrap());
     let keys: Keys = Arc::default();
     let stop = Arc::new(AtomicBool::new(false));
     let (thread_keys, thread_stop) = (Arc::clone(&keys), Arc::clone(&stop));
+    let thread_on_add = on_add;
     let handle = std::thread::spawn(move || {
         let mut next_id = 0_u64;
         while !thread_stop.load(Ordering::SeqCst) {
@@ -129,6 +136,9 @@ fn serve() -> FakeForgejo {
                         );
                         let rendered = serde_json::json!({"id": entry.0, "key": entry.1, "title": entry.2, "read_only": parsed["read_only"]}).to_string();
                         keys.push(entry);
+                        if let Some(path) = &thread_on_add {
+                            let _ = fs::write(path, "accept");
+                        }
                         (201, rendered)
                     }
                     ("DELETE", id) => {
@@ -157,6 +167,15 @@ fn serve() -> FakeForgejo {
 }
 
 fn run(root: &Path, token: Option<&str>, args: &[&str]) -> std::process::Output {
+    run_with(root, token, &[], args)
+}
+
+fn run_with(
+    root: &Path,
+    token: Option<&str>,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+) -> std::process::Output {
     let home = root.join("home");
     fs::create_dir_all(&home).expect("home");
     let mut command = Command::cargo_bin("vulcan").expect("vulcan binary");
@@ -169,6 +188,9 @@ fn run(root: &Path, token: Option<&str>, args: &[&str]) -> std::process::Output 
         .env_remove("FORGE_TOKEN");
     if let Some(token) = token {
         command.env("FORGE_TOKEN", token);
+    }
+    for (name, value) in extra_env {
+        command.env(name, value);
     }
     command.args(args).output().expect("command output")
 }
@@ -991,4 +1013,217 @@ fn authorize_self_installs_this_devices_key_without_any_registration() {
     let plan = json(&forge_cmd(Some(TOKEN), &["sync", "--dry-run"]));
     assert_eq!(plan["orphans"].as_array().unwrap().len(), 1);
     assert!(plan["entries"].as_array().unwrap().is_empty());
+}
+
+/// A fake `ssh` first on PATH. The device-key invocation (it carries
+/// `IdentitiesOnly`) obeys `device_mode`; any other invocation is "ambient
+/// access" and always works. Accepted connections are served from the local
+/// bare repository.
+#[cfg(unix)]
+fn fake_ssh(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(dir).unwrap();
+    let program = dir.join("ssh");
+    fs::write(
+        &program,
+        r#"#!/bin/sh
+for last; do :; done
+case "$*" in *IdentitiesOnly=yes*) mode=$(cat "$(dirname "$0")/device_mode") ;; *) mode=accept ;; esac
+if [ "$mode" = accept ]; then
+  exec sh -c "$(printf '%s' "$last" | sed -e 's/^git-upload-pack/git upload-pack/' -e 's/^git-receive-pack/git receive-pack/')"
+fi
+echo 'git@forge.example.com: Permission denied (publickey).' >&2
+exit 255
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(dir.join("device_mode"), "deny").unwrap();
+    dir.to_path_buf()
+}
+
+#[cfg(unix)]
+#[test]
+#[allow(clippy::too_many_lines)] // One ordered enrollment story reads best unbroken.
+fn vault_enroll_walks_every_branch_end_to_end() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let remote = root.join("remote.git");
+    git(root, &["init", "--bare", "--quiet", "remote.git"]);
+    let admin = installation(root, "admin", &remote);
+    let vault = admin.join("vault");
+    let ssh_dir = fake_ssh(&root.join("fake-ssh"));
+    let path = format!(
+        "{}:{}",
+        ssh_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    // The remote is an SSH URL whose server is the fake ssh serving the bare repo.
+    git(
+        &vault,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("git@forge.example.com:{}", remote.display()),
+        ],
+    );
+    let set_device = |mode: &str| fs::write(ssh_dir.join("device_mode"), mode).unwrap();
+    let forge = serve_with(Some(ssh_dir.join("device_mode")));
+    let enroll = |token: Option<&str>, args: &[&str]| {
+        let mut full = vec!["--output", "json", "vault", "enroll"];
+        full.extend_from_slice(args);
+        run_with(&admin, token, &[("PATH", path.as_str())], &full)
+    };
+    let cmd = |args: &[&str]| run_with(&admin, None, &[("PATH", path.as_str())], args);
+    let ssh_command = || {
+        let output = ProcessCommand::new("git")
+            .current_dir(&vault)
+            .args(["config", "--local", "--get", "core.sshCommand"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let registrations = || {
+        let output = ProcessCommand::new("git")
+            .current_dir(&remote)
+            .args([
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/__vulcan-sync/registrations",
+            ])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).lines().count()
+    };
+    assert!(cmd(&["vault", "add", "wiki", vault.to_str().unwrap()])
+        .status
+        .success());
+
+    // A dry run probes (read-only) but never creates the identity, binds, or registers.
+    let preview = json(&enroll(None, &["wiki", "--dry-run"]));
+    assert_eq!(preview["state"], "pending");
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(registrations(), 0);
+    assert!(ssh_command().is_empty());
+
+    // The key is refused and no forge is known: pending with exact next steps.
+    // The device still becomes visible to an administrator via ambient access.
+    let pending = json(&enroll(None, &["wiki"]));
+    assert_eq!(pending["state"], "pending");
+    let device_id = pending["device_id"].as_str().unwrap().to_owned();
+    let next = pending["next_steps"].to_string();
+    assert!(
+        next.contains("vulcan device public-key") && next.contains("vault enroll wiki"),
+        "{next}"
+    );
+    assert_eq!(registrations(), 1);
+    assert!(
+        ssh_command().is_empty(),
+        "nothing was bound: plain git is untouched"
+    );
+
+    // A saved forge with only an OAuth client ID but no login: pending, with the login command.
+    json(&cmd(&[
+        "--vault",
+        vault.to_str().unwrap(),
+        "--output",
+        "json",
+        "sync",
+        "forge",
+        "set",
+        "--url",
+        &forge.url,
+        "--repo",
+        "owner/vault",
+        "--oauth-client-id",
+        "client-abc",
+    ]));
+    let needs_login = json(&enroll(None, &["wiki"]));
+    assert_eq!(needs_login["state"], "pending");
+    assert!(
+        needs_login["next_steps"]
+            .to_string()
+            .contains("sync forge login --wiki wiki"),
+        "{needs_login}"
+    );
+    assert!(forge.keys.lock().unwrap().is_empty());
+
+    // With a token the forge authorizes the key, the fake remote starts accepting
+    // it, and only then is the vault bound.
+    json(&cmd(&[
+        "--vault",
+        vault.to_str().unwrap(),
+        "--output",
+        "json",
+        "sync",
+        "forge",
+        "set",
+        "--url",
+        &forge.url,
+        "--repo",
+        "owner/vault",
+        "--token-env",
+        "FORGE_TOKEN",
+    ]));
+    let bound = json(&enroll(Some(TOKEN), &["wiki"]));
+    assert_eq!(bound["state"], "bound", "{bound}");
+    assert_eq!(forge.keys.lock().unwrap().len(), 1);
+    assert_eq!(
+        forge.keys.lock().unwrap()[0].2,
+        format!("vulcan-device:{device_id}")
+    );
+    assert!(
+        ssh_command().contains("device ssh-command"),
+        "plain git now uses the device key"
+    );
+    assert_eq!(registrations(), 1, "still one registration, not two");
+    let status = json(&cmd(&[
+        "--vault",
+        vault.to_str().unwrap(),
+        "--output",
+        "json",
+        "sync",
+        "transport",
+        "status",
+    ]));
+    assert_eq!(status["state"], "usable");
+
+    // Re-running changes nothing and asks the forge for nothing.
+    let again = json(&enroll(Some(TOKEN), &["wiki"]));
+    assert_eq!(again["state"], "bound");
+    assert!(again["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|step| step["name"] == "bind" && step["status"] == "already"));
+    assert_eq!(forge.keys.lock().unwrap().len(), 1);
+
+    // `--no-device-key` leaves a vault alone, and --all-wikis reports each vault on its own.
+    let skipped = json(&enroll(None, &["wiki", "--no-device-key"]));
+    assert_eq!(skipped["state"], "skipped");
+    let all = json(&enroll(Some(TOKEN), &["--all-wikis"]));
+    assert_eq!(
+        (all["bound"].as_u64(), all["failed"].as_u64()),
+        (Some(1), Some(0))
+    );
+    assert!(
+        !enroll(None, &["wiki", "--all-wikis"]).status.success(),
+        "an id and --all-wikis conflict"
+    );
+    assert!(
+        !enroll(None, &[]).status.success(),
+        "something to enroll is required"
+    );
+
+    // Once the remote refuses the key again (a revocation), nothing is unbound for you.
+    set_device("deny");
+    let revoked = json(&enroll(None, &["wiki", "--no-device-key"]));
+    assert_eq!(revoked["state"], "skipped");
+    let refused = json(&enroll(None, &["wiki"]));
+    assert_eq!(refused["state"], "pending");
+    assert!(
+        ssh_command().contains("device ssh-command"),
+        "the binding is the user's to remove"
+    );
 }

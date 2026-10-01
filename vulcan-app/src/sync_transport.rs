@@ -468,12 +468,26 @@ pub(crate) fn bind_transport_with_store(
     dry_run: bool,
     executable: &Path,
 ) -> Result<GitTransportBindReport, AppError> {
-    let (device_id, _) = eligible_key(store).map_err(AppError::operation)?;
     let url = remote_url(paths.vault_root(), remote)?;
-    if !is_ssh_url(&url) {
-        return Err(AppError::operation(format!(
-            "remote `{remote}` is not an SSH remote; device-key transport needs ssh:// or scp-like URLs"
-        )));
+    bind_transport_for_url(paths, state, store, &url, mode, dry_run, executable)
+}
+
+/// As [`bind_transport_with_store`] for a caller that already knows the
+/// remote's URL (the enrollment pipeline), so Git is not asked twice.
+pub(crate) fn bind_transport_for_url(
+    paths: &VaultPaths,
+    state: &SyncStateStore,
+    store: &DeviceIdentityStore,
+    url: &str,
+    mode: GitConfigMode,
+    dry_run: bool,
+    executable: &Path,
+) -> Result<GitTransportBindReport, AppError> {
+    let (device_id, _) = eligible_key(store).map_err(AppError::operation)?;
+    if !is_ssh_url(url) {
+        return Err(AppError::operation(
+            "the remote is not an SSH remote; device-key transport needs ssh:// or scp-like URLs",
+        ));
     }
     let existing = load_binding(paths, state)?;
     let current = read_core_ssh_command(paths.vault_root())?;
@@ -574,7 +588,7 @@ fn is_owned(value: &str) -> bool {
     value.starts_with(wrapper_prefix().as_str())
 }
 
-fn is_ssh_url(url: &str) -> bool {
+pub(crate) fn is_ssh_url(url: &str) -> bool {
     if let Some(rest) = url
         .strip_prefix("ssh://")
         .or_else(|| url.strip_prefix("git+ssh://"))
