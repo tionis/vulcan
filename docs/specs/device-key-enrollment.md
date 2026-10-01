@@ -116,6 +116,47 @@ success for `bound`, `pending`, and `skipped`; failures are real errors.
 - **Observability.** `devices list` and `sync doctor` report the state and, for `pending`, the next
   steps. `vault enroll --all-wikis` iterates the registered vaults with independent results.
 
+## Lifecycle: revoking and replacing a device
+
+A device is one key, so retiring a key means retiring a device and enrolling a new one. Two commands
+cover it; both are per-vault independent, never ask a question, and support `--dry-run`.
+
+### `devices revoke <device-id>` (everywhere this installation can reach)
+
+For every registered Git vault: tombstone the device's registration (the existing sticky `revoked`
+record), then remove its Vulcan-marked deploy key through the vault's forge adapter when forge settings
+and a credential exist. Removal is **targeted**: it deletes only keys carrying that device's marker, and
+never runs the full `forge sync`, so revoking one device never installs keys for others. Each vault
+reports its own result (`revoked`, `already`, `not registered`, `forge removed`, `forge pending: <why>`,
+or an error) and one vault's failure never affects another. This reaches only vaults registered on the
+machine running it; the command says so, since a lost device may also be enrolled in vaults this
+installation does not know.
+
+### `device replace`
+
+Replacing the key must not break a working vault. With `core.sshCommand` configured by default, an
+immediate swap would make plain `git` and the daemon fail in every bound repository until each is
+re-enrolled. So the new key is **staged, authorized, and proven before it becomes active**:
+
+1. **Stage** a new identity in a separate directory, leaving the active identity untouched. Re-running
+   reuses it.
+2. **Prepare every affected vault** (every vault bound to the old device): authorize the staged key
+   through the forge when this machine can, then probe with the *staged* key. Each vault ends `ready` or
+   `pending` with the exact step an administrator must take (the staged public key is printed).
+3. **Activate only when every affected vault is ready**, unless `--activate-anyway` accepts that the
+   pending vaults will fail closed until re-enrolled. Activation archives the old public identity (and
+   its private key, inactive, never used as a fallback) under `retired/<old-id>/` and installs the new
+   identity. The manifest is written last and is the commit point: any interruption leaves a mismatched
+   identity that every reader already treats as degraded and fails closed, and re-running finishes the
+   swap.
+4. **Rebind and re-register** each ready vault with the new identity (the binding records the device ID).
+5. **Retire the old device** with `--revoke-old`, which runs the same targeted revocation as
+   `devices revoke`; without it the old registrations and keys remain until you do.
+
+A lost old key does not block any of this: replacement needs only the public identity. A machine with no
+identity at all just runs `device init`, and `devices revoke <lost-id>` from any administrator machine
+retires the lost one.
+
 ## Security considerations
 
 - Probing is one unauthenticated-to-the-forge SSH attempt with the device key. It cannot lock a
