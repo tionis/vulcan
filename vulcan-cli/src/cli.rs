@@ -4049,7 +4049,7 @@ pub enum SyncForgeCommand {
 pub enum SyncTransportCommand {
     #[command(
         about = "Authenticate this vault's Git sync with the device key (SSH remotes only)",
-        long_about = "Authenticate Vulcan's own Git operations, including the daemon's, with this installation's device key. The device key must already be authorized on the remote, for example as a deploy key. Nothing global changes; `--git-config` additionally sets a Vulcan-owned repository-local core.sshCommand so plain `git` uses the key too."
+        long_about = "Authenticate Vulcan's own Git operations, including the daemon's, with this installation's device key. The device key must already be authorized on the remote, for example as a deploy key. Nothing global changes. By default it also sets a Vulcan-owned, repository-local core.sshCommand so plain `git` in this repository uses the key too; the value falls back to ordinary ssh if the vulcan executable it names disappears, and another tool's existing core.sshCommand is left alone and reported. Use --no-git-config to opt out."
     )]
     Bind {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
@@ -4058,9 +4058,15 @@ pub enum SyncTransportCommand {
         remote: String,
         #[arg(
             long,
-            help = "Also set a Vulcan-owned repository-local core.sshCommand for plain git"
+            conflicts_with = "no_git_config",
+            help = "Require configuring plain git too (fail if another tool owns core.sshCommand)"
         )]
         git_config: bool,
+        #[arg(
+            long,
+            help = "Do not configure plain git: leave core.sshCommand alone and remove a Vulcan-owned one"
+        )]
+        no_git_config: bool,
         #[arg(long, help = "Preview without writing anything")]
         dry_run: bool,
     },

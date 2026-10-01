@@ -28,10 +28,14 @@ both execute the same application workflow.
 - Remote safety branches named with an older 26-character ULID are historical recovery heads from
   before key-derived IDs. `vulcan sync devices list/fetch/prune-backup` still handle them; a stale
   legacy `_device.json` is ignored.
-- `vulcan sync transport bind|status|unbind` optionally makes one vault's Git sync (CLI and daemon)
-  authenticate over SSH with the device key. Preview with `--dry-run`; it needs an SSH remote and an
-  initialized identity, never initializes one, and never falls back to another key. `--git-config`
-  also sets a Vulcan-owned `core.sshCommand` and refuses to overwrite a foreign one. Binding does not
+- `vulcan sync transport bind|status|unbind` makes one vault's Git sync (CLI and daemon) authenticate
+  over SSH with the device key. Preview with `--dry-run`; it needs an SSH remote and an initialized
+  identity, never initializes one, and never falls back to another key. By default `bind` also writes
+  a Vulcan-owned repository-local `core.sshCommand` so plain `git` in that repository uses the device
+  key too; the value falls back to ordinary `ssh` if the `vulcan` executable it names disappears. A
+  `core.sshCommand` owned by another tool is left alone and reported (`git_config_skipped`).
+  `--no-git-config` opts out and `--git-config` insists. After installing a new `vulcan`, re-run
+  `bind` so the value names the installed path (`doctor` reports a `stale` value). Binding does not
   authorize the key on the remote; that remains a separate step, and `sync doctor` cannot verify it
   offline. Do not bind on the user's behalf unless asked, since their own SSH key may be intended.
 - Use `vulcan devices list --output json` for an installation-wide view across registered wikis.

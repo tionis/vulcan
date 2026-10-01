@@ -609,7 +609,7 @@ fn doctor_transport(paths: &VaultPaths, report: &mut SyncDoctorReport) {
         GitTransportState::Usable => {
             let drift = matches!(
                 status.git_config,
-                GitConfigState::Missing | GitConfigState::Foreign
+                GitConfigState::Missing | GitConfigState::Foreign | GitConfigState::Stale
             );
             doctor_check(
                 report,
@@ -620,7 +620,7 @@ fn doctor_transport(paths: &VaultPaths, report: &mut SyncDoctorReport) {
                     SyncDoctorSeverity::Pass
                 },
                 if drift {
-                    "Git is bound to the device key, but repository core.sshCommand drifted; rerun `vulcan sync transport bind --git-config`"
+                    "Git is bound to the device key, but the repository's core.sshCommand drifted (missing, replaced, or naming a vulcan that no longer exists); rerun `vulcan sync transport bind`"
                 } else {
                     "Git sync authenticates with the bound device key; remote authorization is not checked offline"
                 },
@@ -3603,7 +3603,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &state_store,
             state_store.identity(),
             "origin",
-            false,
+            crate::sync_transport::GitConfigMode::Skip,
             false,
             Path::new("/usr/bin/vulcan"),
         )

@@ -18,8 +18,12 @@ const BINDING_FILE: &str = "git-transport.json";
 const BINDING_VERSION: u32 = 1;
 const MAX_BINDING_BYTES: u64 = 4 * 1024;
 const ELIGIBLE_PROVIDER: &str = "file_v1";
-/// Suffix that marks a `core.sshCommand` value as Vulcan-owned.
-const WRAPPER_SUFFIX: &str = " device ssh-command";
+/// The shell script behind a Vulcan-owned `core.sshCommand`. Git runs the value
+/// through `sh` with the SSH arguments appended, so `$0` is the `vulcan`
+/// executable and `"$@"` are those arguments. If the executable has gone
+/// missing (an upgrade moved it, a build directory was removed), plain `ssh`
+/// runs instead, so a stale value can never leave `git` worse off than before.
+const WRAPPER_SCRIPT: &str = r#"[ -x "$0" ] && exec "$0" device ssh-command "$@" || exec ssh "$@""#;
 const SSH_OPTIONS: [&str; 6] = [
     "-o",
     "IdentitiesOnly=yes",
@@ -49,17 +53,34 @@ pub enum GitTransportState {
     DeviceKeyUnavailable,
 }
 
+/// Whether `bind` also sets the repository-local `core.sshCommand`, so plain
+/// `git` in the repository uses the device key too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitConfigMode {
+    /// Set it unless another tool already owns the setting; then leave that
+    /// value alone and say so. The default.
+    #[default]
+    Auto,
+    /// Set it, failing if a value Vulcan does not own is present.
+    Require,
+    /// Do not set it, and remove a Vulcan-owned value.
+    Skip,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GitConfigState {
-    /// Binding does not manage `core.sshCommand`.
+    /// The binding does not manage `core.sshCommand`.
     NotManaged,
-    /// Managed and present with a Vulcan-owned value.
+    /// Managed and present with a working Vulcan-owned value.
     Managed,
     /// Managed but the value is absent.
     Missing,
     /// Managed but another tool replaced the value.
     Foreign,
+    /// Managed, but the executable it names no longer exists, so plain `git`
+    /// falls back to ordinary `ssh`. Re-run `sync transport bind` to repair.
+    Stale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -71,10 +92,15 @@ pub struct GitTransportStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // A report: one flag per distinct outcome.
 pub struct GitTransportBindReport {
     pub dry_run: bool,
     pub device_id: String,
     pub git_config_written: bool,
+    pub git_config_removed: bool,
+    /// Why plain `git` was not configured, when it was not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_config_skipped: Option<String>,
     pub changed: bool,
 }
 
@@ -255,7 +281,13 @@ fn transport_status_with_store(
     let git_config = if record.git_config {
         match read_core_ssh_command(paths.vault_root())? {
             None => GitConfigState::Missing,
-            Some(value) if is_owned(&value) => GitConfigState::Managed,
+            Some(value) if is_owned(&value) => {
+                if owned_executable(&value).is_some_and(|path| path.is_file()) {
+                    GitConfigState::Managed
+                } else {
+                    GitConfigState::Stale
+                }
+            }
             Some(_) => GitConfigState::Foreign,
         }
     } else {
@@ -273,7 +305,7 @@ fn transport_status_with_store(
 pub fn bind_transport(
     paths: &VaultPaths,
     remote: &str,
-    git_config: bool,
+    mode: GitConfigMode,
     dry_run: bool,
 ) -> Result<GitTransportBindReport, AppError> {
     let state = SyncStateStore::user_default()?;
@@ -282,10 +314,26 @@ pub fn bind_transport(
         &state,
         state.identity(),
         remote,
-        git_config,
+        mode,
         dry_run,
         &std::env::current_exe().map_err(AppError::operation)?,
     )
+}
+
+/// The `core.sshCommand` value naming `executable`.
+fn wrapper_value(executable: &Path) -> String {
+    format!("{}{}", wrapper_prefix(), path_word(executable))
+}
+
+fn wrapper_prefix() -> String {
+    format!("sh -c {} ", shell_quote(WRAPPER_SCRIPT))
+}
+
+/// The executable a Vulcan-owned value names.
+fn owned_executable(value: &str) -> Option<PathBuf> {
+    let quoted = value.strip_prefix(wrapper_prefix().as_str())?;
+    let inner = quoted.strip_prefix('\'')?.strip_suffix('\'')?;
+    Some(PathBuf::from(inner.replace("'\\''", "'")))
 }
 
 pub(crate) fn bind_transport_with_store(
@@ -293,7 +341,7 @@ pub(crate) fn bind_transport_with_store(
     state: &SyncStateStore,
     store: &DeviceIdentityStore,
     remote: &str,
-    git_config: bool,
+    mode: GitConfigMode,
     dry_run: bool,
     executable: &Path,
 ) -> Result<GitTransportBindReport, AppError> {
@@ -306,28 +354,44 @@ pub(crate) fn bind_transport_with_store(
     }
     let existing = load_binding(paths, state)?;
     let current = read_core_ssh_command(paths.vault_root())?;
-    let wrapper = format!("{}{WRAPPER_SUFFIX}", path_word(executable));
-    if git_config {
-        if let Some(value) = &current {
-            if !is_owned(value) {
-                return Err(AppError::operation(
-                    "core.sshCommand already holds a value Vulcan does not own; refusing to overwrite it",
-                ));
-            }
+    let owned_current = current.as_deref().is_some_and(is_owned);
+    let foreign_current = current.is_some() && !owned_current;
+    let mut skipped = None;
+    let manage = match mode {
+        GitConfigMode::Skip => false,
+        GitConfigMode::Require if foreign_current => {
+            return Err(AppError::operation(
+                "core.sshCommand already holds a value Vulcan does not own; refusing to overwrite it",
+            ));
         }
-    }
+        GitConfigMode::Auto if foreign_current => {
+            skipped = Some(
+                "core.sshCommand is already set by something else and was left alone, so plain `git` still uses its own SSH setup"
+                    .to_owned(),
+            );
+            false
+        }
+        GitConfigMode::Require | GitConfigMode::Auto => true,
+    };
+    let wrapper = wrapper_value(executable);
     let desired = BindingRecord {
         version: BINDING_VERSION,
         device_id: device_id.clone(),
-        git_config: git_config || existing.as_ref().is_some_and(|record| record.git_config),
+        git_config: manage,
     };
-    let config_changed = git_config && current.as_deref() != Some(wrapper.as_str());
-    let changed = existing.as_ref() != Some(&desired) || config_changed;
+    let config_written = manage && current.as_deref() != Some(wrapper.as_str());
+    let config_removed = !manage && owned_current;
+    let changed = existing.as_ref() != Some(&desired) || config_written || config_removed;
     if !dry_run && changed {
-        if config_changed {
+        if config_written {
             run_git_config(
                 paths.vault_root(),
                 &["config", "--local", "core.sshCommand", &wrapper],
+            )?;
+        } else if config_removed {
+            run_git_config(
+                paths.vault_root(),
+                &["config", "--local", "--unset", "core.sshCommand"],
             )?;
         }
         let bytes = serde_json::to_vec_pretty(&desired).map_err(AppError::operation)?;
@@ -336,7 +400,9 @@ pub(crate) fn bind_transport_with_store(
     Ok(GitTransportBindReport {
         dry_run,
         device_id,
-        git_config_written: config_changed,
+        git_config_written: config_written,
+        git_config_removed: config_removed,
+        git_config_skipped: skipped,
         changed,
     })
 }
@@ -382,7 +448,7 @@ fn unbind_transport_with_store(
 }
 
 fn is_owned(value: &str) -> bool {
-    value.ends_with(WRAPPER_SUFFIX)
+    value.starts_with(wrapper_prefix().as_str())
 }
 
 fn is_ssh_url(url: &str) -> bool {
@@ -503,8 +569,29 @@ mod tests {
 
     #[test]
     fn ownership_marker_matches_only_the_wrapper() {
-        assert!(is_owned("'/usr/bin/vulcan' device ssh-command"));
+        assert!(is_owned(&wrapper_value(Path::new("/usr/bin/vulcan"))));
         assert!(!is_owned("ssh -i ~/.ssh/other"));
+        assert!(
+            !is_owned("'/usr/bin/vulcan' device ssh-command"),
+            "the old suffix form is not ours"
+        );
+    }
+
+    #[test]
+    fn the_wrapper_value_round_trips_its_executable_even_with_awkward_paths() {
+        for path in [
+            "/usr/bin/vulcan",
+            "/opt/my tools/vulcan",
+            "/home/me/it's here/vulcan",
+        ] {
+            let value = wrapper_value(Path::new(path));
+            assert_eq!(
+                owned_executable(&value),
+                Some(PathBuf::from(path)),
+                "{value}"
+            );
+        }
+        assert_eq!(owned_executable("ssh -i /other"), None);
     }
 
     fn git(root: &Path, args: &[&str]) {
@@ -518,13 +605,15 @@ mod tests {
     }
 
     struct Fixture {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         paths: VaultPaths,
         store: DeviceIdentityStore,
         state: SyncStateStore,
         exe: PathBuf,
     }
 
+    /// A fixture whose "vulcan" is a real executable script, so the written
+    /// `core.sshCommand` can actually be run.
     fn fixture(remote: &str, init_identity: bool) -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let vault = dir.path().join("vault");
@@ -535,55 +624,72 @@ mod tests {
         if init_identity {
             store.initialize(false).expect("identity");
         }
+        let exe = dir.path().join("my tools").join("vulcan");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, "#!/bin/sh\necho \"vulcan:$*\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         Fixture {
             paths: VaultPaths::new(&vault),
             store,
             state: SyncStateStore::at(dir.path().join("state/sync/repositories")),
-            exe: PathBuf::from("/opt/my tools/vulcan"),
-            _dir: dir,
+            exe,
+            dir,
         }
     }
 
     fn bind(
         fx: &Fixture,
-        git_config: bool,
+        mode: GitConfigMode,
         dry_run: bool,
     ) -> Result<GitTransportBindReport, AppError> {
         bind_transport_with_store(
-            &fx.paths, &fx.state, &fx.store, "origin", git_config, dry_run, &fx.exe,
+            &fx.paths, &fx.state, &fx.store, "origin", mode, dry_run, &fx.exe,
         )
     }
 
+    fn status(fx: &Fixture) -> GitTransportStatus {
+        transport_status_with_store(&fx.paths, &fx.state, &fx.store).unwrap()
+    }
+
+    fn config_value(fx: &Fixture) -> Option<String> {
+        read_core_ssh_command(fx.paths.vault_root()).unwrap()
+    }
+
     #[test]
-    fn bind_status_unbind_roundtrip_without_git_config() {
+    fn bind_configures_plain_git_by_default() {
         let fx = fixture("git@forge.example:o/r.git", true);
-        assert_eq!(
-            transport_status_with_store(&fx.paths, &fx.state, &fx.store)
-                .unwrap()
-                .state,
-            GitTransportState::NotBound
-        );
+        assert_eq!(status(&fx).state, GitTransportState::NotBound);
 
-        let preview = bind(&fx, false, true).unwrap();
-        assert!(preview.dry_run && preview.changed);
+        let preview = bind(&fx, GitConfigMode::default(), true).unwrap();
+        assert!(preview.dry_run && preview.changed && preview.git_config_written);
         assert_eq!(
-            transport_status_with_store(&fx.paths, &fx.state, &fx.store)
-                .unwrap()
-                .state,
-            GitTransportState::NotBound
+            status(&fx).state,
+            GitTransportState::NotBound,
+            "a dry run binds nothing"
         );
+        assert_eq!(config_value(&fx), None);
 
-        let report = bind(&fx, false, false).unwrap();
-        assert!(!report.git_config_written);
-        let status = transport_status_with_store(&fx.paths, &fx.state, &fx.store).unwrap();
-        assert_eq!(status.state, GitTransportState::Usable);
-        assert_eq!(status.git_config, GitConfigState::NotManaged);
+        let report = bind(&fx, GitConfigMode::default(), false).unwrap();
+        assert!(report.git_config_written && report.git_config_skipped.is_none());
+        let state = status(&fx);
         assert_eq!(
-            status.bound_device_id.as_deref(),
-            Some(report.device_id.as_str())
+            (state.state, state.git_config),
+            (GitTransportState::Usable, GitConfigState::Managed)
         );
-        assert_eq!(read_core_ssh_command(fx.paths.vault_root()).unwrap(), None);
-        assert!(!bind(&fx, false, false).unwrap().changed, "idempotent");
+        let value = config_value(&fx).unwrap();
+        assert!(is_owned(&value));
+        assert!(
+            !value.contains("id_ed25519"),
+            "the key path stays out of Git config"
+        );
+        assert!(
+            !bind(&fx, GitConfigMode::default(), false).unwrap().changed,
+            "idempotent"
+        );
 
         let engine = git_engine_with_store(
             GitCliEngine::default(),
@@ -593,17 +699,10 @@ mod tests {
         );
         assert_ne!(engine, GitCliEngine::default());
 
-        assert!(
-            unbind_transport_with_store(&fx.paths, &fx.state, false)
-                .unwrap()
-                .was_bound
-        );
-        assert_eq!(
-            transport_status_with_store(&fx.paths, &fx.state, &fx.store)
-                .unwrap()
-                .state,
-            GitTransportState::NotBound
-        );
+        let removed = unbind_transport_with_store(&fx.paths, &fx.state, false).unwrap();
+        assert!(removed.was_bound && removed.git_config_removed);
+        assert_eq!(config_value(&fx), None);
+        assert_eq!(status(&fx).state, GitTransportState::NotBound);
         assert_eq!(
             git_engine_with_store(
                 GitCliEngine::default(),
@@ -616,97 +715,182 @@ mod tests {
     }
 
     #[test]
-    fn git_config_is_written_owned_and_removed_only_when_owned() {
-        let fx = fixture("ssh://git@forge.example/o/r.git", true);
-        let report = bind(&fx, true, false).unwrap();
-        assert!(report.git_config_written);
-        let value = read_core_ssh_command(fx.paths.vault_root())
-            .unwrap()
-            .unwrap();
-        assert_eq!(value, "'/opt/my tools/vulcan' device ssh-command");
-        assert!(
-            !value.contains("id_ed25519"),
-            "key path stays out of Git config"
-        );
+    fn opting_out_binds_without_touching_git_config_and_removes_an_owned_value() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        let report = bind(&fx, GitConfigMode::Skip, false).unwrap();
+        assert!(!report.git_config_written && !report.git_config_removed);
+        let state = status(&fx);
         assert_eq!(
-            transport_status_with_store(&fx.paths, &fx.state, &fx.store)
-                .unwrap()
-                .git_config,
-            GitConfigState::Managed
+            (state.state, state.git_config),
+            (GitTransportState::Usable, GitConfigState::NotManaged)
         );
-        assert!(!bind(&fx, true, false).unwrap().changed);
+        assert_eq!(config_value(&fx), None);
 
-        git(
-            fx.paths.vault_root(),
-            &["config", "core.sshCommand", "ssh -i /other"],
-        );
+        // Opting out later removes only what Vulcan wrote.
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
+        assert!(config_value(&fx).is_some());
+        let report = bind(&fx, GitConfigMode::Skip, false).unwrap();
+        assert!(report.git_config_removed && report.changed);
+        assert_eq!(config_value(&fx), None);
         assert_eq!(
-            transport_status_with_store(&fx.paths, &fx.state, &fx.store)
-                .unwrap()
-                .git_config,
-            GitConfigState::Foreign
-        );
-        let report = unbind_transport_with_store(&fx.paths, &fx.state, false).unwrap();
-        assert!(!report.git_config_removed);
-        assert_eq!(
-            read_core_ssh_command(fx.paths.vault_root())
-                .unwrap()
-                .as_deref(),
-            Some("ssh -i /other")
+            status(&fx).state,
+            GitTransportState::Usable,
+            "the binding itself stays"
         );
     }
 
     #[test]
-    fn bind_refuses_foreign_core_ssh_command_and_leaves_state_untouched() {
+    fn a_foreign_core_ssh_command_is_left_alone_and_never_blocks_the_bind() {
         let fx = fixture("git@forge.example:o/r.git", true);
         git(
             fx.paths.vault_root(),
             &["config", "core.sshCommand", "ssh -i /mine"],
         );
-        let error = bind(&fx, true, false).unwrap_err();
+
+        let report = bind(&fx, GitConfigMode::Auto, false).unwrap();
+        assert!(!report.git_config_written);
+        assert!(report
+            .git_config_skipped
+            .as_deref()
+            .unwrap()
+            .contains("left alone"));
+        let state = status(&fx);
+        assert_eq!(
+            (state.state, state.git_config),
+            (GitTransportState::Usable, GitConfigState::NotManaged)
+        );
+        assert_eq!(config_value(&fx).as_deref(), Some("ssh -i /mine"));
+
+        // Skip never removes a value it does not own either.
+        bind(&fx, GitConfigMode::Skip, false).unwrap();
+        assert_eq!(config_value(&fx).as_deref(), Some("ssh -i /mine"));
+        unbind_transport_with_store(&fx.paths, &fx.state, false).unwrap();
+        assert_eq!(config_value(&fx).as_deref(), Some("ssh -i /mine"));
+    }
+
+    #[test]
+    fn requiring_the_git_config_fails_on_a_foreign_value_and_changes_nothing() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        git(
+            fx.paths.vault_root(),
+            &["config", "core.sshCommand", "ssh -i /mine"],
+        );
+        let error = bind(&fx, GitConfigMode::Require, false).unwrap_err();
         assert!(error.to_string().contains("does not own"));
+        assert_eq!(status(&fx).state, GitTransportState::NotBound);
+        assert_eq!(config_value(&fx).as_deref(), Some("ssh -i /mine"));
+    }
+
+    #[test]
+    fn a_value_naming_a_missing_executable_is_stale_and_rebinding_repairs_it() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
+        assert_eq!(status(&fx).git_config, GitConfigState::Managed);
+
+        fs::remove_file(&fx.exe).unwrap();
+        assert_eq!(status(&fx).git_config, GitConfigState::Stale);
+
+        // A new executable (an upgrade, a different install path) is adopted by re-binding.
+        let moved = fx.dir.path().join("elsewhere").join("vulcan");
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        fs::write(&moved, "#!/bin/sh\n").unwrap();
+        let report = bind_transport_with_store(
+            &fx.paths,
+            &fx.state,
+            &fx.store,
+            "origin",
+            GitConfigMode::Auto,
+            false,
+            &moved,
+        )
+        .unwrap();
+        assert!(report.git_config_written);
+        assert_eq!(owned_executable(&config_value(&fx).unwrap()), Some(moved));
+        assert_eq!(status(&fx).git_config, GitConfigState::Managed);
+    }
+
+    /// Runs the stored value the way Git does: through `sh` with the SSH
+    /// arguments appended.
+    #[cfg(unix)]
+    fn run_like_git(value: &str, path: &str) -> (String, String) {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(format!("{value} \"$@\""))
+            .arg("sh")
+            .args(["git@forge.example", "git-upload-pack 'o/r'"])
+            .env("PATH", path)
+            .output()
+            .expect("sh");
+        (
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_stored_value_runs_vulcan_and_falls_back_to_ssh_when_it_is_gone() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
+        let value = config_value(&fx).unwrap();
+
+        // A fake `ssh` earlier on PATH proves which program actually ran.
+        let bin = fx.dir.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("ssh"), "#!/bin/sh\necho \"plain-ssh:$*\"\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+
+        // The executable exists (and has a space in its path): vulcan runs with
+        // `device ssh-command` followed by Git's SSH arguments.
+        let (stdout, _) = run_like_git(&value, &path);
         assert_eq!(
-            transport_status_with_store(&fx.paths, &fx.state, &fx.store)
-                .unwrap()
-                .state,
-            GitTransportState::NotBound
+            stdout,
+            "vulcan:device ssh-command git@forge.example git-upload-pack 'o/r'"
         );
-        // Binding without managing Git configuration remains available.
-        assert!(bind(&fx, false, false).is_ok());
-        assert_eq!(
-            read_core_ssh_command(fx.paths.vault_root())
-                .unwrap()
-                .as_deref(),
-            Some("ssh -i /mine")
-        );
+
+        // The executable is gone: plain `ssh` runs with the same arguments, so
+        // a stale value never leaves `git` worse off than before.
+        fs::remove_file(&fx.exe).unwrap();
+        let (stdout, _) = run_like_git(&value, &path);
+        assert_eq!(stdout, "plain-ssh:git@forge.example git-upload-pack 'o/r'");
     }
 
     #[test]
     fn bind_rejects_non_ssh_remotes_and_uninitialized_identity() {
         let https = fixture("https://forge.example/o/r.git", true);
-        assert!(bind(&https, false, false)
+        assert!(bind(&https, GitConfigMode::Auto, false)
             .unwrap_err()
             .to_string()
             .contains("not an SSH remote"));
+        assert_eq!(config_value(&https), None);
 
         let bare = fixture("git@forge.example:o/r.git", false);
-        let error = bind(&bare, false, false).unwrap_err();
+        let error = bind(&bare, GitConfigMode::Auto, false).unwrap_err();
         assert!(error.to_string().contains("vulcan device init"));
         assert!(
             bare.store.inspect().device_id.is_none(),
             "bind must not initialize identity"
+        );
+        assert_eq!(
+            config_value(&bare),
+            None,
+            "a failed bind writes no Git config"
         );
     }
 
     #[test]
     fn bound_vault_fails_closed_when_the_device_key_is_unusable() {
         let fx = fixture("git@forge.example:o/r.git", true);
-        bind(&fx, false, false).unwrap();
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
         fs::remove_file(fx.store.private_key_path().unwrap()).unwrap();
 
-        let status = transport_status_with_store(&fx.paths, &fx.state, &fx.store).unwrap();
-        assert_eq!(status.state, GitTransportState::DeviceKeyUnavailable);
-        assert!(status.diagnostic.is_some());
+        let state = status(&fx);
+        assert_eq!(state.state, GitTransportState::DeviceKeyUnavailable);
+        assert!(state.diagnostic.is_some());
         // The engine still builds, with a transport that cannot authenticate
         // and cannot silently use another key.
         let engine = git_engine_with_store(
@@ -721,10 +905,11 @@ mod tests {
     #[test]
     fn binding_state_never_lands_in_the_work_tree() {
         let fx = fixture("git@forge.example:o/r.git", true);
-        bind(&fx, false, false).unwrap();
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
         // Plain Git vaults replicate everything in the work tree, so the
         // binding must live in device-local state, and `.vulcan/` must not
-        // even be created for it.
+        // even be created for it. (core.sshCommand lives in `.git/config`,
+        // which is never replicated.)
         assert!(!fx.paths.vault_root().join(".vulcan").exists());
         let entries = fs::read_dir(fx.paths.vault_root())
             .unwrap()

@@ -3902,11 +3902,17 @@ fn handle_sync_transport(
             wiki,
             remote,
             git_config,
+            no_git_config,
             dry_run,
         } => {
             let paths = transport_paths(paths, wiki.as_deref())?;
-            let report = bind_transport(&paths, remote, *git_config, *dry_run)
-                .map_err(CliError::operation)?;
+            let mode = match (git_config, no_git_config) {
+                (_, true) => vulcan_app::sync_transport::GitConfigMode::Skip,
+                (true, false) => vulcan_app::sync_transport::GitConfigMode::Require,
+                (false, false) => vulcan_app::sync_transport::GitConfigMode::Auto,
+            };
+            let report =
+                bind_transport(&paths, remote, mode, *dry_run).map_err(CliError::operation)?;
             match cli.output {
                 OutputFormat::Json => print_json(&report),
                 OutputFormat::Human | OutputFormat::Markdown => {
@@ -3917,7 +3923,13 @@ fn handle_sync_transport(
                     };
                     println!("{verb} Git transport to device key {}", report.device_id);
                     if report.git_config_written {
-                        println!("core.sshCommand set for plain git in this repository");
+                        println!("core.sshCommand set, so plain `git` in this repository uses the device key too");
+                    }
+                    if report.git_config_removed {
+                        println!("removed the Vulcan-owned core.sshCommand");
+                    }
+                    if let Some(note) = &report.git_config_skipped {
+                        println!("note: {note}");
                     }
                     Ok(())
                 }

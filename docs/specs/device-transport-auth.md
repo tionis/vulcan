@@ -13,7 +13,7 @@ Let a Vulcan installation authenticate its Git sync with its own device key, and
 administrator install device keys as forge deploy keys with little friction:
 
 1. A device-local **transport binding** makes Vulcan's Git engine (direct CLI and daemon) use the
-   device key. Optionally it also sets `core.sshCommand` for plain `git`.
+   device key. By default it also sets `core.sshCommand`, so plain `git` uses it too.
 2. Each device has a **registration** in the vault's Git remote, published automatically on its first
    mutating sync. An administrator can also create a **placeholder** for a device that has not synced
    yet; the device replaces it on its first sync.
@@ -64,7 +64,7 @@ path. Both
 the direct CLI and the daemon resolve it per vault, so one daemon can serve bound and unbound wikis.
 
 ```text
-vulcan sync transport bind   [--wiki <name>] [--remote origin] [--git-config] [--dry-run]
+vulcan sync transport bind   [--wiki <name>] [--remote origin] [--no-git-config | --git-config] [--dry-run]
 vulcan sync transport status [--wiki <name>]
 vulcan sync transport unbind [--wiki <name>] [--dry-run]
 ```
@@ -90,16 +90,27 @@ and `~/.ssh/config` host aliases still apply. The engine sets `GIT_SSH_COMMAND` 
 `GIT_SSH`) on its own Git processes, so the daemon does not depend on repository configuration. The
 key path never appears in logs, JSON, or notifications.
 
-### Optional `core.sshCommand`
+### Plain `git` (`core.sshCommand`, on by default)
 
-`--git-config` also writes the repository-local `core.sshCommand` so interactive `git` works. It is
-off by default because users may prefer their main key for direct use.
+Vulcan's own Git calls always use the device key through the environment. So that plain `git` in the
+repository uses it too without any extra step, `bind` also writes the repository-local
+`core.sshCommand`. This is the default; `--no-git-config` opts out, and `--git-config` insists
+(failing instead of skipping).
 
-- The value calls a Vulcan wrapper (`vulcan device ssh-command`) rather than embedding the key path,
-  so custody migration need not rewrite Git configuration.
-- The value is recognized as Vulcan-owned by its wrapper suffix. `bind` writes only if the setting is
-  absent or already owned and refuses to overwrite a foreign value. `unbind` removes only an owned
-  value. `sync doctor` warns on drift (value missing or replaced).
+- The value is `sh -c '<script>' '<path to vulcan>'`. The script runs `<vulcan> device ssh-command`
+  with Git's SSH arguments, and **falls back to plain `ssh` if that executable no longer exists**. A
+  value left behind by a moved binary, an upgrade, or a deleted build directory therefore never leaves
+  `git` worse off than before; it just stops using the device key. No key path is written, so custody
+  migration need not rewrite it.
+- Ownership is recognized by the value's exact shape. `bind` writes only when the setting is absent or
+  already Vulcan's. If another tool owns it, `bind` leaves it alone, succeeds, and reports
+  `git_config_skipped`; `--no-git-config` never removes a value it does not own, and `unbind` removes
+  only an owned one.
+- `sync doctor` and `sync transport status` report `missing`, `foreign`, or `stale` (the executable
+  is gone). Re-running `sync transport bind` repairs a stale value, which is also how a newly installed
+  binary takes over the path.
+- Binding by a throwaway development build records that build's path. Re-run `bind` from the installed
+  binary to point it at the stable path.
 
 ### Failure behavior
 

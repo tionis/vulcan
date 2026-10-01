@@ -334,6 +334,7 @@ fn repair_permissions_restricts_loose_identity_storage() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One ordered bind/opt-out/foreign/unbind lifecycle reads best unbroken.
 fn transport_binding_roundtrip_is_dry_run_safe_and_owns_only_its_git_config() {
     let temporary = TempDir::new().expect("temporary directory");
     let root = temporary.path();
@@ -375,17 +376,35 @@ fn transport_binding_roundtrip_is_dry_run_safe_and_owns_only_its_git_config() {
     assert!(refusal.contains("vulcan device init"), "{refusal}");
 
     json_output(&run(root, &["device", "init", "--output", "json"]));
-    let preview = json_output(&transport(&["bind", "--git-config", "--dry-run"]));
+    // The default configures plain git too: nothing to remember to pass.
+    let preview = json_output(&transport(&["bind", "--dry-run"]));
     assert_eq!(preview["dry_run"], true);
     assert_eq!(preview["changed"], true);
+    assert_eq!(preview["git_config_written"], true);
     assert_eq!(
         json_output(&transport(&["status"]))["state"],
         "not_bound",
         "dry run must not bind"
     );
+    let plain_git = |args: &[&str]| {
+        let output = ProcessCommand::new("git")
+            .current_dir(&vault)
+            .args(args)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    assert_eq!(
+        plain_git(&["config", "--local", "--get", "core.sshCommand"]),
+        ""
+    );
 
-    let bound = json_output(&transport(&["bind", "--git-config"]));
+    let bound = json_output(&transport(&["bind"]));
     assert_eq!(bound["git_config_written"], true);
+    assert!(
+        plain_git(&["config", "--local", "--get", "core.sshCommand"])
+            .contains("device ssh-command")
+    );
     let status = json_output(&transport(&["status"]));
     assert_eq!(status["state"], "usable");
     assert_eq!(status["git_config"], "managed");
@@ -394,7 +413,41 @@ fn transport_binding_roundtrip_is_dry_run_safe_and_owns_only_its_git_config() {
         !rendered.contains("id_ed25519"),
         "key path must not be reported"
     );
+    assert!(
+        !plain_git(&["config", "--local", "--get", "core.sshCommand"]).contains("id_ed25519"),
+        "nor written to Git config"
+    );
 
+    // Opting out removes the Vulcan-owned value but keeps the binding.
+    let opted_out = json_output(&transport(&["bind", "--no-git-config"]));
+    assert_eq!(opted_out["git_config_removed"], true);
+    assert_eq!(
+        plain_git(&["config", "--local", "--get", "core.sshCommand"]),
+        ""
+    );
+    let status = json_output(&transport(&["status"]));
+    assert_eq!(
+        (status["state"].as_str(), status["git_config"].as_str()),
+        (Some("usable"), Some("not_managed"))
+    );
+
+    // Another tool's value is left alone and never blocks the default bind.
+    plain_git(&["config", "--local", "core.sshCommand", "ssh -i /mine"]);
+    let skipped = json_output(&transport(&["bind"]));
+    assert_eq!(skipped["git_config_written"], false);
+    assert!(skipped["git_config_skipped"]
+        .as_str()
+        .unwrap()
+        .contains("left alone"));
+    assert_eq!(
+        plain_git(&["config", "--local", "--get", "core.sshCommand"]),
+        "ssh -i /mine"
+    );
+    // `--git-config` insists, so it refuses instead.
+    assert!(!transport(&["bind", "--git-config"]).status.success());
+    plain_git(&["config", "--local", "--unset", "core.sshCommand"]);
+
+    json_output(&transport(&["bind"]));
     let unbound = json_output(&transport(&["unbind"]));
     assert_eq!(unbound["git_config_removed"], true);
     assert_eq!(json_output(&transport(&["status"]))["state"], "not_bound");

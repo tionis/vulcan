@@ -9150,7 +9150,7 @@
                     ]
                   },
                   {
-                    "help": "Also set a Vulcan-owned repository-local core.sshCommand for plain git",
+                    "help": "Require configuring plain git too (fail if another tool owns core.sshCommand)",
                     "id": "git_config",
                     "long": "git-config",
                     "possible_values": [
@@ -9161,6 +9161,20 @@
                     "short": null,
                     "value_names": [
                       "GIT_CONFIG"
+                    ]
+                  },
+                  {
+                    "help": "Do not configure plain git: leave core.sshCommand alone and remove a Vulcan-owned one",
+                    "id": "no_git_config",
+                    "long": "no-git-config",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_GIT_CONFIG"
                     ]
                   },
                   {
