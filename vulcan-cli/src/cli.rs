@@ -4156,6 +4156,32 @@ pub enum DeviceCommand {
         command: DeviceConfigCommand,
     },
     #[command(
+        about = "Replace this installation's device key without breaking any vault",
+        long_about = "Stage a new key, authorize and prove it in every vault bound to the current key (through the forge when this machine holds the authority), and only then make it the active identity and rebind each vault. If any vault cannot be proven yet, nothing changes and the command lists the pending steps; re-run it afterwards, or pass --activate-anyway to switch now (those vaults fail closed until re-enrolled). The old identity is archived, never deleted, and the old device stays registered until you pass --revoke-old or run `vulcan devices revoke`. Its recovery backups are kept."
+    )]
+    Replace {
+        #[arg(
+            long,
+            help = "Activate the new key even if some vaults could not be proven"
+        )]
+        activate_anyway: bool,
+        #[arg(
+            long,
+            help = "Also revoke the old device's registrations and deploy keys, in each vault where the new key is proven"
+        )]
+        revoke_old: bool,
+        #[arg(long, help = "Permit an interactive forge login")]
+        login: bool,
+        #[arg(
+            long,
+            default_value = "origin",
+            help = "Git remote the vaults sync with"
+        )]
+        remote: String,
+        #[arg(long, help = "Show what would happen without changing anything")]
+        dry_run: bool,
+    },
+    #[command(
         hide = true,
         about = "Run ssh with the device key; used as core.sshCommand by `sync transport bind`"
     )]
@@ -4253,6 +4279,22 @@ pub enum DevicesCommand {
             help = "Use local recovery refs and labels without observing remotes"
         )]
         offline: bool,
+    },
+    #[command(
+        about = "Retire a device in every registered Git vault: revoke its registration and remove its deploy key",
+        long_about = "For each registered Git vault, tombstone the device's registration and remove only the deploy keys Vulcan installed for it through that vault's forge. It never adds keys and never touches other devices or keys without the Vulcan marker. Each vault has its own result and one failing vault does not affect the others. This reaches only the vaults registered on this machine; a lost device may be enrolled elsewhere too. Use `vulcan sync devices revoke` for a single vault."
+    )]
+    Revoke {
+        #[arg(help = "Full `vdev1_` device ID")]
+        device_id: String,
+        #[arg(
+            long,
+            default_value = "origin",
+            help = "Git remote the vaults sync with"
+        )]
+        remote: String,
+        #[arg(long, help = "Show what would change without changing anything")]
+        dry_run: bool,
     },
 }
 

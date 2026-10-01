@@ -25,10 +25,10 @@ use vulcan_daemon::registry::{WikiId, WikiRegistration, WikiRegistry};
 
 /// Applies the vault's permission profile, then runs the credential chain and
 /// the forge API on behalf of the pipeline.
-struct CliAuthority<'a> {
-    cli: &'a Cli,
-    paths: &'a VaultPaths,
-    registration_profile: Option<&'a str>,
+pub(crate) struct CliAuthority<'a> {
+    pub(crate) cli: &'a Cli,
+    pub(crate) paths: &'a VaultPaths,
+    pub(crate) registration_profile: Option<&'a str>,
 }
 
 impl ForgeAuthority for CliAuthority<'_> {
@@ -325,6 +325,7 @@ pub(crate) fn print_report(report: &EnrollReport) {
         report.wiki,
         match report.state {
             EnrollState::Bound => "bound to the device key",
+            EnrollState::Ready => "authorized (binding waits for activation)",
             EnrollState::Pending => "pending",
             EnrollState::Skipped => "skipped",
         },

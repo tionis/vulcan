@@ -4542,7 +4542,7 @@ fn forge_sync_one(
 /// variable) is resolved. `check_git` is false for commands that never touch
 /// the Git remote.
 #[cfg(feature = "web")]
-fn forge_adapter(
+pub(crate) fn forge_adapter(
     cli: &Cli,
     paths: &VaultPaths,
     registration_profile: Option<&str>,

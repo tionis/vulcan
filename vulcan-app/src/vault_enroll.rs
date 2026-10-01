@@ -122,6 +122,9 @@ pub struct EnrollStep {
 pub enum EnrollState {
     /// Authorized, bound, and plain `git` configured.
     Bound,
+    /// Authorized and proven with this identity, but deliberately not bound yet
+    /// (a staged replacement key that is waiting to be activated).
+    Ready,
     /// Something outside this machine's authority is missing; see `next_steps`.
     Pending,
     /// Policy or the remote kind says there is nothing to do.
@@ -228,6 +231,26 @@ pub fn enroll_vault(
     env: &EnrollEnvironment<'_>,
     request: &EnrollRequest,
 ) -> Result<EnrollReport, AppError> {
+    enroll_vault_inner(paths, env, request, true)
+}
+
+/// Authorizes, probes, and registers `env.identity` in one vault without
+/// binding the transport to it. Used to prove a staged replacement key before
+/// it becomes the active identity; the state is `Ready` instead of `Bound`.
+pub(crate) fn prepare_vault(
+    paths: &VaultPaths,
+    env: &EnrollEnvironment<'_>,
+    request: &EnrollRequest,
+) -> Result<EnrollReport, AppError> {
+    enroll_vault_inner(paths, env, request, false)
+}
+
+fn enroll_vault_inner(
+    paths: &VaultPaths,
+    env: &EnrollEnvironment<'_>,
+    request: &EnrollRequest,
+    bind: bool,
+) -> Result<EnrollReport, AppError> {
     let mut report = EnrollReport {
         version: VAULT_ENROLL_REPORT_VERSION,
         wiki: request.wiki.clone(),
@@ -288,9 +311,21 @@ pub fn enroll_vault(
     }
 
     if outcome == ProbeOutcome::Accepted {
-        bind_step(paths, env, request, &url, &device_id, &mut report)?;
+        if bind {
+            bind_step(paths, env, request, &url, &device_id, &mut report)?;
+        } else {
+            report.step(
+                "bind",
+                StepStatus::Skipped,
+                "binding waits until this key is activated",
+            );
+        }
         register_step(paths, env, request, &mut report);
-        report.state = EnrollState::Bound;
+        report.state = if bind {
+            EnrollState::Bound
+        } else {
+            EnrollState::Ready
+        };
     } else {
         // Not authorized yet: still make this device visible to an administrator
         // using whatever credential works today.

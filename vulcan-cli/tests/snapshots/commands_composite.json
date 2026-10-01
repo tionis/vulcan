@@ -12150,6 +12150,80 @@
             ]
           },
           {
+            "about": "Replace this installation's device key without breaking any vault",
+            "name": "replace",
+            "options": [
+              {
+                "help": "Activate the new key even if some vaults could not be proven",
+                "id": "activate_anyway",
+                "long": "activate-anyway",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ACTIVATE_ANYWAY"
+                ]
+              },
+              {
+                "help": "Also revoke the old device's registrations and deploy keys, in each vault where the new key is proven",
+                "id": "revoke_old",
+                "long": "revoke-old",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REVOKE_OLD"
+                ]
+              },
+              {
+                "help": "Permit an interactive forge login",
+                "id": "login",
+                "long": "login",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LOGIN"
+                ]
+              },
+              {
+                "help": "Git remote the vaults sync with",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Show what would happen without changing anything",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Restrict existing device identity storage to the current user without touching key material",
             "name": "repair-permissions",
             "options": [
@@ -12193,6 +12267,49 @@
                 "short": null,
                 "value_names": [
                   "OFFLINE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Retire a device in every registered Git vault: revoke its registration and remove its deploy key",
+            "name": "revoke",
+            "options": [
+              {
+                "help": "Full `vdev1_` device ID",
+                "id": "device_id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "DEVICE_ID"
+                ]
+              },
+              {
+                "help": "Git remote the vaults sync with",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Show what would change without changing anything",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
                 ]
               }
             ],

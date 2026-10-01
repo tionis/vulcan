@@ -121,7 +121,7 @@ success for `bound`, `pending`, and `skipped`; failures are real errors.
 A device is one key, so retiring a key means retiring a device and enrolling a new one. Two commands
 cover it; both are per-vault independent, never ask a question, and support `--dry-run`.
 
-### `devices revoke <device-id>` (everywhere this installation can reach)
+### `devices revoke <device-id>` (every vault this installation can reach)
 
 For every registered Git vault: tombstone the device's registration (the existing sticky `revoked`
 record), then remove its Vulcan-marked deploy key through the vault's forge adapter when forge settings
@@ -144,14 +144,15 @@ re-enrolled. So the new key is **staged, authorized, and proven before it become
    through the forge when this machine can, then probe with the *staged* key. Each vault ends `ready` or
    `pending` with the exact step an administrator must take (the staged public key is printed).
 3. **Activate only when every affected vault is ready**, unless `--activate-anyway` accepts that the
-   pending vaults will fail closed until re-enrolled. Activation archives the old public identity (and
-   its private key, inactive, never used as a fallback) under `retired/<old-id>/` and installs the new
-   identity. The manifest is written last and is the commit point: any interruption leaves a mismatched
-   identity that every reader already treats as degraded and fails closed, and re-running finishes the
-   swap.
+   pending vaults will fail closed until re-enrolled. Activation is two atomic directory renames: the active identity directory moves to
+   `device-retired/<old-id>/` (inactive, never used as a fallback), then the staged directory takes its
+   place. An interruption between them leaves no active identity, which every reader treats as
+   uninitialized and fails closed; re-running `device replace` finishes the swap.
 4. **Rebind and re-register** each ready vault with the new identity (the binding records the device ID).
 5. **Retire the old device** with `--revoke-old`, which runs the same targeted revocation as
    `devices revoke`; without it the old registrations and keys remain until you do.
+
+The old device's recovery backups stay on the remote under its ID; `sync devices remove` deletes them.
 
 A lost old key does not block any of this: replacement needs only the public identity. A machine with no
 identity at all just runs `device init`, and `devices revoke <lost-id>` from any administrator machine

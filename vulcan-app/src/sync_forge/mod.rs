@@ -673,5 +673,41 @@ pub fn forge_sync(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ForgeRemoveReport {
+    pub repo: String,
+    pub device_id: String,
+    /// Forge IDs of the Vulcan-marked keys for this device that were (or would be) removed.
+    pub removed: Vec<u64>,
+    pub dry_run: bool,
+}
+
+/// Removes only the Vulcan-marked deploy keys installed for `device_id`.
+/// Unlike `forge_sync` this never adds a key and never looks at other
+/// devices, so retiring one device cannot change anything else. Keys without
+/// the Vulcan marker are never touched.
+pub fn remove_device_keys(
+    adapter: &dyn ForgeDeployKeyAdapter,
+    repo: &str,
+    device_id: &str,
+    dry_run: bool,
+) -> Result<ForgeRemoveReport, AppError> {
+    let mut removed = Vec::new();
+    for key in adapter.list_deploy_keys()? {
+        if key.marker_device().as_deref() == Some(device_id) {
+            if !dry_run {
+                adapter.remove_deploy_key(key.id)?;
+            }
+            removed.push(key.id);
+        }
+    }
+    Ok(ForgeRemoveReport {
+        repo: repo.to_owned(),
+        device_id: device_id.to_owned(),
+        removed,
+        dry_run,
+    })
+}
+
 #[cfg(test)]
 mod tests;

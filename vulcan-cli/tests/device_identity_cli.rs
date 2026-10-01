@@ -703,3 +703,48 @@ fn device_config_commands_edit_only_the_device_file_and_never_store_secrets() {
         1
     );
 }
+
+#[test]
+fn replace_swaps_the_identity_archives_the_old_one_and_is_dry_run_safe() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+
+    let missing = run(root, &["device", "replace"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("device init"));
+
+    json_output(&run(root, &["device", "init", "--output", "json"]));
+    let old = json_output(&run(root, &["device", "show", "--output", "json"]));
+    let old_id = old["device_id"].as_str().expect("old id").to_owned();
+
+    let preview = json_output(&run(
+        root,
+        &["device", "replace", "--dry-run", "--output", "json"],
+    ));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["activated"], false);
+    assert!(!root.join("data/vulcan/device-staged").exists());
+    let still = json_output(&run(root, &["device", "show", "--output", "json"]));
+    assert_eq!(still["device_id"], old_id.as_str());
+
+    let done = json_output(&run(root, &["device", "replace", "--output", "json"]));
+    assert_eq!(done["activated"], true);
+    assert_eq!(done["old_device_id"], old_id.as_str());
+    let new_id = done["new_device_id"].as_str().expect("new id").to_owned();
+    assert_ne!(new_id, old_id);
+    assert!(
+        !done.to_string().contains("PRIVATE KEY"),
+        "no key material in output"
+    );
+    let shown = json_output(&run(root, &["device", "show", "--output", "json"]));
+    assert_eq!(shown["device_id"], new_id.as_str());
+    assert_eq!(shown["status"], "ready");
+
+    // No vaults are registered, so retiring the old device reaches nothing, and says so.
+    let revoked = json_output(&run(
+        root,
+        &["devices", "revoke", &old_id, "--output", "json"],
+    ));
+    assert_eq!(revoked["complete"], 0);
+    assert_eq!(revoked["incomplete"], 0);
+}

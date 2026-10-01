@@ -16,6 +16,7 @@ pub(crate) mod graph;
 pub(crate) mod inbox;
 pub(crate) mod index;
 pub(crate) mod kanban;
+pub(crate) mod lifecycle;
 pub(crate) mod mcp_remote;
 pub(crate) mod mdbase;
 pub(crate) mod note;

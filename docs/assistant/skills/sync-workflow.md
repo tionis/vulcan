@@ -82,6 +82,14 @@ both execute the same application workflow.
   result is in the `transport` and `enroll` fields (or `enroll_error`). Pass `--no-device-key` for the
   old behaviour, and never pass `--login` unattended. A vault added or cloned before this existed is
   enrolled with `vulcan vault enroll <wiki>`.
+- `vulcan device replace [--revoke-old] [--activate-anyway] [--dry-run]` swaps this installation's
+  device key safely: it stages a new key, authorizes and proves it in every vault bound to the old
+  key, and only then activates it and rebinds each vault. If a vault cannot be proven yet it changes
+  nothing and prints the pending steps; re-run it later. Preview with `--dry-run` first, and never
+  pass `--activate-anyway` or `--revoke-old` unless the user asked. `vulcan devices revoke <device-id>`
+  retires a (lost or old) device in every registered Git vault: it tombstones the registration and
+  removes only that device's Vulcan-marked deploy key; it reaches only vaults registered on this
+  machine, so say so. Use `vulcan sync devices revoke` for a single vault.
 - `vulcan device config show|set-transport|set-forge|remove-forge` edits this device's non-secret
   policy in `device.toml` beside `daemon.toml`: the default transport (`device-key`, or `ambient` to
   leave SSH to the user), and per-host forge entries (kind, public OAuth client ID, a token variable

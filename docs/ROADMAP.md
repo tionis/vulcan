@@ -6542,9 +6542,9 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Report enrollment state: `devices list` already reports per-vault `transport` and `this_device_registration`, and `sync doctor` now hints (info, not a warning) when a vault with an SSH remote is not enrolled and the policy expects the device key.
 - [x] Tests for the three entry paths and the fallbacks; update `sync-workflow` and `diagnostics-and-repair` skills. The pre-authorized path and the ambient fallback are covered end to end through the CLI with a fake `ssh`; the dynamic forge-authorization path is covered at the app level with a scripted authority, because a clone derives an `https://` forge URL that a local fake forge cannot serve.
 
-#### 12.22.5 Lifecycle (next)
+#### 12.22.5 Lifecycle
 
-- [ ] `device replace` (new key, retain the old public identity and recovery heads, list every enrolled vault) and `devices revoke --everywhere`, so one command revokes a lost device across vaults. Tracked with 12.15.5.
+- [x] `vulcan device replace` stages a new key, authorizes and proves it in every vault bound to the old key, then activates it (atomic renames, old identity archived under `device-retired/`, recovery backups kept) and rebinds each vault; `--activate-anyway`, `--revoke-old` (never in a vault where the new key is unproven), and `--dry-run`. `vulcan devices revoke <id>` tombstones the registration and removes only that device's Vulcan-marked deploy key in every registered Git vault, with independent per-vault results. Tracked with 12.15.5.
 
 ---
 

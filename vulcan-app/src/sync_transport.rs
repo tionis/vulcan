@@ -392,7 +392,7 @@ fn not_bound() -> GitTransportStatus {
     }
 }
 
-fn transport_status_with_store(
+pub(crate) fn transport_status_with_store(
     paths: &VaultPaths,
     state: &SyncStateStore,
     store: &DeviceIdentityStore,

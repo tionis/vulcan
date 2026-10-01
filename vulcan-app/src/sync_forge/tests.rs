@@ -405,6 +405,140 @@ fn forge_sync_installs_registered_keys_and_revokes_idempotently() {
         .any(|entry| entry.action == ForgeSyncAction::AlreadyAbsent));
 }
 
+fn marked(id: u64, who: &(String, String)) -> DeployKey {
+    key(id, &marker(&who.0), &who.1, false)
+}
+
+#[test]
+fn revoking_a_device_tombstones_it_and_removes_only_its_own_key() {
+    use crate::device_revoke::{revoke_device_in_vault, ForgeAccess, RevokeStepStatus};
+    let repo = repo();
+    let laptop = identity(repo.dir.path(), "laptop");
+    let phone = identity(repo.dir.path(), "phone");
+    repo.register(&laptop, None);
+    repo.register(&phone, None);
+    let forge = FakeForge::seeded(vec![
+        key(1, "ci runner", "ssh-ed25519 AAAAci", false),
+        marked(2, &laptop),
+        marked(3, &phone),
+    ]);
+    let access = ForgeAccess::Adapter {
+        adapter: &forge,
+        repo: "owner/vault",
+    };
+    let run = |dry_run| {
+        revoke_device_in_vault(
+            &repo.paths,
+            "wiki",
+            &repo.remote,
+            &phone.0,
+            &access,
+            dry_run,
+        )
+    };
+
+    let preview = run(true);
+    assert_eq!(preview.registration.status, RevokeStepStatus::Done);
+    assert_eq!(preview.forge.status, RevokeStepStatus::Done);
+    assert!(forge.mutations().is_empty(), "dry run mutates nothing");
+
+    let report = run(false);
+    assert!(!report.incomplete());
+    assert_eq!(report.forge_removed.as_ref().unwrap().removed, vec![3]);
+    assert_eq!(forge.mutations(), vec!["remove 3".to_owned()]);
+    let ids = forge
+        .keys
+        .borrow()
+        .iter()
+        .map(|key| key.id)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec![1, 2], "foreign and other-device keys survive");
+
+    let again = run(false);
+    assert_eq!(again.registration.status, RevokeStepStatus::Already);
+    assert_eq!(again.forge.status, RevokeStepStatus::Already);
+    assert_eq!(forge.mutations().len(), 1, "idempotent");
+}
+
+#[test]
+fn revoking_works_without_a_registration_or_without_forge_access() {
+    use crate::device_revoke::{revoke_device_in_vault, ForgeAccess, RevokeStepStatus};
+    let repo = repo();
+    let phone = identity(repo.dir.path(), "phone");
+    let laptop = identity(repo.dir.path(), "laptop");
+    repo.register(&laptop, None);
+    let forge = FakeForge::seeded(vec![marked(7, &phone)]);
+
+    let no_registration = revoke_device_in_vault(
+        &repo.paths,
+        "wiki",
+        &repo.remote,
+        &phone.0,
+        &ForgeAccess::Adapter {
+            adapter: &forge,
+            repo: "owner/vault",
+        },
+        false,
+    );
+    assert_eq!(
+        no_registration.registration.status,
+        RevokeStepStatus::NotRegistered
+    );
+    assert_eq!(no_registration.forge.status, RevokeStepStatus::Done);
+    assert!(forge.keys.borrow().is_empty());
+
+    let offline = revoke_device_in_vault(
+        &repo.paths,
+        "wiki",
+        &repo.remote,
+        &laptop.0,
+        &ForgeAccess::Unavailable("no credential".to_owned()),
+        false,
+    );
+    assert_eq!(offline.registration.status, RevokeStepStatus::Done);
+    assert_eq!(offline.forge.status, RevokeStepStatus::Pending);
+    assert!(offline.incomplete());
+}
+
+#[test]
+fn a_forge_failure_is_reported_without_undoing_the_registration() {
+    use crate::device_revoke::{revoke_device_in_vault, ForgeAccess, RevokeStepStatus};
+    struct Broken;
+    impl ForgeDeployKeyAdapter for Broken {
+        fn list_deploy_keys(&self) -> Result<Vec<DeployKey>, AppError> {
+            Err(AppError::operation("forge unreachable"))
+        }
+        fn add_deploy_key(&self, _: &str, _: &str) -> Result<DeployKey, AppError> {
+            unreachable!("revocation never adds keys")
+        }
+        fn remove_deploy_key(&self, _: u64) -> Result<(), AppError> {
+            unreachable!("nothing was listed")
+        }
+    }
+    let repo = repo();
+    let phone = identity(repo.dir.path(), "phone");
+    repo.register(&phone, None);
+    let report = revoke_device_in_vault(
+        &repo.paths,
+        "wiki",
+        &repo.remote,
+        &phone.0,
+        &ForgeAccess::Adapter {
+            adapter: &Broken,
+            repo: "owner/vault",
+        },
+        false,
+    );
+    assert_eq!(report.registration.status, RevokeStepStatus::Done);
+    assert_eq!(report.forge.status, RevokeStepStatus::Failed);
+    assert!(report
+        .forge
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("unreachable"));
+}
+
 #[test]
 fn an_unreachable_remote_changes_nothing() {
     let repo = repo();

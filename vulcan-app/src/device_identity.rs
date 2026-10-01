@@ -1476,4 +1476,200 @@ mod tests {
         assert!(store.publish_manifest(&other).is_err());
         assert_eq!(store.inspect().device_id, initialized.identity.device_id);
     }
+
+    #[test]
+    fn staged_replacement_leaves_the_active_identity_until_activated() {
+        let temporary = tempdir().expect("tempdir");
+        let store = DeviceIdentityStore::at(temporary.path().join("device"));
+        let old = store.ensure_device_id().expect("old identity");
+
+        let dry = store.stage_replacement(true).expect("dry run");
+        assert!(dry.dry_run && !dry.reused);
+        assert_eq!(dry.staged.status, DeviceIdentityStatus::Uninitialized);
+
+        let staged = store.stage_replacement(false).expect("stage");
+        let new = staged.staged.device_id.clone().expect("staged id");
+        assert_ne!(new, old);
+        assert_eq!(staged.old_device_id.as_deref(), Some(old.as_str()));
+        assert_eq!(store.device_id().expect("active"), Some(old.clone()));
+
+        let again = store.stage_replacement(false).expect("restage");
+        assert!(again.reused);
+        assert_eq!(again.staged.device_id.as_deref(), Some(new.as_str()));
+
+        let activated = store.activate_staged().expect("activate");
+        assert_eq!(activated.old_device_id.as_deref(), Some(old.as_str()));
+        assert_eq!(activated.new_device_id, new);
+        assert!(activated.archived);
+        assert_eq!(store.device_id().expect("active"), Some(new));
+        assert_eq!(store.inspect().status, DeviceIdentityStatus::Ready);
+        let retired = DeviceIdentityStore::at(store.retired_directory(&old).expect("retired"));
+        assert_eq!(retired.device_id().expect("retired id"), Some(old));
+        assert!(store.activate_staged().is_err(), "nothing left to activate");
+    }
+
+    #[test]
+    fn interrupted_activation_is_finished_by_running_it_again() {
+        let temporary = tempdir().expect("tempdir");
+        let store = DeviceIdentityStore::at(temporary.path().join("device"));
+        let old = store.ensure_device_id().expect("old identity");
+        let new = store
+            .stage_replacement(false)
+            .expect("stage")
+            .staged
+            .device_id
+            .expect("id");
+        // Simulate dying between the two renames.
+        let retired = store.retired_directory(&old).expect("retired");
+        fs::create_dir_all(retired.parent().expect("parent")).expect("retired root");
+        fs::rename(temporary.path().join("device"), retired).expect("first rename");
+        assert_eq!(store.inspect().status, DeviceIdentityStatus::Uninitialized);
+
+        let report = store.activate_staged().expect("finish");
+        assert!(report.completed_interrupted_activation && !report.archived);
+        assert_eq!(store.device_id().expect("active"), Some(new));
+    }
+
+    #[test]
+    fn activation_refuses_without_a_ready_staged_identity() {
+        let temporary = tempdir().expect("tempdir");
+        let store = DeviceIdentityStore::at(temporary.path().join("device"));
+        store.ensure_device_id().expect("identity");
+        assert!(store.activate_staged().is_err());
+    }
+}
+/// A replacement identity staged beside the active one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StagedReplacementReport {
+    pub dry_run: bool,
+    /// The identity currently active, absent when there is none (or it is unreadable).
+    pub old_device_id: Option<String>,
+    /// The staged identity; absent on a dry run that would generate one.
+    pub staged: DeviceIdentityReport,
+    /// A staged identity already existed and was kept.
+    pub reused: bool,
+}
+
+/// Result of making the staged identity the active one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivationReport {
+    pub old_device_id: Option<String>,
+    pub new_device_id: String,
+    /// The old identity was archived (inactive, never used as a fallback).
+    pub archived: bool,
+    /// The staged identity was already moved into place by an interrupted run.
+    pub completed_interrupted_activation: bool,
+}
+
+const STAGED_DIRECTORY: &str = "device-staged";
+const RETIRED_DIRECTORY: &str = "device-retired";
+
+impl DeviceIdentityStore {
+    fn sibling(&self, name: &str) -> Result<PathBuf, AppError> {
+        self.directory
+            .parent()
+            .map(|parent| parent.join(name))
+            .ok_or_else(|| AppError::operation("identity directory has no parent directory"))
+    }
+
+    /// The store holding a staged replacement identity.
+    pub fn staged(&self) -> Result<Self, AppError> {
+        Ok(Self::at(self.sibling(STAGED_DIRECTORY)?))
+    }
+
+    /// Where an archived identity for `device_id` lives once it is retired.
+    pub fn retired_directory(&self, device_id: &str) -> Result<PathBuf, AppError> {
+        Ok(self.sibling(RETIRED_DIRECTORY)?.join(device_id))
+    }
+
+    /// Generates a replacement identity in a separate directory, leaving the
+    /// active identity untouched. Re-running keeps the staged one.
+    pub fn stage_replacement(&self, dry_run: bool) -> Result<StagedReplacementReport, AppError> {
+        let staged = self.staged()?;
+        let old_device_id = self.device_id().ok().flatten();
+        let existing = staged.inspect();
+        let reused = existing.status != DeviceIdentityStatus::Uninitialized;
+        if reused && existing.status != DeviceIdentityStatus::Ready {
+            return Err(AppError::operation(
+                "a staged replacement identity exists but is not usable; remove the device-staged directory and retry",
+            ));
+        }
+        if dry_run || reused {
+            return Ok(StagedReplacementReport {
+                dry_run,
+                old_device_id,
+                staged: existing,
+                reused,
+            });
+        }
+        let report = staged.initialize(false)?;
+        Ok(StagedReplacementReport {
+            dry_run,
+            old_device_id,
+            staged: report.identity,
+            reused: false,
+        })
+    }
+
+    /// Makes the staged identity the active one, archiving the old identity
+    /// under `device-retired/<old-id>`. Two atomic renames; an interruption
+    /// between them leaves no active identity (everything fails closed), and
+    /// running this again finishes the swap.
+    pub fn activate_staged(&self) -> Result<ActivationReport, AppError> {
+        let staged = self.staged()?;
+        let staged_report = staged.inspect();
+        let staged_directory = staged.directory.clone();
+        if staged_report.status != DeviceIdentityStatus::Ready {
+            return Err(AppError::operation(
+                "there is no usable staged identity; run `vulcan device replace` first",
+            ));
+        }
+        let new_device_id = staged_report
+            .device_id
+            .ok_or_else(|| AppError::operation("the staged identity has no device ID"))?;
+        let active_present = match fs::symlink_metadata(&self.directory) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(identity_io_error(error)),
+        };
+        let old_device_id = if active_present {
+            self.device_id()?
+        } else {
+            None
+        };
+        if old_device_id.as_deref() == Some(new_device_id.as_str()) {
+            return Err(AppError::operation(
+                "the staged identity is already the active one",
+            ));
+        }
+        let mut archived = false;
+        if active_present {
+            let id = old_device_id.as_deref().ok_or_else(|| {
+                AppError::operation(
+                    "the active identity has no readable manifest; repair it before replacing",
+                )
+            })?;
+            let retired = self.retired_directory(id)?;
+            if fs::symlink_metadata(&retired).is_ok() {
+                return Err(AppError::operation(
+                    "this identity was already retired; remove the old archive to continue",
+                ));
+            }
+            let retired_root = self.sibling(RETIRED_DIRECTORY)?;
+            create_private_directory(&retired_root)?;
+            fs::rename(&self.directory, &retired).map_err(AppError::operation)?;
+            sync_directory(&retired_root)?;
+            archived = true;
+        }
+        fs::rename(&staged_directory, &self.directory).map_err(AppError::operation)?;
+        if let Some(parent) = self.directory.parent() {
+            sync_directory(parent)?;
+        }
+        Ok(ActivationReport {
+            old_device_id,
+            new_device_id,
+            archived,
+            completed_interrupted_activation: !active_present,
+        })
+    }
 }

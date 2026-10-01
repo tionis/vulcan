@@ -68,6 +68,11 @@ pub(crate) fn handle_devices_command(cli: &Cli, command: &DevicesCommand) -> Res
             let report = build_inventory(cli, *offline)?;
             print_inventory(cli.output, &report)
         }
+        DevicesCommand::Revoke {
+            device_id,
+            remote,
+            dry_run,
+        } => crate::commands::lifecycle::handle_devices_revoke(cli, device_id, remote, *dry_run),
     }
 }
 

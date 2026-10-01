@@ -31,6 +31,9 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
             print_device_repair(cli.output, &report)
         }
         DeviceCommand::Config { command } => handle_device_config(cli, command),
+        DeviceCommand::Replace { .. } => {
+            crate::commands::lifecycle::handle_device_replace(cli, command)
+        }
         DeviceCommand::SshCommand { args } => run_device_ssh(&store, args),
         DeviceCommand::PublicKey => {
             let public_key = store.public_key().map_err(CliError::operation)?;
