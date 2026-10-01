@@ -66,6 +66,7 @@ permission profiles, or diagnoses permission and trust failures.
 
 ## Guardrails
 
+- Device-key transport policy and known forge hosts live in the device-global `device.toml` (`vulcan device config show|set-transport|set-forge|remove-forge`), never in vault config. It holds only non-secret values: an OAuth client ID is public, and a token is named by environment variable, never stored.
 - Do not put private credentials in shared `.vulcan/config.toml`; use local config or environment variables.
 - Never put a provider key in `daemon.toml` or a CLI argument. `daemon config set-agent --api-key-env` accepts the environment-variable name only. For an installed Linux/macOS service, use a mode-`0600` `$XDG_CONFIG_HOME/vulcan/daemon.env` containing literal `NAME=value` records when ordinary environment inheritance is unavailable; never put this file in a vault.
 - Notification webhooks follow the same credential rule: store only `--token-env <name>` in

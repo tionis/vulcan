@@ -29,7 +29,7 @@ Automation conventions:
 - When you need repeatable public exports, prefer `export profile create` for the profile-wide settings and `export profile rule ...` for the ordered transform rules stored in `.vulcan/config.toml`.
 - For ChatGPT or another remote MCP client, start with `vulcan help mcp-remotes`: register a vault, initialize a read-only named remote, and expose its loopback listener through HTTPS. IndieAuth login and separate per-connection consent govern access. See [named MCP remotes](./mcp-remotes.md) for lifecycle and credential recovery. Do not publish a no-auth private vault endpoint.
 
-See also: `vulcan help examples`, `vulcan help filters`, `vulcan help query-dsl`, `vulcan help assistant-integration`, `vulcan export --help`, [Git-backed synchronization](./git-sync.md), [installation and portable updates](../installation.md), and [ChatGPT MCP setup](./chatgpt-mcp.md).
+See also: `vulcan help examples`, `vulcan help filters`, `vulcan help query-dsl`, `vulcan help assistant-integration`, `vulcan export --help`, [Git-backed synchronization](./git-sync.md), [device keys for Git over SSH](./device-keys.md), [installation and portable updates](../installation.md), and [ChatGPT MCP setup](./chatgpt-mcp.md).
 
 ## Local information hub direction
 

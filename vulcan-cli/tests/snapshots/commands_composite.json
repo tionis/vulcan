@@ -9949,7 +9949,7 @@
           },
           {
             "about": "Clone a Git remote with sync-ready platform defaults",
-            "after_help": "Notes:\n  Clones the remote, then registers the new worktree exactly like `vault add`.\n  The ID defaults to the destination directory name and follows the same rules.\n  Preview with --dry-run first; --dry-run clones nothing and registers nothing.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault list\n  vulcan sync status personal",
+            "after_help": "Notes:\n  Clones the remote, then registers the new worktree exactly like `vault add`.\n  The ID defaults to the destination directory name and follows the same rules.\n  Preview with --dry-run first; --dry-run clones nothing and registers nothing.\n\nDevice key:\n  For an SSH remote, the clone authenticates with this device's key when the\n  remote already accepts it or this machine can authorize it through the forge\n  (an OAuth login or API token); otherwise it uses your own SSH credentials as\n  before and enrollment finishes as `pending` with the exact next step. It never\n  asks a question. Use --no-device-key to skip it entirely. Details:\n  `vulcan help device-keys`.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault list\n  vulcan sync status personal",
             "name": "clone",
             "options": [
               {
@@ -13100,7 +13100,7 @@
         "subcommands": [
           {
             "about": "Clone a Git remote and register it as a wiki",
-            "after_help": "Notes:\n  Clones the remote, then registers the new worktree exactly like `vault add`.\n  The ID defaults to the destination directory name and follows the same rules.\n  Preview with --dry-run first; --dry-run clones nothing and registers nothing.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault list\n  vulcan sync status personal",
+            "after_help": "Notes:\n  Clones the remote, then registers the new worktree exactly like `vault add`.\n  The ID defaults to the destination directory name and follows the same rules.\n  Preview with --dry-run first; --dry-run clones nothing and registers nothing.\n\nDevice key:\n  For an SSH remote, the clone authenticates with this device's key when the\n  remote already accepts it or this machine can authorize it through the forge\n  (an OAuth login or API token); otherwise it uses your own SSH credentials as\n  before and enrollment finishes as `pending` with the exact next step. It never\n  asks a question. Use --no-device-key to skip it entirely. Details:\n  `vulcan help device-keys`.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault list\n  vulcan sync status personal",
             "name": "clone",
             "options": [
               {
@@ -13287,7 +13287,7 @@
           },
           {
             "about": "Register an existing local vault so sync and the daemon can use it",
-            "after_help": "Notes:\n  Registration tells Vulcan this vault exists on this device. `vulcan sync <wiki>`\n  and the daemon operate on registered wikis; plain `--vault <path>` commands\n  keep working without registration.\n  IDs are at most 64 characters: lowercase letters, digits, `-`, and `_`.\n  The path must already exist; Git sync additionally needs a Git repository\n  with the live remote configured.\n  Preview with --dry-run first; --dry-run never writes registry state.\n\nExamples:\n  vulcan vault add personal ~/vaults/personal --dry-run\n  vulcan vault add personal ~/vaults/personal\n  vulcan vault list\n  vulcan sync status personal\n  vulcan daemon start",
+            "after_help": "Notes:\n  Registration tells Vulcan this vault exists on this device. `vulcan sync <wiki>`\n  and the daemon operate on registered wikis; plain `--vault <path>` commands\n  keep working without registration.\n  IDs are at most 64 characters: lowercase letters, digits, `-`, and `_`.\n  The path must already exist; Git sync additionally needs a Git repository\n  with the live remote configured.\n  Preview with --dry-run first; --dry-run never writes registry state.\n\nDevice key:\n  For an SSH remote, `vault add` also enrolls this device's key (created if\n  needed): it checks whether the remote accepts it, authorizes it through the\n  forge when you have a login or token, binds Git to it, and registers the\n  device. It never asks a question and never fails the add; anything missing is\n  reported as `pending` with the exact next step (`vulcan vault enroll <id>`\n  finishes it). Use --no-device-key to leave authentication to your own SSH\n  setup. Details: `vulcan help device-keys`.\n\nExamples:\n  vulcan vault add personal ~/vaults/personal --dry-run\n  vulcan vault add personal ~/vaults/personal\n  vulcan vault list\n  vulcan sync status personal\n  vulcan daemon start",
             "name": "add",
             "options": [
               {

@@ -199,6 +199,13 @@ fn print_revoke_vault(report: &VaultRevokeReport) {
 }
 
 fn print_revoke(report: &RevokeEverywhereReport) {
+    if report.wikis.is_empty() {
+        println!(
+            "No Git vaults are registered on this machine, so there is nothing to revoke here."
+        );
+        println!("For a vault this machine does not register, run `vulcan sync devices revoke {}` inside it, or remove the deploy key in the forge.", report.device_id);
+        return;
+    }
     for entry in &report.wikis {
         match (&entry.report, &entry.error) {
             (Some(vault), _) => print_revoke_vault(vault),
@@ -316,6 +323,12 @@ fn print_replace(report: &ReplaceReport) {
         if !report.activated {
             println!("New public key (for an administrator to authorize by hand):\n  {key}");
         }
+    }
+    let affected = report.vaults.iter().filter(|entry| entry.affected).count();
+    if affected == 0 {
+        println!("\nNo vault is bound to the device key, so no vault needs re-enrolling.");
+    } else {
+        println!("\n{affected} vault(s) are bound to the old key and will be re-enrolled.");
     }
     for entry in &report.vaults {
         if !entry.affected {

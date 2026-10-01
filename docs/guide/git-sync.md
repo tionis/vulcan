@@ -14,6 +14,8 @@ File synchronization replicates working-tree content; it is not by itself a comp
 
 Selective materialization remains planned in [Roadmap 12.20](../ROADMAP.md#1220-selective-materialization-and-large-repository-synchronization). Sparse checkout, partial clone, shallow-history reconciliation, and selective LFS hydration are not currently supported sync combinations. Existing Git/LFS filter checks do not establish those guarantees. The future model preserves excluded paths and reports metadata synchronization separately from local payload availability.
 
+Authentication over SSH uses this installation's device key by default and is set up automatically when you clone or add a vault: see [Device keys](device-keys.md) (`vulcan help device-keys`).
+
 This is device/file-tree synchronization. It replicates the whole vault rather than selecting or translating notes for an external wiki.
 
 On graceful daemon shutdown, Vulcan queues a final retained sync for every active Git-backed wiki
@@ -44,6 +46,8 @@ vulcan vault clone <remote> <vault-path> --id personal
 vulcan sync doctor personal
 vulcan sync run personal
 ```
+
+For an SSH remote, the clone also enrolls this device's key (authorize, bind, register) and prints what it did or exactly what is still `pending`; see [Device keys](device-keys.md). Use `--no-device-key` to keep your own SSH setup.
 
 The default colocated layout keeps `.git/` beside the vault. `sync run` does not start the daemon. It also works against an unregistered repository selected with `--vault <path>`.
 
@@ -107,7 +111,9 @@ vulcan sync termux-uninstall personal
 ```
 
 The scheduled process inherits Termux's normal account environment, not an interactive SSH agent.
-Configure unattended Git authentication in Termux itself and verify it with a manual
+The device key is a file-backed key, so `vulcan vault enroll personal` (or the automatic enrollment
+on `sync clone`) gives the scheduler working unattended authentication without an agent. Otherwise
+configure unattended Git authentication in Termux itself. Verify it with a manual
 `vulcan sync run personal` before relying on the scheduler. Do not put credentials in the wrapper,
 vault, or command line.
 

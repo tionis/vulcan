@@ -49,7 +49,7 @@ Export selected notes as documents, datasets, books, or archives; build static s
 
 Git-backed synchronization replicates the complete working tree across registered directories. The `knowledge` profile preserves existing vault behavior; `files-only` skips indexing, knowledge-specific validation, scripts, semantic history, and agent conflict resolution while using the same file reconciliation. Concurrent automatic merges on files-only registrations remain preserved for review. An optional multi-vault daemon schedules synchronization, performs a bounded final sync on graceful shutdown, and reconciles again after detecting resume from suspend; the Obsidian companion exposes status, sync, and file-conflict review. Files-only unattended sync checks repository shape, but external Git processes are outside Vulcan's lock; active development checkout workflows need a separate contract. File replication does not by itself provide a complete backup of refs, history, or Git LFS payloads. Device synchronization and external wiki publication have separate responsibilities: external documents pass through an inspectable local vault.
 
-Follow the guides for [static sites](docs/guide/static-sites.md), [Outline publishing](docs/guide/outline-publishing.md), [Git synchronization](docs/guide/git-sync.md), [unattended conflict resolution](docs/guide/git-sync.md#unattended-conflict-resolution), and the [Obsidian companion](integrations/obsidian-vulcan/README.md).
+Follow the guides for [static sites](docs/guide/static-sites.md), [Outline publishing](docs/guide/outline-publishing.md), [Git synchronization](docs/guide/git-sync.md), [device keys for Git over SSH](docs/guide/device-keys.md), [unattended conflict resolution](docs/guide/git-sync.md#unattended-conflict-resolution), and the [Obsidian companion](integrations/obsidian-vulcan/README.md).
 
 ## Quick start
 
@@ -153,7 +153,7 @@ That integration is planned. The current mdbase query path still performs collec
 | Write scripts or extend automation | [Scripting](docs/guide/scripting.md), [JS API](docs/reference/js-api/index.md), [custom tools](docs/assistant/custom_tools.md), [skill commands](docs/assistant/skill_commands.md) |
 | Configure permissions and script access | [Configuration](docs/reference/config.md), [sandboxing](docs/guide/sandbox.md), [MCP setup](docs/guide/chatgpt-mcp.md) |
 | Publish or exchange knowledge | [Static sites](docs/guide/static-sites.md), [Outline](docs/guide/outline-publishing.md), [external wikis](docs/guide/information-hub.md) |
-| Sync devices and use Obsidian alongside Vulcan | [Git sync](docs/guide/git-sync.md), [companion plugin](integrations/obsidian-vulcan/README.md) |
+| Sync devices and use Obsidian alongside Vulcan | [Git sync](docs/guide/git-sync.md), [device keys](docs/guide/device-keys.md), [companion plugin](integrations/obsidian-vulcan/README.md) |
 | Understand or contribute to the implementation | [Design document](docs/design_document.md), [roadmap](docs/ROADMAP.md), [hardening and verification](docs/hardening.md) |
 
 ## Development

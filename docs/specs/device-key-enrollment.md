@@ -1,9 +1,10 @@
 # Integrated Device-Key Enrollment
 
-Status: proposed design for Roadmap 12.22. Builds on `device-transport-auth.md` (transport binding,
-registrations, forge adapters, OAuth login). Implemented: the device-level policy file, the probe,
-`sync forge authorize-self`, the `vault enroll` pipeline, and the clone/add integration (12.22.1-12.22.4).
-Lifecycle work (12.22.5) is next.
+Status: implemented (Roadmap 12.22.1-12.22.5). Builds on `device-transport-auth.md` (transport binding,
+registrations, forge adapters, OAuth login). Covers the device-level policy file, the probe,
+`sync forge authorize-self`, the `vault enroll` pipeline, the clone/add integration, and the lifecycle
+commands `device replace` and `devices revoke`. The user-facing walkthrough is `docs/guide/device-keys.md`
+(`vulcan help device-keys`).
 
 ## Goal
 
@@ -26,8 +27,8 @@ device key when that is possible, and otherwise in a clearly reported, resumable
      authorizes the device key through the forge API *before* cloning, so the clone uses it.
 - **No question is ever asked.** Every step is non-interactive. Where authority is missing the
   command reports `pending` with the exact next steps and exits successfully; re-running continues.
-- **Lifecycle work comes after enrollment**: `device replace` and `devices revoke --everywhere` are
-  the next slice (12.22.5), because relying on managed keys raises their importance.
+- **Lifecycle follows enrollment**: `device replace` and `devices revoke` (see "Lifecycle" below)
+  matter more once managed keys are the default.
 
 ## Policy: device-level configuration
 

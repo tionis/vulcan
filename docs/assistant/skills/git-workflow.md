@@ -134,3 +134,11 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 - If Git rejects ownership of a successfully created checkout, `vault clone` and `sync clone` add its canonical worktree path to the user's global `safe.directory` entries and retry. Dry runs do not write trust entries, and ordinary discovery never automatically trusts an existing repository.
 - Inspect a managed Termux job with `vulcan sync schedule show <wiki>`. Preview an interval change with `vulcan sync schedule set <wiki> --period-minutes 30 --dry-run`; unspecified network, battery, charging, and reboot settings are preserved. Apply without `--dry-run` after review.
 - Recover that registered layout after private Git-data loss with `vulcan vault recover-git <wiki> <remote> --dry-run`, inspect the warning, then apply without `--dry-run`.
+
+## Git authentication
+
+Vulcan authenticates Git over SSH with the installation's device key by default (enrolled when a
+vault is cloned or added; see `sync-workflow`). Do not set `GIT_SSH_COMMAND` or edit `core.sshCommand`
+by hand for a bound vault, and never copy or print the private key. If Git fails to authenticate,
+run `vulcan sync doctor <wiki>` and `vulcan vault enroll <wiki> --dry-run` rather than substituting
+other credentials, and read `vulcan help device-keys` for the full flow.

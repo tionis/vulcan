@@ -64,6 +64,9 @@ both execute the same application workflow.
   adopt on the user's behalf without showing them the proposal, and never pass `--allow-other-host`
   unless the user asks: the API URL must be on the Git remote's host, since that is where the
   credential is sent. Adoption keeps device-specific values (the token variable) local.
+- `vulcan help device-keys` is the complete user walkthrough of everything below (default flow,
+  forge setup, replacing and revoking keys, troubleshooting); point users to it rather than
+  re-deriving the steps.
 - `vulcan vault enroll <wiki>` takes one vault to "bound to this device's key", or says exactly what is
   missing. It checks the transport policy (the default is the device key; `device config set-transport
   ambient` or `--no-device-key` skips it), ensures the device identity, probes whether the remote

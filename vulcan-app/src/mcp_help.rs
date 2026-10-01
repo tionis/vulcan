@@ -384,6 +384,13 @@ pub fn builtin_help_topics() -> Vec<HelpTopicReport> {
             &["mcp", "chatgpt-mcp", "config", "permissions"],
         ),
         static_help_topic(
+            "device-keys",
+            HelpTopicKind::Guide,
+            "Device key for Git over SSH: automatic enrollment on clone/add, forge setup, replacing and revoking keys.",
+            include_str!("../../docs/guide/device-keys.md"),
+            &["device", "sync", "forge", "vault enroll", "devices"],
+        ),
+        static_help_topic(
             "assistant-integration",
             HelpTopicKind::Guide,
             "External runtime contract for AGENTS.md, skill discovery, permissions, and wrappers.",

@@ -582,6 +582,15 @@ Notes:
   with the live remote configured.
   Preview with --dry-run first; --dry-run never writes registry state.
 
+Device key:
+  For an SSH remote, `vault add` also enrolls this device's key (created if
+  needed): it checks whether the remote accepts it, authorizes it through the
+  forge when you have a login or token, binds Git to it, and registers the
+  device. It never asks a question and never fails the add; anything missing is
+  reported as `pending` with the exact next step (`vulcan vault enroll <id>`
+  finishes it). Use --no-device-key to leave authentication to your own SSH
+  setup. Details: `vulcan help device-keys`.
+
 Examples:
   vulcan vault add personal ~/vaults/personal --dry-run
   vulcan vault add personal ~/vaults/personal
@@ -594,6 +603,14 @@ Notes:
   Clones the remote, then registers the new worktree exactly like `vault add`.
   The ID defaults to the destination directory name and follows the same rules.
   Preview with --dry-run first; --dry-run clones nothing and registers nothing.
+
+Device key:
+  For an SSH remote, the clone authenticates with this device's key when the
+  remote already accepts it or this machine can authorize it through the forge
+  (an OAuth login or API token); otherwise it uses your own SSH credentials as
+  before and enrollment finishes as `pending` with the exact next step. It never
+  asks a question. Use --no-device-key to skip it entirely. Details:
+  `vulcan help device-keys`.
 
 Examples:
   vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --dry-run

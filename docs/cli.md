@@ -25,7 +25,7 @@ Typical first run against a vault:
 ./target/release/vulcan --vault ~/wikis/mimir browse
 ```
 
-For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). `vulcan sync run` is a finite direct workflow and does not require the daemon.
+For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). Git-over-SSH authentication (the device key, enrollment on `vault clone`/`add`, `device replace`, `devices revoke`) is covered in [Device keys](guide/device-keys.md) and `vulcan help device-keys`. `vulcan sync run` is a finite direct workflow and does not require the daemon.
 
 ### Daemon conflict automation
 

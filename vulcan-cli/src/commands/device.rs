@@ -56,6 +56,9 @@ fn print_device_show(output: OutputFormat, report: &DeviceIdentityReport) -> Res
         return print_json(report);
     }
     println!("Local device identity: {}", status_label(report.status));
+    if report.status == DeviceIdentityStatus::Uninitialized {
+        println!("No key yet. Cloning or adding a vault creates one automatically, or run `vulcan device init`.");
+    }
     if let Some(id) = &report.device_id {
         println!("Device ID: {id}");
     }
@@ -75,6 +78,12 @@ fn print_device_show(output: OutputFormat, report: &DeviceIdentityReport) -> Res
     }
     if let Some(diagnostic) = &report.diagnostic {
         println!("{diagnostic}");
+    }
+    if report.status == DeviceIdentityStatus::Ready {
+        println!(
+            "This key authenticates Git over SSH for your vaults (see `vulcan help device-keys`)."
+        );
+        println!("See where it is enrolled: `vulcan devices list`. Rotate it: `vulcan device replace --dry-run`.");
     }
     println!("Identity is not a trust or access decision.");
     Ok(())
