@@ -6501,6 +6501,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Tests with a fake OAuth server: PKCE verifier/challenge, state mismatch, denied consent, timeout, refresh and rotation, expired refresh token, concurrent refresh, file permissions, atomic writes, no token in any output or file under the vault.
 - [x] Update `sync-workflow` and configuration skills plus installed-skill tests when the commands ship.
 
+**Verified:** on a real Forgejo vault with a separately registered OAuth app: login, `forge sync` with no token variable (dry run, add, revoke, remove), publish, and a second machine previewing and refusing a foreign host. See the verification notes in `docs/specs/device-transport-auth.md`.
+
 #### Extension points (not scheduled)
 
 - A cryptographic registry that replaces trust-the-list with signed administrator decisions, and a deploy-key-management CI job built on it. Registration records and the adapter trait should survive unchanged.

@@ -282,6 +282,14 @@ vault, with the device key bound and no SSH agent, `GIT_SSH_COMMAND`, or token i
   deleted `refs/heads/__vulcan-sync/registrations/*` on a vault whose remote already carried the usual
   `__vulcan-sync` refs. A content push to the live ref through the device key was not exercised,
   because there was nothing to push, but it uses the same ref namespace and permission.
+- **Generic setup and OAuth login on a real vault:** from `git@forge.example:owner/repo` alone,
+  `sync forge init --kind forgejo --oauth-client-id <ID>` derived the forge URL and `owner/repo`.
+  `sync forge login` (a separately registered public OAuth app, loopback redirect) stored an
+  owner-only login, and `forge sync` then worked with a clean environment and no token variable:
+  dry run, add, revoke, and remove of a throwaway key, and unregister, leaving only the real key.
+  `init --publish` wrote just the kind and client ID to the remote; a second machine with a fresh
+  state directory saw only a proposal, saved nothing without `--adopt`, and a dry-run adopt of a
+  foreign host was refused.
 - **Not exercised:** a key that is also registered as a user SSH key. The device key is never uploaded
   as a user key, so this should not arise; Forgejo would refuse it with its own message, which the
   adapter reports per key.
