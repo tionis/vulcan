@@ -555,3 +555,144 @@ fn fleet_view_and_all_wikis_keep_every_vault_independent() {
         0
     );
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // One ordered two-administrator scenario reads best unbroken.
+fn init_publishes_non_secret_settings_that_another_administrator_adopts() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let remote = root.join("remote.git");
+    git(root, &["init", "--bare", "--quiet", "remote.git"]);
+    let first = installation(root, "first", &remote);
+    let second = installation(root, "second", &remote);
+    let forge = serve();
+    let on = |who: &Path, token: Option<&str>, args: &[&str]| {
+        let vault = who.join("vault");
+        let mut full = vec![
+            "--vault",
+            vault.to_str().unwrap(),
+            "--output",
+            "json",
+            "sync",
+            "forge",
+        ];
+        full.extend_from_slice(args);
+        run(who, token, &full)
+    };
+
+    // The remote is a local path, so nothing can be derived: the host check
+    // must be confirmed explicitly rather than silently skipped.
+    let refused = failure_text(&on(
+        &first,
+        None,
+        &[
+            "init",
+            "--kind",
+            "forgejo",
+            "--url",
+            &forge.url,
+            "--repo",
+            "owner/vault",
+            "--oauth-client-id",
+            "client-abc",
+        ],
+    ));
+    assert!(refused.contains("--allow-other-host"), "{refused}");
+
+    // Nothing is published by a dry run.
+    let preview = json(&on(
+        &first,
+        None,
+        &[
+            "init",
+            "--kind",
+            "forgejo",
+            "--url",
+            &forge.url,
+            "--repo",
+            "owner/vault",
+            "--oauth-client-id",
+            "client-abc",
+            "--allow-other-host",
+            "--publish",
+            "--dry-run",
+        ],
+    ));
+    assert_eq!(preview["saved"], false);
+    assert_eq!(preview["published"], false);
+
+    let published = json(&on(
+        &first,
+        None,
+        &[
+            "init",
+            "--kind",
+            "forgejo",
+            "--url",
+            &forge.url,
+            "--repo",
+            "owner/vault",
+            "--oauth-client-id",
+            "client-abc",
+            "--token-env",
+            "MY_PRIVATE_TOKEN_NAME",
+            "--allow-other-host",
+            "--publish",
+        ],
+    ));
+    assert_eq!(published["saved"], true);
+    assert_eq!(published["published"], true);
+
+    // What reached the remote carries no secret and no device-specific value.
+    let blob = ProcessCommand::new("git")
+        .current_dir(&remote)
+        .args(["show", "refs/heads/__vulcan-sync/forge:forge.json"])
+        .output()
+        .expect("git show");
+    let shared = String::from_utf8(blob.stdout).expect("utf-8 descriptor");
+    assert!(shared.contains("client-abc"), "{shared}");
+    assert!(
+        !shared.contains("MY_PRIVATE_TOKEN_NAME") && !shared.contains(TOKEN),
+        "{shared}"
+    );
+    assert!(
+        !shared.contains("owner/vault"),
+        "the repository is derived, not shared: {shared}"
+    );
+
+    // The second administrator sees a proposal and saves nothing by default.
+    let proposal = json(&on(&second, None, &["init"]));
+    assert_eq!(
+        proposal["shared"]["settings"]["oauth_client_id"],
+        "client-abc"
+    );
+    assert_eq!(proposal["saved"], false);
+    assert!(json(&on(&second, None, &["show"]))["config"].is_null());
+
+    // Adoption still needs the same explicit host confirmation, and the
+    // device-specific token variable stays local to this machine.
+    assert!(!on(&second, None, &["init", "--adopt"]).status.success());
+    let adopted = json(&on(
+        &second,
+        None,
+        &[
+            "init",
+            "--adopt",
+            "--allow-other-host",
+            "--repo",
+            "owner/vault",
+            "--token-env",
+            "FORGE_TOKEN",
+        ],
+    ));
+    assert_eq!(adopted["saved"], true);
+    let shown = json(&on(&second, None, &["show"]));
+    assert_eq!(shown["config"]["oauth_client_id"], "client-abc");
+    assert_eq!(shown["config"]["token_env"], "FORGE_TOKEN");
+    assert_eq!(shown["config"]["url"], forge.url);
+
+    // The adopted settings drive a real `forge sync` against the (fake) forge.
+    let plan = json(&on(&second, Some(TOKEN), &["sync", "--dry-run"]));
+    assert_eq!(plan["repo"], "owner/vault");
+    assert_eq!(plan["dry_run"], true);
+}

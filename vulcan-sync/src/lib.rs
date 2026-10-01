@@ -64,9 +64,10 @@ pub use refs::{
     local_epoch_ref, local_recovery_ref_namespaces, local_sync_ref,
     remote_conflict_proposal_resolution_ref, remote_conflict_ref, remote_device_ref,
     remote_epoch_ref, remote_registration_ref, semantic_proposal_ref, sync_profile_key,
-    DEFAULT_REMOTE_LIVE_REF, LOCAL_RECOVERY_REF_NAMESPACES, LOCAL_REGISTRATION_MIRROR_ROOT,
-    LOCAL_VULCAN_REF_ROOT, REMOTE_CONFLICT_BRANCH_ROOT, REMOTE_DEVICE_BRANCH_ROOT,
-    REMOTE_EPOCH_BRANCH_ROOT, REMOTE_REGISTRATION_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
+    DEFAULT_REMOTE_LIVE_REF, LOCAL_FORGE_DESCRIPTOR_MIRROR_REF, LOCAL_RECOVERY_REF_NAMESPACES,
+    LOCAL_REGISTRATION_MIRROR_ROOT, LOCAL_VULCAN_REF_ROOT, REMOTE_CONFLICT_BRANCH_ROOT,
+    REMOTE_DEVICE_BRANCH_ROOT, REMOTE_EPOCH_BRANCH_ROOT, REMOTE_FORGE_DESCRIPTOR_REF,
+    REMOTE_REGISTRATION_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
 };
 pub use sync::{
     classify_git_sync_error, find_git_live_epoch, git_live_epoch_id, sync_git_once,

@@ -1,3 +1,5 @@
+use super::init::{forge_init_with, ForgeInitRequest};
+use super::shared::{publish_shared_forge, SharedForge};
 use super::*;
 use crate::device_identity::DeviceIdentityStore;
 use crate::sync_registration::{
@@ -8,6 +10,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
+use vulcan_sync::GitEngine;
 
 fn git(path: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -395,8 +398,9 @@ fn a_read_only_managed_key_is_replaced_with_a_write_key() {
 
 #[test]
 fn config_validation_protects_the_token_destination() {
-    let ok =
-        |url: &str, repo: &str, env: &str| ForgeConfig::new(ForgeKind::Forgejo, url, repo, env);
+    let ok = |url: &str, repo: &str, env: &str| {
+        ForgeConfig::new(ForgeKind::Forgejo, url, repo, Some(env), None)
+    };
     assert!(ok("https://git.example.com", "owner/vault", "FORGEJO_TOKEN").is_ok());
     assert!(ok("https://git.example.com/sub/path/", "o.w_n-er/va.ult", "T").is_ok());
     assert!(ok("http://localhost:3000", "o/r", "T").is_ok());
@@ -439,7 +443,8 @@ fn config_roundtrips_in_device_local_state_and_never_in_the_work_tree() {
         ForgeKind::Forgejo,
         "https://git.example.com",
         "owner/vault",
-        "FORGEJO_TOKEN",
+        Some("FORGEJO_TOKEN"),
+        None,
     )
     .unwrap();
     let preview = set_forge_config_with(&repo.paths, &state, &config, true).unwrap();
@@ -512,6 +517,387 @@ fn a_tampered_config_file_is_rejected_not_trusted() {
         load_config(&repo.paths, &state).is_err(),
         "unknown fields are refused"
     );
+}
+
+const FORGE_REMOTE_URL: &str = "git@forge.example.com:eric/mimir.git";
+
+fn init_request() -> ForgeInitRequest {
+    ForgeInitRequest {
+        kind: Some(ForgeKind::Forgejo),
+        oauth_client_id: Some("c1ient-id-1234".to_owned()),
+        ..ForgeInitRequest::default()
+    }
+}
+
+/// A second administrator machine: its own vault clone and device-local state,
+/// sharing only the Git remote.
+fn second_machine(repo: &Repo) -> (VaultPaths, SyncStateStore) {
+    let vault = repo.dir.path().join("vault-two");
+    fs::create_dir_all(&vault).unwrap();
+    git(&vault, &["init", "-q"]);
+    git(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            repo.dir.path().join("remote.git").to_str().unwrap(),
+        ],
+    );
+    (
+        VaultPaths::new(&vault),
+        SyncStateStore::at(repo.dir.path().join("state-two/sync/repositories")),
+    )
+}
+
+fn state_of(repo: &Repo) -> SyncStateStore {
+    SyncStateStore::at(repo.dir.path().join("state/sync/repositories"))
+}
+
+fn init(
+    paths: &VaultPaths,
+    state: &SyncStateStore,
+    remote: &GitRemote,
+    request: &ForgeInitRequest,
+) -> Result<init::ForgeInitReport, AppError> {
+    forge_init_with(paths, state, remote, request, Some(FORGE_REMOTE_URL))
+}
+
+#[test]
+fn init_derives_everything_but_the_kind_and_credential_from_the_remote() {
+    let repo = repo();
+    let state = state_of(&repo);
+
+    let preview = init(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &ForgeInitRequest {
+            dry_run: true,
+            ..init_request()
+        },
+    )
+    .unwrap();
+    assert!(!preview.saved && preview.config.is_some());
+    assert!(
+        load_config(&repo.paths, &state).unwrap().is_none(),
+        "a dry run saves nothing"
+    );
+
+    let report = init(&repo.paths, &state, &repo.remote, &init_request()).unwrap();
+    assert!(report.saved);
+    let config = load_config(&repo.paths, &state).unwrap().unwrap();
+    assert_eq!(config.url, "https://forge.example.com");
+    assert_eq!(config.repo, "eric/mimir");
+    assert_eq!(config.oauth_client_id.as_deref(), Some("c1ient-id-1234"));
+    assert_eq!(config.token_env, None);
+
+    assert!(
+        !init(&repo.paths, &state, &repo.remote, &init_request())
+            .unwrap()
+            .saved,
+        "idempotent"
+    );
+}
+
+#[test]
+fn init_requires_some_credential_and_a_known_forge_shape() {
+    let repo = repo();
+    let state = state_of(&repo);
+    let bare = ForgeInitRequest {
+        kind: Some(ForgeKind::Forgejo),
+        ..ForgeInitRequest::default()
+    };
+    let error = init(&repo.paths, &state, &repo.remote, &bare)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--oauth-client-id"), "{error}");
+
+    let error = forge_init_with(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &init_request(),
+        Some("/srv/git/local.git"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("--url"), "{error}");
+
+    // Explicit settings work for a remote that implies no forge, once the
+    // unverifiable host is confirmed.
+    let explicit = ForgeInitRequest {
+        url: Some("https://forge.example.com".to_owned()),
+        repo: Some("eric/mimir".to_owned()),
+        ..init_request()
+    };
+    let unconfirmed = forge_init_with(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &explicit,
+        Some("/srv/git/local.git"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(unconfirmed.contains("cannot be checked"), "{unconfirmed}");
+    let confirmed = ForgeInitRequest {
+        allow_other_host: true,
+        ..explicit
+    };
+    let report = forge_init_with(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &confirmed,
+        Some("/srv/git/local.git"),
+    )
+    .unwrap();
+    assert!(report.saved && report.derived.is_none());
+}
+
+#[test]
+fn the_api_url_must_stay_on_the_remotes_host_unless_allowed() {
+    let repo = repo();
+    let state = state_of(&repo);
+    let other = ForgeInitRequest {
+        url: Some("https://elsewhere.example.org".to_owned()),
+        ..init_request()
+    };
+    let error = init(&repo.paths, &state, &repo.remote, &other)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not on the Git remote's host"), "{error}");
+    assert!(load_config(&repo.paths, &state).unwrap().is_none());
+
+    let allowed = ForgeInitRequest {
+        allow_other_host: true,
+        ..other
+    };
+    assert!(
+        init(&repo.paths, &state, &repo.remote, &allowed)
+            .unwrap()
+            .saved
+    );
+    assert_eq!(
+        load_config(&repo.paths, &state).unwrap().unwrap().url,
+        "https://elsewhere.example.org"
+    );
+}
+
+#[test]
+fn published_settings_are_non_secret_and_other_machines_must_adopt_them() {
+    let repo = repo();
+    let state = state_of(&repo);
+    init(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &ForgeInitRequest {
+            publish: true,
+            token_env: Some("MY_PRIVATE_TOKEN".to_owned()),
+            ..init_request()
+        },
+    )
+    .unwrap();
+
+    // The shared descriptor carries kind and client ID only: no token variable,
+    // no repository path, and no URL because it equals the derived one.
+    let (two_paths, two_state) = second_machine(&repo);
+    let preview = init(
+        &two_paths,
+        &two_state,
+        &repo.remote,
+        &ForgeInitRequest::default(),
+    )
+    .unwrap();
+    let shared = preview.shared.as_ref().expect("shared settings found");
+    assert_eq!(shared.settings.api_url, None);
+    assert_eq!(
+        shared.settings.oauth_client_id.as_deref(),
+        Some("c1ient-id-1234")
+    );
+    let raw = serde_json::to_string(&shared.settings).unwrap();
+    assert!(
+        !raw.contains("MY_PRIVATE_TOKEN") && !raw.contains("eric/mimir"),
+        "{raw}"
+    );
+    assert!(!preview.saved && preview.config.is_none());
+    assert!(preview.note.as_deref().unwrap().contains("--adopt"));
+    assert!(
+        load_config(&two_paths, &two_state).unwrap().is_none(),
+        "never adopted implicitly"
+    );
+
+    let adopted = init(
+        &two_paths,
+        &two_state,
+        &repo.remote,
+        &ForgeInitRequest {
+            adopt: true,
+            token_env: Some("OTHER_TOKEN".to_owned()),
+            ..ForgeInitRequest::default()
+        },
+    )
+    .unwrap();
+    assert!(adopted.saved);
+    let config = load_config(&two_paths, &two_state).unwrap().unwrap();
+    assert_eq!(
+        (config.url.as_str(), config.repo.as_str()),
+        ("https://forge.example.com", "eric/mimir")
+    );
+    assert_eq!(config.oauth_client_id.as_deref(), Some("c1ient-id-1234"));
+    assert_eq!(
+        config.token_env.as_deref(),
+        Some("OTHER_TOKEN"),
+        "device-specific values stay local"
+    );
+
+    // Republishing identical settings changes nothing.
+    let again = init(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &ForgeInitRequest {
+            publish: true,
+            ..init_request()
+        },
+    )
+    .unwrap();
+    assert!(!again.published);
+}
+
+#[test]
+fn a_hostile_shared_descriptor_cannot_redirect_the_credential() {
+    let repo = repo();
+    publish_shared_forge(
+        &repo.paths,
+        &repo.remote,
+        &SharedForge::new(
+            ForgeKind::Forgejo,
+            Some("https://evil.example.net".to_owned()),
+            Some("attacker-app".to_owned()),
+        ),
+    )
+    .unwrap();
+    let (paths, state) = second_machine(&repo);
+
+    let error = init(
+        &paths,
+        &state,
+        &repo.remote,
+        &ForgeInitRequest {
+            adopt: true,
+            ..ForgeInitRequest::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("not on the Git remote's host"), "{error}");
+    assert!(
+        load_config(&paths, &state).unwrap().is_none(),
+        "nothing was saved"
+    );
+}
+
+#[test]
+fn init_without_a_kind_needs_published_settings_and_rejects_malformed_ones() {
+    let repo = repo();
+    let state = state_of(&repo);
+    let error = init(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &ForgeInitRequest::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("no shared forge settings"), "{error}");
+
+    // A malformed descriptor is an error to adopt, but publishing repairs it.
+    let (engine, repository) = {
+        let engine = crate::sync_transport::git_engine(&repo.paths);
+        let repository = engine
+            .discover_repository(&fs::canonicalize(repo.paths.vault_root()).unwrap())
+            .unwrap();
+        (engine, repository)
+    };
+    let blob = engine
+        .write_blob(
+            &repository,
+            b"{\"version\":1,\"kind\":\"forgejo\",\"extra\":true}",
+        )
+        .unwrap();
+    let tree = engine
+        .create_single_file_tree(&repository, "forge.json", &blob)
+        .unwrap();
+    let commit = engine
+        .create_commit(&repository, &tree, &[], "x\n")
+        .unwrap();
+    engine
+        .push_ref(
+            &repository,
+            &repo.remote,
+            &commit,
+            &vulcan_sync::GitRefName::parse(vulcan_sync::REMOTE_FORGE_DESCRIPTOR_REF).unwrap(),
+            None,
+        )
+        .unwrap();
+    assert!(init(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &ForgeInitRequest {
+            adopt: true,
+            ..ForgeInitRequest::default()
+        }
+    )
+    .is_err());
+
+    let repaired = init(
+        &repo.paths,
+        &state,
+        &repo.remote,
+        &ForgeInitRequest {
+            publish: true,
+            ..init_request()
+        },
+    )
+    .unwrap();
+    assert!(repaired.published);
+    let (paths, other_state) = second_machine(&repo);
+    assert!(init(
+        &paths,
+        &other_state,
+        &repo.remote,
+        &ForgeInitRequest::default()
+    )
+    .unwrap()
+    .shared
+    .is_some());
+}
+
+#[test]
+fn shared_settings_parsing_is_strict() {
+    let good = br#"{"version":1,"kind":"forgejo","oauth_client_id":"abc-123"}"#;
+    assert!(SharedForge::parse(good).is_ok());
+    for bad in [
+        &br#"{"version":2,"kind":"forgejo"}"#[..],
+        br#"{"version":1,"kind":"gitlab"}"#,
+        br#"{"version":1,"kind":"forgejo","token":"leak"}"#,
+        br#"{"version":1,"kind":"forgejo","oauth_client_id":"bad id"}"#,
+        br#"{"version":1,"kind":"forgejo","oauth_client_id":""}"#,
+        br#"{"version":1,"kind":"forgejo","api_url":"http://insecure.example"}"#,
+        br#"{"version":1,"kind":"forgejo","api_url":"https://u:p@h.example"}"#,
+        b"not json",
+    ] {
+        assert!(
+            SharedForge::parse(bad).is_err(),
+            "{}",
+            String::from_utf8_lossy(bad)
+        );
+    }
+    assert!(SharedForge::parse(&vec![b' '; 4096]).is_err());
 }
 
 #[cfg(feature = "web")]
@@ -693,8 +1079,14 @@ mod http {
     }
 
     fn client(server: &FakeForgejo) -> ForgejoDeployKeys {
-        let config =
-            ForgeConfig::new(ForgeKind::Forgejo, &server.url, "owner/vault", "TOKEN_ENV").unwrap();
+        let config = ForgeConfig::new(
+            ForgeKind::Forgejo,
+            &server.url,
+            "owner/vault",
+            Some("TOKEN_ENV"),
+            None,
+        )
+        .unwrap();
         ForgejoDeployKeys::new(&config, "s3cret", Duration::from_secs(5)).unwrap()
     }
 
@@ -784,8 +1176,14 @@ mod http {
     #[test]
     fn an_empty_token_is_refused_before_any_request() {
         let server = serve();
-        let config =
-            ForgeConfig::new(ForgeKind::Forgejo, &server.url, "owner/vault", "TOKEN_ENV").unwrap();
+        let config = ForgeConfig::new(
+            ForgeKind::Forgejo,
+            &server.url,
+            "owner/vault",
+            Some("TOKEN_ENV"),
+            None,
+        )
+        .unwrap();
         assert!(ForgejoDeployKeys::new(&config, "  ", Duration::from_secs(1)).is_err());
         assert!(server.state.lock().unwrap().requests.is_empty());
     }

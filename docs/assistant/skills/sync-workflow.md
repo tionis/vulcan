@@ -51,6 +51,15 @@ both execute the same application workflow.
   pass the full `vdev1_` ID and confirm it against `vulcan device show` on that device. The list is
   trusted as written by anyone who can push, it grants no remote access, and revoking it does not
   remove any forge deploy key. Never register, revoke, or unregister on the user's behalf unprompted.
+- `vulcan sync forge init` is the generic setup. The forge host and `owner/name` are derived from
+  the Git remote (`git@host:owner/name` gives `https://host` and `owner/name`), so only the kind and a
+  credential are stated: `--kind forgejo --oauth-client-id <ID>` and/or `--token-env <VAR>`. Add
+  `--publish` to share the non-secret settings (kind, OAuth client ID, and a URL only if it differs)
+  on the remote. On another machine, `sync forge init` with no `--kind` only *shows* what the remote
+  proposes; `--adopt` saves it locally. Anyone who can push can change the published settings, so never
+  adopt on the user's behalf without showing them the proposal, and never pass `--allow-other-host`
+  unless the user asks: the API URL must be on the Git remote's host, since that is where the
+  credential is sent. Adoption keeps device-specific values (the token variable) local.
 - `vulcan sync forge set --url <https-url> --repo <owner/name> --token-env <VAR>` saves device-local
   forge settings (only the variable *name*; never ask for or print the token). `vulcan sync forge sync
   --dry-run` shows the plan, then `vulcan sync forge sync` installs a write-capable deploy key for

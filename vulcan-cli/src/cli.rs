@@ -3931,12 +3931,67 @@ pub enum SyncForgeCommand {
         #[arg(
             long,
             value_name = "VAR",
-            help = "Environment variable that holds the API token"
+            help = "Environment variable that holds an API token"
         )]
-        token_env: String,
+        token_env: Option<String>,
+        #[arg(
+            long,
+            value_name = "ID",
+            help = "Public OAuth2 client ID for `sync forge login`"
+        )]
+        oauth_client_id: Option<String>,
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
         wiki: Option<String>,
         #[arg(long, help = "Validate without saving")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Set up forge settings from the Git remote, optionally sharing them with other administrators",
+        long_about = "Derive the forge host and owner/name from the Git remote, so only the adapter kind and credential need stating. With --kind, settings come from the flags plus the remote. Without it, the remote's published settings are looked up and only saved locally with --adopt, because anyone who can push can change them. --publish shares the non-secret settings (kind, OAuth client ID, and an API URL only if it differs) so other machines can adopt them. The API URL must be on the Git remote's host unless --allow-other-host is given."
+    )]
+    Init {
+        #[arg(
+            long,
+            value_enum,
+            help = "Forge software; omit to look up shared settings"
+        )]
+        kind: Option<ForgeKindArg>,
+        #[arg(long, help = "API base URL; defaults to https://<remote host>")]
+        url: Option<String>,
+        #[arg(
+            long,
+            help = "Repository as `owner/name`; defaults to the remote's path"
+        )]
+        repo: Option<String>,
+        #[arg(
+            long,
+            value_name = "VAR",
+            help = "Environment variable that holds an API token"
+        )]
+        token_env: Option<String>,
+        #[arg(
+            long,
+            value_name = "ID",
+            help = "Public OAuth2 client ID for `sync forge login`"
+        )]
+        oauth_client_id: Option<String>,
+        #[arg(long, help = "Save the remote's shared settings locally")]
+        adopt: bool,
+        #[arg(
+            long,
+            help = "Publish these settings to the remote for other administrators"
+        )]
+        publish: bool,
+        #[arg(
+            long,
+            help = "Allow an API URL on a different host than the Git remote"
+        )]
+        allow_other_host: bool,
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Show what would happen without saving or publishing")]
         dry_run: bool,
     },
     #[command(about = "Show the saved forge settings (never the token)")]

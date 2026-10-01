@@ -6482,6 +6482,10 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Tests: recorded-API contract tests, fake-forge coverage of every table row, partial failure and retry, empty/failed fetch, config-source and token-redaction safety, permission denial. Real Forgejo evidence closes the compatibility questions. Implemented against a stateful fake Forgejo server instead of recorded fixtures, plus an end-to-end CLI test. A real Forgejo run is still the evidence for the two open questions.
 - [x] Update `sync-workflow` and configuration skills plus installed-skill tests when commands ship. `sync-workflow` now documents `sync forge`.
 
+- [x] Keep Vulcan generic: derive the forge host and `owner/name` from the Git remote, make the credential optional (`--oauth-client-id` and/or `--token-env`, at least one), and add `sync forge init` to set up from the remote. Enforce that the API URL is on the remote's host unless `--allow-other-host`, and require that flag when the host cannot be determined.
+- [x] Publish non-secret shared settings (`refs/heads/__vulcan-sync/forge`: kind, OAuth client ID, API URL only if it differs) with `init --publish`. Treat them as a proposal: another machine only displays them, saves nothing without `--adopt`, applies the same-host check, and keeps device-specific values (the token variable) local.
+- [x] Tests: derivation table, same-host rule, hostile descriptor, strict descriptor parsing, adopt/preview/republish, repair of a malformed descriptor, and a two-administrator CLI scenario that checks nothing secret reaches the remote.
+
 #### 12.21.4 Fleet view
 
 - [x] Add per-vault transport state (not bound, usable, key unavailable) and this device's registration status to the installation device inventory, separate from backup and recovery state, with no remote contact in offline mode. `vulcan devices list` reports `transport` and `this_device_registration` per vault; offline contacts no remote.

@@ -8735,14 +8735,25 @@
                     ]
                   },
                   {
-                    "help": "Environment variable that holds the API token",
+                    "help": "Environment variable that holds an API token",
                     "id": "token_env",
                     "long": "token-env",
                     "possible_values": [],
-                    "required": true,
+                    "required": false,
                     "short": null,
                     "value_names": [
                       "VAR"
+                    ]
+                  },
+                  {
+                    "help": "Public OAuth2 client ID for `sync forge login`",
+                    "id": "oauth_client_id",
+                    "long": "oauth-client-id",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ID"
                     ]
                   },
                   {
@@ -8758,6 +8769,159 @@
                   },
                   {
                     "help": "Validate without saving",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Set up forge settings from the Git remote, optionally sharing them with other administrators",
+                "name": "init",
+                "options": [
+                  {
+                    "help": "Forge software; omit to look up shared settings",
+                    "id": "kind",
+                    "long": "kind",
+                    "possible_values": [
+                      "forgejo"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "KIND"
+                    ]
+                  },
+                  {
+                    "help": "API base URL; defaults to https://<remote host>",
+                    "id": "url",
+                    "long": "url",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "URL"
+                    ]
+                  },
+                  {
+                    "help": "Repository as `owner/name`; defaults to the remote's path",
+                    "id": "repo",
+                    "long": "repo",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REPO"
+                    ]
+                  },
+                  {
+                    "help": "Environment variable that holds an API token",
+                    "id": "token_env",
+                    "long": "token-env",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "VAR"
+                    ]
+                  },
+                  {
+                    "help": "Public OAuth2 client ID for `sync forge login`",
+                    "id": "oauth_client_id",
+                    "long": "oauth-client-id",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  },
+                  {
+                    "help": "Save the remote's shared settings locally",
+                    "id": "adopt",
+                    "long": "adopt",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ADOPT"
+                    ]
+                  },
+                  {
+                    "help": "Publish these settings to the remote for other administrators",
+                    "id": "publish",
+                    "long": "publish",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PUBLISH"
+                    ]
+                  },
+                  {
+                    "help": "Allow an API URL on a different host than the Git remote",
+                    "id": "allow_other_host",
+                    "long": "allow-other-host",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ALLOW_OTHER_HOST"
+                    ]
+                  },
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Show what would happen without saving or publishing",
                     "id": "dry_run",
                     "long": "dry-run",
                     "possible_values": [

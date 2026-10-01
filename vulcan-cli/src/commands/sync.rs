@@ -4066,21 +4066,37 @@ struct ForgeShowReport {
     token_env_set: bool,
 }
 
+/// Explicit forge settings from the command line.
+struct ForgeSetArgs<'a> {
+    kind: crate::cli::ForgeKindArg,
+    url: &'a str,
+    repo: &'a str,
+    token_env: Option<&'a str>,
+    oauth_client_id: Option<&'a str>,
+    dry_run: bool,
+}
+
+fn forge_kind(kind: crate::cli::ForgeKindArg) -> vulcan_app::sync_forge::ForgeKind {
+    match kind {
+        crate::cli::ForgeKindArg::Forgejo => vulcan_app::sync_forge::ForgeKind::Forgejo,
+    }
+}
+
 fn handle_forge_set(
     cli: &Cli,
     paths: &VaultPaths,
-    kind: crate::cli::ForgeKindArg,
-    url: &str,
-    repo: &str,
-    token_env: &str,
-    dry_run: bool,
+    args: &ForgeSetArgs<'_>,
 ) -> Result<(), CliError> {
-    use vulcan_app::sync_forge::{set_forge_config, ForgeConfig, ForgeKind};
-    let kind = match kind {
-        crate::cli::ForgeKindArg::Forgejo => ForgeKind::Forgejo,
-    };
-    let config = ForgeConfig::new(kind, url, repo, token_env).map_err(CliError::operation)?;
-    let report = set_forge_config(paths, &config, dry_run).map_err(CliError::operation)?;
+    use vulcan_app::sync_forge::{set_forge_config, ForgeConfig};
+    let config = ForgeConfig::new(
+        forge_kind(args.kind),
+        args.url,
+        args.repo,
+        args.token_env,
+        args.oauth_client_id,
+    )
+    .map_err(CliError::operation)?;
+    let report = set_forge_config(paths, &config, args.dry_run).map_err(CliError::operation)?;
     match cli.output {
         OutputFormat::Json => print_json(&report),
         OutputFormat::Human | OutputFormat::Markdown => {
@@ -4094,7 +4110,131 @@ fn handle_forge_set(
                 config.repo,
                 config.url
             );
-            println!("Token is read from ${}", config.token_env);
+            print_forge_credentials(&config);
+            Ok(())
+        }
+    }
+}
+
+fn print_forge_credentials(config: &vulcan_app::sync_forge::ForgeConfig) {
+    if let Some(client_id) = &config.oauth_client_id {
+        println!("OAuth client ID: {client_id}");
+    }
+    if let Some(name) = &config.token_env {
+        println!("API token is read from ${name}");
+    }
+}
+
+fn handle_forge_init(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    target: &crate::SyncTargetArgs,
+    request: &vulcan_app::sync_forge::ForgeInitRequest,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let remote = GitRemote::parse(&target.remote).map_err(CliError::operation)?;
+    let report = vulcan_app::sync_forge::forge_init(&paths, &remote, request)
+        .map_err(CliError::operation)?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    match &report.derived {
+        Some(derived) => println!(
+            "Git remote `{}` implies forge {} and repository {}",
+            report.remote, derived.url, derived.repo
+        ),
+        None => println!("Git remote `{}` does not imply a forge.", report.remote),
+    }
+    if let Some(shared) = &report.shared {
+        println!("Shared settings on the remote (published by anyone who can push):");
+        println!("  kind: {:?}", shared.settings.kind);
+        if let Some(url) = &shared.settings.api_url {
+            println!("  API URL: {url}");
+        }
+        if let Some(client_id) = &shared.settings.oauth_client_id {
+            println!("  OAuth client ID: {client_id}");
+        }
+    }
+    if let Some(config) = &report.config {
+        println!(
+            "{} forge settings: {:?} {} at {}",
+            if report.saved {
+                "Saved"
+            } else if report.dry_run {
+                "Would save"
+            } else {
+                "Already saved:"
+            },
+            config.kind,
+            config.repo,
+            config.url
+        );
+        print_forge_credentials(config);
+    }
+    if report.published {
+        println!("Published the shared settings to the remote.");
+    }
+    if let Some(note) = &report.note {
+        println!("{note}");
+    }
+    Ok(())
+}
+
+fn handle_forge_show(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::show_forge_config;
+    let config = show_forge_config(paths).map_err(CliError::operation)?;
+    let report = ForgeShowReport {
+        version: 1,
+        token_env_set: config.as_ref().is_some_and(|config| {
+            config
+                .token_env
+                .as_ref()
+                .is_some_and(|name| std::env::var_os(name).is_some())
+        }),
+        config,
+    };
+    match (cli.output, &report.config) {
+        (OutputFormat::Json, _) => print_json(&report),
+        (_, None) => {
+            println!("No forge is configured. Use `vulcan sync forge set`.");
+            Ok(())
+        }
+        (_, Some(config)) => {
+            println!("forgejo {} at {}", config.repo, config.url);
+            if let Some(client_id) = &config.oauth_client_id {
+                println!("OAuth client ID: {client_id}");
+            }
+            if let Some(name) = &config.token_env {
+                println!(
+                    "Token variable ${name}: {}",
+                    if report.token_env_set {
+                        "set"
+                    } else {
+                        "not set"
+                    }
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn handle_forge_clear(cli: &Cli, paths: &VaultPaths, dry_run: bool) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::clear_forge_config;
+    let report = clear_forge_config(paths, dry_run).map_err(CliError::operation)?;
+    match cli.output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "{}",
+                match (report.dry_run, report.changed) {
+                    (_, false) => "no forge settings were saved",
+                    (true, true) => "would remove the saved forge settings",
+                    (false, true) => "removed the saved forge settings",
+                }
+            );
             Ok(())
         }
     }
@@ -4105,67 +4245,66 @@ fn handle_sync_forge(
     selected_paths: &VaultPaths,
     command: &SyncForgeCommand,
 ) -> Result<(), CliError> {
-    use vulcan_app::sync_forge::{clear_forge_config, show_forge_config};
     match command {
         SyncForgeCommand::Set {
             kind,
             url,
             repo,
             token_env,
+            oauth_client_id,
             wiki,
             dry_run,
         } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
-            handle_forge_set(cli, &paths, *kind, url, repo, token_env, *dry_run)
+            handle_forge_set(
+                cli,
+                &paths,
+                &ForgeSetArgs {
+                    kind: *kind,
+                    url,
+                    repo,
+                    token_env: token_env.as_deref(),
+                    oauth_client_id: oauth_client_id.as_deref(),
+                    dry_run: *dry_run,
+                },
+            )
         }
+        SyncForgeCommand::Init {
+            kind,
+            url,
+            repo,
+            token_env,
+            oauth_client_id,
+            adopt,
+            publish,
+            allow_other_host,
+            wiki,
+            target,
+            dry_run,
+        } => handle_forge_init(
+            cli,
+            selected_paths,
+            wiki.as_deref(),
+            target,
+            &vulcan_app::sync_forge::ForgeInitRequest {
+                kind: kind.map(forge_kind),
+                url: url.clone(),
+                repo: repo.clone(),
+                token_env: token_env.clone(),
+                oauth_client_id: oauth_client_id.clone(),
+                adopt: *adopt,
+                publish: *publish,
+                allow_other_host: *allow_other_host,
+                dry_run: *dry_run,
+            },
+        ),
         SyncForgeCommand::Show { wiki } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
-            let config = show_forge_config(&paths).map_err(CliError::operation)?;
-            let report = ForgeShowReport {
-                version: 1,
-                token_env_set: config
-                    .as_ref()
-                    .is_some_and(|config| std::env::var_os(&config.token_env).is_some()),
-                config,
-            };
-            match (cli.output, &report.config) {
-                (OutputFormat::Json, _) => print_json(&report),
-                (_, None) => {
-                    println!("No forge is configured. Use `vulcan sync forge set`.");
-                    Ok(())
-                }
-                (_, Some(config)) => {
-                    println!("forgejo {} at {}", config.repo, config.url);
-                    println!(
-                        "Token variable ${}: {}",
-                        config.token_env,
-                        if report.token_env_set {
-                            "set"
-                        } else {
-                            "not set"
-                        }
-                    );
-                    Ok(())
-                }
-            }
+            handle_forge_show(cli, &paths)
         }
         SyncForgeCommand::Clear { wiki, dry_run } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
-            let report = clear_forge_config(&paths, *dry_run).map_err(CliError::operation)?;
-            match cli.output {
-                OutputFormat::Json => print_json(&report),
-                OutputFormat::Human | OutputFormat::Markdown => {
-                    println!(
-                        "{}",
-                        match (report.dry_run, report.changed) {
-                            (_, false) => "no forge settings were saved",
-                            (true, true) => "would remove the saved forge settings",
-                            (false, true) => "removed the saved forge settings",
-                        }
-                    );
-                    Ok(())
-                }
-            }
+            handle_forge_clear(cli, &paths, *dry_run)
         }
         SyncForgeCommand::Sync {
             wiki,
@@ -4230,11 +4369,13 @@ fn forge_sync_one(
     guard
         .check_network(&config.url)
         .map_err(CliError::operation)?;
-    let token = std::env::var(&config.token_env).map_err(|_| {
-        CliError::operation(format!(
-            "forge API token variable `{}` is not set",
-            config.token_env
-        ))
+    let name = config.token_env.as_deref().ok_or_else(|| {
+        CliError::operation(
+            "this vault has no API token variable; set --token-env (OAuth login is configured but not available yet)",
+        )
+    })?;
+    let token = std::env::var(name).map_err(|_| {
+        CliError::operation(format!("forge API token variable `{name}` is not set"))
     })?;
     let adapter = match config.kind {
         vulcan_app::sync_forge::ForgeKind::Forgejo => {

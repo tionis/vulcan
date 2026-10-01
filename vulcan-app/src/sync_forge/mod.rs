@@ -16,10 +16,17 @@ use serde::{Deserialize, Serialize};
 use vulcan_core::VaultPaths;
 use vulcan_sync::{GitRemote, GitSyncDeviceId, GitSyncDeviceIdKind};
 
+mod derive;
 #[cfg(feature = "web")]
 mod forgejo;
+mod init;
+mod shared;
+
+pub use derive::{derive_forge_target, ForgeTarget};
 #[cfg(feature = "web")]
 pub use forgejo::ForgejoDeployKeys;
+pub use init::{forge_init, ForgeInitReport, ForgeInitRequest};
+pub use shared::{read_shared_forge, SharedForge, SharedForgeView};
 
 pub const SYNC_FORGE_REPORT_VERSION: u32 = 1;
 const FORGE_CONFIG_FILE: &str = "forge.json";
@@ -34,8 +41,8 @@ pub enum ForgeKind {
     Forgejo,
 }
 
-/// Device-local forge settings for one vault. Holds the *name* of the token
-/// environment variable, never the token.
+/// Device-local forge settings for one vault. Holds the *name* of a token
+/// environment variable and/or a public OAuth client ID, never a secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForgeConfig {
@@ -44,17 +51,29 @@ pub struct ForgeConfig {
     pub url: String,
     /// `owner/name`.
     pub repo: String,
-    pub token_env: String,
+    /// Environment variable holding an API token (the fallback credential).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    /// Public OAuth client ID for `sync forge login`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_client_id: Option<String>,
 }
 
 impl ForgeConfig {
-    pub fn new(kind: ForgeKind, url: &str, repo: &str, token_env: &str) -> Result<Self, AppError> {
+    pub fn new(
+        kind: ForgeKind,
+        url: &str,
+        repo: &str,
+        token_env: Option<&str>,
+        oauth_client_id: Option<&str>,
+    ) -> Result<Self, AppError> {
         let config = Self {
             version: FORGE_CONFIG_VERSION,
             kind,
             url: url.trim().to_owned(),
             repo: repo.trim().to_owned(),
-            token_env: token_env.trim().to_owned(),
+            token_env: token_env.map(|value| value.trim().to_owned()),
+            oauth_client_id: oauth_client_id.map(|value| value.trim().to_owned()),
         };
         config.validate()?;
         Ok(config)
@@ -69,20 +88,26 @@ impl ForgeConfig {
         }
         validate_forge_url(&self.url)?;
         self.owner_and_repo()?;
-        let env_ok = !self.token_env.is_empty()
-            && self.token_env.len() <= 128
-            && self
-                .token_env
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !self.token_env.starts_with(|c: char| c.is_ascii_digit());
-        if env_ok {
-            Ok(())
-        } else {
-            Err(AppError::operation(
-                "token environment variable must be a plain name such as FORGEJO_TOKEN",
-            ))
+        if let Some(name) = &self.token_env {
+            let env_ok = !name.is_empty()
+                && name.len() <= 128
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !name.starts_with(|c: char| c.is_ascii_digit());
+            if !env_ok {
+                return Err(AppError::operation(
+                    "token environment variable must be a plain name such as FORGEJO_TOKEN",
+                ));
+            }
         }
+        if let Some(client_id) = &self.oauth_client_id {
+            validate_oauth_client_id(client_id)?;
+        }
+        if self.token_env.is_none() && self.oauth_client_id.is_none() {
+            return Err(AppError::operation(
+                "configure a credential: --oauth-client-id for `sync forge login`, --token-env for an API token, or both",
+            ));
+        }
+        Ok(())
     }
 
     /// Splits the validated `owner/name` pair.
@@ -107,9 +132,26 @@ impl ForgeConfig {
     }
 }
 
+/// OAuth client IDs are public identifiers (often UUIDs); keep them to a safe
+/// charset so they can sit in URLs and shared descriptors.
+pub(crate) fn validate_oauth_client_id(client_id: &str) -> Result<(), AppError> {
+    let ok = !client_id.is_empty()
+        && client_id.len() <= 128
+        && client_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~'));
+    if ok {
+        Ok(())
+    } else {
+        Err(AppError::operation(
+            "OAuth client ID must be 1-128 letters, digits, `-`, `_`, `.`, or `~`",
+        ))
+    }
+}
+
 /// The forge URL receives the API token, so require HTTPS except for loopback
 /// (local testing) and forbid credentials, queries, and fragments.
-fn validate_forge_url(text: &str) -> Result<(), AppError> {
+pub(crate) fn validate_forge_url(text: &str) -> Result<(), AppError> {
     let url = reqwest_free_parse(text)?;
     let loopback = matches!(url.host.as_str(), "localhost" | "127.0.0.1" | "[::1]");
     if url.scheme == "https" || (url.scheme == "http" && loopback) {
@@ -157,7 +199,7 @@ fn reqwest_free_parse(text: &str) -> Result<ParsedUrl, AppError> {
     })
 }
 
-fn load_config(
+pub(crate) fn load_config(
     paths: &VaultPaths,
     state: &SyncStateStore,
 ) -> Result<Option<ForgeConfig>, AppError> {
@@ -193,7 +235,7 @@ pub fn set_forge_config(
     set_forge_config_with(paths, &SyncStateStore::user_default()?, config, dry_run)
 }
 
-fn set_forge_config_with(
+pub(crate) fn set_forge_config_with(
     paths: &VaultPaths,
     state: &SyncStateStore,
     config: &ForgeConfig,

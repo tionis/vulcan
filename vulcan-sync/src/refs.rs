@@ -8,6 +8,11 @@ pub const REMOTE_DEVICE_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/devices";
 pub const REMOTE_REGISTRATION_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/registrations";
 /// Device-local mirror of the remote registration refs; never published.
 pub const LOCAL_REGISTRATION_MIRROR_ROOT: &str = "refs/vulcan/registrations";
+/// Shared, non-secret forge adapter settings for one repository (a proposal
+/// that administrators adopt explicitly; never read automatically).
+pub const REMOTE_FORGE_DESCRIPTOR_REF: &str = "refs/heads/__vulcan-sync/forge";
+/// Device-local mirror of the remote forge descriptor; never published.
+pub const LOCAL_FORGE_DESCRIPTOR_MIRROR_REF: &str = "refs/vulcan/forge";
 pub const REMOTE_CONFLICT_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/conflicts";
 pub const LOCAL_VULCAN_REF_ROOT: &str = "refs/vulcan";
 

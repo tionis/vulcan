@@ -183,14 +183,32 @@ vulcan sync devices unregister [--wiki <name>] <device-id> [--dry-run]
 
 ## 3. Forge adapters and forge sync
 
-Adapter configuration is **device-local, per vault**, in operational state like the binding: forge
-kind, API base URL, `owner/repo`, and the *name* of the environment variable (or secret reference)
-holding the API token. It is never read from vault files or synced configuration, because a synced
-value could redirect an administrator's token to another host. Token values are never persisted or
-reported. Network use is gated by the vault's network permission.
+Vulcan stays generic: no forge, host, or OAuth client is built in. Adapter configuration is
+**device-local, per vault**, in state outside the work tree: forge kind, API base URL, `owner/repo`,
+and the credential settings (the *name* of a token environment variable and/or a public OAuth client
+ID). Token values are never persisted or reported, and network use is gated by the vault's network
+permission. At least one credential method is required.
+
+**Derive, don't configure.** In the common case only the kind and credential need stating, because
+the host and `owner/repo` follow from the Git remote (`git@forge.example.com:eric/mimir.git` gives
+`https://forge.example.com` and `eric/mimir`; an SSH port is dropped, an HTTPS port is kept). The API
+URL must be on the Git remote's host, because that is where the credential is sent. A remote that
+implies no forge (a local path) needs `--url`, `--repo`, and an explicit `--allow-other-host`, since
+the host cannot be checked.
+
+**Shared settings are a proposal.** `sync forge init --publish` writes the non-secret settings to
+`refs/heads/__vulcan-sync/forge` on the remote: the kind, the OAuth client ID, and an API URL only if
+it differs from the derived one. It carries no token variable and no repository path. Because anyone
+who can push can change it, it is never read automatically. On another machine `sync forge init`
+(without `--kind`) only displays the proposal; `--adopt` copies it into local configuration after the
+same-host check, and from then on the remote is not consulted again. A hostile descriptor can
+therefore neither redirect a token to another host nor install an attacker's OAuth client without an
+administrator accepting it on that machine.
 
 ```text
-vulcan sync forge set    [--wiki <name>] --kind forgejo --url <base> --repo <owner/repo> --token-env <VAR>
+vulcan sync forge init   [--wiki <name>] [--kind forgejo] [--oauth-client-id <ID>] [--token-env <VAR>]
+                         [--url <base>] [--repo <owner/repo>] [--adopt] [--publish] [--allow-other-host] [--dry-run]
+vulcan sync forge set    [--wiki <name>] --kind forgejo --url <base> --repo <owner/repo> [--token-env <VAR>] [--oauth-client-id <ID>]
 vulcan sync forge show   [--wiki <name>]
 vulcan sync forge clear  [--wiki <name>]
 vulcan sync forge sync   [--wiki <name>] [--dry-run]
