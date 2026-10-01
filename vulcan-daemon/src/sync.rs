@@ -249,12 +249,13 @@ fn execute_claimed_job(
         Err(error) => return complete_execution_error(supervisor, &id, error),
     };
     options.remote_observation = remote_observation_for_triggers(&claimed.job.triggers);
-    let engine = vulcan_app::sync_transport::apply_transport(
+    let engine = vulcan_app::sync_transport::apply_transport_with_state(
         engine
             .clone()
             .with_command_timeout(options.command_timeout)
             .with_fresh_metrics(),
         &paths,
+        state_store,
     );
     let mut observer = SupervisorProgressObserver {
         supervisor,

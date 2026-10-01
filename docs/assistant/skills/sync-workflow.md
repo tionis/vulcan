@@ -60,6 +60,13 @@ both execute the same application workflow.
   be read from the remote. Always run the dry run first and show it to the user; because the
   registration list is trusted as written by anyone who can push, an unexpected `add` is worth
   questioning. It needs network permission for the forge URL and the token variable set.
+  `vulcan sync forge sync --all-wikis` repeats this for every registered Git vault that has forge
+  settings; each vault uses its own settings, token, permissions, and result, one failure never
+  affects the others (the command still exits non-zero), and vaults without settings are skipped.
+- `vulcan devices list` also reports, per vault, the device-local Git `transport` state and
+  `this_device_registration` (`not_registered`, `placeholder`, `registered`, `revoked`, or `unknown`
+  when the remote was not observed, as with `--offline`). They are separate per vault: a registration
+  or binding in one vault says nothing about another, and neither proves remote access.
 
 For a new sync checkout, preview `vulcan sync clone <remote> <path> --dry-run` before applying it.
 The command derives the wiki ID from the destination, uses native clone defaults on desktop, and

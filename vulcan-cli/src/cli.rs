@@ -3958,6 +3958,12 @@ pub enum SyncForgeCommand {
     Sync {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
         wiki: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "wiki",
+            help = "Run for every registered Git vault that has forge settings, each with its own token, permissions, and result"
+        )]
+        all_wikis: bool,
         #[command(flatten)]
         target: SyncTargetArgs,
         #[arg(long, help = "Show the plan without changing the forge")]

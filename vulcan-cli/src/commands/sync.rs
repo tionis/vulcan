@@ -4066,14 +4066,46 @@ struct ForgeShowReport {
     token_env_set: bool,
 }
 
+fn handle_forge_set(
+    cli: &Cli,
+    paths: &VaultPaths,
+    kind: crate::cli::ForgeKindArg,
+    url: &str,
+    repo: &str,
+    token_env: &str,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::{set_forge_config, ForgeConfig, ForgeKind};
+    let kind = match kind {
+        crate::cli::ForgeKindArg::Forgejo => ForgeKind::Forgejo,
+    };
+    let config = ForgeConfig::new(kind, url, repo, token_env).map_err(CliError::operation)?;
+    let report = set_forge_config(paths, &config, dry_run).map_err(CliError::operation)?;
+    match cli.output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "{} forge settings for {} at {}",
+                match (report.dry_run, report.changed) {
+                    (_, false) => "unchanged:",
+                    (true, true) => "would save",
+                    (false, true) => "saved",
+                },
+                config.repo,
+                config.url
+            );
+            println!("Token is read from ${}", config.token_env);
+            Ok(())
+        }
+    }
+}
+
 fn handle_sync_forge(
     cli: &Cli,
     selected_paths: &VaultPaths,
     command: &SyncForgeCommand,
 ) -> Result<(), CliError> {
-    use vulcan_app::sync_forge::{
-        clear_forge_config, set_forge_config, show_forge_config, ForgeConfig, ForgeKind,
-    };
+    use vulcan_app::sync_forge::{clear_forge_config, show_forge_config};
     match command {
         SyncForgeCommand::Set {
             kind,
@@ -4084,30 +4116,7 @@ fn handle_sync_forge(
             dry_run,
         } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
-            let kind = match kind {
-                crate::cli::ForgeKindArg::Forgejo => ForgeKind::Forgejo,
-            };
-            let config =
-                ForgeConfig::new(kind, url, repo, token_env).map_err(CliError::operation)?;
-            let report =
-                set_forge_config(&paths, &config, *dry_run).map_err(CliError::operation)?;
-            match cli.output {
-                OutputFormat::Json => print_json(&report),
-                OutputFormat::Human | OutputFormat::Markdown => {
-                    println!(
-                        "{} forge settings for {} at {}",
-                        match (report.dry_run, report.changed) {
-                            (_, false) => "unchanged:",
-                            (true, true) => "would save",
-                            (false, true) => "saved",
-                        },
-                        config.repo,
-                        config.url
-                    );
-                    println!("Token is read from ${}", config.token_env);
-                    Ok(())
-                }
-            }
+            handle_forge_set(cli, &paths, *kind, url, repo, token_env, *dry_run)
         }
         SyncForgeCommand::Show { wiki } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
@@ -4160,9 +4169,17 @@ fn handle_sync_forge(
         }
         SyncForgeCommand::Sync {
             wiki,
+            all_wikis,
             target,
             dry_run,
-        } => handle_forge_sync(cli, selected_paths, wiki.as_deref(), target, *dry_run),
+        } => handle_forge_sync(
+            cli,
+            selected_paths,
+            wiki.as_deref(),
+            *all_wikis,
+            target,
+            *dry_run,
+        ),
     }
 }
 
@@ -4171,24 +4188,44 @@ fn handle_forge_sync(
     cli: &Cli,
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
+    all_wikis: bool,
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    use vulcan_app::sync_forge::{forge_sync, show_forge_config, ForgejoDeployKeys};
+    if all_wikis {
+        return handle_forge_sync_all(cli, target, dry_run);
+    }
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
-    let config = show_forge_config(&paths)
+    let report = forge_sync_one(
+        cli,
+        &paths,
+        registration_profile.as_deref(),
+        target,
+        dry_run,
+    )?;
+    print_forge_sync(cli.output, &report)
+}
+
+/// One vault's forge sync: its own settings, permission profile, and token.
+#[cfg(feature = "web")]
+fn forge_sync_one(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<vulcan_app::sync_forge::ForgeSyncReport, CliError> {
+    use vulcan_app::sync_forge::{forge_sync, show_forge_config, ForgejoDeployKeys};
+    let config = show_forge_config(paths)
         .map_err(CliError::operation)?
         .ok_or_else(|| {
             CliError::operation(
                 "no forge is configured for this vault; run `vulcan sync forge set`",
             )
         })?;
-    let profile = cli
-        .permissions
-        .as_deref()
-        .or(registration_profile.as_deref());
-    let selection = resolve_permission_profile(&paths, profile).map_err(CliError::operation)?;
-    let guard = ProfilePermissionGuard::new(&paths, selection);
+    let profile = cli.permissions.as_deref().or(registration_profile);
+    let selection = resolve_permission_profile(paths, profile).map_err(CliError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
     guard.check_git().map_err(CliError::operation)?;
     guard
         .check_network(&config.url)
@@ -4206,9 +4243,128 @@ fn handle_forge_sync(
         }
     };
     let remote = GitRemote::parse(&target.remote).map_err(CliError::operation)?;
-    let report = forge_sync(&paths, &remote, &adapter, &config.repo, dry_run)
+    forge_sync(paths, &remote, &adapter, &config.repo, dry_run).map_err(CliError::operation)
+}
+
+#[cfg(feature = "web")]
+#[derive(Serialize)]
+struct ForgeSyncAllEntry {
+    wiki_id: String,
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report: Option<vulcan_app::sync_forge::ForgeSyncReport>,
+}
+
+#[cfg(feature = "web")]
+#[derive(Serialize)]
+struct ForgeSyncAllReport {
+    version: u32,
+    dry_run: bool,
+    wikis: Vec<ForgeSyncAllEntry>,
+    synced: usize,
+    skipped: usize,
+    failed: usize,
+}
+
+/// Iterates registered Git vaults. Each is independent: a failure in one never
+/// affects another, and no vault's settings or approvals apply to another.
+#[cfg(feature = "web")]
+fn handle_forge_sync_all(
+    cli: &Cli,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::show_forge_config;
+    let registrations = WikiRegistry::user_default()
+        .map_err(CliError::operation)?
+        .list(None)
         .map_err(CliError::operation)?;
-    print_forge_sync(cli.output, &report)
+    let mut wikis = Vec::new();
+    for status in registrations {
+        let registration = status.registration;
+        let mut entry = ForgeSyncAllEntry {
+            wiki_id: registration.id.to_string(),
+            outcome: "skipped",
+            reason: None,
+            report: None,
+        };
+        if !status.available {
+            entry.reason = Some("registered vault path is unavailable".to_owned());
+        } else if registration.sync_backend.as_deref() != Some("git") {
+            entry.reason = Some("registration does not use the Git sync backend".to_owned());
+        } else {
+            let paths = VaultPaths::new(&registration.path);
+            match show_forge_config(&paths) {
+                Ok(None) => entry.reason = Some("no forge is configured".to_owned()),
+                Err(error) => {
+                    entry.outcome = "failed";
+                    entry.reason = Some(error.to_string());
+                }
+                Ok(Some(_)) => match forge_sync_one(
+                    cli,
+                    &paths,
+                    registration.permissions_profile.as_deref(),
+                    target,
+                    dry_run,
+                ) {
+                    Ok(report) => {
+                        entry.outcome = if report.failed > 0 {
+                            "failed"
+                        } else {
+                            "synced"
+                        };
+                        entry.report = Some(report);
+                    }
+                    Err(error) => {
+                        entry.outcome = "failed";
+                        entry.reason = Some(error.to_string());
+                    }
+                },
+            }
+        }
+        wikis.push(entry);
+    }
+    let count = |outcome: &str| {
+        wikis
+            .iter()
+            .filter(|entry| entry.outcome == outcome)
+            .count()
+    };
+    let report = ForgeSyncAllReport {
+        version: 1,
+        dry_run,
+        synced: count("synced"),
+        skipped: count("skipped"),
+        failed: count("failed"),
+        wikis,
+    };
+    if cli.output == OutputFormat::Json {
+        print_json(&report)?;
+    } else {
+        for entry in &report.wikis {
+            println!("\nWiki {} — {}", entry.wiki_id, entry.outcome);
+            if let Some(reason) = &entry.reason {
+                println!("  {reason}");
+            }
+            if let Some(single) = &entry.report {
+                print_forge_sync(OutputFormat::Human, single)?;
+            }
+        }
+        println!(
+            "\n{} synced, {} skipped, {} failed",
+            report.synced, report.skipped, report.failed
+        );
+    }
+    if report.failed > 0 {
+        return Err(CliError::operation(format!(
+            "{} of {} vaults failed; the others were not affected",
+            report.failed,
+            report.wikis.len()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(not(feature = "web"))]
@@ -4216,6 +4372,7 @@ fn handle_forge_sync(
     _cli: &Cli,
     _selected_paths: &VaultPaths,
     _wiki: Option<&str>,
+    _all_wikis: bool,
     _target: &crate::SyncTargetArgs,
     _dry_run: bool,
 ) -> Result<(), CliError> {

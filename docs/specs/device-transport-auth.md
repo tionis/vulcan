@@ -2,9 +2,9 @@
 
 Status: proposed design for Roadmap 12.21. Slice 12.21.1 (transport binding), the registration
 records of 12.21.2 (self-registration, placeholders, revoke, unregister, listing), and the Forgejo
-adapter with `forge sync` of 12.21.3 are implemented; the fleet view is not. Two Forgejo questions
+adapter with `forge sync` of 12.21.3, and the fleet view of 12.21.4 are implemented. Two Forgejo questions
 remain open for a real run: a key already registered as a user SSH key, and pushing the hidden
-`__vulcan-sync` refs under branch protection. This design is independent of the key-management registry in `key-management.md`
+`__vulcan-sync` refs under branch protection. The fleet view of 12.21.4 is implemented. This design is independent of the key-management registry in `key-management.md`
 (12.17). It builds on `device-identity.md` and `device-key-custody.md` and resolves their deferred
 "explicit Git/SSH transport adapter" item.
 
@@ -254,11 +254,19 @@ them forbid one key as a deploy key on many repositories; the adapter must surfa
 
 ## 4. Fleet view
 
-`vulcan device show` is vault-independent. Extend the installation inventory with a per-vault
-projection of transport state (not bound, usable, key unavailable) and this device's registration
-status, kept separate from backup and recovery state. For administrators, `devices list --all-wikis`
-and `forge sync --all-wikis` iterate configured vaults with independent forge credentials and results;
-one vault's failure never affects another. Neither view treats one vault's registrations as meaning
+`vulcan device show` is vault-independent. The installation inventory (`vulcan devices list`) already
+iterates every registered Git vault and embeds each vault's `sync devices list` report, including its
+registrations. It now also reports, per vault and separate from backup and recovery state:
+
+- `transport`: not bound, usable, or key unavailable, a local read with no remote contact; and
+- `this_device_registration`: `not_registered` (the remote was observed and holds no record),
+  `placeholder`, `registered`, `revoked`, or `unknown` (the remote was not observed and no mirrored
+  copy exists, as with `--offline`).
+
+For administrators, `forge sync --all-wikis` iterates the registered Git vaults that have forge
+settings. Each vault uses its own settings, token variable, permission profile, and result; vaults
+without settings are skipped; one vault's failure never affects another, though the command then
+exits non-zero. Neither view treats one vault's registrations, binding, or forge state as meaning
 anything in another, and offline mode contacts no remote.
 
 ## Replacement and retirement

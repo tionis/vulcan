@@ -12,6 +12,7 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
         .expect("vulcan binary")
         .current_dir(root)
         .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
         .args(args)

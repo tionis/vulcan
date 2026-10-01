@@ -320,8 +320,12 @@ fn doctor_git_vault_with_optional_state(
     profile: SyncContentProfile,
     unattended: bool,
 ) -> SyncDoctorReport {
-    let engine =
-        crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout);
+    let base_engine = vulcan_sync::GitCliEngine::default();
+    let engine = match state_store {
+        Some(state) => crate::sync_transport::apply_transport_with_state(base_engine, paths, state),
+        None => crate::sync_transport::apply_transport(base_engine, paths),
+    }
+    .with_command_timeout(options.command_timeout);
     let (effective_options, policy_severity, policy_detail) =
         configured_options_for_doctor_profile(paths, options, profile);
     let options = &effective_options;
@@ -1164,7 +1168,12 @@ pub fn sync_git_vault_with_profile(
     let state_store = SyncStateStore::user_default()?;
     let mut observer = vulcan_sync::IgnoreGitSyncProgress;
     sync_git_vault_with_profile_and_observer_and_engine(
-        &crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout),
+        &crate::sync_transport::apply_transport_with_state(
+            vulcan_sync::GitCliEngine::default(),
+            paths,
+            &state_store,
+        )
+        .with_command_timeout(options.command_timeout),
         paths,
         options,
         &state_store,
@@ -1195,8 +1204,12 @@ pub fn sync_git_vault_with_profile_and_progress(
     profile: SyncContentProfile,
 ) -> Result<VaultSyncReport, AppError> {
     let state_store = SyncStateStore::user_default()?;
-    let engine =
-        crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout);
+    let engine = crate::sync_transport::apply_transport_with_state(
+        vulcan_sync::GitCliEngine::default(),
+        paths,
+        &state_store,
+    )
+    .with_command_timeout(options.command_timeout);
     sync_git_vault_with_profile_and_observer_and_engine(
         &engine,
         paths,
@@ -1244,8 +1257,12 @@ pub fn sync_git_vault_with_observer(
     cancellation: &SyncCancellationToken,
     delegate: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
-    let engine =
-        crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout);
+    let engine = crate::sync_transport::apply_transport_with_state(
+        vulcan_sync::GitCliEngine::default(),
+        paths,
+        state_store,
+    )
+    .with_command_timeout(options.command_timeout);
     sync_git_vault_with_observer_and_engine(
         &engine,
         paths,
@@ -3551,6 +3568,79 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &mut GitTreeAnalysisCache::default()
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_bound_transport_failure_still_captures_local_bytes_first() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "ssh://git@forge.invalid/owner/vault.git",
+            ],
+        );
+        fs::write(vault.join("Home.md"), "initial\n").expect("note");
+        git(&vault, &["add", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        let paths = VaultPaths::new(&vault);
+        let state_store = SyncStateStore::at(temporary.path().join("state/sync/repositories"));
+        state_store
+            .load_or_create_device_id(true)
+            .expect("identity is created");
+        crate::sync_transport::bind_transport_with_store(
+            &paths,
+            &state_store,
+            state_store.identity(),
+            "origin",
+            false,
+            false,
+            Path::new("/usr/bin/vulcan"),
+        )
+        .expect("bind");
+        // The device key becomes unavailable after binding.
+        fs::remove_file(state_store.identity().private_key_path().expect("key path"))
+            .expect("remove private key");
+        fs::write(vault.join("Draft.md"), "unsaved local work\n").expect("draft");
+
+        let error =
+            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &state_store)
+                .expect_err("the bound transport cannot authenticate");
+        assert!(
+            error
+                .to_string()
+                .contains("device-key Git transport unavailable"),
+            "{error}"
+        );
+
+        // Local bytes were captured under a local ref before any network use.
+        let refs = git_stdout(
+            &vault,
+            &["for-each-ref", "--format=%(refname)", "refs/vulcan"],
+        );
+        let preserved = refs.lines().any(|reference| {
+            git_stdout(&vault, &["ls-tree", "-r", "--name-only", reference])
+                .lines()
+                .any(|path| path == "Draft.md")
+        });
+        assert!(
+            preserved,
+            "no local ref preserved Draft.md; refs were:\n{refs}"
+        );
+        assert_eq!(
+            fs::read_to_string(vault.join("Draft.md")).expect("draft survives"),
+            "unsaved local work\n"
+        );
     }
 
     #[test]

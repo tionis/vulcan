@@ -145,6 +145,7 @@ fn run(root: &Path, token: Option<&str>, args: &[&str]) -> std::process::Output 
     command
         .current_dir(root)
         .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env_remove("FORGE_TOKEN");
@@ -353,4 +354,204 @@ fn walk(directory: &Path) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+fn extra_vault(base: &Path, name: &str, remote: &Path) -> PathBuf {
+    let vault = base.join(name);
+    fs::create_dir_all(&vault).expect("vault");
+    git(
+        &vault,
+        &["-c", "init.defaultBranch=main", "init", "--quiet"],
+    );
+    git(&vault, &["config", "user.name", "Test"]);
+    git(&vault, &["config", "user.email", "test@example.invalid"]);
+    git(
+        &vault,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    fs::write(vault.join("Home.md"), "note\n").unwrap();
+    git(&vault, &["add", "Home.md"]);
+    git(&vault, &["commit", "--quiet", "-m", "initial"]);
+    vault
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One ordered fleet scenario reads best unbroken.
+fn fleet_view_and_all_wikis_keep_every_vault_independent() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let admin = root.join("admin");
+    let forge = serve();
+    let mut vaults = Vec::new();
+    for name in ["alpha", "beta", "gamma"] {
+        let remote = root.join(format!("{name}.git"));
+        git(
+            root,
+            &["init", "--bare", "--quiet", remote.to_str().unwrap()],
+        );
+        vaults.push((name, extra_vault(&admin, name, &remote)));
+    }
+    let run_admin = |token: Option<&str>, args: &[&str]| run(&admin, token, args);
+    for (name, vault) in &vaults {
+        let added = run_admin(None, &["vault", "add", name, vault.to_str().unwrap()]);
+        assert!(
+            added.status.success(),
+            "{}",
+            String::from_utf8_lossy(&added.stderr)
+        );
+    }
+    // alpha points at the repository the fake forge serves; beta at one it does not.
+    let set = |wiki: &str, repo: &str| {
+        json(&run_admin(
+            None,
+            &[
+                "--output",
+                "json",
+                "sync",
+                "forge",
+                "set",
+                "--wiki",
+                wiki,
+                "--url",
+                &forge.url,
+                "--repo",
+                repo,
+                "--token-env",
+                "FORGE_TOKEN",
+            ],
+        ));
+    };
+    set("alpha", "owner/vault");
+    set("beta", "owner/missing");
+
+    // A device registers in alpha only.
+    let device = root.join("device");
+    json(&run(&device, None, &["device", "init", "--output", "json"]));
+    let public = json(&run(
+        &device,
+        None,
+        &["device", "public-key", "--output", "json"],
+    ));
+    let key_file = root.join("device.pub");
+    fs::write(&key_file, public["public_key"].as_str().unwrap()).unwrap();
+    json(&run_admin(
+        None,
+        &[
+            "--output",
+            "json",
+            "sync",
+            "devices",
+            "register",
+            "--wiki",
+            "alpha",
+            "--public-key",
+            key_file.to_str().unwrap(),
+        ],
+    ));
+
+    // `--all-wikis` and `--wiki` are mutually exclusive.
+    assert!(!run_admin(
+        Some(TOKEN),
+        &["sync", "forge", "sync", "--all-wikis", "--wiki", "alpha"]
+    )
+    .status
+    .success());
+
+    // beta fails, gamma is skipped, alpha still succeeds: results are independent.
+    let output = run_admin(
+        Some(TOKEN),
+        &["--output", "json", "sync", "forge", "sync", "--all-wikis"],
+    );
+    assert!(
+        !output.status.success(),
+        "a failed vault makes the command fail"
+    );
+    // The report comes first; the failure is then reported as a second document.
+    let report: Value = serde_json::Deserializer::from_slice(&output.stdout)
+        .into_iter::<Value>()
+        .next()
+        .expect("report is printed even on failure")
+        .expect("report is valid JSON");
+    assert_eq!(
+        (
+            report["synced"].as_u64(),
+            report["skipped"].as_u64(),
+            report["failed"].as_u64()
+        ),
+        (Some(1), Some(1), Some(1))
+    );
+    let outcome = |wiki: &str| {
+        report["wikis"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["wiki_id"] == wiki)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(outcome("alpha")["outcome"], "synced");
+    assert_eq!(outcome("alpha")["report"]["applied"], 1);
+    assert_eq!(outcome("beta")["outcome"], "failed");
+    assert!(outcome("beta")["reason"].as_str().unwrap().contains("404"));
+    assert_eq!(outcome("gamma")["outcome"], "skipped");
+    assert_eq!(forge.keys.lock().unwrap().len(), 1);
+
+    // Offline fleet view: no remote is asked, so the device's own state is unknown.
+    let offline = json(&run_admin(
+        None,
+        &["--output", "json", "devices", "list", "--offline"],
+    ));
+    let by_wiki = |report: &Value, wiki: &str| {
+        report["vaults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["wiki_id"] == wiki)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        by_wiki(&offline, "alpha")["transport"]["state"],
+        "not_bound"
+    );
+    assert_eq!(
+        by_wiki(&offline, "alpha")["this_device_registration"],
+        "unknown"
+    );
+
+    // After the admin device itself syncs alpha, only alpha shows it as registered.
+    json(&run_admin(None, &["device", "init", "--output", "json"]));
+    json(&run_admin(
+        None,
+        &[
+            "--vault",
+            vaults[0].1.to_str().unwrap(),
+            "--output",
+            "json",
+            "sync",
+            "run",
+        ],
+    ));
+    let online = json(&run_admin(None, &["--output", "json", "devices", "list"]));
+    assert_eq!(
+        by_wiki(&online, "alpha")["this_device_registration"],
+        "registered"
+    );
+    assert_eq!(
+        by_wiki(&online, "beta")["this_device_registration"],
+        "not_registered"
+    );
+    assert_eq!(
+        by_wiki(&online, "gamma")["this_device_registration"],
+        "not_registered"
+    );
+    assert_eq!(
+        by_wiki(&online, "alpha")["sync_inventory"]["registrations"]["count"],
+        2,
+        "alpha lists the placeholder and this device; no other vault's records"
+    );
+    assert_eq!(
+        by_wiki(&online, "beta")["sync_inventory"]["registrations"]["count"],
+        0
+    );
 }

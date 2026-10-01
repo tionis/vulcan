@@ -176,6 +176,17 @@ pub fn git_engine(paths: &VaultPaths) -> GitCliEngine {
     apply_transport(GitCliEngine::default(), paths)
 }
 
+/// Layers the vault's transport binding from an explicit state store, so a sync
+/// that was given a store derives its transport from that same store.
+#[must_use]
+pub fn apply_transport_with_state(
+    engine: GitCliEngine,
+    paths: &VaultPaths,
+    state: &SyncStateStore,
+) -> GitCliEngine {
+    git_engine_with_store(engine, paths, state, Some(state.identity()))
+}
+
 /// Layers the vault's transport binding, if any, onto an existing engine.
 #[must_use]
 pub fn apply_transport(engine: GitCliEngine, paths: &VaultPaths) -> GitCliEngine {
@@ -277,7 +288,7 @@ pub fn bind_transport(
     )
 }
 
-fn bind_transport_with_store(
+pub(crate) fn bind_transport_with_store(
     paths: &VaultPaths,
     state: &SyncStateStore,
     store: &DeviceIdentityStore,

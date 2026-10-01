@@ -10,6 +10,8 @@ use vulcan_app::sync::{GitRefName, GitRemote};
 use vulcan_app::sync_devices::{
     list_sync_device_backups_with_observation, SyncDeviceListReport, SyncDeviceOptions,
 };
+use vulcan_app::sync_registration::{RegistrationListReport, ThisDeviceRegistration};
+use vulcan_app::sync_transport::{transport_status, GitTransportState, GitTransportStatus};
 use vulcan_core::permissions::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard,
 };
@@ -51,6 +53,13 @@ struct VaultInventory {
     detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_inventory: Option<SyncDeviceListReport>,
+    /// Device-local Git transport binding; a local read with no remote contact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport: Option<GitTransportStatus>,
+    /// This device's registration in this vault's remote; separate from, and
+    /// never implying, access, trust, or any other vault's state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    this_device_registration: Option<ThisDeviceRegistration>,
 }
 
 pub(crate) fn handle_devices_command(cli: &Cli, command: &DevicesCommand) -> Result<(), CliError> {
@@ -138,6 +147,7 @@ fn inspect_registered_vault(
             Some("local sync inventory was denied by the active path permissions".to_string());
         return entry;
     }
+    entry.transport = transport_status(&paths).ok();
     match list_sync_device_backups_with_observation(
         &paths,
         &default_sync_device_options(),
@@ -152,6 +162,10 @@ fn inspect_registered_vault(
             } else {
                 "current_remote_observation_attempt"
             };
+            entry.this_device_registration = report
+                .registrations
+                .as_ref()
+                .map(RegistrationListReport::this_device);
             entry.sync_inventory = Some(report);
         }
         Err(error) => {
@@ -179,6 +193,8 @@ fn new_vault_inventory(registration: &vulcan_daemon::registry::WikiRegistration)
         remote_freshness: "not_observed",
         detail: None,
         sync_inventory: None,
+        transport: None,
+        this_device_registration: None,
     }
 }
 
@@ -201,6 +217,32 @@ fn sanitize_inventory_error(error: impl std::fmt::Display) -> String {
     }
 }
 
+/// Per-vault transport and this device's registration, each local to the vault.
+fn print_fleet_state(vault: &VaultInventory) {
+    if let Some(transport) = &vault.transport {
+        match transport.state {
+            GitTransportState::NotBound => println!("  Git transport: not bound (ambient SSH)"),
+            GitTransportState::Usable => println!("  Git transport: bound to the device key"),
+            GitTransportState::DeviceKeyUnavailable => println!(
+                "  Git transport: bound, but the device key is unavailable ({})",
+                transport.diagnostic.as_deref().unwrap_or("unknown reason")
+            ),
+        }
+    }
+    if let Some(registration) = vault.this_device_registration {
+        println!(
+            "  This device's registration: {}",
+            match registration {
+                ThisDeviceRegistration::NotRegistered => "not registered",
+                ThisDeviceRegistration::Placeholder => "placeholder (not claimed yet)",
+                ThisDeviceRegistration::Registered => "registered",
+                ThisDeviceRegistration::Revoked => "revoked",
+                ThisDeviceRegistration::Unknown => "unknown (remote not observed)",
+            }
+        );
+    }
+}
+
 fn print_inventory(
     output: OutputFormat,
     report: &InstallationDeviceInventory,
@@ -220,6 +262,7 @@ fn print_inventory(
         if let Some(detail) = &vault.detail {
             println!("  {detail}");
         }
+        print_fleet_state(vault);
         if let Some(inventory) = &vault.sync_inventory {
             println!(
                 "  This device: {}",

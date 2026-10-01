@@ -552,6 +552,39 @@ pub struct RegistrationListReport {
     pub rejected: Vec<RejectedRegistration>,
 }
 
+/// This device's own registration as seen in one listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThisDeviceRegistration {
+    /// The remote was observed and holds no record for this device.
+    NotRegistered,
+    Placeholder,
+    Registered,
+    Revoked,
+    /// The remote was not observed and no mirrored copy exists.
+    Unknown,
+}
+
+impl RegistrationListReport {
+    /// Summarizes this device's record. The listing's `observation` says how
+    /// fresh it is; a mirrored copy answers when the remote was not asked.
+    #[must_use]
+    pub fn this_device(&self) -> ThisDeviceRegistration {
+        if let Some(entry) = self.registrations.iter().find(|entry| entry.current_device) {
+            return match entry.status {
+                RegistrationStatus::Placeholder => ThisDeviceRegistration::Placeholder,
+                RegistrationStatus::Registered => ThisDeviceRegistration::Registered,
+                RegistrationStatus::Revoked => ThisDeviceRegistration::Revoked,
+            };
+        }
+        if self.observation == RegistrationObservation::Observed {
+            ThisDeviceRegistration::NotRegistered
+        } else {
+            ThisDeviceRegistration::Unknown
+        }
+    }
+}
+
 /// Lists registrations. With `observe_remote` false, only the last fetched
 /// copies are read and no remote is contacted.
 pub fn list_registrations(
