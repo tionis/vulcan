@@ -421,6 +421,33 @@ pub trait GitEngine: Send + Sync {
         prefix: &GitRefName,
     ) -> Result<Vec<GitReference>, GitEngineError>;
 
+    /// Observes `reference` and every ref beneath `prefix` in one remote trip.
+    ///
+    /// The exact ref is strict, like [`GitEngine::remote_ref`]. The prefixed
+    /// refs are best effort: when they cannot be listed or parsed the second
+    /// value is `None`, so this namespace can never fail an ordinary sync.
+    fn remote_ref_with_prefix(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        reference: &GitRefName,
+        prefix: &GitRefName,
+    ) -> Result<(Option<GitOid>, Option<Vec<GitReference>>), GitEngineError>;
+
+    /// Fetches `source` into `destination` and, in the same trip, mirrors every
+    /// remote ref beneath `remote_prefix` into `local_prefix`, pruning mirrors
+    /// whose remote ref vanished. Returns the fetched tip and the mirrored refs
+    /// under their remote names. If the combined fetch fails, it retries the
+    /// plain fetch and reports no mirror (`None`), so mirroring is best effort.
+    fn fetch_ref_with_mirror(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        source: &GitRefName,
+        destination: &GitRefName,
+        mirror: &GitRefMirror<'_>,
+    ) -> Result<(GitOid, Option<Vec<GitReference>>), GitEngineError>;
+
     fn fetch_ref(
         &self,
         repository: &GitRepository,
@@ -1499,6 +1526,13 @@ pub enum CommitSigning {
     Key(String),
 }
 
+/// A remote namespace mirrored into a local one by [`GitEngine::fetch_ref_with_mirror`].
+#[derive(Debug, Clone, Copy)]
+pub struct GitRefMirror<'a> {
+    pub remote_prefix: &'a GitRefName,
+    pub local_prefix: &'a GitRefName,
+}
+
 #[derive(Debug, Clone)]
 pub struct GitCliEngine {
     executable: PathBuf,
@@ -1506,11 +1540,15 @@ pub struct GitCliEngine {
     installation: Arc<OnceLock<GitInstallation>>,
     pending_requirements: Arc<Mutex<BTreeMap<PathBuf, GitRequirementsCache>>>,
     subprocess_count: Arc<AtomicU64>,
+    /// Exact `GIT_SSH_COMMAND` for every spawned Git process. Never logged.
+    ssh_command: Option<Arc<str>>,
 }
 
 impl PartialEq for GitCliEngine {
     fn eq(&self, other: &Self) -> bool {
-        self.executable == other.executable && self.command_timeout == other.command_timeout
+        self.executable == other.executable
+            && self.command_timeout == other.command_timeout
+            && self.ssh_command == other.ssh_command
     }
 }
 
@@ -1531,7 +1569,17 @@ impl GitCliEngine {
             installation: Arc::new(OnceLock::new()),
             pending_requirements: Arc::new(Mutex::new(BTreeMap::new())),
             subprocess_count: Arc::new(AtomicU64::new(0)),
+            ssh_command: None,
         }
+    }
+
+    /// Authenticates every spawned Git process with this exact SSH command,
+    /// overriding any ambient `GIT_SSH`/`GIT_SSH_COMMAND` and repository
+    /// `core.sshCommand`. The value is a shell command line as Git expects.
+    #[must_use]
+    pub fn with_ssh_command(mut self, command: impl Into<String>) -> Self {
+        self.ssh_command = Some(Arc::from(command.into()));
+        self
     }
 
     #[must_use]
@@ -1695,6 +1743,11 @@ impl GitCliEngine {
             .env("LC_ALL", "C")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0");
+        if let Some(ssh_command) = &self.ssh_command {
+            command
+                .env_remove("GIT_SSH")
+                .env("GIT_SSH_COMMAND", &**ssh_command);
+        }
         command
     }
 
@@ -3268,6 +3321,101 @@ impl GitEngine for GitCliEngine {
             .arg(pattern);
         let output = ensure_success("list remote Git refs", self.execute(command)?)?;
         parse_remote_reference_list(&output.stdout, prefix)
+    }
+
+    fn remote_ref_with_prefix(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        reference: &GitRefName,
+        prefix: &GitRefName,
+    ) -> Result<(Option<GitOid>, Option<Vec<GitReference>>), GitEngineError> {
+        let pattern = format!("{}/*", prefix.as_str().trim_end_matches('/'));
+        let mut command = self.repository_command(repository);
+        command
+            .args(["ls-remote", "--refs", "--"])
+            .arg(remote.as_str())
+            .arg(reference.as_str())
+            .arg(pattern);
+        let output = ensure_success("query remote Git refs", self.execute(command)?)?;
+        let stdout = decode_stdout("query remote Git refs", output.stdout)?;
+        let required_prefix = format!("{}/", prefix.as_str().trim_end_matches('/'));
+        let mut live = None;
+        let mut namespaced = Vec::new();
+        for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+            let (oid, name) =
+                line.split_once('\t')
+                    .ok_or_else(|| GitEngineError::InvalidOutput {
+                        operation: "query remote Git refs",
+                        detail: format!("expected `<oid>\\t<ref>`, received `{line}`"),
+                    })?;
+            if name == reference.as_str() {
+                if live.replace(GitOid::parse(oid)?).is_some() {
+                    return Err(GitEngineError::InvalidOutput {
+                        operation: "query remote Git refs",
+                        detail: format!("`{reference}` was returned more than once"),
+                    });
+                }
+            } else if name.starts_with(&required_prefix) {
+                namespaced.push(line);
+            } else {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: "query remote Git refs",
+                    detail: format!("expected `{reference}`, received `{name}`"),
+                });
+            }
+        }
+        let listed = parse_remote_reference_list(namespaced.join("\n").as_bytes(), prefix).ok();
+        Ok((live, listed))
+    }
+
+    fn fetch_ref_with_mirror(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        source: &GitRefName,
+        destination: &GitRefName,
+        mirror: &GitRefMirror<'_>,
+    ) -> Result<(GitOid, Option<Vec<GitReference>>), GitEngineError> {
+        let remote_prefix = mirror.remote_prefix.as_str().trim_end_matches('/');
+        let local_prefix = mirror.local_prefix.as_str().trim_end_matches('/');
+        let mut command = self.repository_command(repository);
+        command
+            .args(["fetch", "--no-tags", "--force", "--prune", "--"])
+            .arg(remote.as_str())
+            .arg(format!("+{}:{}", source.as_str(), destination.as_str()))
+            .arg(format!("+{remote_prefix}/*:{local_prefix}/*"));
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            // The mirror is only a convenience: retry the plain fetch so a
+            // problem in that namespace never fails the sync.
+            let tip = self.fetch_ref(repository, remote, source, destination)?;
+            return Ok((tip, None));
+        }
+        let tip = self.read_ref(repository, destination)?.ok_or_else(|| {
+            GitEngineError::InvalidOutput {
+                operation: "fetch the live sync ref",
+                detail: format!("Git did not update `{destination}`"),
+            }
+        })?;
+        let mirrored = self
+            .list_refs(repository, mirror.local_prefix)
+            .ok()
+            .and_then(|refs| {
+                refs.into_iter()
+                    .map(|reference| {
+                        let name = reference
+                            .name
+                            .as_str()
+                            .strip_prefix(&format!("{local_prefix}/"))?;
+                        Some(GitReference {
+                            name: GitRefName::parse(format!("{remote_prefix}/{name}")).ok()?,
+                            target: reference.target,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+        Ok((tip, mirrored))
     }
 
     fn fetch_ref(
@@ -5779,6 +5927,24 @@ fn bounded_lossy(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ssh_command_overrides_ambient_git_ssh_environment() {
+        let plain = GitCliEngine::default().command();
+        assert!(plain
+            .get_envs()
+            .all(|(key, _)| key != "GIT_SSH_COMMAND" && key != "GIT_SSH"));
+
+        let bound = GitCliEngine::default().with_ssh_command("ssh -i '/k' -o IdentitiesOnly=yes");
+        let command = bound.command();
+        let envs = command.get_envs().collect::<Vec<_>>();
+        assert!(envs.contains(&(
+            OsStr::new("GIT_SSH_COMMAND"),
+            Some(OsStr::new("ssh -i '/k' -o IdentitiesOnly=yes"))
+        )));
+        assert!(envs.contains(&(OsStr::new("GIT_SSH"), None)));
+        assert_ne!(bound, GitCliEngine::default());
+    }
     use super::*;
     use std::fs;
 
@@ -5879,6 +6045,209 @@ mod tests {
         commit_all(&writer, "base");
         run_git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
         (temporary, remote, writer)
+    }
+
+    const OBSERVED_LIVE: &str = "refs/heads/__vulcan-sync/live";
+    const OBSERVED_REGISTRATIONS: &str = "refs/heads/__vulcan-sync/registrations";
+    const OBSERVED_MIRROR: &str = "refs/vulcan/registrations";
+
+    fn registration_names(references: &[GitReference]) -> Vec<String> {
+        references
+            .iter()
+            .map(|reference| reference.name.as_str().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn one_listing_returns_the_live_tip_and_only_registration_refs() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let origin = GitRemote::parse("origin").expect("remote");
+        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
+        let prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
+
+        let (tip, registrations) = engine
+            .remote_ref_with_prefix(&repository, &origin, &live, &prefix)
+            .expect("empty observation");
+        assert_eq!(tip, None);
+        assert_eq!(registrations, Some(Vec::new()));
+
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:{OBSERVED_LIVE}"),
+                &format!("HEAD:{OBSERVED_REGISTRATIONS}/b"),
+                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
+                "HEAD:refs/heads/__vulcan-sync/other/c",
+            ],
+        );
+        let head = GitOid::parse(run_git_capture(&writer, &["rev-parse", "HEAD"])).expect("head");
+        let (tip, registrations) = engine
+            .remote_ref_with_prefix(&repository, &origin, &live, &prefix)
+            .expect("observation");
+        assert_eq!(tip, Some(head));
+        assert_eq!(
+            registration_names(&registrations.expect("registrations observed")),
+            [
+                format!("{OBSERVED_REGISTRATIONS}/a"),
+                format!("{OBSERVED_REGISTRATIONS}/b")
+            ]
+        );
+    }
+
+    #[test]
+    fn mirror_fetch_updates_prunes_and_reports_remote_names() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let origin = GitRemote::parse("origin").expect("remote");
+        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
+        let fetched = GitRefName::parse("refs/vulcan/test/fetched").expect("fetched ref");
+        let remote_prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
+        let local_prefix = GitRefName::parse(OBSERVED_MIRROR).expect("mirror");
+        let mirror = GitRefMirror {
+            remote_prefix: &remote_prefix,
+            local_prefix: &local_prefix,
+        };
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:{OBSERVED_LIVE}"),
+                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
+                &format!("HEAD:{OBSERVED_REGISTRATIONS}/b"),
+            ],
+        );
+
+        let (tip, mirrored) = engine
+            .fetch_ref_with_mirror(&repository, &origin, &live, &fetched, &mirror)
+            .expect("combined fetch");
+        assert_eq!(
+            engine.read_ref(&repository, &fetched).expect("fetched"),
+            Some(tip)
+        );
+        assert_eq!(
+            registration_names(&mirrored.expect("mirror observed")),
+            [
+                format!("{OBSERVED_REGISTRATIONS}/a"),
+                format!("{OBSERVED_REGISTRATIONS}/b")
+            ]
+        );
+        assert!(
+            run_git_capture(&writer, &["rev-parse", &format!("{OBSERVED_MIRROR}/a")]).len() >= 40
+        );
+
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!(":{OBSERVED_REGISTRATIONS}/b"),
+            ],
+        );
+        let (_, mirrored) = engine
+            .fetch_ref_with_mirror(&repository, &origin, &live, &fetched, &mirror)
+            .expect("second combined fetch");
+        assert_eq!(
+            registration_names(&mirrored.expect("mirror observed")),
+            [format!("{OBSERVED_REGISTRATIONS}/a")]
+        );
+        assert_eq!(
+            engine
+                .read_ref(
+                    &repository,
+                    &GitRefName::parse(format!("{OBSERVED_MIRROR}/b")).expect("ref")
+                )
+                .expect("read pruned mirror"),
+            None,
+            "a vanished remote registration is pruned locally"
+        );
+    }
+
+    #[test]
+    fn a_broken_mirror_namespace_never_fails_the_live_fetch() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let origin = GitRemote::parse("origin").expect("remote");
+        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
+        let fetched = GitRefName::parse("refs/vulcan/test/fetched").expect("fetched ref");
+        let remote_prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
+        let local_prefix = GitRefName::parse(OBSERVED_MIRROR).expect("mirror");
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:{OBSERVED_LIVE}"),
+                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
+            ],
+        );
+        // A ref named exactly like the mirror root blocks every mirrored ref
+        // beneath it (directory/file conflict), failing the combined fetch.
+        run_git(&writer, &["update-ref", OBSERVED_MIRROR, "HEAD"]);
+
+        let (tip, mirrored) = engine
+            .fetch_ref_with_mirror(
+                &repository,
+                &origin,
+                &live,
+                &fetched,
+                &GitRefMirror {
+                    remote_prefix: &remote_prefix,
+                    local_prefix: &local_prefix,
+                },
+            )
+            .expect("the plain live fetch still succeeds");
+        assert_eq!(mirrored, None, "the mirror is reported unobserved");
+        assert_eq!(
+            engine.read_ref(&repository, &fetched).expect("fetched"),
+            Some(tip)
+        );
+    }
+
+    #[test]
+    fn a_missing_live_ref_is_still_reported_by_the_mirror_fetch() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let origin = GitRemote::parse("origin").expect("remote");
+        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
+        let remote_prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
+        let local_prefix = GitRefName::parse(OBSERVED_MIRROR).expect("mirror");
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
+            ],
+        );
+        let error = engine
+            .fetch_ref_with_mirror(
+                &repository,
+                &origin,
+                &live,
+                &GitRefName::parse("refs/vulcan/test/fetched").expect("fetched ref"),
+                &GitRefMirror {
+                    remote_prefix: &remote_prefix,
+                    local_prefix: &local_prefix,
+                },
+            )
+            .expect_err("no live ref");
+        assert!(
+            matches!(error, GitEngineError::RemoteRefMissing { .. }),
+            "{error:?}"
+        );
     }
 
     fn advance_remote(temporary: &tempfile::TempDir, remote: &Path, name: &str, contents: &str) {

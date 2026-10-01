@@ -433,13 +433,13 @@ pub use cli::{
     RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
     SearchBackendArg, SearchMode, SearchSortArg, SemanticGroupingArg, SiteCommand, SkillCommand,
     SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg,
-    SyncDeviceCommand, SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs, TagSortArg,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
-    TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateNetworkArg,
-    UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
+    SyncDeviceCommand, SyncForgeCommand, SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs,
+    SyncTransportCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand,
+    ToolInitTemplateArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand,
+    UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
 };
 
 #[must_use]

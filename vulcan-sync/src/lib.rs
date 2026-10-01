@@ -35,11 +35,11 @@ pub use git::{
     GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
     GitMergeResolutionRequest, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject,
     GitPlatformPolicy, GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
-    GitRefName, GitRefUpdateResult, GitReference, GitRemote, GitRepository, GitRepositoryLayout,
-    GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
-    GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
-    GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome, PullFastForward,
-    PullRebase, RebaseOutcome,
+    GitRefMirror, GitRefName, GitRefUpdateResult, GitReference, GitRemote, GitRepository,
+    GitRepositoryLayout, GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath,
+    GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath,
+    GitTreeApplyPlan, GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome,
+    PullFastForward, PullRebase, RebaseOutcome,
 };
 pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{
@@ -63,9 +63,10 @@ pub use refs::{
     conflict_resolved_ref, detached_recovery_ref, device_recovery_live_ref, device_recovery_ref,
     local_epoch_ref, local_recovery_ref_namespaces, local_sync_ref,
     remote_conflict_proposal_resolution_ref, remote_conflict_ref, remote_device_ref,
-    remote_epoch_ref, semantic_proposal_ref, sync_profile_key, DEFAULT_REMOTE_LIVE_REF,
-    LOCAL_RECOVERY_REF_NAMESPACES, LOCAL_VULCAN_REF_ROOT, REMOTE_CONFLICT_BRANCH_ROOT,
-    REMOTE_DEVICE_BRANCH_ROOT, REMOTE_EPOCH_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
+    remote_epoch_ref, remote_registration_ref, semantic_proposal_ref, sync_profile_key,
+    DEFAULT_REMOTE_LIVE_REF, LOCAL_RECOVERY_REF_NAMESPACES, LOCAL_REGISTRATION_MIRROR_ROOT,
+    LOCAL_VULCAN_REF_ROOT, REMOTE_CONFLICT_BRANCH_ROOT, REMOTE_DEVICE_BRANCH_ROOT,
+    REMOTE_EPOCH_BRANCH_ROOT, REMOTE_REGISTRATION_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
 };
 pub use sync::{
     classify_git_sync_error, find_git_live_epoch, git_live_epoch_id, sync_git_once,

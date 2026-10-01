@@ -30,6 +30,7 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
                 .map_err(CliError::operation)?;
             print_device_repair(cli.output, &report)
         }
+        DeviceCommand::SshCommand { args } => run_device_ssh(&store, args),
         DeviceCommand::PublicKey => {
             let public_key = store.public_key().map_err(CliError::operation)?;
             match cli.output {
@@ -146,4 +147,17 @@ fn status_label(status: DeviceIdentityStatus) -> &'static str {
         DeviceIdentityStatus::Degraded => "degraded",
         DeviceIdentityStatus::Invalid => "invalid",
     }
+}
+
+/// Replaces this process with `ssh` using the device key. Git invokes this as
+/// `core.sshCommand`, so stdio is inherited and the exit status is ssh's.
+fn run_device_ssh(identity: &DeviceIdentityStore, args: &[String]) -> Result<(), CliError> {
+    let mut ssh_arguments =
+        vulcan_app::sync_transport::device_ssh_argv(identity).map_err(CliError::operation)?;
+    ssh_arguments.extend(args.iter().cloned());
+    let status = std::process::Command::new("ssh")
+        .args(&ssh_arguments)
+        .status()
+        .map_err(CliError::operation)?;
+    std::process::exit(status.code().unwrap_or(255));
 }

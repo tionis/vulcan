@@ -3,8 +3,8 @@ use crate::editor::open_paths_in_editor;
 use crate::output::print_json;
 use crate::{
     selected_permission_guard, Cli, CliError, OutputFormat, SemanticGroupingArg,
-    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncDeviceCommand,
-    SyncScheduleCommand, SyncSelectionArgs, TermuxNetworkArg,
+    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncDeviceCommand, SyncForgeCommand,
+    SyncScheduleCommand, SyncSelectionArgs, SyncTransportCommand, TermuxNetworkArg,
 };
 use serde::Serialize;
 use std::io::{self, IsTerminal, Read, Write};
@@ -50,6 +50,10 @@ use vulcan_app::sync_proposals::{
 use vulcan_app::sync_proposals::{
     create_and_auto_accept_resolution_proposal, create_resolution_proposal_for_target,
     AutoAcceptResolutionProposalReport, OpenAiCompatibleResolutionProvider,
+};
+use vulcan_app::sync_registration::{
+    register_placeholder, revoke_registration, unregister_registration, RegistrationAction,
+    RegistrationChangeReport, RegistrationListReport, RegistrationObservation, RegistrationStatus,
 };
 use vulcan_app::sync_retention::{
     apply_sync_retention, plan_sync_retention, SyncRetentionApplyReport, SyncRetentionPlanOptions,
@@ -484,6 +488,12 @@ fn handle_non_cycle_sync_command(
     if let SyncCommand::Devices { command } = command {
         return Some(handle_sync_devices(cli, paths, command));
     }
+    if let SyncCommand::Transport { command } = command {
+        return Some(handle_sync_transport(cli, paths, command));
+    }
+    if let SyncCommand::Forge { command } = command {
+        return Some(handle_sync_forge(cli, paths, command));
+    }
     let result = match command {
         SyncCommand::Pause { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run)
@@ -595,6 +605,11 @@ fn handle_non_cycle_sync_command(
         }
         SyncCommand::RetentionPlan { .. } | SyncCommand::RetentionApply { .. } => {
             unreachable!("retention commands are dispatched before the general sync match")
+        }
+        SyncCommand::Transport { .. } | SyncCommand::Forge { .. } => {
+            unreachable!(
+                "transport and forge commands are dispatched before the general sync match"
+            )
         }
     };
     Some(result)
@@ -2747,6 +2762,9 @@ fn handle_sync_devices(
     }
     let (wiki, target) = match command {
         SyncDeviceCommand::List { wiki, target, .. }
+        | SyncDeviceCommand::Register { wiki, target, .. }
+        | SyncDeviceCommand::Revoke { wiki, target, .. }
+        | SyncDeviceCommand::Unregister { wiki, target, .. }
         | SyncDeviceCommand::Fetch { wiki, target, .. }
         | SyncDeviceCommand::Remove { wiki, target, .. } => (wiki.as_deref(), target),
         SyncDeviceCommand::SetName { .. } | SyncDeviceCommand::ClearName { .. } => unreachable!(),
@@ -2762,6 +2780,32 @@ fn handle_sync_devices(
             let report = list_sync_device_backups_with_observation(&paths, &options, !offline)
                 .map_err(CliError::operation)?;
             print_sync_device_list(cli.output, &report)
+        }
+        SyncDeviceCommand::Register {
+            public_key,
+            label,
+            dry_run,
+            ..
+        } => {
+            let text = read_public_key_input(public_key)?;
+            let report =
+                register_placeholder(&paths, &options.remote, &text, label.as_deref(), *dry_run)
+                    .map_err(CliError::operation)?;
+            print_registration_change(cli.output, &report)
+        }
+        SyncDeviceCommand::Revoke {
+            device_id, dry_run, ..
+        } => {
+            let report = revoke_registration(&paths, &options.remote, device_id, *dry_run)
+                .map_err(CliError::operation)?;
+            print_registration_change(cli.output, &report)
+        }
+        SyncDeviceCommand::Unregister {
+            device_id, dry_run, ..
+        } => {
+            let report = unregister_registration(&paths, &options.remote, device_id, *dry_run)
+                .map_err(CliError::operation)?;
+            print_registration_change(cli.output, &report)
         }
         SyncDeviceCommand::Fetch {
             device_id, dry_run, ..
@@ -2889,6 +2933,11 @@ fn print_sync_device_list(
     print_sync_device_local_inventory(report);
     if !report.backups.is_empty() {
         println!("\nRecover another device with: vulcan sync devices fetch <device-id>");
+    }
+    if let Some(registrations) = &report.registrations {
+        print_registrations(registrations);
+    } else if let Some(error) = &report.registrations_error {
+        println!("\nRegistrations unavailable: {error}");
     }
     Ok(())
 }
@@ -3828,4 +3877,412 @@ fn map_network_mode(mode: NetworkNotificationModeArg) -> NetworkNotificationMode
         NetworkNotificationModeArg::Count => NetworkNotificationMode::Count,
         NetworkNotificationModeArg::Duration => NetworkNotificationMode::Duration,
     }
+}
+
+fn transport_paths(paths: &VaultPaths, wiki: Option<&str>) -> Result<VaultPaths, CliError> {
+    let Some(id) = wiki else {
+        return Ok(paths.clone());
+    };
+    let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
+    let registration = registry
+        .show(&WikiId::parse(id).map_err(CliError::operation)?)
+        .map_err(CliError::operation)?
+        .registration;
+    Ok(VaultPaths::new(&registration.path))
+}
+
+fn handle_sync_transport(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &SyncTransportCommand,
+) -> Result<(), CliError> {
+    use vulcan_app::sync_transport::{bind_transport, transport_status, unbind_transport};
+    match command {
+        SyncTransportCommand::Bind {
+            wiki,
+            remote,
+            git_config,
+            dry_run,
+        } => {
+            let paths = transport_paths(paths, wiki.as_deref())?;
+            let report = bind_transport(&paths, remote, *git_config, *dry_run)
+                .map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    let verb = match (report.dry_run, report.changed) {
+                        (_, false) => "already bound",
+                        (true, true) => "would bind",
+                        (false, true) => "bound",
+                    };
+                    println!("{verb} Git transport to device key {}", report.device_id);
+                    if report.git_config_written {
+                        println!("core.sshCommand set for plain git in this repository");
+                    }
+                    Ok(())
+                }
+            }
+        }
+        SyncTransportCommand::Status { wiki } => {
+            let paths = transport_paths(paths, wiki.as_deref())?;
+            let report = transport_status(&paths).map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!("transport: {:?}", report.state);
+                    if let Some(id) = &report.bound_device_id {
+                        println!("device: {id}");
+                    }
+                    println!("core.sshCommand: {:?}", report.git_config);
+                    if let Some(diagnostic) = &report.diagnostic {
+                        println!("note: {diagnostic}");
+                    }
+                    Ok(())
+                }
+            }
+        }
+        SyncTransportCommand::Unbind { wiki, dry_run } => {
+            let paths = transport_paths(paths, wiki.as_deref())?;
+            let report = unbind_transport(&paths, *dry_run).map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if report.was_bound {
+                        println!(
+                            "{} Git transport binding{}",
+                            if report.dry_run {
+                                "would remove"
+                            } else {
+                                "removed"
+                            },
+                            if report.git_config_removed {
+                                " and Vulcan-owned core.sshCommand"
+                            } else {
+                                ""
+                            }
+                        );
+                    } else {
+                        println!("no Git transport binding");
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+fn read_public_key_input(source: &std::path::Path) -> Result<String, CliError> {
+    use std::io::Read;
+    const LIMIT: u64 = 8 * 1024;
+    let mut text = String::new();
+    let read = if source == std::path::Path::new("-") {
+        std::io::stdin().take(LIMIT + 1).read_to_string(&mut text)
+    } else {
+        std::fs::File::open(source).and_then(|file| file.take(LIMIT + 1).read_to_string(&mut text))
+    };
+    read.map_err(CliError::operation)?;
+    if text.len() as u64 > LIMIT {
+        return Err(CliError::operation("public key input is too large"));
+    }
+    Ok(text)
+}
+
+fn print_registration_change(
+    output: OutputFormat,
+    report: &RegistrationChangeReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    let verb = match (report.action, report.dry_run) {
+        (RegistrationAction::Created, true) => "would register",
+        (RegistrationAction::Created, false) => "registered",
+        (RegistrationAction::Updated, true) => "would update",
+        (RegistrationAction::Updated, false) => "updated",
+        (RegistrationAction::Unchanged, _) => "unchanged:",
+        (RegistrationAction::Removed, true) => "would remove",
+        (RegistrationAction::Removed, false) => "removed",
+    };
+    println!("{verb} {}", report.device_id);
+    if let Some(fingerprint) = &report.fingerprint {
+        println!("  Key fingerprint: {fingerprint}");
+    }
+    if let Some(status) = report.status {
+        println!("  Status: {}", registration_status_label(status));
+    }
+    Ok(())
+}
+
+fn registration_status_label(status: RegistrationStatus) -> &'static str {
+    match status {
+        RegistrationStatus::Placeholder => "placeholder (device has not synced yet)",
+        RegistrationStatus::Registered => "registered",
+        RegistrationStatus::Revoked => "revoked",
+    }
+}
+
+fn print_registrations(report: &RegistrationListReport) {
+    println!();
+    match report.observation {
+        RegistrationObservation::Observed => println!("Registrations (remote): {}", report.count),
+        RegistrationObservation::NotRequested => {
+            println!(
+                "Registrations (last fetched copies, --offline): {}",
+                report.count
+            );
+        }
+        RegistrationObservation::Unavailable => println!(
+            "Registrations (remote unavailable; last fetched copies): {}",
+            report.count
+        ),
+    }
+    for entry in &report.registrations {
+        println!(
+            "  {}{} — {}",
+            entry.device_id,
+            if entry.current_device {
+                " (this device)"
+            } else {
+                ""
+            },
+            registration_status_label(entry.status)
+        );
+        if let Some(label) = &entry.label {
+            println!("    Label: {label}");
+        }
+        println!("    Key fingerprint: {}", entry.fingerprint);
+    }
+    for rejected in &report.rejected {
+        println!("  ignored {}: {}", rejected.reference, rejected.reason);
+    }
+}
+
+#[derive(Serialize)]
+struct ForgeShowReport {
+    version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<vulcan_app::sync_forge::ForgeConfig>,
+    /// Whether the configured token variable is currently set; never its value.
+    token_env_set: bool,
+}
+
+fn handle_sync_forge(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    command: &SyncForgeCommand,
+) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::{
+        clear_forge_config, set_forge_config, show_forge_config, ForgeConfig, ForgeKind,
+    };
+    match command {
+        SyncForgeCommand::Set {
+            kind,
+            url,
+            repo,
+            token_env,
+            wiki,
+            dry_run,
+        } => {
+            let paths = transport_paths(selected_paths, wiki.as_deref())?;
+            let kind = match kind {
+                crate::cli::ForgeKindArg::Forgejo => ForgeKind::Forgejo,
+            };
+            let config =
+                ForgeConfig::new(kind, url, repo, token_env).map_err(CliError::operation)?;
+            let report =
+                set_forge_config(&paths, &config, *dry_run).map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "{} forge settings for {} at {}",
+                        match (report.dry_run, report.changed) {
+                            (_, false) => "unchanged:",
+                            (true, true) => "would save",
+                            (false, true) => "saved",
+                        },
+                        config.repo,
+                        config.url
+                    );
+                    println!("Token is read from ${}", config.token_env);
+                    Ok(())
+                }
+            }
+        }
+        SyncForgeCommand::Show { wiki } => {
+            let paths = transport_paths(selected_paths, wiki.as_deref())?;
+            let config = show_forge_config(&paths).map_err(CliError::operation)?;
+            let report = ForgeShowReport {
+                version: 1,
+                token_env_set: config
+                    .as_ref()
+                    .is_some_and(|config| std::env::var_os(&config.token_env).is_some()),
+                config,
+            };
+            match (cli.output, &report.config) {
+                (OutputFormat::Json, _) => print_json(&report),
+                (_, None) => {
+                    println!("No forge is configured. Use `vulcan sync forge set`.");
+                    Ok(())
+                }
+                (_, Some(config)) => {
+                    println!("forgejo {} at {}", config.repo, config.url);
+                    println!(
+                        "Token variable ${}: {}",
+                        config.token_env,
+                        if report.token_env_set {
+                            "set"
+                        } else {
+                            "not set"
+                        }
+                    );
+                    Ok(())
+                }
+            }
+        }
+        SyncForgeCommand::Clear { wiki, dry_run } => {
+            let paths = transport_paths(selected_paths, wiki.as_deref())?;
+            let report = clear_forge_config(&paths, *dry_run).map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "{}",
+                        match (report.dry_run, report.changed) {
+                            (_, false) => "no forge settings were saved",
+                            (true, true) => "would remove the saved forge settings",
+                            (false, true) => "removed the saved forge settings",
+                        }
+                    );
+                    Ok(())
+                }
+            }
+        }
+        SyncForgeCommand::Sync {
+            wiki,
+            target,
+            dry_run,
+        } => handle_forge_sync(cli, selected_paths, wiki.as_deref(), target, *dry_run),
+    }
+}
+
+#[cfg(feature = "web")]
+fn handle_forge_sync(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::{forge_sync, show_forge_config, ForgejoDeployKeys};
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    let config = show_forge_config(&paths)
+        .map_err(CliError::operation)?
+        .ok_or_else(|| {
+            CliError::operation(
+                "no forge is configured for this vault; run `vulcan sync forge set`",
+            )
+        })?;
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration_profile.as_deref());
+    let selection = resolve_permission_profile(&paths, profile).map_err(CliError::operation)?;
+    let guard = ProfilePermissionGuard::new(&paths, selection);
+    guard.check_git().map_err(CliError::operation)?;
+    guard
+        .check_network(&config.url)
+        .map_err(CliError::operation)?;
+    let token = std::env::var(&config.token_env).map_err(|_| {
+        CliError::operation(format!(
+            "forge API token variable `{}` is not set",
+            config.token_env
+        ))
+    })?;
+    let adapter = match config.kind {
+        vulcan_app::sync_forge::ForgeKind::Forgejo => {
+            ForgejoDeployKeys::new(&config, &token, Duration::from_secs(30))
+                .map_err(CliError::operation)?
+        }
+    };
+    let remote = GitRemote::parse(&target.remote).map_err(CliError::operation)?;
+    let report = forge_sync(&paths, &remote, &adapter, &config.repo, dry_run)
+        .map_err(CliError::operation)?;
+    print_forge_sync(cli.output, &report)
+}
+
+#[cfg(not(feature = "web"))]
+fn handle_forge_sync(
+    _cli: &Cli,
+    _selected_paths: &VaultPaths,
+    _wiki: Option<&str>,
+    _target: &crate::SyncTargetArgs,
+    _dry_run: bool,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "this build has no forge support; rebuild with the `web` feature",
+    ))
+}
+
+#[cfg(feature = "web")]
+fn print_forge_sync(
+    output: OutputFormat,
+    report: &vulcan_app::sync_forge::ForgeSyncReport,
+) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::{ForgeSyncAction, ForgeSyncResult};
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Deploy keys for {} {}",
+        report.repo,
+        if report.dry_run { "(dry run)" } else { "" }
+    );
+    if report.entries.is_empty() {
+        println!("No device registrations to install.");
+    }
+    for entry in &report.entries {
+        let action = match (entry.action, entry.result) {
+            (ForgeSyncAction::Add, ForgeSyncResult::Planned) => "would add",
+            (ForgeSyncAction::Add, ForgeSyncResult::Applied) => "added",
+            (ForgeSyncAction::Replace, ForgeSyncResult::Planned) => "would replace",
+            (ForgeSyncAction::Replace, ForgeSyncResult::Applied) => "replaced",
+            (ForgeSyncAction::Remove, ForgeSyncResult::Planned) => "would remove",
+            (ForgeSyncAction::Remove, ForgeSyncResult::Applied) => "removed",
+            (_, ForgeSyncResult::Failed) => "FAILED",
+            (ForgeSyncAction::Present, _) => "present",
+            (ForgeSyncAction::AlreadyAbsent, _) => "already absent",
+            (ForgeSyncAction::ForeignKeyKept, _) => "left alone",
+            _ => "unchanged",
+        };
+        println!("  {action}: {} ({})", entry.device_id, entry.fingerprint);
+        if let Some(detail) = &entry.detail {
+            println!("    {detail}");
+        }
+    }
+    for orphan in &report.orphans {
+        println!(
+            "  orphan (not removed): key {} \"{}\" matches no registration; revoke or unregister the device, or remove it at the forge",
+            orphan.key_id, orphan.title
+        );
+    }
+    if report.foreign_keys > 0 {
+        println!(
+            "{} other deploy key(s) are not managed by Vulcan and were not touched.",
+            report.foreign_keys
+        );
+    }
+    if report.ignored_registrations > 0 {
+        println!(
+            "{} malformed registration(s) were ignored.",
+            report.ignored_registrations
+        );
+    }
+    if report.failed > 0 {
+        println!(
+            "{} key change(s) failed; re-run to converge.",
+            report.failed
+        );
+    }
+    Ok(())
 }

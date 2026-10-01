@@ -3,13 +3,14 @@ use crate::{
     remote_epoch_ref, sync_profile_key, BranchPullConfig, FastForwardOutcome, GitBranchUpstream,
     GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitEngineError,
     GitInstallation, GitOid, GitPathObject, GitPlatformPreflight, GitPlatformProfile,
-    GitPushResult, GitRefName, GitRemote, GitRepository, GitRepositoryRequirements,
-    GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation, MergeBranchOutcome,
-    MergeFileKind, MergePolicy, MergeResolution, PullFastForward, PullRebase, RebaseOutcome,
-    SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict, SyncContext,
-    SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan,
-    SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF,
-    GIT_PLATFORM_PREFLIGHT_VERSION, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
+    GitPushResult, GitRefMirror, GitRefName, GitReference, GitRemote, GitRepository,
+    GitRepositoryRequirements, GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation,
+    MergeBranchOutcome, MergeFileKind, MergePolicy, MergeResolution, PullFastForward, PullRebase,
+    RebaseOutcome, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
+    SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
+    SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
+    DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION, LOCAL_REGISTRATION_MIRROR_ROOT,
+    REMOTE_REGISTRATION_BRANCH_ROOT, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
@@ -552,6 +553,10 @@ pub struct GitSyncReport {
     pub local_snapshot: Option<GitOid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_backup: Option<GitDeviceBackup>,
+    /// Remote device-registration refs seen in the same trip as the live-ref
+    /// observation. `None` means they were not observed; never serialized.
+    #[serde(skip)]
+    pub registration_tips: Option<Vec<GitReference>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_platform_preflight: Option<GitPlatformPreflight>,
     pub accepted: Option<GitOid>,
@@ -712,6 +717,7 @@ impl GitSyncReport {
             local_before: observed.1,
             local_snapshot: None,
             device_backup: None,
+            registration_tips: None,
             local_platform_preflight: None,
             accepted: None,
             accepted_platform_preflight: None,
@@ -2106,30 +2112,50 @@ fn apply_accepted_tree(
 fn observe_remote_tip(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
-    report: &GitSyncReport,
+    report: &mut GitSyncReport,
 ) -> Result<(Option<GitOid>, bool), GitSyncError> {
+    let registrations = GitRefName::parse(REMOTE_REGISTRATION_BRANCH_ROOT)?;
     match options.remote_observation {
-        GitRemoteObservation::Query => Ok((
-            engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?,
-            false,
-        )),
-        GitRemoteObservation::Fetch => match engine.fetch_ref(
-            &report.repository,
-            &options.remote,
-            &report.refs.live,
-            &report.refs.fetched,
-        ) {
-            Ok(revision) => Ok((Some(revision), true)),
-            Err(fetch_error) => {
-                let observed =
-                    engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
-                if observed.is_none() {
-                    Ok((None, false))
-                } else {
-                    Err(fetch_error.into())
+        GitRemoteObservation::Query => {
+            let (tip, tips) = engine.remote_ref_with_prefix(
+                &report.repository,
+                &options.remote,
+                &report.refs.live,
+                &registrations,
+            )?;
+            report.registration_tips = tips;
+            Ok((tip, false))
+        }
+        GitRemoteObservation::Fetch => {
+            let mirror_root = GitRefName::parse(LOCAL_REGISTRATION_MIRROR_ROOT)?;
+            match engine.fetch_ref_with_mirror(
+                &report.repository,
+                &options.remote,
+                &report.refs.live,
+                &report.refs.fetched,
+                &GitRefMirror {
+                    remote_prefix: &registrations,
+                    local_prefix: &mirror_root,
+                },
+            ) {
+                Ok((revision, tips)) => {
+                    report.registration_tips = tips;
+                    Ok((Some(revision), true))
+                }
+                Err(fetch_error) => {
+                    let observed = engine.remote_ref(
+                        &report.repository,
+                        &options.remote,
+                        &report.refs.live,
+                    )?;
+                    if observed.is_none() {
+                        Ok((None, false))
+                    } else {
+                        Err(fetch_error.into())
+                    }
                 }
             }
-        },
+        }
     }
 }
 

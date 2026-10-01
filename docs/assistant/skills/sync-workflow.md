@@ -28,6 +28,12 @@ both execute the same application workflow.
 - Remote safety branches named with an older 26-character ULID are historical recovery heads from
   before key-derived IDs. `vulcan sync devices list/fetch/prune-backup` still handle them; a stale
   legacy `_device.json` is ignored.
+- `vulcan sync transport bind|status|unbind` optionally makes one vault's Git sync (CLI and daemon)
+  authenticate over SSH with the device key. Preview with `--dry-run`; it needs an SSH remote and an
+  initialized identity, never initializes one, and never falls back to another key. `--git-config`
+  also sets a Vulcan-owned `core.sshCommand` and refuses to overwrite a foreign one. Binding does not
+  authorize the key on the remote; that remains a separate step, and `sync doctor` cannot verify it
+  offline. Do not bind on the user's behalf unless asked, since their own SSH key may be intended.
 - Use `vulcan devices list --output json` for an installation-wide view across registered wikis.
   Each wiki has its own local recovery and remote observation state; a failed remote observation
   means remote backup status is unknown, while locally retained recovery and names remain visible.
@@ -35,7 +41,25 @@ both execute the same application workflow.
   `not_requested`, which does not mean no remote backups exist. The same flag is available for a
   selected wiki through `vulcan sync devices list --offline`.
   The current inventory uses the default `origin` remote and hidden live ref for Git registrations.
-  It is an observed recovery inventory, not an enrollment, possession, trust, or online roster.
+  The backup list is an observed recovery inventory, not an enrollment, possession, trust, or online
+  roster. Device registrations are listed separately under `registrations` in the same output.
+- Each device publishes a registration record (key-derived ID, public key, status) to the remote on
+  its first successful non-dry-run sync, reported once as `registration.outcome`. Registering never
+  fails a sync. `vulcan sync devices register --public-key <file>` creates a key-bearing
+  `placeholder` that the device claims on its first sync; `revoke <full-id>` writes a tombstone the
+  device never overwrites; `unregister <full-id>` deletes the record. All accept `--dry-run`. Always
+  pass the full `vdev1_` ID and confirm it against `vulcan device show` on that device. The list is
+  trusted as written by anyone who can push, it grants no remote access, and revoking it does not
+  remove any forge deploy key. Never register, revoke, or unregister on the user's behalf unprompted.
+- `vulcan sync forge set --url <https-url> --repo <owner/name> --token-env <VAR>` saves device-local
+  forge settings (only the variable *name*; never ask for or print the token). `vulcan sync forge sync
+  --dry-run` shows the plan, then `vulcan sync forge sync` installs a write-capable deploy key for
+  each placeholder or registered device and removes the key only for an explicitly `revoked` one.
+  Vulcan-marked keys without a registration are reported as orphans and never removed; keys without
+  the `vulcan-device:` title marker are never touched. It changes nothing if the registrations cannot
+  be read from the remote. Always run the dry run first and show it to the user; because the
+  registration list is trusted as written by anyone who can push, an unexpected `add` is worth
+  questioning. It needs network permission for the forge URL and the token variable set.
 
 For a new sync checkout, preview `vulcan sync clone <remote> <path> --dry-run` before applying it.
 The command derives the wiki ID from the destination, uses native clone defaults on desktop, and

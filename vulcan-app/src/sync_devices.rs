@@ -99,6 +99,12 @@ pub struct SyncDeviceListReport {
     pub retained_recovery: Vec<SyncDeviceLocalRecoverySummary>,
     pub named_without_backup: Vec<SyncDeviceNamedSummary>,
     pub named_without_local_recovery: Vec<SyncDeviceNamedSummary>,
+    /// Device registrations (placeholders, registered, revoked), independent
+    /// of backups. Absent only when they could not be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registrations: Option<crate::sync_registration::RegistrationListReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registrations_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -185,7 +191,7 @@ pub fn list_sync_device_backups_with_observation(
     observe_remote: bool,
 ) -> Result<SyncDeviceListReport, AppError> {
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
@@ -263,6 +269,8 @@ pub fn list_sync_device_backups_with_observation(
             name,
         })
         .collect();
+    let (registrations, registrations_error) =
+        registration_view(paths, &options.remote, observe_remote);
     Ok(SyncDeviceListReport {
         version: SYNC_DEVICE_REPORT_VERSION,
         vault,
@@ -276,7 +284,24 @@ pub fn list_sync_device_backups_with_observation(
         retained_recovery,
         named_without_backup,
         named_without_local_recovery,
+        registrations,
+        registrations_error,
     })
+}
+
+/// Registrations beside backups; unreadable ones never fail the inventory.
+fn registration_view(
+    paths: &VaultPaths,
+    remote: &GitRemote,
+    observe_remote: bool,
+) -> (
+    Option<crate::sync_registration::RegistrationListReport>,
+    Option<String>,
+) {
+    match crate::sync_registration::list_registrations(paths, remote, observe_remote) {
+        Ok(report) => (Some(report), None),
+        Err(error) => (None, Some(error.to_string())),
+    }
 }
 
 struct RemoteDeviceBackups {
@@ -362,7 +387,7 @@ fn list_remote_refs_for_observation(
     }
 }
 
-fn is_remote_observation_unavailable(error: &vulcan_sync::GitEngineError) -> bool {
+pub(crate) fn is_remote_observation_unavailable(error: &vulcan_sync::GitEngineError) -> bool {
     matches!(
         error,
         vulcan_sync::GitEngineError::ExecutableUnavailable { .. }
@@ -464,7 +489,7 @@ fn check_device_name_directory(vault: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_device_name(name: &str) -> Result<(), AppError> {
+pub(crate) fn validate_device_name(name: &str) -> Result<(), AppError> {
     if name.trim() != name
         || name.is_empty()
         || name.len() > MAX_DEVICE_NAME_BYTES
@@ -549,7 +574,7 @@ pub fn fetch_sync_device_backup(
     dry_run: bool,
 ) -> Result<SyncDeviceFetchReport, AppError> {
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
@@ -640,7 +665,7 @@ pub fn remove_sync_device_backup(
     dry_run: bool,
 ) -> Result<SyncDeviceRemoveReport, AppError> {
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;

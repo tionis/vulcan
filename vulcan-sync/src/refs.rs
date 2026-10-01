@@ -4,6 +4,10 @@ pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 3;
 pub const DEFAULT_REMOTE_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 pub const REMOTE_EPOCH_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/epochs";
 pub const REMOTE_DEVICE_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/devices";
+/// One `registrations/<device-id>` ref per device, independent of sync profile.
+pub const REMOTE_REGISTRATION_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/registrations";
+/// Device-local mirror of the remote registration refs; never published.
+pub const LOCAL_REGISTRATION_MIRROR_ROOT: &str = "refs/vulcan/registrations";
 pub const REMOTE_CONFLICT_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/conflicts";
 pub const LOCAL_VULCAN_REF_ROOT: &str = "refs/vulcan";
 
@@ -40,6 +44,10 @@ pub fn remote_epoch_ref(profile: &str, epoch_id: &str) -> Result<GitRefName, Git
 
 pub fn remote_device_ref(profile: &str, device_id: &str) -> Result<GitRefName, GitEngineError> {
     GitRefName::parse(format!("{REMOTE_DEVICE_BRANCH_ROOT}/{profile}/{device_id}"))
+}
+
+pub fn remote_registration_ref(device_id: &str) -> Result<GitRefName, GitEngineError> {
+    GitRefName::parse(format!("{REMOTE_REGISTRATION_BRANCH_ROOT}/{device_id}"))
 }
 
 pub fn device_recovery_ref(profile: &str, device_id: &str) -> Result<GitRefName, GitEngineError> {

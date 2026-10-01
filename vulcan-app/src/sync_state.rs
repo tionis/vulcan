@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use ulid::Ulid;
+use vulcan_core::VaultPaths;
 use vulcan_sync::GitSyncDeviceId;
 
 pub const SYNC_JOURNAL_VERSION: u32 = 2;
@@ -158,6 +159,65 @@ impl SyncStateStore {
                 .join("device-identity"),
         );
         Self { root, identity }
+    }
+
+    /// Device-local, per-vault directory outside every work tree, so plain Git
+    /// vaults never replicate it and nothing creates `.vulcan/` for it. Sibling
+    /// of the journal root, like the identity store.
+    pub(crate) fn vault_local_dir(&self, paths: &VaultPaths) -> PathBuf {
+        let root = fs::canonicalize(paths.vault_root())
+            .unwrap_or_else(|_| paths.vault_root().to_path_buf());
+        let key = blake3::hash(root.to_string_lossy().as_bytes()).to_hex();
+        self.root
+            .parent()
+            .unwrap_or(self.root.as_path())
+            .join("vault-local")
+            .join(&key.as_str()[..32])
+    }
+
+    /// Reads one bounded regular file from the vault-local directory.
+    pub(crate) fn read_vault_local(
+        &self,
+        paths: &VaultPaths,
+        name: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, AppError> {
+        let path = self.vault_local_dir(paths).join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(AppError::operation(error)),
+        };
+        if !metadata.is_file() || metadata.len() > max_bytes {
+            return Err(AppError::operation(format!(
+                "{name} is not a bounded regular file"
+            )));
+        }
+        fs::read(&path).map(Some).map_err(AppError::operation)
+    }
+
+    pub(crate) fn write_vault_local(
+        &self,
+        paths: &VaultPaths,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), AppError> {
+        let directory = self.vault_local_dir(paths);
+        fs::create_dir_all(&directory).map_err(AppError::operation)?;
+        durable_file::replace(&directory.join(name), bytes)
+    }
+
+    pub(crate) fn remove_vault_local(
+        &self,
+        paths: &VaultPaths,
+        name: &str,
+    ) -> Result<(), AppError> {
+        durable_file::remove(&self.vault_local_dir(paths).join(name)).map(|_| ())
+    }
+
+    /// The identity store this state store names devices with.
+    pub(crate) fn identity(&self) -> &DeviceIdentityStore {
+        &self.identity
     }
 
     #[must_use]

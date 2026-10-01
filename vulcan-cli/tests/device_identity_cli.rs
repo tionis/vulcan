@@ -331,3 +331,225 @@ fn repair_permissions_restricts_loose_identity_storage() {
     assert_eq!(repaired["identity"]["status"], "ready");
     assert!(!repaired.to_string().contains(root.to_str().unwrap()));
 }
+
+#[test]
+fn transport_binding_roundtrip_is_dry_run_safe_and_owns_only_its_git_config() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let vault = root.join("vault");
+    fs::create_dir_all(&vault).expect("vault directory");
+    for args in [
+        &["init", "--quiet"][..],
+        &["remote", "add", "origin", "git@forge.example:o/r.git"],
+    ] {
+        assert!(ProcessCommand::new("git")
+            .current_dir(&vault)
+            .args(args)
+            .status()
+            .expect("git")
+            .success());
+    }
+    let vault_arg = vault.to_str().expect("utf-8 vault path");
+    let transport = |extra: &[&str]| {
+        let mut args = vec![
+            "--vault",
+            vault_arg,
+            "--output",
+            "json",
+            "sync",
+            "transport",
+        ];
+        args.extend_from_slice(extra);
+        run(root, &args)
+    };
+
+    // Binding never initializes the identity implicitly.
+    let refused = transport(&["bind"]);
+    assert!(!refused.status.success());
+    let refusal = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(refusal.contains("vulcan device init"), "{refusal}");
+
+    json_output(&run(root, &["device", "init", "--output", "json"]));
+    let preview = json_output(&transport(&["bind", "--git-config", "--dry-run"]));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["changed"], true);
+    assert_eq!(
+        json_output(&transport(&["status"]))["state"],
+        "not_bound",
+        "dry run must not bind"
+    );
+
+    let bound = json_output(&transport(&["bind", "--git-config"]));
+    assert_eq!(bound["git_config_written"], true);
+    let status = json_output(&transport(&["status"]));
+    assert_eq!(status["state"], "usable");
+    assert_eq!(status["git_config"], "managed");
+    let rendered = status.to_string();
+    assert!(
+        !rendered.contains("id_ed25519"),
+        "key path must not be reported"
+    );
+
+    let unbound = json_output(&transport(&["unbind"]));
+    assert_eq!(unbound["git_config_removed"], true);
+    assert_eq!(json_output(&transport(&["status"]))["state"], "not_bound");
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = ProcessCommand::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Two installations, each with its own identity, state, and vault clone of
+/// the same bare remote.
+fn two_installations(root: &Path, remote: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let admin = root.join("admin");
+    let device = root.join("device");
+    for installation in [&admin, &device] {
+        let vault = installation.join("vault");
+        fs::create_dir_all(&vault).expect("vault");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Test"]);
+        git(&vault, &["config", "user.email", "test@example.invalid"]);
+        git(
+            &vault,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fs::write(vault.join("Home.md"), "note\n").expect("note");
+        git(&vault, &["add", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+    }
+    (admin, device)
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One ordered admin/device lifecycle reads best unbroken.
+fn placeholder_is_claimed_by_the_device_and_revocation_sticks() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let remote = root.join("remote.git");
+    git(root, &["init", "--bare", "--quiet", "remote.git"]);
+    let (admin, device) = two_installations(root, &remote);
+    let admin_vault = admin.join("vault");
+    let device_vault = device.join("vault");
+    let admin_vault_arg = admin_vault.to_str().unwrap();
+    let device_vault_arg = device_vault.to_str().unwrap();
+
+    let device_key = json_output(&run(&device, &["device", "init", "--output", "json"]));
+    let device_id = device_key["identity"]["device_id"]
+        .as_str()
+        .expect("device id")
+        .to_owned();
+    let public_key = json_output(&run(&device, &["device", "public-key", "--output", "json"]));
+    let key_file = root.join("device.pub");
+    fs::write(
+        &key_file,
+        format!(
+            "{} laptop@home\n",
+            public_key["public_key"].as_str().unwrap()
+        ),
+    )
+    .expect("key file");
+
+    let devices = |vault: &str, extra: &[&str]| {
+        let mut args = vec!["--vault", vault, "--output", "json", "sync", "devices"];
+        args.extend_from_slice(extra);
+        run(
+            if vault == admin_vault_arg {
+                &admin
+            } else {
+                &device
+            },
+            &args,
+        )
+    };
+
+    let preview = json_output(&devices(
+        admin_vault_arg,
+        &[
+            "register",
+            "--public-key",
+            key_file.to_str().unwrap(),
+            "--label",
+            "Laptop",
+            "--dry-run",
+        ],
+    ));
+    assert_eq!(preview["action"], "created");
+    assert_eq!(preview["dry_run"], true);
+    let created = json_output(&devices(
+        admin_vault_arg,
+        &[
+            "register",
+            "--public-key",
+            key_file.to_str().unwrap(),
+            "--label",
+            "Laptop",
+        ],
+    ));
+    assert_eq!(created["device_id"], device_id);
+    assert_eq!(created["status"], "placeholder");
+
+    let listed = json_output(&devices(admin_vault_arg, &["list"]));
+    let entry = &listed["registrations"]["registrations"][0];
+    assert_eq!(entry["status"], "placeholder");
+    assert_eq!(entry["label"], "Laptop");
+    assert_eq!(entry["current_device"], false);
+
+    // The device's first sync claims its placeholder.
+    let sync = json_output(&run(
+        &device,
+        &[
+            "--vault",
+            device_vault_arg,
+            "--output",
+            "json",
+            "sync",
+            "run",
+        ],
+    ));
+    assert_eq!(sync["registration"]["outcome"], "claimed");
+    let listed = json_output(&devices(admin_vault_arg, &["list"]));
+    assert_eq!(
+        listed["registrations"]["registrations"][0]["status"],
+        "registered"
+    );
+    let own = json_output(&devices(device_vault_arg, &["list", "--offline"]));
+    assert_eq!(
+        own["registrations"]["registrations"][0]["current_device"],
+        true
+    );
+    assert_eq!(own["registrations"]["observation"], "not_requested");
+
+    let revoked = json_output(&devices(admin_vault_arg, &["revoke", &device_id]));
+    assert_eq!(revoked["status"], "revoked");
+    let listed = json_output(&devices(admin_vault_arg, &["list"]));
+    assert_eq!(
+        listed["registrations"]["registrations"][0]["status"],
+        "revoked"
+    );
+
+    // Partial IDs are refused; unregister then forgets the tombstone.
+    assert!(!devices(admin_vault_arg, &["revoke", "vdev1_short"])
+        .status
+        .success());
+    let removed = json_output(&devices(admin_vault_arg, &["unregister", &device_id]));
+    assert_eq!(removed["action"], "removed");
+    let listed = json_output(&devices(admin_vault_arg, &["list"]));
+    assert_eq!(listed["registrations"]["count"], 0);
+}

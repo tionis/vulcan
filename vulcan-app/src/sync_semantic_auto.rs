@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::VaultPaths;
-use vulcan_sync::{GitCliEngine, GitEngine, GitOid, GitSyncOptions, GitSyncRefs};
+use vulcan_sync::{GitEngine, GitOid, GitSyncOptions, GitSyncRefs};
 
 pub const SEMANTIC_AUTO_VERSION: u32 = 1;
 const MAX_STATE_BYTES: u64 = 64 * 1024;
@@ -112,7 +112,7 @@ pub fn run_semantic_auto_with_reconciliation(
         store,
         now_unix_ms,
         reconcile_remote,
-        &GitCliEngine::default(),
+        &crate::sync_transport::git_engine(paths),
     )
 }
 
@@ -441,7 +441,7 @@ fn remove_state(path: &Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::{debounce_decision, observed_state, DebounceDecision, SemanticAutoState};
-    use vulcan_sync::GitOid;
+    use vulcan_sync::{GitCliEngine, GitOid};
 
     #[test]
     fn retained_debounce_caps_continuously_changing_targets_after_restart() {

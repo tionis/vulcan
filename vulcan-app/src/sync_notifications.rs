@@ -78,7 +78,7 @@ pub fn publish_sync_notification_advertisement(
 ) -> Result<SyncNotificationPublishReport, AppError> {
     vulcan_sync::validate_notification_remote(&options.remote).map_err(AppError::operation)?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
@@ -147,7 +147,7 @@ pub fn remove_sync_notification_advertisement(
 ) -> Result<SyncNotificationRemoveReport, AppError> {
     vulcan_sync::validate_notification_remote(&options.remote).map_err(AppError::operation)?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
@@ -293,7 +293,7 @@ pub fn notification_status(
         return Ok(finalize_notification_status(report, false));
     }
 
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;

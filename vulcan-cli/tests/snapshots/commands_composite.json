@@ -8691,6 +8691,309 @@
         "options": [],
         "subcommands": [
           {
+            "about": "Install registered device keys as deploy keys on the vault's forge",
+            "name": "forge",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Save this device's forge settings for a vault (the token stays in an environment variable)",
+                "name": "set",
+                "options": [
+                  {
+                    "help": "Forge software",
+                    "id": "kind",
+                    "long": "kind",
+                    "possible_values": [
+                      "forgejo"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "KIND"
+                    ]
+                  },
+                  {
+                    "help": "Forge base URL, for example https://git.example.com",
+                    "id": "url",
+                    "long": "url",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "URL"
+                    ]
+                  },
+                  {
+                    "help": "Repository as `owner/name`",
+                    "id": "repo",
+                    "long": "repo",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "REPO"
+                    ]
+                  },
+                  {
+                    "help": "Environment variable that holds the API token",
+                    "id": "token_env",
+                    "long": "token-env",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "VAR"
+                    ]
+                  },
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Validate without saving",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show the saved forge settings (never the token)",
+                "name": "show",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove the saved forge settings",
+                "name": "clear",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Preview without removing",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Make the forge's deploy keys match the device registrations",
+                "name": "sync",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Show the plan without changing the forge",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
+            "about": "Bind Git sync to this installation's device key over SSH (optional)",
+            "name": "transport",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Authenticate this vault's Git sync with the device key (SSH remotes only)",
+                "name": "bind",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote that sync uses",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Also set a Vulcan-owned repository-local core.sshCommand for plain git",
+                    "id": "git_config",
+                    "long": "git-config",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "GIT_CONFIG"
+                    ]
+                  },
+                  {
+                    "help": "Preview without writing anything",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show whether the device-key transport binding is usable",
+                "name": "status",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove the binding and any Vulcan-owned core.sshCommand",
+                "name": "unbind",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Preview without writing anything",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
             "about": "Inspect, recover, or retire remote per-device safety backups",
             "name": "devices",
             "options": [],
@@ -8744,6 +9047,212 @@
                     "short": null,
                     "value_names": [
                       "OFFLINE"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Create a registration placeholder for a device that has not synced yet",
+                "name": "register",
+                "options": [
+                  {
+                    "help": "Public key file (`-` reads stdin); the comment is dropped",
+                    "id": "public_key",
+                    "long": "public-key",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "FILE"
+                    ]
+                  },
+                  {
+                    "help": "Optional display label",
+                    "id": "label",
+                    "long": "label",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LABEL"
+                    ]
+                  },
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Preview without writing to the remote",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Mark a device registration revoked, keeping the tombstone",
+                "name": "revoke",
+                "options": [
+                  {
+                    "help": "Full `vdev1_` device ID",
+                    "id": "device_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DEVICE_ID"
+                    ]
+                  },
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Preview without writing to the remote",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Delete a device registration entirely; removes no forge key",
+                "name": "unregister",
+                "options": [
+                  {
+                    "help": "Full `vdev1_` device ID",
+                    "id": "device_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DEVICE_ID"
+                    ]
+                  },
+                  {
+                    "help": "Optional registered wiki ID",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote carrying the live ref",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Fully qualified remote live ref",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Preview without deleting the remote ref",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
                     ]
                   }
                 ],

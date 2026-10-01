@@ -3910,6 +3910,94 @@ pub enum SemanticGroupingArg {
     All,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ForgeKindArg {
+    Forgejo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SyncForgeCommand {
+    #[command(
+        about = "Save this device's forge settings for a vault (the token stays in an environment variable)",
+        long_about = "Save the forge URL, repository, and the NAME of the environment variable that holds the API token. Settings are device-local and never read from vault files, because a synced value could redirect your token to another host. The token needs write access to the repository's deploy keys."
+    )]
+    Set {
+        #[arg(long, value_enum, default_value = "forgejo", help = "Forge software")]
+        kind: ForgeKindArg,
+        #[arg(long, help = "Forge base URL, for example https://git.example.com")]
+        url: String,
+        #[arg(long, help = "Repository as `owner/name`")]
+        repo: String,
+        #[arg(
+            long,
+            value_name = "VAR",
+            help = "Environment variable that holds the API token"
+        )]
+        token_env: String,
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, help = "Validate without saving")]
+        dry_run: bool,
+    },
+    #[command(about = "Show the saved forge settings (never the token)")]
+    Show {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+    },
+    #[command(about = "Remove the saved forge settings")]
+    Clear {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, help = "Preview without removing")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Make the forge's deploy keys match the device registrations",
+        long_about = "Add a write-capable deploy key for every placeholder or registered device, and remove the key only for an explicitly revoked device. Vulcan-managed keys without a registration are reported, never removed; keys without the Vulcan title marker are never touched. The registration list is trusted as written by anyone who can push, so review `vulcan sync devices list` and use --dry-run first."
+    )]
+    Sync {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Show the plan without changing the forge")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SyncTransportCommand {
+    #[command(
+        about = "Authenticate this vault's Git sync with the device key (SSH remotes only)",
+        long_about = "Authenticate Vulcan's own Git operations, including the daemon's, with this installation's device key. The device key must already be authorized on the remote, for example as a deploy key. Nothing global changes; `--git-config` additionally sets a Vulcan-owned repository-local core.sshCommand so plain `git` uses the key too."
+    )]
+    Bind {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, default_value = "origin", help = "Git remote that sync uses")]
+        remote: String,
+        #[arg(
+            long,
+            help = "Also set a Vulcan-owned repository-local core.sshCommand for plain git"
+        )]
+        git_config: bool,
+        #[arg(long, help = "Preview without writing anything")]
+        dry_run: bool,
+    },
+    #[command(about = "Show whether the device-key transport binding is usable")]
+    Status {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+    },
+    #[command(about = "Remove the binding and any Vulcan-owned core.sshCommand")]
+    Unbind {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, help = "Preview without writing anything")]
+        dry_run: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncScheduleCommand {
     #[command(about = "Show the saved settings of a managed Termux sync job")]
@@ -3961,6 +4049,14 @@ pub enum DeviceCommand {
     #[command(about = "Export this installation's canonical public device key")]
     PublicKey,
     #[command(
+        hide = true,
+        about = "Run ssh with the device key; used as core.sshCommand by `sync transport bind --git-config`"
+    )]
+    SshCommand {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
+    #[command(
         about = "Restrict existing device identity storage to the current user without touching key material"
     )]
     RepairPermissions {
@@ -3994,6 +4090,48 @@ pub enum SyncDeviceCommand {
             help = "List local recovery refs and labels without observing the remote"
         )]
         offline: bool,
+    },
+    #[command(
+        about = "Create a registration placeholder for a device that has not synced yet",
+        long_about = "Create a key-bearing placeholder registration in the Git remote. Take the public key from `vulcan device public-key` on the device and check the device ID against `vulcan device show` there. The device replaces the placeholder with its own registration on its first successful sync. The registration list is trusted as written by anyone who can push."
+    )]
+    Register {
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Public key file (`-` reads stdin); the comment is dropped"
+        )]
+        public_key: PathBuf,
+        #[arg(long, help = "Optional display label")]
+        label: Option<String>,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Preview without writing to the remote")]
+        dry_run: bool,
+    },
+    #[command(about = "Mark a device registration revoked, keeping the tombstone")]
+    Revoke {
+        #[arg(help = "Full `vdev1_` device ID")]
+        device_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Preview without writing to the remote")]
+        dry_run: bool,
+    },
+    #[command(about = "Delete a device registration entirely; removes no forge key")]
+    Unregister {
+        #[arg(help = "Full `vdev1_` device ID")]
+        device_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Preview without deleting the remote ref")]
+        dry_run: bool,
     },
     #[command(about = "Set a shared display name for a device ID")]
     SetName {
@@ -4048,6 +4186,16 @@ pub enum SyncDeviceCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
+    #[command(about = "Install registered device keys as deploy keys on the vault's forge")]
+    Forge {
+        #[command(subcommand)]
+        command: SyncForgeCommand,
+    },
+    #[command(about = "Bind Git sync to this installation's device key over SSH (optional)")]
+    Transport {
+        #[command(subcommand)]
+        command: SyncTransportCommand,
+    },
     #[command(about = "Inspect, recover, or retire remote per-device safety backups")]
     Devices {
         #[command(subcommand)]

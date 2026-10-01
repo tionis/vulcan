@@ -75,6 +75,10 @@ pub struct VaultSyncReport {
     pub cache_refresh: Option<ScanSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_refresh_error: Option<String>,
+    /// Present only when this sync created, claimed, or found revoked this
+    /// device's registration, or when registering failed (never fatal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration: Option<crate::sync_registration::SelfRegistrationReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(serialize_with = "serialize_sync_report_conflict_record")]
     pub conflict_record: Option<SyncConflictRecord>,
@@ -316,7 +320,8 @@ fn doctor_git_vault_with_optional_state(
     profile: SyncContentProfile,
     unattended: bool,
 ) -> SyncDoctorReport {
-    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
+    let engine =
+        crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout);
     let (effective_options, policy_severity, policy_detail) =
         configured_options_for_doctor_profile(paths, options, profile);
     let options = &effective_options;
@@ -328,6 +333,7 @@ fn doctor_git_vault_with_optional_state(
         policy_detail,
     );
     doctor_device_identity(state_store, &mut report);
+    doctor_transport(paths, &mut report);
 
     match engine.installation() {
         Ok(installation) => {
@@ -566,6 +572,56 @@ fn doctor_device_identity(state_store: Option<&SyncStateStore>, report: &mut Syn
             SyncDoctorSeverity::Error,
             error.to_string(),
         ),
+    }
+}
+
+/// Reports a device-key transport binding. Unbound vaults add no check, so
+/// ambient SSH setups keep their existing doctor output.
+fn doctor_transport(paths: &VaultPaths, report: &mut SyncDoctorReport) {
+    use crate::sync_transport::{transport_status, GitConfigState, GitTransportState};
+    let status = match transport_status(paths) {
+        Ok(status) => status,
+        Err(error) => {
+            doctor_check(
+                report,
+                "sync.transport",
+                SyncDoctorSeverity::Error,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    match status.state {
+        GitTransportState::NotBound => {}
+        GitTransportState::DeviceKeyUnavailable => doctor_check(
+            report,
+            "sync.transport",
+            SyncDoctorSeverity::Error,
+            format!(
+                "Git is bound to the device key but it cannot authenticate: {}; sync fails closed",
+                status.diagnostic.unwrap_or_default()
+            ),
+        ),
+        GitTransportState::Usable => {
+            let drift = matches!(
+                status.git_config,
+                GitConfigState::Missing | GitConfigState::Foreign
+            );
+            doctor_check(
+                report,
+                "sync.transport",
+                if drift {
+                    SyncDoctorSeverity::Warning
+                } else {
+                    SyncDoctorSeverity::Pass
+                },
+                if drift {
+                    "Git is bound to the device key, but repository core.sshCommand drifted; rerun `vulcan sync transport bind --git-config`"
+                } else {
+                    "Git sync authenticates with the bound device key; remote authorization is not checked offline"
+                },
+            );
+        }
     }
 }
 
@@ -1108,7 +1164,7 @@ pub fn sync_git_vault_with_profile(
     let state_store = SyncStateStore::user_default()?;
     let mut observer = vulcan_sync::IgnoreGitSyncProgress;
     sync_git_vault_with_profile_and_observer_and_engine(
-        &vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout),
+        &crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout),
         paths,
         options,
         &state_store,
@@ -1139,7 +1195,8 @@ pub fn sync_git_vault_with_profile_and_progress(
     profile: SyncContentProfile,
 ) -> Result<VaultSyncReport, AppError> {
     let state_store = SyncStateStore::user_default()?;
-    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
+    let engine =
+        crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout);
     sync_git_vault_with_profile_and_observer_and_engine(
         &engine,
         paths,
@@ -1187,7 +1244,8 @@ pub fn sync_git_vault_with_observer(
     cancellation: &SyncCancellationToken,
     delegate: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
-    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
+    let engine =
+        crate::sync_transport::git_engine(paths).with_command_timeout(options.command_timeout);
     sync_git_vault_with_observer_and_engine(
         &engine,
         paths,
@@ -1330,6 +1388,17 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
         }
     };
     let backend_cycle = backend_started.elapsed();
+    let registration = if options.dry_run {
+        None
+    } else {
+        crate::sync_registration::self_register_after_sync(
+            engine,
+            &sync.repository,
+            &options.remote,
+            state_store.identity(),
+            sync.registration_tips.as_deref(),
+        )
+    };
     let conflict_state_started = Instant::now();
     let conflict_record =
         persist_and_update_conflicts(engine, &sync, &mut journal, state_store, !options.dry_run)?;
@@ -1369,6 +1438,7 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
         sync,
         cache_refresh,
         cache_refresh_error,
+        registration,
         conflict_record,
         operational_stats,
         state: VaultSyncStateReport {
@@ -3484,6 +3554,112 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn first_sync_registers_the_device_once_without_touching_the_work_tree() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(vault.join("Home.md"), "initial\n").expect("note");
+        git(&vault, &["add", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        let paths = VaultPaths::new(&vault);
+        let state_store = SyncStateStore::at(temporary.path().join("state/sync/repositories"));
+
+        let dry = sync_git_vault_with_state_store(
+            &paths,
+            &GitSyncOptions {
+                dry_run: true,
+                ..GitSyncOptions::default()
+            },
+            &state_store,
+        )
+        .expect("dry run");
+        assert!(dry.registration.is_none());
+        assert!(git_stdout(
+            &remote,
+            &["for-each-ref", "refs/heads/__vulcan-sync/registrations"]
+        )
+        .is_empty());
+
+        let first =
+            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &state_store)
+                .expect("first sync");
+        let device_id = state_store
+            .load_or_create_device_id(false)
+            .expect("identity")
+            .expect("created by sync");
+        assert_eq!(
+            first.registration.expect("registration reported").outcome,
+            Some(crate::sync_registration::SelfRegistrationOutcome::Created)
+        );
+        let refs = git_stdout(
+            &remote,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/__vulcan-sync/registrations",
+            ],
+        );
+        assert_eq!(
+            refs.trim(),
+            format!(
+                "refs/heads/__vulcan-sync/registrations/{}",
+                device_id.as_str()
+            )
+        );
+
+        let second =
+            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &state_store)
+                .expect("second sync");
+        assert!(
+            second.registration.is_none(),
+            "already registered stays quiet"
+        );
+        assert!(
+            !vault.join(".vulcan").exists(),
+            "no device-local state in the work tree"
+        );
+        let live = git_stdout(
+            &remote,
+            &[
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "refs/heads/__vulcan-sync/live",
+            ],
+        );
+        assert_eq!(
+            live.trim(),
+            "Home.md",
+            "the registration never reaches the synced tree"
+        );
+    }
+
+    #[test]
     fn applied_remote_tree_refreshes_an_existing_cache() {
         let temporary = tempdir().expect("temporary directory");
         let remote = temporary.path().join("remote.git");
@@ -3563,7 +3739,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .application
             .as_ref()
             .expect("accepted tree application plan");
-        assert_eq!(application.additions, 1);
+        assert_eq!(application.additions, 1, "{:?}", application.paths);
         assert_eq!(application.updates, 0);
         assert_eq!(application.deletions, 0);
         assert_eq!(application.type_changes, 0);

@@ -6448,6 +6448,54 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ---
 
+### 12.21 Device-key Git transport, device registration, and forge deploy keys
+
+**Goal:** Let a device authenticate Git sync with its own device key, and let a vault administrator install that key as a forge deploy key with little friction.
+
+**Design contract:** `docs/specs/device-transport-auth.md`. Each device has a registration record in the vault's Git remote (published on its first mutating sync, or created as a key-bearing placeholder by an administrator). A forge sync command makes the repository's deploy keys match the registrations. The registration list is trusted as written, a deliberate temporary tradeoff recorded in the spec; a cryptographic registry (12.17 or its successor) replaces that trust later, and a deploy-key CI job can build on it. Each vault is its own trust plane; the only cross-vault fact is the device key itself.
+
+**Depends on:** 12.15 device identity and 12.16 `file_v1` custody. Independent of the 12.17 registry, which this feature neither needs nor extends yet. This resolves the 12.15.5 "SSH Git authentication through an explicit transport adapter" item.
+
+#### 12.21.1 Transport binding
+
+- [x] Add a device-local, per-wiki transport binding stored outside the vault, cache, and synced files. Accept only SSH remotes and unattended-capable providers (`file_v1` initially); never initialize identity implicitly and never fall back to another key or provider. Shipped as `vulcan-app::sync_transport` (`git-transport.json` in per-vault operational state, holding only the bound device ID).
+- [x] Build one shared SSH argv (`-i`, `IdentitiesOnly`, `IdentityAgent=none`, `BatchMode`, host-key checking untouched) and apply it through the `vulcan-sync` Git command chokepoint for CLI and daemon, with key paths redacted everywhere. Applied in `vulcan-app` engine construction and per daemon job; a bound vault with an unusable key gets a fail-closed transport so local capture still runs.
+- [x] Add `sync transport bind|status|unbind` with `--dry-run` and JSON. Optional `--git-config` writes a Vulcan-owned `core.sshCommand` that calls a Vulcan wrapper; refuse foreign values, remove only owned values, and detect drift in `sync doctor`. Hidden `vulcan device ssh-command` is the wrapper; `sync doctor` reports `sync.transport` only for bound vaults.
+- [ ] Report `transport_state` separately from custody, authority, and backup state. Authentication failure under a binding captures local bytes first and emits the ordinary attention event without retrying through another credential. Shipped: `sync.transport` doctor check and fail-closed engine. Open: the structured per-vault state in the device inventory (12.21.4) and a test proving auth failure captures local bytes first.
+- [ ] Tests: hostile ambient agent/config, HTTPS and unsupported-provider rejection, ownership/drift cases, wrapper quoting, CLI/daemon parity, redaction, dry runs. Shipped: argv/quoting, HTTPS and uninitialized-identity rejection, ownership and drift, fail-closed engine, CLI JSON round trip. Still open: a real `ssh` run against hostile ambient agent/config, unsupported-provider rejection, daemon-versus-CLI parity.
+- [x] Review `sync-workflow`, `diagnostics-and-repair`, and configuration skills plus installed-skill tests when commands ship. `sync-workflow` now documents `sync transport`; the other skills need no change until enrollment/forge commands ship.
+
+#### 12.21.2 Device registrations
+
+- [x] Extend the versioned `vulcan-sync` ref contract with `refs/heads/__vulcan-sync/registrations/<device-id>` and builders. Store a bounded strict `registration.json` (device ID, canonical public key, optional label, `placeholder|registered|revoked`, timestamps). Reject ID/key mismatch, unknown fields, oversize content, unsupported key types, and illegal status transitions; ignore bad records with diagnostics. Implemented in `vulcan-app::sync_registration`; ref builder in `vulcan-sync`. Readers also reject a ref naming another device and any tree other than exactly `registration.json`.
+- [x] Publish the device's own record on its first mutating sync: best effort, create-only with an exact lease, never failing or delaying sync, and never created by doctor, dry-run, or status. Afterwards the device updates only its own record, to claim a placeholder or change its label, and never overwrites a `revoked` record. The registration refs ride the sync's own remote observation (one `ls-remote` listing the live ref and `registrations/*`, or the one `fetch`, which also mirrors them), so steady-state syncs add no round trip and see revocations immediately; mirroring is best effort and never fails a sync.
+- [x] Add `sync devices register --public-key <file>` (key-bearing placeholder), `revoke` (tombstone), and `unregister` (delete) with `--dry-run` and JSON. Extend `sync devices list` with registration status, fingerprint, and backup head, each labeled by source. Existing backup-head commands keep their meaning. `sync devices list` now includes `registrations`.
+- [x] Tests: mismatch and malformed input, illegal transitions, create-only lease races, concurrent first syncs, placeholder claim, tombstone persistence, registration failure not failing sync, doctor/dry-run purity, label sanitization. Unit tests plus an end-to-end CLI test with two installations.
+- [x] Update `sync-workflow` and `diagnostics-and-repair` skills plus installed-skill tests when commands ship. `sync-workflow` documents the registration commands; `diagnostics-and-repair` needed no change.
+
+#### 12.21.3 Forge adapters and forge sync
+
+- [ ] Verify against a real Forgejo before building on it: one key as a deploy key on several repositories, a key already registered as a user SSH key, and pushing hidden `__vulcan-sync` refs under branch protection. Record versions and results; report forge-level key conflicts explicitly. Partly done: one key as a deploy key on several repositories is confirmed. Still open: a key already registered as a user SSH key, and pushing hidden `__vulcan-sync` refs under branch protection.
+- [x] Add device-local per-vault forge configuration (`sync forge set|show|clear`): kind, API base URL, `owner/repo`, and the name of the token environment variable or secret reference. Never read it from vault or synced files, never persist or print token values, and gate network use on the vault's permission. `sync forge set|show|clear`; HTTPS required except loopback, no credentials/query in the URL, unknown fields in the file refused.
+- [x] Define the synchronous `ForgeDeployKeyAdapter` trait (list/add/remove) and implement Forgejo. Manage only keys with the `vulcan-device:` title marker, match by public key, never touch foreign keys, always add write-capable keys. Forgejo client never follows redirects, bounds responses and error text, and strips control characters.
+- [x] Add `sync forge sync [--dry-run]` implementing the spec's reconciliation table: add keys for `placeholder`/`registered`, remove keys only for explicit `revoked` records, report Vulcan-marked orphans without removing them. A failed or partial fetch or an empty list must delete nothing. Add before remove, converge on retry, report per-key results, JSON output. A read-only managed key is removed and re-added (the same key cannot coexist twice).
+- [x] Tests: recorded-API contract tests, fake-forge coverage of every table row, partial failure and retry, empty/failed fetch, config-source and token-redaction safety, permission denial. Real Forgejo evidence closes the compatibility questions. Implemented against a stateful fake Forgejo server instead of recorded fixtures, plus an end-to-end CLI test. A real Forgejo run is still the evidence for the two open questions.
+- [x] Update `sync-workflow` and configuration skills plus installed-skill tests when commands ship. `sync-workflow` now documents `sync forge`.
+
+#### 12.21.4 Fleet view
+
+- [ ] Add per-vault transport state (not bound, usable, key unavailable) and this device's registration status to the installation device inventory, separate from backup and recovery state, with no remote contact in offline mode.
+- [ ] Add `devices list --all-wikis` and `forge sync --all-wikis` as independent per-vault iteration with separate credentials, results, and failures; never imply one vault's registrations apply to another.
+
+#### Extension points (not scheduled)
+
+- A cryptographic registry that replaces trust-the-list with signed administrator decisions, and a deploy-key-management CI job built on it. Registration records and the adapter trait should survive unchanged.
+- Signing a device's own registration record for tamper evidence; needs a typed device-key signing operation and does not close the trust gap alone.
+- A multi-user model, as part of any later registry rework.
+- A first-class `device replace` workflow, tracked under 12.15.5; not a dependency because binding is optional and revocation does not need the old key.
+
+---
+
 ## Phase 13: WebUI — Admin and Browse
 
 **Goal:** A web interface for managing the daemon, browsing vaults, and monitoring sync. Read-only initially, leveraging the existing JSON API and the shared rendering/site contracts established in Phase 9.20.

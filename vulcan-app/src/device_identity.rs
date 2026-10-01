@@ -152,6 +152,15 @@ impl DeviceIdentityStore {
     }
 
     /// Return canonical public-key text for explicit export.
+    /// Path of the `file_v1` private key for explicit transport use. Callers
+    /// must have checked identity status; the path is never reported or logged.
+    pub(crate) fn private_key_path(&self) -> Result<PathBuf, AppError> {
+        let path = self.directory.join(PRIVATE_KEY_FILE);
+        let identity = self.load_manifest()?;
+        self.private_key_matches(&identity)?;
+        Ok(path)
+    }
+
     pub fn public_key(&self) -> Result<String, AppError> {
         let validated = self.load_manifest()?;
         Ok(validated.manifest.public_key)
@@ -663,6 +672,48 @@ fn validate_manifest(manifest: IdentityManifest) -> Result<ValidatedPublicIdenti
     Ok(ValidatedPublicIdentity {
         manifest,
         fingerprint,
+    })
+}
+
+/// Identity facts derived from one public key alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicKeyIdentity {
+    pub device_id: String,
+    /// Canonical `ssh-ed25519 <base64>` text without a comment.
+    pub public_key: String,
+    pub fingerprint: String,
+}
+
+/// Validates an Ed25519 OpenSSH public key and derives its device ID.
+///
+/// With `lenient` input (a pasted `id_ed25519.pub`), surrounding whitespace and
+/// the comment are dropped. Strict input must already be canonical, which is
+/// what stored records require.
+pub fn identity_from_public_key(text: &str, lenient: bool) -> Result<PublicKeyIdentity, AppError> {
+    if text.len() > 4096 {
+        return Err(AppError::operation("public key exceeds its size limit"));
+    }
+    let public = if lenient {
+        let public = PublicKey::from_openssh(text.trim())
+            .map_err(|_| AppError::operation("public key is malformed"))?;
+        if public.algorithm() != Algorithm::Ed25519 || public.key_data().ed25519().is_none() {
+            return Err(AppError::operation("public key is not Ed25519"));
+        }
+        public
+    } else {
+        parse_device_public_key(text)?
+    };
+    let canonical = canonical_public_key(&public)?;
+    if !lenient && canonical != text {
+        return Err(AppError::operation("public key is not canonical"));
+    }
+    let blob = public
+        .to_bytes()
+        .map_err(|_| AppError::operation("public key is malformed"))?;
+    Ok(PublicKeyIdentity {
+        device_id: format!("vdev1_{}", base32_lower(&Sha256::digest(blob))),
+        public_key: canonical,
+        fingerprint: public.fingerprint(HashAlg::Sha256).to_string(),
     })
 }
 

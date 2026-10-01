@@ -53,7 +53,7 @@ pub fn create_sync_checkpoint(
     options: &SyncCheckpointOptions,
 ) -> Result<SyncCheckpointReport, AppError> {
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
         .discover_repository(&vault)
         .map_err(AppError::operation)?;
