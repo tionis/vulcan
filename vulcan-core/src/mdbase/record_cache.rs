@@ -87,6 +87,97 @@ pub struct MdbaseCachedMetadata {
     pub file: MdbaseRecordFileMetadata,
 }
 
+/// Evidence supplied by a caller's complete current visible-record manifest.
+/// This is not itself a freshness or authorization proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdbaseCachedRecordExpectation {
+    pub revision: String,
+    pub file: MdbaseRecordFileMetadata,
+}
+
+/// Load one coherent `SQLite` snapshot, then derive collection overlays only over
+/// the caller's currently visible records. Never reuse cached final diagnostics.
+///
+/// The caller must establish that `expected` completely describes its current
+/// visible source generation and retain the cooperating read guard. This helper
+/// reads controls but no record files; it cannot discover new/changed records or
+/// grant authority from a manifest. Exact source is not hydrated. A missing or
+/// stale local row, metadata mismatch, or unclassified CEL inference returns
+/// `None` for source reconciliation, never a partial result. It is not yet the
+/// public indexed query executor or a selective metadata-only hydration path.
+pub fn load_cached_mdbase_record_set(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    expected: &BTreeMap<String, MdbaseCachedRecordExpectation>,
+    filter: Option<&PermissionFilter>,
+) -> Result<Option<super::MdbaseRecordSet>, MdbaseRecordCacheError> {
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
+    if has_dynamic_local_membership(types) {
+        return Ok(None);
+    }
+    let root = cache_collection_root(collection)?;
+    let transaction = connection.unchecked_transaction()?;
+    let mut records = Vec::new();
+    {
+        let mut statement = transaction.prepare_cached(
+            "SELECT local_record_json FROM mdbase_record_cache
+             WHERE collection_root = ?1 AND path = ?2 AND revision = ?3
+               AND dependency_digest = ?4 AND record_model_version = ?5
+               AND local_record_json IS NOT NULL",
+        )?;
+        for (path, expectation) in expected {
+            // Check before fetching or decoding any denied payload, including
+            // malformed JSON that would otherwise leak a hidden cache failure.
+            if filter.is_some_and(|filter| !filter.is_allowed(path)) {
+                continue;
+            }
+            let record: Option<MdbaseRecordDocument> = statement
+                .query_row(
+                    params![
+                        root,
+                        path,
+                        expectation.revision,
+                        controls.combined,
+                        MDBASE_RECORD_MODEL_VERSION
+                    ],
+                    |row| parse_json_column(0, &row.get::<_, String>(0)?),
+                )
+                .optional()?;
+            let Some(record) = record.filter(|record| {
+                record.path == *path
+                    && record.revision == expectation.revision
+                    && record.file == expectation.file
+                    && is_local_record(record)
+            }) else {
+                return Ok(None);
+            };
+            records.push(record);
+        }
+    }
+    transaction.commit()?;
+    if verify_mdbase_control_snapshots(collection, types, contracts, filter)? != controls {
+        return Err(MdbaseRecordCacheError::StaleControls);
+    }
+    Ok(Some(super::records::finish_local_record_set(
+        collection, types, contracts, records,
+    )))
+}
+
+fn is_local_record(record: &MdbaseRecordDocument) -> bool {
+    record.document.is_none()
+        && record.links.is_empty()
+        && record.tags.is_empty()
+        && record.contract_views.is_empty()
+}
+
+fn has_dynamic_local_membership(types: &MdbaseTypeRegistry) -> bool {
+    types
+        .iter()
+        .any(|definition| definition.frontmatter.pointer("/match/expr").is_some())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MdbaseCachedRecord {
     pub collection_root: String,
@@ -716,9 +807,7 @@ fn derive_local_records(
     let clock = super::records::operation_clock(collection);
     // CEL inference may depend on now/today. Until dependency classification is
     // complete, never reuse local membership when any match expression exists.
-    let dynamic = types
-        .iter()
-        .any(|definition| definition.frontmatter.pointer("/match/expr").is_some());
+    let dynamic = has_dynamic_local_membership(types);
     let mut records = BTreeMap::new();
     let mut derived = 0;
     let mut reused = 0;
@@ -736,10 +825,7 @@ fn derive_local_records(
                 && record.path == path
                 && record.revision == revision
                 && record.file == file
-                && record.document.is_none()
-                && record.links.is_empty()
-                && record.tags.is_empty()
-                && record.contract_views.is_empty()
+                && is_local_record(record)
         });
         let record = if let Some(record) = cached {
             reused += 1;
@@ -920,6 +1006,7 @@ mod tests {
         load_mdbase_type_registry,
     };
     use crate::paths::VaultPaths;
+    use crate::permissions::{PathPermission, ResourceSpecifier};
     use std::fs;
     use tempfile::tempdir;
 
@@ -1417,6 +1504,210 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Compare visible overlays before and after permission changes and corruption.
+    fn cached_record_snapshot_rebuilds_visibility_sensitive_overlays_before_use() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  read_defaults: {status: open}\n  unique: [{field: id, scope: type}]\n  links:\n    parent: {target_type: any, validate_exists: true}\n---\n");
+        write(
+            &directory.path().join("a.md"),
+            "---\ntype: task\nid: shared\nparent: '[[secret]]'\n---\n# Public\n#tag [[secret]]\n",
+        );
+        write(
+            &directory.path().join("secret.md"),
+            "---\ntype: task\nid: shared\n---\nSecret\n",
+        );
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let source = super::super::load_mdbase_records_with_contracts(
+            &collection,
+            &types,
+            &contracts,
+            false,
+        )
+        .unwrap();
+        let expected = source
+            .records
+            .iter()
+            .map(|record| {
+                (
+                    record.path.clone(),
+                    MdbaseCachedRecordExpectation {
+                        revision: record.revision.clone(),
+                        file: record.file.clone(),
+                    },
+                )
+            })
+            .collect();
+        let full = load_cached_mdbase_record_set(
+            database.connection(),
+            &collection,
+            &types,
+            &contracts,
+            &expected,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(full, source);
+        assert!(full
+            .get("a.md")
+            .unwrap()
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "duplicate_value"));
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("secret.md".into())],
+        });
+        let filtered_source = super::super::load_mdbase_records_with_contracts_filtered(
+            &collection,
+            &types,
+            &contracts,
+            false,
+            Some(&filter),
+        )
+        .unwrap();
+        database.connection().execute("UPDATE mdbase_record_cache SET local_record_json = 'corrupt denied payload' WHERE path = 'secret.md'", []).unwrap();
+        let filtered = load_cached_mdbase_record_set(
+            database.connection(),
+            &collection,
+            &types,
+            &contracts,
+            &expected,
+            Some(&filter),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(filtered, filtered_source);
+        let public = filtered.get("a.md").unwrap();
+        assert_eq!(public.effective_frontmatter["status"], "open");
+        assert!(public
+            .diagnostics
+            .iter()
+            .all(|d| d.code != "duplicate_value" && d.related_paths.is_empty()));
+        assert!(public.links.iter().all(|link| link.resolved_path.is_none()));
+        assert!(load_cached_mdbase_record_set(
+            database.connection(),
+            &collection,
+            &types,
+            &contracts,
+            &expected,
+            None
+        )
+        .is_err());
+        let deny_controls = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("mdbase.yaml".into())],
+        });
+        assert!(matches!(
+            load_cached_mdbase_record_set(
+                database.connection(),
+                &collection,
+                &types,
+                &contracts,
+                &expected,
+                Some(&deny_controls)
+            ),
+            Err(MdbaseRecordCacheError::PermissionDenied)
+        ));
+    }
+
+    #[test]
+    fn cached_record_snapshot_rejects_missing_rows_or_stale_expectations() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("a.md"), "A\n");
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let record = load_mdbase_record(&collection, &types, "a.md", false).unwrap();
+        let expected = BTreeMap::from([(
+            "a.md".into(),
+            MdbaseCachedRecordExpectation {
+                revision: record.revision,
+                file: record.file,
+            },
+        )]);
+        for mutation in ["revision", "metadata", "missing", "model", "payload"] {
+            let mut manifest = expected.clone();
+            match mutation {
+                "revision" => manifest.get_mut("a.md").unwrap().revision = "changed-source".into(),
+                "metadata" => manifest.get_mut("a.md").unwrap().file.size += 1,
+                "missing" => {
+                    manifest.insert("new.md".into(), expected["a.md"].clone());
+                }
+                "model" => {
+                    database
+                        .connection()
+                        .execute("UPDATE mdbase_record_cache SET record_model_version=0", [])
+                        .unwrap();
+                }
+                "payload" => {
+                    database
+                        .connection()
+                        .execute("UPDATE mdbase_record_cache SET local_record_json=NULL", [])
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                load_cached_mdbase_record_set(
+                    database.connection(),
+                    &collection,
+                    &types,
+                    &contracts,
+                    &manifest,
+                    None
+                )
+                .unwrap()
+                .is_none(),
+                "{mutation}"
+            );
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        }
+        // This helper consumes a caller-proved manifest, not disk freshness:
+        // removing the ordinary source demonstrates it never reads that file.
+        fs::remove_file(directory.path().join("a.md")).unwrap();
+        assert!(load_cached_mdbase_record_set(
+            database.connection(),
+            &collection,
+            &types,
+            &contracts,
+            &expected,
+            None
+        )
+        .unwrap()
+        .is_some());
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n# changed\n",
+        );
+        assert!(matches!(
+            load_cached_mdbase_record_set(
+                database.connection(),
+                &collection,
+                &types,
+                &contracts,
+                &expected,
+                None
+            ),
+            Err(MdbaseRecordCacheError::StaleControls)
+        ));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)] // One cache lifecycle checks overlay invalidation and repair parity.
     fn local_cache_reuses_unchanged_records_but_refreshes_cross_record_diagnostics() {
         let directory = tempdir().unwrap();
@@ -1581,6 +1872,26 @@ mod tests {
             )
             .unwrap();
             assert_eq!(rows["a.md"].types, ["inferred"]);
+            let record = &rows["a.md"];
+            let expected = BTreeMap::from([(
+                "a.md".into(),
+                MdbaseCachedRecordExpectation {
+                    revision: record.revision.clone(),
+                    file: record.metadata.as_ref().unwrap().file.clone(),
+                },
+            )]);
+            // A matching source revision cannot prove clock-dependent CEL
+            // membership is still current, even immediately after refresh.
+            assert!(load_cached_mdbase_record_set(
+                database.connection(),
+                &collection,
+                &types,
+                &contracts,
+                &expected,
+                None,
+            )
+            .unwrap()
+            .is_none());
         }
     }
 
