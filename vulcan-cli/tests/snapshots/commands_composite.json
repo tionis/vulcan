@@ -8938,6 +8938,67 @@
                 "subcommands": []
               },
               {
+                "about": "Log in to the forge with OAuth (opens your browser; no token to copy)",
+                "name": "login",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Only print the URL; do not try to open a browser",
+                    "id": "no_browser",
+                    "long": "no-browser",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_BROWSER"
+                    ]
+                  },
+                  {
+                    "help": "Seconds to wait for the browser",
+                    "id": "timeout_seconds",
+                    "long": "timeout-seconds",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TIMEOUT_SECONDS"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove the local OAuth login (revoke the app in the forge to invalidate it)",
+                "name": "logout",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Show the saved forge settings (never the token)",
                 "name": "show",
                 "options": [

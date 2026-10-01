@@ -215,6 +215,16 @@ impl SyncStateStore {
         durable_file::remove(&self.vault_local_dir(paths).join(name)).map(|_| ())
     }
 
+    /// Device-local directory for forge OAuth tokens, outside every work tree.
+    /// Tokens are shared by every vault on the same forge and client.
+    #[cfg(feature = "web")]
+    pub(crate) fn forge_oauth_dir(&self) -> PathBuf {
+        self.root
+            .parent()
+            .unwrap_or(self.root.as_path())
+            .join("forge-oauth")
+    }
+
     /// The identity store this state store names devices with.
     pub(crate) fn identity(&self) -> &DeviceIdentityStore {
         &self.identity

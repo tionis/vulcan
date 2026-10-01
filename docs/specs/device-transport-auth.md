@@ -205,12 +205,26 @@ same-host check, and from then on the remote is not consulted again. A hostile d
 therefore neither redirect a token to another host nor install an attacker's OAuth client without an
 administrator accepting it on that machine.
 
+**Credentials.** `forge sync` resolves a token in order: an OAuth login, refreshed when it has
+expired, then the configured environment variable. `sync forge login` runs the authorization-code flow
+with PKCE (S256) and a loopback redirect to `http://127.0.0.1:<random port>/` (RFC 8252) for a public
+client: only a client ID, never a client secret. It checks a random `state`, ignores stray requests
+to the listener, times out, and sends the code only to the configured forge's token endpoint, never
+following a redirect. The login lives in one owner-only file per forge origin and client under the
+device-local state directory (never a work tree), shared by every vault on that forge. Refresh tokens
+rotate; a process that loses a rotation race uses the winner's fresh login. A failed refresh never
+deletes the login. `sync forge logout` removes the local file; revoking the grant happens in the forge's
+application settings. Tokens are never printed, logged, or put in output, and the in-memory credential
+redacts itself when formatted.
+
 ```text
 vulcan sync forge init   [--wiki <name>] [--kind forgejo] [--oauth-client-id <ID>] [--token-env <VAR>]
                          [--url <base>] [--repo <owner/repo>] [--adopt] [--publish] [--allow-other-host] [--dry-run]
 vulcan sync forge set    [--wiki <name>] --kind forgejo --url <base> --repo <owner/repo> [--token-env <VAR>] [--oauth-client-id <ID>]
 vulcan sync forge show   [--wiki <name>]
 vulcan sync forge clear  [--wiki <name>]
+vulcan sync forge login  [--wiki <name>] [--no-browser] [--timeout-seconds 300]
+vulcan sync forge logout [--wiki <name>]
 vulcan sync forge sync   [--wiki <name>] [--dry-run]
 ```
 

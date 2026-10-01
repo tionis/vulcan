@@ -6495,11 +6495,11 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 **Why:** a long-lived personal access token in an environment variable or file is the weakest part of `forge sync`. A public OAuth2 client with PKCE and a loopback redirect (RFC 8252, as used by the maintainer's `forge-keys` tool) needs no long-lived secret on disk beyond a revocable, rotating refresh token. Verified: an OAuth token from such a client works with the deploy-key API.
 
-- [ ] Add `sync forge login|logout|status` for Forgejo using authorization code with PKCE (S256), a state check, and a `http://127.0.0.1:<random port>/` loopback listener with a timeout; print the URL when no browser can be opened. Use a separate, non-confidential Vulcan OAuth app per forge (redirect `http://127.0.0.1/`), configured with `sync forge set --oauth-client-id <ID>`.
-- [ ] Store tokens device-locally outside every work tree, one 0600 file per forge origin and client, written atomically under a lock. Refresh on use with rotation; never print or log tokens. Provider order: OAuth login first, then the named environment variable as a fallback, as in `forge-keys`.
-- [ ] Send the token only to the configured forge origin (HTTPS, or loopback for tests), never follow redirects, bound responses, and reject a token endpoint on another host.
-- [ ] Tests with a fake OAuth server: PKCE verifier/challenge, state mismatch, denied consent, timeout, refresh and rotation, expired refresh token, concurrent refresh, file permissions, atomic writes, no token in any output or file under the vault.
-- [ ] Update `sync-workflow` and configuration skills plus installed-skill tests when the commands ship.
+- [x] Add `sync forge login|logout` for Forgejo (login state is shown by `sync forge show`) using authorization code with PKCE (S256), a state check, and a `http://127.0.0.1:<random port>/` loopback listener with a timeout; print the URL when no browser can be opened. Use a separate, non-confidential Vulcan OAuth app per forge (redirect `http://127.0.0.1/`), configured with `sync forge set --oauth-client-id <ID>`.
+- [x] Store tokens device-locally outside every work tree, one 0600 file per forge origin and client, written atomically under a lock. Refresh on use with rotation; never print or log tokens. Provider order: OAuth login first, then the named environment variable as a fallback, as in `forge-keys`.
+- [x] Send the token only to the configured forge origin (HTTPS, or loopback for tests), never follow redirects, bound responses, and reject a token endpoint on another host.
+- [x] Tests with a fake OAuth server: PKCE verifier/challenge, state mismatch, denied consent, timeout, refresh and rotation, expired refresh token, concurrent refresh, file permissions, atomic writes, no token in any output or file under the vault.
+- [x] Update `sync-workflow` and configuration skills plus installed-skill tests when the commands ship.
 
 #### Extension points (not scheduled)
 

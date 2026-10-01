@@ -4064,6 +4064,10 @@ struct ForgeShowReport {
     config: Option<vulcan_app::sync_forge::ForgeConfig>,
     /// Whether the configured token variable is currently set; never its value.
     token_env_set: bool,
+    /// Local OAuth login state; never a token.
+    #[cfg(feature = "web")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth: Option<vulcan_app::sync_forge::ForgeOAuthStatus>,
 }
 
 /// Explicit forge settings from the command line.
@@ -4193,6 +4197,12 @@ fn handle_forge_show(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
                 .as_ref()
                 .is_some_and(|name| std::env::var_os(name).is_some())
         }),
+        #[cfg(feature = "web")]
+        oauth: config.as_ref().and_then(|config| {
+            vulcan_app::sync_forge::forge_oauth_status(config)
+                .ok()
+                .flatten()
+        }),
         config,
     };
     match (cli.output, &report.config) {
@@ -4205,6 +4215,22 @@ fn handle_forge_show(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
             println!("forgejo {} at {}", config.repo, config.url);
             if let Some(client_id) = &config.oauth_client_id {
                 println!("OAuth client ID: {client_id}");
+                #[cfg(feature = "web")]
+                match &report.oauth {
+                    Some(status) if status.logged_in && status.access_token_expired => println!(
+                        "OAuth login: access token expired{}",
+                        if status.has_refresh_token {
+                            " (refreshes automatically)"
+                        } else {
+                            "; run `vulcan sync forge login`"
+                        }
+                    ),
+                    Some(status) if status.logged_in => println!(
+                        "OAuth login: active, access token valid for {} more seconds",
+                        status.expires_in_seconds.unwrap_or(0)
+                    ),
+                    _ => println!("OAuth login: not logged in; run `vulcan sync forge login`"),
+                }
             }
             if let Some(name) = &config.token_env {
                 println!(
@@ -4219,6 +4245,102 @@ fn handle_forge_show(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
             Ok(())
         }
     }
+}
+
+#[cfg(feature = "web")]
+fn handle_forge_login(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    no_browser: bool,
+    timeout_seconds: u64,
+) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::{forge_login, open_in_browser, show_forge_config};
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    let config = show_forge_config(&paths)
+        .map_err(CliError::operation)?
+        .ok_or_else(|| {
+            CliError::operation(
+                "no forge is configured for this vault; run `vulcan sync forge init`",
+            )
+        })?;
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration_profile.as_deref());
+    let selection = resolve_permission_profile(&paths, profile).map_err(CliError::operation)?;
+    ProfilePermissionGuard::new(&paths, selection)
+        .check_network(&config.url)
+        .map_err(CliError::operation)?;
+    let announce = |url: &str| {
+        // Progress goes to stderr so JSON output stays machine-readable.
+        eprintln!("Approve the login in your browser. If it does not open, visit:\n  {url}\nWaiting for the redirect to 127.0.0.1 ...");
+        if !no_browser {
+            let _ = open_in_browser(url);
+        }
+    };
+    let report = forge_login(&config, Duration::from_secs(timeout_seconds), &announce)
+        .map_err(CliError::operation)?;
+    match cli.output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Logged in to {} (access token valid for {} s{}).",
+                report.origin,
+                report.expires_in_seconds,
+                if report.has_refresh_token {
+                    ", refreshes automatically"
+                } else {
+                    ""
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "web"))]
+fn handle_forge_login(
+    _cli: &Cli,
+    _selected_paths: &VaultPaths,
+    _wiki: Option<&str>,
+    _no_browser: bool,
+    _timeout_seconds: u64,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "this build has no forge support; rebuild with the `web` feature",
+    ))
+}
+
+#[cfg(feature = "web")]
+fn handle_forge_logout(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
+    use vulcan_app::sync_forge::{forge_logout, show_forge_config};
+    let config = show_forge_config(paths)
+        .map_err(CliError::operation)?
+        .ok_or_else(|| CliError::operation("no forge is configured for this vault"))?;
+    let report = forge_logout(&config).map_err(CliError::operation)?;
+    match cli.output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "{}",
+                if report.removed {
+                    "Removed the local login."
+                } else {
+                    "There was no local login."
+                }
+            );
+            println!("{}", report.note);
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "web"))]
+fn handle_forge_logout(_cli: &Cli, _paths: &VaultPaths) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "this build has no forge support; rebuild with the `web` feature",
+    ))
 }
 
 fn handle_forge_clear(cli: &Cli, paths: &VaultPaths, dry_run: bool) -> Result<(), CliError> {
@@ -4302,6 +4424,21 @@ fn handle_sync_forge(
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
             handle_forge_show(cli, &paths)
         }
+        SyncForgeCommand::Login {
+            wiki,
+            no_browser,
+            timeout_seconds,
+        } => handle_forge_login(
+            cli,
+            selected_paths,
+            wiki.as_deref(),
+            *no_browser,
+            *timeout_seconds,
+        ),
+        SyncForgeCommand::Logout { wiki } => {
+            let paths = transport_paths(selected_paths, wiki.as_deref())?;
+            handle_forge_logout(cli, &paths)
+        }
         SyncForgeCommand::Clear { wiki, dry_run } => {
             let paths = transport_paths(selected_paths, wiki.as_deref())?;
             handle_forge_clear(cli, &paths, *dry_run)
@@ -4354,7 +4491,9 @@ fn forge_sync_one(
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<vulcan_app::sync_forge::ForgeSyncReport, CliError> {
-    use vulcan_app::sync_forge::{forge_sync, show_forge_config, ForgejoDeployKeys};
+    use vulcan_app::sync_forge::{
+        forge_sync, resolve_forge_credential, show_forge_config, ForgejoDeployKeys,
+    };
     let config = show_forge_config(paths)
         .map_err(CliError::operation)?
         .ok_or_else(|| {
@@ -4369,17 +4508,12 @@ fn forge_sync_one(
     guard
         .check_network(&config.url)
         .map_err(CliError::operation)?;
-    let name = config.token_env.as_deref().ok_or_else(|| {
-        CliError::operation(
-            "this vault has no API token variable; set --token-env (OAuth login is configured but not available yet)",
-        )
-    })?;
-    let token = std::env::var(name).map_err(|_| {
-        CliError::operation(format!("forge API token variable `{name}` is not set"))
-    })?;
+    let credential = resolve_forge_credential(&config, &|name| std::env::var(name).ok())
+        .map_err(CliError::operation)?;
+    let token = credential.token.as_str();
     let adapter = match config.kind {
         vulcan_app::sync_forge::ForgeKind::Forgejo => {
-            ForgejoDeployKeys::new(&config, &token, Duration::from_secs(30))
+            ForgejoDeployKeys::new(&config, token, Duration::from_secs(30))
                 .map_err(CliError::operation)?
         }
     };

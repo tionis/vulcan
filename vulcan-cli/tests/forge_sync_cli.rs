@@ -86,7 +86,25 @@ fn serve() -> FakeForgejo {
                 .next()
                 .unwrap_or_default()
                 .to_owned();
-            let (status, payload) = if !authorized {
+            let (status, payload) = if method == "POST" && path == "/login/oauth/access_token" {
+                // The OAuth token endpoint needs no bearer token. A real server
+                // verifies PKCE; the app-level tests cover that in depth.
+                let form = body.split('&').collect::<Vec<_>>();
+                let has = |needle: &str| form.contains(&needle);
+                if has("code=good-code")
+                    && has("grant_type=authorization_code")
+                    && form
+                        .iter()
+                        .any(|pair| pair.starts_with("code_verifier=") && pair.len() > 60)
+                {
+                    (
+                        200,
+                        serde_json::json!({"access_token": TOKEN, "refresh_token": "RT-cli", "expires_in": 3600}).to_string(),
+                    )
+                } else {
+                    (400, r#"{"error":"invalid_grant"}"#.to_owned())
+                }
+            } else if !authorized {
                 (401, r#"{"message":"bad token"}"#.to_owned())
             } else if let Some(rest) = path.strip_prefix("/api/v1/repos/owner/vault/keys") {
                 let mut keys = thread_keys.lock().unwrap();
@@ -695,4 +713,193 @@ fn init_publishes_non_secret_settings_that_another_administrator_adopts() {
     let plan = json(&on(&second, Some(TOKEN), &["sync", "--dry-run"]));
     assert_eq!(plan["repo"], "owner/vault");
     assert_eq!(plan["dry_run"], true);
+}
+
+fn find_dir(root: &Path, name: &str) -> Option<PathBuf> {
+    for entry in fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|candidate| candidate == name) {
+                return Some(path);
+            }
+            if let Some(found) = find_dir(&path, name) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One ordered login lifecycle reads best unbroken.
+fn oauth_login_replaces_a_pasted_token_and_stays_out_of_the_vault() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let remote = root.join("remote.git");
+    git(root, &["init", "--bare", "--quiet", "remote.git"]);
+    let admin = installation(root, "admin", &remote);
+    let vault = admin.join("vault");
+    let vault_arg = vault.to_str().unwrap().to_owned();
+    let forge = serve();
+    let forge_cmd = |token: Option<&str>, args: &[&str]| {
+        let mut full = vec![
+            "--vault",
+            vault_arg.as_str(),
+            "--output",
+            "json",
+            "sync",
+            "forge",
+        ];
+        full.extend_from_slice(args);
+        run(&admin, token, &full)
+    };
+
+    // OAuth only: no token variable is configured anywhere.
+    json(&forge_cmd(
+        None,
+        &[
+            "init",
+            "--kind",
+            "forgejo",
+            "--url",
+            &forge.url,
+            "--repo",
+            "owner/vault",
+            "--oauth-client-id",
+            "client-abc",
+            "--allow-other-host",
+        ],
+    ));
+    let before = failure_text(&forge_cmd(None, &["sync", "--dry-run"]));
+    assert!(before.contains("sync forge login"), "{before}");
+    let shown = json(&forge_cmd(None, &["show"]));
+    assert_eq!(shown["oauth"]["logged_in"], false);
+
+    // The login runs in a child; this test plays the browser.
+    let home = admin.join("home");
+    let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .current_dir(&admin)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", admin.join("config"))
+        .env("XDG_DATA_HOME", admin.join("data"))
+        .env("XDG_STATE_HOME", admin.join("state"))
+        .args([
+            "--vault",
+            vault_arg.as_str(),
+            "--output",
+            "json",
+            "sync",
+            "forge",
+            "login",
+            "--no-browser",
+            "--timeout-seconds",
+            "30",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("login process");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr"));
+    let mut authorize = String::new();
+    let mut line = String::new();
+    while authorize.is_empty() && stderr.read_line(&mut line).unwrap_or(0) > 0 {
+        authorize = line
+            .trim()
+            .strip_prefix("")
+            .filter(|text| text.starts_with("http"))
+            .unwrap_or_default()
+            .to_owned();
+        line.clear();
+    }
+    assert!(
+        authorize.contains("/login/oauth/authorize?"),
+        "no authorization URL was printed: {authorize:?}"
+    );
+    assert!(
+        authorize.contains("code_challenge_method=S256")
+            && authorize.contains("client_id=client-abc")
+    );
+    let query = authorize.split_once('?').unwrap().1;
+    let param = |name: &str| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let redirect = param("redirect_uri")
+        .replace("%3A", ":")
+        .replace("%2F", "/");
+    let state = param("state");
+    let approved = reqwest_get(&format!("{redirect}?code=good-code&state={state}"));
+    assert!(approved.contains("login complete"), "{approved}");
+    let output = child.wait_with_output().expect("login result");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let login: Value = serde_json::from_slice(&output.stdout).expect("login JSON");
+    assert_eq!(login["client_id"], "client-abc");
+    assert_eq!(login["has_refresh_token"], true);
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(TOKEN),
+        "the token is never printed"
+    );
+
+    // The login is local, owner-only, and nowhere near the vault.
+    let tokens = find_dir(&admin.join("state"), "forge-oauth").expect("token directory");
+    let files = fs::read_dir(&tokens).unwrap().flatten().collect::<Vec<_>>();
+    assert_eq!(files.len(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(files[0].path()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&tokens).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    for file in walk(&vault) {
+        if let Ok(text) = fs::read_to_string(&file) {
+            assert!(!text.contains(TOKEN), "{} holds the token", file.display());
+        }
+    }
+    let shown = json(&forge_cmd(None, &["show"]));
+    assert_eq!(shown["oauth"]["logged_in"], true);
+    assert!(!shown.to_string().contains(TOKEN));
+
+    // `forge sync` now works with no token variable at all.
+    let plan = json(&forge_cmd(None, &["sync", "--dry-run"]));
+    assert_eq!(plan["repo"], "owner/vault");
+
+    // Logging out removes it again.
+    assert_eq!(json(&forge_cmd(None, &["logout"]))["removed"], true);
+    assert!(failure_text(&forge_cmd(None, &["sync", "--dry-run"])).contains("sync forge login"));
+    assert_eq!(fs::read_dir(&tokens).unwrap().count(), 0);
+}
+
+/// A plain blocking GET, as the browser's redirect would do.
+fn reqwest_get(url: &str) -> String {
+    let rest = url.strip_prefix("http://").expect("http URL");
+    let (authority, path) = rest.split_once('/').expect("path");
+    let mut stream =
+        std::net::TcpStream::connect(authority).expect("connect to the login listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /{path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response
 }

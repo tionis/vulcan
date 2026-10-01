@@ -20,12 +20,20 @@ mod derive;
 #[cfg(feature = "web")]
 mod forgejo;
 mod init;
+#[cfg(feature = "web")]
+mod oauth;
 mod shared;
 
 pub use derive::{derive_forge_target, ForgeTarget};
 #[cfg(feature = "web")]
 pub use forgejo::ForgejoDeployKeys;
 pub use init::{forge_init, ForgeInitReport, ForgeInitRequest};
+#[cfg(feature = "web")]
+pub use oauth::{
+    forge_login, forge_logout, forge_oauth_status, open_in_browser, resolve_forge_credential,
+    CredentialSource, ForgeCredential, ForgeLoginReport, ForgeLogoutReport, ForgeOAuthStatus,
+    DEFAULT_LOGIN_TIMEOUT,
+};
 pub use shared::{read_shared_forge, SharedForge, SharedForgeView};
 
 pub const SYNC_FORGE_REPORT_VERSION: u32 = 1;
@@ -39,6 +47,18 @@ pub const DEVICE_KEY_TITLE_PREFIX: &str = "vulcan-device:";
 #[serde(rename_all = "snake_case")]
 pub enum ForgeKind {
     Forgejo,
+}
+
+impl ForgeKind {
+    /// `(authorize, token)` endpoint paths for the OAuth authorization-code
+    /// flow, relative to the forge's base URL. Everything provider-specific
+    /// lives here, so no forge is special-cased elsewhere.
+    #[must_use]
+    pub const fn oauth_paths(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Forgejo => ("login/oauth/authorize", "login/oauth/access_token"),
+        }
+    }
 }
 
 /// Device-local forge settings for one vault. Holds the *name* of a token

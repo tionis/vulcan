@@ -60,6 +60,13 @@ both execute the same application workflow.
   adopt on the user's behalf without showing them the proposal, and never pass `--allow-other-host`
   unless the user asks: the API URL must be on the Git remote's host, since that is where the
   credential is sent. Adoption keeps device-specific values (the token variable) local.
+- `vulcan sync forge login` authenticates with the forge's OAuth app instead of a pasted token: it
+  needs the OAuth client ID from `sync forge init --oauth-client-id`, prints an authorization URL,
+  tries to open a browser, and waits for the redirect to `127.0.0.1`. It is interactive (the user
+  approves in their browser), so never run it unattended. The login is stored device-locally with
+  owner-only permissions, refreshes automatically, and is shown (never the token) by `sync forge show`;
+  `sync forge logout` removes it, but only revoking the app in the forge's settings invalidates the
+  grant. `forge sync` uses the OAuth login first and the `--token-env` variable as a fallback.
 - `vulcan sync forge set --url <https-url> --repo <owner/name> --token-env <VAR>` saves device-local
   forge settings (only the variable *name*; never ask for or print the token). `vulcan sync forge sync
   --dry-run` shows the plan, then `vulcan sync forge sync` installs a write-capable deploy key for

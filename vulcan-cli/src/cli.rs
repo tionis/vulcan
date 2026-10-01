@@ -3994,6 +3994,25 @@ pub enum SyncForgeCommand {
         #[arg(long, help = "Show what would happen without saving or publishing")]
         dry_run: bool,
     },
+    #[command(
+        about = "Log in to the forge with OAuth (opens your browser; no token to copy)",
+        long_about = "Authorize Vulcan with the forge's OAuth app (authorization code with PKCE and a loopback redirect to 127.0.0.1). Needs an OAuth client ID from `sync forge init --oauth-client-id`. Prints the URL, tries to open a browser, and waits for the redirect. The login is stored device-locally with owner-only permissions and refreshes automatically; nothing is stored in the vault."
+    )]
+    Login {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, help = "Only print the URL; do not try to open a browser")]
+        no_browser: bool,
+        #[arg(long, default_value_t = 300, help = "Seconds to wait for the browser")]
+        timeout_seconds: u64,
+    },
+    #[command(
+        about = "Remove the local OAuth login (revoke the app in the forge to invalidate it)"
+    )]
+    Logout {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+    },
     #[command(about = "Show the saved forge settings (never the token)")]
     Show {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
