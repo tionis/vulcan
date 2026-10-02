@@ -1,3 +1,4 @@
+use crate::keyed_state::{KeyedStateStore, TrackedMap, TrackedSet};
 use crate::outline_markdown::{
     outline_document_links_to_obsidian, outline_to_obsidian_markdown,
     rewrite_markdown_link_destinations,
@@ -19,6 +20,10 @@ use vulcan_core::paths::{secure_read, secure_read_to_string, secure_write};
 use vulcan_core::VaultPaths;
 
 const STATE_VERSION: u32 = 1;
+const DOCUMENTS: &str = "documents";
+const PENDING_ACTIONS: &str = "pending_actions";
+const DUPLICATE_LOCAL_PATH: &str =
+    "Outline pull state maps multiple objects to the same local path";
 pub const DEFAULT_ATTACHMENT_MAX_BYTES: usize = 25 * 1024 * 1024;
 pub const DEFAULT_REMOTE_CONTENT_MAX_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_ATTACHMENT_COUNT_MAX: usize = 10_000;
@@ -357,8 +362,9 @@ struct OutlinePullState {
     destination: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     connector_identity: Option<String>,
+    /// One durable row per remote document; only mutated rows are rewritten.
     #[serde(default)]
-    documents: BTreeMap<String, OutlinePullMapping>,
+    documents: TrackedMap<OutlinePullMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     incomplete_operation: Option<OutlinePullOperationJournal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -369,7 +375,14 @@ struct OutlinePullState {
 #[serde(deny_unknown_fields)]
 struct OutlinePullOperationJournal {
     operation_id: String,
-    pending_actions: BTreeSet<String>,
+    pending_actions: TrackedSet,
+    completed_actions: usize,
+}
+
+/// The journal fields stored as one meta value; pending actions are rows.
+#[derive(Serialize, Deserialize)]
+struct StoredJournalHeader {
+    operation_id: String,
     completed_actions: usize,
 }
 
@@ -462,7 +475,7 @@ pub fn adopt_outline_document_binding(
     if !dry_run {
         let _write_lock =
             vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
-        let lock = StateLock::acquire(paths, profile)?;
+        let mut lock = StateLock::acquire(paths, profile)?;
         let mut state = load_state(
             paths,
             profile,
@@ -503,7 +516,7 @@ pub fn adopt_outline_document_binding(
         if state.connector_identity.is_none() {
             state.connector_identity = connector_identity.map(str::to_string);
         }
-        lock.save(&state)?;
+        lock.save(&mut state)?;
     }
     Ok(OutlineDocumentBindingReport {
         profile: profile.to_string(),
@@ -531,7 +544,7 @@ pub fn remove_outline_document_binding(
         .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
         .transpose()
         .map_err(AppError::operation)?;
-    let lock = (!dry_run)
+    let mut lock = (!dry_run)
         .then(|| StateLock::acquire(paths, profile))
         .transpose()?;
     let mut state = load_state(
@@ -554,9 +567,9 @@ pub fn remove_outline_document_binding(
     let local_path = mapping.local_path.clone();
     if !dry_run {
         state.documents.remove(remote_document_id);
-        lock.as_ref()
+        lock.as_mut()
             .expect("live removal has a state lock")
-            .save(&state)?;
+            .save(&mut state)?;
     }
     Ok(OutlineDocumentBindingReport {
         profile: profile.to_string(),
@@ -591,7 +604,7 @@ impl OutlinePullState {
             collection_id: collection_id.to_string(),
             destination: destination.to_string(),
             connector_identity: connector_identity.map(str::to_string),
-            documents: BTreeMap::new(),
+            documents: TrackedMap::default(),
             incomplete_operation: None,
             last_completed_operation_id: None,
         }
@@ -972,7 +985,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
 
     let _write_lock =
         vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
-    let lock = StateLock::acquire(paths, profile)?;
+    let mut lock = StateLock::acquire(paths, profile)?;
     let mut state = load_state(
         paths,
         profile,
@@ -1090,7 +1103,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             .connector_identity
             .clone_from(&options.connector_identity);
     }
-    lock.save(&state)?;
+    lock.save(&mut state)?;
     let mutation_total = actions
         .iter()
         .filter(|action| pull_action_mutates(action.kind))
@@ -1159,7 +1172,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
                 mapping.attachments.remove(remote_url);
             }
             complete_journal_action(&mut state, action);
-            lock.save(&state)?;
+            lock.save(&mut state)?;
             mutations_processed += 1;
             emit_pull_progress(
                 on_progress,
@@ -1198,7 +1211,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             }
             state.documents.remove(&action.remote_document_id);
             complete_journal_action(&mut state, action);
-            lock.save(&state)?;
+            lock.save(&mut state)?;
             mutations_processed += 1;
             emit_pull_progress(
                 on_progress,
@@ -1251,7 +1264,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             .map_or_else(BTreeMap::new, |mapping| mapping.attachments.clone());
         if action.kind == OutlinePullActionKind::WriteConflictMarkers {
             complete_journal_action(&mut state, action);
-            lock.save(&state)?;
+            lock.save(&mut state)?;
         } else {
             for attachment in &action.attachments {
                 if attachment.needs_download
@@ -1357,7 +1370,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
                 },
             );
             complete_journal_action(&mut state, action);
-            lock.save(&state)?;
+            lock.save(&mut state)?;
         }
         mutations_processed += 1;
         emit_pull_progress(
@@ -1382,7 +1395,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
         .map_err(AppError::operation)?;
     state.last_completed_operation_id = Some(operation_id.clone());
     state.incomplete_operation = None;
-    lock.save(&state)?;
+    lock.save(&mut state)?;
     emit_pull_progress(
         on_progress,
         OutlinePullPhase::Scanning,
@@ -2770,7 +2783,10 @@ fn bytes_hash(bytes: &[u8]) -> String {
 
 fn state_path(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppError> {
     validate_state_profile(profile)?;
-    crate::device_state::path(paths, &state_relative_path(profile))
+    crate::device_state::path(
+        paths,
+        &PathBuf::from("integrations/outline-pull").join(format!("{profile}.sqlite")),
+    )
 }
 
 fn validate_state_profile(profile: &str) -> Result<(), AppError> {
@@ -2786,8 +2802,96 @@ fn validate_state_profile(profile: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn state_relative_path(profile: &str) -> PathBuf {
+/// The JSON file used before the keyed store, still read for migration.
+fn legacy_state_relative_path(profile: &str) -> PathBuf {
     PathBuf::from("integrations/outline-pull").join(format!("{profile}.json"))
+}
+
+fn snapshot_directory(state_path: &Path) -> PathBuf {
+    state_path
+        .parent()
+        .expect("state path has a parent")
+        .join("sources")
+}
+
+/// Reads pull state without locking or migrating. With `hydrate`, base and
+/// remote-source snapshots are loaded into the mappings.
+fn read_state(
+    paths: &VaultPaths,
+    profile: &str,
+    hydrate: bool,
+) -> Result<Option<OutlinePullState>, AppError> {
+    validate_state_profile(profile)?;
+    let path = state_path(paths, profile)?;
+    if let Some(store) = KeyedStateStore::open_read_only(&path)? {
+        return load_from_store(
+            &store,
+            hydrate.then(|| snapshot_directory(&path)).as_deref(),
+        )
+        .map(Some);
+    }
+    // State written before the keyed store is read until the next locked
+    // operation migrates it.
+    let legacy_path =
+        crate::device_state::readable_path(paths, &legacy_state_relative_path(profile))?;
+    if !legacy_path.exists() {
+        return Ok(None);
+    }
+    let mut state = parse_legacy_state(&legacy_path)?;
+    if hydrate {
+        let directory = snapshot_directory(&legacy_path);
+        for mapping in state.documents.values_mut() {
+            hydrate_mapping(&directory, mapping)?;
+        }
+    }
+    Ok(Some(state))
+}
+
+fn parse_legacy_state(path: &Path) -> Result<OutlinePullState, AppError> {
+    let bytes = fs::read(path).map_err(AppError::operation)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))
+}
+
+fn load_from_store(
+    store: &KeyedStateStore,
+    snapshots: Option<&Path>,
+) -> Result<OutlinePullState, AppError> {
+    let mut documents = store.load_entries::<OutlinePullMapping>(DOCUMENTS)?;
+    if let Some(directory) = snapshots {
+        for mapping in documents.values_mut() {
+            hydrate_mapping(directory, mapping)?;
+        }
+    }
+    let incomplete_operation = store
+        .meta::<StoredJournalHeader>("incomplete_operation")?
+        .map(|header| -> Result<_, AppError> {
+            Ok(OutlinePullOperationJournal {
+                operation_id: header.operation_id,
+                pending_actions: store.load_set(PENDING_ACTIONS)?,
+                completed_actions: header.completed_actions,
+            })
+        })
+        .transpose()?;
+    Ok(OutlinePullState {
+        version: required_meta(store, "version")?,
+        profile: required_meta(store, "profile")?,
+        collection_id: required_meta(store, "collection_id")?,
+        destination: required_meta(store, "destination")?,
+        connector_identity: store.meta("connector_identity")?.flatten(),
+        documents: TrackedMap::persisted(documents),
+        incomplete_operation,
+        last_completed_operation_id: store.meta("last_completed_operation_id")?.flatten(),
+    })
+}
+
+fn required_meta<T: serde::de::DeserializeOwned>(
+    store: &KeyedStateStore,
+    key: &str,
+) -> Result<T, AppError> {
+    store
+        .meta(key)?
+        .ok_or_else(|| AppError::operation(format!("Outline pull state is missing `{key}`")))
 }
 
 fn load_state(
@@ -2797,20 +2901,14 @@ fn load_state(
     destination: &str,
     connector_identity: Option<&str>,
 ) -> Result<OutlinePullState, AppError> {
-    validate_state_profile(profile)?;
-    let path = crate::device_state::readable_path(paths, &state_relative_path(profile))?;
-    if !path.exists() {
+    let Some(state) = read_state(paths, profile, true)? else {
         return Ok(OutlinePullState::empty(
             profile,
             collection_id,
             destination,
             connector_identity,
         ));
-    }
-    let bytes = fs::read(&path).map_err(AppError::operation)?;
-    let mut state: OutlinePullState = serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))?;
-    hydrate_state_sources(&path, &mut state)?;
+    };
     state.validate(profile, collection_id, destination, connector_identity)?;
     Ok(state)
 }
@@ -2821,14 +2919,9 @@ pub fn load_outline_pulled_bindings(
     profile: &str,
     collection_id: &str,
 ) -> Result<Vec<OutlinePulledBinding>, AppError> {
-    validate_state_profile(profile)?;
-    let path = crate::device_state::readable_path(paths, &state_relative_path(profile))?;
-    if !path.exists() {
+    let Some(state) = read_state(paths, profile, false)? else {
         return Ok(Vec::new());
-    }
-    let bytes = fs::read(path).map_err(AppError::operation)?;
-    let state: OutlinePullState = serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))?;
+    };
     let destination = state.destination.clone();
     state.validate(profile, collection_id, &destination, None)?;
     state
@@ -2863,6 +2956,7 @@ pub fn load_outline_pulled_bindings(
 struct StateLock {
     file: File,
     state_path: PathBuf,
+    store: KeyedStateStore,
 }
 
 impl StateLock {
@@ -2880,57 +2974,170 @@ impl StateLock {
             .map_err(AppError::operation)?;
         file.try_lock_exclusive()
             .map_err(|_| AppError::operation("Outline pull state is locked by another process"))?;
-        if !state_path.exists() {
+        let mut store = KeyedStateStore::open(&state_path)?;
+        if !store.is_initialized()? {
             crate::device_state::migrate_flat_directory(
                 paths,
                 Path::new("integrations/outline-pull/sources"),
             )?;
-            crate::device_state::migrate_file(paths, &state_relative_path(profile))?;
+            let legacy = legacy_state_relative_path(profile);
+            crate::device_state::migrate_file(paths, &legacy)?;
+            migrate_legacy_state(
+                &crate::device_state::path(paths, &legacy)?,
+                &state_path,
+                &mut store,
+            )?;
         }
-        Ok(Self { file, state_path })
+        Ok(Self {
+            file,
+            state_path,
+            store,
+        })
     }
 
-    fn save(&self, state: &OutlinePullState) -> Result<(), AppError> {
-        let mut persisted = state.clone();
-        let snapshot_directory = self
-            .state_path
-            .parent()
-            .expect("state parent")
-            .join("sources");
-        for mapping in persisted.documents.values_mut() {
-            if let Some(source) = mapping.last_remote_source.take() {
-                write_content_snapshot(
-                    &snapshot_directory,
-                    mapping.last_remote_source_hash.as_deref().ok_or_else(|| {
-                        AppError::operation("remote source snapshot omitted its hash")
-                    })?,
-                    &source,
-                )?;
-            }
-            if !mapping.base_content.is_empty() {
-                write_content_snapshot(
-                    &snapshot_directory,
-                    &mapping.last_remote_content_hash,
-                    &mapping.base_content,
-                )?;
-                mapping.base_content.clear();
-            }
-        }
-        let bytes = serde_json::to_vec_pretty(&persisted).map_err(AppError::operation)?;
-        let parent = self.state_path.parent().expect("state parent");
-        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-        temporary.write_all(&bytes).map_err(AppError::operation)?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(AppError::operation)?;
-        temporary
-            .persist(&self.state_path)
-            .map_err(|error| AppError::operation(error.error))?;
-        #[cfg(unix)]
-        sync_parent_directory(parent)?;
-        Ok(())
+    /// Persists the documents and journal entries changed since the last save
+    /// in one transaction, after writing their content snapshots.
+    fn save(&mut self, state: &mut OutlinePullState) -> Result<(), AppError> {
+        persist_state(
+            &mut self.store,
+            &snapshot_directory(&self.state_path),
+            state,
+        )
     }
+}
+
+/// Imports a JSON pull state into the keyed store, then keeps the file as a
+/// `.json.migrated` backup. A failed import leaves the JSON file authoritative.
+fn migrate_legacy_state(
+    legacy_path: &Path,
+    state_path: &Path,
+    store: &mut KeyedStateStore,
+) -> Result<(), AppError> {
+    if !legacy_path.is_file() {
+        return Ok(());
+    }
+    let mut state = parse_legacy_state(legacy_path)?;
+    let directory = snapshot_directory(state_path);
+    // Hydration verifies every referenced snapshot exists before the import.
+    for mapping in state.documents.values_mut() {
+        hydrate_mapping(&directory, mapping)?;
+    }
+    let destination = state.destination.clone();
+    state.validate(
+        &state.profile.clone(),
+        &state.collection_id.clone(),
+        &destination,
+        None,
+    )?;
+    persist_state(store, &directory, &mut state)?;
+    fs::rename(legacy_path, legacy_path.with_extension("json.migrated"))
+        .map_err(AppError::operation)
+}
+
+fn persist_state(
+    store: &mut KeyedStateStore,
+    snapshot_directory: &Path,
+    state: &mut OutlinePullState,
+) -> Result<(), AppError> {
+    let changed = if state.documents.is_replaced() {
+        state.documents.keys().collect::<Vec<_>>()
+    } else {
+        state.documents.dirty_keys().iter().collect()
+    };
+    // Snapshots are content-addressed, so writing them before the rows keeps
+    // every committed row backed by its content.
+    for key in changed {
+        let Some(mapping) = state.documents.get(key) else {
+            continue;
+        };
+        if let Some(source) = &mapping.last_remote_source {
+            let hash = mapping
+                .last_remote_source_hash
+                .as_deref()
+                .ok_or_else(|| AppError::operation("remote source snapshot omitted its hash"))?;
+            write_content_snapshot(snapshot_directory, hash, source)?;
+        }
+        if !mapping.base_content.is_empty() {
+            write_content_snapshot(
+                snapshot_directory,
+                &mapping.last_remote_content_hash,
+                &mapping.base_content,
+            )?;
+        }
+    }
+    store.write(|writer| {
+        writer.set_meta("version", &state.version)?;
+        writer.set_meta("profile", &state.profile)?;
+        writer.set_meta("collection_id", &state.collection_id)?;
+        writer.set_meta("destination", &state.destination)?;
+        writer.set_meta("connector_identity", &state.connector_identity)?;
+        writer.set_meta(
+            "last_completed_operation_id",
+            &state.last_completed_operation_id,
+        )?;
+        if let Some(journal) = &state.incomplete_operation {
+            writer.set_meta(
+                "incomplete_operation",
+                &StoredJournalHeader {
+                    operation_id: journal.operation_id.clone(),
+                    completed_actions: journal.completed_actions,
+                },
+            )?;
+            writer.write_dirty(
+                PENDING_ACTIONS,
+                journal.pending_actions.tracked(),
+                |()| Vec::new(),
+                "Outline pull journal contains a duplicate action",
+            )?;
+        } else {
+            writer.delete_meta("incomplete_operation")?;
+            writer.clear_namespace(PENDING_ACTIONS)?;
+        }
+        writer.write_dirty_as(
+            DOCUMENTS,
+            &state.documents,
+            |mapping| serde_json::to_string(&stored_mapping(mapping)),
+            local_path_claims,
+            DUPLICATE_LOCAL_PATH,
+        )?;
+        writer.mark_initialized()
+    })?;
+    state.documents.mark_persisted();
+    if let Some(journal) = state.incomplete_operation.as_mut() {
+        journal.pending_actions.mark_persisted();
+    }
+    Ok(())
+}
+
+/// The row form of a mapping: content lives in snapshot files, not rows.
+fn stored_mapping(mapping: &OutlinePullMapping) -> OutlinePullMapping {
+    OutlinePullMapping {
+        local_path: mapping.local_path.clone(),
+        last_remote_content_hash: mapping.last_remote_content_hash.clone(),
+        last_remote_source_hash: mapping.last_remote_source_hash.clone(),
+        last_remote_source: None,
+        last_remote_revision: mapping.last_remote_revision,
+        last_remote_updated_at: mapping.last_remote_updated_at.clone(),
+        last_remote_title: mapping.last_remote_title.clone(),
+        last_remote_parent_id: mapping.last_remote_parent_id.clone(),
+        last_materialized_local_hash: mapping.last_materialized_local_hash.clone(),
+        base_content: String::new(),
+        attachments: mapping.attachments.clone(),
+    }
+}
+
+/// Portable local paths a mapping occupies, which must be unique across the
+/// documents and attachments of one pull profile.
+fn local_path_claims(mapping: &OutlinePullMapping) -> Vec<String> {
+    std::iter::once(&mapping.local_path)
+        .chain(
+            mapping
+                .attachments
+                .values()
+                .map(|attachment| &attachment.local_path),
+        )
+        .map(|path| portable_path_key(path))
+        .collect()
 }
 
 #[cfg(unix)]
@@ -2977,22 +3184,19 @@ fn write_content_snapshot(directory: &Path, hash: &str, content: &str) -> Result
     Ok(())
 }
 
-fn hydrate_state_sources(path: &Path, state: &mut OutlinePullState) -> Result<(), AppError> {
-    let directory = path.parent().expect("state parent").join("sources");
-    for mapping in state.documents.values_mut() {
-        if mapping.base_content.is_empty() {
-            let snapshot = snapshot_path(&directory, &mapping.last_remote_content_hash)?;
-            mapping.base_content = fs::read_to_string(snapshot).map_err(|_| {
-                AppError::operation("Outline pull state is missing a required base snapshot")
-            })?;
-        }
-        if mapping.last_remote_source.is_none() {
-            if let Some(hash) = mapping.last_remote_source_hash.as_deref() {
-                let snapshot = snapshot_path(&directory, hash)?;
-                if snapshot.exists() {
-                    mapping.last_remote_source =
-                        Some(fs::read_to_string(snapshot).map_err(AppError::operation)?);
-                }
+fn hydrate_mapping(directory: &Path, mapping: &mut OutlinePullMapping) -> Result<(), AppError> {
+    if mapping.base_content.is_empty() {
+        let snapshot = snapshot_path(directory, &mapping.last_remote_content_hash)?;
+        mapping.base_content = fs::read_to_string(snapshot).map_err(|_| {
+            AppError::operation("Outline pull state is missing a required base snapshot")
+        })?;
+    }
+    if mapping.last_remote_source.is_none() {
+        if let Some(hash) = mapping.last_remote_source_hash.as_deref() {
+            let snapshot = snapshot_path(directory, hash)?;
+            if snapshot.exists() {
+                mapping.last_remote_source =
+                    Some(fs::read_to_string(snapshot).map_err(AppError::operation)?);
             }
         }
     }
@@ -3125,6 +3329,148 @@ mod tests {
         }
     }
 
+    fn stored_pull_mapping(local_path: &str, base: &str) -> OutlinePullMapping {
+        OutlinePullMapping {
+            local_path: local_path.to_string(),
+            last_remote_content_hash: content_hash(base),
+            last_remote_source_hash: None,
+            last_remote_source: None,
+            last_remote_revision: None,
+            last_remote_updated_at: None,
+            last_remote_title: "Title".to_string(),
+            last_remote_parent_id: None,
+            last_materialized_local_hash: content_hash(base),
+            base_content: base.to_string(),
+            attachments: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn pull_state_saves_touch_only_changed_documents() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        let mut lock = StateLock::acquire(&paths, "wiki").unwrap();
+        let mut state = OutlinePullState::empty("wiki", "collection", "Imported", None);
+        for index in 0..20 {
+            state.documents.insert(
+                format!("doc-{index}"),
+                stored_pull_mapping(
+                    &format!("Imported/Note {index}.md"),
+                    &format!("base {index}\n"),
+                ),
+            );
+        }
+        lock.save(&mut state).unwrap();
+
+        // Corrupt another document's snapshot. Saving one changed document must
+        // not read it, while a full reload still detects the damage.
+        let sources = snapshot_directory(&state_path(&paths, "wiki").unwrap());
+        let untouched = snapshot_path(&sources, &content_hash("base 7\n")).unwrap();
+        fs::write(&untouched, "damaged\n").unwrap();
+        let changed = state.documents.get_mut("doc-3").unwrap();
+        changed.base_content = "updated base\n".to_string();
+        changed.last_remote_content_hash = content_hash("updated base\n");
+        lock.save(&mut state).unwrap();
+        state.documents.remove("doc-4");
+        lock.save(&mut state).unwrap();
+        drop(lock);
+
+        fs::write(&untouched, "base 7\n").unwrap();
+        let reloaded = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
+        assert_eq!(reloaded.documents.len(), 19);
+        assert_eq!(reloaded.documents["doc-3"].base_content, "updated base\n");
+        assert!(!reloaded.documents.contains_key("doc-4"));
+
+        let mut lock = StateLock::acquire(&paths, "wiki").unwrap();
+        let mut state = reloaded;
+        state.documents.insert(
+            "intruder".to_string(),
+            stored_pull_mapping("Imported/Note 1.md", "other\n"),
+        );
+        let error = lock.save(&mut state).unwrap_err();
+        assert!(error.to_string().contains("same local path"), "{error}");
+    }
+
+    #[test]
+    fn rebuilt_pull_journal_replaces_its_stored_pending_actions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        let mut lock = StateLock::acquire(&paths, "wiki").unwrap();
+        let mut state = OutlinePullState::empty("wiki", "collection", "Imported", None);
+        state.incomplete_operation = Some(OutlinePullOperationJournal {
+            operation_id: "operation".to_string(),
+            pending_actions: ["a".to_string(), "b".to_string()].into_iter().collect(),
+            completed_actions: 0,
+        });
+        lock.save(&mut state).unwrap();
+        let journal = state.incomplete_operation.as_mut().unwrap();
+        assert!(journal.pending_actions.remove("a"));
+        journal.completed_actions += 1;
+        lock.save(&mut state).unwrap();
+        let reloaded = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
+        let pending = |state: &OutlinePullState| {
+            state
+                .incomplete_operation
+                .as_ref()
+                .map(|journal| journal.pending_actions.iter().cloned().collect::<Vec<_>>())
+        };
+        assert_eq!(pending(&reloaded), Some(vec!["b".to_string()]));
+
+        // A resumed run rebuilds the journal under the same operation ID.
+        state.incomplete_operation = Some(OutlinePullOperationJournal {
+            operation_id: "operation".to_string(),
+            pending_actions: ["c".to_string()].into_iter().collect(),
+            completed_actions: 1,
+        });
+        lock.save(&mut state).unwrap();
+        let reloaded = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
+        assert_eq!(pending(&reloaded), Some(vec!["c".to_string()]));
+
+        state.incomplete_operation = None;
+        state.last_completed_operation_id = Some("operation".to_string());
+        lock.save(&mut state).unwrap();
+        let reloaded = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
+        assert!(reloaded.incomplete_operation.is_none());
+        assert_eq!(
+            reloaded.last_completed_operation_id.as_deref(),
+            Some("operation")
+        );
+    }
+
+    #[test]
+    fn legacy_json_pull_state_is_migrated_with_its_snapshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        let legacy =
+            crate::device_state::path(&paths, &legacy_state_relative_path("wiki")).unwrap();
+        let sources = snapshot_directory(&legacy);
+        let mut legacy_state = OutlinePullState::empty("wiki", "collection", "Imported", None);
+        legacy_state.documents.insert(
+            "home".to_string(),
+            stored_pull_mapping("Imported/Home.md", "legacy base\n"),
+        );
+        write_content_snapshot(&sources, &content_hash("legacy base\n"), "legacy base\n").unwrap();
+        let mut stored = legacy_state.clone();
+        stored.documents = stored
+            .documents
+            .iter()
+            .map(|(key, mapping)| (key.clone(), stored_mapping(mapping)))
+            .collect();
+        fs::write(&legacy, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+        assert_eq!(
+            load_state(&paths, "wiki", "collection", "Imported", None).unwrap(),
+            legacy_state
+        );
+
+        drop(StateLock::acquire(&paths, "wiki").unwrap());
+        assert!(!legacy.exists());
+        assert!(legacy.with_extension("json.migrated").is_file());
+        assert_eq!(
+            load_state(&paths, "wiki", "collection", "Imported", None).unwrap(),
+            legacy_state
+        );
+    }
+
     #[test]
     fn pull_materializes_hierarchy_reverse_markdown_and_links_idempotently() {
         let temp = tempdir().expect("temp dir");
@@ -3211,7 +3557,7 @@ mod tests {
         )
         .expect("binding preview should succeed");
         assert!(!preview.applied);
-        assert!(!state_path(&paths, "wiki").unwrap().exists());
+        assert!(read_state(&paths, "wiki", false).unwrap().is_none());
 
         let adopted = adopt_outline_document_binding(
             &paths,
@@ -3339,7 +3685,7 @@ mod tests {
         .expect_err("drift between plan and apply must fail");
         assert!(error.to_string().contains("pre-apply conformance check"));
         assert!(!temp.path().join("Imported/Home.md").exists());
-        assert!(!state_path(&paths, "wiki").unwrap().exists());
+        assert!(read_state(&paths, "wiki", false).unwrap().is_none());
     }
 
     #[test]
@@ -4445,8 +4791,16 @@ mod tests {
             mapping.last_remote_updated_at.as_deref(),
             Some("2026-08-24T12:00:00Z")
         );
-        let persisted = fs::read_to_string(state_path(&paths, "wiki").unwrap()).unwrap();
-        assert!(!persisted.contains("remote source"));
+        let store = state_path(&paths, "wiki").unwrap();
+        for file in [store.clone(), store.with_extension("sqlite-wal")] {
+            let persisted = fs::read(file).unwrap_or_default();
+            assert!(
+                !persisted
+                    .windows(b"remote source".len())
+                    .any(|window| window == b"remote source"),
+                "content belongs in snapshots, not state rows"
+            );
+        }
         assert!(
             paths
                 .operational_state_dir()

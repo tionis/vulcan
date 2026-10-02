@@ -172,7 +172,7 @@ where
         ));
     }
 
-    let lock = lock_outline_state(paths, profile)?;
+    let mut lock = lock_outline_state(paths, profile)?;
     let mut state = load_outline_state(paths, profile, collection_id)?;
     let adopted_pull_bindings = apply_pull_adoptions(
         api,
@@ -261,8 +261,7 @@ where
             });
             let mapping = state
                 .documents
-                .entry(source_identity.clone())
-                .or_insert_with(|| OutlineDocumentMapping {
+                .entry_or_insert_with(source_identity.clone(), || OutlineDocumentMapping {
                     source_path: document.source_path.clone(),
                     source_document_id: document.source_document_id.clone(),
                     remote_document_id: requested_remote_id.clone(),
@@ -284,7 +283,7 @@ where
                 mapping.attachments.clear();
             }
             mapping.pending_create = true;
-            lock.save(&state)?;
+            lock.save(&mut state)?;
             let remote = api
                 .create_document(
                     &requested_remote_id,
@@ -337,7 +336,7 @@ where
                 .clone_from(&verified.parent_document_id);
             mapping.last_observed_remote = Some(remote_snapshot(&verified));
             mapping.pending_create = false;
-            lock.save(&state)?;
+            lock.save(&mut state)?;
             source_identity
         } else {
             action.source_identity.clone().ok_or_else(|| {
@@ -379,7 +378,7 @@ where
             identity_by_path.remove(&previous_path);
         }
         identity_by_path.insert(document.source_path.clone(), source_identity);
-        lock.save(&state)?;
+        lock.save(&mut state)?;
         emit_progress(
             &mut on_progress,
             OutlinePublishPhase::ReconcilingDocuments,
@@ -459,8 +458,17 @@ where
                     &error,
                 )
             })?;
-        for mapping in state.documents.values_mut() {
-            mapping.attachments.remove(&attachment.source_path);
+        // Touch only mappings that hold the path, so a save rewrites those rows.
+        let holders = state
+            .documents
+            .iter()
+            .filter(|(_, mapping)| mapping.attachments.contains_key(&attachment.source_path))
+            .map(|(identity, _)| identity.clone())
+            .collect::<Vec<_>>();
+        for identity in holders {
+            if let Some(mapping) = state.documents.get_mut(&identity) {
+                mapping.attachments.remove(&attachment.source_path);
+            }
         }
         state
             .documents
@@ -476,7 +484,7 @@ where
                     owner_remote_document_id: owner_remote_id,
                 },
             );
-        lock.save(&state)?;
+        lock.save(&mut state)?;
         emit_progress(
             &mut on_progress,
             OutlinePublishPhase::UploadingAttachments,
@@ -491,10 +499,23 @@ where
         .iter()
         .map(|attachment| attachment.source_path.as_str())
         .collect::<BTreeSet<_>>();
-    for mapping in state.documents.values_mut() {
-        mapping
-            .attachments
-            .retain(|path, _| selected_attachments.contains(path.as_str()));
+    let pruned = state
+        .documents
+        .iter()
+        .filter(|(_, mapping)| {
+            mapping
+                .attachments
+                .keys()
+                .any(|path| !selected_attachments.contains(path.as_str()))
+        })
+        .map(|(identity, _)| identity.clone())
+        .collect::<Vec<_>>();
+    for identity in pruned {
+        if let Some(mapping) = state.documents.get_mut(&identity) {
+            mapping
+                .attachments
+                .retain(|path, _| selected_attachments.contains(path.as_str()));
+        }
     }
     let remote_urls = state
         .documents
@@ -582,7 +603,7 @@ where
         }
         mapping.pending_create = false;
         mapping.pending_archive = false;
-        lock.save(&state)?;
+        lock.save(&mut state)?;
         emit_progress(
             &mut on_progress,
             OutlinePublishPhase::UpdatingDocuments,
@@ -635,7 +656,7 @@ where
             .get_mut(&source_identity)
             .expect("archive mapping should exist")
             .pending_archive = true;
-        lock.save(&state)?;
+        lock.save(&mut state)?;
         if let Err(archive_error) = api.archive_document(&remote_id) {
             let already_archived = api
                 .document_info(&remote_id)
@@ -651,7 +672,7 @@ where
             }
         }
         state.documents.remove(&source_identity);
-        lock.save(&state)?;
+        lock.save(&mut state)?;
         emit_progress(
             &mut on_progress,
             OutlinePublishPhase::ArchivingDocuments,
@@ -680,7 +701,7 @@ where
         .collect::<Vec<_>>();
     for source_identity in adopted_removals {
         state.documents.remove(source_identity);
-        lock.save(&state)?;
+        lock.save(&mut state)?;
     }
 
     emit_progress(
@@ -1275,11 +1296,15 @@ mod tests {
             .expect("old remote")
             .deleted_at = Some("2026-08-25T22:44:45Z".to_string());
 
-        let lock = lock_outline_state(&paths, "chronicles").expect("new state lock");
+        let mut lock = lock_outline_state(&paths, "chronicles").expect("new state lock");
         let mut corrupted =
             super::super::OutlinePublishState::empty("chronicles", "new-collection");
-        corrupted.documents = old_state.documents.clone();
-        lock.save(&corrupted).expect("corrupted state fixture");
+        corrupted.documents = old_state
+            .documents
+            .iter()
+            .map(|(identity, mapping)| (identity.clone(), mapping.clone()))
+            .collect();
+        lock.save(&mut corrupted).expect("corrupted state fixture");
         drop(lock);
 
         let dry_run = publish_outline(
