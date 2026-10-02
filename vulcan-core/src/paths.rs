@@ -228,19 +228,30 @@ pub fn is_trusted_vault(vault_root: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+    trusted_vaults_contain(&content, &canonical_root)
+}
+
+/// Whether the trusted-vaults JSON `content` lists `canonical_root`.
+fn trusted_vaults_contain(content: &str, canonical_root: &Path) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(content) else {
         return false;
     };
-    value
-        .get("vaults")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|vaults| {
-            vaults
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .filter_map(|entry| PathBuf::from(entry).canonicalize().ok())
-                .any(|entry| entry == canonical_root)
-        })
+    let Some(vaults) = value.get("vaults").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    let entries = vaults
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(Path::new);
+    // `vulcan trust add` stores canonical paths, so an exact match settles it
+    // without touching the filesystem. Only a hand-edited entry naming the same
+    // final component is canonicalized, which keeps the check cheap however
+    // many vaults are trusted.
+    entries.clone().any(|entry| entry == canonical_root)
+        || entries
+            .filter(|entry| entry.file_name() == canonical_root.file_name())
+            .filter_map(|entry| entry.canonicalize().ok())
+            .any(|entry| entry == canonical_root)
 }
 
 fn user_config_dir_from_env(mut env: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
@@ -1368,6 +1379,34 @@ mod tests {
         if let Some(path) = state_dir {
             assert_eq!(path.file_name(), Some(std::ffi::OsStr::new("vulcan")));
         }
+    }
+
+    #[test]
+    fn trusted_vaults_match_exact_and_hand_edited_entries() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        let canonical = vault.canonicalize().expect("canonical vault");
+        let listing = |entries: &[String]| serde_json::json!({ "vaults": entries }).to_string();
+
+        let exact = listing(&[
+            "/missing/one/vault".to_owned(),
+            canonical.display().to_string(),
+        ]);
+        assert!(trusted_vaults_contain(&exact, &canonical));
+
+        #[cfg(unix)]
+        {
+            let link = temporary.path().join("link");
+            std::os::unix::fs::symlink(temporary.path(), &link).expect("parent symlink");
+            let hand_edited = listing(&[link.join("vault").display().to_string()]);
+            assert!(trusted_vaults_contain(&hand_edited, &canonical));
+        }
+
+        let other = listing(&[temporary.path().join("other").display().to_string()]);
+        assert!(!trusted_vaults_contain(&other, &canonical));
+        assert!(!trusted_vaults_contain("not json", &canonical));
+        assert!(!trusted_vaults_contain("{}", &canonical));
     }
 
     #[test]

@@ -17485,9 +17485,12 @@ fn skill_init_and_run_execute_agent_skill_command() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    // Trust is per-user state; keep it out of the developer's real config.
+    let config_home = temp_dir.path().join("config");
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17499,6 +17502,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     let init_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17530,6 +17534,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17541,6 +17546,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     let run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17562,6 +17568,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     let path = path_with_vulcan_bin();
     let help_output = skill_script_process(&script_path, &path)
+        .env("XDG_CONFIG_HOME", &config_home)
         .current_dir(&vault_root)
         .arg("--help")
         .output()
@@ -17572,6 +17579,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
     );
 
     let direct_output = skill_script_process(&script_path, &path)
+        .env("XDG_CONFIG_HOME", &config_home)
         .current_dir(&vault_root)
         .arg("--arg-json")
         .arg("value=9")
@@ -17585,6 +17593,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     let arg_run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17615,6 +17624,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
     .expect("messages fixture should write");
     let file_arg_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17640,6 +17650,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     let stdin_arg_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17666,6 +17677,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     let describe_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17686,6 +17698,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
 
     let js_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17722,9 +17735,12 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    // Trust is per-user state; keep it out of the developer's real config.
+    let config_home = temp_dir.path().join("config");
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17736,6 +17752,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let init_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17768,6 +17785,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let mutation_init_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17792,6 +17810,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let lint_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17824,6 +17843,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     }
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17840,6 +17860,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let fix_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17862,6 +17883,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17873,6 +17895,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let test_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17894,6 +17917,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let test_all_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17916,6 +17940,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let compat_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17939,6 +17964,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17958,6 +17984,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let types_all_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -17978,6 +18005,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let ci_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18004,6 +18032,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18046,6 +18075,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let file_example_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18073,6 +18103,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     .expect("expected fixture should be made stale");
     let update_expected_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18101,6 +18132,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
 
     let mismatch_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18135,6 +18167,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     .expect("manifest should add mutating permission profile");
     let mutation_lint_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18166,9 +18199,12 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    // Trust is per-user state; keep it out of the developer's real config.
+    let config_home = temp_dir.path().join("config");
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18179,6 +18215,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         .success();
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18194,6 +18231,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     assert_executable(&script_path);
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18205,6 +18243,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18240,6 +18279,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let path = path_with_vulcan_bin();
     let direct_output = skill_script_process(&script_path, &path)
+        .env("XDG_CONFIG_HOME", &config_home)
         .current_dir(temp_dir.path())
         .arg("--input-json")
         .arg(
@@ -18262,6 +18302,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let structured_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18288,6 +18329,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let facade_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18327,6 +18369,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let transcript_stdin_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18357,6 +18400,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     .expect("messages file should write");
     let messages_file_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18380,6 +18424,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let tool_name_complete = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18396,6 +18441,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let tool_flag_complete = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18412,6 +18458,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let tool_value_complete = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18428,6 +18475,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18445,6 +18493,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     let tool_test_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18468,6 +18517,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18486,6 +18536,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18538,6 +18589,7 @@ metadata:
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
@@ -18555,6 +18607,7 @@ metadata:
 
     let validate_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             vault_root.to_str().expect("utf-8"),
