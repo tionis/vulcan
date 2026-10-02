@@ -4265,12 +4265,9 @@ impl GitEngine for GitCliEngine {
             return Err(GitEngineError::WorktreeChanged);
         }
         self.reject_ignored_collisions(repository, &index_path, &plan)?;
-        self.index_output(
-            repository,
-            &index_path,
-            "restore the pre-application index",
-            ["read-tree", expected_worktree.as_str()],
-        )?;
+        // The verified index already holds `expected_worktree` with fresh stat
+        // data. Keeping it lets `read-tree -u` touch only the changed paths;
+        // rebuilding it from the tree would rewrite every file in the vault.
         self.index_output(
             repository,
             &index_path,

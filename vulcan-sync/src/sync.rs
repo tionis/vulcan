@@ -5451,6 +5451,46 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert!(matches!(error, GitSyncError::PlatformIncompatible(_)));
     }
 
+    #[test]
+    fn applying_a_remote_change_rewrites_only_the_changed_paths() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        fs::create_dir(writer.join("Notes")).expect("notes directory");
+        fs::write(writer.join("Other.md"), "untouched\n").expect("other note");
+        fs::write(writer.join("Notes/Deep.md"), "untouched too\n").expect("deep note");
+        commit_all(&writer, "add untouched notes");
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        sync_git_once(&engine, &writer, &options).expect("writer bootstrap");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &options).expect("reader adoption");
+        backdate_worktree(&reader);
+        let mtime = |path: &str| {
+            fs::metadata(reader.join(path))
+                .and_then(|metadata| metadata.modified())
+                .expect("reader mtime")
+        };
+        let untouched = ["Other.md", "Notes/Deep.md"].map(|path| (path, mtime(path)));
+        let home_before = mtime("Home.md");
+
+        fs::write(writer.join("Home.md"), "changed remotely\n").expect("remote edit");
+        sync_git_once(&engine, &writer, &options).expect("writer publish");
+        let report = sync_git_once(&engine, &reader, &options).expect("reader apply");
+
+        assert!(report.actions.contains(&GitSyncAction::WorktreeApplied));
+        assert_eq!(
+            fs::read_to_string(reader.join("Home.md")).expect("applied note"),
+            "changed remotely\n"
+        );
+        assert_ne!(mtime("Home.md"), home_before);
+        for (path, before) in untouched {
+            assert_eq!(
+                mtime(path),
+                before,
+                "applying an unrelated change must not rewrite `{path}`"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn incompatible_remote_tree_is_not_applied_or_republished() {

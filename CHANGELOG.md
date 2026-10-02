@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- Applying a change pulled by `vulcan sync` no longer rewrites every file in the vault. Only the
+  changed paths are written, so unchanged notes keep their modification times and Obsidian,
+  watchers, and the Vulcan cache no longer see the whole vault as modified.
 - Incremental scans now re-resolve every note's links when a note's `aliases` change, and stale
   resolutions from removed aliases or targets are cleared.
 - `%%` inside code, math, or frontmatter no longer opens an Obsidian comment, so prose after such
