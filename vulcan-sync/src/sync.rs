@@ -1097,8 +1097,10 @@ pub fn sync_git_once_with_control(
     emit_progress(observer, GitSyncPhase::Preparing, 0, &report, None)?;
     require_filter_drivers(&report.requirements)?;
     if options.dry_run {
-        report.remote_before =
-            engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
+        let upstream = resolve_branch_upstream(engine, &report)
+            .transpose()?
+            .flatten();
+        let upstream_tip = preview_remote_refs(engine, options, &mut report, upstream.as_ref())?;
         if let Some(revision) = report.local_before.as_ref().or(report.head_before.as_ref()) {
             report.local_platform_preflight = Some(platform_preflight(
                 engine,
@@ -1121,7 +1123,7 @@ pub fn sync_git_once_with_control(
             ),
             worktree_matches_local,
         });
-        preview_branch_pull(engine, &mut report)?;
+        preview_branch_pull(engine, &mut report, upstream, upstream_tip)?;
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
@@ -1283,6 +1285,99 @@ struct AttemptRefs {
     pending: Option<GitOid>,
 }
 
+/// A remote ref's tip as observed by a query; `None` means the ref is absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedTip(Option<GitOid>);
+
+/// Remote state observed by one `ls-remote` at the start of an attempt, so an
+/// unchanged cycle needs a single remote round trip. Every later remote write
+/// still uses an exact lease, so a slightly stale observation can only cause a
+/// rejected push and a retry, never a lost update.
+#[derive(Default)]
+struct AttemptRemote {
+    /// Whether the attempt queried the remote yet. Capture runs first so an
+    /// unreachable remote never prevents the local safety snapshot.
+    observed: bool,
+    /// Exact device backup head, or `None` once it is no longer known.
+    device: Option<ObservedTip>,
+    /// Live tip and registration refs, observed only in query mode.
+    live: Option<(Option<GitOid>, Option<Vec<GitReference>>)>,
+    /// Branch upstream resolution, consumed by the branch lane.
+    upstream: Option<Result<Option<GitBranchUpstream>, GitEngineError>>,
+    /// Exact upstream branch tip when the upstream lives on the sync remote.
+    upstream_tip: Option<(GitRemote, GitRefName, ObservedTip)>,
+}
+
+fn resolve_branch_upstream(
+    engine: &dyn GitEngine,
+    report: &GitSyncReport,
+) -> Option<Result<Option<GitBranchUpstream>, GitEngineError>> {
+    let branch = report.head_ref_before.as_ref()?;
+    report.repository.work_tree.as_ref()?;
+    Some(engine.branch_upstream(&report.repository, branch))
+}
+
+fn sync_remote_upstream<'a>(
+    options: &GitSyncOptions,
+    upstream: Option<&'a Result<Option<GitBranchUpstream>, GitEngineError>>,
+) -> Option<&'a GitBranchUpstream> {
+    upstream
+        .and_then(|resolved| resolved.as_ref().ok())
+        .and_then(Option::as_ref)
+        .filter(|upstream| upstream.remote == options.remote)
+}
+
+impl AttemptRemote {
+    fn ensure_observed(
+        &mut self,
+        engine: &dyn GitEngine,
+        options: &GitSyncOptions,
+        report: &GitSyncReport,
+    ) -> Result<(), GitSyncError> {
+        if !self.observed {
+            *self = observe_attempt_remote(engine, options, report)?;
+        }
+        Ok(())
+    }
+}
+
+fn observe_attempt_remote(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &GitSyncReport,
+) -> Result<AttemptRemote, GitSyncError> {
+    let upstream = resolve_branch_upstream(engine, report);
+    let upstream_ref = sync_remote_upstream(options, upstream.as_ref())
+        .map(|upstream| (upstream.remote.clone(), upstream.merge_ref.clone()));
+    let query_live = options.remote_observation == GitRemoteObservation::Query;
+    let registrations = GitRefName::parse(REMOTE_REGISTRATION_BRANCH_ROOT)?;
+    let mut references = vec![&report.refs.device];
+    if query_live {
+        references.push(&report.refs.live);
+    }
+    if let Some((_, upstream_ref)) = &upstream_ref {
+        references.push(upstream_ref);
+    }
+    let (tips, registration_tips) = engine.remote_refs(
+        &report.repository,
+        &options.remote,
+        &references,
+        query_live.then_some(&registrations),
+    )?;
+    let mut tips = tips.into_iter();
+    let device = tips.next().flatten();
+    let live = query_live.then(|| (tips.next().flatten(), registration_tips));
+    let upstream_tip = upstream_ref
+        .map(|(remote, reference)| (remote, reference, ObservedTip(tips.next().flatten())));
+    Ok(AttemptRemote {
+        observed: true,
+        device: Some(ObservedTip(device)),
+        live,
+        upstream,
+        upstream_tip,
+    })
+}
+
 fn read_attempt_refs(
     engine: &dyn GitEngine,
     report: &GitSyncReport,
@@ -1381,6 +1476,7 @@ fn inert_branch_lane(
 fn resolve_pull_target(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
+    resolved: Option<Result<Option<GitBranchUpstream>, GitEngineError>>,
 ) -> Option<(GitRefName, GitBranchUpstream)> {
     let repository = &report.repository;
     let branch = report.head_ref_before.clone()?;
@@ -1393,7 +1489,7 @@ fn resolve_pull_target(
         ));
         return None;
     }
-    match engine.branch_upstream(repository, &branch) {
+    match resolved.unwrap_or_else(|| engine.branch_upstream(repository, &branch)) {
         Ok(Some(upstream)) => Some((branch, upstream)),
         Ok(None) => {
             report.branch = Some(inert_branch_lane(
@@ -1419,9 +1515,49 @@ fn resolve_pull_target(
     }
 }
 
+/// Returns the upstream tip, fetching only when the attempt's observation does
+/// not show the tracking ref already holding it. The inner result is the
+/// branch lane's own outcome; only local ref reads fail the cycle.
+fn fetch_upstream_tip(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    upstream: &GitBranchUpstream,
+    remote: &mut AttemptRemote,
+) -> Result<Result<GitOid, GitEngineError>, GitSyncError> {
+    let observed_tip = remote
+        .upstream_tip
+        .take()
+        .filter(|(remote, reference, _)| {
+            remote == &upstream.remote && reference == &upstream.merge_ref
+        })
+        .map(|(_, _, tip)| tip);
+    Ok(match observed_tip {
+        // The tracking ref already holds the observed tip and its objects.
+        Some(ObservedTip(Some(tip)))
+            if engine
+                .read_ref(repository, &upstream.tracking_ref)?
+                .as_ref()
+                == Some(&tip) =>
+        {
+            Ok(tip)
+        }
+        Some(ObservedTip(None)) => Err(GitEngineError::RemoteRefMissing {
+            remote: upstream.remote.clone(),
+            reference: upstream.merge_ref.clone(),
+        }),
+        _ => engine.fetch_ref(
+            repository,
+            &upstream.remote,
+            &upstream.merge_ref,
+            &upstream.tracking_ref,
+        ),
+    })
+}
+
 fn pull_branch_lane(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
+    remote: &mut AttemptRemote,
 ) -> Result<(), GitSyncError> {
     // Branch operations must not start while another Git operation owns the
     // worktree; the live pause check then reports it with guidance. Pure
@@ -1444,7 +1580,8 @@ fn pull_branch_lane(
             return Ok(());
         }
     }
-    let Some((branch, upstream)) = resolve_pull_target(engine, report) else {
+    let Some((branch, upstream)) = resolve_pull_target(engine, report, remote.upstream.take())
+    else {
         return Ok(());
     };
     let repository = &report.repository;
@@ -1460,12 +1597,8 @@ fn pull_branch_lane(
         pushed: false,
         push_detail: None,
     };
-    let fetched = match engine.fetch_ref(
-        repository,
-        &upstream.remote,
-        &upstream.merge_ref,
-        &upstream.tracking_ref,
-    ) {
+    let fetched = fetch_upstream_tip(engine, repository, &upstream, remote)?;
+    let fetched = match fetched {
         Ok(tip) => tip,
         Err(error) => {
             // A deleted upstream branch is a skip, not a failure: there is
@@ -1640,22 +1773,43 @@ fn pull_branch_with_strategy(
 
 /// Previews the branch lane without mutation for dry runs: resolves the
 /// upstream, compares tips by object id, and reports the configured strategy.
+/// Queries the live ref and, when it lives on the same remote, the branch
+/// upstream in one trip. Returns the upstream tip when it was observed.
+fn preview_remote_refs(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    upstream: Option<&GitBranchUpstream>,
+) -> Result<Option<ObservedTip>, GitSyncError> {
+    let upstream_ref = upstream
+        .filter(|upstream| upstream.remote == options.remote)
+        .map(|upstream| &upstream.merge_ref);
+    let mut references = vec![&report.refs.live];
+    references.extend(upstream_ref);
+    let (tips, _) = engine.remote_refs(&report.repository, &options.remote, &references, None)?;
+    let mut tips = tips.into_iter();
+    report.remote_before = tips.next().flatten();
+    Ok(upstream_ref.map(|_| ObservedTip(tips.next().flatten())))
+}
+
 fn preview_branch_pull(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
+    upstream: Option<GitBranchUpstream>,
+    observed_tip: Option<ObservedTip>,
 ) -> Result<(), GitSyncError> {
     let repository = &report.repository;
     let Some(branch) = report.head_ref_before.clone() else {
         return Ok(());
     };
-    if repository.work_tree.is_none() {
-        return Ok(());
-    }
-    let Some(upstream) = engine.branch_upstream(repository, &branch)? else {
+    let Some(upstream) = upstream else {
         return Ok(());
     };
     let before = engine.head_commit(repository)?;
-    let tip = engine.remote_ref(repository, &upstream.remote, &upstream.merge_ref)?;
+    let tip = match observed_tip {
+        Some(ObservedTip(tip)) => tip,
+        None => engine.remote_ref(repository, &upstream.remote, &upstream.merge_ref)?,
+    };
     let (action, detail) = match (&before, &tip) {
         (Some(head), Some(tip)) if head == tip => (GitBranchSyncAction::UpToDate, None),
         (_, None) => (
@@ -1790,11 +1944,13 @@ fn run_attempt(
     // checkout. If the branch lane moves the tree, publish a fresh safety
     // snapshot before allowing file-lane reconciliation to publish anything.
     let refs_before = read_attempt_refs(engine, report)?;
+    let mut remote = AttemptRemote::default();
     let Some(capture) = capture_and_publish_device_backup(
         engine,
         options,
         report,
         control,
+        &mut remote,
         refs_before.local.clone(),
     )?
     else {
@@ -1806,6 +1962,7 @@ fn run_attempt(
         options,
         report,
         control,
+        &mut remote,
         capture,
         refs_before.local,
     )?
@@ -1816,7 +1973,8 @@ fn run_attempt(
 
     control.check()?;
     control.emit(GitSyncPhase::Fetching, report, None)?;
-    let (remote_tip, fetched_during_observation) = observe_remote_tip(engine, options, report)?;
+    let (remote_tip, fetched_during_observation) =
+        observe_remote_tip(engine, options, report, &mut remote)?;
     let fetched_before = if fetched_during_observation {
         remote_tip.as_ref()
     } else {
@@ -1928,6 +2086,7 @@ fn capture_and_publish_device_backup(
     options: &GitSyncOptions,
     report: &mut GitSyncReport,
     control: &mut AttemptControl<'_>,
+    remote: &mut AttemptRemote,
     base: Option<GitOid>,
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.emit(GitSyncPhase::Capturing, report, None)?;
@@ -1939,7 +2098,8 @@ fn capture_and_publish_device_backup(
     control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
     control.check()?;
     control.emit(GitSyncPhase::BackingUp, report, Some(capture.tree.clone()))?;
-    if publish_device_backup(engine, options, report, &capture)? {
+    remote.ensure_observed(engine, options, report)?;
+    if publish_device_backup(engine, options, report, &capture, &mut remote.device)? {
         Ok(Some(capture))
     } else {
         Ok(None)
@@ -1972,11 +2132,12 @@ fn pull_branch_and_refresh_device_backup(
     options: &GitSyncOptions,
     report: &mut GitSyncReport,
     control: &mut AttemptControl<'_>,
+    remote: &mut AttemptRemote,
     capture: crate::GitCapture,
     base: Option<GitOid>,
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.check()?;
-    pull_branch_lane(engine, report)?;
+    pull_branch_lane(engine, report, remote)?;
     push_branch_lane(engine, report)?;
     let may_have_rewritten_worktree = report.branch.as_ref().is_some_and(|branch| {
         matches!(
@@ -1996,11 +2157,49 @@ fn pull_branch_and_refresh_device_backup(
     if engine.worktree_matches_tree(&report.repository, &capture.commit)? {
         Ok(Some(capture))
     } else {
-        capture_and_publish_device_backup(engine, options, report, control, base)
+        capture_and_publish_device_backup(engine, options, report, control, remote, base)
     }
 }
 
 fn publish_device_backup(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+    observed: &mut Option<ObservedTip>,
+) -> Result<bool, GitSyncError> {
+    let published = match observed.take() {
+        Some(ObservedTip(current)) => {
+            publish_observed_device_backup(engine, options, report, capture, current.as_ref())?
+        }
+        None => false,
+    } || publish_queried_device_backup(engine, options, report, capture)?;
+    if published {
+        *observed = report
+            .device_backup
+            .as_ref()
+            .map(|backup| ObservedTip(Some(backup.published_revision.clone())));
+    }
+    Ok(published)
+}
+
+/// Publishes against the device head observed at the start of the attempt.
+/// Returns `false` when the leased push was rejected, so the caller re-queries.
+fn publish_observed_device_backup(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+    current: Option<&GitOid>,
+) -> Result<bool, GitSyncError> {
+    let tracked = engine.read_ref(&report.repository, &report.refs.device_tracking)?;
+    if current.is_some() && current != tracked.as_ref() {
+        return publish_device_backup_after_remote_moved(engine, options, report, capture, current);
+    }
+    publish_device_backup_against(engine, options, report, capture, current)
+}
+
+fn publish_queried_device_backup(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
     report: &mut GitSyncReport,
@@ -2068,6 +2267,8 @@ fn publish_device_backup_after_remote_moved(
     publish_device_backup_against(engine, options, report, capture, current)
 }
 
+/// Publishes against a remote head that was just observed, skipping the push
+/// when that head already covers the capture.
 fn publish_device_backup_against(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
@@ -2076,6 +2277,10 @@ fn publish_device_backup_against(
     remote_before: Option<&GitOid>,
 ) -> Result<bool, GitSyncError> {
     let (target, outcome) = device_backup_target(engine, options, report, capture, remote_before)?;
+    if remote_before == Some(&target) {
+        record_device_backup(report, options, capture, target, outcome);
+        return Ok(true);
+    }
     push_device_backup(
         engine,
         options,
@@ -2185,10 +2390,18 @@ fn observe_remote_tip(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
     report: &mut GitSyncReport,
+    remote: &mut AttemptRemote,
 ) -> Result<(Option<GitOid>, bool), GitSyncError> {
     let registrations = GitRefName::parse(REMOTE_REGISTRATION_BRANCH_ROOT)?;
     match options.remote_observation {
         GitRemoteObservation::Query => {
+            // Nothing in this attempt writes the live ref before reconciliation,
+            // which leases its push, so the attempt's observation is current
+            // enough and saves a second round trip.
+            if let Some((tip, tips)) = remote.live.take() {
+                report.registration_tips = tips;
+                return Ok((tip, false));
+            }
             let (tip, tips) = engine.remote_ref_with_prefix(
                 &report.repository,
                 &options.remote,
@@ -4695,6 +4908,28 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[cfg(unix)]
+    fn assert_single_remote_observation(lines: &[&str], commands: &str, report: &GitSyncReport) {
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" ls-remote "))
+                .count(),
+            1,
+            "steady sync should observe the remote in one query: {commands}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(" ls-remote ")
+                && line.contains(report.refs.device.as_str())
+                && line.contains(report.refs.live.as_str())),
+            "the single query should cover the device backup and live refs: {commands}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains(" push ")),
+            "an already published device backup must not open a push connection: {commands}"
+        );
+    }
+
+    #[cfg(unix)]
     fn assert_direct_engine_probes(lines: &[&str], commands: &str) {
         assert_eq!(
             lines.iter().filter(|line| **line == "--version").count(),
@@ -4982,18 +5217,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             0,
             "a clean steady capture must bypass the full two-pass scan: {commands}"
         );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" ls-remote "))
-                .count(),
-            2,
-            "steady sync should query the device backup and live refs: {commands}"
-        );
-        assert!(
-            lines.iter().all(|line| !line.contains(" push ")),
-            "an already published device backup must not open a push connection: {commands}"
-        );
+        assert_single_remote_observation(&lines, &commands, &report);
         assert!(
             lines.iter().all(|line| !line.contains(" fetch ")),
             "an exact cached remote tip must not be fetched again: {commands}"
@@ -5825,6 +6049,129 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     fn branch_action(report: &GitSyncReport) -> (GitBranchSyncAction, Option<String>) {
         let lane = report.branch.as_ref().expect("branch lane report");
         (lane.action, lane.detail.clone())
+    }
+
+    /// Returns an engine whose Git invocations are appended to the trace file.
+    #[cfg(unix)]
+    fn traced_engine(temporary: &TempDir) -> (GitCliEngine, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let trace = temporary.path().join("git-invocations.log");
+        let wrapper = temporary.path().join("git-wrapper");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                trace.display()
+            ),
+        )
+        .expect("Git wrapper");
+        let mut permissions = fs::metadata(&wrapper)
+            .expect("wrapper metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
+        (GitCliEngine::new(&wrapper), trace)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_device_tracking_ref_is_restored_without_a_push() {
+        let (temporary, _remote, writer) = setup_remote_and_writer();
+        let (engine, trace) = traced_engine(&temporary);
+        let options = GitSyncOptions::default();
+        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
+        let published = bootstrap
+            .device_backup
+            .expect("bootstrap device backup")
+            .published_revision;
+        run_git(
+            &writer,
+            &["update-ref", "-d", bootstrap.refs.device_tracking.as_str()],
+        );
+
+        fs::write(&trace, "").expect("reset invocation trace");
+        let report = sync_git_once(&engine, &writer, &options).expect("steady sync");
+
+        let backup = report.device_backup.expect("device backup");
+        assert_eq!(backup.outcome, GitDeviceBackupOutcome::Current);
+        assert_eq!(backup.published_revision, published);
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert_eq!(
+            engine
+                .read_ref(&repository, &report.refs.device_tracking)
+                .expect("tracking ref"),
+            Some(published)
+        );
+        let commands = fs::read_to_string(&trace).expect("invocation trace");
+        assert!(
+            commands.lines().all(|line| !line.contains(" push ")),
+            "a remote head that already covers the capture must not be pushed: {commands}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn steady_tracked_branch_sync_observes_the_remote_in_one_query() {
+        let (temporary, _remote, writer) = setup_tracked_branch();
+        let (engine, trace) = traced_engine(&temporary);
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap");
+
+        fs::write(&trace, "").expect("reset invocation trace");
+        let report =
+            sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("steady sync");
+        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
+        assert_eq!(branch_action(&report).0, GitBranchSyncAction::UpToDate);
+        let commands = fs::read_to_string(&trace).expect("invocation trace");
+        let remote_commands = commands
+            .lines()
+            .filter(|line| {
+                line.contains(" ls-remote ") || line.contains(" fetch ") || line.contains(" push ")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remote_commands.len(),
+            1,
+            "a steady tracked-branch sync should use one remote query: {commands}"
+        );
+        for reference in [
+            report.refs.device.as_str(),
+            report.refs.live.as_str(),
+            "refs/heads/main",
+        ] {
+            assert!(
+                remote_commands[0].contains(reference),
+                "the remote query should cover `{reference}`: {commands}"
+            );
+        }
+
+        fs::write(&trace, "").expect("reset invocation trace");
+        let preview = sync_git_once(
+            &engine,
+            &writer,
+            &GitSyncOptions {
+                dry_run: true,
+                ..GitSyncOptions::default()
+            },
+        )
+        .expect("preview");
+        assert_eq!(branch_action(&preview).0, GitBranchSyncAction::UpToDate);
+        assert_eq!(preview.remote_before, report.accepted);
+        let commands = fs::read_to_string(&trace).expect("preview invocation trace");
+        let queries = commands
+            .lines()
+            .filter(|line| line.contains(" ls-remote "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            queries.len(),
+            1,
+            "a preview should query the live and upstream refs together: {commands}"
+        );
+        assert!(
+            queries[0].contains(report.refs.live.as_str())
+                && queries[0].contains("refs/heads/main"),
+            "the preview query should cover live and upstream refs: {commands}"
+        );
     }
 
     #[test]

@@ -35,11 +35,11 @@ pub use git::{
     GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
     GitMergeResolutionRequest, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject,
     GitPlatformPolicy, GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
-    GitRefMirror, GitRefName, GitRefUpdateResult, GitReference, GitRemote, GitRepository,
-    GitRepositoryLayout, GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath,
-    GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath,
-    GitTreeApplyPlan, GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome,
-    PullFastForward, PullRebase, RebaseOutcome,
+    GitRefMirror, GitRefName, GitRefUpdateResult, GitReference, GitRemote, GitRemoteRefs,
+    GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitReservedNamesPolicy,
+    GitResolvedPath, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction,
+    GitTreeApplyPath, GitTreeApplyPlan, GitTreeEntry, GitUnattendedRepositoryState, GitVersion,
+    MergeBranchOutcome, PullFastForward, PullRebase, RebaseOutcome,
 };
 pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{

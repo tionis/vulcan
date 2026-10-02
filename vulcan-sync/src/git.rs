@@ -66,6 +66,10 @@ const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
 ];
 
 /// A typed boundary over the repository implementation used by Git-backed sync.
+/// Exact remote ref tips in request order, plus best-effort refs beneath an
+/// optional namespace (`None` when not requested or not parseable).
+pub type GitRemoteRefs = (Vec<Option<GitOid>>, Option<Vec<GitReference>>);
+
 pub trait GitEngine: Send + Sync {
     fn kind(&self) -> GitEngineKind;
 
@@ -433,6 +437,19 @@ pub trait GitEngine: Send + Sync {
         reference: &GitRefName,
         prefix: &GitRefName,
     ) -> Result<(Option<GitOid>, Option<Vec<GitReference>>), GitEngineError>;
+
+    /// Observes several exact refs and, optionally, every ref beneath `prefix`
+    /// in one remote trip. The returned tips follow the order of `references`.
+    ///
+    /// Exact refs are strict, like [`GitEngine::remote_ref`]. The prefixed refs
+    /// are best effort, as in [`GitEngine::remote_ref_with_prefix`].
+    fn remote_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        references: &[&GitRefName],
+        prefix: Option<&GitRefName>,
+    ) -> Result<GitRemoteRefs, GitEngineError>;
 
     /// Fetches `source` into `destination` and, in the same trip, mirrors every
     /// remote ref beneath `remote_prefix` into `local_prefix`, pruning mirrors
@@ -3330,43 +3347,75 @@ impl GitEngine for GitCliEngine {
         reference: &GitRefName,
         prefix: &GitRefName,
     ) -> Result<(Option<GitOid>, Option<Vec<GitReference>>), GitEngineError> {
-        let pattern = format!("{}/*", prefix.as_str().trim_end_matches('/'));
+        let (mut tips, listed) =
+            self.remote_refs(repository, remote, &[reference], Some(prefix))?;
+        Ok((tips.pop().flatten(), listed))
+    }
+
+    fn remote_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        references: &[&GitRefName],
+        prefix: Option<&GitRefName>,
+    ) -> Result<GitRemoteRefs, GitEngineError> {
+        const OPERATION: &str = "query remote Git refs";
         let mut command = self.repository_command(repository);
         command
             .args(["ls-remote", "--refs", "--"])
-            .arg(remote.as_str())
-            .arg(reference.as_str())
-            .arg(pattern);
-        let output = ensure_success("query remote Git refs", self.execute(command)?)?;
-        let stdout = decode_stdout("query remote Git refs", output.stdout)?;
-        let required_prefix = format!("{}/", prefix.as_str().trim_end_matches('/'));
-        let mut live = None;
+            .arg(remote.as_str());
+        for reference in references {
+            command.arg(reference.as_str());
+        }
+        let required_prefix =
+            prefix.map(|prefix| format!("{}/", prefix.as_str().trim_end_matches('/')));
+        if let Some(required_prefix) = &required_prefix {
+            command.arg(format!("{required_prefix}*"));
+        }
+        let output = ensure_success(OPERATION, self.execute(command)?)?;
+        let stdout = decode_stdout(OPERATION, output.stdout)?;
+        let mut tips: Vec<Option<GitOid>> = vec![None; references.len()];
+        let mut seen = BTreeSet::new();
         let mut namespaced = Vec::new();
         for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
             let (oid, name) =
                 line.split_once('\t')
                     .ok_or_else(|| GitEngineError::InvalidOutput {
-                        operation: "query remote Git refs",
+                        operation: OPERATION,
                         detail: format!("expected `<oid>\\t<ref>`, received `{line}`"),
                     })?;
-            if name == reference.as_str() {
-                if live.replace(GitOid::parse(oid)?).is_some() {
+            if references
+                .iter()
+                .any(|reference| reference.as_str() == name)
+            {
+                if !seen.insert(name) {
                     return Err(GitEngineError::InvalidOutput {
-                        operation: "query remote Git refs",
-                        detail: format!("`{reference}` was returned more than once"),
+                        operation: OPERATION,
+                        detail: format!("`{name}` was returned more than once"),
                     });
                 }
-            } else if name.starts_with(&required_prefix) {
+                let oid = GitOid::parse(oid)?;
+                for (tip, reference) in tips.iter_mut().zip(references) {
+                    if reference.as_str() == name {
+                        *tip = Some(oid.clone());
+                    }
+                }
+            } else if required_prefix
+                .as_deref()
+                .is_some_and(|required| name.starts_with(required))
+            {
                 namespaced.push(line);
             } else {
                 return Err(GitEngineError::InvalidOutput {
-                    operation: "query remote Git refs",
-                    detail: format!("expected `{reference}`, received `{name}`"),
+                    operation: OPERATION,
+                    detail: format!("received unexpected remote ref `{name}`"),
                 });
             }
         }
-        let listed = parse_remote_reference_list(namespaced.join("\n").as_bytes(), prefix).ok();
-        Ok((live, listed))
+        let listed = prefix.and_then(|prefix| {
+            parse_remote_reference_list(namespaced.join("\n").as_bytes(), prefix).ok()
+        });
+        Ok((tips, listed))
     }
 
     fn fetch_ref_with_mirror(
@@ -6097,6 +6146,50 @@ mod tests {
                 format!("{OBSERVED_REGISTRATIONS}/b")
             ]
         );
+    }
+
+    #[test]
+    fn one_listing_returns_several_exact_tips_in_request_order() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let origin = GitRemote::parse("origin").expect("remote");
+        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
+        let device = GitRefName::parse("refs/heads/__vulcan-sync/devices/p/d").expect("device ref");
+        let missing = GitRefName::parse("refs/heads/missing").expect("missing ref");
+        let prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:{OBSERVED_LIVE}"),
+                &format!("HEAD:{}", device.as_str()),
+                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
+            ],
+        );
+        let head = GitOid::parse(run_git_capture(&writer, &["rev-parse", "HEAD"])).expect("head");
+
+        let (tips, registrations) = engine
+            .remote_refs(
+                &repository,
+                &origin,
+                &[&device, &missing, &live],
+                Some(&prefix),
+            )
+            .expect("observation");
+        assert_eq!(tips, vec![Some(head.clone()), None, Some(head.clone())]);
+        assert_eq!(
+            registration_names(&registrations.expect("registrations observed")),
+            [format!("{OBSERVED_REGISTRATIONS}/a")]
+        );
+
+        let (tips, registrations) = engine
+            .remote_refs(&repository, &origin, &[&live], None)
+            .expect("observation without a namespace");
+        assert_eq!(tips, vec![Some(head)]);
+        assert_eq!(registrations, None);
     }
 
     #[test]
