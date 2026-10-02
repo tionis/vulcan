@@ -135,6 +135,16 @@ pub trait GitEngine: Send + Sync {
         limit: usize,
     ) -> Result<Vec<GitOid>, GitEngineError>;
 
+    /// Lists first-parent history from `tip`, newest first, stopping before
+    /// any ancestor of `exclude`. At most `limit` commits are returned.
+    fn first_parent_range(
+        &self,
+        repository: &GitRepository,
+        tip: &GitOid,
+        exclude: &GitOid,
+        limit: usize,
+    ) -> Result<Vec<GitOid>, GitEngineError>;
+
     fn update_ref(
         &self,
         repository: &GitRepository,
@@ -186,6 +196,13 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
         commit: &GitOid,
     ) -> Result<GitCommitMetadata, GitEngineError>;
+
+    /// Reads several commits in one process, in the order given.
+    fn commit_metadata_batch(
+        &self,
+        repository: &GitRepository,
+        commits: &[GitOid],
+    ) -> Result<Vec<GitCommitMetadata>, GitEngineError>;
 
     fn path_object(
         &self,
@@ -1929,9 +1946,22 @@ impl GitCliEngine {
 
     fn visit_batch_blobs_with_limits(
         &self,
+        command: Command,
+        input: &[u8],
+        expected: &[GitOid],
+        limits: (usize, usize),
+        visitor: &mut GitBlobVisitor<'_>,
+    ) -> Result<(), GitEngineError> {
+        self.visit_batch_objects_with_limits(command, input, expected, "blob", limits, visitor)
+    }
+
+    /// Streams `cat-file --batch` objects of type `kind` in `expected` order.
+    fn visit_batch_objects_with_limits(
+        &self,
         mut command: Command,
         input: &[u8],
         expected: &[GitOid],
+        kind: &str,
         limits: (usize, usize),
         visitor: &mut GitBlobVisitor<'_>,
     ) -> Result<(), GitEngineError> {
@@ -1966,9 +1996,10 @@ impl GitCliEngine {
             .expect("piped Git stdin must be available");
         std::thread::scope(|scope| {
             let stdout_reader = scope.spawn(move || {
-                visit_batch_blobs_reader(
+                visit_batch_objects_reader(
                     expected,
                     BufReader::new(stdout),
+                    kind,
                     limits.0,
                     limits.1,
                     visitor,
@@ -2785,6 +2816,33 @@ impl GitEngine for GitCliEngine {
             .collect()
     }
 
+    fn first_parent_range(
+        &self,
+        repository: &GitRepository,
+        tip: &GitOid,
+        exclude: &GitOid,
+        limit: usize,
+    ) -> Result<Vec<GitOid>, GitEngineError> {
+        if limit == 0 || limit > 1_000_000 {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "first-parent history limit must be between 1 and 1000000".to_string(),
+            });
+        }
+        let mut command = self.repository_command(repository);
+        command
+            .args(["rev-list", "--first-parent"])
+            .arg(format!("--max-count={limit}"))
+            .arg(tip.as_str())
+            .arg(format!("^{}", exclude.as_str()))
+            .arg("--");
+        let output = ensure_success("list first-parent history", self.execute(command)?)?;
+        decode_stdout("list first-parent history", output.stdout)?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(GitOid::parse)
+            .collect()
+    }
+
     fn update_ref(
         &self,
         repository: &GitRepository,
@@ -2921,6 +2979,37 @@ impl GitEngine for GitCliEngine {
             ["cat-file", "commit", commit.as_str()],
         )?;
         parse_commit_metadata(&output.stdout)
+    }
+
+    fn commit_metadata_batch(
+        &self,
+        repository: &GitRepository,
+        commits: &[GitOid],
+    ) -> Result<Vec<GitCommitMetadata>, GitEngineError> {
+        const MAX_COMMIT_BYTES: usize = 16 * 1024 * 1024;
+        const MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
+        if commits.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut input = String::new();
+        for commit in commits {
+            writeln!(input, "{commit}").expect("writing to a String cannot fail");
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["cat-file", "--batch"]);
+        let mut metadata = Vec::with_capacity(commits.len());
+        self.visit_batch_objects_with_limits(
+            command,
+            input.as_bytes(),
+            commits,
+            "commit",
+            (MAX_COMMIT_BYTES, MAX_BATCH_BYTES),
+            &mut |_, data| {
+                metadata.push(parse_commit_metadata(&data)?);
+                Ok(())
+            },
+        )?;
+        Ok(metadata)
     }
 
     fn path_object(
@@ -5694,9 +5783,28 @@ fn parse_batch_blobs_reader(
     Ok(blobs)
 }
 
+#[cfg(test)]
 fn visit_batch_blobs_reader(
     expected: &[GitOid],
+    reader: impl BufRead,
+    per_blob_limit: usize,
+    total_limit: usize,
+    visitor: &mut GitBlobVisitor<'_>,
+) -> Result<(), GitEngineError> {
+    visit_batch_objects_reader(
+        expected,
+        reader,
+        "blob",
+        per_blob_limit,
+        total_limit,
+        visitor,
+    )
+}
+
+fn visit_batch_objects_reader(
+    expected: &[GitOid],
     mut reader: impl BufRead,
+    expected_kind: &str,
     per_blob_limit: usize,
     total_limit: usize,
     visitor: &mut GitBlobVisitor<'_>,
@@ -5731,7 +5839,7 @@ fn visit_batch_blobs_reader(
         let oid = fields.next().unwrap_or_default();
         let kind = fields.next().unwrap_or_default();
         let size = fields.next().unwrap_or_default();
-        if fields.next().is_some() || oid != expected_oid.as_str() || kind != "blob" {
+        if fields.next().is_some() || oid != expected_oid.as_str() || kind != expected_kind {
             return Err(GitEngineError::InvalidOutput {
                 operation: OPERATION,
                 detail: format!("unexpected batch object header `{header}`"),
@@ -6301,7 +6409,10 @@ mod tests {
                 &format!("HEAD:{OBSERVED_LIVE}"),
             ],
         );
-        run_git(&writer, &["commit", "--quiet", "--allow-empty", "-m", "newer"]);
+        run_git(
+            &writer,
+            &["commit", "--quiet", "--allow-empty", "-m", "newer"],
+        );
         let head = GitOid::parse(run_git_capture(&writer, &["rev-parse", "HEAD"])).expect("head");
         let stale = GitOid::parse("1".repeat(40)).expect("stale oid");
 

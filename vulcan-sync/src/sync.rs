@@ -2923,71 +2923,252 @@ pub struct GitLiveEpoch {
     pub local_archive: GitRefName,
 }
 
+/// Commits read per `cat-file --batch` process while scanning live history.
+const EPOCH_DISCOVERY_BATCH: usize = 512;
+const LIVE_EPOCH_CACHE_VERSION: u32 = 1;
+const MAX_LIVE_EPOCH_CACHE_BYTES: u64 = 64 * 1024;
+
+/// Finds the epoch of `live`: the nearest first-parent commit carrying a
+/// `Vulcan-Sync-Epoch` trailer, which must be a parentless epoch root.
+///
+/// The answer for the last examined live tip is cached in the Git directory.
+/// When `live` descends from that tip along first parents, the normal case for
+/// a moving live ref, only the new commits are read, so the cost tracks recent
+/// activity rather than total history. Otherwise history is read in batches.
 pub fn find_git_live_epoch(
     engine: &dyn GitEngine,
     repository: &GitRepository,
     refs: &GitSyncRefs,
     live: &GitOid,
 ) -> Result<Option<GitLiveEpoch>, GitSyncError> {
-    for commit in engine.first_parent_history(repository, live, MAX_EPOCH_DISCOVERY_COMMITS)? {
-        let metadata = engine.commit_metadata(repository, &commit)?;
-        let Some(id) = trailer(&metadata.message, "Vulcan-Sync-Epoch") else {
-            continue;
-        };
-        if metadata.parents.is_empty() {
-            let previous = trailer(&metadata.message, "Vulcan-Sync-Previous-Epoch")
-                .ok_or_else(|| invalid_epoch("epoch root has no previous-epoch trailer"))
-                .and_then(|value| GitOid::parse(value).map_err(GitSyncError::from))?;
-            let remote_archive = trailer(&metadata.message, "Vulcan-Sync-Epoch-Archive")
-                .ok_or_else(|| invalid_epoch("epoch root has no archive-ref trailer"))
-                .and_then(|value| GitRefName::parse(value).map_err(GitSyncError::from))?;
-            let profile = refs
-                .local
-                .as_str()
-                .split('/')
-                .nth(3)
-                .ok_or_else(|| invalid_epoch("local sync ref has no profile component"))?;
-            if trailer(&metadata.message, "Vulcan-Sync-Profile") != Some(profile) {
-                return Err(invalid_epoch(
-                    "epoch root profile does not match this sync target",
-                ));
-            }
-            let expected_archive_prefix = format!("{}/{profile}/", crate::REMOTE_EPOCH_BRANCH_ROOT);
-            if !remote_archive
-                .as_str()
-                .starts_with(&expected_archive_prefix)
-            {
-                return Err(invalid_epoch(
-                    "epoch archive ref is outside the target profile",
-                ));
-            }
-            if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(invalid_epoch(
-                    "epoch ID is not a 32-character hexadecimal value",
-                ));
-            }
-            if id != git_live_epoch_id(profile, &previous) {
-                return Err(invalid_epoch(
-                    "epoch ID does not match its profile and previous tip",
-                ));
-            }
-            if remote_archive != remote_epoch_ref(profile, id)? {
-                return Err(invalid_epoch(
-                    "epoch archive ref does not match the epoch ID",
-                ));
-            }
-            let local_archive = local_epoch_ref(profile, id)?;
-            return Ok(Some(GitLiveEpoch {
-                root: commit,
-                id: id.to_string(),
-                previous,
-                remote_archive,
-                local_archive,
-            }));
+    let cached = load_live_epoch_cache(repository, refs);
+    if let Some(cached) = &cached {
+        if &cached.tip == live {
+            return cached.epoch();
         }
-        return Err(invalid_epoch("epoch trailer appears on a non-root commit"));
     }
-    Ok(None)
+    let incremental = match &cached {
+        Some(cached) => find_epoch_since(engine, repository, refs, live, cached)?,
+        None => EpochLookup::Unknown,
+    };
+    let epoch = if let EpochLookup::Known(epoch) = incremental {
+        epoch
+    } else {
+        let history = engine.first_parent_history(repository, live, MAX_EPOCH_DISCOVERY_COMMITS)?;
+        find_epoch_in(engine, repository, refs, &history)?.0
+    };
+    // The cache only saves work; failing to write it never fails discovery.
+    let _ = save_live_epoch_cache(repository, refs, live, epoch.as_ref());
+    Ok(epoch)
+}
+
+enum EpochLookup {
+    /// The cache could not answer; scan the full history.
+    Unknown,
+    Known(Option<GitLiveEpoch>),
+}
+
+/// Resolves `live` from the cached tip when that tip is its first-parent
+/// ancestor.
+fn find_epoch_since(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    refs: &GitSyncRefs,
+    live: &GitOid,
+    cached: &LiveEpochCache,
+) -> Result<EpochLookup, GitSyncError> {
+    // A cached tip that is gone or unrelated simply leaves the full scan.
+    let Ok(range) =
+        engine.first_parent_range(repository, live, &cached.tip, MAX_EPOCH_DISCOVERY_COMMITS)
+    else {
+        return Ok(EpochLookup::Unknown);
+    };
+    if range.is_empty() {
+        return Ok(EpochLookup::Unknown);
+    }
+    // The range is a prefix of the full first-parent walk, so an epoch or an
+    // error found in it is exactly what the full scan would report.
+    let (epoch, boundary) = find_epoch_in(engine, repository, refs, &range)?;
+    if epoch.is_some() {
+        return Ok(EpochLookup::Known(epoch));
+    }
+    if boundary.as_ref() != Some(&cached.tip) {
+        return Ok(EpochLookup::Unknown);
+    }
+    cached.epoch().map(EpochLookup::Known)
+}
+
+/// Scans `history` (newest first) for the first epoch trailer. Also returns
+/// the first parent of the last scanned commit, where the walk would continue.
+fn find_epoch_in(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    refs: &GitSyncRefs,
+    history: &[GitOid],
+) -> Result<(Option<GitLiveEpoch>, Option<GitOid>), GitSyncError> {
+    let mut boundary = None;
+    for chunk in history.chunks(EPOCH_DISCOVERY_BATCH) {
+        let metadata = engine.commit_metadata_batch(repository, chunk)?;
+        for (commit, metadata) in chunk.iter().zip(&metadata) {
+            if let Some(epoch) = classify_epoch_commit(refs, commit, metadata)? {
+                return Ok((Some(epoch), None));
+            }
+            boundary = metadata.parents.first().cloned();
+        }
+    }
+    Ok((None, boundary))
+}
+
+/// `Ok(None)` for a commit without an epoch trailer, the epoch for a valid
+/// epoch root, and an error for any other commit carrying the trailer.
+fn classify_epoch_commit(
+    refs: &GitSyncRefs,
+    commit: &GitOid,
+    metadata: &crate::GitCommitMetadata,
+) -> Result<Option<GitLiveEpoch>, GitSyncError> {
+    let Some(id) = trailer(&metadata.message, "Vulcan-Sync-Epoch") else {
+        return Ok(None);
+    };
+    if metadata.parents.is_empty() {
+        let previous = trailer(&metadata.message, "Vulcan-Sync-Previous-Epoch")
+            .ok_or_else(|| invalid_epoch("epoch root has no previous-epoch trailer"))
+            .and_then(|value| GitOid::parse(value).map_err(GitSyncError::from))?;
+        let remote_archive = trailer(&metadata.message, "Vulcan-Sync-Epoch-Archive")
+            .ok_or_else(|| invalid_epoch("epoch root has no archive-ref trailer"))
+            .and_then(|value| GitRefName::parse(value).map_err(GitSyncError::from))?;
+        let profile = refs
+            .local
+            .as_str()
+            .split('/')
+            .nth(3)
+            .ok_or_else(|| invalid_epoch("local sync ref has no profile component"))?;
+        if trailer(&metadata.message, "Vulcan-Sync-Profile") != Some(profile) {
+            return Err(invalid_epoch(
+                "epoch root profile does not match this sync target",
+            ));
+        }
+        let expected_archive_prefix = format!("{}/{profile}/", crate::REMOTE_EPOCH_BRANCH_ROOT);
+        if !remote_archive
+            .as_str()
+            .starts_with(&expected_archive_prefix)
+        {
+            return Err(invalid_epoch(
+                "epoch archive ref is outside the target profile",
+            ));
+        }
+        if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(invalid_epoch(
+                "epoch ID is not a 32-character hexadecimal value",
+            ));
+        }
+        if id != git_live_epoch_id(profile, &previous) {
+            return Err(invalid_epoch(
+                "epoch ID does not match its profile and previous tip",
+            ));
+        }
+        if remote_archive != remote_epoch_ref(profile, id)? {
+            return Err(invalid_epoch(
+                "epoch archive ref does not match the epoch ID",
+            ));
+        }
+        let local_archive = local_epoch_ref(profile, id)?;
+        return Ok(Some(GitLiveEpoch {
+            root: commit.clone(),
+            id: id.to_string(),
+            previous,
+            remote_archive,
+            local_archive,
+        }));
+    }
+    Err(invalid_epoch("epoch trailer appears on a non-root commit"))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LiveEpochCache {
+    version: u32,
+    profile: String,
+    tip: GitOid,
+    epoch: Option<CachedLiveEpoch>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedLiveEpoch {
+    root: GitOid,
+    id: String,
+    previous: GitOid,
+    remote_archive: String,
+    local_archive: String,
+}
+
+impl LiveEpochCache {
+    fn epoch(&self) -> Result<Option<GitLiveEpoch>, GitSyncError> {
+        self.epoch
+            .as_ref()
+            .map(|epoch| {
+                Ok(GitLiveEpoch {
+                    root: epoch.root.clone(),
+                    id: epoch.id.clone(),
+                    previous: epoch.previous.clone(),
+                    remote_archive: GitRefName::parse(&epoch.remote_archive)?,
+                    local_archive: GitRefName::parse(&epoch.local_archive)?,
+                })
+            })
+            .transpose()
+    }
+}
+
+fn live_epoch_cache_path(repository: &GitRepository) -> std::path::PathBuf {
+    repository
+        .git_dir
+        .join("vulcan-sync/live-epoch-cache-v1.json")
+}
+
+fn load_live_epoch_cache(repository: &GitRepository, refs: &GitSyncRefs) -> Option<LiveEpochCache> {
+    let path = live_epoch_cache_path(repository);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_LIVE_EPOCH_CACHE_BYTES {
+        return None;
+    }
+    let cache = serde_json::from_slice::<LiveEpochCache>(&fs::read(path).ok()?).ok()?;
+    (cache.version == LIVE_EPOCH_CACHE_VERSION && cache.profile == refs.local.as_str())
+        .then_some(cache)
+}
+
+fn save_live_epoch_cache(
+    repository: &GitRepository,
+    refs: &GitSyncRefs,
+    tip: &GitOid,
+    epoch: Option<&GitLiveEpoch>,
+) -> Result<(), GitSyncError> {
+    let path = live_epoch_cache_path(repository);
+    let parent = path
+        .parent()
+        .expect("the live epoch cache path always has a parent");
+    fs::create_dir_all(parent)?;
+    let bytes = serde_json::to_vec(&LiveEpochCache {
+        version: LIVE_EPOCH_CACHE_VERSION,
+        profile: refs.local.to_string(),
+        tip: tip.clone(),
+        epoch: epoch.map(|epoch| CachedLiveEpoch {
+            root: epoch.root.clone(),
+            id: epoch.id.clone(),
+            previous: epoch.previous.clone(),
+            remote_archive: epoch.remote_archive.to_string(),
+            local_archive: epoch.local_archive.to_string(),
+        }),
+    })
+    .map_err(|error| {
+        GitSyncError::Git(GitEngineError::InvalidOutput {
+            operation: "cache the live epoch",
+            detail: error.to_string(),
+        })
+    })?;
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary
+        .persist(path)
+        .map_err(|error| GitSyncError::Io(error.error))?;
+    Ok(())
 }
 
 fn trailer<'a>(message: &'a str, key: &str) -> Option<&'a str> {
@@ -6355,6 +6536,115 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         permissions.set_mode(0o700);
         fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
         (GitCliEngine::new(&wrapper), trace)
+    }
+
+    /// Publishes `count` first-parent commits on top of the remote live ref,
+    /// each with `message`, and returns the new live tip.
+    fn advance_live_history(
+        writer: &Path,
+        live: &GitRefName,
+        count: usize,
+        message: &str,
+    ) -> String {
+        run_git(
+            writer,
+            &[
+                "fetch",
+                "--quiet",
+                "origin",
+                &format!("+{live}:refs/test/live"),
+            ],
+        );
+        let mut tip = git_stdout(writer, &["rev-parse", "refs/test/live"]);
+        let tree = git_stdout(writer, &["rev-parse", &format!("{tip}^{{tree}}")]);
+        for _ in 0..count {
+            tip = git_stdout(writer, &["commit-tree", &tree, "-p", &tip, "-m", message]);
+        }
+        run_git(
+            writer,
+            &["push", "--quiet", "origin", &format!("{tip}:{live}")],
+        );
+        tip
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn epoch_discovery_reads_history_in_batches_and_then_incrementally() {
+        let (temporary, _remote, writer) = setup_remote_and_writer();
+        let (engine, trace) = traced_engine(&temporary);
+        let options = GitSyncOptions::default();
+        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
+        let live = bootstrap.refs.live.clone();
+        let first_tip = advance_live_history(&writer, &live, 300, "remote device commit");
+        fs::write(writer.join("Local.md"), "local edit one\n").expect("local edit");
+
+        fs::write(&trace, "").expect("reset invocation trace");
+        let merged = sync_git_once(&engine, &writer, &options).expect("first merge");
+        assert_eq!(merged.outcome, GitSyncOutcome::Merged);
+        let commands = fs::read_to_string(&trace).expect("invocation trace");
+        assert!(
+            commands
+                .lines()
+                .filter(|line| line.contains(" cat-file commit "))
+                .count()
+                <= 2,
+            "epoch discovery must not read commits one process at a time: {commands}"
+        );
+        assert!(
+            commands
+                .lines()
+                .filter(|line| line.contains(" cat-file --batch"))
+                .count()
+                <= 4,
+            "a 300-commit history should take a constant number of batch reads: {commands}"
+        );
+
+        advance_live_history(&writer, &live, 2, "another remote commit");
+        fs::write(writer.join("Local.md"), "local edit two\n").expect("second local edit");
+        fs::write(&trace, "").expect("reset invocation trace");
+        let merged = sync_git_once(&engine, &writer, &options).expect("second merge");
+        assert_eq!(merged.outcome, GitSyncOutcome::Merged);
+        let commands = fs::read_to_string(&trace).expect("invocation trace");
+        assert!(
+            commands
+                .lines()
+                .any(|line| line.contains(" rev-list --first-parent")
+                    && line.contains(&format!("^{first_tip}"))),
+            "the second merge should resume from the cached tip: {commands}"
+        );
+        assert!(
+            commands
+                .lines()
+                .filter(|line| line.contains(" rev-list --first-parent --max-count="))
+                .all(|line| line.contains('^')),
+            "the second merge must not walk the full history again: {commands}"
+        );
+    }
+
+    #[test]
+    fn cached_epoch_discovery_still_rejects_a_new_non_root_epoch_trailer() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let accepted = bootstrap.accepted.clone().expect("accepted revision");
+        assert!(
+            find_git_live_epoch(&engine, &repository, &bootstrap.refs, &accepted)
+                .expect("cache the epoch of the accepted tip")
+                .is_none()
+        );
+
+        let tip = advance_live_history(
+            &writer,
+            &bootstrap.refs.live,
+            1,
+            "forged\n\nVulcan-Sync-Epoch: 0123456789abcdef0123456789abcdef",
+        );
+        let tip = GitOid::parse(tip).expect("tip");
+        let error = find_git_live_epoch(&engine, &repository, &bootstrap.refs, &tip)
+            .expect_err("a non-root epoch trailer must stay invalid");
+        assert!(error.to_string().contains("non-root"), "{error}");
     }
 
     #[cfg(unix)]
