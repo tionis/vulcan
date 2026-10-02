@@ -2053,7 +2053,11 @@ impl VaultTreeValidator {
             .tree_validation
             .validate()
             .map_err(GitSyncObserverError::new)?;
-        let mut cache = GitTreeAnalysisCache::default();
+        let fingerprint = merge_validation_fingerprint(&self.config);
+        let mut cache = GitTreeAnalysisCache {
+            store: MergeValidationStore::open(request.repository, &fingerprint),
+            ..GitTreeAnalysisCache::default()
+        };
         let local = analyze_git_tree(
             engine,
             request.repository,
@@ -2075,6 +2079,16 @@ impl VaultTreeValidator {
             &self.config,
             &mut cache,
         )?;
+
+        if let Some(store) = &cache.store {
+            let referenced = local
+                .blobs
+                .iter()
+                .chain(&remote.blobs)
+                .chain(&merged.blobs)
+                .collect::<BTreeSet<_>>();
+            store.prune_unless(&referenced);
+        }
 
         let candidate_paths = local
             .paths
@@ -2109,23 +2123,276 @@ impl VaultTreeValidator {
 
 struct GitTreeAnalysis {
     paths: BTreeSet<String>,
+    /// Markdown and Canvas blobs the analysis read.
+    blobs: BTreeSet<vulcan_sync::GitOid>,
     link_problems: BTreeSet<LinkProblemKey>,
 }
 
+/// Blob analyses shared by the trees of one validation, backed by the
+/// persistent [`MergeValidationStore`] when it is available.
 #[derive(Default)]
 struct GitTreeAnalysisCache {
     markdown: BTreeMap<vulcan_sync::GitOid, CachedMarkdown>,
     canvas: BTreeMap<vulcan_sync::GitOid, CachedCanvas>,
+    store: Option<MergeValidationStore>,
 }
 
+/// What the merge gate needs from a Markdown blob. Blobs are immutable, so an
+/// entry stays valid while the parser and the vault config are unchanged; see
+/// [`merge_validation_fingerprint`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CachedMarkdown {
     bytes: usize,
-    parsed: vulcan_core::ParsedDocument,
+    aliases: Vec<String>,
+    links: Vec<CachedLink>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct CachedLink {
+    target: Option<String>,
+    kind: CachedLinkKind,
+}
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CachedLinkKind {
+    Wikilink,
+    Markdown,
+    Embed,
+    External,
+}
+
+impl From<vulcan_core::LinkKind> for CachedLinkKind {
+    fn from(kind: vulcan_core::LinkKind) -> Self {
+        match kind {
+            vulcan_core::LinkKind::Wikilink => Self::Wikilink,
+            vulcan_core::LinkKind::Markdown => Self::Markdown,
+            vulcan_core::LinkKind::Embed => Self::Embed,
+            vulcan_core::LinkKind::External => Self::External,
+        }
+    }
+}
+
+impl From<CachedLinkKind> for vulcan_core::LinkKind {
+    fn from(kind: CachedLinkKind) -> Self {
+        match kind {
+            CachedLinkKind::Wikilink => Self::Wikilink,
+            CachedLinkKind::Markdown => Self::Markdown,
+            CachedLinkKind::Embed => Self::Embed,
+            CachedLinkKind::External => Self::External,
+        }
+    }
+}
+
+impl CachedMarkdown {
+    fn from_source(source: &str, config: &VaultConfig) -> Self {
+        let parsed = parse_document(source, config);
+        Self {
+            bytes: source.len(),
+            aliases: parsed.aliases,
+            links: parsed
+                .links
+                .into_iter()
+                .map(|link| CachedLink {
+                    target: link.target_path_candidate,
+                    kind: link.link_kind.into(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CachedCanvas {
     bytes: usize,
     references: Vec<String>,
+}
+
+const MERGE_VALIDATION_STORE_VERSION: i64 = 1;
+/// Rows beyond the blobs of the last validated trees that may accumulate
+/// before old note versions are pruned.
+const MERGE_VALIDATION_STORE_SLACK: usize = 1_024;
+const MERGE_VALIDATION_LOOKUP_CHUNK: usize = 512;
+const STORED_MARKDOWN: i64 = 0;
+const STORED_CANVAS: i64 = 1;
+
+/// Identifies everything besides blob content that shapes a stored analysis:
+/// the store format, the parser, the build, and the vault configuration.
+fn merge_validation_fingerprint(config: &VaultConfig) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&MERGE_VALIDATION_STORE_VERSION.to_le_bytes());
+    hasher.update(&vulcan_core::PARSER_VERSION.to_le_bytes());
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(&serde_json::to_vec(config).unwrap_or_default());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn merge_validation_store_path(repository: &vulcan_sync::GitRepository) -> PathBuf {
+    repository
+        .git_dir
+        .join("vulcan-sync/merge-validation-cache.sqlite")
+}
+
+/// Persistent analyses of Markdown and Canvas blobs keyed by blob ID, so a
+/// merge parses only content it has not seen. Lookups are point queries for
+/// the blobs a validation needs and new analyses are appended, so neither
+/// reading nor writing scales with the size of the store. Every operation is
+/// best effort: a store that cannot be used leaves validation uncached.
+struct MergeValidationStore {
+    connection: rusqlite::Connection,
+}
+
+impl MergeValidationStore {
+    fn open(repository: &vulcan_sync::GitRepository, fingerprint: &str) -> Option<Self> {
+        let path = merge_validation_store_path(repository);
+        fs::create_dir_all(path.parent()?).ok()?;
+        Self::open_at(&path, fingerprint).or_else(|| {
+            // An unreadable or corrupt store is rebuilt from scratch once.
+            let _ = fs::remove_file(&path);
+            Self::open_at(&path, fingerprint)
+        })
+    }
+
+    fn open_at(path: &Path, fingerprint: &str) -> Option<Self> {
+        let connection = rusqlite::Connection::open(path).ok()?;
+        connection.busy_timeout(Duration::from_secs(5)).ok()?;
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;
+                 CREATE TABLE IF NOT EXISTS meta (
+                     key TEXT PRIMARY KEY,
+                     value TEXT NOT NULL
+                 ) WITHOUT ROWID;
+                 CREATE TABLE IF NOT EXISTS blobs (
+                     oid TEXT PRIMARY KEY,
+                     kind INTEGER NOT NULL,
+                     summary BLOB NOT NULL
+                 ) WITHOUT ROWID;",
+            )
+            .ok()?;
+        let stored = connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'fingerprint'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        if stored.as_deref() != Some(fingerprint) {
+            connection.execute_batch("DELETE FROM blobs").ok()?;
+            connection
+                .execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('fingerprint', ?1)",
+                    [fingerprint],
+                )
+                .ok()?;
+        }
+        Some(Self { connection })
+    }
+
+    /// Adds every stored analysis among `oids` to `cache`.
+    fn load_into(&self, oids: &[&vulcan_sync::GitOid], cache: &mut GitTreeAnalysisCache) {
+        for chunk in oids.chunks(MERGE_VALIDATION_LOOKUP_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let Ok(mut statement) = self.connection.prepare(&format!(
+                "SELECT oid, kind, summary FROM blobs WHERE oid IN ({placeholders})"
+            )) else {
+                return;
+            };
+            let Ok(rows) = statement.query_map(
+                rusqlite::params_from_iter(chunk.iter().map(|oid| oid.as_str())),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            ) else {
+                return;
+            };
+            for (oid, kind, summary) in rows.flatten() {
+                let Ok(oid) = vulcan_sync::GitOid::parse(oid) else {
+                    continue;
+                };
+                // A row that no longer decodes is treated as absent and
+                // reparsed from the blob.
+                if kind == STORED_MARKDOWN {
+                    if let Ok(markdown) = serde_json::from_slice::<CachedMarkdown>(&summary) {
+                        cache.markdown.insert(oid, markdown);
+                    }
+                } else if kind == STORED_CANVAS {
+                    if let Ok(canvas) = serde_json::from_slice::<CachedCanvas>(&summary) {
+                        cache.canvas.insert(oid, canvas);
+                    }
+                }
+            }
+        }
+    }
+
+    fn insert(&mut self, additions: &GitTreeAnalysisCache) {
+        let Ok(transaction) = self.connection.transaction() else {
+            return;
+        };
+        {
+            let Ok(mut statement) = transaction
+                .prepare("INSERT OR IGNORE INTO blobs (oid, kind, summary) VALUES (?1, ?2, ?3)")
+            else {
+                return;
+            };
+            let markdown = additions.markdown.iter().filter_map(|(oid, entry)| {
+                Some((oid, STORED_MARKDOWN, serde_json::to_vec(entry).ok()?))
+            });
+            let canvas = additions.canvas.iter().filter_map(|(oid, entry)| {
+                Some((oid, STORED_CANVAS, serde_json::to_vec(entry).ok()?))
+            });
+            for (oid, kind, summary) in markdown.chain(canvas) {
+                if statement
+                    .execute(rusqlite::params![oid.as_str(), kind, summary])
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+        let _ = transaction.commit();
+    }
+
+    /// Drops analyses of blobs outside `referenced` once they outnumber it, so
+    /// the store stays proportional to the vault rather than to its history.
+    fn prune_unless(&self, referenced: &BTreeSet<&vulcan_sync::GitOid>) {
+        let Ok(rows) = self
+            .connection
+            .query_row("SELECT count(*) FROM blobs", [], |row| row.get::<_, i64>(0))
+        else {
+            return;
+        };
+        let limit = referenced
+            .len()
+            .saturating_mul(2)
+            .saturating_add(MERGE_VALIDATION_STORE_SLACK);
+        if usize::try_from(rows).unwrap_or(usize::MAX) <= limit {
+            return;
+        }
+        let _ = (|| -> rusqlite::Result<()> {
+            self.connection.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS referenced (oid TEXT PRIMARY KEY) WITHOUT ROWID;
+                 DELETE FROM referenced;",
+            )?;
+            {
+                let mut statement = self
+                    .connection
+                    .prepare("INSERT OR IGNORE INTO referenced (oid) VALUES (?1)")?;
+                for oid in referenced {
+                    statement.execute([oid.as_str()])?;
+                }
+            }
+            self.connection.execute_batch(
+                "DELETE FROM blobs WHERE oid NOT IN (SELECT oid FROM referenced);
+                 DELETE FROM referenced;",
+            )
+        })();
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -2178,6 +2445,11 @@ fn analyze_git_tree(
         cache,
     )?;
 
+    let blobs = markdown_entries
+        .iter()
+        .chain(&canvas_entries)
+        .map(|entry| entry.oid.clone())
+        .collect::<BTreeSet<_>>();
     let mut parsed_documents = Vec::with_capacity(markdown_entries.len());
     let mut total_bytes = 0_usize;
     for entry in markdown_entries {
@@ -2191,7 +2463,7 @@ fn analyze_git_tree(
                 "automatic merge tree exceeds the {MAX_VALIDATED_MARKDOWN_BYTES}-byte Markdown validation limit"
             )));
         }
-        parsed_documents.push((entry.path.clone(), cached.parsed.clone()));
+        parsed_documents.push((entry.path.clone(), cached));
     }
 
     let resolver_documents = parsed_documents
@@ -2235,6 +2507,7 @@ fn analyze_git_tree(
     resolve_canvas_links(&resolver, config, &canvas_references, &mut link_problems);
     Ok(GitTreeAnalysis {
         paths,
+        blobs,
         link_problems,
     })
 }
@@ -2270,6 +2543,19 @@ fn cache_tree_content(
         .filter(|entry| !cache.canvas.contains_key(&entry.oid))
         .map(|entry| (entry.oid.clone(), *entry))
         .collect::<BTreeMap<_, _>>();
+    if let Some(store) = cache.store.take() {
+        let wanted = markdown.keys().chain(canvas.keys()).collect::<Vec<_>>();
+        store.load_into(&wanted, cache);
+        cache.store = Some(store);
+    }
+    let markdown = markdown
+        .into_iter()
+        .filter(|(oid, _)| !cache.markdown.contains_key(oid))
+        .collect::<BTreeMap<_, _>>();
+    let canvas = canvas
+        .into_iter()
+        .filter(|(oid, _)| !cache.canvas.contains_key(oid))
+        .collect::<BTreeMap<_, _>>();
     let mut missing = markdown
         .keys()
         .chain(canvas.keys())
@@ -2295,13 +2581,9 @@ fn cache_tree_content(
                 let source = std::str::from_utf8(&data).map_err(|_| {
                     invalid(format!("Markdown path `{}` is not valid UTF-8", entry.path))
                 })?;
-                additions.markdown.insert(
-                    oid.clone(),
-                    CachedMarkdown {
-                        bytes: data.len(),
-                        parsed: parse_document(source, config),
-                    },
-                );
+                additions
+                    .markdown
+                    .insert(oid.clone(), CachedMarkdown::from_source(source, config));
             }
             if let Some(entry) = canvas.get(oid) {
                 additions.canvas.insert(
@@ -2321,6 +2603,9 @@ fn cache_tree_content(
             "blob `{oid}` has no data"
         )));
     }
+    if let Some(store) = cache.store.as_mut() {
+        store.insert(&additions);
+    }
     cache.markdown.extend(additions.markdown);
     cache.canvas.extend(additions.canvas);
     Ok(())
@@ -2329,17 +2614,18 @@ fn cache_tree_content(
 fn resolve_document_links(
     resolver: &ResolverIndex,
     config: &VaultConfig,
-    parsed_documents: &[(String, vulcan_core::ParsedDocument)],
+    parsed_documents: &[(String, &CachedMarkdown)],
     link_problems: &mut BTreeSet<LinkProblemKey>,
 ) {
     for (path, parsed) in parsed_documents {
         for link in &parsed.links {
+            let link_kind = vulcan_core::LinkKind::from(link.kind);
             let resolution = resolver.resolve(
                 &ResolverLink {
                     source_document_id: path.clone(),
                     source_path: path.clone(),
-                    target_path_candidate: link.target_path_candidate.clone(),
-                    link_kind: link.link_kind,
+                    target_path_candidate: link.target.clone(),
+                    link_kind,
                 },
                 config.link_resolution,
             );
@@ -2348,8 +2634,8 @@ fn resolve_document_links(
             };
             link_problems.insert(LinkProblemKey {
                 source_path: path.clone(),
-                target: link.target_path_candidate.clone().unwrap_or_default(),
-                kind: match link.link_kind {
+                target: link.target.clone().unwrap_or_default(),
+                kind: match link_kind {
                     vulcan_core::LinkKind::Wikilink => "wikilink",
                     vulcan_core::LinkKind::Markdown => "markdown",
                     vulcan_core::LinkKind::Embed => "embed",
@@ -3419,6 +3705,163 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             1,
             "commands:\n{commands}"
         );
+
+        fs::write(&trace, "").expect("reset trace");
+        VaultTreeValidator::new(VaultConfig::default())
+            .validate(
+                &engine,
+                &GitAutomaticMergeValidation {
+                    repository: &repository,
+                    base: &commit,
+                    local_candidate: &commit,
+                    accepted_remote: &commit,
+                    merged_tree: &tree,
+                    resolved_paths: &[],
+                },
+            )
+            .expect("cached validation");
+        let commands = fs::read_to_string(&trace).expect("trace");
+        assert!(
+            commands
+                .lines()
+                .all(|command| !command.contains("cat-file --batch")),
+            "a repeated validation must reuse parsed blobs:\n{commands}"
+        );
+    }
+
+    #[test]
+    fn cached_whole_tree_validation_still_rejects_a_new_broken_link() {
+        let temporary = tempdir().expect("temporary directory");
+        git(
+            temporary.path(),
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(temporary.path(), &["config", "user.name", "Vulcan Test"]);
+        git(
+            temporary.path(),
+            &["config", "user.email", "vulcan@example.invalid"],
+        );
+        fs::write(temporary.path().join("Source.md"), "[[Target]]\n").expect("source");
+        fs::write(temporary.path().join("Target.md"), "target\n").expect("target");
+        git(temporary.path(), &["add", "--all", "--", "."]);
+        git(temporary.path(), &["commit", "--quiet", "-m", "linked"]);
+        let commit =
+            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
+                .expect("commit");
+        fs::remove_file(temporary.path().join("Target.md")).expect("remove target");
+        git(temporary.path(), &["add", "--all", "--", "."]);
+        git(temporary.path(), &["commit", "--quiet", "-m", "broken"]);
+        let broken =
+            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
+                .expect("broken commit");
+        let engine = vulcan_sync::GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let tree = engine.tree_oid(&repository, &commit).expect("tree");
+        let broken_tree = engine.tree_oid(&repository, &broken).expect("broken tree");
+        let mut config = VaultConfig::default();
+        config.sync.tree_validation.max_deleted_paths = 10;
+        let request = |merged_tree| GitAutomaticMergeValidation {
+            repository: &repository,
+            base: &commit,
+            local_candidate: &commit,
+            accepted_remote: &commit,
+            merged_tree,
+            resolved_paths: &[],
+        };
+
+        VaultTreeValidator::new(config.clone())
+            .validate(&engine, &request(&tree))
+            .expect("warm the cache with a valid tree");
+        assert!(merge_validation_store_path(&repository).is_file());
+        let error = VaultTreeValidator::new(config)
+            .validate(&engine, &request(&broken_tree))
+            .expect_err("a cached analysis must still catch the new broken link");
+
+        assert!(error.to_string().contains("introduces a new"), "{error}");
+    }
+
+    #[test]
+    fn merge_validation_store_is_scoped_to_its_configuration_and_recovers() {
+        let temporary = tempdir().expect("temporary directory");
+        git(temporary.path(), &["init", "--quiet"]);
+        let engine = vulcan_sync::GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let oid = engine
+            .write_blob(&repository, b"[[Target]]\n")
+            .expect("blob");
+        let config = VaultConfig::default();
+        let fingerprint = merge_validation_fingerprint(&config);
+        let stored = |fingerprint: &str| {
+            let mut cache = GitTreeAnalysisCache::default();
+            MergeValidationStore::open(&repository, fingerprint)
+                .expect("store")
+                .load_into(&[&oid], &mut cache);
+            cache.markdown.contains_key(&oid)
+        };
+        let mut additions = GitTreeAnalysisCache::default();
+        additions.markdown.insert(
+            oid.clone(),
+            CachedMarkdown::from_source("[[Target]]\n", &config),
+        );
+        MergeValidationStore::open(&repository, &fingerprint)
+            .expect("store")
+            .insert(&additions);
+
+        assert!(stored(&fingerprint));
+        let mut other = VaultConfig::default();
+        other.sync.tree_validation.max_deleted_paths += 1;
+        assert!(!stored(&merge_validation_fingerprint(&other)));
+        assert!(
+            !stored(&fingerprint),
+            "a new configuration clears the store"
+        );
+
+        let path = merge_validation_store_path(&repository);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+        fs::write(&path, b"not a database").expect("corrupt the store");
+        assert!(!stored(&fingerprint), "a corrupt store is rebuilt empty");
+    }
+
+    #[test]
+    fn merge_validation_store_prunes_once_old_versions_outnumber_the_trees() {
+        let temporary = tempdir().expect("temporary directory");
+        git(temporary.path(), &["init", "--quiet"]);
+        let engine = vulcan_sync::GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let config = VaultConfig::default();
+        let fingerprint = merge_validation_fingerprint(&config);
+        let mut store = MergeValidationStore::open(&repository, &fingerprint).expect("store");
+        let mut additions = GitTreeAnalysisCache::default();
+        let oids = (0..MERGE_VALIDATION_STORE_SLACK + 64)
+            .map(|index| {
+                vulcan_sync::GitOid::parse(format!("{index:040x}")).expect("synthetic oid")
+            })
+            .collect::<Vec<_>>();
+        for oid in &oids {
+            additions
+                .markdown
+                .insert(oid.clone(), CachedMarkdown::from_source("note\n", &config));
+        }
+        store.insert(&additions);
+        let count = |store: &MergeValidationStore| {
+            store
+                .connection
+                .query_row("SELECT count(*) FROM blobs", [], |row| row.get::<_, i64>(0))
+                .expect("count")
+        };
+
+        let referenced = oids.iter().take(4).collect::<BTreeSet<_>>();
+        store.prune_unless(&referenced);
+        assert_eq!(count(&store), 4);
+        store.prune_unless(&referenced);
+        assert_eq!(count(&store), 4, "a small store is left alone");
     }
 
     #[test]
@@ -3483,10 +3926,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         let mut cache = GitTreeAnalysisCache::default();
         cache.markdown.insert(
             existing.oid.clone(),
-            CachedMarkdown {
-                bytes: 4,
-                parsed: parse_document("keep", &config),
-            },
+            CachedMarkdown::from_source("keep", &config),
         );
         let prefix = format!(
             "{} blob 2\\nhi\\n{} blob 12\\n{{\"nodes\":[]}}\\n",
