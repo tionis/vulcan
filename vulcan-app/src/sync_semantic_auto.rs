@@ -441,7 +441,9 @@ fn remove_state(path: &Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::{debounce_decision, observed_state, DebounceDecision, SemanticAutoState};
-    use vulcan_sync::{GitCliEngine, GitOid};
+    #[cfg(unix)]
+    use vulcan_sync::GitCliEngine;
+    use vulcan_sync::GitOid;
 
     #[test]
     fn retained_debounce_caps_continuously_changing_targets_after_restart() {
@@ -548,7 +550,8 @@ mod tests {
             run(0, false).unwrap().outcome,
             SemanticAutoOutcome::Deferred
         );
-        let state = semantic_auto_state_path(&store, &vault);
+        // Production keys state by the canonical path (macOS temp dirs sit behind a symlink).
+        let state = semantic_auto_state_path(&store, &vault.canonicalize().unwrap());
         let before = fs::metadata(&state).unwrap();
         for now in (30_000..=600_000).step_by(30_000) {
             assert_eq!(
