@@ -571,6 +571,16 @@ pub trait GitEngine: Send + Sync {
         expected: Option<&GitOid>,
     ) -> Result<GitPushResult, GitEngineError>;
 
+    /// Pushes several leased ref updates in one remote trip. The push is not
+    /// atomic: each ref is accepted or rejected on its own, and the results
+    /// follow the order of `updates`.
+    fn push_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        updates: &[GitRefPush<'_>],
+    ) -> Result<Vec<GitPushResult>, GitEngineError>;
+
     fn delete_remote_ref(
         &self,
         repository: &GitRepository,
@@ -1325,6 +1335,15 @@ pub struct GitContentMergeResolutionRequest {
 pub enum GitPushResult {
     Updated,
     Rejected,
+}
+
+/// One leased ref update within a multi-ref push.
+#[derive(Debug, Clone, Copy)]
+pub struct GitRefPush<'a> {
+    pub source: &'a GitOid,
+    pub destination: &'a GitRefName,
+    /// The remote value the update requires; `None` requires the ref absent.
+    pub expected: Option<&'a GitOid>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -3906,6 +3925,57 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("push a sync ref", &output))
     }
 
+    fn push_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        updates: &[GitRefPush<'_>],
+    ) -> Result<Vec<GitPushResult>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["push", "--porcelain"]);
+        for update in updates {
+            command.arg(format!(
+                "--force-with-lease={}:{}",
+                update.destination.as_str(),
+                update.expected.map_or("", GitOid::as_str)
+            ));
+        }
+        command.arg("--").arg(remote.as_str());
+        for update in updates {
+            command.arg(format!(
+                "{}:{}",
+                update.source.as_str(),
+                update.destination.as_str()
+            ));
+        }
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(vec![GitPushResult::Updated; updates.len()]);
+        }
+        // Some refs were refused. Classify each by the remote's current value
+        // instead of parsing Git's porcelain report.
+        let destinations = updates
+            .iter()
+            .map(|update| update.destination)
+            .collect::<Vec<_>>();
+        let Ok((tips, _)) = self.remote_refs(repository, remote, &destinations, None) else {
+            return Err(command_failed("push sync refs", &output));
+        };
+        updates
+            .iter()
+            .zip(tips)
+            .map(|(update, tip)| {
+                if tip.as_ref() == Some(update.source) {
+                    Ok(GitPushResult::Updated)
+                } else if tip.as_ref() != update.expected {
+                    Ok(GitPushResult::Rejected)
+                } else {
+                    Err(command_failed("push sync refs", &output))
+                }
+            })
+            .collect()
+    }
+
     fn delete_remote_ref(
         &self,
         repository: &GitRepository,
@@ -6212,6 +6282,58 @@ mod tests {
             .expect("observation without a namespace");
         assert_eq!(tips, vec![Some(head)]);
         assert_eq!(registrations, None);
+    }
+
+    #[test]
+    fn multi_ref_push_reports_each_lease_separately() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let origin = GitRemote::parse("origin").expect("remote");
+        let accepted = GitRefName::parse("refs/heads/__vulcan-sync/devices/p/d").expect("ref");
+        let refused = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:{OBSERVED_LIVE}"),
+            ],
+        );
+        run_git(&writer, &["commit", "--quiet", "--allow-empty", "-m", "newer"]);
+        let head = GitOid::parse(run_git_capture(&writer, &["rev-parse", "HEAD"])).expect("head");
+        let stale = GitOid::parse("1".repeat(40)).expect("stale oid");
+
+        let results = engine
+            .push_refs(
+                &repository,
+                &origin,
+                &[
+                    GitRefPush {
+                        source: &head,
+                        destination: &accepted,
+                        expected: None,
+                    },
+                    GitRefPush {
+                        source: &head,
+                        destination: &refused,
+                        expected: Some(&stale),
+                    },
+                ],
+            )
+            .expect("non-atomic push");
+
+        assert_eq!(
+            results,
+            vec![GitPushResult::Updated, GitPushResult::Rejected]
+        );
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &origin, &accepted)
+                .expect("accepted ref"),
+            Some(head)
+        );
     }
 
     #[test]
