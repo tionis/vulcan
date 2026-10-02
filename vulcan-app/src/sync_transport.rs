@@ -44,8 +44,10 @@ const CONTROL_PERSIST_SECONDS: u32 = 60;
 const CONTROL_SOCKET_NAME: &str = "vulcan-%C";
 /// macOS limits socket paths to 104 bytes including the terminator, and
 /// OpenSSH binds through a temporary name 17 bytes longer than the final one.
+#[cfg(unix)]
 const MAX_CONTROL_SOCKET_PATH: usize = 103 - 17;
 /// Length of the expanded `%C` token in [`CONTROL_SOCKET_NAME`].
+#[cfg(unix)]
 const EXPANDED_CONNECTION_HASH: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -774,6 +776,8 @@ mod tests {
         assert!(!command.contains("StrictHostKeyChecking"));
     }
 
+    // Connection sharing is Unix-only, and the expected path uses `/`.
+    #[cfg(unix)]
     #[test]
     fn multiplexing_options_quote_the_control_path_for_the_shell() {
         let options = multiplex_options(Path::new("/run/user/it's"));
