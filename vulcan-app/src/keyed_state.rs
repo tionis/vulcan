@@ -80,12 +80,6 @@ impl<V> TrackedMap<V> {
         self.entries.entry(key).or_insert_with(value)
     }
 
-    /// Marks every entry dirty. Prefer [`Self::get_mut`] for targeted changes.
-    pub(crate) fn values_mut(&mut self) -> btree_map::ValuesMut<'_, String, V> {
-        self.dirty.extend(self.entries.keys().cloned());
-        self.entries.values_mut()
-    }
-
     pub(crate) fn dirty_keys(&self) -> &BTreeSet<String> {
         &self.dirty
     }

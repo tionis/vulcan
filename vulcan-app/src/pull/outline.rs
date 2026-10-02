@@ -1588,9 +1588,12 @@ fn plan_pull(
                 == Some(OutlinePullConflictResolution::ConflictMarkers)
             && conflict_markers_available)
             .then(|| {
+                let base = mapping
+                    .map(|mapping| mapping_base_content(paths, &state.profile, mapping))
+                    .transpose()?;
                 three_way_merge(
                     &extract_local_from_diff3(local_content.as_deref().unwrap_or_default()),
-                    mapping.map_or("", |mapping| mapping.base_content.as_str()),
+                    base.as_deref().unwrap_or_default(),
                     &desired,
                     &document.id,
                 )
@@ -2814,37 +2817,59 @@ fn snapshot_directory(state_path: &Path) -> PathBuf {
         .join("sources")
 }
 
-/// Reads pull state without locking or migrating. With `hydrate`, base and
-/// remote-source snapshots are loaded into the mappings.
-fn read_state(
-    paths: &VaultPaths,
-    profile: &str,
-    hydrate: bool,
-) -> Result<Option<OutlinePullState>, AppError> {
+/// Reads pull state without locking or migrating. Mappings carry content
+/// hashes only; content stays in snapshots until a merge needs it (see
+/// [`mapping_base_content`]), so loading costs no more than the mapping rows.
+fn read_state(paths: &VaultPaths, profile: &str) -> Result<Option<OutlinePullState>, AppError> {
     validate_state_profile(profile)?;
     let path = state_path(paths, profile)?;
     if let Some(store) = KeyedStateStore::open_read_only(&path)? {
-        return load_from_store(
-            &store,
-            hydrate.then(|| snapshot_directory(&path)).as_deref(),
-        )
-        .map(Some);
+        return load_from_store(&store).map(Some);
     }
     // State written before the keyed store is read until the next locked
     // operation migrates it.
-    let legacy_path =
-        crate::device_state::readable_path(paths, &legacy_state_relative_path(profile))?;
+    let legacy_path = legacy_state_path(paths, profile)?;
     if !legacy_path.exists() {
         return Ok(None);
     }
-    let mut state = parse_legacy_state(&legacy_path)?;
-    if hydrate {
-        let directory = snapshot_directory(&legacy_path);
-        for mapping in state.documents.values_mut() {
-            hydrate_mapping(&directory, mapping)?;
-        }
+    parse_legacy_state(&legacy_path).map(Some)
+}
+
+fn legacy_state_path(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppError> {
+    crate::device_state::readable_path(paths, &legacy_state_relative_path(profile))
+}
+
+/// The snapshot directory of whichever state `read_state` would read.
+fn current_snapshot_directory(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppError> {
+    let path = state_path(paths, profile)?;
+    if KeyedStateStore::open_read_only(&path)?.is_some() {
+        return Ok(snapshot_directory(&path));
     }
-    Ok(Some(state))
+    Ok(snapshot_directory(&legacy_state_path(paths, profile)?))
+}
+
+/// A mapping's diff3 base: the in-memory content when this run produced it,
+/// otherwise its content-addressed snapshot, verified against the recorded
+/// hash. Only conflicted documents that need a merge read their base.
+fn mapping_base_content<'a>(
+    paths: &VaultPaths,
+    profile: &str,
+    mapping: &'a OutlinePullMapping,
+) -> Result<std::borrow::Cow<'a, str>, AppError> {
+    if !mapping.base_content.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(&mapping.base_content));
+    }
+    let directory = current_snapshot_directory(paths, profile)?;
+    let snapshot = snapshot_path(&directory, &mapping.last_remote_content_hash)?;
+    let content = fs::read_to_string(snapshot).map_err(|_| {
+        AppError::operation("Outline pull state is missing a required base snapshot")
+    })?;
+    if content_hash(&content) != mapping.last_remote_content_hash {
+        return Err(AppError::operation(
+            "Outline pull base snapshot does not match its recorded hash",
+        ));
+    }
+    Ok(std::borrow::Cow::Owned(content))
 }
 
 fn parse_legacy_state(path: &Path) -> Result<OutlinePullState, AppError> {
@@ -2853,16 +2878,7 @@ fn parse_legacy_state(path: &Path) -> Result<OutlinePullState, AppError> {
         .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))
 }
 
-fn load_from_store(
-    store: &KeyedStateStore,
-    snapshots: Option<&Path>,
-) -> Result<OutlinePullState, AppError> {
-    let mut documents = store.load_entries::<OutlinePullMapping>(DOCUMENTS)?;
-    if let Some(directory) = snapshots {
-        for mapping in documents.values_mut() {
-            hydrate_mapping(directory, mapping)?;
-        }
-    }
+fn load_from_store(store: &KeyedStateStore) -> Result<OutlinePullState, AppError> {
     let incomplete_operation = store
         .meta::<StoredJournalHeader>("incomplete_operation")?
         .map(|header| -> Result<_, AppError> {
@@ -2879,7 +2895,7 @@ fn load_from_store(
         collection_id: required_meta(store, "collection_id")?,
         destination: required_meta(store, "destination")?,
         connector_identity: store.meta("connector_identity")?.flatten(),
-        documents: TrackedMap::persisted(documents),
+        documents: store.load_map(DOCUMENTS)?,
         incomplete_operation,
         last_completed_operation_id: store.meta("last_completed_operation_id")?.flatten(),
     })
@@ -2901,7 +2917,7 @@ fn load_state(
     destination: &str,
     connector_identity: Option<&str>,
 ) -> Result<OutlinePullState, AppError> {
-    let Some(state) = read_state(paths, profile, true)? else {
+    let Some(state) = read_state(paths, profile)? else {
         return Ok(OutlinePullState::empty(
             profile,
             collection_id,
@@ -2919,7 +2935,7 @@ pub fn load_outline_pulled_bindings(
     profile: &str,
     collection_id: &str,
 ) -> Result<Vec<OutlinePulledBinding>, AppError> {
-    let Some(state) = read_state(paths, profile, false)? else {
+    let Some(state) = read_state(paths, profile)? else {
         return Ok(Vec::new());
     };
     let destination = state.destination.clone();
@@ -3018,10 +3034,6 @@ fn migrate_legacy_state(
     }
     let mut state = parse_legacy_state(legacy_path)?;
     let directory = snapshot_directory(state_path);
-    // Hydration verifies every referenced snapshot exists before the import.
-    for mapping in state.documents.values_mut() {
-        hydrate_mapping(&directory, mapping)?;
-    }
     let destination = state.destination.clone();
     state.validate(
         &state.profile.clone(),
@@ -3057,7 +3069,14 @@ fn persist_state(
                 .ok_or_else(|| AppError::operation("remote source snapshot omitted its hash"))?;
             write_content_snapshot(snapshot_directory, hash, source)?;
         }
-        if !mapping.base_content.is_empty() {
+        if mapping.base_content.is_empty() {
+            // Every committed row must stay backed by its diff3 base.
+            if !snapshot_path(snapshot_directory, &mapping.last_remote_content_hash)?.is_file() {
+                return Err(AppError::operation(
+                    "Outline pull state is missing a required base snapshot",
+                ));
+            }
+        } else {
             write_content_snapshot(
                 snapshot_directory,
                 &mapping.last_remote_content_hash,
@@ -3181,25 +3200,6 @@ fn write_content_snapshot(directory: &Path, hash: &str, content: &str) -> Result
         .map_err(|error| AppError::operation(error.error))?;
     #[cfg(unix)]
     sync_parent_directory(directory)?;
-    Ok(())
-}
-
-fn hydrate_mapping(directory: &Path, mapping: &mut OutlinePullMapping) -> Result<(), AppError> {
-    if mapping.base_content.is_empty() {
-        let snapshot = snapshot_path(directory, &mapping.last_remote_content_hash)?;
-        mapping.base_content = fs::read_to_string(snapshot).map_err(|_| {
-            AppError::operation("Outline pull state is missing a required base snapshot")
-        })?;
-    }
-    if mapping.last_remote_source.is_none() {
-        if let Some(hash) = mapping.last_remote_source_hash.as_deref() {
-            let snapshot = snapshot_path(directory, hash)?;
-            if snapshot.exists() {
-                mapping.last_remote_source =
-                    Some(fs::read_to_string(snapshot).map_err(AppError::operation)?);
-            }
-        }
-    }
     Ok(())
 }
 
@@ -3362,8 +3362,8 @@ mod tests {
         }
         lock.save(&mut state).unwrap();
 
-        // Corrupt another document's snapshot. Saving one changed document must
-        // not read it, while a full reload still detects the damage.
+        // Corrupt another document's snapshot. Neither saving a changed document
+        // nor loading the state may read it; reading that base detects it.
         let sources = snapshot_directory(&state_path(&paths, "wiki").unwrap());
         let untouched = snapshot_path(&sources, &content_hash("base 7\n")).unwrap();
         fs::write(&untouched, "damaged\n").unwrap();
@@ -3375,11 +3375,21 @@ mod tests {
         lock.save(&mut state).unwrap();
         drop(lock);
 
-        fs::write(&untouched, "base 7\n").unwrap();
         let reloaded = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
         assert_eq!(reloaded.documents.len(), 19);
-        assert_eq!(reloaded.documents["doc-3"].base_content, "updated base\n");
+        assert!(reloaded
+            .documents
+            .values()
+            .all(|mapping| mapping.base_content.is_empty()));
+        assert_eq!(
+            mapping_base_content(&paths, "wiki", &reloaded.documents["doc-3"]).unwrap(),
+            "updated base\n"
+        );
+        let damaged =
+            mapping_base_content(&paths, "wiki", &reloaded.documents["doc-7"]).unwrap_err();
+        assert!(damaged.to_string().contains("recorded hash"), "{damaged}");
         assert!(!reloaded.documents.contains_key("doc-4"));
+        fs::write(&untouched, "base 7\n").unwrap();
 
         let mut lock = StateLock::acquire(&paths, "wiki").unwrap();
         let mut state = reloaded;
@@ -3389,6 +3399,42 @@ mod tests {
         );
         let error = lock.save(&mut state).unwrap_err();
         assert!(error.to_string().contains("same local path"), "{error}");
+    }
+
+    #[test]
+    fn pull_state_loads_without_content_and_keeps_rows_backed_by_snapshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        let mut lock = StateLock::acquire(&paths, "wiki").unwrap();
+        let mut state = OutlinePullState::empty("wiki", "collection", "Imported", None);
+        state.documents.insert(
+            "home".to_string(),
+            stored_pull_mapping("Imported/Home.md", "base\n"),
+        );
+        lock.save(&mut state).unwrap();
+        let sources = snapshot_directory(&state_path(&paths, "wiki").unwrap());
+        fs::remove_dir_all(&sources).unwrap();
+
+        let mut reloaded = load_state(&paths, "wiki", "collection", "Imported", None)
+            .expect("loading reads no content");
+        assert!(
+            mapping_base_content(&paths, "wiki", &reloaded.documents["home"])
+                .unwrap_err()
+                .to_string()
+                .contains("missing a required base snapshot")
+        );
+        reloaded
+            .documents
+            .get_mut("home")
+            .unwrap()
+            .last_remote_title = "Renamed".to_string();
+        let error = lock.save(&mut reloaded).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing a required base snapshot"),
+            "a changed row must stay backed by its base: {error}"
+        );
     }
 
     #[test]
@@ -3459,7 +3505,13 @@ mod tests {
         fs::write(&legacy, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
         assert_eq!(
             load_state(&paths, "wiki", "collection", "Imported", None).unwrap(),
-            legacy_state
+            stored
+        );
+
+        let loaded = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
+        assert_eq!(
+            mapping_base_content(&paths, "wiki", &loaded.documents["home"]).unwrap(),
+            "legacy base\n"
         );
 
         drop(StateLock::acquire(&paths, "wiki").unwrap());
@@ -3467,7 +3519,7 @@ mod tests {
         assert!(legacy.with_extension("json.migrated").is_file());
         assert_eq!(
             load_state(&paths, "wiki", "collection", "Imported", None).unwrap(),
-            legacy_state
+            stored
         );
     }
 
@@ -3557,7 +3609,7 @@ mod tests {
         )
         .expect("binding preview should succeed");
         assert!(!preview.applied);
-        assert!(read_state(&paths, "wiki", false).unwrap().is_none());
+        assert!(read_state(&paths, "wiki").unwrap().is_none());
 
         let adopted = adopt_outline_document_binding(
             &paths,
@@ -3685,7 +3737,7 @@ mod tests {
         .expect_err("drift between plan and apply must fail");
         assert!(error.to_string().contains("pre-apply conformance check"));
         assert!(!temp.path().join("Imported/Home.md").exists());
-        assert!(read_state(&paths, "wiki", false).unwrap().is_none());
+        assert!(read_state(&paths, "wiki").unwrap().is_none());
     }
 
     #[test]
@@ -4782,9 +4834,14 @@ mod tests {
             Some("https://outline.example/")
         );
         let mapping = &state.documents["home"];
+        let source_snapshot = snapshot_path(
+            &current_snapshot_directory(&paths, "wiki").unwrap(),
+            mapping.last_remote_source_hash.as_deref().unwrap(),
+        )
+        .unwrap();
         assert_eq!(
-            mapping.last_remote_source.as_deref(),
-            Some("remote source\n")
+            fs::read_to_string(source_snapshot).unwrap(),
+            "remote source\n"
         );
         assert_eq!(mapping.last_remote_revision, Some(7));
         assert_eq!(
