@@ -90,6 +90,22 @@ and `~/.ssh/config` host aliases still apply. The engine sets `GIT_SSH_COMMAND` 
 `GIT_SSH`) on its own Git processes, so the daemon does not depend on repository configuration. The
 key path never appears in logs, JSON, or notifications.
 
+On Unix the engine's command also shares one authenticated connection between its Git processes:
+
+```text
+-o ControlMaster=auto -o ControlPath=<dir>/vulcan-%C -o ControlPersist=60
+```
+
+A sync cycle makes several remote trips, and each new connection repeats the TCP and SSH handshake
+(about half of a typical forge round trip). `<dir>` is the first of `$XDG_RUNTIME_DIR` and `$TMPDIR`
+that is absolute, owned by the current user, not group- or world-writable, free of `%`, and short
+enough for the platform's socket-path limit; without one, connections are not shared. A shared
+master stays up at most 60 seconds after its last use, so a replaced or revoked key stops being
+used shortly after. The device-key probe never shares a connection, so it always tests a fresh
+authentication, and plain `git` through `core.sshCommand` is unaffected. Sharing relies on OpenSSH
+7.3 or newer, where a backgrounded master no longer holds the caller's stderr open. Windows OpenSSH
+does not support it.
+
 ### Plain `git` (`core.sshCommand`, on by default)
 
 Vulcan's own Git calls always use the device key through the environment. So that plain `git` in the

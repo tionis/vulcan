@@ -35,6 +35,19 @@ const SSH_OPTIONS: [&str; 6] = [
     "BatchMode=yes",
 ];
 
+/// How long a shared SSH connection outlives its last Git process. A sync
+/// cycle makes several remote trips; sharing one authenticated connection
+/// saves a TCP and SSH handshake on each. Kept short so a replaced or revoked
+/// key stops being used soon after.
+const CONTROL_PERSIST_SECONDS: u32 = 60;
+/// Socket name; OpenSSH expands `%C` to a 40-character connection hash.
+const CONTROL_SOCKET_NAME: &str = "vulcan-%C";
+/// macOS limits socket paths to 104 bytes including the terminator, and
+/// OpenSSH binds through a temporary name 17 bytes longer than the final one.
+const MAX_CONTROL_SOCKET_PATH: usize = 103 - 17;
+/// Length of the expanded `%C` token in [`CONTROL_SOCKET_NAME`].
+const EXPANDED_CONNECTION_HASH: usize = 40;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BindingRecord {
@@ -168,12 +181,21 @@ fn path_word(path: &Path) -> String {
     shell_quote(&path.to_string_lossy())
 }
 
-/// Exact `GIT_SSH_COMMAND` for Vulcan-spawned Git processes.
+/// Exact `GIT_SSH_COMMAND` for Vulcan-spawned Git processes. Where a private
+/// socket directory exists, these processes share one SSH connection.
 fn ssh_command_for(key: &Path) -> String {
-    ssh_command_with("ssh", key)
+    let mut command = ssh_command_with("ssh", key);
+    if let Some(directory) = control_directory() {
+        for option in multiplex_options(&directory) {
+            command.push(' ');
+            command.push_str(&option);
+        }
+    }
+    command
 }
 
-/// As [`ssh_command_for`] with an explicit `ssh` program, which tests replace.
+/// As [`ssh_command_for`] with an explicit `ssh` program, which tests replace,
+/// and without connection sharing.
 fn ssh_command_with(program: &str, key: &Path) -> String {
     let program = if program == "ssh" {
         program.to_owned()
@@ -183,6 +205,60 @@ fn ssh_command_with(program: &str, key: &Path) -> String {
     let mut parts = vec![program, "-i".to_owned(), path_word(key)];
     parts.extend(SSH_OPTIONS.iter().map(|option| (*option).to_owned()));
     parts.join(" ")
+}
+
+/// SSH options that share one connection through a socket in `directory`.
+/// The control path is shell-quoted for `GIT_SSH_COMMAND`.
+fn multiplex_options(directory: &Path) -> Vec<String> {
+    let control_path = directory.join(CONTROL_SOCKET_NAME);
+    vec![
+        "-o".to_owned(),
+        "ControlMaster=auto".to_owned(),
+        "-o".to_owned(),
+        shell_quote(&format!("ControlPath={}", control_path.to_string_lossy())),
+        "-o".to_owned(),
+        format!("ControlPersist={CONTROL_PERSIST_SECONDS}"),
+    ]
+}
+
+/// The first of `$XDG_RUNTIME_DIR` and `$TMPDIR` that can safely hold control
+/// sockets. Without one, connections are simply not shared.
+fn control_directory() -> Option<PathBuf> {
+    ["XDG_RUNTIME_DIR", "TMPDIR"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|directory| is_control_directory(directory))
+}
+
+/// A control socket grants use of an authenticated connection, so it must
+/// live in a directory only this user can write. The path must also fit the
+/// platform socket limit and avoid `%`, which OpenSSH would expand.
+#[cfg(unix)]
+fn is_control_directory(directory: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let Some(text) = directory.to_str() else {
+        return false;
+    };
+    if !directory.is_absolute()
+        || text.contains('%')
+        || text.len() + 1 + CONTROL_SOCKET_NAME.len() - 2 + EXPANDED_CONNECTION_HASH
+            > MAX_CONTROL_SOCKET_PATH
+    {
+        return false;
+    }
+    std::fs::metadata(directory).is_ok_and(|metadata| {
+        metadata.is_dir()
+            && metadata.uid() == rustix::process::geteuid().as_raw()
+            && metadata.mode() & 0o022 == 0
+    })
+}
+
+/// Windows OpenSSH does not support connection sharing.
+#[cfg(not(unix))]
+fn is_control_directory(_directory: &Path) -> bool {
+    false
 }
 
 /// Command that fails every SSH connection with a clear message.
@@ -696,6 +772,52 @@ mod tests {
         assert!(command.contains("IdentityAgent=none"));
         assert!(command.contains("BatchMode=yes"));
         assert!(!command.contains("StrictHostKeyChecking"));
+    }
+
+    #[test]
+    fn multiplexing_options_quote_the_control_path_for_the_shell() {
+        let options = multiplex_options(Path::new("/run/user/it's"));
+        assert_eq!(
+            options.join(" "),
+            "-o ControlMaster=auto -o 'ControlPath=/run/user/it'\\''s/vulcan-%C' -o ControlPersist=60"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_sockets_need_a_short_private_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temporary = tempfile::Builder::new()
+            .prefix("vs")
+            .tempdir_in("/tmp")
+            .expect("temporary directory");
+        let private = temporary.path().join("private");
+        fs::create_dir(&private).expect("private directory");
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).expect("chmod");
+        assert!(is_control_directory(&private));
+
+        let shared = temporary.path().join("shared");
+        fs::create_dir(&shared).expect("shared directory");
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).expect("chmod");
+        assert!(
+            !is_control_directory(&shared),
+            "a directory others can write must never hold control sockets"
+        );
+
+        let token = temporary.path().join("a%b");
+        fs::create_dir(&token).expect("token directory");
+        assert!(!is_control_directory(&token), "OpenSSH would expand `%`");
+
+        let long = temporary.path().join("x".repeat(40));
+        fs::create_dir(&long).expect("long directory");
+        assert!(
+            !is_control_directory(&long),
+            "the expanded socket path must fit the platform limit"
+        );
+
+        assert!(!is_control_directory(Path::new("relative")));
+        assert!(!is_control_directory(&temporary.path().join("missing")));
     }
 
     #[test]
