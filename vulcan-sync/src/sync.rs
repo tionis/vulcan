@@ -2007,11 +2007,53 @@ fn publish_device_backup(
     capture: &crate::GitCapture,
 ) -> Result<bool, GitSyncError> {
     let tracked = engine.read_ref(&report.repository, &report.refs.device_tracking)?;
-    if publish_device_backup_against(engine, options, report, capture, tracked.as_ref())? {
+    if let Some(tracked) = tracked.as_ref() {
+        let (target, outcome) =
+            device_backup_target(engine, options, report, capture, Some(tracked))?;
+        if &target == tracked {
+            // Nothing new to publish. Confirm the remote head with a ref query
+            // instead of a no-op leased push, which still opens a receive-pack
+            // connection and runs pre-push hooks such as Git LFS.
+            let current =
+                engine.remote_ref(&report.repository, &options.remote, &report.refs.device)?;
+            if current.as_ref() == Some(tracked) {
+                record_device_backup(report, options, capture, target, outcome);
+                return Ok(true);
+            }
+            return publish_device_backup_after_remote_moved(
+                engine,
+                options,
+                report,
+                capture,
+                current.as_ref(),
+            );
+        }
+        if push_device_backup(
+            engine,
+            options,
+            report,
+            capture,
+            Some(tracked),
+            target,
+            outcome,
+        )? {
+            return Ok(true);
+        }
+    } else if publish_device_backup_against(engine, options, report, capture, None)? {
         return Ok(true);
     }
     let current = engine.remote_ref(&report.repository, &options.remote, &report.refs.device)?;
-    if let Some(current) = &current {
+    publish_device_backup_after_remote_moved(engine, options, report, capture, current.as_ref())
+}
+
+fn publish_device_backup_after_remote_moved(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+    current: Option<&GitOid>,
+) -> Result<bool, GitSyncError> {
+    if let Some(current) = current {
         engine.fetch_ref(
             &report.repository,
             &options.remote,
@@ -2023,7 +2065,7 @@ fn publish_device_backup(
             Some(current.clone())
         );
     }
-    publish_device_backup_against(engine, options, report, capture, current.as_ref())
+    publish_device_backup_against(engine, options, report, capture, current)
 }
 
 fn publish_device_backup_against(
@@ -2034,6 +2076,26 @@ fn publish_device_backup_against(
     remote_before: Option<&GitOid>,
 ) -> Result<bool, GitSyncError> {
     let (target, outcome) = device_backup_target(engine, options, report, capture, remote_before)?;
+    push_device_backup(
+        engine,
+        options,
+        report,
+        capture,
+        remote_before,
+        target,
+        outcome,
+    )
+}
+
+fn push_device_backup(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+    remote_before: Option<&GitOid>,
+    target: GitOid,
+    outcome: GitDeviceBackupOutcome,
+) -> Result<bool, GitSyncError> {
     if engine.push_ref(
         &report.repository,
         &options.remote,
@@ -2047,6 +2109,17 @@ fn publish_device_backup_against(
     if remote_before != Some(&target) {
         engine.update_ref(&report.repository, &report.refs.device_tracking, &target)?;
     }
+    record_device_backup(report, options, capture, target, outcome);
+    Ok(true)
+}
+
+fn record_device_backup(
+    report: &mut GitSyncReport,
+    options: &GitSyncOptions,
+    capture: &crate::GitCapture,
+    target: GitOid,
+    outcome: GitDeviceBackupOutcome,
+) {
     report.device_backup = Some(GitDeviceBackup {
         device_id: options.device_id.clone(),
         reference: report.refs.device.clone(),
@@ -2054,7 +2127,6 @@ fn publish_device_backup_against(
         published_revision: target,
         outcome,
     });
-    Ok(true)
 }
 
 fn device_backup_target(
@@ -4759,6 +4831,86 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
+    fn steady_sync_republishes_a_deleted_device_backup() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
+        let published = bootstrap
+            .device_backup
+            .expect("bootstrap device backup")
+            .published_revision;
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!(":{}", bootstrap.refs.device),
+            ],
+        );
+
+        let report = sync_git_once(&engine, &writer, &options).expect("steady sync");
+
+        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &options.remote, &report.refs.device)
+                .expect("remote device backup"),
+            Some(published)
+        );
+    }
+
+    #[test]
+    fn steady_sync_bridges_a_device_backup_moved_elsewhere() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
+        let published = bootstrap
+            .device_backup
+            .expect("bootstrap device backup")
+            .published_revision;
+        let tree = git_stdout(&writer, &["rev-parse", &format!("{published}^{{tree}}")]);
+        let foreign = git_stdout(
+            &writer,
+            &["commit-tree", &tree, "-m", "foreign device head"],
+        );
+        run_git(
+            &writer,
+            &[
+                "push",
+                "--quiet",
+                "--force",
+                "origin",
+                &format!("{foreign}:{}", bootstrap.refs.device),
+            ],
+        );
+
+        let report = sync_git_once(&engine, &writer, &options).expect("steady sync");
+
+        let backup = report.device_backup.expect("device backup");
+        assert_eq!(backup.outcome, GitDeviceBackupOutcome::Bridged);
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let remote = engine
+            .remote_ref(&repository, &options.remote, &report.refs.device)
+            .expect("remote device backup")
+            .expect("published device backup");
+        assert_eq!(remote, backup.published_revision);
+        assert!(engine
+            .is_ancestor(
+                &repository,
+                &GitOid::parse(&foreign).expect("foreign oid"),
+                &remote
+            )
+            .expect("ancestry"));
+        assert!(engine
+            .is_ancestor(&repository, &published, &remote)
+            .expect("ancestry"));
+    }
+
+    #[test]
     fn exact_cached_remote_tip_does_not_open_a_fetch_connection() {
         let (_temporary, _remote, writer) = setup_remote_and_writer();
         let engine = GitCliEngine::default();
@@ -4835,8 +4987,12 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
                 .iter()
                 .filter(|line| line.contains(" ls-remote "))
                 .count(),
-            1,
-            "steady sync should query the remote once: {commands}"
+            2,
+            "steady sync should query the device backup and live refs: {commands}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains(" push ")),
+            "an already published device backup must not open a push connection: {commands}"
         );
         assert!(
             lines.iter().all(|line| !line.contains(" fetch ")),
@@ -4925,9 +5081,17 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert_eq!(notification_report.outcome, GitSyncOutcome::UpToDate);
         let notification_commands =
             fs::read_to_string(&trace).expect("notification invocation trace");
+        let live = notification_report.refs.live.as_str();
         assert!(
-            !notification_commands.contains(" ls-remote "),
-            "fetch-first verification must skip the preliminary remote query: {notification_commands}"
+            notification_commands
+                .lines()
+                .filter(|line| line.contains(" ls-remote "))
+                .all(|line| !line.contains(live)),
+            "fetch-first verification must skip the preliminary live-ref query: {notification_commands}"
+        );
+        assert!(
+            notification_commands.lines().all(|line| !line.contains(" push ")),
+            "an already published device backup must not open a push connection: {notification_commands}"
         );
         assert_eq!(
             notification_commands
@@ -4935,7 +5099,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
                 .filter(|line| line.contains(" fetch "))
                 .count(),
             1,
-            "fetch-first verification should use one remote operation: {notification_commands}"
+            "fetch-first verification should fetch the live ref once: {notification_commands}"
         );
     }
 
