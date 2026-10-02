@@ -5182,6 +5182,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         fs::write(writer.join("asset.bin"), "representative filtered bytes\n")
             .expect("filtered asset");
         commit_all(&writer, "add representative LFS paths");
+        backdate_worktree(&writer);
         let trace = temporary.path().join("git-invocations.log");
         let wrapper = temporary.path().join("git-wrapper");
         fs::write(
@@ -6049,6 +6050,77 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     fn branch_action(report: &GitSyncReport) -> (GitBranchSyncAction, Option<String>) {
         let lane = report.branch.as_ref().expect("branch lane report");
         (lane.action, lane.detail.clone())
+    }
+
+    /// Moves every worktree file's mtime an hour back, so a sync index written
+    /// now cannot hold racily clean entries that a steady check would refresh.
+    fn backdate_worktree(path: &Path) {
+        let past = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for entry in fs::read_dir(path).expect("read worktree directory") {
+            let entry = entry.expect("worktree entry");
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            let file_type = entry.file_type().expect("worktree entry type");
+            if file_type.is_dir() {
+                backdate_worktree(&entry.path());
+            } else if file_type.is_file() {
+                fs::File::options()
+                    .write(true)
+                    .open(entry.path())
+                    .expect("open worktree file")
+                    .set_modified(past)
+                    .expect("backdate worktree file");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn racily_clean_sync_index_is_refreshed_once() {
+        let (temporary, _remote, writer) = setup_remote_and_writer();
+        let (engine, trace) = traced_engine(&temporary);
+        let options = GitSyncOptions::default();
+        // An older note lets the refresh write an index that is no longer racy.
+        backdate_worktree(&writer);
+        sync_git_once(&engine, &writer, &options).expect("bootstrap");
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let index = repository.git_dir.join("vulcan-sync/index");
+        let note_mtime = fs::metadata(writer.join("Home.md"))
+            .and_then(|metadata| metadata.modified())
+            .expect("note mtime");
+        fs::File::options()
+            .write(true)
+            .open(&index)
+            .expect("open sync index")
+            .set_modified(note_mtime)
+            .expect("make the sync index racy");
+        let refreshes = |commands: &str| {
+            commands
+                .lines()
+                .filter(|line| line.contains(" update-index -q --refresh"))
+                .count()
+        };
+
+        fs::write(&trace, "").expect("reset invocation trace");
+        let report = sync_git_once(&engine, &writer, &options).expect("racy steady sync");
+        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
+        let commands = fs::read_to_string(&trace).expect("invocation trace");
+        assert_eq!(
+            refreshes(&commands),
+            1,
+            "a racily clean sync index should be refreshed once: {commands}"
+        );
+
+        fs::write(&trace, "").expect("reset invocation trace");
+        let report = sync_git_once(&engine, &writer, &options).expect("healed steady sync");
+        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
+        let commands = fs::read_to_string(&trace).expect("invocation trace");
+        assert_eq!(
+            refreshes(&commands),
+            0,
+            "a refreshed sync index must not be refreshed again: {commands}"
+        );
     }
 
     /// Returns an engine whose Git invocations are appended to the trace file.

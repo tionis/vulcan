@@ -2318,6 +2318,7 @@ impl GitCliEngine {
         repository: &GitRepository,
         index_path: &Path,
     ) -> Result<bool, GitEngineError> {
+        self.heal_racy_sync_index(repository, index_path)?;
         let mut command = self.index_command(repository, index_path)?;
         command.args(["diff-files", "--quiet", "--"]);
         command.args(WORKTREE_CAPTURE_PATHS);
@@ -2337,6 +2338,30 @@ impl GitCliEngine {
                 .trim()
                 .is_empty(),
         )
+    }
+
+    /// Rewrites the sync index with fresh stat data when some entry is racily
+    /// clean, so later comparisons stop re-reading and re-filtering those files.
+    /// Only stat data changes; entries whose content differs stay dirty.
+    fn heal_racy_sync_index(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+    ) -> Result<(), GitEngineError> {
+        let hash_len = match repository.object_format {
+            GitObjectFormat::Sha1 => 20,
+            GitObjectFormat::Sha256 => 32,
+            GitObjectFormat::Other(_) => return Ok(()),
+        };
+        if crate::racy_index::may_have_racy_entries(index_path, hash_len) {
+            let mut command = self.index_command(repository, index_path)?;
+            command.args(["update-index", "-q", "--refresh"]);
+            ensure_success(
+                "refresh racily clean sync index entries",
+                self.execute(command)?,
+            )?;
+        }
+        Ok(())
     }
 
     fn commit_tree_with_reproducible_identity(

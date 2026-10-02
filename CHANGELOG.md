@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- `vulcan sync run` and `sync status` make far fewer remote round trips. An unchanged sync now
+  queries the remote once instead of pushing the device backup, fetching the branch upstream, and
+  querying the live ref separately. Device-key transports share one SSH connection on Unix. The
+  private sync index stops re-reading racily clean files, which with Git LFS re-ran the clean
+  filter on every sync. On a forge over SSH, an idle sync drops from about 5s to about 0.6s.
+
 ### Fixed
 
 - Incremental scans now re-resolve every note's links when a note's `aliases` change, and stale
