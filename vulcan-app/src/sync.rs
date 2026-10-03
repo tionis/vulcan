@@ -3108,6 +3108,8 @@ mod tests {
         );
         git(&writer, &["config", "user.name", "Vulcan Test"]);
         git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+        // Windows runners default to autocrlf; the assertions compare LF bytes.
+        git(&writer, &["config", "core.autocrlf", "false"]);
         git(
             &writer,
             &[

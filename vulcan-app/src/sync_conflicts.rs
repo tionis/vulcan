@@ -2197,6 +2197,7 @@ fn set_carried_mode(path: &Path, mode: Option<&str>) -> Result<(), AppError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // One fallible contract across platforms.
 fn set_carried_mode(_path: &Path, _mode: Option<&str>) -> Result<(), AppError> {
     Ok(())
 }
@@ -5111,7 +5112,22 @@ mod tests {
 
     /// Ages the `conflicts/` directory past the index settle time.
     fn settle_conflicts_directory(store: &SyncConflictStore, key: &str) {
-        let directory = fs::File::open(store.root.join(key).join("conflicts")).expect("open");
+        let path = store.root.join(key).join("conflicts");
+        #[cfg(not(windows))]
+        let directory = fs::File::open(path).expect("open");
+        // Windows opens a directory only with backup semantics, and setting
+        // its time needs attribute-write access.
+        #[cfg(windows)]
+        let directory = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .expect("open")
+        };
         directory
             .set_modified(std::time::SystemTime::now() - 2 * OPEN_INDEX_SETTLE)
             .expect("age conflicts directory");
