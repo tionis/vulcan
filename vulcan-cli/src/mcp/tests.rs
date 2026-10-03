@@ -520,6 +520,9 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     let process = DaemonProcessContext {
         registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
         state_root: temporary.path().join("state"),
+        device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
+            temporary.path().join("state/sync/device-identity"),
+        ),
         verbose: false,
     };
     let wiki_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID");
@@ -4616,6 +4619,9 @@ fn named_runtime_rejects_a_definition_changed_before_listener_startup() {
     let process = DaemonProcessContext {
         registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
         state_root: temporary.path().join("state"),
+        device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
+            temporary.path().join("state/sync/device-identity"),
+        ),
         verbose: false,
     };
     let wiki_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID");
@@ -4679,6 +4685,9 @@ fn resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions() {
     let process = DaemonProcessContext {
         registry: vulcan_daemon::registry::WikiRegistry::at(temporary.path().join("daemon.toml")),
         state_root: temporary.path().join("state"),
+        device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
+            temporary.path().join("state/sync/device-identity"),
+        ),
         verbose: false,
     };
     let scheduler =

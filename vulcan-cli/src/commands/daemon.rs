@@ -1122,6 +1122,9 @@ mod tests {
                 temporary.path().join("daemon.toml"),
             ),
             state_root: temporary.path().join("state"),
+            device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
+                temporary.path().join("state/sync/device-identity"),
+            ),
             verbose: false,
         };
         let scheduler = Arc::new(

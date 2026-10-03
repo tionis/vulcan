@@ -161,6 +161,13 @@ impl SyncStateStore {
         Self { root, identity }
     }
 
+    /// Store rooted at an explicit directory that names devices with an explicit identity, so
+    /// a host with a relocated state root still shares the installation's device key.
+    #[must_use]
+    pub fn with_identity(root: PathBuf, identity: DeviceIdentityStore) -> Self {
+        Self { root, identity }
+    }
+
     /// Device-local, per-vault directory outside every work tree, so plain Git
     /// vaults never replicate it and nothing creates `.vulcan/` for it. Sibling
     /// of the journal root, like the identity store.
