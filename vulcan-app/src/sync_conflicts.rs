@@ -1720,7 +1720,7 @@ fn publish_and_apply_resolution(
                 == GitPushResult::Rejected
             {
                 return Err(AppError::operation(
-                    "another device updated the live branch while this resolution was being published, so nothing was applied; run `vulcan sync run`, then resolve again with `--group`",
+                    "another device updated the live branch while this resolution was being published, so nothing was applied; run `vulcan sync run`, then rerun this command",
                 ));
             }
         }

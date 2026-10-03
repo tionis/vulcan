@@ -3886,6 +3886,29 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         )
         .expect("reader receives the unrelated edit");
         assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
+        // An earlier attempt prepared a whole resolution that never
+        // published, as when another device won the race; it must not
+        // pin the choice to the old live version.
+        crate::sync_conflicts::SyncConflictStore::from_state_store(&fixture.store)
+            .save_resolution(
+                &conflict.repository_key,
+                &crate::sync_conflicts::SyncConflictResolutionRecord {
+                    version: crate::sync_conflicts::SYNC_CONFLICT_RESOLUTION_VERSION,
+                    conflict_id: conflict.id.clone(),
+                    side: Some(crate::sync_conflicts::SyncConflictResolutionSide::Local),
+                    proposal_id: None,
+                    base_revision: conflict.base_revision.clone().expect("base"),
+                    local_revision: conflict.local_revision.clone(),
+                    remote_revision: conflict.remote_revision.clone(),
+                    live_input_revision: None,
+                    recovery_revision: conflict.local_revision.clone(),
+                    resolved_tree: conflict.local_revision.clone(),
+                    resolution_commit: conflict.local_revision.clone(),
+                    published: false,
+                    applied: false,
+                },
+            )
+            .expect("abandoned whole resolution");
 
         let resolved = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
             &VaultPaths::new(&fixture.reader),
