@@ -2,7 +2,7 @@
 
 use crate::registry::{RegistryError, WikiId, WikiRegistration, WikiRegistry};
 use crate::supervisor::{SupervisedSyncJob, SupervisorError, SyncSupervisor};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -14,7 +14,7 @@ use vulcan_sync::{SyncErrorCategory, SyncJobState, SyncJobTrigger, SyncStatus};
 
 pub const DAEMON_SYNC_STATUS_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonSyncStatusSource {
     Job,
@@ -25,20 +25,20 @@ pub enum DaemonSyncStatusSource {
     Idle,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonWikiSyncStatus {
     pub version: u32,
     pub wiki_id: String,
     pub paused: bool,
     pub source: DaemonSyncStatusSource,
     pub recovery_required: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_attempt_unix_ms: Option<u64>,
     #[serde(flatten)]
     pub status: SyncStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<SupervisedSyncJob>,
 }
 

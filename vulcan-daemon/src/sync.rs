@@ -799,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn observer_coalesces_equivalent_phases_and_propagates_persistence_failure() {
+    fn observer_coalesces_equivalent_phases_without_rewriting_the_ledger() {
         let temporary = tempdir().unwrap();
         let ledger = temporary.path().join("jobs.json");
         let supervisor = SyncSupervisor::at(&ledger).unwrap();
@@ -838,18 +838,12 @@ mod tests {
         progress.phase = GitSyncPhase::Verifying;
         observer.progress(&progress).unwrap();
         assert!(!changes.has_changed().unwrap());
-        let before = supervisor.list().unwrap();
-        assert_eq!(
-            SyncSupervisor::inspect_at(&ledger).unwrap().list().unwrap(),
-            before
-        );
-        // Fail the actual atomic replacement, after serialization/temp-file I/O.
-        fs::rename(&ledger, temporary.path().join("saved-jobs.json")).unwrap();
-        fs::create_dir(&ledger).unwrap();
+        // Progress is published in memory only; the ledger keeps the claim.
+        let ledger_after_claim = fs::read(&ledger).unwrap();
         progress.phase = GitSyncPhase::Completed;
-        assert!(observer.progress(&progress).is_err());
-        assert_eq!(supervisor.list().unwrap(), before);
-        assert!(!changes.has_changed().unwrap());
+        observer.progress(&progress).unwrap();
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(fs::read(&ledger).unwrap(), ledger_after_claim);
     }
 
     #[test]

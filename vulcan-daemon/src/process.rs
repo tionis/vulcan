@@ -933,19 +933,43 @@ pub fn daemon_status(
     let services = load_host_status(&context.host_status_path())?
         .map(|report| report.services)
         .unwrap_or_default();
-    let supervisor = SyncSupervisor::inspect_at(state_store.root().join("daemon/jobs.json"))?;
+    let (running, capability_probe_error) = runtime.as_ref().map_or((false, None), |record| {
+        match authenticated_request(context, record, "GET", "/capabilities") {
+            Ok(_) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        }
+    });
+    // Job progress lives only in the running daemon's memory, so ask it. The
+    // on-disk ledger is read only when the daemon is down (no job can be
+    // running then) or does not answer.
+    let mut ledger = None;
     let wiki_statuses = registered_wikis
         .iter()
         .map(|wiki| {
-            let sync = wiki_sync_status(
-                &context.registry,
-                &supervisor,
-                &state_store,
-                &wiki.registration.id,
-            );
+            let live = runtime.as_ref().filter(|_| running).and_then(|record| {
+                live_wiki_sync_status(context, record, wiki.registration.id.as_str()).ok()
+            });
+            let sync = match live {
+                Some(status) => Ok(status),
+                None => match &ledger {
+                    Some(supervisor) => Ok(supervisor),
+                    None => SyncSupervisor::inspect_at(state_store.root().join("daemon/jobs.json"))
+                        .map(|supervisor| &*ledger.insert(supervisor)),
+                }
+                .map_err(|error| error.to_string())
+                .and_then(|supervisor| {
+                    wiki_sync_status(
+                        &context.registry,
+                        supervisor,
+                        &state_store,
+                        &wiki.registration.id,
+                    )
+                    .map_err(|error| error.to_string())
+                }),
+            };
             let (sync, sync_error) = match sync {
                 Ok(status) => (Some(status), None),
-                Err(error) => (None, Some(error.to_string())),
+                Err(error) => (None, Some(error)),
             };
             let cache = if wiki.registration.capabilities().markdown_index {
                 load_scan_completion(&scan_status_path(
@@ -968,12 +992,6 @@ pub fn daemon_status(
             }
         })
         .collect();
-    let (running, capability_probe_error) = runtime.as_ref().map_or((false, None), |record| {
-        match authenticated_request(context, record, "GET", "/capabilities") {
-            Ok(()) => (true, None),
-            Err(error) => (false, Some(error.to_string())),
-        }
-    });
     Ok(DaemonStatusReport {
         version: DAEMON_RUNTIME_VERSION,
         running,
@@ -1044,12 +1062,27 @@ pub fn request_daemon_shutdown(
     daemon_status(context)
 }
 
+/// Reads one wiki's sync status, including live job progress, from the
+/// running daemon.
+fn live_wiki_sync_status(
+    context: &DaemonProcessContext,
+    record: &DaemonRuntimeRecord,
+    wiki_id: &str,
+) -> Result<DaemonWikiSyncStatus, DaemonProcessError> {
+    let body = authenticated_request(context, record, "GET", &format!("/{wiki_id}/sync/status"))?;
+    serde_json::from_slice(&body).map_err(|error| {
+        DaemonProcessError::Configuration(format!(
+            "daemon returned an invalid sync status: {error}"
+        ))
+    })
+}
+
 fn authenticated_request(
     context: &DaemonProcessContext,
     record: &DaemonRuntimeRecord,
     method: &str,
     path: &str,
-) -> Result<(), DaemonProcessError> {
+) -> Result<Vec<u8>, DaemonProcessError> {
     let credential = CompanionCredentialStore::at(&context.state_root).load()?;
     if credential.id != record.credential_id {
         return Err(DaemonProcessError::Configuration(
@@ -1059,12 +1092,14 @@ fn authenticated_request(
     send_http_request(record.bind, &credential, method, path)
 }
 
+/// Sends one authenticated request and returns the response body. The daemon
+/// answers with `Content-Length` bodies; other framings are rejected.
 fn send_http_request(
     bind: SocketAddr,
     credential: &CompanionCredential,
     method: &str,
     path: &str,
-) -> Result<(), DaemonProcessError> {
+) -> Result<Vec<u8>, DaemonProcessError> {
     let mut stream = TcpStream::connect_timeout(&bind, Duration::from_millis(500))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -1092,7 +1127,19 @@ fn send_http_request(
             String::from_utf8_lossy(status).trim()
         )));
     }
-    Ok(())
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| {
+            DaemonProcessError::Configuration("daemon HTTP response has no header end".to_string())
+        })?;
+    let headers = String::from_utf8_lossy(&response[..header_end]).to_ascii_lowercase();
+    if headers.contains("transfer-encoding:") {
+        return Err(DaemonProcessError::Configuration(
+            "daemon HTTP response uses an unsupported transfer encoding".to_string(),
+        ));
+    }
+    Ok(response[header_end + 4..].to_vec())
 }
 
 fn unix_time_ms() -> Result<u64, DaemonProcessError> {
@@ -1627,6 +1674,21 @@ mod tests {
         });
         assert!(cache_became_fresh, "hosted cache scan should complete");
 
+        // A running daemon answers sync status itself, so live job progress
+        // never has to be read back from the ledger file.
+        let ledger = context
+            .state_root
+            .join("sync/repositories/daemon/jobs.json");
+        let saved_ledger = fs::read(&ledger).expect("ledger");
+        fs::write(&ledger, b"not a ledger").expect("damage ledger");
+        let live = daemon_status(&context).expect("status");
+        assert!(
+            live.wiki_statuses[0].sync.is_some(),
+            "{:?}",
+            live.wiki_statuses[0].sync_error
+        );
+        fs::write(&ledger, &saved_ledger).expect("restore ledger");
+
         fs::write(vault.join("Last-minute.md"), "captured during shutdown\n")
             .expect("last-minute note");
 
@@ -1643,6 +1705,13 @@ mod tests {
             .expect("daemon result channel")
             .expect("daemon result");
         assert!(!context.runtime_path().exists());
+        // A stopped daemon has no running jobs, so status reads the ledger.
+        let saved_ledger = fs::read(&ledger).expect("ledger");
+        fs::write(&ledger, b"not a ledger").expect("damage ledger");
+        let offline = daemon_status(&context).expect("status");
+        assert!(offline.wiki_statuses[0].sync.is_none());
+        assert!(offline.wiki_statuses[0].sync_error.is_some());
+        fs::write(&ledger, &saved_ledger).expect("restore ledger");
         let rebound = std::net::TcpListener::bind(daemon_bind).expect("companion port released");
         drop(rebound);
         assert!(git(

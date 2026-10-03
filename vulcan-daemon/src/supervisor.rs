@@ -281,6 +281,17 @@ impl SyncSupervisor {
         Ok(())
     }
 
+    /// Publishes a change that a restart would discard anyway (progress of a
+    /// running job) without rewriting the durable ledger. On startup every
+    /// running job returns to the queue with fresh status, so persisting each
+    /// progress step would only cost I/O. Live progress is read from the
+    /// running daemon instead.
+    fn publish_volatile(&self, inner: SupervisorInner) -> Result<(), SupervisorError> {
+        *self.inner.lock().map_err(|_| SupervisorError::Poisoned)? = inner;
+        self.notify_change();
+        Ok(())
+    }
+
     pub fn user_default() -> Result<Self, SupervisorError> {
         let sync_state = vulcan_app::sync_state::SyncStateStore::user_default()
             .map_err(|error| SupervisorError::InvalidState(error.to_string()))?;
@@ -635,6 +646,8 @@ impl SyncSupervisor {
         // Removing stale queue entries or deferring blocked jobs only changes
         // the in-memory queue. An empty claim must not serialize and fsync the
         // entire retained history on every idle worker iteration.
+        // A claim stays durable: a restart must know the job was interrupted
+        // so it can requeue it with the `Recovery` trigger.
         if claimed.is_some() {
             self.persist(&inner)?;
         } else {
@@ -712,7 +725,7 @@ impl SyncSupervisor {
             .expect("validated job in cloned transaction");
         job.job.status = Some(status);
         let updated = job.clone();
-        self.persist(&inner)?;
+        self.publish_volatile(inner)?;
         Ok(updated)
     }
 
@@ -1206,6 +1219,7 @@ mod tests {
         let mut changes = supervisor.subscribe_changes();
         let before = supervisor.persistence_probe.writes.load(Ordering::SeqCst);
         let mut status = claimed.job.job.status.unwrap();
+        let claimed_status = status.clone();
         for _ in 0..100 {
             supervisor
                 .update_running_status(&claimed.job.job.id, status.clone())
@@ -1229,16 +1243,21 @@ mod tests {
         }
         assert_eq!(
             supervisor.persistence_probe.writes.load(Ordering::SeqCst),
-            before + 1
+            before,
+            "progress is published in memory, never written to the ledger"
         );
         assert!(!changes.has_changed().unwrap());
+        assert_eq!(
+            supervisor.list().unwrap()[0].job.status,
+            Some(status),
+            "readers of the running supervisor see the latest progress"
+        );
         assert_eq!(
             load_state(&supervisor.state_path).unwrap().jobs[0]
                 .job
                 .status,
-            Some(status)
+            Some(claimed_status)
         );
-        eprintln!("progress fixture: 201 callbacks, baseline 201 ledger writes, actual 1");
     }
 
     #[test]
@@ -1404,13 +1423,16 @@ mod tests {
             .fail
             .store(true, Ordering::SeqCst);
         let status = status_for(&claimed.job.job, SyncState::Applying, None);
-        assert!(supervisor
+        // Progress never touches storage, so failing writes cannot stop it.
+        supervisor
             .update_running_status(&claimed.job.job.id, status.clone())
-            .is_err());
+            .unwrap();
         assert!(supervisor
             .complete(&claimed.job.job.id, SyncJobState::Succeeded, None, None)
             .is_err());
-        assert_eq!(supervisor.list().unwrap(), before);
+        let listed = supervisor.list().unwrap();
+        assert_eq!(listed[0].job.state, SyncJobState::Running);
+        assert_eq!(listed[0].job.status, Some(status.clone()));
         assert_eq!(load_state(&supervisor.state_path).unwrap().jobs, before);
         supervisor
             .persistence_probe
@@ -1453,10 +1475,10 @@ mod tests {
         let (release_tx, release_rx) = mpsc::channel();
         *supervisor.persistence_probe.gate.lock().unwrap() = Some((entered_tx, release_rx));
         let writer = Arc::clone(&supervisor);
-        let id = claimed.job.job.id.clone();
-        let progress = std::thread::spawn(move || {
+        let blocked_vault = temporary.path().to_path_buf();
+        let blocked = std::thread::spawn(move || {
             writer
-                .update_running_status(&id, status_for(&claimed.job.job, SyncState::Fetching, None))
+                .enqueue("gamma", blocked_vault, SyncJobTrigger::Manual)
                 .unwrap();
         });
         entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1484,7 +1506,7 @@ mod tests {
         let id = before[0].job.id.clone();
         let cancel = std::thread::spawn(move || cancel_supervisor.cancel(&id).unwrap());
         release_tx.send(()).unwrap();
-        progress.join().unwrap();
+        blocked.join().unwrap();
         let queued = enqueue.join().unwrap();
         cancel.join().unwrap();
         assert!(claimed.cancellation.is_cancelled());
