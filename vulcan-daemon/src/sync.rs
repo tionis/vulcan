@@ -839,11 +839,13 @@ mod tests {
         observer.progress(&progress).unwrap();
         assert!(!changes.has_changed().unwrap());
         // Progress is published in memory only; the ledger keeps the claim.
-        let ledger_after_claim = fs::read(&ledger).unwrap();
+        let persisted = || SyncSupervisor::inspect_at(&ledger).unwrap().list().unwrap();
+        let ledger_after_claim = persisted();
         progress.phase = GitSyncPhase::Completed;
         observer.progress(&progress).unwrap();
         assert!(changes.has_changed().unwrap());
-        assert_eq!(fs::read(&ledger).unwrap(), ledger_after_claim);
+        assert_eq!(persisted(), ledger_after_claim);
+        assert_ne!(supervisor.list().unwrap(), ledger_after_claim);
     }
 
     #[test]

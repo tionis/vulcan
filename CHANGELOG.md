@@ -4,6 +4,10 @@
 
 ### Changed
 
+- The daemon job ledger moved from `jobs.json`, rewritten whole on every job change, to a SQLite
+  store with one row per job (`daemon/jobs.sqlite`); running-job progress is no longer written to
+  disk at all, and `daemon status` reads it from the running daemon. The JSON ledger is imported
+  automatically and kept as `jobs.json.migrated`.
 - `vulcan sync run` and `sync status` make far fewer remote round trips. An unchanged sync now
   queries the remote once instead of pushing the device backup, fetching the branch upstream, and
   querying the live ref separately. Device-key transports share one SSH connection on Unix. The

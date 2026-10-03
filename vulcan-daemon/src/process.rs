@@ -50,6 +50,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use vulcan_app::device_identity::DeviceIdentityStore;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_sync::{cached_notification_advertisement, GitCliEngine, GitEngine};
@@ -122,6 +123,9 @@ pub struct DaemonWikiOperationalStatus {
 pub struct DaemonProcessContext {
     pub registry: WikiRegistry,
     pub state_root: PathBuf,
+    /// The installation's device identity. Sync state must name devices and
+    /// authenticate Git transport with the same key as the direct CLI.
+    pub device_identity: DeviceIdentityStore,
     /// Enables operational stderr lines (sync executions, notification
     /// wake-ups). Off by default; set from the global `--verbose` flag.
     pub verbose: bool,
@@ -138,6 +142,8 @@ impl DaemonProcessContext {
         Ok(Self {
             registry: WikiRegistry::user_default()?,
             state_root,
+            device_identity: DeviceIdentityStore::user_default()
+                .map_err(|error| DaemonProcessError::Configuration(error.to_string()))?,
             verbose: false,
         })
     }
@@ -153,6 +159,16 @@ impl DaemonProcessContext {
 
     fn host_status_path(&self) -> PathBuf {
         self.state_root.join("daemon").join("services.json")
+    }
+
+    /// Sync state under this context's state root, bound to the installation's
+    /// device identity rather than one beside the state root.
+    #[must_use]
+    pub fn sync_state_store(&self) -> SyncStateStore {
+        SyncStateStore::with_identity(
+            self.state_root.join("sync/repositories"),
+            self.device_identity.clone(),
+        )
     }
 }
 
@@ -327,9 +343,7 @@ where
         started_unix_ms: unix_time_ms()?,
         credential_id: credential.id.clone(),
     };
-    let state_store = Arc::new(SyncStateStore::at(
-        context.state_root.join("sync/repositories"),
-    ));
+    let state_store = Arc::new(context.sync_state_store());
     let supervisor = Arc::new(SyncSupervisor::at(
         state_store.root().join("daemon/jobs.json"),
     )?);
@@ -929,7 +943,7 @@ pub fn daemon_status(
 ) -> Result<DaemonStatusReport, DaemonProcessError> {
     let runtime = read_runtime_record(&context.runtime_path())?;
     let registered_wikis = context.registry.list(None)?;
-    let state_store = SyncStateStore::at(context.state_root.join("sync/repositories"));
+    let state_store = context.sync_state_store();
     let services = load_host_status(&context.host_status_path())?
         .map(|report| report.services)
         .unwrap_or_default();
@@ -1356,6 +1370,9 @@ mod tests {
         let context = DaemonProcessContext {
             registry,
             state_root: temporary.path().join("state"),
+            device_identity: DeviceIdentityStore::at(
+                temporary.path().join("state/sync/device-identity"),
+            ),
             verbose: false,
         };
         let child_context = context.clone();
@@ -1566,6 +1583,9 @@ mod tests {
         let context = DaemonProcessContext {
             registry,
             state_root: temporary.path().join("state"),
+            device_identity: DeviceIdentityStore::at(
+                temporary.path().join("state/sync/device-identity"),
+            ),
             verbose: false,
         };
         let child_context = context.clone();
@@ -1612,6 +1632,9 @@ mod tests {
         let context = DaemonProcessContext {
             registry,
             state_root: temporary.path().join("state"),
+            device_identity: DeviceIdentityStore::at(
+                temporary.path().join("state/sync/device-identity"),
+            ),
             verbose: false,
         };
         let child_context = context.clone();
@@ -1674,20 +1697,18 @@ mod tests {
         });
         assert!(cache_became_fresh, "hosted cache scan should complete");
 
-        // A running daemon answers sync status itself, so live job progress
-        // never has to be read back from the ledger file.
+        // A running daemon answers sync status itself, including live job
+        // progress that is never written to the ledger.
+        let runtime = read_runtime_record(&context.runtime_path())
+            .expect("runtime record")
+            .expect("running daemon");
+        let live = live_wiki_sync_status(&context, &runtime, "notes").expect("live status");
+        assert_eq!(live.wiki_id, "notes");
+        let status = daemon_status(&context).expect("status");
+        assert!(status.wiki_statuses[0].sync.is_some());
         let ledger = context
             .state_root
-            .join("sync/repositories/daemon/jobs.json");
-        let saved_ledger = fs::read(&ledger).expect("ledger");
-        fs::write(&ledger, b"not a ledger").expect("damage ledger");
-        let live = daemon_status(&context).expect("status");
-        assert!(
-            live.wiki_statuses[0].sync.is_some(),
-            "{:?}",
-            live.wiki_statuses[0].sync_error
-        );
-        fs::write(&ledger, &saved_ledger).expect("restore ledger");
+            .join("sync/repositories/daemon/jobs.sqlite");
 
         fs::write(vault.join("Last-minute.md"), "captured during shutdown\n")
             .expect("last-minute note");
@@ -1707,6 +1728,9 @@ mod tests {
         assert!(!context.runtime_path().exists());
         // A stopped daemon has no running jobs, so status reads the ledger.
         let saved_ledger = fs::read(&ledger).expect("ledger");
+        for companion in ["sqlite-wal", "sqlite-shm"] {
+            let _ = fs::remove_file(ledger.with_extension(companion));
+        }
         fs::write(&ledger, b"not a ledger").expect("damage ledger");
         let offline = daemon_status(&context).expect("status");
         assert!(offline.wiki_statuses[0].sync.is_none());
@@ -1724,12 +1748,9 @@ mod tests {
                 "refs/heads/__vulcan-sync/live:Last-minute.md",
             ]
         ));
-        let supervisor = SyncSupervisor::at(
-            SyncStateStore::at(context.state_root.join("sync/repositories"))
-                .root()
-                .join("daemon/jobs.json"),
-        )
-        .expect("supervisor");
+        let supervisor =
+            SyncSupervisor::at(context.sync_state_store().root().join("daemon/jobs.json"))
+                .expect("supervisor");
         assert!(supervisor.list().expect("jobs").iter().any(|job| {
             job.triggers.contains(&SyncJobTrigger::Shutdown)
                 && job.job.state == SyncJobState::Succeeded
@@ -1786,6 +1807,33 @@ mod tests {
     }
 
     #[test]
+    fn sync_state_uses_the_installation_identity_not_one_beside_the_state_root() {
+        let temporary = tempfile::tempdir().expect("temporary state");
+        let installation = DeviceIdentityStore::at(temporary.path().join("data/device"));
+        let device_id = installation
+            .ensure_device_id()
+            .expect("installation identity");
+        let context = DaemonProcessContext {
+            registry: WikiRegistry::at(temporary.path().join("daemon.toml")),
+            state_root: temporary.path().join("state"),
+            device_identity: installation,
+            verbose: false,
+        };
+        let store = context.sync_state_store();
+        assert_eq!(
+            store.root(),
+            temporary.path().join("state/sync/repositories")
+        );
+        let named = store
+            .load_or_create_device_id(true)
+            .expect("device id")
+            .expect("existing identity");
+        assert_eq!(named.as_str(), device_id);
+        // Naming a device must never mint a second, daemon-only identity.
+        assert!(!temporary.path().join("state/sync/device-identity").exists());
+    }
+
+    #[test]
     fn runtime_records_reject_symlinks() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let target = temporary.path().join("target.json");
@@ -1818,6 +1866,9 @@ mod tests {
         let context = DaemonProcessContext {
             registry: WikiRegistry::at(temporary.path().join("daemon.toml")),
             state_root: temporary.path().join("state"),
+            device_identity: DeviceIdentityStore::at(
+                temporary.path().join("state/sync/device-identity"),
+            ),
             verbose: false,
         };
         let credential = CompanionCredentialStore::at(&context.state_root)
@@ -1869,6 +1920,9 @@ mod tests {
         let context = DaemonProcessContext {
             registry,
             state_root: temporary.path().join("state"),
+            device_identity: DeviceIdentityStore::at(
+                temporary.path().join("state/sync/device-identity"),
+            ),
             verbose: false,
         };
         let status = daemon_status(&context).expect("offline daemon status");

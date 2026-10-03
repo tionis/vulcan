@@ -10,13 +10,15 @@ use std::sync::Mutex;
 #[cfg(test)]
 use std::time::Duration;
 use ulid::Ulid;
+use vulcan_app::keyed_state::KeyedStateStore;
 use vulcan_sync::{
     SyncCancellationToken, SyncError, SyncJob, SyncJobState, SyncJobTrigger, SyncState, SyncStatus,
     SYNC_CONTRACT_VERSION,
 };
 
 pub const SYNC_SUPERVISOR_STATE_VERSION: u32 = 1;
-const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
+/// Upper bound when reading a JSON ledger from earlier versions.
+const MAX_LEGACY_STATE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_RETAINED_JOBS: usize = 256;
 const MAX_WATCH_PATHS: usize = 256;
 const MAX_WATCH_TRANSACTIONS: usize = 16;
@@ -143,7 +145,11 @@ struct SupervisorInner {
 
 #[derive(Debug)]
 pub struct SyncSupervisor {
+    /// The logical ledger path (`jobs.json`); the rows live in a `SQLite` store
+    /// beside it, and a JSON file at this path is only read for migration.
+    #[cfg(test)]
     state_path: PathBuf,
+    store: Mutex<LedgerStore>,
     inner: Mutex<SupervisorInner>,
     /// Serializes complete read/modify/persist/publish transactions. Readers
     /// only take `inner`; serialization and disk I/O never hold that lock.
@@ -275,7 +281,12 @@ impl SyncSupervisor {
     fn persist(&self, inner: &SupervisorInner) -> Result<(), SupervisorError> {
         #[cfg(test)]
         self.persistence_probe.before_write()?;
-        persist_state(&self.state_path, &inner.state)?;
+        let changes = {
+            let committed = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+            LedgerChanges::between(&committed.state, &inner.state)
+        };
+        let mut store = self.store.lock().map_err(|_| SupervisorError::Poisoned)?;
+        changes.write(store.open()?)?;
         *self.inner.lock().map_err(|_| SupervisorError::Poisoned)? = inner.clone();
         self.notify_change();
         Ok(())
@@ -300,7 +311,7 @@ impl SyncSupervisor {
 
     pub fn at(state_path: impl Into<PathBuf>) -> Result<Self, SupervisorError> {
         let state_path = state_path.into();
-        let mut state = load_state(&state_path)?;
+        let (store, mut state) = open_ledger(&state_path)?;
         let mut queue = VecDeque::new();
         let mut cancellations = BTreeMap::new();
         for supervised in &mut state.jobs {
@@ -319,7 +330,9 @@ impl SyncSupervisor {
             }
         }
         Ok(Self {
+            #[cfg(test)]
             state_path,
+            store: Mutex::new(store),
             writer: Mutex::new(()),
             #[cfg(test)]
             persistence_probe: PersistenceProbe::default(),
@@ -339,7 +352,9 @@ impl SyncSupervisor {
         let state_path = state_path.into();
         let state = load_state(&state_path)?;
         Ok(Self {
+            #[cfg(test)]
             state_path,
+            store: Mutex::new(LedgerStore::ReadOnly),
             writer: Mutex::new(()),
             #[cfg(test)]
             persistence_probe: PersistenceProbe::default(),
@@ -520,7 +535,7 @@ impl SyncSupervisor {
                 job_id: enqueue.job.job.id,
             });
         }
-        let id = Ulid::new().to_string().to_ascii_lowercase();
+        let id = new_ledger_id();
         let persisted = PersistedAggregateSyncJob {
             version: SYNC_CONTRACT_VERSION,
             id: id.clone(),
@@ -1024,7 +1039,7 @@ fn enqueue_locked(
             coalesced: true,
         };
     }
-    let id = Ulid::new().to_string().to_ascii_lowercase();
+    let id = new_ledger_id();
     let job = SyncJob {
         version: SYNC_CONTRACT_VERSION,
         id: id.clone(),
@@ -1157,26 +1172,268 @@ fn trim_terminal_jobs(
     }
 }
 
-fn load_state(path: &Path) -> Result<PersistedSupervisorState, SupervisorError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PersistedSupervisorState::default());
+/// Rows of each collection are keyed so that key order is creation order:
+/// ledger IDs are monotonic ULIDs, and idempotency rows lead with the ID of
+/// the job or aggregate they map to.
+const LEDGER_JOBS: &str = "jobs";
+const LEDGER_IDEMPOTENCY: &str = "idempotency";
+const LEDGER_AGGREGATES: &str = "aggregates";
+const LEDGER_AGGREGATE_IDEMPOTENCY: &str = "aggregate_idempotency";
+const LEDGER_KEY_SEPARATOR: char = '\u{1f}';
+
+/// A new job or aggregate ID. IDs are monotonic within the process, so a
+/// ledger loaded in key order keeps creation order even within a millisecond.
+// `Ulid::default()` is the nil ID, so the suggested `unwrap_or_default` would
+// hand out a constant ID whenever the monotonic generator is unavailable.
+#[allow(clippy::unwrap_or_default)]
+fn new_ledger_id() -> String {
+    static GENERATOR: Mutex<ulid::Generator> = Mutex::new(ulid::Generator::new());
+    GENERATOR
+        .lock()
+        .ok()
+        .and_then(|mut generator| generator.generate().ok())
+        .unwrap_or_else(Ulid::new)
+        .to_string()
+        .to_ascii_lowercase()
+}
+
+fn ledger_store_path(state_path: &Path) -> PathBuf {
+    state_path.with_extension("sqlite")
+}
+
+#[allow(clippy::needless_pass_by_value)] // Passed directly to `map_err`.
+fn store_error(error: vulcan_app::AppError) -> SupervisorError {
+    SupervisorError::InvalidState(format!("supervisor ledger: {error}"))
+}
+
+fn idempotency_key(record: &SyncIdempotencyRecord) -> String {
+    format!(
+        "{}{LEDGER_KEY_SEPARATOR}{}{LEDGER_KEY_SEPARATOR}{}",
+        record.job_id, record.scope, record.key
+    )
+}
+
+fn aggregate_idempotency_key(record: &AggregateSyncIdempotencyRecord) -> String {
+    format!(
+        "{}{LEDGER_KEY_SEPARATOR}{}{LEDGER_KEY_SEPARATOR}{}",
+        record.aggregate_id, record.scope, record.key
+    )
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum LedgerRow<'a> {
+    Job(&'a SupervisedSyncJob),
+    Idempotency(&'a SyncIdempotencyRecord),
+    Aggregate(&'a PersistedAggregateSyncJob),
+    AggregateIdempotency(&'a AggregateSyncIdempotencyRecord),
+}
+
+/// The rows that differ between two ledger states, so a transition writes
+/// only what it changed instead of the whole retained history.
+#[derive(Default)]
+struct LedgerChanges<'a> {
+    puts: Vec<(&'static str, String, LedgerRow<'a>)>,
+    deletes: Vec<(&'static str, String)>,
+}
+
+impl<'a> LedgerChanges<'a> {
+    fn between(old: &PersistedSupervisorState, new: &'a PersistedSupervisorState) -> Self {
+        let mut changes = Self::default();
+        changes.diff(
+            LEDGER_JOBS,
+            &old.jobs,
+            &new.jobs,
+            |job| job.job.id.clone(),
+            LedgerRow::Job,
+        );
+        changes.diff(
+            LEDGER_IDEMPOTENCY,
+            &old.idempotency,
+            &new.idempotency,
+            idempotency_key,
+            LedgerRow::Idempotency,
+        );
+        changes.diff(
+            LEDGER_AGGREGATES,
+            &old.aggregates,
+            &new.aggregates,
+            |aggregate| aggregate.id.clone(),
+            LedgerRow::Aggregate,
+        );
+        changes.diff(
+            LEDGER_AGGREGATE_IDEMPOTENCY,
+            &old.aggregate_idempotency,
+            &new.aggregate_idempotency,
+            aggregate_idempotency_key,
+            LedgerRow::AggregateIdempotency,
+        );
+        changes
+    }
+
+    /// Every row of `state`, for an initial write.
+    fn all(state: &'a PersistedSupervisorState) -> Self {
+        Self::between(&PersistedSupervisorState::default(), state)
+    }
+
+    fn diff<V: PartialEq>(
+        &mut self,
+        namespace: &'static str,
+        old: &[V],
+        new: &'a [V],
+        key: impl Fn(&V) -> String,
+        row: impl Fn(&'a V) -> LedgerRow<'a>,
+    ) {
+        let mut previous = old
+            .iter()
+            .map(|value| (key(value), value))
+            .collect::<BTreeMap<_, _>>();
+        for value in new {
+            let key = key(value);
+            if previous.remove(&key) != Some(value) {
+                self.puts.push((namespace, key, row(value)));
+            }
         }
-        Err(error) => return Err(error.into()),
+        self.deletes
+            .extend(previous.into_keys().map(|key| (namespace, key)));
+    }
+
+    fn write(&self, store: &mut KeyedStateStore) -> Result<(), SupervisorError> {
+        store
+            .write(|writer| {
+                for (namespace, key) in &self.deletes {
+                    writer.delete(namespace, key)?;
+                }
+                for (namespace, key, row) in &self.puts {
+                    writer.put(namespace, key, row)?;
+                }
+                writer.set_meta("version", &SYNC_SUPERVISOR_STATE_VERSION)?;
+                writer.mark_initialized()
+            })
+            .map_err(store_error)
+    }
+}
+
+/// Where a writable supervisor keeps its ledger rows.
+enum LedgerStore {
+    /// No ledger exists yet; the store is created by the first write, so an
+    /// idle daemon never creates or touches it.
+    Unopened(PathBuf),
+    Open(KeyedStateStore),
+    /// Status inspection must never write.
+    ReadOnly,
+}
+
+impl std::fmt::Debug for LedgerStore {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unopened(path) => formatter.debug_tuple("Unopened").field(path).finish(),
+            Self::Open(store) => formatter.debug_tuple("Open").field(store).finish(),
+            Self::ReadOnly => formatter.write_str("ReadOnly"),
+        }
+    }
+}
+
+impl LedgerStore {
+    fn open(&mut self) -> Result<&mut KeyedStateStore, SupervisorError> {
+        if let Self::Unopened(path) = self {
+            *self = Self::Open(KeyedStateStore::open(path).map_err(store_error)?);
+        }
+        match self {
+            Self::Open(store) => Ok(store),
+            Self::ReadOnly => Err(SupervisorError::InvalidState(
+                "an inspected supervisor ledger is read-only".to_string(),
+            )),
+            Self::Unopened(_) => unreachable!("the store was just opened"),
+        }
+    }
+}
+
+/// Opens the ledger for writing, importing a JSON ledger from earlier
+/// versions once and keeping it as `jobs.json.migrated`.
+fn open_ledger(
+    state_path: &Path,
+) -> Result<(LedgerStore, PersistedSupervisorState), SupervisorError> {
+    let store_path = ledger_store_path(state_path);
+    if store_path.is_file() {
+        let mut store = KeyedStateStore::open(&store_path).map_err(store_error)?;
+        if store.is_initialized().map_err(store_error)? {
+            let state = load_ledger(&store)?;
+            return Ok((LedgerStore::Open(store), state));
+        }
+        let state = load_legacy_state(state_path)?;
+        migrate_legacy_ledger(state_path, &mut store, &state)?;
+        return Ok((LedgerStore::Open(store), state));
+    }
+    if !state_path.is_file() {
+        return Ok((
+            LedgerStore::Unopened(store_path),
+            PersistedSupervisorState::default(),
+        ));
+    }
+    let state = load_legacy_state(state_path)?;
+    let mut store = KeyedStateStore::open(&store_path).map_err(store_error)?;
+    migrate_legacy_ledger(state_path, &mut store, &state)?;
+    Ok((LedgerStore::Open(store), state))
+}
+
+fn migrate_legacy_ledger(
+    state_path: &Path,
+    store: &mut KeyedStateStore,
+    state: &PersistedSupervisorState,
+) -> Result<(), SupervisorError> {
+    LedgerChanges::all(state).write(store)?;
+    if state_path.is_file() {
+        fs::rename(state_path, state_path.with_extension("json.migrated"))?;
+    }
+    Ok(())
+}
+
+/// Reads the ledger without creating or migrating anything.
+fn load_state(state_path: &Path) -> Result<PersistedSupervisorState, SupervisorError> {
+    match KeyedStateStore::open_read_only(&ledger_store_path(state_path)).map_err(store_error)? {
+        Some(store) => load_ledger(&store),
+        None => load_legacy_state(state_path),
+    }
+}
+
+fn load_ledger(store: &KeyedStateStore) -> Result<PersistedSupervisorState, SupervisorError> {
+    let version = store
+        .meta::<u32>("version")
+        .map_err(store_error)?
+        .unwrap_or(SYNC_SUPERVISOR_STATE_VERSION);
+    if version != SYNC_SUPERVISOR_STATE_VERSION {
+        return Err(SupervisorError::InvalidState(format!(
+            "unsupported supervisor state version {version}"
+        )));
+    }
+    Ok(PersistedSupervisorState {
+        version,
+        jobs: ledger_rows(store, LEDGER_JOBS)?,
+        idempotency: ledger_rows(store, LEDGER_IDEMPOTENCY)?,
+        aggregates: ledger_rows(store, LEDGER_AGGREGATES)?,
+        aggregate_idempotency: ledger_rows(store, LEDGER_AGGREGATE_IDEMPOTENCY)?,
+    })
+}
+
+/// The rows of one collection in key order, which is creation order.
+fn ledger_rows<T: serde::de::DeserializeOwned>(
+    store: &KeyedStateStore,
+    namespace: &str,
+) -> Result<Vec<T>, SupervisorError> {
+    Ok(store
+        .load_entries::<T>(namespace)
+        .map_err(store_error)?
+        .into_values()
+        .collect())
+}
+
+/// Reads a JSON ledger written before the keyed store.
+fn load_legacy_state(path: &Path) -> Result<PersistedSupervisorState, SupervisorError> {
+    let Some(bytes) = vulcan_core::durable::read_bounded(path, MAX_LEGACY_STATE_BYTES)? else {
+        return Ok(PersistedSupervisorState::default());
     };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(SupervisorError::InvalidState(format!(
-            "supervisor state at {} is not a regular file",
-            path.display()
-        )));
-    }
-    if metadata.len() > MAX_STATE_BYTES {
-        return Err(SupervisorError::InvalidState(format!(
-            "supervisor state exceeds the {MAX_STATE_BYTES} byte limit"
-        )));
-    }
-    let state: PersistedSupervisorState = serde_json::from_slice(&fs::read(path)?)?;
+    let state: PersistedSupervisorState = serde_json::from_slice(&bytes)?;
     if state.version != SYNC_SUPERVISOR_STATE_VERSION {
         return Err(SupervisorError::InvalidState(format!(
             "unsupported supervisor state version {}",
@@ -1184,18 +1441,6 @@ fn load_state(path: &Path) -> Result<PersistedSupervisorState, SupervisorError> 
         )));
     }
     Ok(state)
-}
-
-fn persist_state(path: &Path, state: &PersistedSupervisorState) -> Result<(), SupervisorError> {
-    let mut bytes = serde_json::to_vec_pretty(state)?;
-    if bytes.len() as u64 > MAX_STATE_BYTES {
-        return Err(SupervisorError::InvalidState(format!(
-            "supervisor state exceeds the {MAX_STATE_BYTES} byte limit"
-        )));
-    }
-    bytes.push(b'\n');
-    vulcan_core::durable::replace(path, &bytes, vulcan_core::durable::Durability::Full)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1531,6 +1776,7 @@ mod tests {
         let supervisor = supervisor(temporary.path());
         assert!(supervisor.claim_next().unwrap().is_none());
         assert!(!supervisor.state_path.exists());
+        assert!(!ledger_store_path(&supervisor.state_path).exists());
 
         let first = supervisor
             .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
@@ -1562,26 +1808,109 @@ mod tests {
         assert_claim_does_not_write(&supervisor);
     }
 
-    fn assert_claim_does_not_write(supervisor: &SyncSupervisor) {
-        let timestamp = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
-        fs::File::options()
-            .write(true)
-            .open(&supervisor.state_path)
+    #[test]
+    fn ledger_transitions_write_only_the_rows_they_change() {
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        for index in 0..100 {
+            supervisor
+                .enqueue(
+                    format!("wiki-{index}"),
+                    temporary.path(),
+                    SyncJobTrigger::Manual,
+                )
+                .unwrap();
+        }
+        let before = supervisor.inner.lock().unwrap().state.clone();
+        let mut after = before.clone();
+        after.jobs[42].job.state = SyncJobState::Cancelled;
+        let changes = LedgerChanges::between(&before, &after);
+        assert_eq!(changes.puts.len(), 1);
+        assert!(changes.deletes.is_empty());
+
+        let removed = after.jobs.remove(7).job.id;
+        let changes = LedgerChanges::between(&before, &after);
+        assert_eq!(changes.puts.len(), 1);
+        assert_eq!(changes.deletes, vec![(LEDGER_JOBS, removed)]);
+    }
+
+    #[test]
+    fn ledger_keeps_creation_order_across_restart() {
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        let created = (0..50)
+            .map(|index| {
+                supervisor
+                    .enqueue(
+                        format!("wiki-{index}"),
+                        temporary.path(),
+                        SyncJobTrigger::Manual,
+                    )
+                    .unwrap()
+                    .job
+                    .job
+                    .id
+            })
+            .collect::<Vec<_>>();
+        let state_path = supervisor.state_path.clone();
+        drop(supervisor);
+        let restarted = SyncSupervisor::at(&state_path).unwrap();
+        let reloaded = restarted
+            .list()
             .unwrap()
-            .set_modified(timestamp)
+            .into_iter()
+            .map(|job| job.job.id)
+            .collect::<Vec<_>>();
+        assert_eq!(reloaded, created);
+        let claimed = restarted.claim_next().unwrap().unwrap();
+        assert_eq!(claimed.job.job.id, created[0], "the queue resumes in order");
+    }
+
+    #[test]
+    fn json_ledger_is_migrated_once_and_kept_as_backup() {
+        let temporary = tempdir().unwrap();
+        let legacy_path = temporary.path().join("jobs.json");
+        let original = supervisor(temporary.path());
+        original
+            .enqueue("alpha", temporary.path(), SyncJobTrigger::Manual)
             .unwrap();
-        let before = fs::read(&supervisor.state_path).unwrap();
+        let expected = original.list().unwrap();
+        let mut legacy = original.inner.lock().unwrap().state.clone();
+        legacy.version = SYNC_SUPERVISOR_STATE_VERSION;
+        drop(original);
+        // Recreate the pre-SQLite layout: only a JSON ledger on disk.
+        for extension in ["sqlite", "sqlite-wal", "sqlite-shm"] {
+            let _ = fs::remove_file(legacy_path.with_extension(extension));
+        }
+        fs::write(&legacy_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        assert_eq!(load_state(&legacy_path).unwrap().jobs, expected);
+
+        let migrated = SyncSupervisor::at(&legacy_path).unwrap();
+        assert_eq!(migrated.list().unwrap(), expected);
+        assert!(!legacy_path.exists());
+        assert!(legacy_path.with_extension("json.migrated").is_file());
+        drop(migrated);
+        assert_eq!(
+            SyncSupervisor::inspect_at(&legacy_path)
+                .unwrap()
+                .list()
+                .unwrap(),
+            expected
+        );
+    }
+
+    fn assert_claim_does_not_write(supervisor: &SyncSupervisor) {
+        use std::sync::atomic::Ordering;
+        let writes = supervisor.persistence_probe.writes.load(Ordering::SeqCst);
+        let before = load_state(&supervisor.state_path).unwrap();
         for _ in 0..10 {
             assert!(supervisor.claim_next().unwrap().is_none());
         }
-        assert_eq!(fs::read(&supervisor.state_path).unwrap(), before);
         assert_eq!(
-            fs::metadata(&supervisor.state_path)
-                .unwrap()
-                .modified()
-                .unwrap(),
-            timestamp
+            supervisor.persistence_probe.writes.load(Ordering::SeqCst),
+            writes
         );
+        assert_eq!(load_state(&supervisor.state_path).unwrap(), before);
     }
 
     #[test]
