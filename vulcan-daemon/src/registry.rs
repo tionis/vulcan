@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_app::sync::{GitRefName, GitRemote};
 
@@ -1554,23 +1553,17 @@ fn parse_config(path: &Path, source: Option<&str>) -> Result<DaemonConfig, Regis
 }
 
 fn save_config(path: &Path, config: &DaemonConfig) -> Result<(), RegistryError> {
-    let parent = path.parent().ok_or_else(|| RegistryError::InvalidConfig {
-        path: path.to_path_buf(),
-        detail: "registry path has no parent directory".to_string(),
-    })?;
-    fs::create_dir_all(parent)?;
     let rendered =
         toml::to_string_pretty(config).map_err(|error| RegistryError::InvalidConfig {
             path: path.to_path_buf(),
             detail: error.to_string(),
         })?;
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    std::io::Write::write_all(&mut temporary, rendered.as_bytes())?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| RegistryError::Io(error.error))?;
-    Ok(())
+    vulcan_core::durable::replace(
+        path,
+        rendered.as_bytes(),
+        vulcan_core::durable::Durability::Full,
+    )
+    .map_err(RegistryError::Io)
 }
 
 struct RegistryLock {

@@ -7,12 +7,10 @@ use crate::supervisor::SyncSupervisor;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tempfile::NamedTempFile;
 use vulcan_app::sync::{GitRefName, GitRemote, SyncCancellationToken};
 use vulcan_app::sync_conflicts::{
     get_sync_conflict_page_with_state_store, list_sync_conflicts_with_state_store,
@@ -429,22 +427,11 @@ fn status_error(
     }
 }
 
+/// Status reports are informative and rewritten often, so they are atomic but
+/// not synced.
 fn save_status(path: &Path, report: &ConflictWorkerStatus) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "conflict worker status path has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    temporary
-        .write_all(&serde_json::to_vec_pretty(report).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
-    temporary
-        .write_all(b"\n")
-        .map_err(|error| error.to_string())?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error.to_string())?;
-    Ok(())
+    vulcan_core::durable::replace_json(path, report, vulcan_core::durable::Durability::BestEffort)
+        .map_err(|error| error.to_string())
 }
 
 fn unix_time_ms() -> Result<u64, String> {

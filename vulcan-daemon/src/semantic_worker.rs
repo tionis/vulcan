@@ -7,13 +7,11 @@ use crate::supervisor::SyncSupervisor;
 use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tempfile::NamedTempFile;
 use vulcan_app::sync::{GitRefName, GitRemote, SyncCancellationToken};
 use vulcan_app::sync_semantic_auto::{
     run_semantic_auto_with_reconciliation, SemanticAutoOptions, SemanticAutoReport,
@@ -436,22 +434,11 @@ fn status_error(wiki_id: &str, detail: impl Into<String>) -> SemanticWorkerStatu
     }
 }
 
+/// Status reports are informative and rewritten often, so they are atomic but
+/// not synced.
 fn save_status(path: &Path, report: &SemanticWorkerStatus) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "semantic worker status path has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    temporary
-        .write_all(&serde_json::to_vec_pretty(report).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
-    temporary
-        .write_all(b"\n")
-        .map_err(|error| error.to_string())?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error.to_string())?;
-    Ok(())
+    vulcan_core::durable::replace_json(path, report, vulcan_core::durable::Durability::BestEffort)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

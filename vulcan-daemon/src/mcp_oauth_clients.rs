@@ -4,11 +4,10 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use subtle::ConstantTimeEq;
-use tempfile::NamedTempFile;
 use vulcan_secrets::{
     SecretBytes, SecretName, SecretProvider, SecretReference, SecretStore, SecretStoreError,
 };
@@ -563,18 +562,7 @@ fn validate_registry_size(serialized: &[u8]) -> Result<(), OAuthClientRegistryEr
 }
 
 fn publish_registry(path: &Path, serialized: &[u8]) -> Result<(), OAuthClientRegistryError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| OAuthClientRegistryError::Invalid("registry path has no parent".into()))?;
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary.write_all(serialized)?;
-    temporary.as_file().sync_all()?;
-    set_owner_only(temporary.as_file())?;
-    temporary
-        .persist(path)
-        .map_err(|error| OAuthClientRegistryError::Io(error.error))?;
-    #[cfg(unix)]
-    File::open(parent)?.sync_all()?;
+    vulcan_core::durable::replace(path, serialized, vulcan_core::durable::Durability::Full)?;
     Ok(())
 }
 
@@ -673,22 +661,21 @@ fn require_owner_only(
     Ok(())
 }
 
-#[cfg(unix)]
-fn set_owner_only(file: &File) -> Result<(), OAuthClientRegistryError> {
-    use std::os::unix::fs::PermissionsExt;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-#[allow(clippy::unnecessary_wraps)] // Signature matches the fallible Unix implementation.
-fn set_owner_only(_file: &File) -> Result<(), OAuthClientRegistryError> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Makes a hand-written fixture file owner-only, as the registry writes it.
+    fn set_owner_only(file: &File) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(not(unix))]
+        let _ = file;
+        Ok(())
+    }
     use std::sync::Arc;
     use std::thread;
 

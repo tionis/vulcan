@@ -12,10 +12,8 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use subtle::ConstantTimeEq;
-use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_core::PermissionGrant;
 
@@ -739,18 +737,7 @@ fn migrate_state(value: serde_json::Value) -> Result<AuthorizationState, McpStat
 }
 
 fn save_state(path: &Path, state: &AuthorizationState) -> Result<(), McpStateError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| McpStateError::Invalid("authorization state path has no parent".into()))?;
-    fs::create_dir_all(parent)?;
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary.write_all(&serde_json::to_vec_pretty(state)?)?;
-    temporary.write_all(b"\n")?;
-    temporary.as_file().sync_all()?;
-    set_owner_only(temporary.path())?;
-    temporary
-        .persist(path)
-        .map_err(|error| McpStateError::Io(error.error))?;
+    vulcan_core::durable::replace_json(path, state, vulcan_core::durable::Durability::Full)?;
     Ok(())
 }
 
@@ -850,13 +837,6 @@ fn validate_string_set(
 }
 
 #[cfg(unix)]
-fn set_owner_only(path: &Path) -> Result<(), McpStateError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(unix)]
 fn validate_owner_only(metadata: &fs::Metadata, path: &Path) -> Result<(), McpStateError> {
     use std::os::unix::fs::PermissionsExt;
     if metadata.permissions().mode() & 0o077 != 0 {
@@ -865,15 +845,6 @@ fn validate_owner_only(metadata: &fs::Metadata, path: &Path) -> Result<(), McpSt
             path.display()
         )));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-#[allow(clippy::permissions_set_readonly_false)]
-fn set_owner_only(path: &Path) -> Result<(), McpStateError> {
-    let mut permissions = fs::metadata(path)?.permissions();
-    permissions.set_readonly(false);
-    fs::set_permissions(path, permissions)?;
     Ok(())
 }
 

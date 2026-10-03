@@ -18,7 +18,6 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tempfile::NamedTempFile;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -872,29 +871,13 @@ impl DeliveryLedger {
     }
 
     fn save(&self) -> Result<(), AlertDeliveryError> {
-        let parent = self.path.parent().ok_or_else(|| {
-            AlertDeliveryError::InvalidState("alert delivery ledger path has no parent".to_string())
-        })?;
-        fs::create_dir_all(parent)?;
-        if fs::symlink_metadata(&self.path).is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            return Err(AlertDeliveryError::InvalidState(format!(
-                "alert delivery ledger `{}` must not be a symlink",
-                self.path.display()
-            )));
-        }
         let bytes = serde_json::to_vec_pretty(&self.state)?;
         if bytes.len() as u64 > MAX_LEDGER_BYTES {
             return Err(AlertDeliveryError::InvalidState(
                 "alert delivery ledger exceeds the byte limit".to_string(),
             ));
         }
-        let mut temporary = NamedTempFile::new_in(parent)?;
-        temporary.write_all(&bytes)?;
-        temporary.as_file().sync_all()?;
-        temporary.persist(&self.path).map_err(|error| error.error)?;
-        #[cfg(unix)]
-        std::fs::File::open(parent)?.sync_all()?;
+        vulcan_core::durable::replace(&self.path, &bytes, vulcan_core::durable::Durability::Full)?;
         Ok(())
     }
 

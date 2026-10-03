@@ -50,7 +50,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tempfile::NamedTempFile;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_sync::{cached_notification_advertisement, GitCliEngine, GitEngine};
@@ -1109,15 +1108,7 @@ fn write_runtime_record(
     path: &Path,
     record: &DaemonRuntimeRecord,
 ) -> Result<(), DaemonProcessError> {
-    let parent = path.parent().ok_or_else(|| {
-        DaemonProcessError::Configuration("daemon runtime path has no parent".to_string())
-    })?;
-    fs::create_dir_all(parent)?;
-    let bytes = serde_json::to_vec_pretty(record)?;
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary.write_all(&bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
+    vulcan_core::durable::replace_json(path, record, vulcan_core::durable::Durability::Full)?;
     Ok(())
 }
 

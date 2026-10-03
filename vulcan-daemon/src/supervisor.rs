@@ -5,12 +5,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 #[cfg(test)]
 use std::time::Duration;
-use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_sync::{
     SyncCancellationToken, SyncError, SyncJob, SyncJobState, SyncJobTrigger, SyncState, SyncStatus,
@@ -1176,21 +1174,14 @@ fn load_state(path: &Path) -> Result<PersistedSupervisorState, SupervisorError> 
 }
 
 fn persist_state(path: &Path, state: &PersistedSupervisorState) -> Result<(), SupervisorError> {
-    let parent = path.parent().ok_or_else(|| {
-        SupervisorError::InvalidState("supervisor state path has no parent".to_string())
-    })?;
-    fs::create_dir_all(parent)?;
-    let bytes = serde_json::to_vec_pretty(state)?;
+    let mut bytes = serde_json::to_vec_pretty(state)?;
     if bytes.len() as u64 > MAX_STATE_BYTES {
         return Err(SupervisorError::InvalidState(format!(
             "supervisor state exceeds the {MAX_STATE_BYTES} byte limit"
         )));
     }
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary.write_all(&bytes)?;
-    temporary.write_all(b"\n")?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
+    bytes.push(b'\n');
+    vulcan_core::durable::replace(path, &bytes, vulcan_core::durable::Durability::Full)?;
     Ok(())
 }
 

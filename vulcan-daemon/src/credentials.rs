@@ -7,10 +7,8 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use subtle::ConstantTimeEq;
-use tempfile::NamedTempFile;
 
 pub const COMPANION_CREDENTIAL_VERSION: u32 = 1;
 const CREDENTIAL_FILE: &str = "companion-credential.json";
@@ -126,20 +124,15 @@ impl CompanionCredentialStore {
     }
 
     fn save_new(&self, credential: &CompanionCredential) -> Result<(), CredentialError> {
-        let parent = self.path.parent().ok_or_else(|| {
-            CredentialError::Invalid("companion credential path has no parent".to_string())
-        })?;
-        fs::create_dir_all(parent)?;
-        let mut temporary = NamedTempFile::new_in(parent)?;
-        temporary.write_all(&serde_json::to_vec_pretty(credential)?)?;
-        temporary.write_all(b"\n")?;
-        temporary.as_file().sync_all()?;
-        set_owner_only(temporary.path())?;
-        match temporary.persist_noclobber(&self.path) {
-            Ok(_) => Ok(()),
-            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-            Err(error) => Err(CredentialError::Io(error.error)),
-        }
+        let mut bytes = serde_json::to_vec_pretty(credential)?;
+        bytes.push(b'\n');
+        // An existing credential is kept; the caller rereads it.
+        vulcan_core::durable::create_new(
+            &self.path,
+            &bytes,
+            vulcan_core::durable::Durability::Full,
+        )?;
+        Ok(())
     }
 }
 
@@ -221,13 +214,6 @@ fn valid_port(port: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn set_owner_only(path: &Path) -> Result<(), CredentialError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(unix)]
 fn validate_owner_only(metadata: &fs::Metadata, path: &Path) -> Result<(), CredentialError> {
     use std::os::unix::fs::PermissionsExt;
     if metadata.permissions().mode() & 0o077 != 0 {
@@ -236,18 +222,6 @@ fn validate_owner_only(metadata: &fs::Metadata, path: &Path) -> Result<(), Crede
             path.display()
         )));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-// On Windows the read-only bit is not a Unix-style access mode and clearing it
-// does not make the file world-writable. Preserve the writable temporary file
-// before the atomic rename while ACLs remain inherited from its directory.
-#[allow(clippy::permissions_set_readonly_false)]
-fn set_owner_only(path: &Path) -> Result<(), CredentialError> {
-    let mut permissions = fs::metadata(path)?.permissions();
-    permissions.set_readonly(false);
-    fs::set_permissions(path, permissions)?;
     Ok(())
 }
 
