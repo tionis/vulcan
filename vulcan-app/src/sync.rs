@@ -3739,7 +3739,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
-    fn conflict_with_one_resolvable_group_stays_actionable_after_partial_frontier_change() {
+    fn partially_overtaken_conflict_moves_its_remaining_groups_to_one_replacement() {
         let fixture = structured_sync_fixture(&[("A.md", "base a\n"), ("B.md", "base b\n")]);
         fs::write(fixture.writer.join("A.md"), "remote a\n").expect("remote A");
         fs::write(fixture.writer.join("B.md"), "remote b\n").expect("remote B");
@@ -3760,7 +3760,13 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         .conflict_record
         .expect("durable conflict");
 
-        // Only A changes again on the accepted frontier; B stays resolvable.
+        // Only A changes again on the accepted frontier; B is untouched.
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer observes the projection");
         fs::write(fixture.writer.join("A.md"), "remote a two\n").expect("writer advances A");
         sync_git_vault_with_state_store(
             &VaultPaths::new(&fixture.writer),
@@ -3768,42 +3774,16 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &fixture.store,
         )
         .expect("writer advances live ref");
-        let later = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("later successful sync");
-        assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
 
-        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &fixture.store,
-        )
-        .expect("active conflicts");
-        assert_eq!(listed.count, 1);
-        assert_eq!(listed.superseded_count, 0);
-        let group_b = conflict
-            .paths
-            .iter()
-            .find(|item| item.path == "B.md")
-            .expect("B conflict path")
-            .group_id
-            .clone();
-        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &conflict.id,
-            &crate::sync_conflicts::ResolveSyncConflictOptions {
+        let side_options =
+            |group_ids: Vec<String>| crate::sync_conflicts::ResolveSyncConflictOptions {
                 side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
-                group_ids: vec![group_b],
+                group_ids,
                 remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
                 live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
                     .expect("live ref"),
                 dry_run: true,
-            },
-            &fixture.store,
-        )
-        .expect("unchanged group remains resolvable");
+            };
         let group_a = conflict
             .paths
             .iter()
@@ -3811,24 +3791,56 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("A conflict path")
             .group_id
             .clone();
+        // Before this device syncs, the refusal names the way forward.
         let stale = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
             &VaultPaths::new(&fixture.reader),
             &conflict.id,
-            &crate::sync_conflicts::ResolveSyncConflictOptions {
-                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
-                group_ids: vec![group_a],
-                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
-                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
-                    .expect("live ref"),
-                dry_run: true,
-            },
+            &side_options(vec![group_a]),
             &fixture.store,
         )
         .expect_err("a changed group cannot use its out-of-date sides");
-        // The refusal names the way forward instead of a dead end.
-        let message = stale.to_string();
-        assert!(message.contains("changed again on the live branch"));
-        assert!(message.contains("vulcan sync run"));
+        assert!(stale.to_string().contains("vulcan sync run"), "{stale}");
+
+        let later = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("later successful sync");
+        assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
+        let listed = conflict_listing(&fixture);
+        assert_eq!(listed.count, 1);
+        assert_eq!(listed.superseded_count, 1);
+        let replacement_id = historical_conflict(&fixture, &conflict.id)
+            .supersession
+            .and_then(|supersession| supersession.replacement_conflict_id)
+            .expect("replacement conflict");
+        let replacement = historical_conflict(&fixture, &replacement_id);
+        let mut paths = replacement
+            .record
+            .paths
+            .iter()
+            .map(|path| path.path.as_str())
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        assert_eq!(paths, ["A.md", "B.md"]);
+
+        let mut apply = side_options(Vec::new());
+        apply.dry_run = false;
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &replacement_id,
+            &apply,
+            &fixture.store,
+        )
+        .expect("replacement resolves every remaining group");
+        for (path, content) in [("A.md", "local a\n"), ("B.md", "local b\n")] {
+            assert_eq!(
+                fs::read_to_string(fixture.reader.join(path)).expect("resolved file"),
+                content
+            );
+        }
+        assert_eq!(conflict_listing(&fixture).count, 0);
     }
 
     #[test]

@@ -2218,7 +2218,7 @@ fn ensure_group_frontier_unchanged(
         Ok(())
     } else {
         Err(AppError::operation(
-            "the selected conflict groups changed again on the live branch since this conflict was recorded, so their preserved sides are out of date; resolve any unchanged groups with `--group`, then run `vulcan sync run`, which re-merges this device's version onto the live one once every remaining group has changed",
+            "the selected conflict groups changed again on the live branch since this conflict was recorded, so their preserved sides are out of date; run `vulcan sync run`, which re-merges this device's version onto the live one and reports any remaining conflict as a new one to resolve",
         ))
     }
 }
@@ -3083,17 +3083,19 @@ impl SyncConflictStore {
 
     /// Carries overtaken conflicts forward onto the accepted `frontier`.
     ///
-    /// A conflict is overtaken when every unfinished group has a path whose
-    /// tree entry on the frontier differs from the conflict's recorded live
-    /// input: later accepted edits changed it again, so no resolution of the
-    /// recorded sides can complete it. Each such path is re-merged from the
-    /// preserved base and local sides onto the frontier version. Clean results
-    /// are written to the worktree as ordinary local edits for the next sync
-    /// to publish; paths that still conflict move to a replacement conflict
-    /// recorded against the frontier, which resolves like any other. The old
-    /// record is then superseded, and its evidence and refs are kept.
+    /// A conflict is overtaken when an unfinished group has a path whose tree
+    /// entry on the frontier differs from the conflict's recorded live input:
+    /// later accepted edits changed it again, so no resolution of the
+    /// recorded sides can complete that group. Every unfinished path is then
+    /// re-merged from the preserved base and local sides onto the frontier
+    /// version; an unchanged group simply reproduces its original conflict.
+    /// Clean results are written to the worktree as ordinary local edits for
+    /// the next sync to publish; paths that still conflict move to one
+    /// replacement conflict recorded against the frontier, which resolves like
+    /// any other. The old record is then superseded, and its evidence and
+    /// refs are kept.
     ///
-    /// Conflicts with any still-resolvable group, structural groups, or a
+    /// Conflicts with a resolution being published, structural groups, or a
     /// worktree that no longer matches the frontier are left untouched. The
     /// caller holds the vault and repository locks.
     pub fn carry_forward_stale_unresolved(
@@ -3134,8 +3136,8 @@ impl SyncConflictStore {
         Ok(summary)
     }
 
-    /// The unfinished paths of an unresolved conflict whose every unfinished
-    /// group was overtaken on `frontier`, or `None` when it is not overtaken.
+    /// The unfinished paths of an unresolved conflict with an unfinished group
+    /// overtaken on `frontier`, or `None` when nothing was overtaken.
     fn overtaken_paths(
         &self,
         engine: &dyn GitEngine,
@@ -3150,6 +3152,16 @@ impl SyncConflictStore {
             != SyncConflictResolutionState::Unresolved
             || !progress.groups_complete
             || record.base_revision.is_none()
+            // A resolution already on its way to the live branch finishes first.
+            || progress.groups.iter().any(|group| {
+                matches!(
+                    group.state,
+                    SyncConflictGroupState::Prepared | SyncConflictGroupState::Published
+                )
+            })
+            || self
+                .get_resolution(repository_key, &record.id)?
+                .is_some_and(|resolution| resolution.published)
         {
             return Ok(None);
         }
@@ -3183,7 +3195,7 @@ impl SyncConflictStore {
             slot => slot.insert(tree_entries_by_path(engine, repository, frontier)?),
         };
         let original_entries = tree_entries_by_path(engine, repository, &original)?;
-        let overtaken = unfinished.iter().all(|group| {
+        let overtaken = unfinished.iter().any(|group| {
             group.paths.iter().any(|path| {
                 original_entries.get(path.as_str()) != frontier_entries.get(path.as_str())
             })

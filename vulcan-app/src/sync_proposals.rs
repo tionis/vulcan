@@ -2295,7 +2295,7 @@ fn resolve_proposal_selection(
             .map_err(AppError::operation)?;
         if original_objects != accepted_objects {
             return Err(AppError::operation(
-                "the selected conflict groups changed again on the live branch since this conflict was recorded, so their preserved sides are out of date; resolve any unchanged groups with `--group`, then run `vulcan sync run`, which re-merges this device's version onto the live one once every remaining group has changed",
+                "the selected conflict groups changed again on the live branch since this conflict was recorded, so their preserved sides are out of date; run `vulcan sync run`, which re-merges this device's version onto the live one and reports any remaining conflict as a new one to resolve",
             ));
         }
     }
