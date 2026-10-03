@@ -1159,7 +1159,7 @@ fn resolve_conflict_groups_with_state_store(
         && prepared_tree.as_ref() != Some(&worktree_tree)
     {
         return Err(AppError::operation(
-            "the worktree does not match the current accepted live tree; synchronize or preserve local edits before resolving groups",
+            "the worktree does not match the live branch; run `vulcan sync run` first (it also publishes local edits), then retry",
         ));
     }
     let batch_id = active_batch
@@ -1720,13 +1720,13 @@ fn publish_and_apply_resolution(
                 == GitPushResult::Rejected
             {
                 return Err(AppError::operation(
-                    "the remote live ref changed while publishing the resolution; preserved state remains available",
+                    "another device updated the live branch while this resolution was being published, so nothing was applied; run `vulcan sync run`, then resolve again with `--group`",
                 ));
             }
         }
         _ => {
             return Err(AppError::operation(
-                "the remote live ref no longer matches the preserved conflict input or prepared resolution",
+                "the live branch moved since this conflict was recorded or its resolution was prepared; run `vulcan sync run`, which re-merges a conflict whose files changed again, then resolve the conflict it reports or select groups with `--group`",
             ));
         }
     }
@@ -1967,7 +1967,7 @@ fn verify_remote_for_resolution(
         Ok(())
     } else {
         Err(AppError::operation(
-            "the remote live ref no longer matches the preserved conflict input or prepared resolution",
+            "the live branch moved since this conflict was recorded or its resolution was prepared; run `vulcan sync run`, which re-merges a conflict whose files changed again, then resolve the conflict it reports or select groups with `--group`",
         ))
     }
 }
@@ -2218,7 +2218,7 @@ fn ensure_group_frontier_unchanged(
         Ok(())
     } else {
         Err(AppError::operation(
-            "one or more selected conflict groups changed on the accepted live frontier and require a fresh reconciliation",
+            "the selected conflict groups changed again on the live branch since this conflict was recorded, so their preserved sides are out of date; resolve any unchanged groups with `--group`, then run `vulcan sync run`, which re-merges this device's version onto the live one once every remaining group has changed",
         ))
     }
 }

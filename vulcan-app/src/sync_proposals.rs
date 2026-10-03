@@ -2195,7 +2195,7 @@ fn prepare_manual_resolution_scope(
         != expected_tree
     {
         return Err(AppError::operation(
-            "the worktree no longer matches the preserved local conflict input",
+            "the worktree no longer matches the preserved local conflict input; run `vulcan sync run`, then retry (resolve with `--group` if the live branch moved)",
         ));
     }
     if selection.is_none() && accepted.as_str() != conflict_live_input(&record)? {
@@ -2295,7 +2295,7 @@ fn resolve_proposal_selection(
             .map_err(AppError::operation)?;
         if original_objects != accepted_objects {
             return Err(AppError::operation(
-                "one or more selected conflict groups changed on the accepted live frontier and require a fresh reconciliation",
+                "the selected conflict groups changed again on the live branch since this conflict was recorded, so their preserved sides are out of date; resolve any unchanged groups with `--group`, then run `vulcan sync run`, which re-merges this device's version onto the live one once every remaining group has changed",
             ));
         }
     }
@@ -4086,7 +4086,7 @@ fn verify_approval_preconditions(
     let proposal_tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
     if current_tree != expected_tree && current_tree != proposal_tree {
         return Err(AppError::operation(
-            "the worktree no longer matches the preserved local input or approved proposal",
+            "the worktree no longer matches the preserved local input or approved proposal; run `vulcan sync run`, then create a new proposal",
         ));
     }
     let remote = engine

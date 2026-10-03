@@ -3804,6 +3804,31 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &fixture.store,
         )
         .expect("unchanged group remains resolvable");
+        let group_a = conflict
+            .paths
+            .iter()
+            .find(|item| item.path == "A.md")
+            .expect("A conflict path")
+            .group_id
+            .clone();
+        let stale = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: vec![group_a],
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: true,
+            },
+            &fixture.store,
+        )
+        .expect_err("a changed group cannot use its out-of-date sides");
+        // The refusal names the way forward instead of a dead end.
+        let message = stale.to_string();
+        assert!(message.contains("changed again on the live branch"));
+        assert!(message.contains("vulcan sync run"));
     }
 
     #[test]

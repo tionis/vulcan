@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Sync conflict resolution errors now say what to do next. A refusal because the live branch moved,
+  a conflicted file changed again, or the worktree is out of date names `vulcan sync run` and when
+  to use `--group`, instead of "require a fresh reconciliation" or "the remote live ref no longer
+  matches the preserved conflict input".
+
 - Conflicts in Obsidian's `.obsidian/workspace*.json` (open panes and layout) no longer stop a
   sync for review: when both devices changed it, this device's copy is kept. The new
   `prefer_local` merge-policy resolution can also be used in a shared `sync.merge_policy` for other
