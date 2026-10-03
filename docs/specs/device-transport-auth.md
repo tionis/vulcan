@@ -101,7 +101,10 @@ A sync cycle makes several remote trips, and each new connection repeats the TCP
 that is absolute, owned by the current user, not group- or world-writable, free of `%`, and short
 enough for the platform's socket-path limit; without one, connections are not shared. A shared
 master stays up at most 60 seconds after its last use, so a replaced or revoked key stops being
-used shortly after. The device-key probe never shares a connection, so it always tests a fresh
+used shortly after. The window is deliberately short: the first sync after an idle minute pays the
+full handshake again. A longer `ControlPersist` would hide that cost but keep idle connections open
+and delay picking up a replaced key; revisit it only if measured sync latency after idle periods
+becomes a problem. The device-key probe never shares a connection, so it always tests a fresh
 authentication, and plain `git` through `core.sshCommand` is unaffected. Sharing relies on OpenSSH
 7.3 or newer, where a backgrounded master no longer holds the caller's stderr open. Windows OpenSSH
 does not support it.
