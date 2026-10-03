@@ -2207,14 +2207,16 @@ fn set_carried_mode(_path: &Path, _mode: Option<&str>) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Leaf tree entries of `revision` keyed by path, without loading contents.
+/// Leaf tree entries at `paths` in `revision`, keyed by path, without
+/// loading contents or listing the rest of the tree.
 fn tree_entries_by_path(
     engine: &dyn GitEngine,
     repository: &GitRepository,
     revision: &GitOid,
+    paths: &[String],
 ) -> Result<BTreeMap<String, GitTreeEntry>, AppError> {
     Ok(engine
-        .tree_entries(repository, revision)
+        .tree_entries_for_paths(repository, revision, paths)
         .map_err(AppError::operation)?
         .into_iter()
         .map(|entry| (entry.path.clone(), entry))
@@ -3251,17 +3253,10 @@ impl SyncConflictStore {
         let work_tree = repository.work_tree.clone().ok_or_else(|| {
             AppError::operation("cannot carry sync conflicts forward in a bare repository")
         })?;
-        let mut frontier_entries: Option<BTreeMap<String, GitTreeEntry>> = None;
         let mut summary = CarryForwardSummary::default();
         for record in self.open_records(repository_key)? {
-            let Some(paths) = self.overtaken_paths(
-                engine,
-                repository,
-                repository_key,
-                frontier,
-                &record,
-                &mut frontier_entries,
-            )?
+            let Some(paths) =
+                self.overtaken_paths(engine, repository, repository_key, frontier, &record)?
             else {
                 continue;
             };
@@ -3286,7 +3281,6 @@ impl SyncConflictStore {
         repository_key: &str,
         frontier: &GitOid,
         record: &SyncConflictRecord,
-        frontier_entries: &mut Option<BTreeMap<String, GitTreeEntry>>,
     ) -> Result<Option<Vec<String>>, AppError> {
         let progress = self.group_progress(repository_key, record)?;
         if self.resolution_state_with_progress(repository_key, &record.id, &progress)?
@@ -3335,26 +3329,22 @@ impl SyncConflictStore {
         if original == *frontier {
             return Ok(None);
         }
-        let frontier_entries = match frontier_entries {
-            Some(entries) => entries,
-            slot => slot.insert(tree_entries_by_path(engine, repository, frontier)?),
-        };
-        let original_entries = tree_entries_by_path(engine, repository, &original)?;
-        let overtaken = unfinished.iter().any(|group| {
-            group.paths.iter().any(|path| {
-                original_entries.get(path.as_str()) != frontier_entries.get(path.as_str())
-            })
-        });
-        if !overtaken {
-            return Ok(None);
-        }
         let mut paths = unfinished
             .iter()
             .flat_map(|group| group.paths.iter().cloned())
             .collect::<Vec<_>>();
         paths.sort();
         paths.dedup();
-        Ok(Some(paths))
+        // Only this conflict's paths are listed, so the check costs the
+        // conflict's size, not the vault's.
+        let frontier_entries = tree_entries_by_path(engine, repository, frontier, &paths)?;
+        let original_entries = tree_entries_by_path(engine, repository, &original, &paths)?;
+        let overtaken = unfinished.iter().any(|group| {
+            group.paths.iter().any(|path| {
+                original_entries.get(path.as_str()) != frontier_entries.get(path.as_str())
+            })
+        });
+        Ok(overtaken.then_some(paths))
     }
 
     #[allow(clippy::too_many_arguments)]

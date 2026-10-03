@@ -24,6 +24,9 @@ pub type GitBlobVisitor<'a> = dyn FnMut(&GitOid, Vec<u8>) -> Result<(), GitEngin
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
+/// Paths per scoped `ls-tree`, keeping each command line well bounded.
+const SCOPED_TREE_LISTING_CHUNK: usize = 256;
+const SCOPED_TREE_LISTING_MAX_CHUNKS: usize = 4;
 const MAX_CONFLICT_BLOB_BATCH_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(unix)]
@@ -238,12 +241,7 @@ pub trait GitEngine: Send + Sync {
         per_blob_limit: usize,
         total_limit: usize,
     ) -> Result<BTreeMap<String, GitPathObject>, GitEngineError> {
-        let selected = paths.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        let entries = self
-            .tree_entries(repository, revision)?
-            .into_iter()
-            .filter(|entry| selected.contains(entry.path.as_str()))
-            .collect::<Vec<_>>();
+        let entries = self.tree_entries_for_paths(repository, revision, paths)?;
         let blob_ids = entries
             .iter()
             .filter(|entry| entry.kind == "blob")
@@ -370,6 +368,23 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
         revision: &GitOid,
     ) -> Result<Vec<GitTreeEntry>, GitEngineError>;
+
+    /// Lists the leaf entries at exactly `paths` in a commit or tree, without
+    /// loading object contents. Engines should keep the work proportional to
+    /// the selected paths rather than to the whole tree.
+    fn tree_entries_for_paths(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        paths: &[String],
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError> {
+        let selected = paths.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        Ok(self
+            .tree_entries(repository, revision)?
+            .into_iter()
+            .filter(|entry| selected.contains(entry.path.as_str()))
+            .collect())
+    }
 
     fn tree_with_paths(
         &self,
@@ -3184,6 +3199,51 @@ impl GitEngine for GitCliEngine {
             ["ls-tree", "-r", "-z", revision.as_str()],
         )?;
         parse_tree_entries(&output.stdout)
+    }
+
+    fn tree_entries_for_paths(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        paths: &[String],
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let selected = paths.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        // Past this many processes one full listing is cheaper.
+        if paths.len() > SCOPED_TREE_LISTING_CHUNK * SCOPED_TREE_LISTING_MAX_CHUNKS {
+            return Ok(self
+                .tree_entries(repository, revision)?
+                .into_iter()
+                .filter(|entry| selected.contains(entry.path.as_str()))
+                .collect());
+        }
+        let mut entries = Vec::with_capacity(paths.len());
+        for chunk in paths.chunks(SCOPED_TREE_LISTING_CHUNK) {
+            let mut command = self.repository_command(repository);
+            // Conflict paths are literal names, never patterns.
+            command.env("GIT_LITERAL_PATHSPECS", "1").args([
+                "ls-tree",
+                "-r",
+                "-z",
+                "--full-tree",
+                revision.as_str(),
+                "--",
+            ]);
+            for path in chunk {
+                validate_repository_path(path)?;
+                command.arg(path);
+            }
+            let output = ensure_success("list Git tree entries for paths", self.execute(command)?)?;
+            // A directory path lists its children; keep exact matches only.
+            entries.extend(
+                parse_tree_entries(&output.stdout)?
+                    .into_iter()
+                    .filter(|entry| selected.contains(entry.path.as_str())),
+            );
+        }
+        Ok(entries)
     }
 
     fn tree_with_paths(
@@ -8019,6 +8079,66 @@ mod tests {
             run_git_capture(temporary.path(), &["write-tree"]),
             index_before
         );
+    }
+
+    #[test]
+    fn scoped_tree_listing_returns_exactly_the_selected_entries() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::create_dir_all(temporary.path().join("notes/sub")).expect("folders");
+        for index in 0..300 {
+            fs::write(
+                temporary.path().join(format!("notes/n{index:03}.md")),
+                format!("{index}\n"),
+            )
+            .expect("note");
+        }
+        fs::write(temporary.path().join("notes/[draft]*.md"), "glob-like\n").expect("glob");
+        fs::write(temporary.path().join("notes/sub/inner.md"), "inner\n").expect("inner");
+        let commit = commit_all(temporary.path(), "tree");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let selected = [
+            "notes/[draft]*.md",
+            "notes/n007.md",
+            "notes/sub",
+            "missing.md",
+        ]
+        .map(str::to_string);
+        let before = engine.subprocess_count().unwrap_or_default();
+        let mut entries = engine
+            .tree_entries_for_paths(&repository, &commit, &selected)
+            .expect("scoped listing");
+        assert_eq!(engine.subprocess_count().unwrap_or_default() - before, 1);
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        // Literal names only: no glob expansion, no directory children.
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["notes/[draft]*.md", "notes/n007.md"]
+        );
+        let full = engine
+            .tree_entries(&repository, &commit)
+            .expect("full listing");
+        for entry in &entries {
+            assert!(full.contains(entry));
+        }
+
+        // 300 paths take two bounded commands.
+        let many = (0..300)
+            .map(|index| format!("notes/n{index:03}.md"))
+            .collect::<Vec<_>>();
+        let before = engine.subprocess_count().unwrap_or_default();
+        let entries = engine
+            .tree_entries_for_paths(&repository, &commit, &many)
+            .expect("chunked listing");
+        assert_eq!(engine.subprocess_count().unwrap_or_default() - before, 2);
+        assert_eq!(entries.len(), 300);
     }
 
     #[test]
