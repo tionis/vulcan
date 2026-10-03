@@ -7,6 +7,7 @@ use crate::{
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use vulcan_app::notes::{read_note_for_update, write_note_content};
 use vulcan_app::templates::{template_variables_for_path, TemplateTimestamp};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::VaultPaths;
@@ -49,13 +50,23 @@ pub(crate) fn run_inbox_command(
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
-    let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
+    let existing = read_note_for_update(paths, &relative_path).map_err(CliError::operation)?;
+    let current = existing.as_deref().unwrap_or_default();
     let updated = if let Some(heading) = inbox_config.heading.as_deref() {
-        append_under_heading(&existing, heading, &entry)
+        append_under_heading(current, heading, &entry)
     } else {
-        append_at_end(&existing, &entry)
+        append_at_end(current, &entry)
     };
-    fs::write(&absolute_path, updated).map_err(CliError::operation)?;
+    write_note_content(
+        paths,
+        &relative_path,
+        existing.as_deref(),
+        &updated,
+        "inbox",
+        None,
+        quiet,
+    )
+    .map_err(CliError::operation)?;
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     auto_commit
         .commit(

@@ -800,6 +800,42 @@ where
     Ok(())
 }
 
+/// Atomically writes a regular file below `root` without following
+/// symlinks: an existing file is replaced keeping its permissions, a missing
+/// one is created from a synced staging file. A crash leaves either the old
+/// or the new contents, never a truncated file. Callers that need lost-update
+/// protection check the current contents first under their own lock.
+pub fn secure_write_atomic(
+    root: &Path,
+    relative_path: &Path,
+    contents: impl AsRef<[u8]>,
+) -> Result<(), std::io::Error> {
+    let contents = contents.as_ref();
+    match secure_replace(root, relative_path, contents) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            secure_create_atomic(root, relative_path, contents)
+        }
+        result => result,
+    }
+}
+
+/// [`secure_write_atomic`] for a file named by its full path, such as a
+/// configuration file or a note outside any vault.
+pub fn write_file_atomic(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), std::io::Error> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} does not name a file", path.display()),
+        ));
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    secure_write_atomic(parent, Path::new(name), contents)
+}
+
 pub fn secure_create(
     root: &Path,
     relative_path: &Path,
@@ -1642,6 +1678,56 @@ mod tests {
                 .permissions(),
             original.permissions(),
         );
+    }
+
+    #[test]
+    fn atomic_writes_create_replace_and_never_follow_symlinks() {
+        let temporary = TempDir::new().expect("temporary root");
+        let relative = Path::new("config.toml");
+        secure_write_atomic(temporary.path(), relative, "first\n").expect("create");
+        assert_eq!(
+            fs::read_to_string(temporary.path().join(relative)).expect("created"),
+            "first\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                temporary.path().join(relative),
+                fs::Permissions::from_mode(0o640),
+            )
+            .expect("mode");
+        }
+        let absolute = temporary.path().join(relative);
+        write_file_atomic(&absolute, "second\n").expect("replace by full path");
+        assert_eq!(fs::read_to_string(&absolute).expect("replaced"), "second\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&absolute)
+                    .expect("metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o640
+            );
+            fs::write(temporary.path().join("target.md"), "untouched").expect("target");
+            std::os::unix::fs::symlink("target.md", temporary.path().join("linked.md"))
+                .expect("symlink");
+            assert!(secure_write_atomic(temporary.path(), Path::new("linked.md"), "new").is_err());
+            std::os::unix::fs::symlink("absent.md", temporary.path().join("dangling.md"))
+                .expect("dangling symlink");
+            assert!(
+                secure_write_atomic(temporary.path(), Path::new("dangling.md"), "new").is_err()
+            );
+            assert!(!temporary.path().join("absent.md").exists());
+            assert_eq!(
+                fs::read_to_string(temporary.path().join("target.md")).expect("target"),
+                "untouched"
+            );
+        }
+        assert!(write_file_atomic(Path::new("/"), "root").is_err());
     }
 
     #[test]

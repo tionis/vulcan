@@ -2788,7 +2788,8 @@ pub fn apply_export_profile_delete(
     let updated = existing_contents.as_deref() != Some(rendered.as_str());
 
     let changed_paths = if !dry_run && updated {
-        fs::write(&config_path, rendered).map_err(AppError::operation)?;
+        vulcan_core::paths::write_file_atomic(&config_path, rendered)
+            .map_err(AppError::operation)?;
         vec![relativize_path_string(paths, &config_path)]
     } else {
         Vec::new()
@@ -3706,7 +3707,8 @@ fn persist_shared_export_profile(
 
     let changed_paths = if !dry_run && updated {
         ensure_vulcan_dir(paths).map_err(AppError::operation)?;
-        fs::write(&config_path, rendered).map_err(AppError::operation)?;
+        vulcan_core::paths::write_file_atomic(&config_path, rendered)
+            .map_err(AppError::operation)?;
         let mut changed_paths = vec![relativize_path_string(paths, &config_path)];
         let gitignore_path = paths.gitignore_file();
         if !had_gitignore && gitignore_path.exists() {

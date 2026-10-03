@@ -4746,8 +4746,7 @@ globalThis.Function = undefined;
                         fs::create_dir_all(parent)
                             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
                     }
-                    fs::write(&absolute, contents)
-                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                    write_vault_file(&absolute, contents)?;
                 }
                 None => {
                     if absolute.is_file() {
@@ -4772,8 +4771,7 @@ globalThis.Function = undefined;
                         fs::create_dir_all(parent)
                             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
                     }
-                    fs::write(&absolute, contents)
-                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                    write_vault_file(&absolute, contents)?;
                 }
                 None if absolute.is_file() => fs::remove_file(&absolute)
                     .map_err(|error| DataviewJsError::Message(error.to_string()))?,
@@ -4843,8 +4841,7 @@ globalThis.Function = undefined;
                 } else {
                     content
                 };
-                fs::write(state.paths.vault_root().join(&resolved_path), updated)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                write_vault_file(state.paths.vault_root().join(&resolved_path), updated)?;
                 scan_and_reload_state(state)?;
                 mutation_note_response(state, &resolved_path)
             }
@@ -4868,8 +4865,7 @@ globalThis.Function = undefined;
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let rendered = render_note_document(payload.get("frontmatter"), content)?;
-                fs::write(&absolute, rendered)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                write_vault_file(&absolute, rendered)?;
                 scan_and_reload_state(state)?;
                 mutation_note_response(state, &path)
             }
@@ -4891,8 +4887,7 @@ globalThis.Function = undefined;
                 } else {
                     append_at_end(&existing, text)
                 };
-                fs::write(&absolute, updated)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                write_vault_file(&absolute, updated)?;
                 scan_and_reload_state(state)?;
                 mutation_note_response(state, &path)
             }
@@ -4910,8 +4905,7 @@ globalThis.Function = undefined;
                 let replace_all = payload_bool(&payload, "replaceAll");
                 let (updated, match_count) =
                     apply_note_patch(&existing, find, replace, regex, replace_all)?;
-                fs::write(&absolute, updated)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                write_vault_file(&absolute, updated)?;
                 scan_and_reload_state(state)?;
                 let mut response = mutation_note_response(state, &path)?;
                 if let Value::Object(ref mut object) = response {
@@ -4954,7 +4948,7 @@ globalThis.Function = undefined;
                     fs::create_dir_all(parent)
                         .map_err(|error| DataviewJsError::Message(error.to_string()))?;
                 }
-                let existing = fs::read_to_string(&absolute).unwrap_or_default();
+                let existing = read_existing_or_empty(&absolute)?;
                 let entry = render_inbox_entry(
                     &state.inbox_config.format,
                     payload_string(&payload, "text")?,
@@ -4970,8 +4964,7 @@ globalThis.Function = undefined;
                     || append_at_end(&existing, &rendered_entry),
                     |heading| append_under_heading(&existing, heading, &rendered_entry),
                 );
-                fs::write(&absolute, updated)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                write_vault_file(&absolute, updated)?;
                 scan_and_reload_state(state)?;
                 Ok(serde_json::json!({ "path": path, "appended": true }))
             }
@@ -4995,14 +4988,13 @@ globalThis.Function = undefined;
                     fs::create_dir_all(parent)
                         .map_err(|error| DataviewJsError::Message(error.to_string()))?;
                 }
-                let existing = fs::read_to_string(&absolute).unwrap_or_default();
+                let existing = read_existing_or_empty(&absolute)?;
                 let text = payload_string(&payload, "text")?;
                 let updated = payload.get("heading").and_then(Value::as_str).map_or_else(
                     || append_at_end(&existing, text),
                     |heading| append_under_heading(&existing, heading, text),
                 );
-                fs::write(&absolute, updated)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                write_vault_file(&absolute, updated)?;
                 scan_and_reload_state(state)?;
                 mutation_note_response(state, &path)
             }
@@ -6435,6 +6427,29 @@ globalThis.Function = undefined;
             .map_err(|error| Exception::throw_message(ctx, &error.to_string()))
     }
 
+    /// Writes a vault file atomically, so an interrupted script never leaves
+    /// a truncated note behind.
+    fn write_vault_file(
+        path: impl AsRef<Path>,
+        contents: impl AsRef<[u8]>,
+    ) -> Result<(), DataviewJsError> {
+        crate::paths::write_file_atomic(path.as_ref(), contents)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))
+    }
+
+    /// A note's contents for appending, empty only when it does not exist
+    /// yet; an unreadable note is an error rather than something to overwrite.
+    fn read_existing_or_empty(path: &Path) -> Result<String, DataviewJsError> {
+        match fs::read_to_string(path) {
+            Ok(contents) => Ok(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(DataviewJsError::Message(format!(
+                "cannot read {}: {error}",
+                path.display()
+            ))),
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use std::fs;
@@ -7263,6 +7278,37 @@ cpu_limit_ms = 25
                 DataviewJsError::Message(message) if message.contains("rollback")
             ));
             assert!(!vault_root.join("Temp.md").exists());
+        }
+
+        #[test]
+        fn dataviewjs_inbox_refuses_to_overwrite_an_unreadable_note() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan directory");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let original = b"# Inbox\n\xff\xfe keep me\n".to_vec();
+            fs::write(vault_root.join("Inbox.md"), &original).expect("inbox note");
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                r#"vault.inbox("new entry")"#,
+                None,
+                DataviewJsEvalOptions {
+                    timeout: None,
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    permission_profile: None,
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("an unreadable inbox must not be replaced");
+            assert!(matches!(
+                error,
+                DataviewJsError::Message(message) if message.contains("cannot read")
+            ));
+            assert_eq!(
+                fs::read(vault_root.join("Inbox.md")).expect("inbox"),
+                original
+            );
         }
 
         #[test]

@@ -190,7 +190,8 @@ pub fn set_plugin_enabled(
     let updated = existing_contents.as_deref() != Some(rendered.as_str());
     if updated {
         ensure_vulcan_dir(paths).map_err(AppError::operation)?;
-        fs::write(&config_path, rendered).map_err(AppError::operation)?;
+        vulcan_core::paths::write_file_atomic(&config_path, rendered)
+            .map_err(AppError::operation)?;
     }
 
     Ok(PluginToggleOutcome {

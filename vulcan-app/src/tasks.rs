@@ -850,8 +850,9 @@ pub fn apply_task_create_with_guard(
         )));
     }
 
-    let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
-    let created_note = !absolute_path.exists();
+    let existing = crate::notes::read_note_for_update(paths, &relative_path)?;
+    let created_note = existing.is_none();
+    let existing = existing.unwrap_or_default();
     let planned = build_inline_task_create_plan(
         &config,
         &request.text,

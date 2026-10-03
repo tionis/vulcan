@@ -4,6 +4,16 @@
 
 ### Changed
 
+- `vulcan inbox`, `daily append`/`periodic append`, `tasks create`, and the script APIs
+  `vault.inbox()` and `vault.daily.append()` no longer treat a note they cannot read (for example
+  one that is not valid UTF-8) as empty. They used to replace such a note with only the new entry;
+  they now fail and leave it untouched.
+- Note checkbox toggles, inbox and periodic appends, periodic note creation, script vault writes,
+  and config edits (plugin toggles, export profiles, settings import) now replace files atomically
+  instead of rewriting them in place, so a crash can no longer leave a truncated note or
+  `config.toml`. The CLI note writes also refuse to overwrite a note that changed since it was
+  read, and route notes in mdbase collections through collection validation like `note append`.
+
 - A device-key mismatch now names both devices and the identity directory in use. When the
   installation's own key is the bound one, the message says this process reads a different
   identity directory (check its `HOME`/`XDG_DATA_HOME`) and warns against re-binding, instead of

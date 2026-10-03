@@ -78,9 +78,15 @@ pub(crate) fn run_edit_command(
         if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).map_err(CliError::operation)?;
         }
-        if !absolute_path.exists() {
-            fs::write(&absolute_path, "").map_err(CliError::operation)?;
-            created = true;
+        // Create-new never truncates a note that appeared in the meantime.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&absolute_path)
+        {
+            Ok(_) => created = true,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(CliError::operation(error)),
         }
     } else if !absolute_path.is_file() {
         return Err(CliError::operation(format!(

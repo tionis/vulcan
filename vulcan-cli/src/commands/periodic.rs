@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use vulcan_app::browse::{build_periodic_list_report, PeriodicListItem};
+use vulcan_app::notes::{read_note_for_update, write_note_content};
 use vulcan_app::periodic::{
     current_utc_date_string as app_current_utc_date_string, list_daily_notes,
     normalize_date_argument as app_normalize_date_argument, read_daily_note,
@@ -425,6 +426,7 @@ fn write_periodic_note_if_missing(
     period_type: &str,
     relative_path: &str,
     warnings: &mut Vec<String>,
+    quiet: bool,
 ) -> Result<bool, CliError> {
     let absolute_path = paths.vault_root().join(relative_path);
     if absolute_path.is_file() {
@@ -440,7 +442,8 @@ fn write_periodic_note_if_missing(
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
     let contents = render_periodic_note_contents(paths, period_type, relative_path, warnings)?;
-    fs::write(&absolute_path, contents).map_err(CliError::operation)?;
+    write_note_content(paths, relative_path, None, &contents, "create", None, quiet)
+        .map_err(CliError::operation)?;
     Ok(true)
 }
 
@@ -480,7 +483,8 @@ fn run_periodic_open_command(
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
     let mut warnings = Vec::new();
-    let created = write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings)?;
+    let created =
+        write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings, quiet)?;
     let absolute_path = paths.vault_root().join(&target.path);
     let opened_editor = !no_edit && allow_editor;
 
@@ -566,7 +570,8 @@ fn run_daily_export_ics_command(
         {
             fs::create_dir_all(parent).map_err(CliError::operation)?;
         }
-        fs::write(path, &export.content).map_err(CliError::operation)?;
+        vulcan_core::paths::write_file_atomic(path, &export.content)
+            .map_err(CliError::operation)?;
     }
 
     Ok(DailyIcsExportReport {
@@ -595,14 +600,24 @@ fn run_daily_append_command(
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
     let mut warnings = Vec::new();
-    let created = write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings)?;
-    let absolute_path = paths.vault_root().join(&target.path);
-    let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
+    let created =
+        write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings, quiet)?;
+    let existing = read_note_for_update(paths, &target.path).map_err(CliError::operation)?;
+    let current = existing.as_deref().unwrap_or_default();
     let updated = heading.map_or_else(
-        || append_at_end(&existing, text),
-        |heading| append_under_heading(&existing, heading, text),
+        || append_at_end(current, text),
+        |heading| append_under_heading(current, heading, text),
     );
-    fs::write(&absolute_path, updated).map_err(CliError::operation)?;
+    write_note_content(
+        paths,
+        &target.path,
+        existing.as_deref(),
+        &updated,
+        "append",
+        None,
+        quiet,
+    )
+    .map_err(CliError::operation)?;
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, quiet)?;

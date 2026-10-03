@@ -478,7 +478,7 @@ fn apply_import_settings(
     let rendered = toml::to_string_pretty(&config_value)?;
     let updated = existing_contents.as_deref() != Some(rendered.as_str());
     if updated && !dry_run {
-        fs::write(&target_file, &rendered)?;
+        crate::paths::write_file_atomic(&target_file, &rendered)?;
     }
 
     Ok(ConfigImportReport {
@@ -2382,7 +2382,7 @@ fn apply_tasknotes_mdbase_writes(
     for (applied, (write, temporary)) in writes.iter().zip(staged).enumerate() {
         if let Err(error) = temporary.persist(&write.path) {
             for rollback in writes[..applied].iter().rev() {
-                let _ = fs::write(&rollback.path, &rollback.before);
+                let _ = crate::paths::write_file_atomic(&rollback.path, &rollback.before);
             }
             return Err(ConfigImportError::Io(error.error));
         }
@@ -2627,7 +2627,7 @@ pub(super) fn tasknotes_migrate_view_files(
             if let Some(parent) = target_absolute.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(&target_absolute, migrated_contents)?;
+            crate::paths::write_file_atomic(&target_absolute, migrated_contents)?;
         }
 
         result.migrated_files.push(ImportMigratedFile {

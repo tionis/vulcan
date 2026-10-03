@@ -3758,6 +3758,47 @@ fn daily_append_creates_note_and_appends_under_heading() {
 }
 
 #[test]
+fn appending_to_an_unreadable_note_fails_without_overwriting_it() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    // Not valid UTF-8: earlier versions read this as empty and replaced it
+    // with only the new entry.
+    let original = b"# Inbox\n\xff\xfe keep me\n".to_vec();
+    fs::write(vault_root.join("Inbox.md"), &original).expect("inbox note");
+    let daily = vault_root.join("Journal/Daily/2026-04-03.md");
+    fs::create_dir_all(daily.parent().expect("daily parent")).expect("daily dir");
+    fs::write(&daily, &original).expect("daily note");
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+
+    for arguments in [
+        vec!["--vault", vault, "inbox", "new entry"],
+        vec![
+            "--vault",
+            vault,
+            "daily",
+            "append",
+            "new entry",
+            "--date",
+            "2026-04-03",
+        ],
+    ] {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(&arguments)
+            .assert()
+            .failure();
+    }
+    assert_eq!(
+        fs::read(vault_root.join("Inbox.md")).expect("inbox"),
+        original
+    );
+    assert_eq!(fs::read(&daily).expect("daily"), original);
+}
+
+#[test]
 fn note_get_json_output_supports_composable_selectors() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

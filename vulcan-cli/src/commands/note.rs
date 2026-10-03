@@ -761,7 +761,24 @@ pub(crate) fn run_note_checkbox_command(
                 quiet,
             )?;
         }
-        fs::write(&target.target.absolute_path, &updated_content).map_err(CliError::operation)?;
+        match target.target.vault_relative_path.as_deref() {
+            Some(relative_path) => vulcan_app::notes::write_note_content(
+                paths,
+                relative_path,
+                Some(&target.source),
+                &updated_content,
+                "checkbox",
+                permission_profile,
+                quiet,
+            )
+            .map(drop),
+            None => vulcan_core::paths::write_file_atomic(
+                &target.target.absolute_path,
+                &updated_content,
+            )
+            .map_err(vulcan_app::AppError::operation),
+        }
+        .map_err(CliError::operation)?;
         if target.target.is_vault_managed() {
             run_incremental_scan(paths, output, use_stderr_color, quiet)?;
         }

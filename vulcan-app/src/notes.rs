@@ -1327,6 +1327,53 @@ pub fn apply_note_set(
     })
 }
 
+/// Writes a vault note's new content the way note commands do: through
+/// mdbase validation when the note belongs to a collection, otherwise
+/// atomically and only while the note still holds `before`. `None` creates a
+/// note that must not exist yet. Returns the content written, which mdbase
+/// lifecycle rules may have extended. Plugin hooks are left to the caller.
+pub fn write_note_content(
+    paths: &VaultPaths,
+    path: &str,
+    before: Option<&str>,
+    after: &str,
+    operation: &str,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Result<String, AppError> {
+    if note_path_is_mdbase_managed(paths, path)? {
+        return apply_mdbase_note_content_change(
+            paths,
+            &MdbaseManagedNoteWriteRequest {
+                path,
+                before,
+                after: Some(after),
+                operation: if before.is_some() {
+                    MdbaseWriteOperation::Update
+                } else {
+                    MdbaseWriteOperation::Create
+                },
+                mode: MdbaseManagedWriteMode::Validated,
+                dry_run: false,
+                permission_profile,
+                quiet,
+            },
+        );
+    }
+    write_ordinary_note_if_unchanged(paths, path, before, after, operation)?;
+    Ok(after.to_string())
+}
+
+/// Reads a vault note for a read-modify-write: `None` when it does not exist
+/// yet. Any other failure is an error, never an empty note to overwrite.
+pub fn read_note_for_update(paths: &VaultPaths, path: &str) -> Result<Option<String>, AppError> {
+    match secure_read_to_string(paths.vault_root(), Path::new(path)) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::operation(format!("cannot read {path}: {error}"))),
+    }
+}
+
 pub(crate) fn write_ordinary_note_if_unchanged(
     paths: &VaultPaths,
     path: &str,
@@ -1515,7 +1562,8 @@ fn persist_note_patch_content(
             write_ordinary_note_if_unchanged(paths, relative_path, Some(source), content, "patch")?;
         }
     } else if !request.dry_run {
-        fs::write(&request.target.absolute_path, content).map_err(AppError::operation)?;
+        vulcan_core::paths::write_file_atomic(&request.target.absolute_path, content)
+            .map_err(AppError::operation)?;
     }
     Ok(content.to_string())
 }
@@ -2508,6 +2556,54 @@ mod tests {
         initialize_vulcan_dir, resolve_permission_profile, scan_vault_with_progress,
         ProfilePermissionGuard, ScanMode, VaultPaths,
     };
+
+    #[test]
+    fn note_writes_are_atomic_checked_and_never_overwrite_unreadable_notes() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        assert_eq!(
+            super::read_note_for_update(&paths, "New.md").expect("missing"),
+            None
+        );
+        super::write_note_content(&paths, "New.md", None, "first\n", "create", None, true)
+            .expect("create");
+        assert!(
+            super::write_note_content(&paths, "New.md", None, "again\n", "create", None, true)
+                .is_err(),
+            "create must not replace an existing note"
+        );
+        assert!(
+            super::write_note_content(
+                &paths,
+                "New.md",
+                Some("stale\n"),
+                "lost update\n",
+                "append",
+                None,
+                true
+            )
+            .is_err(),
+            "a note that changed since it was read is not overwritten"
+        );
+        let written = super::write_note_content(
+            &paths,
+            "New.md",
+            Some("first\n"),
+            "second\n",
+            "append",
+            None,
+            true,
+        )
+        .expect("update");
+        assert_eq!(written, "second\n");
+        assert_eq!(
+            super::read_note_for_update(&paths, "New.md").expect("read"),
+            Some("second\n".to_string())
+        );
+
+        fs::write(temp_dir.path().join("Binary.md"), b"\xff\xfe").expect("binary note");
+        assert!(super::read_note_for_update(&paths, "Binary.md").is_err());
+    }
 
     #[test]
     fn note_info_report_preserves_metadata_and_word_count() {
