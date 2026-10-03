@@ -41,6 +41,17 @@ const MAX_CONFLICT_SUMMARY_PATHS: usize = 16;
 /// device-local artifact copies; the immutable Git refs remain the durable
 /// byte archive.
 const MAX_RETAINED_RESOLVED_ARTIFACT_SETS: usize = 32;
+/// Beside a repository's `conflicts/`: one empty marker per conflict that may
+/// still be unresolved, so sync maintenance reads only those records instead
+/// of every conflict ever recorded.
+const OPEN_CONFLICTS_DIR: &str = "open-conflicts";
+/// Holds the modification time of `conflicts/` when the index last covered
+/// every conflict directory. Creating a conflict directory, by this or any
+/// other version, changes that time and triggers one full re-index.
+const OPEN_INDEX_STAMP: &str = ".indexed-at";
+/// A directory time this recent is not trusted as a stamp: a coarse clock
+/// could give a conflict created in the same tick the same time.
+const OPEN_INDEX_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConflictRecord {
@@ -629,6 +640,13 @@ pub fn list_sync_conflicts_with_state_store(
             ))
         })
         .collect::<Result<Vec<_>, AppError>>()?;
+    store.reconcile_open_index(
+        &repository_key,
+        &states
+            .iter()
+            .map(|(state, summary)| (*state, summary.id.clone()))
+            .collect::<Vec<_>>(),
+    )?;
     let superseded_count = states
         .iter()
         .filter(|(state, _)| *state == SyncConflictResolutionState::Superseded)
@@ -2580,6 +2598,8 @@ impl SyncConflictStore {
             AppError::operation("cannot preserve a sync conflict for a bare repository")
         })?;
         fs::create_dir_all(directory.join("artifacts")).map_err(AppError::operation)?;
+        // Indexed before the record exists, so a crash never hides it.
+        self.mark_open(repository_key, &conflict.id)?;
         let base_objects = conflict
             .base
             .as_ref()
@@ -2685,15 +2705,16 @@ impl SyncConflictStore {
             if !entry.file_type().map_err(AppError::operation)?.is_dir() {
                 continue;
             }
+            // Pruned conflicts have no artifacts left; skip them unread.
+            let artifacts = entry.path().join("artifacts");
+            if !artifacts.is_dir() {
+                continue;
+            }
             let id = entry.file_name().to_string_lossy().to_string();
             let Some(resolution) = self.get_resolution(repository_key, &id)? else {
                 continue;
             };
             if !resolution.applied {
-                continue;
-            }
-            let artifacts = entry.path().join("artifacts");
-            if !artifacts.is_dir() {
                 continue;
             }
             let modified = fs::metadata(entry.path().join("resolution.json"))
@@ -2711,6 +2732,109 @@ impl SyncConflictStore {
             pruned += 1;
         }
         Ok(pruned)
+    }
+
+    /// The records of unresolved conflicts, read through the open index:
+    /// cost follows the conflicts still open, not the repository's conflict
+    /// history. Conflicts found resolved or superseded leave the index; those
+    /// states are final. Builds the index from a full listing once.
+    pub(crate) fn open_records(
+        &self,
+        repository_key: &str,
+    ) -> Result<Vec<SyncConflictRecord>, AppError> {
+        validate_hex_id("repository key", repository_key)?;
+        let index = self.root.join(repository_key).join(OPEN_CONFLICTS_DIR);
+        fs::create_dir_all(&index).map_err(AppError::operation)?;
+        let stamp_path = index.join(OPEN_INDEX_STAMP);
+        let directory_time = conflicts_directory_time(&self.root.join(repository_key))?;
+        let stamp = fs::read_to_string(&stamp_path).ok();
+        if directory_time.as_ref().map(|(stamp, _)| stamp) != stamp.as_ref() {
+            // Conflicts appeared since the last full pass. Index all of them;
+            // the pass below drops the ones already resolved or superseded.
+            for id in self.list_ids(repository_key)? {
+                self.mark_open(repository_key, &id)?;
+            }
+            match directory_time {
+                Some((stamp, settled)) if settled => {
+                    durable_file::replace(&stamp_path, stamp.as_bytes())?;
+                }
+                _ => {
+                    durable_file::remove(&stamp_path)?;
+                }
+            }
+        }
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(&index).map_err(AppError::operation)? {
+            let id = entry
+                .map_err(AppError::operation)?
+                .file_name()
+                .to_string_lossy()
+                .to_string();
+            if validate_hex_id("conflict ID", &id).is_ok() {
+                ids.push(id);
+            }
+        }
+        ids.sort();
+        let mut records = Vec::with_capacity(ids.len());
+        for id in ids {
+            let directory = self.conflict_directory(repository_key, &id)?;
+            if !directory.join("record.json").is_file() {
+                // Still being recorded, or never completed.
+                continue;
+            }
+            let record = self.get(repository_key, &id)?;
+            let progress = self.group_progress(repository_key, &record)?;
+            if self.resolution_state_with_progress(repository_key, &id, &progress)?
+                == SyncConflictResolutionState::Unresolved
+            {
+                records.push(record);
+            } else {
+                self.mark_closed(repository_key, &id)?;
+            }
+        }
+        Ok(records)
+    }
+
+    fn mark_open(&self, repository_key: &str, conflict_id: &str) -> Result<(), AppError> {
+        validate_hex_id("conflict ID", conflict_id)?;
+        let index = self.root.join(repository_key).join(OPEN_CONFLICTS_DIR);
+        fs::create_dir_all(&index).map_err(AppError::operation)?;
+        durable_file::create(&index.join(conflict_id), b"").map(drop)
+    }
+
+    fn mark_closed(&self, repository_key: &str, conflict_id: &str) -> Result<(), AppError> {
+        validate_hex_id("conflict ID", conflict_id)?;
+        durable_file::remove(
+            &self
+                .root
+                .join(repository_key)
+                .join(OPEN_CONFLICTS_DIR)
+                .join(conflict_id),
+        )
+        .map(drop)
+    }
+
+    /// Repairs the open index from a full listing's states, for conflicts
+    /// recorded by versions that did not maintain it.
+    fn reconcile_open_index(
+        &self,
+        repository_key: &str,
+        states: &[(SyncConflictResolutionState, String)],
+    ) -> Result<(), AppError> {
+        let index = self.root.join(repository_key).join(OPEN_CONFLICTS_DIR);
+        if !index.is_dir() {
+            return Ok(());
+        }
+        for (state, id) in states {
+            if *state == SyncConflictResolutionState::Unresolved {
+                if !index.join(id).is_file() {
+                    self.mark_open(repository_key, id)?;
+                }
+            } else if index.join(id).is_file() {
+                self.mark_closed(repository_key, id)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn list(&self, repository_key: &str) -> Result<Vec<SyncConflictRecord>, AppError> {
@@ -3035,7 +3159,7 @@ impl SyncConflictStore {
                     .collect::<BTreeSet<_>>()
             });
         let mut superseded = 0;
-        for record in self.list(repository_key)? {
+        for record in self.open_records(repository_key)? {
             if current_conflict_id == Some(record.id.as_str()) {
                 continue;
             }
@@ -3076,6 +3200,7 @@ impl SyncConflictStore {
                 current_revision,
                 current_conflict_id,
             )?;
+            self.mark_closed(repository_key, &record.id)?;
             superseded += 1;
         }
         Ok(superseded)
@@ -3114,7 +3239,7 @@ impl SyncConflictStore {
         })?;
         let mut frontier_entries: Option<BTreeMap<String, GitTreeEntry>> = None;
         let mut summary = CarryForwardSummary::default();
-        for record in self.list(repository_key)? {
+        for record in self.open_records(repository_key)? {
             let Some(paths) = self.overtaken_paths(
                 engine,
                 repository,
@@ -4430,6 +4555,23 @@ fn projection_matches(
     }
 }
 
+/// The modification time of a repository's `conflicts/` directory as a
+/// stamp, and whether it is old enough to trust; `None` before any conflict.
+fn conflicts_directory_time(repository: &Path) -> Result<Option<(String, bool)>, AppError> {
+    let modified = match fs::metadata(repository.join("conflicts")) {
+        Ok(metadata) => metadata.modified().map_err(AppError::operation)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    let since_epoch = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(AppError::operation)?;
+    let settled = modified
+        .elapsed()
+        .is_ok_and(|elapsed| elapsed >= OPEN_INDEX_SETTLE);
+    Ok(Some((since_epoch.as_nanos().to_string(), settled)))
+}
+
 fn validate_hex_id(label: &str, value: &str) -> Result<(), AppError> {
     if value.len() == 32
         && value
@@ -4955,6 +5097,69 @@ mod tests {
             store.get(&key, &old_id).expect("immutable old record").id,
             old_id
         );
+    }
+
+    fn write_unresolved(store: &SyncConflictStore, key: &str, id: &str, root: &Path) {
+        let directory = store.conflict_directory(key, id).expect("directory");
+        fs::create_dir_all(&directory).expect("conflict directory");
+        write_json_noclobber(
+            &directory.join("record.json"),
+            &unresolved_record(id, key, root),
+        )
+        .expect("record");
+    }
+
+    /// Ages the `conflicts/` directory past the index settle time.
+    fn settle_conflicts_directory(store: &SyncConflictStore, key: &str) {
+        let directory = fs::File::open(store.root.join(key).join("conflicts")).expect("open");
+        directory
+            .set_modified(std::time::SystemTime::now() - 2 * OPEN_INDEX_SETTLE)
+            .expect("age conflicts directory");
+    }
+
+    #[test]
+    fn sync_maintenance_reads_only_open_conflicts_once_indexed() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let old_id = "b".repeat(32);
+        let current_id = "c".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().join("state"));
+        write_unresolved(&store, &key, &old_id, temporary.path());
+        write_unresolved(&store, &key, &current_id, temporary.path());
+        settle_conflicts_directory(&store, &key);
+        assert_eq!(
+            store
+                .supersede_unresolved_except(&key, Some(&current_id), "revision")
+                .expect("supersede"),
+            1
+        );
+        // A superseded conflict is final: later scans must not open it again.
+        let old_record = store
+            .conflict_directory(&key, &old_id)
+            .expect("directory")
+            .join("record.json");
+        fs::write(&old_record, b"not a record").expect("corrupt closed record");
+        let open = store.open_records(&key).expect("open records");
+        assert_eq!(
+            open.iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            [current_id.as_str()]
+        );
+        fs::remove_file(&old_record).expect("remove corrupt record");
+        write_json_noclobber(
+            &old_record,
+            &unresolved_record(&old_id, &key, temporary.path()),
+        )
+        .expect("restore record");
+
+        // A conflict directory created without the index, as an older
+        // version would, changes the directory time and is found again.
+        let legacy_id = "d".repeat(32);
+        write_unresolved(&store, &key, &legacy_id, temporary.path());
+        let open = store.open_records(&key).expect("reindexed");
+        assert!(open.iter().any(|record| record.id == legacy_id));
+        assert!(!open.iter().any(|record| record.id == old_id));
     }
 
     #[test]

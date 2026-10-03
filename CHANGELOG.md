@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Every sync used to read every conflict record ever preserved for the repository to decide
+  which unresolved ones to supersede or carry forward. A device-local index of open conflicts
+  now limits that to the conflicts still open; resolved and superseded records are no longer
+  reopened. Recording a new conflict no longer reads the resolution of every pruned conflict
+  either.
+
 - `vulcan inbox`, `daily append`/`periodic append`, `tasks create`, and the script APIs
   `vault.inbox()` and `vault.daily.append()` no longer treat a note they cannot read (for example
   one that is not valid UTF-8) as empty. They used to replace such a note with only the new entry;
