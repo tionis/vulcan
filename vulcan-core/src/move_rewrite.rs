@@ -399,16 +399,12 @@ fn move_journal_path(paths: &VaultPaths) -> std::io::Result<PathBuf> {
 }
 
 fn write_move_journal(paths: &VaultPaths, journal: &MoveJournal) -> std::io::Result<()> {
-    let path = move_journal_path(paths)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("move journal path has no parent directory"))?;
-    fs::create_dir_all(parent)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer(&mut temporary, journal).map_err(std::io::Error::other)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&path).map_err(|error| error.error)?;
-    Ok(())
+    let bytes = serde_json::to_vec(journal).map_err(std::io::Error::other)?;
+    crate::durable::replace(
+        &move_journal_path(paths)?,
+        &bytes,
+        crate::durable::Durability::Full,
+    )
 }
 
 pub(crate) fn remove_move_journal(paths: &VaultPaths) -> std::io::Result<()> {

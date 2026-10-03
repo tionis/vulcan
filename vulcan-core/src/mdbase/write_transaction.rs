@@ -1413,20 +1413,8 @@ fn durable_json_replace<T: Serialize>(
     let bytes = serde_json::to_vec_pretty(value).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to encode durable state", error)
     })?;
-    let parent = path.parent().ok_or_else(|| {
-        MdbaseWriteTransactionError::new("state_unsafe", "durable state has no parent")
-    })?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(|error| {
-        MdbaseWriteTransactionError::io("failed to create durable state", error)
-    })?;
-    temporary
-        .write_all(&bytes)
-        .and_then(|()| temporary.as_file().sync_all())
-        .map_err(|error| MdbaseWriteTransactionError::io("failed to sync durable state", error))?;
-    temporary.persist(path).map_err(|error| {
-        MdbaseWriteTransactionError::io("failed to replace durable state", error.error)
-    })?;
-    sync_directory(parent)
+    crate::durable::replace(path, &bytes, crate::durable::Durability::Full)
+        .map_err(|error| MdbaseWriteTransactionError::io("failed to replace durable state", error))
 }
 
 fn durable_remove(path: &Path) -> Result<(), MdbaseWriteTransactionError> {

@@ -16,9 +16,8 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 #[cfg(unix)]
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 use ulid::Ulid;
 
 const JOURNAL_VERSION: u32 = 1;
@@ -721,16 +720,12 @@ fn save_journal(directory: &Path, journal: &Journal) -> Result<(), OrdinaryWrite
             None,
         ));
     }
-    let mut temporary = NamedTempFile::new_in(directory)
-        .map_err(|error| OrdinaryWriteError::io("stage ordinary write journal", error))?;
-    temporary
-        .write_all(&bytes)
-        .and_then(|()| temporary.as_file().sync_all())
-        .map_err(|error| OrdinaryWriteError::io("sync ordinary write journal", error))?;
-    temporary
-        .persist(journal_path(directory))
-        .map_err(|error| OrdinaryWriteError::io("publish ordinary write journal", error.error))?;
-    sync_directory(directory)
+    crate::durable::replace(
+        &journal_path(directory),
+        &bytes,
+        crate::durable::Durability::Full,
+    )
+    .map_err(|error| OrdinaryWriteError::io("publish ordinary write journal", error))
 }
 
 fn remove_journal(directory: &Path) -> Result<(), OrdinaryWriteError> {

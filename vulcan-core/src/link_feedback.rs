@@ -10,7 +10,6 @@ use crate::VaultPaths;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use ulid::Ulid;
 
@@ -67,17 +66,11 @@ fn load(paths: &VaultPaths) -> std::io::Result<Option<LinkFeedbackFile>> {
 }
 
 fn store(paths: &VaultPaths, file: &LinkFeedbackFile) -> std::io::Result<()> {
-    let path = feedback_path(paths)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("feedback path has no parent directory"))?;
-    fs::create_dir_all(parent)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(&mut temporary, file).map_err(std::io::Error::other)?;
-    temporary.write_all(b"\n")?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&path).map_err(|error| error.error)?;
-    Ok(())
+    crate::durable::replace_json(
+        &feedback_path(paths)?,
+        file,
+        crate::durable::Durability::Full,
+    )
 }
 
 /// Records (or replaces) the decision for one source/target pair.
