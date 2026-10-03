@@ -4449,7 +4449,10 @@ fn edit_new_auto_commit_creates_git_commit() {
     )
     .expect("config should be written");
 
+    // `VISUAL` wins over `EDITOR`, so a developer's own editor must not leak in.
+    let original_visual = std::env::var_os("VISUAL");
     let original_editor = std::env::var_os("EDITOR");
+    std::env::remove_var("VISUAL");
     std::env::set_var("EDITOR", "true");
 
     let result = run_from([
@@ -4464,6 +4467,9 @@ fn edit_new_auto_commit_creates_git_commit() {
     match original_editor {
         Some(value) => std::env::set_var("EDITOR", value),
         None => std::env::remove_var("EDITOR"),
+    }
+    if let Some(value) = original_visual {
+        std::env::set_var("VISUAL", value);
     }
 
     result.expect("edit should succeed");

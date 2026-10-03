@@ -7820,6 +7820,7 @@ fn sync_resolve_cli_applies_a_reviewed_editor_result_through_a_proposal() {
         let mut command = Command::cargo_bin("vulcan").expect("binary should build");
         command
             .env("XDG_STATE_HOME", &state_home)
+            .env_remove("VISUAL")
             .env("EDITOR", editor_command)
             .arg("--vault")
             .arg(&reader)
@@ -7842,6 +7843,7 @@ fn sync_resolve_cli_applies_a_reviewed_editor_result_through_a_proposal() {
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .env("XDG_STATE_HOME", &state_home)
+        .env_remove("VISUAL")
         .env("EDITOR", "true")
         .arg("--vault")
         .arg(&reader)
@@ -7872,6 +7874,7 @@ fn sync_resolve_cli_applies_a_reviewed_editor_result_through_a_proposal() {
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .env("XDG_STATE_HOME", &state_home)
+        .env_remove("VISUAL")
         .env("EDITOR", &marker_editor)
         .arg("--vault")
         .arg(&reader)
@@ -14976,6 +14979,7 @@ fn tasks_edit_json_output_opens_editor_and_rescans_tasknote() {
 
     let edit_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env_remove("VISUAL")
         .env("EDITOR", editor)
         .args([
             "--vault",
@@ -27985,6 +27989,7 @@ fn edit_new_creates_note_and_updates_cache() {
 
     let edit_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env_remove("VISUAL")
         .env("EDITOR", editor)
         .args([
             "--vault",
