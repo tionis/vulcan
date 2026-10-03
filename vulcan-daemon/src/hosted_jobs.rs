@@ -8,10 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_app::execution::{
     ExecutionAuthority, ExecutionCancellationToken, ExecutionContext, ExecutionRetryClass,
@@ -449,40 +448,42 @@ impl HostedJobLedger {
         Ok(record)
     }
 
-    fn temporary_record(&self, record: &HostedJobRecord) -> Result<NamedTempFile, HostedJobError> {
+    /// The serialized record, after preparing the owner-only job directory.
+    fn record_bytes(&self, record: &HostedJobRecord) -> Result<Vec<u8>, HostedJobError> {
         fs::create_dir_all(&self.root).map_err(HostedJobError::Io)?;
         set_owner_only_directory(&self.root)?;
-        let bytes = serde_json::to_vec_pretty(record).map_err(HostedJobError::Json)?;
+        let mut bytes = serde_json::to_vec_pretty(record).map_err(HostedJobError::Json)?;
         if bytes.len() as u64 > MAX_JOB_BYTES {
             return Err(HostedJobError::TooLarge);
         }
-        let mut temporary = NamedTempFile::new_in(&self.root).map_err(HostedJobError::Io)?;
-        temporary.write_all(&bytes).map_err(HostedJobError::Io)?;
-        temporary.write_all(b"\n").map_err(HostedJobError::Io)?;
-        set_owner_only_file(temporary.as_file())?;
-        Ok(temporary)
+        bytes.push(b'\n');
+        Ok(bytes)
     }
 
     fn save_new(&self, record: &HostedJobRecord) -> Result<(), HostedJobError> {
-        let temporary = self.temporary_record(record)?;
-        temporary
-            .persist_noclobber(self.path(&record.operation_id))
-            .map_err(|error| {
-                if error.error.kind() == std::io::ErrorKind::AlreadyExists {
-                    HostedJobError::DuplicateOperation(record.operation_id.clone())
-                } else {
-                    HostedJobError::Io(error.error)
-                }
-            })?;
+        let bytes = self.record_bytes(record)?;
+        let created = vulcan_core::durable::create_new(
+            &self.path(&record.operation_id),
+            &bytes,
+            vulcan_core::durable::Durability::Full,
+        )
+        .map_err(HostedJobError::Io)?;
+        if !created {
+            return Err(HostedJobError::DuplicateOperation(
+                record.operation_id.clone(),
+            ));
+        }
         Ok(())
     }
 
     fn save_replace(&self, record: &HostedJobRecord) -> Result<(), HostedJobError> {
-        let temporary = self.temporary_record(record)?;
-        temporary
-            .persist(self.path(&record.operation_id))
-            .map_err(|error| HostedJobError::Io(error.error))?;
-        Ok(())
+        let bytes = self.record_bytes(record)?;
+        vulcan_core::durable::replace(
+            &self.path(&record.operation_id),
+            &bytes,
+            vulcan_core::durable::Durability::Full,
+        )
+        .map_err(HostedJobError::Io)
     }
 
     fn path(&self, operation_id: &str) -> PathBuf {
@@ -580,19 +581,6 @@ fn set_owner_only_directory(path: &Path) -> Result<(), HostedJobError> {
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps)]
 fn set_owner_only_directory(_path: &Path) -> Result<(), HostedJobError> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_owner_only_file(file: &File) -> Result<(), HostedJobError> {
-    use std::os::unix::fs::PermissionsExt;
-    file.set_permissions(fs::Permissions::from_mode(0o600))
-        .map_err(HostedJobError::Io)
-}
-
-#[cfg(not(unix))]
-#[allow(clippy::unnecessary_wraps)]
-fn set_owner_only_file(_file: &File) -> Result<(), HostedJobError> {
     Ok(())
 }
 

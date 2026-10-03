@@ -11,7 +11,8 @@
 //!   the replacement survives power loss once the call returns;
 //! - on Unix the file is owner-only (`0600`) before it becomes visible;
 //! - symlinks and other non-regular files are refused, never followed;
-//! - reads are bounded, so a corrupt or hostile file cannot exhaust memory.
+//! - reads are bounded, so a corrupt or hostile file cannot exhaust memory;
+//! - on Windows, a rename that a concurrent reader briefly blocks is retried.
 //!
 //! State that grows with the vault or with history belongs in a keyed store,
 //! not in a file that is rewritten whole; see the design document.
@@ -38,8 +39,15 @@ pub enum Durability {
 /// Atomically replaces `path` with `bytes`, creating parent directories.
 pub fn replace(path: &Path, bytes: &[u8], durability: Durability) -> io::Result<()> {
     let parent = prepare_parent(path)?;
-    let temporary = staged(parent, bytes, durability)?;
-    temporary.persist(path).map_err(|error| error.error)?;
+    let mut temporary = staged(parent, bytes, durability)?;
+    let mut attempt = 0;
+    loop {
+        match temporary.persist(path) {
+            Ok(_) => break,
+            Err(error) if retry_transient(&error.error, &mut attempt) => temporary = error.file,
+            Err(error) => return Err(error.error),
+        }
+    }
     sync_directory(parent, durability)
 }
 
@@ -47,15 +55,47 @@ pub fn replace(path: &Path, bytes: &[u8], durability: Durability) -> io::Result<
 /// whether the file was created.
 pub fn create_new(path: &Path, bytes: &[u8], durability: Durability) -> io::Result<bool> {
     let parent = prepare_parent(path)?;
-    let temporary = staged(parent, bytes, durability)?;
-    match temporary.persist_noclobber(path) {
-        Ok(_) => {
-            sync_directory(parent, durability)?;
-            Ok(true)
+    let mut temporary = staged(parent, bytes, durability)?;
+    let mut attempt = 0;
+    loop {
+        match temporary.persist_noclobber(path) {
+            Ok(_) => {
+                sync_directory(parent, durability)?;
+                return Ok(true);
+            }
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) if retry_transient(&error.error, &mut attempt) => temporary = error.file,
+            Err(error) => return Err(error.error),
         }
-        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(error.error),
     }
+}
+
+/// Attempts a rename may make when Windows reports a transient conflict.
+const TRANSIENT_RENAME_ATTEMPTS: u32 = 10;
+const TRANSIENT_RENAME_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Whether a failed rename should be retried, sleeping briefly if so. On
+/// Windows a concurrent reader or scanner holding the target makes the rename
+/// fail with an access, sharing, or lock violation for a moment; elsewhere no
+/// rename error is transient.
+fn retry_transient(error: &io::Error, attempt: &mut u32) -> bool {
+    *attempt += 1;
+    if !is_transient_rename_error(error) || *attempt >= TRANSIENT_RENAME_ATTEMPTS {
+        return false;
+    }
+    std::thread::sleep(TRANSIENT_RENAME_DELAY);
+    true
+}
+
+#[cfg(windows)]
+fn is_transient_rename_error(error: &io::Error) -> bool {
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+#[cfg(not(windows))]
+fn is_transient_rename_error(_error: &io::Error) -> bool {
+    false
 }
 
 /// Removes `path` if it exists, syncing its directory. Returns whether a file
@@ -258,6 +298,25 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn ordinary_rename_errors_are_not_retried() {
+        let mut attempt = 0;
+        let error = io::Error::new(io::ErrorKind::NotFound, "missing");
+        assert!(!retry_transient(&error, &mut attempt));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sharing_violations_are_retried_a_bounded_number_of_times() {
+        let error = io::Error::from_raw_os_error(32);
+        let mut attempt = 0;
+        let mut retries = 0;
+        while retry_transient(&error, &mut attempt) {
+            retries += 1;
+        }
+        assert_eq!(retries, TRANSIENT_RENAME_ATTEMPTS - 1);
     }
 
     #[cfg(unix)]

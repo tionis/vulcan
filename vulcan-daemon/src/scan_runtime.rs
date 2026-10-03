@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -221,46 +220,15 @@ pub fn load_scan_completion(path: &Path) -> Result<Option<ScanCompletion>, Strin
 }
 
 fn persist_scan_completion(path: &Path, completion: &ScanCompletion) -> Result<(), String> {
-    if path
-        .symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
-    {
-        return Err(format!("refusing symlinked scan status {}", path.display()));
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| "scan status path has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| error.to_string())?;
-    }
-    serde_json::to_writer(
-        temporary.as_file_mut(),
-        &ScanStatusFile {
-            version: SCAN_STATUS_VERSION,
-            completion: completion.clone(),
-        },
-    )
+    // The completion decides whether the cache counts as fresh, so it is synced.
+    let mut bytes = serde_json::to_vec(&ScanStatusFile {
+        version: SCAN_STATUS_VERSION,
+        completion: completion.clone(),
+    })
     .map_err(|error| error.to_string())?;
-    temporary
-        .as_file_mut()
-        .write_all(b"\n")
-        .map_err(|error| error.to_string())?;
-    temporary
-        .as_file_mut()
-        .sync_all()
-        .map_err(|error| error.to_string())?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error.to_string())?;
-    Ok(())
+    bytes.push(b'\n');
+    vulcan_core::durable::replace(path, &bytes, vulcan_core::durable::Durability::Full)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

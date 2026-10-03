@@ -5,14 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tempfile::NamedTempFile;
 
 use crate::hosted_executor::HostedExecutor;
 use crate::hosted_jobs::HostedJobLedger;
@@ -22,8 +20,6 @@ use crate::shutdown::ShutdownSignal;
 const MAX_SERVICE_ID_BYTES: usize = 160;
 const MAX_FAILURE_DETAIL_BYTES: usize = 512;
 const MAX_HOST_STATUS_BYTES: u64 = 1024 * 1024;
-const HOST_STATUS_PERSIST_ATTEMPTS: u32 = 10;
-const HOST_STATUS_PERSIST_RETRY_DELAY: Duration = Duration::from_millis(20);
 pub const HOST_STATUS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1116,60 +1112,10 @@ fn persist_host_status(path: &Path, report: &HostStatusReport) -> Result<(), Hos
             path.display()
         )));
     }
-    let parent = path.parent().ok_or_else(|| {
-        HostRuntimeError::InvalidStatus("host status path has no parent".to_string())
-    })?;
-    fs::create_dir_all(parent).map_err(|error| HostRuntimeError::Io(error.to_string()))?;
-    let mut temporary =
-        NamedTempFile::new_in(parent).map_err(|error| HostRuntimeError::Io(error.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| HostRuntimeError::Io(error.to_string()))?;
-    }
-    serde_json::to_writer(temporary.as_file_mut(), report)
-        .map_err(|error| HostRuntimeError::Json(error.to_string()))?;
-    temporary
-        .as_file_mut()
-        .write_all(b"\n")
-        .map_err(|error| HostRuntimeError::Io(error.to_string()))?;
-    temporary
-        .as_file_mut()
-        .sync_all()
-        .map_err(|error| HostRuntimeError::Io(error.to_string()))?;
-    // A concurrent reader (for example `vulcan daemon status` polling during
-    // startup) can hold the destination open. On Windows that makes the atomic
-    // replace fail with a sharing violation, so retry briefly instead of
-    // turning a transient read race into a daemon startup failure.
-    let mut pending = temporary;
-    for attempt in 0..HOST_STATUS_PERSIST_ATTEMPTS {
-        match pending.persist(path) {
-            Ok(_) => return Ok(()),
-            Err(error) => {
-                let transient = is_transient_persist_error(&error.error);
-                if !transient || attempt + 1 == HOST_STATUS_PERSIST_ATTEMPTS {
-                    return Err(HostRuntimeError::Io(error.error.to_string()));
-                }
-                pending = error.file;
-                thread::sleep(HOST_STATUS_PERSIST_RETRY_DELAY);
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn is_transient_persist_error(error: &std::io::Error) -> bool {
-    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
-    matches!(error.raw_os_error(), Some(5 | 32 | 33))
-}
-
-#[cfg(not(windows))]
-fn is_transient_persist_error(_error: &std::io::Error) -> bool {
-    false
+    // A concurrent `vulcan daemon status` reader can briefly block the replace
+    // on Windows; the durable primitive retries that transient conflict.
+    vulcan_core::durable::replace_json(path, report, vulcan_core::durable::Durability::Full)
+        .map_err(|error| HostRuntimeError::Io(error.to_string()))
 }
 
 fn unix_time_ms() -> Result<u64, HostRuntimeError> {
