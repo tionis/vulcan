@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
+use vulcan_core::durable::{self, Durability};
 
 /// The file where trusted vault paths are stored.
 fn trusted_vaults_file() -> Result<PathBuf, AppError> {
@@ -31,20 +32,18 @@ struct TrustedVaults {
 
 fn load() -> Result<TrustedVaults, AppError> {
     let path = trusted_vaults_file()?;
-    if !path.exists() {
-        return Ok(TrustedVaults::default());
-    }
-    let content = std::fs::read_to_string(&path).map_err(AppError::operation)?;
-    serde_json::from_str(&content).map_err(AppError::operation)
+    Ok(
+        durable::read_json(&path, vulcan_core::MAX_TRUSTED_VAULTS_FILE_BYTES)
+            .map_err(AppError::operation)?
+            .unwrap_or_default(),
+    )
 }
 
+/// Replaces the list atomically and durably: a crash mid-write must never
+/// leave a truncated file, which would silently untrust every vault.
 fn save(data: &TrustedVaults) -> Result<(), AppError> {
     let path = trusted_vaults_file()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(AppError::operation)?;
-    }
-    let content = serde_json::to_string_pretty(data).map_err(AppError::operation)?;
-    std::fs::write(&path, content).map_err(AppError::operation)
+    durable::replace_json(&path, data, Durability::Full).map_err(AppError::operation)
 }
 
 /// Returns `true` if `vault_root` is in the trusted vaults list.
@@ -101,8 +100,28 @@ mod tests {
         assert!(add_trust(vault.path()).expect("trust should be added"));
         assert!(is_trusted(vault.path()));
         assert_eq!(list_trusted().expect("trusts should load").len(), 1);
+        let file = vulcan_core::trusted_vaults_file().expect("trust file");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("saved list"))
+                .expect("a saved list is complete JSON");
+        assert_eq!(saved["vaults"].as_array().map(Vec::len), Some(1));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "the trust list is owner-only");
+        }
         assert!(revoke_trust(vault.path()).expect("trust should be removed"));
         assert!(!is_trusted(vault.path()));
+
+        std::fs::write(&file, b"{\"vaults\": [").expect("truncated list");
+        assert!(
+            add_trust(vault.path()).is_err(),
+            "a damaged list must be reported, not silently replaced"
+        );
         match previous_xdg {
             Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
             None => std::env::remove_var("XDG_CONFIG_HOME"),

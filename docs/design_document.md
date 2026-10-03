@@ -460,6 +460,17 @@ Cache clearing may remove only stores declared rebuildable. Durable local state 
 
 The host owns SQLite connections, transactions, WAL/SHM cleanup, quotas, backup, integrity checks, and schema migration journals. It forbids arbitrary `ATTACH` paths, extension loading, host-path VFS access, and unsafe pragmas; applies statement, row, byte, page, time, and result limits; and exposes parameterized, transport-neutral operations to QuickJS, server WASM, CLI entrypoints, and the browser bridge. A package cannot supply a native SQLite extension merely by requesting a store.
 
+#### Host operational state
+
+Vulcan's own operational state (registries, journals, trust lists, credentials, daemon and sync bookkeeping, integration mappings) lives outside the vault and outside the rebuildable cache. Its storage shape follows how the data behaves, not which component owns it:
+
+- **Small bounded records** — one writer, read and written whole, with a fixed size ceiling — are individual JSON files written through `vulcan_core::durable`. Every write is a temporary file renamed over the target; authoritative records sync the file and its directory before returning, all files are owner-only on Unix, symlinks are refused, and reads are bounded. Only rebuildable or informative state such as status reports may opt into best-effort durability.
+- **Collections that grow with the vault, its history, or time**, state that needs atomic updates across several records, and state that is looked up by key are a per-component SQLite store (`keyed_state` in `vulcan-app`): one row per entity, writes limited to the rows that changed, uniqueness enforced by constraints. Outline publish and pull mappings and the merge-validation cache use this shape.
+- **Large immutable content** (pull base snapshots, conflict evidence) stays in content-addressed files referenced by hash rather than inside a database.
+- Human-edited configuration remains TOML.
+
+Stores are deliberately per component rather than one database per vault or daemon: workflows keep independent locks, corruption stays contained, and a quiescent component's files can be copied safely. A cost that grows with vault size or history on every operation (whole-file rewrites, per-commit or per-entry processes) is treated as a defect.
+
 #### Vault-native and canonical stores
 
 For the App/script typed-collection backend, the design is one mdbase persisted collection model, one Vulcan execution and mutation engine, and multiple frontends. mdbase type/schema/contract declarations compile with Markdown records into Vulcan's rebuildable SQLite representation; this is a derived execution representation, not a second maintained collection format. Common canonical mdbase and explicitly collection-bound native queries receive equivalent SQL/index optimization through a shared physical planner, with residual CEL where needed. Apps, scripts, and generic managed collection edits share mdbase rule enforcement and Vulcan's revision-checked journaled write path. Explicit raw repair remains separate from validated writes, and external edits remain diagnosable source changes. These integration guarantees are implementation targets; current ordinary note queries retain their existing semantics and plain Markdown vaults do not require mdbase.

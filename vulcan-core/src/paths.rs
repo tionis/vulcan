@@ -10,6 +10,8 @@ pub const LOCAL_CONFIG_FILE_NAME: &str = "config.local.toml";
 pub const GITIGNORE_FILE_NAME: &str = ".gitignore";
 pub const REPORTS_DIR_NAME: &str = "reports";
 pub const TRUSTED_VAULTS_FILE_NAME: &str = "trusted_vaults.json";
+/// Upper bound when reading the trusted-vault list; it holds a few paths.
+pub const MAX_TRUSTED_VAULTS_FILE_BYTES: u64 = 4 * 1024 * 1024;
 pub const DEFAULT_ATTACHMENT_FOLDER: &str = ".";
 const DEFAULT_VULCAN_GITIGNORE: &str =
     "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n!templates/\n!templates/**\n";
@@ -225,7 +227,10 @@ pub fn is_trusted_vault(vault_root: &Path) -> bool {
     let Ok(canonical_root) = vault_root.canonicalize() else {
         return false;
     };
-    let Ok(content) = fs::read_to_string(path) else {
+    let Ok(Some(bytes)) = crate::durable::read_bounded(&path, MAX_TRUSTED_VAULTS_FILE_BYTES) else {
+        return false;
+    };
+    let Ok(content) = String::from_utf8(bytes) else {
         return false;
     };
     trusted_vaults_contain(&content, &canonical_root)

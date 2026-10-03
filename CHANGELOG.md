@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- The trusted-vault list is written atomically and durably. A crash mid-write previously could
+  truncate it, after which every vault was silently treated as untrusted.
 - Applying a change pulled by `vulcan sync` no longer rewrites every file in the vault. Only the
   changed paths are written, so unchanged notes keep their modification times and Obsidian,
   watchers, and the Vulcan cache no longer see the whole vault as modified.
