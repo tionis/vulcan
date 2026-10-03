@@ -1781,7 +1781,20 @@ fn supersede_obsolete_conflicts(
             Some(&record.id),
             current_revision,
         )?;
-        return Ok(false);
+        // Older conflicts the new one does not cover may have been overtaken
+        // too. The worktree holds the frontier only once the new conflict's
+        // projection was applied; the new conflict itself is never overtaken.
+        let applied = record
+            .projection
+            .as_ref()
+            .is_some_and(|projection| projection.published && projection.applied);
+        if !applied {
+            return Ok(false);
+        }
+        let frontier = vulcan_sync::GitOid::parse(current_revision).map_err(AppError::operation)?;
+        return Ok(carry_forward_overtaken_conflicts(
+            engine, paths, options, sync, &store, journal, &frontier,
+        ));
     }
     if matches!(
         sync.outcome,
@@ -3718,6 +3731,57 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             fs::read_to_string(fixture.writer.join("Home.md")).expect("published"),
             merged
         );
+    }
+
+    #[test]
+    fn overtaken_conflict_is_carried_forward_by_a_sync_that_conflicts_elsewhere() {
+        let fixture = structured_sync_fixture(&[("A.md", "base a\n"), ("B.md", "base b\n")]);
+        let sync = |root: &std::path::Path| {
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(root),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("sync")
+        };
+        fs::write(fixture.writer.join("A.md"), "remote a\n").expect("remote A");
+        fs::write(fixture.reader.join("A.md"), "local a\n").expect("local A");
+        sync(&fixture.writer);
+        let first = sync(&fixture.reader)
+            .conflict_record
+            .expect("conflict on A");
+
+        // The writer changes A again and, in the same push, B; the reader also
+        // changed B, so its next sync records a new conflict on B only.
+        sync(&fixture.writer);
+        fs::write(fixture.writer.join("A.md"), "remote a two\n").expect("writer advances A");
+        fs::write(fixture.writer.join("B.md"), "remote b\n").expect("remote B");
+        fs::write(fixture.reader.join("B.md"), "local b\n").expect("local B");
+        sync(&fixture.writer);
+        let later = sync(&fixture.reader);
+        assert_eq!(later.sync.outcome, GitSyncOutcome::Conflicted);
+        let second = later.conflict_record.expect("conflict on B");
+        assert_eq!(
+            second
+                .paths
+                .iter()
+                .map(|path| path.path.as_str())
+                .collect::<Vec<_>>(),
+            ["B.md"]
+        );
+
+        let replacement_id = historical_conflict(&fixture, &first.id)
+            .supersession
+            .and_then(|supersession| supersession.replacement_conflict_id)
+            .expect("the overtaken A conflict was carried forward");
+        assert_ne!(replacement_id, second.id);
+        let replacement = historical_conflict(&fixture, &replacement_id);
+        assert_eq!(replacement.record.paths[0].path, "A.md");
+        assert_eq!(
+            replacement.record.paths[0].remote.bytes,
+            Some("remote a two\n".len() as u64)
+        );
+        assert_eq!(conflict_listing(&fixture).count, 2);
     }
 
     #[test]
