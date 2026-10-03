@@ -198,7 +198,13 @@ After a version-tag workflow succeeds, an operator supplies both the exact immut
 full commit ID. The signer requires the non-prerelease tag to be exactly `v<version>`, verifies the
 successful `release.yml` tag run for that commit, downloads and validates the complete release with
 the same canonical artifact checks as the rolling signer, rechecks the release for races, replaces
-only the descriptor, and verifies both API readback and the public download URL:
+only the descriptor, and verifies API readback. The version-tag workflow creates the release with
+`make_latest: false`, so `releases/latest`, which the stable channel URL resolves through, keeps
+pointing at the previous signed release until the signer promotes the new one. Promotion happens
+only after the signature is published and never moves `latest` to an older version than the current
+one; rerunning the signer on an already-signed release completes a missed promotion. The signer then
+polls the client-facing `releases/latest/download/vulcan-update-channel.json` URL until it serves the
+signed bytes:
 
 ```sh
 python scripts/release/sign_stable_release.py \

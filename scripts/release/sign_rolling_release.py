@@ -498,6 +498,51 @@ def public_descriptor_url(repo: str, tag: str) -> str:
     return f"https://github.com/{repo}/releases/download/{tag}/{CANONICAL_DESCRIPTOR}"
 
 
+def latest_descriptor_url(repo: str) -> str:
+    return f"https://github.com/{repo}/releases/latest/download/{CANONICAL_DESCRIPTOR}"
+
+
+STABLE_TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
+
+
+def should_promote(candidate_tag: str, latest_tag: str | None) -> bool:
+    """Promote a signed stable release unless a newer one is already latest.
+
+    Re-signing an older tag must never move `releases/latest` backwards.
+    """
+    candidate = STABLE_TAG.fullmatch(candidate_tag)
+    if candidate is None:
+        raise ValueError(f"cannot promote non-stable tag {candidate_tag}")
+    if latest_tag is None:
+        return True
+    latest = STABLE_TAG.fullmatch(latest_tag)
+    if latest is None:
+        return True
+    return tuple(map(int, candidate.groups())) >= tuple(map(int, latest.groups()))
+
+
+def fetch_latest_tag(repo: str) -> str | None:
+    try:
+        release = gh_json(["api", f"repos/{repo}/releases/latest"])
+    except ValueError as error:
+        if "Not Found" in str(error) or "404" in str(error):
+            return None
+        raise
+    tag = release.get("tag_name") if isinstance(release, dict) else None
+    return tag if isinstance(tag, str) else None
+
+
+def promote_signed_release(repo: str, tag: str) -> bool:
+    """Mark a signed stable release as latest; return whether it now is."""
+    latest = fetch_latest_tag(repo)
+    if latest == tag:
+        return True
+    if not should_promote(tag, latest):
+        return False
+    run(["gh", "release", "edit", tag, "--repo", repo, "--latest"])
+    return True
+
+
 def fetch_public(url: str) -> bytes | None:
     request = urllib.request.Request(url, headers={"User-Agent": "vulcan-release-signer"})
     try:
@@ -630,8 +675,16 @@ def sign_published_release(
     fast_already_signed: bool,
     tag_is_source: bool,
     staged_descriptor: bool = False,
+    promote_latest: bool = False,
     await_public: Callable[[str, bytes], float] = await_public_descriptor,
 ) -> dict:
+    def publish_signed(signed: bytes) -> float:
+        # Stable releases are created without `latest` so the channel URL never
+        # resolves to an unsigned descriptor; promotion follows the signature.
+        if promote_latest and promote_signed_release(repo, tag):
+            return await_public(latest_descriptor_url(repo), signed)
+        return await_public(public_descriptor_url(repo, tag), signed)
+
     if key_id != expected_key_id:
         raise ValueError(f"{release_kind} release signer requires key ID {expected_key_id}")
     validate_key(
@@ -764,6 +817,10 @@ def sign_published_release(
                 "source_commit": validated.source_commit,
                 "key_id": key_id,
                 "dry_run": dry_run,
+                # Repairs a run that signed but stopped before promotion.
+                "public_propagation_seconds": (
+                    publish_signed(signed) if promote_latest and not dry_run else None
+                ),
             }
         if envelope["signatures"]:
             raise ValueError("refusing to replace an unexpected signed update descriptor")
@@ -826,7 +883,7 @@ def sign_published_release(
                     raise ValueError("signed descriptor readback did not match uploaded bytes")
             if staged_descriptor:
                 delete_asset(repo, tag, STAGED_DESCRIPTOR)
-            propagation_seconds = await_public(public_descriptor_url(repo, tag), signed)
+            propagation_seconds = publish_signed(signed)
     return {
         "action": action,
         "repo": repo,

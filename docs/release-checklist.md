@@ -17,7 +17,10 @@ workspace test gate and every archive build succeed.
 - [ ] After the version-tag workflow succeeds, independently resolve the immutable tag to its full
   commit ID. Run `scripts/release/sign_stable_release.py` first with `--dry-run`, then without it,
   supplying that exact `--tag`, `--expected-commit`, and the protected `stable-2026-09` key. Require
-  `signed` or `already_signed` plus exact readback; never copy the private key into Actions.
+  `signed` or `already_signed` plus exact readback and a reported `public_propagation_seconds`;
+  never copy the private key into Actions. The release stays out of `latest` until this step
+  promotes it, so the stable channel never serves its unsigned descriptor; confirm GitHub now
+  shows it as the latest release.
 - [ ] From a post-bootstrap portable build, run `vulcan self-update check` without
   `--allow-unsigned` and require `signature_verified: true` with
   `verified_key_id: stable-2026-09`. For the first bootstrap release only, separately verify and

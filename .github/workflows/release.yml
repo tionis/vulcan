@@ -285,4 +285,7 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
+          # The stable channel resolves through `releases/latest`; the signer
+          # promotes this release only after its descriptor is signed.
+          make_latest: false
           files: artifacts/*

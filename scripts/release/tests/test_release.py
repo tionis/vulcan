@@ -649,6 +649,24 @@ class ReleasePackagingTests(unittest.TestCase):
             "vulcan-update-channel.json",
         )
 
+    def test_stable_promotion_never_moves_latest_backwards(self) -> None:
+        promote = rolling_signer_script.should_promote
+        self.assertTrue(promote("v0.2.2", None))
+        self.assertTrue(promote("v0.2.2", "v0.2.1"))
+        self.assertTrue(promote("v0.2.2", "v0.2.2"))
+        self.assertTrue(promote("v0.10.0", "v0.9.9"))
+        self.assertFalse(promote("v0.2.1", "v0.2.2"))
+        self.assertFalse(promote("v0.9.9", "v0.10.0"))
+        with self.assertRaisesRegex(ValueError, "non-stable tag"):
+            promote("rolling-main", "v0.2.1")
+        self.assertEqual(
+            rolling_signer_script.latest_descriptor_url("tionis/vulcan"),
+            "https://github.com/tionis/vulcan/releases/latest/download/"
+            "vulcan-update-channel.json",
+        )
+        stable_signer = (SCRIPT_ROOT / "sign_stable_release.py").read_text(encoding="utf-8")
+        self.assertIn("promote_latest=True", stable_signer)
+
     def test_rolling_prune_retains_the_previous_signed_generation(self) -> None:
         base_url = "https://github.com/tionis/vulcan/releases/download/rolling-main"
         previous = "vulcan-0.2.2-dev.20261001.52.gaaaaaaaa-x86_64-unknown-linux-gnu.tar.gz"
@@ -831,6 +849,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("scripts/release/update_channel.py", stable)
         self.assertIn("--channel stable", stable)
         self.assertNotIn("--signing-key", stable)
+        self.assertIn("make_latest: false", stable)
         self.assertIn('cron: "17 3 * * *"', rolling)
         self.assertIn("workflow_dispatch:", rolling)
         self.assertIn("--workflow CI", rolling)
