@@ -1177,6 +1177,29 @@ impl Drop for RuntimeRecordGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Waits for the daemon to report itself running. CI runners can be slow
+    /// to start one, so this allows a generous deadline but still returns as
+    /// soon as the daemon is ready and fails at once if it exits first.
+    fn wait_until_running<T: std::fmt::Debug>(
+        context: &DaemonProcessContext,
+        result_receiver: &std::sync::mpsc::Receiver<T>,
+    ) -> DaemonStatusReport {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(result) = result_receiver.try_recv() {
+                panic!("daemon stopped before readiness: {result:?}");
+            }
+            if let Some(status) = daemon_status(context).ok().filter(|status| status.running) {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "daemon did not become ready within 30 seconds"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
     use crate::registry::{
         AddWikiRequest, DaemonConfig, DaemonConflictWorkerConfig, ManagedDirectoryProfile, WikiId,
         WikiRegistration,
@@ -1323,20 +1346,7 @@ mod tests {
             result_sender.send(result).expect("send daemon result");
         });
 
-        let status = (0..100)
-            .find_map(|_| {
-                if let Ok(result) = result_receiver.try_recv() {
-                    panic!("daemon stopped before readiness: {result:?}");
-                }
-                let status = daemon_status(&context).ok()?;
-                if status.running {
-                    Some(status)
-                } else {
-                    thread::sleep(Duration::from_millis(25));
-                    None
-                }
-            })
-            .expect("daemon becomes ready");
+        let status = wait_until_running(&context, &result_receiver);
         assert_eq!(status.services.len(), 8);
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "listener.test-ingress"
@@ -1527,20 +1537,7 @@ mod tests {
             result_sender.send(result).expect("send daemon result");
         });
 
-        let status = (0..100)
-            .find_map(|_| {
-                if let Ok(result) = result_receiver.try_recv() {
-                    panic!("daemon stopped before readiness: {result:?}");
-                }
-                let status = daemon_status(&context).ok()?;
-                if status.running {
-                    Some(status)
-                } else {
-                    thread::sleep(Duration::from_millis(25));
-                    None
-                }
-            })
-            .expect("daemon becomes ready");
+        let status = wait_until_running(&context, &result_receiver);
         assert_eq!(status.registered_wikis.len(), 1);
         let pulled = (0..200).any(|_| {
             if rev_parse(&vault, "HEAD") == expected {
@@ -1586,20 +1583,7 @@ mod tests {
             result_sender.send(result).expect("send daemon result");
         });
 
-        let status = (0..100)
-            .find_map(|_| {
-                if let Ok(result) = result_receiver.try_recv() {
-                    panic!("daemon stopped before readiness: {result:?}");
-                }
-                let status = daemon_status(&context).ok()?;
-                if status.running {
-                    Some(status)
-                } else {
-                    thread::sleep(Duration::from_millis(25));
-                    None
-                }
-            })
-            .expect("daemon becomes ready");
+        let status = wait_until_running(&context, &result_receiver);
         assert_eq!(status.registered_wikis.len(), 1);
         assert_eq!(status.wiki_statuses.len(), 1);
         assert_eq!(status.services.len(), 7);

@@ -3634,11 +3634,37 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .contains("exceeding the shared limits of 0 paths and 0 percent"));
     }
 
+    /// Writes an executable test script and waits until it can be executed.
+    /// Another test thread that forks while the script is open for writing
+    /// briefly holds that descriptor, and executing the script then fails with
+    /// ETXTBSY until the forked child execs. One successful run proves no such
+    /// descriptor remains, so later executions are reliable.
+    #[cfg(unix)]
+    fn write_test_script(path: &Path, content: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, content).expect("write test script");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .expect("make test script executable");
+        for _ in 0..500 {
+            match std::process::Command::new(path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => return,
+            }
+        }
+        panic!("test script {} stayed busy", path.display());
+    }
+
     #[cfg(unix)]
     #[test]
     fn whole_tree_validation_batches_git_work_independent_of_note_count() {
-        use std::os::unix::fs::PermissionsExt;
-
         let temporary = tempdir().expect("temporary directory");
         git(
             temporary.path(),
@@ -3661,16 +3687,13 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
 
         let trace = temporary.path().join("git-trace");
         let wrapper = temporary.path().join("git-wrapper");
-        fs::write(
+        write_test_script(
             &wrapper,
-            format!(
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
                 trace.display()
             ),
-        )
-        .expect("Git wrapper");
-        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))
-            .expect("wrapper permissions");
+        );
         let engine = vulcan_sync::GitCliEngine::new(&wrapper);
         let repository = engine
             .discover_repository(temporary.path())
@@ -3904,8 +3927,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     #[cfg(unix)]
     #[test]
     fn whole_tree_blob_cache_publishes_nothing_after_late_stream_or_process_failure() {
-        use std::os::unix::fs::PermissionsExt;
-
         let temporary = tempdir().unwrap();
         git(temporary.path(), &["init", "--quiet"]);
         let real_engine = vulcan_sync::GitCliEngine::default();
@@ -3936,12 +3957,10 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             format!("printf '{} blob 4\\nab'; exit 0", last.oid),
             format!("printf '{} blob 4\\nlast\\n'; exit 7", last.oid),
         ] {
-            fs::write(
+            write_test_script(
                 &wrapper,
-                format!("#!/bin/sh\ncat >/dev/null\nprintf '{prefix}'\n{suffix}\n"),
-            )
-            .unwrap();
-            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+                &format!("#!/bin/sh\ncat >/dev/null\nprintf '{prefix}'\n{suffix}\n"),
+            );
             let error = cache_tree_content(
                 &engine,
                 &repository,
@@ -3962,14 +3981,13 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             assert_eq!(cache.markdown[&existing.oid].bytes, 4);
             assert!(cache.canvas.is_empty());
         }
-        fs::write(
+        write_test_script(
             &wrapper,
-            format!(
+            &format!(
                 "#!/bin/sh\ncat >/dev/null\nprintf '{prefix}{} blob 4\\nlast\\n'\n",
                 last.oid
             ),
-        )
-        .unwrap();
+        );
         cache_tree_content(
             &engine,
             &repository,
