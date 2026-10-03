@@ -3159,13 +3159,6 @@ fn local_path_claims(mapping: &OutlinePullMapping) -> Vec<String> {
         .collect()
 }
 
-#[cfg(unix)]
-fn sync_parent_directory(parent: &Path) -> Result<(), AppError> {
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(AppError::operation)
-}
-
 fn snapshot_path(directory: &Path, hash: &str) -> Result<PathBuf, AppError> {
     if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(AppError::operation(
@@ -3176,30 +3169,22 @@ fn snapshot_path(directory: &Path, hash: &str) -> Result<PathBuf, AppError> {
 }
 
 fn write_content_snapshot(directory: &Path, hash: &str, content: &str) -> Result<(), AppError> {
-    fs::create_dir_all(directory).map_err(AppError::operation)?;
     let path = snapshot_path(directory, hash)?;
-    if path.exists() {
+    let created = vulcan_core::durable::create_new(
+        &path,
+        content.as_bytes(),
+        vulcan_core::durable::Durability::Full,
+    )
+    .map_err(AppError::operation)?;
+    // Snapshots are content-addressed: an existing one must hold these bytes.
+    if !created {
         let existing = fs::read(&path).map_err(AppError::operation)?;
         if bytes_hash(&existing) != hash {
             return Err(AppError::operation(
                 "Outline pull content snapshot hash mismatch",
             ));
         }
-        return Ok(());
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(AppError::operation)?;
-    temporary
-        .write_all(content.as_bytes())
-        .map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
-    temporary
-        .persist(path)
-        .map_err(|error| AppError::operation(error.error))?;
-    #[cfg(unix)]
-    sync_parent_directory(directory)?;
     Ok(())
 }
 

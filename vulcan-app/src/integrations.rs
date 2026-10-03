@@ -5,7 +5,6 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
@@ -240,26 +239,7 @@ fn validate_state_route_name(route: &str) -> Result<(), AppError> {
 }
 
 fn save_route_state(path: &Path, state: &RouteRuntimeState) -> Result<(), AppError> {
-    let bytes = serde_json::to_vec_pretty(state).map_err(AppError::operation)?;
-    let parent = path.parent().expect("route state parent");
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(AppError::operation)?;
-    temporary.write_all(&bytes).map_err(AppError::operation)?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(AppError::operation)?;
-    temporary
-        .persist(path)
-        .map_err(|error| AppError::operation(error.error))?;
-    #[cfg(unix)]
-    sync_parent_directory(parent)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn sync_parent_directory(parent: &Path) -> Result<(), AppError> {
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
+    vulcan_core::durable::replace_json(path, state, vulcan_core::durable::Durability::Full)
         .map_err(AppError::operation)
 }
 
