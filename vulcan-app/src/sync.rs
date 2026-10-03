@@ -3715,6 +3715,90 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn repeatedly_overtaken_conflict_keeps_one_current_replacement() {
+        let (fixture, first, _) =
+            overtaken_conflict("base\n", "writer one\n", "reader\n", "writer two\n");
+        let conflicts_dir = fixture
+            .store
+            .root()
+            .join(&first.repository_key)
+            .join("conflicts");
+        let reader_refs = || {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .args([
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/vulcan/conflicts",
+                ])
+                .output()
+                .expect("list conflict refs");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .lines()
+                .map(|line| line.split('/').nth(3).expect("conflict id").to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let mut previous = None;
+        for round in ["writer three\n", "writer four\n", "writer five\n"] {
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(&fixture.writer),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("writer catches up");
+            fs::write(fixture.writer.join("Home.md"), round).expect("writer edits again");
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(&fixture.writer),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("writer advances live ref");
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(&fixture.reader),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("reader carries the conflict forward");
+
+            let current = historical_conflict(&fixture, &first.id)
+                .supersession
+                .and_then(|supersession| supersession.replacement_conflict_id)
+                .expect("the original names the current replacement");
+            assert_ne!(Some(&current), previous.as_ref());
+            let replacement = historical_conflict(&fixture, &current);
+            assert_eq!(
+                replacement.record.carried_from.as_deref(),
+                Some(first.id.as_str())
+            );
+            assert_eq!(
+                replacement.record.paths[0].remote.bytes,
+                Some(round.len() as u64)
+            );
+            // Only the original and the current replacement remain, on disk
+            // and as preserved refs.
+            let ids = fs::read_dir(&conflicts_dir)
+                .expect("conflicts")
+                .map(|entry| {
+                    entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let expected = [first.id.clone(), current.clone()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(ids, expected);
+            assert_eq!(reader_refs(), expected);
+            assert_eq!(conflict_listing(&fixture).count, 1);
+            previous = Some(current);
+        }
+    }
+
+    #[test]
     fn overtaken_conflict_that_now_merges_cleanly_is_published_automatically() {
         let (fixture, first, later) = overtaken_conflict(
             "a\nb\nc\n",

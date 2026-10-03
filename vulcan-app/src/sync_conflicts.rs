@@ -84,8 +84,9 @@ pub struct SyncConflictRecord {
     pub projection: Option<SyncConflictProjectionRecord>,
     pub paths: Vec<SyncConflictPathRecord>,
     pub diagnostics: String,
-    /// The overtaken conflict this one replaced when a sync carried it
-    /// forward onto a later live version. Such a record's local side is
+    /// The original conflict this one descends from when a sync carried it
+    /// forward onto a later live version; a chain of replacements always
+    /// names the original, and intermediate replacements are removed. Such a record's local side is
     /// already an ancestor of its remote side, so it resolves by overlaying
     /// its groups on the live tree rather than by re-running the merge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3441,10 +3442,64 @@ impl SyncConflictStore {
             frontier.as_str(),
             replacement.as_deref(),
         )?;
+        if let Some(root) = &record.carried_from {
+            // Best effort: a leftover intermediate only costs disk space.
+            let _ = self.collapse_intermediate(
+                engine,
+                repository,
+                root,
+                record,
+                frontier,
+                replacement.as_deref(),
+            );
+        }
         Ok(Some(RecordCarryForward {
             written_paths: merged.into_iter().map(|resolved| resolved.path).collect(),
             replacement,
         }))
+    }
+
+    /// Removes a replacement that was itself carried forward, so a file that
+    /// another device keeps changing leaves at most the original conflict
+    /// and one current replacement instead of a record, artifact copies, and
+    /// refs per sync. Nothing unique is lost: the intermediate's base and
+    /// local sides are the original's, and its remote side is a past live
+    /// commit. The original's supersession is repointed first. Intermediates
+    /// someone started resolving (batches, a resolution, proposals) are kept.
+    fn collapse_intermediate(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        root: &str,
+        intermediate: &SyncConflictRecord,
+        frontier: &GitOid,
+        replacement: Option<&str>,
+    ) -> Result<(), AppError> {
+        let key = &intermediate.repository_key;
+        let directory = self.conflict_directory(key, &intermediate.id)?;
+        if ["batches", "resolution.json", "proposals"]
+            .iter()
+            .any(|entry| directory.join(entry).exists())
+        {
+            return Ok(());
+        }
+        self.write_supersession(key, root, frontier.as_str(), replacement)?;
+        let preserved = [
+            ("base", intermediate.base_revision.as_deref()),
+            ("local", Some(intermediate.local_revision.as_str())),
+            ("remote", Some(intermediate.remote_revision.as_str())),
+            ("record", intermediate.provenance_revision.as_deref()),
+        ];
+        for (role, commit) in preserved {
+            let Some(commit) = commit else { continue };
+            let reference = conflict_ref(&intermediate.id, role).map_err(AppError::operation)?;
+            let commit = GitOid::parse(commit).map_err(AppError::operation)?;
+            engine
+                .delete_ref(repository, &reference, &commit)
+                .map_err(AppError::operation)?;
+        }
+        self.mark_closed(key, &intermediate.id)?;
+        fs::remove_dir_all(&directory).map_err(AppError::operation)
     }
 
     /// Records the still-conflicting paths against `frontier`: the preserved
@@ -3512,16 +3567,12 @@ impl SyncConflictStore {
             merge_tree: None,
             diagnostics: format!(
                 "carried forward from conflict {}: these files changed again on the live branch and still conflict with this device's version",
-                record.id
+                record.carried_from.as_deref().unwrap_or(&record.id)
             ),
         };
-        self.persist_with_origin(
-            engine,
-            repository,
-            repository_key,
-            &conflict,
-            Some(&record.id),
-        )?;
+        // A chain of replacements always names the original conflict.
+        let origin = record.carried_from.as_deref().unwrap_or(&record.id);
+        self.persist_with_origin(engine, repository, repository_key, &conflict, Some(origin))?;
         Ok(id)
     }
 

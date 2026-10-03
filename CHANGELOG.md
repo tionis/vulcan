@@ -85,7 +85,8 @@
   merges are published automatically, and files that still conflict move to a new conflict that
   resolves against the live version. Rename and directory/file conflicts move to the new conflict
   as one unit. Previously no resolution could complete such a conflict, so the wiki stayed marked
-  conflicted. The original conflict's evidence remains inspectable.
+  conflicted. The original conflict's evidence remains inspectable, and a file another device
+  keeps changing leaves only the original plus one current conflict, not one per sync.
 
 - The trusted-vault list is written atomically and durably. A crash mid-write previously could
   truncate it, after which every vault was silently treated as untrusted.
