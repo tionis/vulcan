@@ -3095,9 +3095,11 @@ impl SyncConflictStore {
     /// any other. The old record is then superseded, and its evidence and
     /// refs are kept.
     ///
-    /// Conflicts with a resolution being published, structural groups, or a
-    /// worktree that no longer matches the frontier are left untouched. The
-    /// caller holds the vault and repository locks.
+    /// Structural groups (renames, directory/file collisions) are never
+    /// merged; they move to the replacement as a unit. Whole-tree validation
+    /// conflicts, conflicts with a resolution being published, and a worktree
+    /// that no longer matches the frontier are left untouched. The caller
+    /// holds the vault and repository locks.
     pub fn carry_forward_stale_unresolved(
         &self,
         engine: &dyn GitEngine,
@@ -3179,10 +3181,14 @@ impl SyncConflictStore {
                 )
             })
             .collect::<Vec<_>>();
+        // A whole-tree validation failure has no paths to carry.
         if unfinished.is_empty()
-            || unfinished
-                .iter()
-                .any(|group| kinds.get(&group.id) != Some(&SyncConflictGroupKind::Path))
+            || unfinished.iter().any(|group| {
+                !matches!(
+                    kinds.get(&group.id),
+                    Some(SyncConflictGroupKind::Path | SyncConflictGroupKind::Structural)
+                )
+            })
         {
             return Ok(None);
         }
@@ -3238,9 +3244,21 @@ impl SyncConflictStore {
         };
         let (base_objects, local_objects, current_objects) =
             (objects(&base)?, objects(&local)?, objects(frontier)?);
+        // Renames and directory/file collisions are decided as one unit, so
+        // their paths move to the replacement together, never merged apart.
+        let structural = record
+            .paths
+            .iter()
+            .filter(|path| path.group_kind == SyncConflictGroupKind::Structural)
+            .map(|path| path.path.as_str())
+            .collect::<BTreeSet<_>>();
         let mut merged = Vec::new();
         let mut unresolved = Vec::new();
         for path in paths {
+            if structural.contains(path.as_str()) {
+                unresolved.push(path.clone());
+                continue;
+            }
             match vulcan_sync::merge_carried_path(
                 engine,
                 options,

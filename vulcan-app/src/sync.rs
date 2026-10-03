@@ -3785,6 +3785,74 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn overtaken_rename_conflict_moves_to_a_replacement_as_one_group() {
+        let fixture = structured_sync_fixture(&[("Note.md", "shared body\n")]);
+        let sync = |root: &std::path::Path| {
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(root),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("sync")
+        };
+        fs::rename(
+            fixture.writer.join("Note.md"),
+            fixture.writer.join("Writer.md"),
+        )
+        .expect("writer rename");
+        fs::rename(
+            fixture.reader.join("Note.md"),
+            fixture.reader.join("Reader.md"),
+        )
+        .expect("reader rename");
+        sync(&fixture.writer);
+        let first = sync(&fixture.reader)
+            .conflict_record
+            .expect("rename conflict");
+        assert!(conflict_groups(&first)
+            .iter()
+            .all(|group| group.kind == crate::sync_conflicts::SyncConflictGroupKind::Structural));
+
+        // The writer recreates the original path, overtaking the conflict.
+        sync(&fixture.writer);
+        fs::write(fixture.writer.join("Note.md"), "recreated\n").expect("writer recreates");
+        sync(&fixture.writer);
+        let later = sync(&fixture.reader);
+        assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
+
+        let replacement_id = historical_conflict(&fixture, &first.id)
+            .supersession
+            .and_then(|supersession| supersession.replacement_conflict_id)
+            .expect("the structural conflict was carried forward");
+        let replacement = historical_conflict(&fixture, &replacement_id).record;
+        let groups = conflict_groups(&replacement);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].kind,
+            crate::sync_conflicts::SyncConflictGroupKind::Structural
+        );
+        assert_eq!(groups[0].paths, ["Note.md"]);
+
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &replacement_id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: false,
+            },
+            &fixture.store,
+        )
+        .expect("structural replacement resolves");
+        assert!(!fixture.reader.join("Note.md").exists());
+        assert!(fixture.reader.join("Reader.md").exists());
+        assert_eq!(conflict_listing(&fixture).count, 0);
+    }
+
+    #[test]
     fn overtaken_conflict_already_matching_the_live_version_is_retired() {
         let (fixture, first, _) =
             overtaken_conflict("base\n", "writer one\n", "reader\n", "reader\n");

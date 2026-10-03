@@ -51,8 +51,9 @@
 - A sync conflict whose conflicted files changed again in later syncs no longer stays
   unresolved forever. The next sync re-merges this device's version onto the live one: clean
   merges are published automatically, and files that still conflict move to a new conflict that
-  resolves against the live version. Previously no resolution could complete such a conflict, so
-  the wiki stayed marked conflicted. The original conflict's evidence remains inspectable.
+  resolves against the live version. Rename and directory/file conflicts move to the new conflict
+  as one unit. Previously no resolution could complete such a conflict, so the wiki stayed marked
+  conflicted. The original conflict's evidence remains inspectable.
 
 - The trusted-vault list is written atomically and durably. A crash mid-write previously could
   truncate it, after which every vault was silently treated as untrusted.
