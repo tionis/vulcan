@@ -564,8 +564,10 @@ def await_public_descriptor(
 ) -> float:
     """Poll the client-facing URL until it serves exactly the signed bytes.
 
-    The API readback proves the asset exists; only this proves that clients,
-    which resolve the public download path, receive it.
+    The API readback proves the asset exists; this proves GitHub's public
+    download path resolves to it, as seen from this machine's CDN edge.
+    Clients behind other edges can briefly lag further, which is safe
+    because the previous signed descriptor and its archives remain valid.
     """
     started = clock()
     while True:

@@ -175,7 +175,10 @@ the release for races, publishes the signed `vulcan-update-channel.json`, reads 
 back through the API, removes the staged envelope, and polls the public
 `releases/download/rolling-main/vulcan-update-channel.json` URL that clients use until it serves the
 signed bytes. Failing to converge within ten minutes fails the workflow even though the signature
-was published, so download-path lag stays visible. An already-valid signature is an inexpensive
+was published, so origin-side download-path lag stays visible. This check observes only the
+runner's own CDN edge: clients behind other edges were observed receiving the previous descriptor
+for about a minute after the signer had converged. That lag is benign by construction, because
+the previous descriptor is signed and its archives are retained until the following build. An already-valid signature is an inexpensive
 idempotent no-op that also removes a leftover staged envelope; any other existing signature fails
 closed. No developer workstation,
 resident process, or systemd timer participates in the normal rolling release path.
