@@ -356,10 +356,7 @@ impl NamedMcpRuntime {
             );
         }
         self.authorization_store
-            .attenuate_grant_permissions(grant.id, &current_profile.grant, request.now)
-            .map_err(|error| error.to_string())?;
-        self.authorization_store
-            .mark_grant_used(grant.id, request.now)
+            .record_grant_use(grant.id, &current_profile.grant, request.now)
             .map_err(|error| error.to_string())?;
         Ok(McpSessionAuthority::granted(
             self.remote_id.clone(),

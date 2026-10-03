@@ -344,6 +344,30 @@ impl KeyedStateStore {
             .transpose()
     }
 
+    /// One entry of `namespace`, read without loading the others.
+    pub fn entry<V: DeserializeOwned>(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> Result<Option<V>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT value FROM entries WHERE namespace = ?1 AND key = ?2",
+                params![namespace, key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(AppError::operation)?
+            .map(|value| {
+                serde_json::from_str(&value).map_err(|error| {
+                    AppError::operation(format!(
+                        "malformed keyed state entry `{namespace}/{key}`: {error}"
+                    ))
+                })
+            })
+            .transpose()
+    }
+
     pub fn load_map<V: DeserializeOwned>(
         &self,
         namespace: &str,
@@ -601,6 +625,23 @@ mod tests {
             .collect::<TrackedMap<_>>();
         assert!(collected.is_replaced());
         assert!(!map.is_replaced());
+    }
+
+    #[test]
+    fn entry_reads_one_row_of_a_namespace() {
+        let temporary = tempdir().expect("temporary directory");
+        let path = temporary.path().join("state.sqlite");
+        let mut store = KeyedStateStore::open(&path).expect("store");
+        store
+            .write(|writer| {
+                writer.put("grants", "a", &1)?;
+                writer.put("families", "a", &2)
+            })
+            .expect("write");
+        assert_eq!(store.entry::<i32>("grants", "a").expect("entry"), Some(1));
+        assert_eq!(store.entry::<i32>("families", "a").expect("entry"), Some(2));
+        assert_eq!(store.entry::<i32>("grants", "b").expect("missing"), None);
+        assert!(store.entry::<String>("grants", "a").is_err());
     }
 
     #[test]

@@ -77,6 +77,8 @@ snapshot against current policy. A connection used or refreshed under narrower
 permissions stays narrowed even if the profile is later widened: expansion needs
 fresh consent. `remote remove` revokes connections by default; retained grants
 with `--preserve-grants` remain unusable without their original instance.
+Expired and revoked approvals stay listed for 30 days and are then dropped,
+together with their refresh-token families, the next time a client connects.
 
 ## Configuration, credentials, and recovery
 

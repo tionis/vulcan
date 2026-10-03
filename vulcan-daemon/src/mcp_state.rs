@@ -1,6 +1,6 @@
 //! Durable device-local authorization state for named remote MCP instances.
 //!
-//! Raw bearer and refresh-token secrets are never persisted. The state file
+//! Raw bearer and refresh-token secrets are never persisted. The state store
 //! contains only grants, revocation/audit metadata, and SHA-256 token hashes.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -15,6 +15,7 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use subtle::ConstantTimeEq;
 use ulid::Ulid;
+use vulcan_app::keyed_state::{KeyedStateStore, TrackedMap};
 use vulcan_core::PermissionGrant;
 
 use crate::mcp_remote::McpRemoteId;
@@ -23,8 +24,15 @@ use crate::registry::WikiId;
 pub const MCP_AUTHORIZATION_STATE_VERSION: u32 = 1;
 pub const MCP_CONNECTION_GRANT_VERSION: u32 = 1;
 pub const MCP_TOKEN_FAMILY_VERSION: u32 = 1;
-const STATE_FILE: &str = "mcp-authorizations.json";
-const MAX_STATE_BYTES: u64 = 8 * 1024 * 1024;
+const STATE_FILE: &str = "mcp-authorizations.sqlite";
+const LEGACY_STATE_FILE: &str = "mcp-authorizations.json";
+const MAX_LEGACY_STATE_BYTES: u64 = 8 * 1024 * 1024;
+const GRANTS: &str = "grants";
+const TOKEN_FAMILIES: &str = "token-families";
+/// How long an expired or revoked grant or token family stays listed before
+/// it is dropped.
+pub const INACTIVE_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
+const GRANT_USE_RESOLUTION_SECONDS: u64 = 60;
 const MAX_GRANTS: usize = 4_096;
 const MAX_TOKEN_FAMILIES: usize = 8_192;
 const MAX_USED_REFRESH_TOKENS: usize = 64;
@@ -207,25 +215,30 @@ pub struct TokenFamilyReport {
     pub revoked_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Grants and token families held in memory by management operations, which
+/// are rare and may scan everything. Per-request paths read single rows.
+#[derive(Debug, Default)]
 struct AuthorizationState {
-    version: u32,
+    grants: TrackedMap<ConnectionGrant>,
+    token_families: TrackedMap<TokenFamily>,
+}
+
+/// The JSON layout used before the `SQLite` store.
+#[derive(Deserialize)]
+struct LegacyAuthorizationState {
     #[serde(default)]
     grants: Vec<ConnectionGrant>,
     #[serde(default)]
     token_families: Vec<TokenFamily>,
 }
 
-impl Default for AuthorizationState {
-    fn default() -> Self {
-        Self {
-            version: MCP_AUTHORIZATION_STATE_VERSION,
-            grants: Vec::new(),
-            token_families: Vec::new(),
-        }
-    }
-}
-
+/// Device-local remote MCP authorization state.
+///
+/// Grants and token families are rows of one owner-only `SQLite` store, so an
+/// authenticated request reads only its own grant instead of parsing every
+/// grant ever issued. Writers serialize on a lock file; readers never block.
+/// Grants and token families that ended more than [`INACTIVE_RETENTION_SECONDS`]
+/// ago are dropped whenever a new grant or token family is recorded.
 #[derive(Debug, Clone)]
 pub struct McpAuthorizationStore {
     path: PathBuf,
@@ -251,6 +264,7 @@ impl McpAuthorizationStore {
     ) -> Result<ConnectionGrantReport, McpStateError> {
         validate_create_grant(&request)?;
         self.mutate(dry_run, |state| {
+            prune_inactive(state, request.created_at);
             let grant = ConnectionGrant {
                 version: MCP_CONNECTION_GRANT_VERSION,
                 id: Ulid::new(),
@@ -269,9 +283,9 @@ impl McpAuthorizationStore {
                 last_used_at: None,
                 revoked_at: None,
             };
-            state.grants.push(grant.clone());
-            state.grants.sort_by_key(|item| item.id);
-            Ok(grant.report())
+            let report = grant.report();
+            state.grants.insert(grant.id.to_string(), grant);
+            Ok(report)
         })
     }
 
@@ -282,17 +296,15 @@ impl McpAuthorizationStore {
         let state = self.load()?;
         Ok(state
             .grants
-            .iter()
+            .values()
             .filter(|grant| remote.is_none_or(|remote| &grant.remote_id == remote))
             .map(ConnectionGrant::report)
             .collect())
     }
 
     pub fn show_grant(&self, id: Ulid) -> Result<ConnectionGrantReport, McpStateError> {
-        self.load()?
-            .grants
-            .iter()
-            .find(|grant| grant.id == id)
+        self.grant(id)?
+            .as_ref()
             .map(ConnectionGrant::report)
             .ok_or(McpStateError::UnknownGrant(id))
     }
@@ -305,12 +317,7 @@ impl McpAuthorizationStore {
         audience: &str,
         now: u64,
     ) -> Result<ConnectionGrant, McpStateError> {
-        let state = self.load()?;
-        let grant = state
-            .grants
-            .into_iter()
-            .find(|grant| grant.id == id)
-            .ok_or(McpStateError::UnknownGrant(id))?;
+        let grant = self.grant(id)?.ok_or(McpStateError::UnknownGrant(id))?;
         if !grant.is_active_at(now) {
             return Err(McpStateError::InactiveGrant(id));
         }
@@ -332,18 +339,11 @@ impl McpAuthorizationStore {
         self.mutate(dry_run, |state| {
             let grant = state
                 .grants
-                .iter_mut()
-                .find(|grant| grant.id == id)
+                .get_mut(&id.to_string())
                 .ok_or(McpStateError::UnknownGrant(id))?;
             grant.revoked_at.get_or_insert(revoked_at);
             let report = grant.report();
-            for family in state
-                .token_families
-                .iter_mut()
-                .filter(|family| family.grant_id == id)
-            {
-                family.revoked_at.get_or_insert(revoked_at);
-            }
+            revoke_families(state, &BTreeSet::from([id]), revoked_at);
             Ok(report)
         })
     }
@@ -353,28 +353,7 @@ impl McpAuthorizationStore {
         id: Ulid,
         now: u64,
     ) -> Result<ConnectionGrantReport, McpStateError> {
-        let _lock = StateLock::acquire(&self.path)?;
-        let mut state = self.load()?;
-        let grant = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.id == id)
-            .ok_or(McpStateError::UnknownGrant(id))?;
-        if !grant.is_active_at(now) {
-            return Err(McpStateError::InactiveGrant(id));
-        }
-        let should_persist = grant
-            .last_used_at
-            .is_none_or(|last_used| now.saturating_sub(last_used) >= 60);
-        if should_persist {
-            grant.last_used_at = Some(now);
-            let report = grant.report();
-            validate_state(&state)?;
-            save_state(&self.path, &state)?;
-            Ok(report)
-        } else {
-            Ok(grant.report())
-        }
+        self.update_active_grant(id, now, |grant| Ok(touch_grant(grant, now)))
     }
 
     /// Persist a narrower effective permission boundary for an existing grant.
@@ -385,28 +364,21 @@ impl McpAuthorizationStore {
         current_permissions: &PermissionGrant,
         now: u64,
     ) -> Result<ConnectionGrantReport, McpStateError> {
-        let _lock = StateLock::acquire(&self.path)?;
-        let mut state = self.load()?;
-        let grant = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.id == id)
-            .ok_or(McpStateError::UnknownGrant(id))?;
-        if !grant.is_active_at(now) {
-            return Err(McpStateError::InactiveGrant(id));
-        }
-        if !current_permissions.is_subset_of(&grant.approved_permissions) {
-            return Err(McpStateError::GrantPermissionWidening(id));
-        }
-        if current_permissions == &grant.approved_permissions {
-            Ok(grant.report())
-        } else {
-            grant.approved_permissions = current_permissions.clone();
-            let report = grant.report();
-            validate_state(&state)?;
-            save_state(&self.path, &state)?;
-            Ok(report)
-        }
+        self.update_active_grant(id, now, |grant| attenuate_grant(grant, current_permissions))
+    }
+
+    /// Records one authenticated use of a grant: attenuates it to the current
+    /// permissions and refreshes its last use, writing only when either changed.
+    pub fn record_grant_use(
+        &self,
+        id: Ulid,
+        current_permissions: &PermissionGrant,
+        now: u64,
+    ) -> Result<ConnectionGrantReport, McpStateError> {
+        self.update_active_grant(id, now, |grant| {
+            let attenuated = attenuate_grant(grant, current_permissions)?;
+            Ok(touch_grant(grant, now) | attenuated)
+        })
     }
 
     pub fn revoke_remote_grants(
@@ -415,30 +387,7 @@ impl McpAuthorizationStore {
         revoked_at: u64,
         dry_run: bool,
     ) -> Result<Vec<ConnectionGrantReport>, McpStateError> {
-        self.mutate(dry_run, |state| {
-            let ids = state
-                .grants
-                .iter_mut()
-                .filter(|grant| &grant.remote_id == remote)
-                .map(|grant| {
-                    grant.revoked_at.get_or_insert(revoked_at);
-                    grant.id
-                })
-                .collect::<BTreeSet<_>>();
-            for family in state
-                .token_families
-                .iter_mut()
-                .filter(|family| ids.contains(&family.grant_id))
-            {
-                family.revoked_at.get_or_insert(revoked_at);
-            }
-            Ok(state
-                .grants
-                .iter()
-                .filter(|grant| ids.contains(&grant.id))
-                .map(ConnectionGrant::report)
-                .collect())
-        })
+        self.revoke_matching_grants(dry_run, revoked_at, |grant| &grant.remote_id == remote)
     }
 
     pub fn revoke_remote_wiki_grants(
@@ -448,29 +397,8 @@ impl McpAuthorizationStore {
         revoked_at: u64,
         dry_run: bool,
     ) -> Result<Vec<ConnectionGrantReport>, McpStateError> {
-        self.mutate(dry_run, |state| {
-            let ids = state
-                .grants
-                .iter_mut()
-                .filter(|grant| &grant.remote_id == remote && &grant.wiki_id == wiki)
-                .map(|grant| {
-                    grant.revoked_at.get_or_insert(revoked_at);
-                    grant.id
-                })
-                .collect::<BTreeSet<_>>();
-            for family in state
-                .token_families
-                .iter_mut()
-                .filter(|family| ids.contains(&family.grant_id))
-            {
-                family.revoked_at.get_or_insert(revoked_at);
-            }
-            Ok(state
-                .grants
-                .iter()
-                .filter(|grant| ids.contains(&grant.id))
-                .map(ConnectionGrant::report)
-                .collect())
+        self.revoke_matching_grants(dry_run, revoked_at, |grant| {
+            &grant.remote_id == remote && &grant.wiki_id == wiki
         })
     }
 
@@ -483,10 +411,10 @@ impl McpAuthorizationStore {
         let secret = generate_secret()?;
         let hash = token_hash(secret.expose());
         let issued = self.mutate(false, |state| {
+            prune_inactive(state, now);
             let grant = state
                 .grants
-                .iter()
-                .find(|grant| grant.id == grant_id)
+                .get(&grant_id.to_string())
                 .ok_or(McpStateError::UnknownGrant(grant_id))?;
             if !grant.is_active_at(now) {
                 return Err(McpStateError::InactiveGrant(grant_id));
@@ -512,8 +440,7 @@ impl McpAuthorizationStore {
                 used_refresh_token_hashes: Vec::new(),
             };
             let family_id = family.id;
-            state.token_families.push(family);
-            state.token_families.sort_by_key(|item| item.id);
+            state.token_families.insert(family_id.to_string(), family);
             Ok(family_id)
         })?;
         Ok(IssuedRefreshToken {
@@ -532,52 +459,51 @@ impl McpAuthorizationStore {
         let replacement = generate_secret()?;
         let replacement_hash = token_hash(replacement.expose());
         let candidate_hash = token_hash(candidate);
-        let outcome = self.mutate(false, |state| {
-            let family = state
-                .token_families
-                .iter_mut()
-                .find(|family| family.id == family_id)
-                .ok_or(McpStateError::UnknownTokenFamily(family_id))?;
-            if family.revoked_at.is_some() || now >= family.expires_at {
-                return Err(McpStateError::InactiveTokenFamily(family_id));
-            }
-            if family
-                .used_refresh_token_hashes
-                .iter()
-                .any(|hash| hashes_equal(hash, &candidate_hash))
-            {
-                family.revoked_at = Some(now);
-                return Ok(RotationOutcome::Replay);
-            }
-            if !hashes_equal(&family.current_refresh_token_hash, &candidate_hash) {
-                return Err(McpStateError::InvalidRefreshToken);
-            }
-            family.used_refresh_token_hashes.push(std::mem::replace(
-                &mut family.current_refresh_token_hash,
-                replacement_hash,
-            ));
-            if family.used_refresh_token_hashes.len() > MAX_USED_REFRESH_TOKENS {
-                family.used_refresh_token_hashes.remove(0);
-            }
-            family.rotation_count = family.rotation_count.saturating_add(1);
-            family.last_used_at = Some(now);
-            if let Some(grant) = state
-                .grants
-                .iter_mut()
-                .find(|grant| grant.id == family.grant_id)
-            {
-                grant.last_used_at = Some(now);
-            }
-            Ok(RotationOutcome::Rotated(family.expires_at))
-        })?;
-        match outcome {
-            RotationOutcome::Rotated(expires_at) => Ok(IssuedRefreshToken {
-                family_id,
-                secret: replacement,
-                expires_at,
-            }),
-            RotationOutcome::Replay => Err(McpStateError::RefreshTokenReplay(family_id)),
+        let _lock = StateLock::acquire(&self.path)?;
+        let mut store = self.open_writable()?;
+        let mut family =
+            read_family(&store, family_id)?.ok_or(McpStateError::UnknownTokenFamily(family_id))?;
+        if family.revoked_at.is_some() || now >= family.expires_at {
+            return Err(McpStateError::InactiveTokenFamily(family_id));
         }
+        if family
+            .used_refresh_token_hashes
+            .iter()
+            .any(|hash| hashes_equal(hash, &candidate_hash))
+        {
+            family.revoked_at = Some(now);
+            store.write(|writer| writer.put(TOKEN_FAMILIES, &family_id.to_string(), &family))?;
+            return Err(McpStateError::RefreshTokenReplay(family_id));
+        }
+        if !hashes_equal(&family.current_refresh_token_hash, &candidate_hash) {
+            return Err(McpStateError::InvalidRefreshToken);
+        }
+        family.used_refresh_token_hashes.push(std::mem::replace(
+            &mut family.current_refresh_token_hash,
+            replacement_hash,
+        ));
+        if family.used_refresh_token_hashes.len() > MAX_USED_REFRESH_TOKENS {
+            family.used_refresh_token_hashes.remove(0);
+        }
+        family.rotation_count = family.rotation_count.saturating_add(1);
+        family.last_used_at = Some(now);
+        let mut grant = read_grant(&store, family.grant_id)?;
+        if let Some(grant) = &mut grant {
+            grant.last_used_at = Some(now);
+        }
+        validate_family(&family, grant.as_ref())?;
+        store.write(|writer| {
+            writer.put(TOKEN_FAMILIES, &family_id.to_string(), &family)?;
+            if let Some(grant) = &grant {
+                writer.put(GRANTS, &grant.id.to_string(), grant)?;
+            }
+            Ok(())
+        })?;
+        Ok(IssuedRefreshToken {
+            family_id,
+            secret: replacement,
+            expires_at: family.expires_at,
+        })
     }
 
     pub fn list_token_families(
@@ -587,14 +513,81 @@ impl McpAuthorizationStore {
         Ok(self
             .load()?
             .token_families
-            .iter()
+            .values()
             .filter(|family| grant_id.is_none_or(|grant_id| family.grant_id == grant_id))
             .map(TokenFamily::report)
             .collect())
     }
 
+    fn revoke_matching_grants(
+        &self,
+        dry_run: bool,
+        revoked_at: u64,
+        matches: impl Fn(&ConnectionGrant) -> bool,
+    ) -> Result<Vec<ConnectionGrantReport>, McpStateError> {
+        self.mutate(dry_run, |state| {
+            let ids = state
+                .grants
+                .values()
+                .filter(|grant| matches(grant))
+                .map(|grant| grant.id)
+                .collect::<BTreeSet<_>>();
+            let mut reports = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let grant = state
+                    .grants
+                    .get_mut(&id.to_string())
+                    .expect("matched grant is present");
+                grant.revoked_at.get_or_insert(revoked_at);
+                reports.push(grant.report());
+            }
+            revoke_families(state, &ids, revoked_at);
+            Ok(reports)
+        })
+    }
+
+    /// Applies `apply` to one active grant, writing it only when `apply`
+    /// reports a change. The common unchanged case takes no lock and writes
+    /// nothing; a change is re-applied to a fresh read under the writer lock.
+    fn update_active_grant(
+        &self,
+        id: Ulid,
+        now: u64,
+        apply: impl Fn(&mut ConnectionGrant) -> Result<bool, McpStateError>,
+    ) -> Result<ConnectionGrantReport, McpStateError> {
+        let mut grant = active_grant(self.grant(id)?, id, now)?;
+        if !apply(&mut grant)? {
+            return Ok(grant.report());
+        }
+        let _lock = StateLock::acquire(&self.path)?;
+        let mut store = self.open_writable()?;
+        let mut grant = active_grant(read_grant(&store, id)?, id, now)?;
+        if apply(&mut grant)? {
+            validate_grant(&grant)?;
+            store.write(|writer| writer.put(GRANTS, &id.to_string(), &grant))?;
+        }
+        Ok(grant.report())
+    }
+
+    /// One grant, read without loading any other.
+    fn grant(&self, id: Ulid) -> Result<Option<ConnectionGrant>, McpStateError> {
+        match self.open_readable()? {
+            Some(store) => read_grant(&store, id),
+            None => Ok(self.load()?.grants.get(&id.to_string()).cloned()),
+        }
+    }
+
+    /// Everything, for management operations.
     fn load(&self) -> Result<AuthorizationState, McpStateError> {
-        load_state(&self.path)
+        let state = match self.open_readable()? {
+            Some(store) => AuthorizationState {
+                grants: store.load_map(GRANTS)?,
+                token_families: store.load_map(TOKEN_FAMILIES)?,
+            },
+            None => load_legacy_state(&self.legacy_path())?.unwrap_or_default(),
+        };
+        validate_state(&state)?;
+        Ok(state)
     }
 
     fn mutate<T>(
@@ -607,15 +600,172 @@ impl McpAuthorizationStore {
         let result = operation(&mut state)?;
         validate_state(&state)?;
         if !dry_run {
-            save_state(&self.path, &state)?;
+            let mut store = self.open_writable()?;
+            store.write(|writer| {
+                writer.write_dirty(GRANTS, &state.grants, |_| Vec::new(), "duplicate grant")?;
+                writer.write_dirty(
+                    TOKEN_FAMILIES,
+                    &state.token_families,
+                    |_| Vec::new(),
+                    "duplicate token family",
+                )
+            })?;
         }
         Ok(result)
     }
+
+    /// The initialized store, or `None` before the first write. Never creates
+    /// or migrates anything, so reads and dry runs leave no files behind.
+    fn open_readable(&self) -> Result<Option<KeyedStateStore>, McpStateError> {
+        if !check_private_file(&self.path)? {
+            return Ok(None);
+        }
+        Ok(KeyedStateStore::open_read_only(&self.path)?)
+    }
+
+    /// Opens the store for writing, importing the JSON state of earlier
+    /// versions once and keeping it as `mcp-authorizations.json.migrated`.
+    /// The caller holds the writer lock.
+    fn open_writable(&self) -> Result<KeyedStateStore, McpStateError> {
+        check_private_file(&self.path)?;
+        let mut store = KeyedStateStore::open(&self.path)?;
+        if store.is_initialized()? {
+            return Ok(store);
+        }
+        let legacy_path = self.legacy_path();
+        let legacy = load_legacy_state(&legacy_path)?;
+        store.write(|writer| {
+            if let Some(state) = &legacy {
+                writer.write_dirty(GRANTS, &state.grants, |_| Vec::new(), "duplicate grant")?;
+                writer.write_dirty(
+                    TOKEN_FAMILIES,
+                    &state.token_families,
+                    |_| Vec::new(),
+                    "duplicate token family",
+                )?;
+            }
+            writer.mark_initialized()
+        })?;
+        if legacy.is_some() {
+            fs::rename(&legacy_path, legacy_path.with_extension("json.migrated"))?;
+        }
+        Ok(store)
+    }
+
+    fn legacy_path(&self) -> PathBuf {
+        self.path.with_file_name(LEGACY_STATE_FILE)
+    }
 }
 
-enum RotationOutcome {
-    Rotated(u64),
-    Replay,
+fn read_grant(store: &KeyedStateStore, id: Ulid) -> Result<Option<ConnectionGrant>, McpStateError> {
+    let grant = store.entry::<ConnectionGrant>(GRANTS, &id.to_string())?;
+    if let Some(grant) = &grant {
+        if grant.id != id {
+            return Err(McpStateError::Invalid(
+                "connection grant is stored under another ID".to_string(),
+            ));
+        }
+        validate_grant(grant)?;
+    }
+    Ok(grant)
+}
+
+fn read_family(store: &KeyedStateStore, id: Ulid) -> Result<Option<TokenFamily>, McpStateError> {
+    let family = store.entry::<TokenFamily>(TOKEN_FAMILIES, &id.to_string())?;
+    if let Some(family) = &family {
+        if family.id != id {
+            return Err(McpStateError::Invalid(
+                "token family is stored under another ID".to_string(),
+            ));
+        }
+    }
+    Ok(family)
+}
+
+fn active_grant(
+    grant: Option<ConnectionGrant>,
+    id: Ulid,
+    now: u64,
+) -> Result<ConnectionGrant, McpStateError> {
+    let grant = grant.ok_or(McpStateError::UnknownGrant(id))?;
+    if !grant.is_active_at(now) {
+        return Err(McpStateError::InactiveGrant(id));
+    }
+    Ok(grant)
+}
+
+/// Narrows a grant to `current`, which may never widen it. Returns whether
+/// the grant changed.
+fn attenuate_grant(
+    grant: &mut ConnectionGrant,
+    current: &PermissionGrant,
+) -> Result<bool, McpStateError> {
+    if !current.is_subset_of(&grant.approved_permissions) {
+        return Err(McpStateError::GrantPermissionWidening(grant.id));
+    }
+    if current == &grant.approved_permissions {
+        return Ok(false);
+    }
+    grant.approved_permissions = current.clone();
+    Ok(true)
+}
+
+/// Records a use, at most once a minute so busy clients do not write on every
+/// request. Returns whether the grant changed.
+fn touch_grant(grant: &mut ConnectionGrant, now: u64) -> bool {
+    let stale = grant
+        .last_used_at
+        .is_none_or(|last_used| now.saturating_sub(last_used) >= GRANT_USE_RESOLUTION_SECONDS);
+    if stale {
+        grant.last_used_at = Some(now);
+    }
+    stale
+}
+
+fn revoke_families(state: &mut AuthorizationState, grant_ids: &BTreeSet<Ulid>, revoked_at: u64) {
+    let keys = state
+        .token_families
+        .iter()
+        .filter(|(_, family)| grant_ids.contains(&family.grant_id))
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    for key in keys {
+        if let Some(family) = state.token_families.get_mut(&key) {
+            family.revoked_at.get_or_insert(revoked_at);
+        }
+    }
+}
+
+/// Drops grants and token families that ended (expired or were revoked) more
+/// than [`INACTIVE_RETENTION_SECONDS`] before `now`, along with the families
+/// of dropped grants. They can never authorize again; keeping them only grew
+/// the state with every connection ever made.
+fn prune_inactive(state: &mut AuthorizationState, now: u64) {
+    let cutoff = now.saturating_sub(INACTIVE_RETENTION_SECONDS);
+    let ended = |revoked_at: Option<u64>, expires_at: u64| {
+        revoked_at.map_or(expires_at, |revoked_at| revoked_at.min(expires_at)) < cutoff
+    };
+    let grants = state
+        .grants
+        .iter()
+        .filter(|(_, grant)| ended(grant.revoked_at, grant.expires_at))
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    for key in grants {
+        state.grants.remove(&key);
+    }
+    let families = state
+        .token_families
+        .iter()
+        .filter(|(_, family)| {
+            ended(family.revoked_at, family.expires_at)
+                || !state.grants.contains_key(&family.grant_id.to_string())
+        })
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    for key in families {
+        state.token_families.remove(&key);
+    }
 }
 
 fn validate_create_grant(request: &CreateConnectionGrant) -> Result<(), McpStateError> {
@@ -634,75 +784,87 @@ fn validate_create_grant(request: &CreateConnectionGrant) -> Result<(), McpState
 }
 
 fn validate_state(state: &AuthorizationState) -> Result<(), McpStateError> {
-    if state.version != MCP_AUTHORIZATION_STATE_VERSION {
-        return Err(McpStateError::UnsupportedVersion(state.version));
-    }
     if state.grants.len() > MAX_GRANTS || state.token_families.len() > MAX_TOKEN_FAMILIES {
         return Err(McpStateError::Invalid(
             "remote MCP authorization state exceeds configured entry limits".to_string(),
         ));
     }
-    let mut grant_ids = BTreeSet::new();
-    for grant in &state.grants {
-        if grant.version != MCP_CONNECTION_GRANT_VERSION || !grant_ids.insert(grant.id) {
+    for (key, grant) in &state.grants {
+        if *key != grant.id.to_string() {
             return Err(McpStateError::Invalid(
-                "connection grants contain an unsupported version or duplicate ID".to_string(),
+                "connection grant is stored under another ID".to_string(),
             ));
         }
-        McpRemoteId::parse(grant.remote_id.as_str())
-            .map_err(|error| McpStateError::Invalid(error.to_string()))?;
-        WikiId::parse(grant.wiki_id.as_str())
-            .map_err(|error| McpStateError::Invalid(error.to_string()))?;
-        validate_create_grant(&CreateConnectionGrant {
-            remote_id: grant.remote_id.clone(),
-            remote_instance_id: grant.remote_instance_id,
-            client_id: grant.client_id.clone(),
-            subject: grant.subject.clone(),
-            wiki_id: grant.wiki_id.clone(),
-            permission_profile: grant.permission_profile.clone(),
-            approved_permissions: grant.approved_permissions.clone(),
-            tool_packs: grant.tool_packs.clone(),
-            scopes: grant.scopes.clone(),
-            audience: grant.audience.clone(),
-            created_at: grant.created_at,
-            expires_at: grant.expires_at,
-        })?;
+        validate_grant(grant)?;
     }
-    let mut family_ids = BTreeSet::new();
-    for family in &state.token_families {
-        let bound_grant = state
-            .grants
-            .iter()
-            .find(|grant| grant.id == family.grant_id);
-        if family.version != MCP_TOKEN_FAMILY_VERSION
-            || !family_ids.insert(family.id)
-            || !grant_ids.contains(&family.grant_id)
-            || bound_grant.is_none_or(|grant| {
-                family.client_id != grant.client_id || family.audience != grant.audience
-            })
-            || family.expires_at <= family.created_at
-            || family.current_refresh_token_hash.len() != 43
-            || family.used_refresh_token_hashes.len() > MAX_USED_REFRESH_TOKENS
-            || family
-                .used_refresh_token_hashes
-                .iter()
-                .any(|hash| hash.len() != 43)
-        {
+    for (key, family) in &state.token_families {
+        if *key != family.id.to_string() {
             return Err(McpStateError::Invalid(
-                "token families contain invalid versions, bindings, timestamps, or hashes"
-                    .to_string(),
+                "token family is stored under another ID".to_string(),
             ));
         }
+        validate_family(family, state.grants.get(&family.grant_id.to_string()))?;
     }
     Ok(())
 }
 
-fn load_state(path: &Path) -> Result<AuthorizationState, McpStateError> {
+fn validate_grant(grant: &ConnectionGrant) -> Result<(), McpStateError> {
+    if grant.version != MCP_CONNECTION_GRANT_VERSION {
+        return Err(McpStateError::Invalid(
+            "connection grants contain an unsupported version".to_string(),
+        ));
+    }
+    McpRemoteId::parse(grant.remote_id.as_str())
+        .map_err(|error| McpStateError::Invalid(error.to_string()))?;
+    WikiId::parse(grant.wiki_id.as_str())
+        .map_err(|error| McpStateError::Invalid(error.to_string()))?;
+    validate_create_grant(&CreateConnectionGrant {
+        remote_id: grant.remote_id.clone(),
+        remote_instance_id: grant.remote_instance_id,
+        client_id: grant.client_id.clone(),
+        subject: grant.subject.clone(),
+        wiki_id: grant.wiki_id.clone(),
+        permission_profile: grant.permission_profile.clone(),
+        approved_permissions: grant.approved_permissions.clone(),
+        tool_packs: grant.tool_packs.clone(),
+        scopes: grant.scopes.clone(),
+        audience: grant.audience.clone(),
+        created_at: grant.created_at,
+        expires_at: grant.expires_at,
+    })
+}
+
+fn validate_family(
+    family: &TokenFamily,
+    bound_grant: Option<&ConnectionGrant>,
+) -> Result<(), McpStateError> {
+    if family.version != MCP_TOKEN_FAMILY_VERSION
+        || bound_grant.is_none_or(|grant| {
+            grant.id != family.grant_id
+                || family.client_id != grant.client_id
+                || family.audience != grant.audience
+        })
+        || family.expires_at <= family.created_at
+        || family.current_refresh_token_hash.len() != 43
+        || family.used_refresh_token_hashes.len() > MAX_USED_REFRESH_TOKENS
+        || family
+            .used_refresh_token_hashes
+            .iter()
+            .any(|hash| hash.len() != 43)
+    {
+        return Err(McpStateError::Invalid(
+            "token families contain invalid versions, bindings, timestamps, or hashes".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a state file that is not a private regular file. Returns whether
+/// it exists.
+fn check_private_file(path: &Path) -> Result<bool, McpStateError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AuthorizationState::default());
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(McpStateError::Io(error)),
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -711,34 +873,55 @@ fn load_state(path: &Path) -> Result<AuthorizationState, McpStateError> {
             path.display()
         )));
     }
-    if metadata.len() > MAX_STATE_BYTES {
-        return Err(McpStateError::Invalid(format!(
-            "remote MCP authorization state exceeds {MAX_STATE_BYTES} bytes"
-        )));
-    }
     validate_owner_only(&metadata, path)?;
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
-    let state = migrate_state(value)?;
-    validate_state(&state)?;
-    Ok(state)
+    Ok(true)
 }
 
-fn migrate_state(value: serde_json::Value) -> Result<AuthorizationState, McpStateError> {
+/// Reads the JSON state written before the `SQLite` store, if it is present.
+fn load_legacy_state(path: &Path) -> Result<Option<AuthorizationState>, McpStateError> {
+    if !check_private_file(path)? {
+        return Ok(None);
+    }
+    let Some(bytes) = vulcan_core::durable::read_bounded(path, MAX_LEGACY_STATE_BYTES)? else {
+        return Ok(None);
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| McpStateError::Invalid("authorization state has no version".to_string()))?;
-    match version {
-        1 => serde_json::from_value(value).map_err(McpStateError::Json),
-        version => Err(McpStateError::UnsupportedVersion(
+    if version != u64::from(MCP_AUTHORIZATION_STATE_VERSION) {
+        return Err(McpStateError::UnsupportedVersion(
             u32::try_from(version).unwrap_or(u32::MAX),
-        )),
+        ));
     }
-}
-
-fn save_state(path: &Path, state: &AuthorizationState) -> Result<(), McpStateError> {
-    vulcan_core::durable::replace_json(path, state, vulcan_core::durable::Durability::Full)?;
-    Ok(())
+    let legacy: LegacyAuthorizationState = serde_json::from_value(value)?;
+    let mut grant_ids = BTreeSet::new();
+    let mut family_ids = BTreeSet::new();
+    if !legacy.grants.iter().all(|grant| grant_ids.insert(grant.id))
+        || !legacy
+            .token_families
+            .iter()
+            .all(|family| family_ids.insert(family.id))
+    {
+        return Err(McpStateError::Invalid(
+            "remote MCP authorization state contains duplicate IDs".to_string(),
+        ));
+    }
+    let state = AuthorizationState {
+        grants: legacy
+            .grants
+            .into_iter()
+            .map(|grant| (grant.id.to_string(), grant))
+            .collect(),
+        token_families: legacy
+            .token_families
+            .into_iter()
+            .map(|family| (family.id.to_string(), family))
+            .collect(),
+    };
+    validate_state(&state)?;
+    Ok(Some(state))
 }
 
 struct StateLock {
@@ -879,6 +1062,7 @@ pub enum McpStateError {
     Random(String),
     Io(std::io::Error),
     Json(serde_json::Error),
+    Store(String),
 }
 
 impl Display for McpStateError {
@@ -910,7 +1094,9 @@ impl Display for McpStateError {
                     "unsupported authorization-state version {version}"
                 )
             }
-            Self::Invalid(detail) | Self::Random(detail) => formatter.write_str(detail),
+            Self::Invalid(detail) | Self::Random(detail) | Self::Store(detail) => {
+                formatter.write_str(detail)
+            }
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Json(error) => Display::fmt(error, formatter),
         }
@@ -922,6 +1108,12 @@ impl Error for McpStateError {}
 impl From<std::io::Error> for McpStateError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<vulcan_app::AppError> for McpStateError {
+    fn from(error: vulcan_app::AppError) -> Self {
+        Self::Store(error.to_string())
     }
 }
 
@@ -1006,8 +1198,10 @@ mod tests {
             Err(McpStateError::GrantBindingMismatch(_))
         ));
 
-        let json = fs::read_to_string(store.path()).expect("state file");
-        assert!(!json.contains("refresh_token"));
+        let stored = fs::read(store.path()).expect("state file");
+        assert!(!stored
+            .windows(b"refresh_token".len())
+            .any(|window| window == b"refresh_token"));
         let reloaded = McpAuthorizationStore::at(temporary.path());
         assert_eq!(reloaded.show_grant(report.id).expect("reloaded"), report);
     }
@@ -1221,6 +1415,185 @@ mod tests {
             .expect("personal")
             .revoked_at
             .is_none());
+    }
+
+    fn write_private(path: &Path, contents: &[u8]) {
+        fs::create_dir_all(path.parent().expect("parent")).expect("state directory");
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        std::io::Write::write_all(&mut options.open(path).expect("create"), contents)
+            .expect("write");
+    }
+
+    #[test]
+    fn json_state_is_readable_before_and_migrated_once_by_a_write() {
+        let source = tempdir().expect("source");
+        let original = McpAuthorizationStore::at(source.path());
+        let grant = original
+            .create_grant(
+                grant_request("personal", "client", "https://id.test/alice"),
+                false,
+            )
+            .expect("grant");
+        let refresh = original
+            .issue_refresh_token(grant.id, 9_000, 1_001)
+            .expect("refresh");
+        let state = original.load().expect("state");
+        let legacy = serde_json::json!({
+            "version": MCP_AUTHORIZATION_STATE_VERSION,
+            "grants": state.grants.values().collect::<Vec<_>>(),
+            "token_families": state.token_families.values().collect::<Vec<_>>(),
+        });
+
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let legacy_path = store.legacy_path();
+        write_private(&legacy_path, &serde_json::to_vec(&legacy).expect("json"));
+
+        // Reads and dry runs use the JSON state without creating the store.
+        assert_eq!(store.show_grant(grant.id).expect("legacy grant"), grant);
+        assert!(store
+            .resolve_active_grant(
+                grant.id,
+                grant.remote_instance_id,
+                &grant.client_id,
+                &grant.audience,
+                2_000,
+            )
+            .is_ok());
+        store
+            .revoke_grant(grant.id, 2_000, true)
+            .expect("dry-run revoke");
+        assert!(!store.path().exists());
+        assert!(legacy_path.is_file());
+
+        // The first write imports everything and keeps the JSON as a backup.
+        let rotated = store
+            .rotate_refresh_token(refresh.family_id, refresh.secret.expose(), 2_000)
+            .expect("rotate migrated family");
+        assert!(store.path().is_file());
+        assert!(!legacy_path.exists());
+        assert!(legacy_path.with_extension("json.migrated").is_file());
+        assert_eq!(store.list_grants(None).expect("grants").len(), 1);
+        assert_eq!(
+            store.show_grant(grant.id).expect("grant").last_used_at,
+            Some(2_000)
+        );
+        let reopened = McpAuthorizationStore::at(temporary.path());
+        assert!(reopened
+            .rotate_refresh_token(refresh.family_id, rotated.secret.expose(), 2_001)
+            .is_ok());
+    }
+
+    #[test]
+    fn ended_grants_and_families_are_pruned_after_the_retention_window() {
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let expired = store
+            .create_grant(
+                grant_request("personal", "client-a", "https://id.test/a"),
+                false,
+            )
+            .expect("expired grant");
+        store
+            .issue_refresh_token(expired.id, 9_000, 1_001)
+            .expect("expired family");
+        let mut revocable = grant_request("personal", "client-b", "https://id.test/b");
+        revocable.expires_at = 10 * INACTIVE_RETENTION_SECONDS;
+        let revoked = store.create_grant(revocable, false).expect("revoked grant");
+        let mut long_lived = grant_request("personal", "client-c", "https://id.test/c");
+        long_lived.expires_at = 10 * INACTIVE_RETENTION_SECONDS;
+        let active = store.create_grant(long_lived, false).expect("active grant");
+        let old_family = store
+            .issue_refresh_token(active.id, 9_000, 1_001)
+            .expect("old family");
+        let later = 10_000 + INACTIVE_RETENTION_SECONDS;
+        store
+            .revoke_grant(revoked.id, later - 1, false)
+            .expect("recent revocation");
+
+        // Within the window everything is still listed.
+        let mut next = grant_request("personal", "client-d", "https://id.test/d");
+        next.created_at = later - 1;
+        next.expires_at = later + 1_000;
+        store
+            .create_grant(next, false)
+            .expect("grant inside window");
+        assert_eq!(store.list_grants(None).expect("grants").len(), 4);
+
+        let mut next = grant_request("personal", "client-e", "https://id.test/e");
+        next.created_at = later + 1;
+        next.expires_at = later + 1_000;
+        store.create_grant(next, false).expect("grant after window");
+        let remaining = store
+            .list_grants(None)
+            .expect("grants")
+            .into_iter()
+            .map(|grant| grant.id)
+            .collect::<BTreeSet<_>>();
+        assert!(!remaining.contains(&expired.id));
+        assert!(remaining.contains(&revoked.id));
+        assert!(remaining.contains(&active.id));
+        assert!(store
+            .list_token_families(Some(expired.id))
+            .expect("families")
+            .is_empty());
+        assert!(store
+            .list_token_families(Some(active.id))
+            .expect("families")
+            .iter()
+            .all(|family| family.id != old_family.family_id));
+    }
+
+    #[test]
+    fn grant_use_attenuates_and_records_at_most_once_a_minute() {
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let grant = store
+            .create_grant(
+                grant_request("personal", "client", "https://id.test/a"),
+                false,
+            )
+            .expect("grant");
+        let original = permission_grant();
+        let first = store
+            .record_grant_use(grant.id, &original, 1_500)
+            .expect("first use");
+        assert_eq!(first.last_used_at, Some(1_500));
+        let quick = store
+            .record_grant_use(grant.id, &original, 1_530)
+            .expect("quick use");
+        assert_eq!(quick.last_used_at, Some(1_500));
+
+        let mut narrowed = original.clone();
+        narrowed.read = PathPermission::default();
+        let attenuated = store
+            .record_grant_use(grant.id, &narrowed, 1_540)
+            .expect("attenuating use");
+        assert_eq!(attenuated.approved_permissions, narrowed);
+        let stored = store.show_grant(grant.id).expect("stored");
+        assert_eq!(stored.approved_permissions, narrowed);
+        assert_eq!(stored.last_used_at, Some(1_500));
+        assert!(matches!(
+            store.record_grant_use(grant.id, &original, 1_600),
+            Err(McpStateError::GrantPermissionWidening(_))
+        ));
+        assert_eq!(
+            store
+                .record_grant_use(grant.id, &narrowed, 1_600)
+                .expect("later use")
+                .last_used_at,
+            Some(1_600)
+        );
+        assert!(matches!(
+            store.record_grant_use(grant.id, &narrowed, 10_000),
+            Err(McpStateError::InactiveGrant(_))
+        ));
     }
 
     #[cfg(unix)]

@@ -19,6 +19,13 @@
   `prefer_local` merge-policy resolution can also be used in a shared `sync.merge_policy` for other
   per-device state; `sync.merge_automation = "require_review"` still turns it into review.
 
+- Remote MCP connection grants and refresh-token families moved from
+  `daemon/mcp-authorizations.json`, which every authenticated request parsed in full up to three
+  times, to an owner-only SQLite store (`daemon/mcp-authorizations.sqlite`). A request now reads
+  only its own grant and writes at most once a minute. Approvals that expired or were revoked more
+  than 30 days ago are dropped instead of accumulating until the entry limit blocked new
+  connections. The JSON state is imported on the first write and kept as
+  `mcp-authorizations.json.migrated`.
 - The daemon job ledger moved from `jobs.json`, rewritten whole on every job change, to a SQLite
   store with one row per job (`daemon/jobs.sqlite`); running-job progress is no longer written to
   disk at all, and `daemon status` reads it from the running daemon. The JSON ledger is imported
