@@ -205,7 +205,10 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    may already be present in the projected tree while the record lists only paths still requiring
    review. Later successful synchronization or a
    replacement conflict marks an older attempt as superseded immutable history only when the
-   replacement covers every unfinished path; independent pending groups stay active. An unavailable conflict count makes the inspection incomplete instead of
+   replacement covers every unfinished path; independent pending groups stay active. A sync also
+   supersedes an older attempt automatically once every unfinished group changed again on the
+   accepted live frontier, because no resolution could complete it any more; a conflict with even
+   one still-resolvable group stays active. An unavailable conflict count makes the inspection incomplete instead of
    implying zero.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.

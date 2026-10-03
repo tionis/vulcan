@@ -15,7 +15,7 @@ use vulcan_sync::{
     GitAutomaticMergeValidation, GitCaptureRequest, GitConflictClassification, GitConflictScope,
     GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest,
     GitOid, GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict,
-    GitSyncOptions, GitSyncRefs, SyncCancellationToken,
+    GitSyncOptions, GitSyncRefs, GitTreeEntry, SyncCancellationToken,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 4;
@@ -2055,6 +2055,20 @@ fn selected_side_paths(
         .collect())
 }
 
+/// Leaf tree entries of `revision` keyed by path, without loading contents.
+fn tree_entries_by_path(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    revision: &GitOid,
+) -> Result<BTreeMap<String, GitTreeEntry>, AppError> {
+    Ok(engine
+        .tree_entries(repository, revision)
+        .map_err(AppError::operation)?
+        .into_iter()
+        .map(|entry| (entry.path.clone(), entry))
+        .collect())
+}
+
 fn ensure_group_frontier_unchanged(
     engine: &dyn GitEngine,
     repository: &GitRepository,
@@ -2892,19 +2906,97 @@ impl SyncConflictStore {
             {
                 continue;
             }
-            let supersession = SyncConflictSupersessionRecord {
-                version: SYNC_CONFLICT_SUPERSESSION_VERSION,
-                conflict_id: record.id.clone(),
-                current_revision: current_revision.to_string(),
-                replacement_conflict_id: current_conflict_id.map(str::to_string),
-            };
-            let path = self
-                .conflict_directory(repository_key, &record.id)?
-                .join("supersession.json");
-            write_json_replace(&path, &supersession)?;
+            self.write_supersession(
+                repository_key,
+                &record.id,
+                current_revision,
+                current_conflict_id,
+            )?;
             superseded += 1;
         }
         Ok(superseded)
+    }
+
+    /// Supersedes unresolved conflicts that no resolution can complete any more:
+    /// every unfinished group has a path whose tree entry on the accepted
+    /// `frontier` differs from the conflict's recorded live input. Such groups
+    /// were overtaken by later accepted edits, so side, file, and editor
+    /// resolution all refuse them, and without this the record would stay
+    /// actionable forever. A record with even one group still resolvable on the
+    /// frontier remains actionable. The immutable evidence and preserved refs
+    /// are kept; only supersession metadata is written.
+    pub fn supersede_stale_unresolved(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        repository_key: &str,
+        frontier: &GitOid,
+    ) -> Result<usize, AppError> {
+        validate_hex_id("repository key", repository_key)?;
+        let mut frontier_entries: Option<BTreeMap<String, GitTreeEntry>> = None;
+        let mut superseded = 0;
+        for record in self.list(repository_key)? {
+            let progress = self.group_progress(repository_key, &record)?;
+            if self.resolution_state_with_progress(repository_key, &record.id, &progress)?
+                != SyncConflictResolutionState::Unresolved
+            {
+                continue;
+            }
+            let unfinished = progress
+                .groups
+                .iter()
+                .filter(|group| {
+                    matches!(
+                        group.state,
+                        SyncConflictGroupState::Pending | SyncConflictGroupState::NeedsRebase
+                    )
+                })
+                .collect::<Vec<_>>();
+            // Without complete group evidence a hidden group might still be live.
+            if unfinished.is_empty() || !progress.groups_complete {
+                continue;
+            }
+            let original =
+                GitOid::parse(conflict_live_input(&record)?).map_err(AppError::operation)?;
+            if original == *frontier {
+                continue;
+            }
+            let frontier_entries = match &mut frontier_entries {
+                Some(entries) => entries,
+                slot => slot.insert(tree_entries_by_path(engine, repository, frontier)?),
+            };
+            let original_entries = tree_entries_by_path(engine, repository, &original)?;
+            let all_stale = unfinished.iter().all(|group| {
+                group.paths.iter().any(|path| {
+                    original_entries.get(path.as_str()) != frontier_entries.get(path.as_str())
+                })
+            });
+            if !all_stale {
+                continue;
+            }
+            self.write_supersession(repository_key, &record.id, frontier.as_str(), None)?;
+            superseded += 1;
+        }
+        Ok(superseded)
+    }
+
+    fn write_supersession(
+        &self,
+        repository_key: &str,
+        conflict_id: &str,
+        current_revision: &str,
+        replacement_conflict_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let supersession = SyncConflictSupersessionRecord {
+            version: SYNC_CONFLICT_SUPERSESSION_VERSION,
+            conflict_id: conflict_id.to_string(),
+            current_revision: current_revision.to_string(),
+            replacement_conflict_id: replacement_conflict_id.map(str::to_string),
+        };
+        let path = self
+            .conflict_directory(repository_key, conflict_id)?
+            .join("supersession.json");
+        write_json_replace(&path, &supersession)
     }
 
     fn get_supersession(
