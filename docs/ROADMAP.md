@@ -6245,9 +6245,9 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 #### 12.15.5 Explicitly deferred integrations
 
 - [x] Define trust, ownership, lifecycle, key inventory, and accepted-history contracts in `docs/specs/key-management.md`. Never infer trust from a key-derived ref name, public-key comment, commit author, forge badge, or self-asserted principal.
-- [ ] Add SSH Git authentication only through an explicit transport adapter, dedicated key, and remote authorization. Do not silently replace the user's Git SSH identity or upload keys to a forge; authentication and signing remain independently authorized.
+- [x] Add SSH Git authentication only through an explicit transport adapter, dedicated key, and remote authorization (delivered by 12.21 and 12.22). Do not silently replace the user's Git SSH identity or upload keys to a forge; authentication and signing remain independently authorized.
 - [ ] Add domain-separated signed device attestations over exact snapshot/ref/profile/protocol inputs without changing deterministic internal sync commit IDs or making local capture depend on signing availability. Treat human/semantic Git commit signing as a separate opt-in integration.
-- [ ] Before requiring device-key-backed access, ship replacement and retirement with independent re-enrollment: capture current bytes, retain old public identity/recovery heads, initialize a new key without requiring the lost private key, and list known bindings for authorized revocation/re-enrollment. Replacement produces a different device ID and never transfers authority implicitly.
+- [x] Before requiring device-key-backed access, ship replacement and retirement with independent re-enrollment (delivered as `device replace` and `devices revoke`, 12.22.5): capture current bytes, retain old public identity/recovery heads, initialize a new key without requiring the lost private key, and list known bindings for authorized revocation/re-enrollment. Replacement produces a different device ID and never transfers authority implicitly.
 - [ ] Review and update `sync-workflow`, `diagnostics-and-repair`, configuration guidance, generated CLI/schema snapshots, and installed managed-skill tests when executable identity commands or sync behavior ship. Roadmap-only design does not change the current ULID-based skill instructions.
 
 ### 12.16 Device key custody and secret-store foundation
@@ -6545,6 +6545,15 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 #### 12.22.5 Lifecycle
 
 - [x] `vulcan device replace` stages a new key, authorizes and proves it in every vault bound to the old key, then activates it (atomic renames, old identity archived under `device-retired/`, recovery backups kept) and rebinds each vault; `--activate-anyway`, `--revoke-old` (never in a vault where the new key is unproven), and `--dry-run`. `vulcan devices revoke <id>` tombstones the registration and removes only that device's Vulcan-marked deploy key in every registered Git vault, with independent per-vault results. Tracked with 12.15.5.
+
+#### 12.22.6 Deferred follow-ons
+
+- [ ] Auto-adopt a remote's published forge settings (`trust_shared_settings`), after a trust and consent design. Today they are a proposal that needs `sync forge init --adopt`.
+- [ ] Cryptographic registry: signed administrator decisions replacing trust-the-list, enabling a deploy-key-management CI job. Registration records and the adapter trait stay unchanged.
+- [ ] Registration signing (needs a typed signing operation on the device key; does not close the trust gap alone).
+- [ ] Forge adapters beyond Forgejo (GitHub, GitLab, plain `authorized_keys`), surfacing the one-deploy-key-per-repository limit.
+- [ ] Optional `sync transport bind --all-wikis`.
+- [ ] Verify `device replace` and `devices revoke` against a real forge (currently fakes only).
 
 ---
 

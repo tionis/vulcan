@@ -168,14 +168,34 @@ retires the lost one.
 - The device-level file holds no secret. A forge entry only names where to send a credential the user
   already holds; the same-host rule between the Git remote and the forge URL still applies.
 - One unencrypted key authorizes every enrolled repository. That blast radius is why `device replace`
-  and `revoke --everywhere` follow this slice.
+  and `devices revoke` exist (see "Lifecycle").
 
 ## Non-goals
 
 - Rewriting HTTPS remotes to SSH, or managing a user's own SSH keys.
 - Enrolling vaults on forges without an adapter, or on forges that forbid shared deploy keys.
-- Automatically adopting a remote's published settings (deferred).
+- Automatically adopting a remote's published settings (deferred, see below).
 - Interactive prompts of any kind.
+
+## Deferred
+
+Each of these is intentionally not built; none blocks the implemented flows.
+
+- **Auto-adopting shared forge settings** (`trust_shared_settings`). A remote's published,
+  non-secret forge descriptor is only a proposal today and needs `sync forge init --adopt`. Auto-adoption
+  needs a trust and consent design first, because anyone who can push can change the descriptor.
+- **Signed roster / cryptographic registry.** The registration list is trusted as written by anyone who
+  can push. Signed administrator decisions (and a deploy-key-management CI job on top) would replace
+  that without changing registration records or the adapter trait.
+- **Registration signing.** A device signing its own record needs a typed signing operation on the
+  device key and does not close the trust gap alone.
+- **Forge kinds beyond Forgejo.** GitHub, GitLab and plain `authorized_keys` implement the same adapter
+  trait later. GitHub forbids one deploy key on several repositories, so that adapter must surface the
+  conflict (those hosts use `ambient` meanwhile).
+- **`sync transport bind --all-wikis`.** `vault enroll --all-wikis` covers the common case; a bare
+  bind-all convenience is optional.
+- **Live-forge verification of `device replace` and `devices revoke`.** Covered by app-level tests with
+  fakes and a CLI test with no vaults; not yet exercised against a real forge.
 
 ## Tests
 
