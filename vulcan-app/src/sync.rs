@@ -1191,18 +1191,32 @@ pub fn sync_git_vault_with_profile(
     options: &GitSyncOptions,
     profile: SyncContentProfile,
 ) -> Result<VaultSyncReport, AppError> {
-    let state_store = SyncStateStore::user_default()?;
+    sync_git_vault_with_profile_and_state_store(
+        paths,
+        options,
+        profile,
+        &SyncStateStore::user_default()?,
+    )
+}
+
+/// Runs one profile-aware direct cycle against an explicit state store.
+pub fn sync_git_vault_with_profile_and_state_store(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    profile: SyncContentProfile,
+    state_store: &SyncStateStore,
+) -> Result<VaultSyncReport, AppError> {
     let mut observer = vulcan_sync::IgnoreGitSyncProgress;
     sync_git_vault_with_profile_and_observer_and_engine(
         &crate::sync_transport::apply_transport_with_state(
             vulcan_sync::GitCliEngine::default(),
             paths,
-            &state_store,
+            state_store,
         )
         .with_command_timeout(options.command_timeout),
         paths,
         options,
-        &state_store,
+        state_store,
         &SyncCancellationToken::default(),
         &mut observer,
         profile,
@@ -5005,20 +5019,22 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         );
         let reader_paths = VaultPaths::new(&reader);
         assert!(!reader_paths.cache_db().exists());
-        sync_git_vault_with_profile(
+        sync_git_vault_with_profile_and_state_store(
             &reader_paths,
             &GitSyncOptions::default(),
             SyncContentProfile::FilesOnly,
+            &state_store,
         )
         .expect("establish reader sync baseline");
 
         fs::write(writer.join("Remote.md"), "remote note\n").expect("remote note");
         sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
             .expect("writer push");
-        let report = sync_git_vault_with_profile(
+        let report = sync_git_vault_with_profile_and_state_store(
             &reader_paths,
             &GitSyncOptions::default(),
             SyncContentProfile::FilesOnly,
+            &state_store,
         )
         .expect("files-only reader sync");
 
@@ -5107,10 +5123,11 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         )
         .expect("writer push");
 
-        let report = sync_git_vault_with_profile(
+        let report = sync_git_vault_with_profile_and_state_store(
             &VaultPaths::new(&fixture.reader),
             &GitSyncOptions::default(),
             SyncContentProfile::FilesOnly,
+            &fixture.store,
         )
         .expect("files-only synchronization");
 
