@@ -177,25 +177,28 @@ retires the lost one.
 - Automatically adopting a remote's published settings (deferred, see below).
 - Interactive prompts of any kind.
 
-## Deferred
+## Deferred and decided
 
-Each of these is intentionally not built; none blocks the implemented flows.
+Each of these is intentionally not built; none blocks the implemented flows. The roadmap entry is 12.22.6.
 
-- **Auto-adopting shared forge settings** (`trust_shared_settings`). A remote's published,
-  non-secret forge descriptor is only a proposal today and needs `sync forge init --adopt`. Auto-adoption
-  needs a trust and consent design first, because anyone who can push can change the descriptor.
-- **Signed roster / cryptographic registry.** The registration list is trusted as written by anyone who
-  can push. Signed administrator decisions (and a deploy-key-management CI job on top) would replace
-  that without changing registration records or the adapter trait.
-- **Registration signing.** A device signing its own record needs a typed signing operation on the
-  device key and does not close the trust gap alone.
-- **Forge kinds beyond Forgejo.** GitHub, GitLab and plain `authorized_keys` implement the same adapter
-  trait later. GitHub forbids one deploy key on several repositories, so that adapter must surface the
-  conflict (those hosts use `ambient` meanwhile).
-- **`sync transport bind --all-wikis`.** `vault enroll --all-wikis` covers the common case; a bare
-  bind-all convenience is optional.
-- **Live-forge verification of `device replace` and `devices revoke`.** Covered by app-level tests with
-  fakes and a CLI test with no vaults; not yet exercised against a real forge.
+- **Auto-adopting shared forge settings** (`trust_shared_settings`): not planned. A remote's published,
+  non-secret forge descriptor stays a proposal that needs `sync forge init --adopt`. The reason is that
+  the descriptor tells the device where to send a user-wide forge login: adopting a hostile descriptor
+  would let anyone who can push to a vault point the OAuth flow at an attacker-chosen client, whose token
+  then reaches beyond the vault. Revisit only together with the signed registry, and never for
+  `oauth_client_id` without explicit consent.
+- **Cryptographic registry (signed roster).** The registration list is trusted as written by anyone who
+  can push. Device-signed records now prove key possession; administrator-signed decisions (and a
+  deploy-key-management CI job on top) would replace the trust-the-list step without changing the
+  registration records or the adapter trait.
+- **Forge adapters.** GitHub is not supported (one deploy key per repository; a future route would be
+  per-vault keys published and signed by the device key). GitLab is a candidate adapter. Hosts without
+  an adapter use `ambient`.
+- **Live-forge verification of `device replace` and `devices revoke`**: accepted as test-covered only
+  (app-level tests with fakes and CLI tests); not exercised against a real forge.
+
+Delivered from the earlier deferred list: `sync transport bind --all-wikis` (probe-guarded, per-vault
+results) and device-signed registration records.
 
 ## Tests
 

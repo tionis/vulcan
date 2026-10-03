@@ -98,6 +98,7 @@ pub mod sync_semantic;
 pub mod sync_semantic_auto;
 pub mod sync_state;
 pub mod sync_transport;
+pub mod sync_transport_all;
 pub mod tasks;
 pub mod templates;
 pub mod textbundle;

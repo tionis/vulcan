@@ -9182,6 +9182,20 @@
                     ]
                   },
                   {
+                    "help": "Bind every registered Git vault whose remote accepts the device key; each vault has its own result",
+                    "id": "all_wikis",
+                    "long": "all-wikis",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ALL_WIKIS"
+                    ]
+                  },
+                  {
                     "help": "Git remote that sync uses",
                     "id": "remote",
                     "long": "remote",

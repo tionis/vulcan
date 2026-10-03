@@ -172,6 +172,21 @@ impl DeviceIdentityStore {
         Ok(validated.manifest.public_key)
     }
 
+    /// Signs `message` with the device key as an armored SSH signature in the
+    /// given `namespace`, which separates uses so a signature made for one
+    /// purpose is never valid for another. Only the signature leaves this
+    /// function; the key is read, used, and dropped.
+    pub fn sign(&self, namespace: &str, message: &[u8]) -> Result<String, AppError> {
+        let identity = self.load_manifest()?;
+        let private = self.load_private_key(&identity)?;
+        let signature = private
+            .sign(namespace, ssh_key::HashAlg::Sha512, message)
+            .map_err(|_| AppError::operation("could not sign with the device key"))?;
+        signature
+            .to_pem(LineEnding::LF)
+            .map_err(|_| AppError::operation("could not encode the device signature"))
+    }
+
     /// Restrict an existing identity directory and its known files to the current user.
     ///
     /// This only tightens access: it refuses symlinks/reparse points and objects owned by
@@ -555,6 +570,12 @@ impl DeviceIdentityStore {
     }
 
     fn private_key_matches(&self, identity: &ValidatedPublicIdentity) -> Result<(), AppError> {
+        self.load_private_key(identity).map(|_| ())
+    }
+
+    /// Reads the `file_v1` private key and checks it is the manifest's key.
+    /// The key lives only as long as the returned value.
+    fn load_private_key(&self, identity: &ValidatedPublicIdentity) -> Result<PrivateKey, AppError> {
         let path = self.directory.join(PRIVATE_KEY_FILE);
         let file = open_regular_file(&path)?;
         let metadata = file.metadata().map_err(AppError::operation)?;
@@ -592,7 +613,7 @@ impl DeviceIdentityStore {
                 "device private key does not match the public identity",
             ));
         }
-        Ok(())
+        Ok(private)
     }
 
     fn verify_keypair_files(&self, identity: &ValidatedPublicIdentity) -> Result<(), AppError> {
@@ -1544,6 +1565,23 @@ mod tests {
         assert!(store.activate_staged().is_err());
     }
 }
+/// Verifies an armored SSH signature over `message` against `public_key`
+/// (canonical `ssh-ed25519 <base64>` text) in `namespace`.
+pub fn verify_signature(
+    public_key: &str,
+    namespace: &str,
+    message: &[u8],
+    signature: &str,
+) -> Result<(), AppError> {
+    let public = PublicKey::from_openssh(public_key)
+        .map_err(|_| AppError::operation("the public key is invalid"))?;
+    let signature = ssh_key::SshSig::from_pem(signature)
+        .map_err(|_| AppError::operation("the signature is malformed"))?;
+    public
+        .verify(namespace, message, &signature)
+        .map_err(|_| AppError::operation("the signature does not verify"))
+}
+
 /// A replacement identity staged beside the active one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StagedReplacementReport {

@@ -4087,6 +4087,12 @@ pub enum SyncTransportCommand {
     Bind {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
         wiki: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "wiki",
+            help = "Bind every registered Git vault whose remote accepts the device key; each vault has its own result"
+        )]
+        all_wikis: bool,
         #[arg(long, default_value = "origin", help = "Git remote that sync uses")]
         remote: String,
         #[arg(

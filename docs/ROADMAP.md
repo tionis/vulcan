@@ -6555,14 +6555,14 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 - [x] `vulcan device replace` stages a new key, authorizes and proves it in every vault bound to the old key, then activates it (atomic renames, old identity archived under `device-retired/`, recovery backups kept) and rebinds each vault; `--activate-anyway`, `--revoke-old` (never in a vault where the new key is unproven), and `--dry-run`. `vulcan devices revoke <id>` tombstones the registration and removes only that device's Vulcan-marked deploy key in every registered Git vault, with independent per-vault results. Tracked with 12.15.5.
 
-#### 12.22.6 Deferred follow-ons
+#### 12.22.6 Follow-ons: delivered and deferred
 
-- [ ] Auto-adopt a remote's published forge settings (`trust_shared_settings`), after a trust and consent design. Today they are a proposal that needs `sync forge init --adopt`.
-- [ ] Cryptographic registry: signed administrator decisions replacing trust-the-list, enabling a deploy-key-management CI job. Registration records and the adapter trait stay unchanged.
-- [ ] Registration signing (needs a typed signing operation on the device key; does not close the trust gap alone).
-- [ ] Forge adapters beyond Forgejo (GitHub, GitLab, plain `authorized_keys`), surfacing the one-deploy-key-per-repository limit.
-- [ ] Optional `sync transport bind --all-wikis`.
-- [ ] Verify `device replace` and `devices revoke` against a real forge (currently fakes only).
+- [x] `sync transport bind --all-wikis`: binds each registered Git vault whose remote accepts the device key (probe first, so a bulk run never switches a vault to a refused key), with independent per-vault results, `--dry-run`, and skips for ambient policy, non-SSH remotes, and permission-blocked vaults.
+- [x] Registration signing: every record a device writes is signed with its own key (SSHSIG, namespace `device-registration-v1@vulcan`) and verified on read; placeholders and revocations stay unsigned administrator records; an older unsigned record is signed once on the device's next sync. Listings show `signed`. This is the foundation for the registry below.
+- [ ] **Cryptographic registry (signed roster)**: administrator-signed decisions (approval, revocation, sequence number against replay) replacing trust-the-list, enabling a deploy-key-management CI job. Builds on device-signed registrations; registration records and the adapter trait stay unchanged. Design notes: `docs/specs/device-transport-auth.md` ("Extension points") and `docs/specs/device-key-enrollment.md` ("Deferred and decided").
+- [ ] GitLab deploy-key adapter (candidate; same adapter trait, a deploy key can be enabled on several projects). GitHub is **not supported** (one deploy key per repository); if ever wanted, use per-vault keys published and signed by the device key.
+- [ ] Auto-adopting a remote's published forge settings: **not planned**. The descriptor decides where a user-wide forge login is sent, so adoption stays an explicit `sync forge init --adopt`. Revisit only with the signed registry, and never auto-adopt `oauth_client_id`.
+- Accepted risk: `device replace` and `devices revoke` are verified by tests with fakes only, not against a live forge.
 
 ---
 

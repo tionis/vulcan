@@ -117,7 +117,14 @@ vulcan vault enroll <id> --dry-run
 ```
 
 It is idempotent, never binds a key the remote has not accepted, and stops as `pending` when
-authority is missing. `vulcan sync doctor` points at enrollment when a vault is not bound.
+authority is missing.
+
+If the device key is already authorized everywhere (for example you added it as a deploy key by
+hand) and you only want to switch the vaults over, `vulcan sync transport bind --all-wikis` binds
+every registered Git vault whose remote already accepts the key. It probes each vault first, skips
+(with the reason and the fix) any vault the remote refuses, an `ambient` host, or a non-SSH remote,
+and reports each vault on its own; `--dry-run` previews it. It authorizes nothing and registers
+nothing; use `vault enroll` for that. `vulcan sync doctor` points at enrollment when a vault is not bound.
 
 ## Staying on your own SSH setup
 
@@ -138,7 +145,7 @@ Unbinding removes only Vulcan's own `core.sshCommand`; another tool's setting is
 - `vulcan device show`: this installation's identity and status.
 - `vulcan devices list`: per vault, whether it is bound, and whether this device is registered.
 - `vulcan sync transport status`: one vault's binding and whether plain `git` is configured.
-- `vulcan sync devices list`: every device registered in a vault's remote.
+- `vulcan sync devices list`: every device registered in a vault's remote, and whether each record is signed by its device.
 - `vulcan sync doctor`: reports binding problems and suggests the fix.
 
 ## Adding another machine
@@ -152,6 +159,11 @@ vulcan sync devices register --public-key new-machine.pub --label "Laptop"
 vulcan sync forge sync --dry-run      # review what would be added
 vulcan sync forge sync
 ```
+
+A registration the administrator creates is a placeholder and is unsigned; on its first sync the
+device claims it and signs it with its own key. From then on every record a device writes is signed,
+so nobody else can claim a placeholder or forge a registration for it. (A signature proves the
+device holds the key, not that anyone approved it: approval is still your `sync forge sync`.)
 
 `sync forge sync` only adds keys for registered devices and removes only a key whose registration
 was explicitly revoked. Keys without Vulcan's `vulcan-device:` title marker are never touched, and
@@ -214,6 +226,7 @@ deploy key in the forge.
 - A bound vault never falls back to other credentials, and unbinding is always available.
 - Nothing is ever revoked or removed because something was *absent*; only an explicit revocation
   removes a key, and only one carrying Vulcan's marker.
+- A device signs every registration it writes with its own key, and readers verify it; this proves key possession, not approval.
 - Forge settings are device-local; settings shared through a remote are proposals you must adopt.
 - Each vault is separate; one vault's failure never changes another.
 

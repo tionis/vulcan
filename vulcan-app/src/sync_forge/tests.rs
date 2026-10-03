@@ -50,6 +50,7 @@ fn summary(
         status,
         created_at_unix: 1,
         claimed_at_unix: (status == RegistrationStatus::Registered).then_some(1),
+        signed: false,
         current_device: false,
         revision: "0".repeat(40),
         source: RegistrationSource::Remote,

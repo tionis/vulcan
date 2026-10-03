@@ -198,7 +198,9 @@ fn run_with(
 fn json(output: &std::process::Output) -> Value {
     assert!(
         output.status.success(),
-        "{}",
+        "{:?}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("JSON output")
@@ -1474,4 +1476,95 @@ fn vault_add_enrolls_a_vault_that_already_has_an_ssh_remote() {
     git(&bare_dir, &["init", "--quiet"]);
     let skipped = json(&add("noremote", &bare_dir, &[]));
     assert_eq!(skipped["enroll"]["state"], "skipped");
+}
+
+#[cfg(unix)]
+#[test]
+fn bind_all_wikis_binds_only_vaults_whose_remote_accepts_the_key() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let remote = root.join("remote.git");
+    git(root, &["init", "--bare", "--quiet", "remote.git"]);
+    let admin = installation(root, "admin", &remote);
+    let vault = admin.join("vault");
+    let ssh_dir = fake_ssh(&root.join("fake-ssh"));
+    let path = format!(
+        "{}:{}",
+        ssh_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    git(
+        &vault,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("git@forge.example.com:{}", remote.display()),
+        ],
+    );
+    let cmd = |args: &[&str]| run_with(&admin, None, &[("PATH", path.as_str())], args);
+    assert!(cmd(&[
+        "vault",
+        "add",
+        "wiki",
+        vault.to_str().unwrap(),
+        "--no-device-key"
+    ])
+    .status
+    .success());
+    let ssh_command = || {
+        let output = ProcessCommand::new("git")
+            .current_dir(&vault)
+            .args(["config", "--local", "--get", "core.sshCommand"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    // Without a device identity the whole run stops once, with the fix named.
+    let early = cmd(&["sync", "transport", "bind", "--all-wikis"]);
+    assert!(!early.status.success());
+    assert!(String::from_utf8_lossy(&early.stderr).contains("device init"));
+    assert!(cmd(&["device", "init"]).status.success());
+    let bind_all = |extra: &[&str]| {
+        let mut args = vec![
+            "--output",
+            "json",
+            "sync",
+            "transport",
+            "bind",
+            "--all-wikis",
+        ];
+        args.extend_from_slice(extra);
+        json(&cmd(&args))
+    };
+
+    // The remote refuses the device key: skipped, with the fix named, and nothing changes.
+    let refused = bind_all(&[]);
+    assert_eq!(refused["skipped"], 1);
+    assert_eq!(refused["bound"], 0);
+    let reason = refused["wikis"][0]["reason"].as_str().unwrap();
+    assert!(reason.contains("vulcan vault enroll wiki"), "{reason}");
+    assert!(ssh_command().is_empty(), "a refused key is never bound");
+
+    // A dry run previews the bind without writing.
+    fs::write(ssh_dir.join("device_mode"), "accept").unwrap();
+    let preview = bind_all(&["--dry-run"]);
+    assert_eq!(preview["bound"], 1);
+    assert_eq!(preview["dry_run"], true);
+    assert!(ssh_command().is_empty());
+
+    let bound = bind_all(&[]);
+    assert_eq!(
+        (bound["bound"].as_u64(), bound["failed"].as_u64()),
+        (Some(1), Some(0))
+    );
+    assert!(ssh_command().contains("device ssh-command"));
+    assert_eq!(bind_all(&[])["already"], 1);
+
+    assert!(
+        !cmd(&["sync", "transport", "bind", "--all-wikis", "--wiki", "wiki"])
+            .status
+            .success(),
+        "--all-wikis and --wiki conflict"
+    );
 }

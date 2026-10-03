@@ -799,7 +799,11 @@ fn register_step(
         return;
     }
     match register_self(paths, &request.remote, env.identity) {
-        Ok(Some(SelfRegistrationOutcome::Created | SelfRegistrationOutcome::Claimed)) => {
+        Ok(Some(
+            SelfRegistrationOutcome::Created
+            | SelfRegistrationOutcome::Claimed
+            | SelfRegistrationOutcome::Signed,
+        )) => {
             report.step_bare("registration", StepStatus::Done);
         }
         Ok(Some(SelfRegistrationOutcome::AlreadyRegistered)) => {

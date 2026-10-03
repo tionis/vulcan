@@ -3900,6 +3900,98 @@ fn transport_paths(paths: &VaultPaths, wiki: Option<&str>) -> Result<VaultPaths,
     Ok(VaultPaths::new(&registration.path))
 }
 
+/// Binds every registered Git vault whose remote accepts the device key.
+fn handle_bind_all(
+    cli: &Cli,
+    remote: &str,
+    mode: vulcan_app::sync_transport::GitConfigMode,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    use std::path::Path;
+    use vulcan_app::device_config::DeviceConfigStore;
+    use vulcan_app::device_identity::DeviceIdentityStore;
+    use vulcan_app::sync_state::SyncStateStore;
+    use vulcan_app::sync_transport::probe_device_key;
+    use vulcan_app::sync_transport_all::{bind_all, BindAllEnvironment, BindOutcome, BindVault};
+    let remote = GitRemote::parse(remote).map_err(CliError::operation)?;
+    let vaults = WikiRegistry::user_default()
+        .map_err(CliError::operation)?
+        .list(None)
+        .map_err(CliError::operation)?
+        .into_iter()
+        .filter(|status| {
+            status.available && status.registration.sync_backend.as_deref() == Some("git")
+        })
+        .map(|status| {
+            let registration = status.registration;
+            let paths = VaultPaths::new(&registration.path);
+            let profile = cli
+                .permissions
+                .as_deref()
+                .or(registration.permissions_profile.as_deref());
+            let blocked = resolve_permission_profile(&paths, profile)
+                .map_err(|error| error.to_string())
+                .and_then(|selection| {
+                    ProfilePermissionGuard::new(&paths, selection)
+                        .check_git()
+                        .map_err(|error| error.to_string())
+                })
+                .err();
+            BindVault {
+                wiki: registration.id.to_string(),
+                paths,
+                blocked,
+            }
+        })
+        .collect::<Vec<_>>();
+    let device_config = DeviceConfigStore::user_default()
+        .and_then(|store| store.load())
+        .map_err(CliError::operation)?;
+    let state = SyncStateStore::user_default().map_err(CliError::operation)?;
+    let executable = std::env::current_exe().map_err(CliError::operation)?;
+    let identity = DeviceIdentityStore::user_default().map_err(CliError::operation)?;
+    let probe = |remote: &str, dir: &Path| probe_device_key(&identity, remote, Some(dir));
+    let environment = BindAllEnvironment {
+        device_config: &device_config,
+        identity: &identity,
+        state: &state,
+        executable: &executable,
+        probe: &probe,
+        remote_url_override: None,
+    };
+    let report =
+        bind_all(&environment, &vaults, &remote, mode, dry_run).map_err(CliError::operation)?;
+    if cli.output == OutputFormat::Json {
+        print_json(&report)?;
+    } else {
+        for entry in &report.wikis {
+            let verb = match (entry.outcome, report.dry_run) {
+                (BindOutcome::Bound, true) => "would bind",
+                (BindOutcome::Bound, false) => "bound",
+                (BindOutcome::Already, _) => "already bound",
+                (BindOutcome::Skipped, _) => "skipped",
+                (BindOutcome::Failed, _) => "FAILED",
+            };
+            println!("{}: {verb}", entry.wiki);
+            if let Some(reason) = &entry.reason {
+                println!("  {reason}");
+            }
+        }
+        println!(
+            "\n{} bound, {} already bound, {} skipped, {} failed",
+            report.bound, report.already, report.skipped, report.failed
+        );
+    }
+    if report.failed > 0 {
+        return Err(CliError::operation(format!(
+            "{} of {} vaults failed; the others were not affected",
+            report.failed,
+            report.wikis.len()
+        )));
+    }
+    Ok(())
+}
+
 fn handle_sync_transport(
     cli: &Cli,
     paths: &VaultPaths,
@@ -3909,17 +4001,21 @@ fn handle_sync_transport(
     match command {
         SyncTransportCommand::Bind {
             wiki,
+            all_wikis,
             remote,
             git_config,
             no_git_config,
             dry_run,
         } => {
-            let paths = transport_paths(paths, wiki.as_deref())?;
             let mode = match (git_config, no_git_config) {
                 (_, true) => vulcan_app::sync_transport::GitConfigMode::Skip,
                 (true, false) => vulcan_app::sync_transport::GitConfigMode::Require,
                 (false, false) => vulcan_app::sync_transport::GitConfigMode::Auto,
             };
+            if *all_wikis {
+                return handle_bind_all(cli, remote, mode, *dry_run);
+            }
+            let paths = transport_paths(paths, wiki.as_deref())?;
             let report =
                 bind_transport(&paths, remote, mode, *dry_run).map_err(CliError::operation)?;
             match cli.output {
@@ -4042,6 +4138,18 @@ fn registration_status_label(status: RegistrationStatus) -> &'static str {
     }
 }
 
+/// The status plus whether the device's own signature backs the record.
+fn entry_status_label(entry: &vulcan_app::sync_registration::RegistrationSummary) -> String {
+    let base = registration_status_label(entry.status);
+    match (entry.status, entry.signed) {
+        (RegistrationStatus::Registered, true) => format!("{base}, signed by the device"),
+        (RegistrationStatus::Registered, false) => {
+            format!("{base}, unsigned (the device signs it on its next sync)")
+        }
+        _ => base.to_owned(),
+    }
+}
+
 fn print_registrations(report: &RegistrationListReport) {
     println!();
     match report.observation {
@@ -4066,7 +4174,7 @@ fn print_registrations(report: &RegistrationListReport) {
             } else {
                 ""
             },
-            registration_status_label(entry.status)
+            entry_status_label(entry)
         );
         if let Some(label) = &entry.label {
             println!("    Label: {label}");

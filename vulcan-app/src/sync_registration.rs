@@ -5,7 +5,7 @@
 //! The list is trusted as written: anyone with push access can change it. See
 //! `docs/specs/device-transport-auth.md` for that accepted tradeoff.
 
-use crate::device_identity::{identity_from_public_key, DeviceIdentityStore};
+use crate::device_identity::{identity_from_public_key, verify_signature, DeviceIdentityStore};
 use crate::sync_devices::{is_remote_observation_unavailable, validate_device_name};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,8 @@ const REGISTRATION_FILE: &str = "registration.json";
 const MAX_REGISTRATION_BYTES: usize = 4096;
 const LOCAL_MIRROR_ROOT: &str = LOCAL_REGISTRATION_MIRROR_ROOT;
 const COMMIT_MESSAGE: &str = "vulcan device registration\n";
+/// Separates registration signatures from every other use of the device key.
+const SIGNATURE_NAMESPACE: &str = "device-registration-v1@vulcan";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,9 +51,33 @@ pub struct DeviceRegistration {
     pub created_at_unix: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claimed_at_unix: Option<u64>,
+    /// The device's own SSH signature over every other field, present on every
+    /// record the device writes (`registered`). Administrator-written records
+    /// (placeholders and revocations) are never signed: an administrator cannot
+    /// sign for a device, and changing a record invalidates its signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl DeviceRegistration {
+    /// The exact bytes the signature covers: this record serialized without
+    /// its signature, exactly as it is published.
+    fn signing_bytes(&self) -> Result<Vec<u8>, AppError> {
+        let mut unsigned = self.clone();
+        unsigned.signature = None;
+        let mut bytes = serde_json::to_vec_pretty(&unsigned).map_err(AppError::operation)?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    /// Signs this record with the device's own key, replacing any signature.
+    fn sign(mut self, store: &DeviceIdentityStore) -> Result<Self, AppError> {
+        self.signature = None;
+        let bytes = self.signing_bytes()?;
+        self.signature = Some(store.sign(SIGNATURE_NAMESPACE, &bytes)?);
+        Ok(self)
+    }
+
     /// Strictly parses one stored record. Never trusts a claimed ID: it must
     /// derive from the key.
     pub fn parse(bytes: &[u8]) -> Result<Self, AppError> {
@@ -85,6 +111,22 @@ impl DeviceRegistration {
                 ))
             }
             _ => {}
+        }
+        if let Some(signature) = &record.signature {
+            if record.status != RegistrationStatus::Registered {
+                return Err(AppError::operation(
+                    "only a registration written by the device itself carries a signature",
+                ));
+            }
+            verify_signature(
+                &record.public_key,
+                SIGNATURE_NAMESPACE,
+                &record.signing_bytes()?,
+                signature,
+            )
+            .map_err(|_| {
+                AppError::operation("the registration signature does not match its device key")
+            })?;
         }
         Ok(record)
     }
@@ -129,6 +171,11 @@ fn check_transition(
             | (Some(Placeholder | Registered), Revoked, Actor::Admin)
             | (Some(Revoked), Revoked, _)
     );
+    if allowed && actor == Actor::Device && new.status == Registered && new.signature.is_none() {
+        return Err(AppError::operation(
+            "a device signs its own registration; this one is unsigned",
+        ));
+    }
     if allowed {
         Ok(())
     } else {
@@ -348,6 +395,7 @@ pub fn register_placeholder(
             .as_ref()
             .map_or_else(now_unix, |(record, _)| record.created_at_unix),
         claimed_at_unix: None,
+        signature: None,
     };
     let (action, parent) = match &existing {
         None => (RegistrationAction::Created, None),
@@ -409,6 +457,9 @@ pub fn revoke_registration(
     }
     let revoked = DeviceRegistration {
         status: RegistrationStatus::Revoked,
+        // The tombstone is the administrator's record; the device's signature
+        // covered the old bytes and cannot carry over.
+        signature: None,
         ..record.clone()
     };
     check_transition(Some(&record), &revoked, Actor::Admin)?;
@@ -528,6 +579,9 @@ pub struct RegistrationSummary {
     pub created_at_unix: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claimed_at_unix: Option<u64>,
+    /// The record carries the device's own verified signature. Placeholders and
+    /// revocations (written by an administrator) are never signed.
+    pub signed: bool,
     pub current_device: bool,
     pub revision: String,
     pub source: RegistrationSource,
@@ -710,7 +764,9 @@ fn list_registrations_with_current(
         match context.read_record(&revision, &id) {
             Ok(record) => {
                 let fingerprint = record.fingerprint()?;
+                let signed = record.signature.is_some();
                 report.registrations.push(RegistrationSummary {
+                    signed,
                     current_device: current == Some(record.device_id.as_str()),
                     device_id: record.device_id,
                     fingerprint,
@@ -739,6 +795,8 @@ pub enum SelfRegistrationOutcome {
     Created,
     Claimed,
     AlreadyRegistered,
+    /// An older unsigned record of this device was re-published with its signature.
+    Signed,
     /// An administrator revoked this device. It reports this and never
     /// overwrites the tombstone.
     Revoked,
@@ -771,6 +829,7 @@ pub fn self_register_after_sync(
         Ok(Some(
             outcome @ (SelfRegistrationOutcome::Created
             | SelfRegistrationOutcome::Claimed
+            | SelfRegistrationOutcome::Signed
             | SelfRegistrationOutcome::Revoked),
         )) => Some(SelfRegistrationReport {
             outcome: Some(outcome),
@@ -869,20 +928,28 @@ fn self_register_with_store(
         Some((record, _)) if record.status == RegistrationStatus::Revoked => {
             Ok(Some(SelfRegistrationOutcome::Revoked))
         }
-        Some((record, _)) if record.status == RegistrationStatus::Registered => {
+        Some((record, revision)) if record.status == RegistrationStatus::Registered => {
             if record.public_key != public_key {
                 return Err(AppError::operation(
                     "registration key does not match this device",
                 ));
             }
-            Ok(Some(SelfRegistrationOutcome::AlreadyRegistered))
+            if record.signature.is_some() {
+                return Ok(Some(SelfRegistrationOutcome::AlreadyRegistered));
+            }
+            // A record from before signing: sign it now, once.
+            let signed = record.clone().sign(store)?;
+            check_transition(Some(&record), &signed, Actor::Device)?;
+            context.publish(&signed, Some(&revision))?;
+            Ok(Some(SelfRegistrationOutcome::Signed))
         }
         Some((record, revision)) => {
             let claimed = DeviceRegistration {
                 status: RegistrationStatus::Registered,
                 claimed_at_unix: Some(now),
                 ..record.clone()
-            };
+            }
+            .sign(store)?;
             check_transition(Some(&record), &claimed, Actor::Device)?;
             context.publish(&claimed, Some(&revision))?;
             Ok(Some(SelfRegistrationOutcome::Claimed))
@@ -896,7 +963,9 @@ fn self_register_with_store(
                 status: RegistrationStatus::Registered,
                 created_at_unix: now,
                 claimed_at_unix: Some(now),
-            };
+                signature: None,
+            }
+            .sign(store)?;
             check_transition(None, &created, Actor::Device)?;
             context.publish(&created, None)?;
             Ok(Some(SelfRegistrationOutcome::Created))
@@ -925,7 +994,7 @@ mod tests {
     }
 
     struct Fixture {
-        _dir: TempDir,
+        dir: TempDir,
         paths: VaultPaths,
         remote: GitRemote,
         remote_path: std::path::PathBuf,
@@ -957,7 +1026,7 @@ mod tests {
             admin_key: other.public_key().unwrap(),
             device,
             device_id,
-            _dir: dir,
+            dir,
         }
     }
 
@@ -1027,6 +1096,165 @@ mod tests {
             status: RegistrationStatus::Registered,
             created_at_unix: 10,
             claimed_at_unix: Some(10),
+            signature: None,
+        }
+    }
+
+    fn fx_list(fx: &Fixture) -> Vec<RegistrationSummary> {
+        fx.list().registrations
+    }
+
+    #[test]
+    fn a_device_signs_its_own_registration_and_readers_verify_it() {
+        let fx = fixture();
+        assert_eq!(
+            register_self(&fx.paths, &fx.remote, &fx.device).unwrap(),
+            Some(SelfRegistrationOutcome::Created)
+        );
+        let listed = fx_list(&fx);
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].signed, "the device's own record is signed");
+        assert_eq!(listed[0].status, RegistrationStatus::Registered);
+
+        // Signing is deterministic input to verification: any change breaks it.
+        let signed = sample_record_for(&fx).sign(&fx.device).unwrap();
+        let mut bytes = serde_json::to_vec_pretty(&signed).unwrap();
+        bytes.push(b'\n');
+        assert!(DeviceRegistration::parse(&bytes).is_ok());
+        let tampered = DeviceRegistration {
+            label: Some("someone else".to_owned()),
+            ..signed.clone()
+        };
+        assert!(DeviceRegistration::parse(&serde_json::to_vec_pretty(&tampered).unwrap()).is_err());
+        let later = DeviceRegistration {
+            claimed_at_unix: Some(99),
+            ..signed
+        };
+        assert!(DeviceRegistration::parse(&serde_json::to_vec_pretty(&later).unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_signature_by_another_key_or_on_an_admin_record_is_rejected() {
+        let fx = fixture();
+        let stranger = DeviceIdentityStore::at(fx.dir.path().join("stranger"));
+        stranger.initialize(false).unwrap();
+        // Signed by a key that is not the record's key.
+        let forged = sample_record_for(&fx).sign(&stranger).unwrap();
+        let error =
+            DeviceRegistration::parse(&serde_json::to_vec_pretty(&forged).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("signature"), "{error}");
+
+        // Administrator-owned statuses never carry a signature.
+        let signed = sample_record_for(&fx).sign(&fx.device).unwrap();
+        for status in [RegistrationStatus::Placeholder, RegistrationStatus::Revoked] {
+            let record = DeviceRegistration {
+                status,
+                claimed_at_unix: (status == RegistrationStatus::Revoked).then_some(10),
+                ..signed.clone()
+            };
+            assert!(
+                DeviceRegistration::parse(&serde_json::to_vec_pretty(&record).unwrap()).is_err(),
+                "{status:?} must not be signed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_device_never_publishes_an_unsigned_registration() {
+        let unsigned = sample_record();
+        let error = check_transition(None, &unsigned, Actor::Device).unwrap_err();
+        assert!(error.to_string().contains("signs its own"), "{error}");
+        assert!(check_transition(
+            None,
+            &unsigned.sign(&fixture().device).unwrap(),
+            Actor::Device
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn claiming_a_placeholder_signs_it_and_revoking_clears_the_signature() {
+        let fx = fixture();
+        register_placeholder(
+            &fx.paths,
+            &fx.remote,
+            &fx.device_key(),
+            Some("Laptop"),
+            false,
+        )
+        .unwrap();
+        let placeholder = fx_list(&fx);
+        assert_eq!(placeholder[0].status, RegistrationStatus::Placeholder);
+        assert!(
+            !placeholder[0].signed,
+            "an administrator cannot sign for a device"
+        );
+
+        assert_eq!(
+            register_self(&fx.paths, &fx.remote, &fx.device).unwrap(),
+            Some(SelfRegistrationOutcome::Claimed)
+        );
+        let claimed = fx_list(&fx);
+        assert!(claimed[0].signed);
+        assert_eq!(
+            claimed[0].label.as_deref(),
+            Some("Laptop"),
+            "the label survives the claim"
+        );
+
+        revoke_registration(&fx.paths, &fx.remote, &fx.device_id, false).unwrap();
+        let revoked = fx_list(&fx);
+        assert_eq!(revoked[0].status, RegistrationStatus::Revoked);
+        assert!(
+            !revoked[0].signed,
+            "the tombstone is the administrator's record"
+        );
+        assert_eq!(
+            register_self(&fx.paths, &fx.remote, &fx.device).unwrap(),
+            Some(SelfRegistrationOutcome::Revoked),
+            "a signature never lets a device undo a revocation"
+        );
+    }
+
+    #[test]
+    fn an_older_unsigned_registration_is_signed_once() {
+        let fx = fixture();
+        // A record written before signing existed.
+        let (engine, repository) = open(&fx.paths).unwrap();
+        let context = Context {
+            engine: &engine,
+            repository: &repository,
+            remote: &fx.remote,
+        };
+        let legacy = DeviceRegistration {
+            signature: None,
+            ..sample_record_for(&fx)
+        };
+        context.publish(&legacy, None).unwrap();
+        assert!(!fx_list(&fx)[0].signed);
+
+        assert_eq!(
+            register_self(&fx.paths, &fx.remote, &fx.device).unwrap(),
+            Some(SelfRegistrationOutcome::Signed)
+        );
+        assert!(fx_list(&fx)[0].signed);
+        assert_eq!(
+            register_self(&fx.paths, &fx.remote, &fx.device).unwrap(),
+            Some(SelfRegistrationOutcome::AlreadyRegistered),
+            "signed once, then quiet"
+        );
+    }
+
+    fn sample_record_for(fx: &Fixture) -> DeviceRegistration {
+        DeviceRegistration {
+            version: 1,
+            device_id: fx.device_id.clone(),
+            public_key: fx.device_key(),
+            label: None,
+            status: RegistrationStatus::Registered,
+            created_at_unix: 10,
+            claimed_at_unix: Some(10),
+            signature: None,
         }
     }
 
@@ -1097,12 +1325,17 @@ mod tests {
         let placeholder = with(Placeholder, None);
         let registered = with(Registered, Some(11));
         let revoked = with(Revoked, None);
+        // Signature validity is checked on read; transitions only require its presence.
+        let signed = DeviceRegistration {
+            signature: Some("present".to_owned()),
+            ..registered.clone()
+        };
 
         assert!(check_transition(None, &placeholder, Actor::Admin).is_ok());
         assert!(check_transition(None, &placeholder, Actor::Device).is_err());
-        assert!(check_transition(None, &registered, Actor::Device).is_ok());
+        assert!(check_transition(None, &signed, Actor::Device).is_ok());
         assert!(check_transition(None, &registered, Actor::Admin).is_err());
-        assert!(check_transition(Some(&placeholder), &registered, Actor::Device).is_ok());
+        assert!(check_transition(Some(&placeholder), &signed, Actor::Device).is_ok());
         assert!(check_transition(Some(&placeholder), &registered, Actor::Admin).is_err());
         assert!(check_transition(Some(&registered), &revoked, Actor::Admin).is_ok());
         assert!(check_transition(Some(&placeholder), &revoked, Actor::Admin).is_ok());

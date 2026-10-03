@@ -152,7 +152,7 @@ call sites. One ref per device means concurrent registrations never conflict and
 branch. The tree holds one bounded, strictly versioned `registration.json`:
 
 ```text
-version, device_id, public_key (canonical ssh-ed25519), label?, status, created_at, claimed_at?
+version, device_id, public_key (canonical ssh-ed25519), label?, status, created_at, claimed_at?, signature?
 status: placeholder | registered | revoked
 ```
 
@@ -194,6 +194,26 @@ public key from `vulcan device public-key` on the device and checks the displaye
 its first successful sync the device replaces the placeholder with a `registered` record. The device
 ID is derived from the key, so a device with a different key cannot claim it; it simply registers
 separately. Registration reaches the remote with whatever credentials the administrator already has.
+
+### Registration signing
+
+Every record a device writes (`registered`) carries a `signature`: an armored SSH signature
+(SSHSIG) made with the device's own key in the namespace `device-registration-v1@vulcan`, over the
+record's exact JSON with the `signature` field omitted. A device always signs: when it creates its
+record, when it claims a placeholder, and once for an older unsigned record of its own on the next
+sync (`SelfRegistrationOutcome::Signed`), after which sync is quiet again. Readers verify the signature
+against the record's own `public_key` and reject a record whose signature does not verify. A signature
+is valid only on a `registered` record: placeholders and revocations are the administrator's records,
+an administrator cannot sign for a device, and changing a record invalidates its signature, so
+`revoke` writes an unsigned tombstone. Listings report `signed` per record; an unsigned `registered`
+record is an older one that its device will sign next time it syncs.
+
+What this proves: the record was written by a holder of that device's private key, so nobody else can
+claim a placeholder or forge a `registered` record for a device, and any later edit is detectable. What
+it does not prove: that the device is *approved* (that is an administrator decision), or that the record
+is current: an old signed record can be pushed back, including over a tombstone. Forge sync therefore
+still trusts the list as written. This is the foundation the cryptographic registry builds on, which
+would add administrator-signed decisions and a sequence number so a replay is rejected.
 
 ### Listing and revoking
 
@@ -324,8 +344,11 @@ vault, with the device key bound and no SSH agent, `GIT_SSH_COMMAND`, or token i
   as a user key, so this should not arise; Forgejo would refuse it with its own message, which the
   adapter reports per key.
 
-Other forges (GitHub, GitLab, plain `authorized_keys`) implement the same trait later. Several of
-them forbid one key as a deploy key on many repositories; the adapter must surface that clearly.
+**Other forges.** GitHub is **not supported**: it forbids one key as a deploy key on several
+repositories, and a device is one key. If it is ever supported, the route is keys generated per vault
+that the device key publishes and signs, not a change to the one-key-per-device rule. GitLab is a
+candidate adapter (it allows a deploy key to be enabled on several projects) and implements the same
+trait. Plain `authorized_keys` hosts would also implement it.
 
 ## 4. Fleet view
 
@@ -346,26 +369,24 @@ anything in another, and offline mode contacts no remote.
 
 ## Replacement and retirement
 
-The key-management gate that requires a replacement workflow before key-backed access becomes
-*required* does not apply: a binding is optional per vault, the user's other SSH access remains, and
-an administrator can always revoke the registration and run forge sync (or delete the key at the forge) without the lost private key. Replacing a key is: initialize a new identity, let it register, revoke the old registration. A first-class
-`device replace` workflow (capture bytes, new key, list bound vaults) remains a worthwhile follow-on
-tracked under 12.15.5, but this feature does not depend on it.
+Implemented (see `device-key-enrollment.md`, "Lifecycle"): `vulcan device replace` stages a new key,
+proves it in every vault bound to the old one, then activates it; `vulcan devices revoke` retires a
+device in every registered vault. Neither needs the old private key, and an administrator can still
+revoke a registration and run forge sync (or delete the key at the forge) by hand.
 
 ## Extension points (not built)
 
 - **Cryptographic registry.** Replaces trust-the-list with signed administrator decisions, and makes a
-  deploy-key-management CI job possible. Registration records and the adapter trait should survive
-  unchanged; only the source of the desired set changes.
-- **Registration signing.** Signing a device's own record would make it tamper-evident against other
-  devices. It needs a typed signing operation on the device key and does not close the trust gap
-  alone, so it is deferred.
+  deploy-key-management CI job possible. Device-signed registrations (above) prove key possession; the
+  registry would add the administrator's signed approval, revocations, and a sequence number against
+  replay. Registration records and the adapter trait should survive unchanged; only the source of the
+  desired set changes. Tracked in Roadmap 12.22.6.
 - **Multiple users.** The forge's collaborator model scopes who may run forge sync today. A richer
   model belongs with whatever registry design follows.
 
 ## Non-goals
 
-- A Vulcan-run authorization registry, admin signing keys, or signed roster in this feature.
+- A Vulcan-run authorization registry, admin signing keys, or signed roster in this feature. (Device-signed registration records are in scope and implemented.)
 - Cross-vault trust, a shared roster, or installation-wide approval.
 - Per-vault device keys.
 - Replacing the user's main Git SSH identity or changing global Git/SSH configuration.

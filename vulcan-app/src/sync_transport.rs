@@ -147,7 +147,7 @@ fn load_binding(
 }
 
 /// Resolve the eligible device key path, or explain why it is unusable.
-fn eligible_key(store: &DeviceIdentityStore) -> Result<(String, PathBuf), String> {
+pub(crate) fn eligible_key(store: &DeviceIdentityStore) -> Result<(String, PathBuf), String> {
     let report = store.inspect();
     match report.status {
         DeviceIdentityStatus::Uninitialized => {

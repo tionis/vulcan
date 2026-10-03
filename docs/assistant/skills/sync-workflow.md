@@ -85,6 +85,7 @@ both execute the same application workflow.
   result is in the `transport` and `enroll` fields (or `enroll_error`). Pass `--no-device-key` for the
   old behaviour, and never pass `--login` unattended. A vault added or cloned before this existed is
   enrolled with `vulcan vault enroll <wiki>`.
+- `vulcan sync transport bind --all-wikis [--dry-run]` binds every registered Git vault whose remote already accepts the device key (it probes first and skips, with the fix, any vault that refuses it); it authorizes and registers nothing, so use `vault enroll` for that. `sync devices list` shows whether each registration is signed by its device: a device signs every record it writes, an unsigned `registered` record is an older one that is signed on that device's next sync, and a signature proves key possession, not approval.
 - `vulcan device replace [--revoke-old] [--activate-anyway] [--dry-run]` swaps this installation's
   device key safely: it stages a new key, authorizes and proves it in every vault bound to the old
   key, and only then activates it and rebinds each vault. If a vault cannot be proven yet it changes

@@ -583,6 +583,10 @@ fn placeholder_is_claimed_by_the_device_and_revocation_sticks() {
         listed["registrations"]["registrations"][0]["status"],
         "registered"
     );
+    assert_eq!(
+        listed["registrations"]["registrations"][0]["signed"], true,
+        "the device signs the record it claims"
+    );
     let own = json_output(&devices(device_vault_arg, &["list", "--offline"]));
     assert_eq!(
         own["registrations"]["registrations"][0]["current_device"],
@@ -596,6 +600,10 @@ fn placeholder_is_claimed_by_the_device_and_revocation_sticks() {
     assert_eq!(
         listed["registrations"]["registrations"][0]["status"],
         "revoked"
+    );
+    assert_eq!(
+        listed["registrations"]["registrations"][0]["signed"], false,
+        "a revocation is the administrator's unsigned record"
     );
 
     // Partial IDs are refused; unregister then forgets the tombstone.
