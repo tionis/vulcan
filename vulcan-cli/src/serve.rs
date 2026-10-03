@@ -304,21 +304,31 @@ mod tests {
     fn partial_watcher_startup_failure_rolls_back_the_listener() {
         let temporary = TempDir::new().expect("temporary directory");
         let missing_vault = temporary.path().join("missing-vault");
-        let probe = TcpListener::bind("127.0.0.1:0").expect("port probe");
-        let address = probe.local_addr().expect("address");
-        drop(probe);
-        let error = spawn_server(
-            VaultPaths::new(&missing_vault),
-            ServeOptions {
-                bind: address.to_string(),
-                watch: true,
-                debounce_ms: 50,
-                auth_token: Some("secret".to_string()),
-                permissions: None,
-            },
-        )
-        .expect_err("missing watched vault must fail startup");
-        assert!(error.to_string().contains("service"));
+        // The probed port is free only until it is released, and parallel
+        // tests may take it before the server binds; probe again if so.
+        let (address, error) = (0..8)
+            .find_map(|_| {
+                let probe = TcpListener::bind("127.0.0.1:0").expect("port probe");
+                let address = probe.local_addr().expect("address");
+                drop(probe);
+                let error = spawn_server(
+                    VaultPaths::new(&missing_vault),
+                    ServeOptions {
+                        bind: address.to_string(),
+                        watch: true,
+                        debounce_ms: 50,
+                        auth_token: Some("secret".to_string()),
+                        permissions: None,
+                    },
+                )
+                .expect_err("missing watched vault must fail startup");
+                let message = error.to_string().to_ascii_lowercase();
+                let taken = message.contains("address already in use")
+                    || message.contains("address in use");
+                (!taken).then_some((address, error))
+            })
+            .expect("a free port for the listener");
+        assert!(error.to_string().contains("service"), "{error}");
         let rebound = TcpListener::bind(address).expect("failed startup releases listener");
         drop(rebound);
     }
