@@ -21,6 +21,10 @@
 
 ### Fixed
 
+- `vulcan sync resolve <id> --side …` without `--group` no longer fails with "the remote live ref
+  no longer matches" after another device synced unrelated changes. The choice now applies to every
+  unfinished conflict group on the current live tree, and a live commit not yet fetched is fetched.
+
 - The daemon now syncs with the installation's device key. It previously created and used a
   second, daemon-only key, so every vault bound to the device-key transport failed daemon syncs
   with "the device key changed since binding; re-bind" while `vulcan sync run` worked. The stray

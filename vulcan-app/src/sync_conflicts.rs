@@ -793,6 +793,24 @@ pub fn resolve_sync_conflict_with_state_store(
         .discover_repository(&work_tree)
         .map_err(AppError::operation)?;
     verify_preserved_conflict_refs(&engine, &repository, &record)?;
+    if existing_resolution.is_none() {
+        if let Some(group_ids) =
+            whole_side_fallback_groups(&engine, &repository, &store, &record, options)?
+        {
+            let options = ResolveSyncConflictOptions {
+                group_ids,
+                ..options.clone()
+            };
+            return resolve_sync_conflict_groups_with_state_store(
+                paths,
+                &options,
+                state_store,
+                &store,
+                &record,
+                &context,
+            );
+        }
+    }
     let safety = engine
         .safety_state(&repository)
         .map_err(AppError::operation)?;
@@ -823,6 +841,51 @@ pub fn resolve_sync_conflict_with_state_store(
         &repository,
         &context,
     )
+}
+
+/// A whole-conflict side choice is bound to the exact live ref the conflict
+/// recorded, so any later sync from another device would refuse it. When the
+/// live ref has moved, the same choice is applied as a grouped resolution of
+/// every unfinished group, which overlays only those paths on the current
+/// accepted tree and keeps unrelated later edits.
+fn whole_side_fallback_groups(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    store: &SyncConflictStore,
+    record: &SyncConflictRecord,
+    options: &ResolveSyncConflictOptions,
+) -> Result<Option<Vec<String>>, AppError> {
+    if record.scope != GitConflictScope::Paths || record.base_revision.is_none() {
+        return Ok(None);
+    }
+    let remote = engine
+        .remote_ref(repository, &options.remote, &options.live_ref)
+        .map_err(AppError::operation)?;
+    if remote.as_ref().map(GitOid::as_str) == Some(conflict_live_input(record)?) {
+        return Ok(None);
+    }
+    let progress = store.group_progress(&record.repository_key, record)?;
+    let group_ids = progress
+        .groups
+        .iter()
+        .filter(|group| {
+            matches!(
+                group.state,
+                SyncConflictGroupState::Pending | SyncConflictGroupState::NeedsRebase
+            )
+        })
+        .map(|group| group.id.clone())
+        .collect::<Vec<_>>();
+    if group_ids.is_empty() || !progress.groups_complete {
+        return Ok(None);
+    }
+    if group_ids.len() > MAX_CONFLICT_GROUPS_PER_BATCH {
+        return Err(AppError::operation(format!(
+            "the live branch moved since this conflict was recorded and it has {} unfinished groups; resolve them in batches of at most {MAX_CONFLICT_GROUPS_PER_BATCH} with repeatable `--group <group-id>`",
+            group_ids.len()
+        )));
+    }
+    Ok(Some(group_ids))
 }
 
 fn resolve_sync_conflict_groups_with_state_store(
@@ -1020,6 +1083,7 @@ fn resolve_conflict_groups_with_state_store(
         .remote_ref(&repository, options.remote, options.live_ref)
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("the remote live ref is missing"))?;
+    let current = ensure_frontier_fetched(&engine, &repository, options, current)?;
     let prepared_frontier = active_batch
         .as_ref()
         .map(|batch| GitOid::parse(&batch.expected_revision).map_err(AppError::operation))
@@ -2161,6 +2225,30 @@ fn publish_conflict_group_batch(
     }
     batch.published = true;
     Ok(())
+}
+
+/// Another device may have advanced the live ref since this device last
+/// synchronized, so its commit may not exist locally yet. Fetch it the same
+/// way a sync does; the compare-and-swap publication still rejects any later
+/// movement.
+fn ensure_frontier_fetched(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    options: &ConflictGroupOptions<'_>,
+    current: GitOid,
+) -> Result<GitOid, AppError> {
+    if engine.tree_oid(repository, &current).is_ok() {
+        return Ok(current);
+    }
+    let refs = GitSyncRefs::for_options(&GitSyncOptions {
+        remote: options.remote.clone(),
+        live_ref: options.live_ref.clone(),
+        ..GitSyncOptions::default()
+    })
+    .map_err(AppError::operation)?;
+    engine
+        .fetch_ref(repository, options.remote, options.live_ref, &refs.fetched)
+        .map_err(AppError::operation)
 }
 
 fn update_resolution_sync_refs(

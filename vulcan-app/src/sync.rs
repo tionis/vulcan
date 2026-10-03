@@ -3558,6 +3558,83 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn whole_side_resolution_survives_unrelated_live_advancement() {
+        let fixture = structured_sync_fixture(&[("A.md", "base a\n"), ("B.md", "base b\n")]);
+        fs::write(fixture.writer.join("A.md"), "remote a\n").expect("remote A");
+        fs::write(fixture.writer.join("B.md"), "remote b\n").expect("remote B");
+        fs::write(fixture.reader.join("A.md"), "local a\n").expect("local A");
+        fs::write(fixture.reader.join("B.md"), "local b\n").expect("local B");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer conflict inputs");
+        let conflict = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("reader conflict")
+        .conflict_record
+        .expect("durable conflict");
+
+        // Another device moves the live ref without touching the conflict.
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer observes the conflict projection");
+        fs::write(fixture.writer.join("Unrelated.md"), "later\n").expect("unrelated edit");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("unrelated live advancement");
+        let later = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("reader receives the unrelated edit");
+        assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
+
+        let resolved = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: false,
+            },
+            &fixture.store,
+        )
+        .expect("whole side choice applies to every unfinished group");
+        assert_eq!(resolved.remaining_groups, Some(0));
+        for (path, content) in [
+            ("A.md", "local a\n"),
+            ("B.md", "local b\n"),
+            ("Unrelated.md", "later\n"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(fixture.reader.join(path)).expect("resolved file"),
+                content
+            );
+        }
+        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.store,
+        )
+        .expect("conflicts");
+        assert_eq!(listed.count, 0);
+    }
+
+    #[test]
     fn grouped_side_resolution_survives_restart_and_unrelated_live_advancement() {
         let fixture = structured_sync_fixture(&[("A.md", "base a\n"), ("B.md", "base b\n")]);
         fs::write(fixture.writer.join("A.md"), "remote a\n").expect("remote A");
