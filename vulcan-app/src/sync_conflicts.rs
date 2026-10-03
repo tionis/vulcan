@@ -45,6 +45,10 @@ const MAX_RETAINED_RESOLVED_ARTIFACT_SETS: usize = 32;
 /// still be unresolved, so sync maintenance reads only those records instead
 /// of every conflict ever recorded.
 const OPEN_CONFLICTS_DIR: &str = "open-conflicts";
+/// Beside `open-conflicts/`: one empty marker per conflict found resolved or
+/// superseded. Those states are final, so a full re-index skips these
+/// conflicts by a marker check instead of reading their records again.
+const CLOSED_CONFLICTS_DIR: &str = "closed-conflicts";
 /// Holds the modification time of `conflicts/` when the index last covered
 /// every conflict directory. Creating a conflict directory, by this or any
 /// other version, changes that time and triggers one full re-index.
@@ -2751,10 +2755,14 @@ impl SyncConflictStore {
         let directory_time = conflicts_directory_time(&self.root.join(repository_key))?;
         let stamp = fs::read_to_string(&stamp_path).ok();
         if directory_time.as_ref().map(|(stamp, _)| stamp) != stamp.as_ref() {
-            // Conflicts appeared since the last full pass. Index all of them;
-            // the pass below drops the ones already resolved or superseded.
+            // Conflicts appeared since the last full pass. Index all of them
+            // not already known closed; the pass below drops the ones
+            // resolved or superseded since.
+            let closed = self.root.join(repository_key).join(CLOSED_CONFLICTS_DIR);
             for id in self.list_ids(repository_key)? {
-                self.mark_open(repository_key, &id)?;
+                if !closed.join(&id).is_file() {
+                    self.mark_open(repository_key, &id)?;
+                }
             }
             match directory_time {
                 Some((stamp, settled)) if settled => {
@@ -2806,6 +2814,10 @@ impl SyncConflictStore {
 
     fn mark_closed(&self, repository_key: &str, conflict_id: &str) -> Result<(), AppError> {
         validate_hex_id("conflict ID", conflict_id)?;
+        let closed = self.root.join(repository_key).join(CLOSED_CONFLICTS_DIR);
+        fs::create_dir_all(&closed).map_err(AppError::operation)?;
+        // Closed before leaving the open index, so a crash never loses both.
+        durable_file::create(&closed.join(conflict_id), b"")?;
         durable_file::remove(
             &self
                 .root
@@ -3499,7 +3511,16 @@ impl SyncConflictStore {
                 .map_err(AppError::operation)?;
         }
         self.mark_closed(key, &intermediate.id)?;
-        fs::remove_dir_all(&directory).map_err(AppError::operation)
+        fs::remove_dir_all(&directory).map_err(AppError::operation)?;
+        // The record is gone, so no full re-index will list it again.
+        durable_file::remove(
+            &self
+                .root
+                .join(key)
+                .join(CLOSED_CONFLICTS_DIR)
+                .join(&intermediate.id),
+        )
+        .map(drop)
     }
 
     /// Records the still-conflicting paths against `frontier`: the preserved
@@ -5213,15 +5234,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             [current_id.as_str()]
         );
-        fs::remove_file(&old_record).expect("remove corrupt record");
-        write_json_noclobber(
-            &old_record,
-            &unresolved_record(&old_id, &key, temporary.path()),
-        )
-        .expect("restore record");
 
         // A conflict directory created without the index, as an older
-        // version would, changes the directory time and is found again.
+        // version would, changes the directory time and is found again. The
+        // full re-index skips the closed conflict without reading its
+        // (still corrupt) record.
         let legacy_id = "d".repeat(32);
         write_unresolved(&store, &key, &legacy_id, temporary.path());
         let open = store.open_records(&key).expect("reindexed");
