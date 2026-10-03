@@ -33,7 +33,7 @@ mod credential_transport;
 mod device_state;
 mod durable_file;
 mod error;
-mod keyed_state;
+pub mod keyed_state;
 #[cfg(windows)]
 pub use vulcan_winacl as windows_acl;
 

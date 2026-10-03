@@ -28,7 +28,7 @@ const INITIALIZED_KEY: &str = "initialized";
 /// deserialized) is a replacement: saving it first clears the stored namespace,
 /// so assigning a fresh map never leaves stale rows behind.
 #[derive(Clone)]
-pub(crate) struct TrackedMap<V> {
+pub struct TrackedMap<V> {
     entries: BTreeMap<String, V>,
     dirty: BTreeSet<String>,
     replaced: bool,
@@ -46,7 +46,8 @@ impl<V> Default for TrackedMap<V> {
 
 impl<V> TrackedMap<V> {
     /// Wraps entries that already match their persisted rows.
-    pub(crate) fn persisted(entries: BTreeMap<String, V>) -> Self {
+    #[must_use]
+    pub fn persisted(entries: BTreeMap<String, V>) -> Self {
         Self {
             entries,
             dirty: BTreeSet::new(),
@@ -54,43 +55,41 @@ impl<V> TrackedMap<V> {
         }
     }
 
-    pub(crate) fn get_mut(&mut self, key: &str) -> Option<&mut V> {
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut V> {
         let value = self.entries.get_mut(key)?;
         self.dirty.insert(key.to_string());
         Some(value)
     }
 
-    pub(crate) fn insert(&mut self, key: String, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: String, value: V) -> Option<V> {
         self.dirty.insert(key.clone());
         self.entries.insert(key, value)
     }
 
-    pub(crate) fn remove(&mut self, key: &str) -> Option<V> {
+    pub fn remove(&mut self, key: &str) -> Option<V> {
         let removed = self.entries.remove(key)?;
         self.dirty.insert(key.to_string());
         Some(removed)
     }
 
-    pub(crate) fn entry_or_insert_with(
-        &mut self,
-        key: String,
-        value: impl FnOnce() -> V,
-    ) -> &mut V {
+    pub fn entry_or_insert_with(&mut self, key: String, value: impl FnOnce() -> V) -> &mut V {
         self.dirty.insert(key.clone());
         self.entries.entry(key).or_insert_with(value)
     }
 
-    pub(crate) fn dirty_keys(&self) -> &BTreeSet<String> {
+    #[must_use]
+    pub fn dirty_keys(&self) -> &BTreeSet<String> {
         &self.dirty
     }
 
     /// Whether saving must replace the whole stored namespace.
-    pub(crate) fn is_replaced(&self) -> bool {
+    #[must_use]
+    pub fn is_replaced(&self) -> bool {
         self.replaced
     }
 
     /// Records that every change has been persisted.
-    pub(crate) fn mark_persisted(&mut self) {
+    pub fn mark_persisted(&mut self) {
         self.dirty.clear();
         self.replaced = false;
     }
@@ -164,30 +163,32 @@ impl<'de, V: Deserialize<'de>> Deserialize<'de> for TrackedMap<V> {
 /// A string set with the same change tracking as [`TrackedMap`]. It
 /// serializes as a sequence.
 #[derive(Clone, Default, PartialEq, Eq)]
-pub(crate) struct TrackedSet {
+pub struct TrackedSet {
     map: TrackedMap<()>,
 }
 
 impl TrackedSet {
-    pub(crate) fn persisted(values: BTreeSet<String>) -> Self {
+    #[must_use]
+    pub fn persisted(values: BTreeSet<String>) -> Self {
         Self {
             map: TrackedMap::persisted(values.into_iter().map(|value| (value, ())).collect()),
         }
     }
 
-    pub(crate) fn remove(&mut self, value: &str) -> bool {
+    pub fn remove(&mut self, value: &str) -> bool {
         self.map.remove(value).is_some()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &String> {
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
         self.map.keys()
     }
 
-    pub(crate) fn tracked(&self) -> &TrackedMap<()> {
+    #[must_use]
+    pub fn tracked(&self) -> &TrackedMap<()> {
         &self.map
     }
 
-    pub(crate) fn mark_persisted(&mut self) {
+    pub fn mark_persisted(&mut self) {
         self.map.mark_persisted();
     }
 }
@@ -224,17 +225,27 @@ impl<'de> Deserialize<'de> for TrackedSet {
 /// namespaced JSON entries. Entries may also hold `claims`, strings that must be
 /// unique within a namespace, which the store enforces with a primary key so a
 /// save never has to revalidate untouched entries.
-pub(crate) struct KeyedStateStore {
+pub struct KeyedStateStore {
     connection: Connection,
+}
+
+impl std::fmt::Debug for KeyedStateStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeyedStateStore")
+            .field("path", &self.connection.path())
+            .finish_non_exhaustive()
+    }
 }
 
 impl KeyedStateStore {
     /// Opens or creates the store for writing. The caller holds the workflow
     /// lock that serializes writers.
-    pub(crate) fn open(path: &Path) -> Result<Self, AppError> {
+    pub fn open(path: &Path) -> Result<Self, AppError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(AppError::operation)?;
         }
+        restrict_to_owner(path)?;
         let connection = Connection::open(path).map_err(AppError::operation)?;
         Self::configure(&connection)?;
         connection
@@ -279,7 +290,7 @@ impl KeyedStateStore {
     }
 
     /// Opens an existing store without creating or modifying anything.
-    pub(crate) fn open_read_only(path: &Path) -> Result<Option<Self>, AppError> {
+    pub fn open_read_only(path: &Path) -> Result<Option<Self>, AppError> {
         if !path.is_file() {
             return Ok(None);
         }
@@ -300,7 +311,7 @@ impl KeyedStateStore {
     }
 
     /// Whether a complete initial write has been committed.
-    pub(crate) fn is_initialized(&self) -> Result<bool, AppError> {
+    pub fn is_initialized(&self) -> Result<bool, AppError> {
         Ok(self.raw_meta(INITIALIZED_KEY)?.is_some())
     }
 
@@ -323,7 +334,7 @@ impl KeyedStateStore {
         }
     }
 
-    pub(crate) fn meta<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, AppError> {
+    pub fn meta<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, AppError> {
         self.raw_meta(key)?
             .map(|value| {
                 serde_json::from_str(&value).map_err(|error| {
@@ -333,7 +344,7 @@ impl KeyedStateStore {
             .transpose()
     }
 
-    pub(crate) fn load_map<V: DeserializeOwned>(
+    pub fn load_map<V: DeserializeOwned>(
         &self,
         namespace: &str,
     ) -> Result<TrackedMap<V>, AppError> {
@@ -343,7 +354,7 @@ impl KeyedStateStore {
     /// The stored entries of `namespace`, for callers that enrich them in
     /// memory (for example with content kept outside the store) before
     /// tracking changes with [`TrackedMap::persisted`].
-    pub(crate) fn load_entries<V: DeserializeOwned>(
+    pub fn load_entries<V: DeserializeOwned>(
         &self,
         namespace: &str,
     ) -> Result<BTreeMap<String, V>, AppError> {
@@ -369,7 +380,7 @@ impl KeyedStateStore {
         Ok(entries)
     }
 
-    pub(crate) fn load_set(&self, namespace: &str) -> Result<TrackedSet, AppError> {
+    pub fn load_set(&self, namespace: &str) -> Result<TrackedSet, AppError> {
         Ok(TrackedSet::persisted(
             self.load_map::<()>(namespace)?
                 .into_iter()
@@ -379,7 +390,7 @@ impl KeyedStateStore {
     }
 
     /// Runs `write` in one transaction, committing only when it succeeds.
-    pub(crate) fn write(
+    pub fn write(
         &mut self,
         write: impl FnOnce(&KeyedStateWriter<'_>) -> Result<(), AppError>,
     ) -> Result<(), AppError> {
@@ -392,12 +403,33 @@ impl KeyedStateStore {
     }
 }
 
-pub(crate) struct KeyedStateWriter<'a> {
+/// Creates the database file owner-only before `SQLite` opens it, and tightens
+/// an existing one. `SQLite` gives its `-wal` and `-shm` files the same mode.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) -> Result<(), AppError> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .map_err(AppError::operation)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(AppError::operation)
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // One fallible contract across platforms.
+fn restrict_to_owner(_path: &Path) -> Result<(), AppError> {
+    Ok(())
+}
+
+pub struct KeyedStateWriter<'a> {
     transaction: &'a rusqlite::Transaction<'a>,
 }
 
 impl KeyedStateWriter<'_> {
-    pub(crate) fn set_meta<T: Serialize>(&self, key: &str, value: &T) -> Result<(), AppError> {
+    pub fn set_meta<T: Serialize>(&self, key: &str, value: &T) -> Result<(), AppError> {
         let value = serde_json::to_string(value).map_err(AppError::operation)?;
         self.transaction
             .execute(
@@ -409,19 +441,45 @@ impl KeyedStateWriter<'_> {
         Ok(())
     }
 
-    pub(crate) fn delete_meta(&self, key: &str) -> Result<(), AppError> {
+    pub fn delete_meta(&self, key: &str) -> Result<(), AppError> {
         self.transaction
             .execute("DELETE FROM meta WHERE key = ?1", [key])
             .map_err(AppError::operation)?;
         Ok(())
     }
 
+    /// Upserts one entry of `namespace` without claims.
+    pub fn put<V: Serialize>(&self, namespace: &str, key: &str, value: &V) -> Result<(), AppError> {
+        let encoded = serde_json::to_string(value).map_err(AppError::operation)?;
+        self.transaction
+            .execute(
+                "INSERT INTO entries (namespace, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value",
+                params![namespace, key, encoded],
+            )
+            .map_err(AppError::operation)?;
+        Ok(())
+    }
+
+    /// Deletes one entry of `namespace` and its claims, if present.
+    pub fn delete(&self, namespace: &str, key: &str) -> Result<(), AppError> {
+        for table in ["entries", "claims"] {
+            self.transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE namespace = ?1 AND key = ?2"),
+                    params![namespace, key],
+                )
+                .map_err(AppError::operation)?;
+        }
+        Ok(())
+    }
+
     /// Marks the store as completely written; see [`KeyedStateStore::is_initialized`].
-    pub(crate) fn mark_initialized(&self) -> Result<(), AppError> {
+    pub fn mark_initialized(&self) -> Result<(), AppError> {
         self.set_meta(INITIALIZED_KEY, &true)
     }
 
-    pub(crate) fn clear_namespace(&self, namespace: &str) -> Result<(), AppError> {
+    pub fn clear_namespace(&self, namespace: &str) -> Result<(), AppError> {
         for table in ["entries", "claims"] {
             self.transaction
                 .execute(
@@ -437,7 +495,7 @@ impl KeyedStateWriter<'_> {
     /// with their claims and absent ones are deleted; a replaced map rewrites
     /// the namespace. A claim already held by another key fails the write with
     /// `conflict`.
-    pub(crate) fn write_dirty<V: Serialize>(
+    pub fn write_dirty<V: Serialize>(
         &self,
         namespace: &str,
         map: &TrackedMap<V>,
@@ -449,7 +507,7 @@ impl KeyedStateWriter<'_> {
 
     /// As [`Self::write_dirty`], storing `encode(value)` instead of the value's
     /// own JSON.
-    pub(crate) fn write_dirty_as<V>(
+    pub fn write_dirty_as<V>(
         &self,
         namespace: &str,
         map: &TrackedMap<V>,
@@ -599,6 +657,29 @@ mod tests {
             BTreeMap::from([("one".to_string(), "remote-2".to_string())])
         );
         assert!(loaded.dirty_keys().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempdir().expect("temporary directory");
+        let path = temporary.path().join("state.sqlite");
+        let mut store = KeyedStateStore::open(&path).expect("store");
+        store
+            .write(|writer| writer.set_meta("profile", &"wiki"))
+            .expect("write");
+        for file in [path.clone(), path.with_extension("sqlite-wal")] {
+            if file.exists() {
+                let mode = fs::metadata(&file).expect("metadata").permissions().mode();
+                assert_eq!(mode & 0o777, 0o600, "{}", file.display());
+            }
+        }
+        drop(store);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("loosen");
+        drop(KeyedStateStore::open(&path).expect("reopen"));
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "reopening tightens an existing store");
     }
 
     #[test]
