@@ -4114,8 +4114,29 @@ fn try_structured_path(
         .merge_policy
         .decision_for(input.path, kind, options.merge_automation)
         .map_err(|error| error.to_string())?;
-    if decision.resolution != MergeResolution::Structured {
-        return Ok(None);
+    match decision.resolution {
+        MergeResolution::Structured => {}
+        MergeResolution::RequireReview => return Ok(None),
+        MergeResolution::PreferLocal => {
+            // Only a surviving regular file wins; a local deletion still
+            // needs review rather than silently removing shared state.
+            let Some(local) = input.local.filter(|object| is_projectable_blob(object)) else {
+                return Ok(None);
+            };
+            return Ok(Some((
+                GitResolvedPath {
+                    path: input.path.to_string(),
+                    mode: Some(local.mode.clone()),
+                    data: local.data.clone(),
+                },
+                GitAutomaticResolution {
+                    path: input.path.to_string(),
+                    kind,
+                    rule_id: decision.rule_id,
+                    validation: automatic_validation(kind),
+                },
+            )));
+        }
     }
     let Some(crate::structured_merge::StructuredMergeOutcome::Resolved(Some(data))) =
         crate::structured_merge::merge_structured_path(
@@ -7622,6 +7643,77 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             serde_json::json!({"base": true, "reader": 2, "writer": 1})
         );
         assert!(!reader.join("removed.md").exists());
+    }
+
+    #[test]
+    fn obsidian_workspace_conflicts_keep_the_local_layout_without_review() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        fs::create_dir_all(writer.join(".obsidian/plugins/example")).expect("obsidian dir");
+        fs::write(
+            writer.join(".obsidian/workspace.json"),
+            "{\n  \"active\": \"base\"\n}\n",
+        )
+        .expect("base workspace");
+        fs::write(
+            writer.join(".obsidian/plugins/example/data.json"),
+            "{\n  \"setting\": \"base\"\n}\n",
+        )
+        .expect("base plugin data");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
+
+        fs::write(
+            writer.join(".obsidian/workspace.json"),
+            "{\n  \"active\": \"writer\"\n}\n",
+        )
+        .expect("writer workspace");
+        fs::write(
+            reader.join(".obsidian/workspace.json"),
+            "{\n  \"active\": \"reader\"\n}\n",
+        )
+        .expect("reader workspace");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("local layout wins");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Merged);
+        assert!(report.conflict.is_none());
+        assert_eq!(report.automatic_resolutions.len(), 1);
+        assert_eq!(
+            report.automatic_resolutions[0].path,
+            ".obsidian/workspace.json"
+        );
+        assert_eq!(
+            report.automatic_resolutions[0].rule_id,
+            "obsidian-workspace-local"
+        );
+        assert_eq!(
+            fs::read_to_string(reader.join(".obsidian/workspace.json")).expect("workspace"),
+            "{\n  \"active\": \"reader\"\n}\n"
+        );
+
+        // Plugin data holds real settings, so it still needs review.
+        fs::write(
+            writer.join(".obsidian/plugins/example/data.json"),
+            "{\n  \"setting\": \"writer\"\n}\n",
+        )
+        .expect("writer plugin data");
+        fs::write(
+            reader.join(".obsidian/plugins/example/data.json"),
+            "{\n  \"setting\": \"reader\"\n}\n",
+        )
+        .expect("reader plugin data");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer plugin push");
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("plugin conflict");
+        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
+        let conflict = report.conflict.expect("plugin data conflict");
+        assert_eq!(
+            conflict.paths,
+            vec![".obsidian/plugins/example/data.json".to_string()]
+        );
     }
 
     #[test]

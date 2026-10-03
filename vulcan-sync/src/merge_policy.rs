@@ -98,6 +98,10 @@ impl MergePathSelector {
 pub enum MergeResolution {
     Structured,
     RequireReview,
+    /// When both sides changed, keep this device's copy. Only for files that
+    /// hold per-device state (such as Obsidian's open panes), where neither
+    /// side carries content worth reviewing. Deliberately role-dependent.
+    PreferLocal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +128,12 @@ impl Default for MergePolicy {
         Self {
             version: MERGE_POLICY_SCHEMA_VERSION,
             rules: vec![
+                rule(
+                    "obsidian-workspace-local",
+                    ".obsidian/workspace*.json",
+                    &[MergeFileKind::ObsidianState],
+                    MergeResolution::PreferLocal,
+                ),
                 rule(
                     "obsidian-device-state-review",
                     ".obsidian/**",
@@ -282,7 +292,7 @@ mod tests {
         assert_eq!(policy.version, 1);
         assert_eq!(
             policy.rules.first().expect("first").id,
-            "obsidian-device-state-review"
+            "obsidian-workspace-local"
         );
         assert_eq!(policy.rules.last().expect("last").id, "fallback-review");
         let first = policy.policy_hash().expect("hash");
@@ -296,16 +306,47 @@ mod tests {
     #[test]
     fn ordered_rules_and_local_ceiling_never_increase_automation() {
         let policy = MergePolicy::default();
+        for path in [
+            ".obsidian/workspace.json",
+            ".obsidian/workspace-mobile.json",
+        ] {
+            assert_eq!(
+                policy
+                    .resolution_for(
+                        path,
+                        MergeFileKind::ObsidianState,
+                        MergeAutomation::AllowPolicy,
+                    )
+                    .expect("resolution"),
+                MergeResolution::PreferLocal
+            );
+        }
         assert_eq!(
             policy
                 .resolution_for(
                     ".obsidian/workspace.json",
                     MergeFileKind::ObsidianState,
-                    MergeAutomation::AllowPolicy,
+                    MergeAutomation::RequireReview,
                 )
-                .expect("resolution"),
+                .expect("ceiling"),
             MergeResolution::RequireReview
         );
+        for path in [
+            ".obsidian/app.json",
+            ".obsidian/plugins/example/data.json",
+            ".obsidian/plugins/example/workspace.json",
+        ] {
+            assert_eq!(
+                policy
+                    .resolution_for(
+                        path,
+                        MergeFileKind::ObsidianState,
+                        MergeAutomation::AllowPolicy,
+                    )
+                    .expect("resolution"),
+                MergeResolution::RequireReview
+            );
+        }
         let selected_state_policy = MergePolicy {
             version: MERGE_POLICY_SCHEMA_VERSION,
             rules: vec![

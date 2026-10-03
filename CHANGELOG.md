@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Conflicts in Obsidian's `.obsidian/workspace*.json` (open panes and layout) no longer stop a
+  sync for review: when both devices changed it, this device's copy is kept. The new
+  `prefer_local` merge-policy resolution can also be used in a shared `sync.merge_policy` for other
+  per-device state; `sync.merge_automation = "require_review"` still turns it into review.
+
 - The daemon job ledger moved from `jobs.json`, rewritten whole on every job change, to a SQLite
   store with one row per job (`daemon/jobs.sqlite`); running-job progress is no longer written to
   disk at all, and `daemon status` reads it from the running daemon. The JSON ledger is imported
