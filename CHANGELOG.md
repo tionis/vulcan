@@ -21,6 +21,10 @@
 
 ### Fixed
 
+- A structured sync merge whose result matched this device's files no longer retries until it
+  gives up. Building the merged tree reused the private sync index and left it without file stat
+  data, so the following working-tree check reported unchanged files as modified.
+
 - `vulcan sync resolve <id> --side …` without `--group` no longer fails with "the remote live ref
   no longer matches" after another device synced unrelated changes. The choice now applies to every
   unfinished conflict group on the current live tree, and a live commit not yet fetched is fetched.

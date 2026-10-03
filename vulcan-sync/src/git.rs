@@ -3730,13 +3730,11 @@ impl GitEngine for GitCliEngine {
                 detail: "a merge resolution must name at least one conflicted path".to_string(),
             });
         }
-        let index_path = repository.sync_index();
-        std::fs::create_dir_all(
-            index_path
-                .parent()
-                .expect("the sync index path always has a parent"),
-        )?;
-        remove_file_if_present(&index_path)?;
+        // Build in a scratch index. The shared sync index caches worktree stat
+        // data; a tree written here has none, and a later comparison that
+        // reused it would report an unchanged worktree as modified.
+        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
+        let index_path = scratch.path().join("index");
         let merge = self.merge_commits(
             repository,
             &request.accepted_remote,
@@ -3819,13 +3817,11 @@ impl GitEngine for GitCliEngine {
                     .to_string(),
             });
         }
-        let index_path = repository.sync_index();
-        std::fs::create_dir_all(
-            index_path
-                .parent()
-                .expect("the sync index path always has a parent"),
-        )?;
-        remove_file_if_present(&index_path)?;
+        // Build in a scratch index. The shared sync index caches worktree stat
+        // data; a tree written here has none, and a later comparison that
+        // reused it would report an unchanged worktree as modified.
+        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
+        let index_path = scratch.path().join("index");
         let merge = self.merge_commits(
             repository,
             &request.accepted_remote,
@@ -7988,6 +7984,55 @@ mod tests {
             run_git_capture(temporary.path(), &["write-tree"]),
             index_before
         );
+    }
+
+    #[test]
+    fn merge_resolution_keeps_the_worktree_comparison_index_valid() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("data.json"), "{\"value\":0}\n").expect("base");
+        let base = commit_all(temporary.path(), "base");
+        run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
+        fs::write(temporary.path().join("data.json"), "{\"value\":1}\n").expect("remote");
+        let remote = commit_all(temporary.path(), "remote");
+        run_git(
+            temporary.path(),
+            &["checkout", "--quiet", "-b", "local", base.as_str()],
+        );
+        fs::write(temporary.path().join("data.json"), "{\"value\":2}\n").expect("local");
+        let local = commit_all(temporary.path(), "local");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        assert!(engine
+            .worktree_matches_tree(&repository, &local)
+            .expect("initial comparison"));
+
+        // A resolution that keeps the local bytes produces the local tree;
+        // the following comparison must still see the untouched worktree.
+        let tree = engine
+            .resolve_merge_tree_with_paths(
+                &repository,
+                &GitContentMergeResolutionRequest {
+                    base,
+                    accepted_remote: remote,
+                    local_candidate: local.clone(),
+                    paths: vec![GitResolvedPath {
+                        path: "data.json".to_string(),
+                        mode: Some("100644".to_string()),
+                        data: Some(b"{\"value\":2}\n".to_vec()),
+                    }],
+                },
+            )
+            .expect("resolution tree");
+        assert_eq!(
+            tree,
+            engine.tree_oid(&repository, &local).expect("local tree")
+        );
+        assert!(engine
+            .worktree_matches_tree(&repository, &local)
+            .expect("comparison after resolution"));
     }
 
     #[test]
