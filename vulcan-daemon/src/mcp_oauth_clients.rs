@@ -666,6 +666,7 @@ mod tests {
     use super::*;
 
     /// Makes a hand-written fixture file owner-only, as the registry writes it.
+    #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
     fn set_owner_only(file: &File) -> std::io::Result<()> {
         #[cfg(unix)]
         {
