@@ -388,6 +388,36 @@ fn templater_native_interpolation_reads_file_and_frontmatter_context() {
 }
 
 #[test]
+fn templater_date_now_uses_moment_tokens_and_evaluated_reference_args() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+
+    // Regression: `dddd` rendered as the day of month twice ("0202") and the
+    // `tp.file.title` reference was ignored in favour of the current date.
+    let rendered = render_template_request(TemplateRenderRequest {
+        paths: &paths,
+        vault_config: &config,
+        templates: &[],
+        template_path: None,
+        template_text: "# <% tp.file.title %> - <% tp.date.now(\"dddd\", 0, tp.file.title, \"YYYY-MM-DD\") %>\n<% tp.date.now(\"ddd D MMM [week] YYYY\", 1, tp.file.title, \"YYYY-MM-DD\") %>\n",
+        target_path: "Journal/2026-09-02.md",
+        target_contents: None,
+        engine: TemplateEngineKind::Templater,
+        vars: &vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Dynamic,
+    })
+    .expect("template should render");
+
+    assert_eq!(
+        rendered.content,
+        "# 2026-09-02 - Wednesday\nThu 3 Sep week 2026\n"
+    );
+}
+
+#[test]
 fn templater_include_rejects_an_absolute_path() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());

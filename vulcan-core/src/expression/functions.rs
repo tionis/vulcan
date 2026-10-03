@@ -1790,10 +1790,10 @@ pub fn parse_date_with_format(text: &str, format: &str) -> Option<i64> {
             }
             let value = segment.parse::<i64>().ok()?;
             match token {
-                "yyyy" => year = Some(value),
-                "yy" => year = Some(2000 + value),
+                "yyyy" | "YYYY" => year = Some(value),
+                "yy" | "YY" => year = Some(2000 + value),
                 "MM" => month = Some(value),
-                "dd" => day = Some(value),
+                "dd" | "DD" => day = Some(value),
                 "HH" => hour = Some(value),
                 "mm" => minute = Some(value),
                 "ss" => second = Some(value),
@@ -2441,6 +2441,18 @@ mod tests {
         let ms = parse_date_string("2025-01-15").unwrap();
         let (y, m, d, _, _, _, _) = date_components(ms);
         assert_eq!((y, m, d), (2025, 1, 15));
+    }
+
+    #[test]
+    fn parse_date_with_format_accepts_uppercase_moment_tokens() {
+        for format in ["yyyy-MM-dd", "YYYY-MM-DD"] {
+            let ms = parse_date_with_format("2026-09-02", format).unwrap();
+            let (year, month, day, _, _, _, _) = date_components(ms);
+            assert_eq!((year, month, day), (2026, 9, 2), "{format}");
+        }
+        let ms = parse_date_with_format("02.09.26", "DD.MM.YY").unwrap();
+        let (year, month, day, _, _, _, _) = date_components(ms);
+        assert_eq!((year, month, day), (2026, 9, 2));
     }
 
     #[test]

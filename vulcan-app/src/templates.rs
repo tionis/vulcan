@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::{Arc, Mutex};
 use vulcan_core::config::TemplatesConfig;
-use vulcan_core::expression::functions::{
-    format_date, parse_date_like_string, parse_date_with_format,
-};
+use vulcan_core::expression::functions::{parse_date_like_string, parse_date_with_format};
 use vulcan_core::move_note;
 use vulcan_core::move_rewrite::move_note_unlocked;
 use vulcan_core::parser::parse_document;
@@ -1821,6 +1819,8 @@ impl<'a> TemplateSession<'a> {
         include_depth: usize,
     ) -> Result<TemplateValue, NativeExpressionError> {
         let signature = join_native_path(callee);
+        let args = self.eval_native_call_args(args, include_depth)?;
+        let args = args.as_slice();
         match signature.as_str() {
             "tp.date.now" => self.tp_date_now(args, false),
             "tp.date.tomorrow" => self.tp_date_fixed_offset(args, 1),
@@ -1853,6 +1853,33 @@ impl<'a> TemplateSession<'a> {
                 "templater function `{signature}` requires the `js_runtime` feature"
             ))),
         }
+    }
+
+    /// Templater evaluates call arguments like JavaScript does, so an argument
+    /// such as `tp.file.title` must reach the callee as its value. Non-scalar
+    /// results keep their original expression.
+    fn eval_native_call_args(
+        &mut self,
+        args: &[NativeExpression],
+        include_depth: usize,
+    ) -> Result<Vec<NativeExpression>, NativeExpressionError> {
+        args.iter()
+            .map(|arg| {
+                if !matches!(
+                    arg,
+                    NativeExpression::Path(_) | NativeExpression::Call { .. }
+                ) {
+                    return Ok(arg.clone());
+                }
+                Ok(match self.eval_native_expression(arg, include_depth)? {
+                    TemplateValue::String(value) => NativeExpression::String(value),
+                    TemplateValue::Number(value) => NativeExpression::Number(value),
+                    TemplateValue::Bool(value) => NativeExpression::Bool(value),
+                    TemplateValue::Null => NativeExpression::Null,
+                    TemplateValue::Array(_) | TemplateValue::Object(_) => arg.clone(),
+                })
+            })
+            .collect()
     }
 
     fn tp_date_now(
@@ -4973,6 +5000,43 @@ impl TemplateTimestamp {
             _ => token.to_string(),
         }
     }
+}
+
+/// Format a timestamp with Moment.js tokens, as Templater does. The Dataview
+/// formatter in `vulcan_core` uses Luxon tokens, where `dd` is the day of month
+/// rather than a weekday, so it must not be used for `tp.*` dates.
+fn format_date(ms: i64, format: &str) -> String {
+    let timestamp = TemplateTimestamp::from_millis(ms);
+    let format = if format.is_empty() {
+        "YYYY-MM-DD"
+    } else {
+        format
+    };
+    let mut rendered = String::with_capacity(format.len());
+    let mut remaining = format;
+    while let Some(character) = remaining.chars().next() {
+        if character == '[' {
+            if let Some(end) = remaining.find(']') {
+                rendered.push_str(&remaining[1..end]);
+                remaining = &remaining[end + 1..];
+                continue;
+            }
+        }
+        let (value, consumed) = if remaining.starts_with("SSS") {
+            (format!("{:03}", ms.rem_euclid(1_000)), 3)
+        } else if character == 'x' {
+            (ms.to_string(), 1)
+        } else if character == 'X' {
+            (ms.div_euclid(1_000).to_string(), 1)
+        } else if let Some(token) = TemplateTimestamp::next_obsidian_token(remaining) {
+            (timestamp.token_value(token), token.len())
+        } else {
+            (character.to_string(), character.len_utf8())
+        };
+        rendered.push_str(&value);
+        remaining = &remaining[consumed..];
+    }
+    rendered
 }
 
 fn ordinal_day(day: i64) -> String {
