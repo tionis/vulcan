@@ -99,5 +99,8 @@ repository's `core.sshCommand` is gone: plain `git` quietly falls back to ordina
 `vulcan sync transport bind` repairs it. An `error` that the bound device key cannot authenticate means
 the remote no longer accepts it (for example after a revocation); Vulcan never unbinds for the user, so
 explain the options (`vulcan vault enroll <wiki>` after the key is authorized again, or
-`vulcan sync transport unbind`) and let them choose.
+`vulcan sync transport unbind`) and let them choose. If the diagnostic says this process uses a
+different device than the installation's bound one (for example only the daemon fails), the process
+reads the wrong identity directory: check its `HOME`/`XDG_DATA_HOME` and never re-bind, which would
+lock the installation key out. Re-bind only when the diagnostic says the key itself changed.
 

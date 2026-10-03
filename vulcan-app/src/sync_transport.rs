@@ -174,6 +174,38 @@ fn eligible_key(store: &DeviceIdentityStore) -> Result<(String, PathBuf), String
     Ok((device_id, key))
 }
 
+/// Explains why the identity this process uses is not the bound one. When the
+/// installation's own identity is the bound one, this process is reading a
+/// different identity directory (a different `HOME` or `XDG_DATA_HOME`, as a
+/// service environment can have), and re-binding would lock the installation
+/// key out; only a genuinely replaced key should be re-bound.
+fn binding_mismatch(
+    store: &DeviceIdentityStore,
+    current: &str,
+    bound: &str,
+    installation: Option<&DeviceIdentityStore>,
+) -> String {
+    let installation = installation.filter(|installation| {
+        installation.directory() != store.directory()
+            && installation
+                .device_id()
+                .ok()
+                .flatten()
+                .is_some_and(|id| id == bound)
+    });
+    match installation {
+        Some(installation) => format!(
+            "this process uses device {current} from {}, but the vault is bound to this installation's device {bound} in {}; check this process's HOME and XDG_DATA_HOME (for a daemon, its service environment) and do not re-bind, which would lock the installation key out",
+            store.directory().display(),
+            installation.directory().display()
+        ),
+        None => format!(
+            "the device key changed since binding (bound to {bound}, this process uses {current} from {}); if the key was replaced on purpose, run `vulcan sync transport bind` again",
+            store.directory().display()
+        ),
+    }
+}
+
 /// POSIX-quote one word for the shell command line Git runs.
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -328,14 +360,19 @@ fn git_engine_with_store(
 ) -> GitCliEngine {
     match load_binding(paths, state) {
         Ok(None) => engine,
-        Ok(Some(record)) => match store.map(eligible_key) {
-            Some(Ok((device_id, key))) if device_id == record.device_id => {
+        Ok(Some(record)) => match store.map(|store| (store, eligible_key(store))) {
+            Some((_, Ok((device_id, key)))) if device_id == record.device_id => {
                 engine.with_ssh_command(ssh_command_for(&key))
             }
-            Some(Ok(_)) => engine.with_ssh_command(failing_ssh_command(
-                "the device key changed since binding; re-bind",
-            )),
-            Some(Err(reason)) => engine.with_ssh_command(failing_ssh_command(&reason)),
+            Some((store, Ok((device_id, _)))) => {
+                engine.with_ssh_command(failing_ssh_command(&binding_mismatch(
+                    store,
+                    &device_id,
+                    &record.device_id,
+                    DeviceIdentityStore::user_default().ok().as_ref(),
+                )))
+            }
+            Some((_, Err(reason))) => engine.with_ssh_command(failing_ssh_command(&reason)),
             None => engine.with_ssh_command(failing_ssh_command("no device identity directory")),
         },
         Err(error) => engine.with_ssh_command(failing_ssh_command(&error.to_string())),
@@ -480,9 +517,14 @@ pub(crate) fn transport_status_with_store(
     };
     let (transport, diagnostic) = match eligible_key(store) {
         Ok((device_id, _)) if device_id == record.device_id => (GitTransportState::Usable, None),
-        Ok(_) => (
+        Ok((device_id, _)) => (
             GitTransportState::DeviceKeyUnavailable,
-            Some("the device key changed since binding; re-bind".to_owned()),
+            Some(binding_mismatch(
+                store,
+                &device_id,
+                &record.device_id,
+                DeviceIdentityStore::user_default().ok().as_ref(),
+            )),
         ),
         Err(reason) => (GitTransportState::DeviceKeyUnavailable, Some(reason)),
     };
@@ -1150,6 +1192,54 @@ mod tests {
             None,
             "a failed bind writes no Git config"
         );
+    }
+
+    #[test]
+    fn a_mismatched_identity_says_whether_to_re_bind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let installation = DeviceIdentityStore::at(dir.path().join("installation"));
+        let bound = installation
+            .ensure_device_id()
+            .expect("installation identity");
+        let stray = DeviceIdentityStore::at(dir.path().join("stray"));
+        let current = stray.ensure_device_id().expect("stray identity");
+
+        // The installation key is the bound one: this process reads the wrong
+        // directory, and re-binding would lock the installation out.
+        let wrong_directory = binding_mismatch(&stray, &current, &bound, Some(&installation));
+        assert!(wrong_directory.contains(&current));
+        assert!(wrong_directory.contains(&bound));
+        assert!(wrong_directory.contains("XDG_DATA_HOME"));
+        assert!(wrong_directory.contains("do not re-bind"));
+
+        // No identity on this installation is the bound one: the key really
+        // changed, so re-binding is the remedy.
+        let other = DeviceIdentityStore::at(dir.path().join("other"));
+        let other_id = other.ensure_device_id().expect("other identity");
+        for installation in [None, Some(&other), Some(&stray)] {
+            let replaced = binding_mismatch(&stray, &current, &bound, installation);
+            assert!(replaced.contains("changed since binding"), "{replaced}");
+            assert!(replaced.contains("vulcan sync transport bind"));
+            assert!(!replaced.contains("do not re-bind"));
+        }
+        assert_ne!(other_id, bound);
+    }
+
+    #[test]
+    fn transport_status_names_both_identities_on_a_mismatch() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
+        let replacement = DeviceIdentityStore::at(fx.dir.path().join("replacement"));
+        let current = replacement
+            .ensure_device_id()
+            .expect("replacement identity");
+        let bound = fx.store.device_id().unwrap().expect("bound identity");
+
+        let state = transport_status_with_store(&fx.paths, &fx.state, &replacement).unwrap();
+        assert_eq!(state.state, GitTransportState::DeviceKeyUnavailable);
+        let diagnostic = state.diagnostic.expect("diagnostic");
+        assert!(diagnostic.contains(&current));
+        assert!(diagnostic.contains(&bound));
     }
 
     #[test]

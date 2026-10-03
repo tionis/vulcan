@@ -4,6 +4,11 @@
 
 ### Changed
 
+- A device-key mismatch now names both devices and the identity directory in use. When the
+  installation's own key is the bound one, the message says this process reads a different
+  identity directory (check its `HOME`/`XDG_DATA_HOME`) and warns against re-binding, instead of
+  advising "re-bind", which would have locked the installation key out.
+
 - Sync conflict resolution errors now say what to do next. A refusal because the live branch moved,
   a conflicted file changed again, or the worktree is out of date names `vulcan sync run` and when
   to use `--group`, instead of "require a fresh reconciliation" or "the remote live ref no longer

@@ -202,6 +202,7 @@ deploy key in the forge.
 | `pending`: "a forge login is required" | OAuth configured, not logged in. | `vulcan sync forge login --wiki <id>`, then enroll again. |
 | Probe says the remote refused the key | Key not authorized, or a read-only deploy key. | Authorize it (`vulcan sync forge authorize-self`), or ask an administrator. |
 | Git says the device key is unavailable | The identity changed or its files are unreadable. | `vulcan device show`; re-run `vulcan vault enroll <id>`; `vulcan device repair-permissions` for loose permissions. |
+| Only one process (such as the daemon) says it uses a different device than the bound one | That process reads another identity directory, usually a different `HOME` or `XDG_DATA_HOME`. | Fix that process's environment; do not re-bind, which would lock the installation key out. |
 | Plain `git` ignores the key | `core.sshCommand` is owned by another tool, or Vulcan moved. | `vulcan sync transport status`; `vulcan sync transport bind` refreshes it. |
 | A daemon sync fails for one vault only | That vault is not authorized for this key. | `vulcan sync doctor <id>` and `vulcan vault enroll <id>`. |
 | Hardware or card-backed key never works unattended | Signing needs a touch or PIN. | Use `ambient` for that host; the device key is file-backed by design. |

@@ -101,6 +101,12 @@ impl DeviceIdentityStore {
         Ok(Self::at(directory))
     }
 
+    /// The directory this store reads its identity from.
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     /// Construct a store at an explicit identity directory, primarily useful
     /// for tests and platform adapters.
     #[must_use]
