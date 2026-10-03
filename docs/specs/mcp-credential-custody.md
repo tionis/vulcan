@@ -33,9 +33,23 @@ OAuth client registry version 2 stores client metadata, a bound namespace, and o
 references, never inline client secrets. Public clients declaring `none` have no secret reference.
 Confidential clients declare `client_secret_basic` or `client_secret_post` and require the exact
 instance/client-derived reference. Unknown providers, namespace/reference substitution, missing
-credentials, malformed metadata, and unsupported versions fail closed. Registry publication remains
-atomic and cross-process locked; every lookup reloads durable state. An older/direct version-1
+credentials, malformed metadata, and unsupported versions fail closed. An older/direct version-1
 reader refuses version 2 rather than silently ignoring credentials.
+
+A named remote's registrations are rows of the owner-only SQLite store that also holds its
+connection grants (`daemon/mcp-authorizations.sqlite`), keyed by the instance's credential
+namespace, so one remote never sees another's clients. Each row carries the same reference-only
+metadata as version 2. Registration takes the store's cross-process writer lock and writes one
+row; every lookup reads the current row. Because dynamic registration is unauthenticated, each
+registration also drops the remote's clients that no connection grant refers to once they were
+registered more than a day ago, then deletes their secrets, and a remote holds at most 4,096
+clients. A client keeps working while any grant, including an ended grant still retained for
+audit, refers to it. A standalone `vulcan mcp --http` registry without custody uses its own store
+beside the configured JSON path and keeps the inline secrets that path held.
+
+The JSON registry is still the migration source: once it holds only references, the first start
+imports it into the store and keeps it as `oauth-clients.json.migrated`. A version-1 registry with
+inline secrets keeps refusing named startup until the explicit migration below has run.
 
 ## Explicit legacy migration
 

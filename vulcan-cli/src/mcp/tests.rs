@@ -2877,7 +2877,8 @@ fn failed_registration_save_does_not_publish_a_client() {
     let mut context = dcr_test_context(&VaultPaths::new(temporary.path()));
     let registry = temporary.path().join("oauth-clients.json");
     context.oauth_clients = Arc::new(OAuthClientRegistry::at(registry.clone()).expect("registry"));
-    fs::create_dir(&registry).expect("block registry replacement with a directory");
+    fs::create_dir(registry.with_extension("sqlite"))
+        .expect("block registry replacement with a directory");
     let response = handle_local_oauth_register(&context, &dcr_test_request("failure"));
     assert_eq!(response.status, 500);
     assert!(context.oauth_clients.list().is_err());
@@ -3153,16 +3154,13 @@ fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
             client_id_issued_at: 1,
         })
         .expect("save registry");
+    let store = registry.with_extension("sqlite");
     assert_eq!(
-        fs::metadata(&registry)
-            .expect("metadata")
-            .permissions()
-            .mode()
-            & 0o777,
+        fs::metadata(&store).expect("metadata").permissions().mode() & 0o777,
         0o600
     );
     assert!(OAuthClientRegistry::at(registry.clone()).is_ok());
-    fs::set_permissions(&registry, fs::Permissions::from_mode(0o644)).expect("loosen mode");
+    fs::set_permissions(&store, fs::Permissions::from_mode(0o644)).expect("loosen mode");
     assert!(OAuthClientRegistry::at(registry).is_err());
 }
 

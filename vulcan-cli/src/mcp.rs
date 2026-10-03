@@ -918,16 +918,13 @@ fn run_mcp_http_server_inner(
             #[cfg(feature = "oauth")]
             oauth_codes: Arc::new(McpAuthorizationCodeMap::default()),
             #[cfg(feature = "oauth")]
-            oauth_clients: Arc::new(
-                match options.oauth_credentials.as_ref() {
-                    Some(credentials) => OAuthClientRegistry::with_secret_store(
-                        oauth_clients_path(paths, options),
-                        credentials.client_custody().map_err(CliError::operation)?,
-                    ),
-                    None => OAuthClientRegistry::at(oauth_clients_path(paths, options)),
-                }
-                .map_err(CliError::operation)?,
-            ),
+            oauth_clients: Arc::new(match options.oauth_credentials.as_ref() {
+                Some(credentials) => credentials
+                    .client_registry(oauth_clients_path(paths, options))
+                    .map_err(CliError::operation)?,
+                None => OAuthClientRegistry::at(oauth_clients_path(paths, options))
+                    .map_err(CliError::operation)?,
+            }),
             #[cfg(feature = "oauth")]
             oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(feature = "oauth")]

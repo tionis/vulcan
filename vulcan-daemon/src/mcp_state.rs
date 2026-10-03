@@ -626,7 +626,7 @@ impl McpAuthorizationStore {
     /// Opens the store for writing, importing the JSON state of earlier
     /// versions once and keeping it as `mcp-authorizations.json.migrated`.
     /// The caller holds the writer lock.
-    fn open_writable(&self) -> Result<KeyedStateStore, McpStateError> {
+    pub(crate) fn open_writable(&self) -> Result<KeyedStateStore, McpStateError> {
         check_private_file(&self.path)?;
         let mut store = KeyedStateStore::open(&self.path)?;
         if store.is_initialized()? {
@@ -861,7 +861,7 @@ fn validate_family(
 
 /// Refuses a state file that is not a private regular file. Returns whether
 /// it exists.
-fn check_private_file(path: &Path) -> Result<bool, McpStateError> {
+pub(crate) fn check_private_file(path: &Path) -> Result<bool, McpStateError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -924,25 +924,66 @@ fn load_legacy_state(path: &Path) -> Result<Option<AuthorizationState>, McpState
     Ok(Some(state))
 }
 
-struct StateLock {
+/// The writer lock of one store: `<store>.lock` beside it, owner-only, never
+/// followed through a symlink. Every writer of the store, including the OAuth
+/// client registry sharing it, takes this lock.
+pub(crate) struct StateLock {
     _file: File,
 }
 
 impl StateLock {
-    fn acquire(state_path: &Path) -> Result<Self, McpStateError> {
-        let parent = state_path.parent().ok_or_else(|| {
+    pub(crate) fn acquire(store_path: &Path) -> Result<Self, McpStateError> {
+        let parent = store_path.parent().ok_or_else(|| {
             McpStateError::Invalid("authorization state path has no parent".into())
         })?;
         fs::create_dir_all(parent)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(parent.join("mcp-authorizations.lock"))?;
+        let lock_path = store_path.with_extension("lock");
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = options.open(&lock_path)?;
+        if !file.metadata()?.is_file() {
+            return Err(McpStateError::Invalid(format!(
+                "{} must be a regular lock file",
+                lock_path.display()
+            )));
+        }
+        // Lock files of earlier versions were created with the default mode.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         file.lock_exclusive()?;
         Ok(Self { _file: file })
     }
+}
+
+/// The client IDs that connection grants in `store` refer to.
+pub(crate) fn referenced_client_ids(
+    store: &KeyedStateStore,
+) -> Result<BTreeSet<String>, McpStateError> {
+    #[derive(Deserialize)]
+    struct GrantClient {
+        client_id: String,
+    }
+    Ok(store
+        .load_entries::<GrantClient>(GRANTS)?
+        .into_values()
+        .map(|grant| grant.client_id)
+        .collect())
 }
 
 fn generate_secret() -> Result<RefreshTokenSecret, McpStateError> {

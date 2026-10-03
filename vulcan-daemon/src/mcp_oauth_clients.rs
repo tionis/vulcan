@@ -1,19 +1,31 @@
 //! Durable dynamic OAuth client registrations shared by MCP hosting modes.
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use subtle::ConstantTimeEq;
+use vulcan_app::keyed_state::KeyedStateStore;
 use vulcan_secrets::{
     SecretBytes, SecretName, SecretProvider, SecretReference, SecretStore, SecretStoreError,
 };
 
+use crate::mcp_state::{
+    check_private_file, referenced_client_ids, McpAuthorizationStore, McpStateError, StateLock,
+};
+
 const REGISTRY_VERSION: u32 = 1;
+/// The size limit of a legacy JSON registry.
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
+const CLIENTS: &str = "oauth-clients";
+/// The scope of a standalone registry without secret custody.
+const LOCAL_SCOPE: &str = "local";
+const MAX_CLIENTS_PER_SCOPE: usize = 4_096;
+/// How long a registered client may go without any connection grant before a
+/// later registration drops it. Clients complete authorization within minutes.
+pub const UNUSED_CLIENT_GRACE_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RegisteredOAuthClient {
@@ -160,39 +172,85 @@ impl From<serde_json::Error> for OAuthClientRegistryError {
 
 #[derive(Debug)]
 pub struct OAuthClientRegistry {
-    path: Option<PathBuf>,
-    custody: Option<OAuthClientSecretCustody>,
+    durable: Option<DurableClients>,
     ephemeral: Mutex<BTreeMap<String, RegisteredOAuthClient>>,
 }
 
+/// Registrations kept as rows of a `SQLite` store, keyed by
+/// `<scope>/<client_id>`. Named remotes share the store of their connection
+/// grants, so a registration can drop clients that no grant refers to.
+#[derive(Debug)]
+struct DurableClients {
+    store_path: PathBuf,
+    /// The JSON registry of earlier versions, imported once.
+    legacy_path: PathBuf,
+    scope: String,
+    custody: Option<OAuthClientSecretCustody>,
+    authorizations: Option<McpAuthorizationStore>,
+}
+
 impl OAuthClientRegistry {
-    /// Use a durable, cross-process registry. Existing bare-array files are read without mutation.
+    /// A standalone durable registry in `<path>.sqlite`, importing the JSON
+    /// registry at `path` written by earlier versions.
     pub fn at(path: PathBuf) -> Result<Self, OAuthClientRegistryError> {
-        let _lock = RegistryLock::acquire(&path)?;
-        let _ = load_clients(&path)?;
-        Ok(Self {
-            path: Some(path),
+        Self::durable(DurableClients {
+            store_path: path.with_extension("sqlite"),
+            legacy_path: path,
+            scope: LOCAL_SCOPE.to_string(),
             custody: None,
-            ephemeral: Mutex::new(BTreeMap::new()),
+            authorizations: None,
         })
     }
 
-    /// Named hosts require reference-only metadata and fail closed on legacy secrets.
+    /// A standalone registry whose client secrets live in a secret store.
+    /// Legacy registries with inline secrets fail closed until migrated.
     pub fn with_secret_store(
         path: PathBuf,
         custody: OAuthClientSecretCustody,
     ) -> Result<Self, OAuthClientRegistryError> {
-        let _lock = RegistryLock::acquire(&path)?;
-        let _ = load_clients_with_custody(&path, Some(&custody), false)?;
-        Ok(Self {
-            path: Some(path),
+        Self::durable(DurableClients {
+            store_path: path.with_extension("sqlite"),
+            legacy_path: path,
+            scope: custody.namespace.as_str().to_string(),
             custody: Some(custody),
+            authorizations: None,
+        })
+    }
+
+    /// The registry of a named remote, stored beside its connection grants.
+    /// Registering a client drops this remote's clients that no grant refers
+    /// to once their registration is older than a day, with their secrets.
+    pub fn with_authorizations(
+        authorizations: McpAuthorizationStore,
+        legacy_path: PathBuf,
+        custody: OAuthClientSecretCustody,
+    ) -> Result<Self, OAuthClientRegistryError> {
+        Self::durable(DurableClients {
+            store_path: authorizations.path().to_path_buf(),
+            legacy_path,
+            scope: custody.namespace.as_str().to_string(),
+            custody: Some(custody),
+            authorizations: Some(authorizations),
+        })
+    }
+
+    fn durable(clients: DurableClients) -> Result<Self, OAuthClientRegistryError> {
+        {
+            let _lock = StateLock::acquire(&clients.store_path)?;
+            clients.import_legacy()?;
+        }
+        // Fail at startup, not on the first client, when rows are unreadable.
+        clients.list()?;
+        Ok(Self {
+            durable: Some(clients),
             ephemeral: Mutex::new(BTreeMap::new()),
         })
     }
 
-    /// Explicit, resumable migration. Dry-run only inspects the source metadata:
-    /// no credential reads, provider writes, registry lock creation, or publication.
+    /// Explicit, resumable migration of a legacy JSON registry's inline
+    /// secrets into the secret store. Dry-run only inspects the source
+    /// metadata: no credential reads, provider writes, lock creation, or
+    /// publication.
     pub fn migrate_secrets(
         path: &Path,
         custody: &OAuthClientSecretCustody,
@@ -221,7 +279,7 @@ impl OAuthClientRegistry {
                 migrated_clients: None,
             });
         }
-        let _lock = RegistryLock::acquire(path)?;
+        let _lock = StateLock::acquire(path)?;
         let clients = load_clients_with_custody(path, Some(custody), true)?;
         save_clients_with_custody(path, &clients, Some(custody))?;
         Ok(OAuthClientSecretMigration {
@@ -235,8 +293,7 @@ impl OAuthClientRegistry {
     #[must_use]
     pub fn ephemeral() -> Self {
         Self {
-            path: None,
-            custody: None,
+            durable: None,
             ephemeral: Mutex::new(BTreeMap::new()),
         }
     }
@@ -245,11 +302,8 @@ impl OAuthClientRegistry {
         &self,
         client_id: &str,
     ) -> Result<Option<RegisteredOAuthClient>, OAuthClientRegistryError> {
-        if let Some(path) = &self.path {
-            let _lock = RegistryLock::acquire(path)?;
-            return Ok(
-                load_clients_with_custody(path, self.custody.as_ref(), false)?.remove(client_id),
-            );
+        if let Some(durable) = &self.durable {
+            return durable.get(client_id);
         }
         Ok(self
             .ephemeral
@@ -260,13 +314,8 @@ impl OAuthClientRegistry {
     }
 
     pub fn list(&self) -> Result<Vec<RegisteredOAuthClient>, OAuthClientRegistryError> {
-        if let Some(path) = &self.path {
-            let _lock = RegistryLock::acquire(path)?;
-            return Ok(
-                load_clients_with_custody(path, self.custody.as_ref(), false)?
-                    .into_values()
-                    .collect(),
-            );
+        if let Some(durable) = &self.durable {
+            return durable.list();
         }
         Ok(self
             .ephemeral
@@ -277,24 +326,15 @@ impl OAuthClientRegistry {
             .collect())
     }
 
-    /// Publish a client under the same lock used by all durable readers and writers.
+    /// Publish a client under the writer lock of its store.
     pub fn register(&self, client: RegisteredOAuthClient) -> Result<(), OAuthClientRegistryError> {
         if client.client_id.is_empty() {
             return Err(OAuthClientRegistryError::Invalid(
                 "client ID must not be empty".to_string(),
             ));
         }
-        if let Some(path) = &self.path {
-            let _lock = RegistryLock::acquire(path)?;
-            let mut clients = load_clients_with_custody(path, self.custody.as_ref(), false)?;
-            if clients.contains_key(&client.client_id) {
-                return Err(OAuthClientRegistryError::Invalid(format!(
-                    "duplicate client ID `{}`",
-                    client.client_id
-                )));
-            }
-            clients.insert(client.client_id.clone(), client);
-            return save_clients_with_custody(path, &clients, self.custody.as_ref());
+        if let Some(durable) = &self.durable {
+            return durable.register(&client);
         }
         let mut clients = self
             .ephemeral
@@ -308,6 +348,249 @@ impl OAuthClientRegistry {
         }
         clients.insert(client.client_id.clone(), client);
         Ok(())
+    }
+}
+
+/// One registration row. With secret custody the row holds only a bound
+/// reference; a standalone registry without custody keeps the secret inline
+/// in its owner-only store, as its JSON file did.
+#[derive(Deserialize, Serialize)]
+struct ClientRow {
+    client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_reference: Option<SecretReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_secret: Option<String>,
+    redirect_uris: Vec<String>,
+    client_name: Option<String>,
+    token_endpoint_auth_method: String,
+    client_id_issued_at: u64,
+}
+
+impl DurableClients {
+    fn key(&self, client_id: &str) -> String {
+        format!("{}/{client_id}", self.scope)
+    }
+
+    fn get(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<RegisteredOAuthClient>, OAuthClientRegistryError> {
+        let Some(store) = self.open_readable()? else {
+            return Ok(None);
+        };
+        store
+            .entry::<ClientRow>(CLIENTS, &self.key(client_id))?
+            .map(|row| self.resolve(row))
+            .transpose()
+    }
+
+    fn list(&self) -> Result<Vec<RegisteredOAuthClient>, OAuthClientRegistryError> {
+        let Some(store) = self.open_readable()? else {
+            return Ok(Vec::new());
+        };
+        self.rows(&store)?
+            .into_values()
+            .map(|row| self.resolve(row))
+            .collect()
+    }
+
+    fn register(&self, client: &RegisteredOAuthClient) -> Result<(), OAuthClientRegistryError> {
+        let _lock = StateLock::acquire(&self.store_path)?;
+        let mut store = self.open_writable()?;
+        let key = self.key(&client.client_id);
+        if store.entry::<serde_json::Value>(CLIENTS, &key)?.is_some() {
+            return Err(OAuthClientRegistryError::Invalid(format!(
+                "duplicate client ID `{}`",
+                client.client_id
+            )));
+        }
+        let mut rows = self.rows(&store)?;
+        let unused = self.unused_clients(&store, &rows, client.client_id_issued_at)?;
+        rows.retain(|key, _| !unused.contains(key));
+        if rows.len() >= MAX_CLIENTS_PER_SCOPE {
+            return Err(OAuthClientRegistryError::Invalid(format!(
+                "registry already holds {MAX_CLIENTS_PER_SCOPE} clients"
+            )));
+        }
+        let row = self.row(client)?;
+        store.write(|writer| {
+            for key in &unused {
+                writer.delete(CLIENTS, key)?;
+            }
+            writer.put(CLIENTS, &key, &row)
+        })?;
+        // Secrets go only after their rows; a leftover secret is inert.
+        if let Some(custody) = &self.custody {
+            for key in &unused {
+                let client_id = &key[self.scope.len() + 1..];
+                match custody.store.delete(&custody.reference(client_id).name) {
+                    Ok(()) | Err(SecretStoreError::Missing) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// This scope's clients that no connection grant refers to and that
+    /// registered more than [`UNUSED_CLIENT_GRACE_SECONDS`] before `now`.
+    /// Dynamic registration is unauthenticated, so without this anyone who
+    /// can reach the endpoint could fill the registry.
+    fn unused_clients(
+        &self,
+        store: &KeyedStateStore,
+        rows: &BTreeMap<String, ClientRow>,
+        now: u64,
+    ) -> Result<BTreeSet<String>, OAuthClientRegistryError> {
+        if self.authorizations.is_none() {
+            return Ok(BTreeSet::new());
+        }
+        let referenced = referenced_client_ids(store)?;
+        let cutoff = now.saturating_sub(UNUSED_CLIENT_GRACE_SECONDS);
+        Ok(rows
+            .iter()
+            .filter(|(_, row)| {
+                row.client_id_issued_at < cutoff && !referenced.contains(&row.client_id)
+            })
+            .map(|(key, _)| key.clone())
+            .collect())
+    }
+
+    /// This scope's rows, keyed by store key.
+    fn rows(
+        &self,
+        store: &KeyedStateStore,
+    ) -> Result<BTreeMap<String, ClientRow>, OAuthClientRegistryError> {
+        let prefix = format!("{}/", self.scope);
+        let mut rows = store.load_entries::<ClientRow>(CLIENTS)?;
+        rows.retain(|key, _| key.starts_with(&prefix));
+        Ok(rows)
+    }
+
+    fn row(&self, client: &RegisteredOAuthClient) -> Result<ClientRow, OAuthClientRegistryError> {
+        let (secret_reference, client_secret) = match &self.custody {
+            Some(custody) => {
+                let stored = StoredOAuthClient::from_client(client, custody)?;
+                // Bind the secret before any row can refer to it.
+                if !client.client_secret.is_empty() {
+                    custody.ensure_secret(client)?;
+                }
+                (stored.secret_reference, None)
+            }
+            None => (None, Some(client.client_secret.clone())),
+        };
+        Ok(ClientRow {
+            client_id: client.client_id.clone(),
+            secret_reference,
+            client_secret,
+            redirect_uris: client.redirect_uris.clone(),
+            client_name: client.client_name.clone(),
+            token_endpoint_auth_method: client.token_endpoint_auth_method.clone(),
+            client_id_issued_at: client.client_id_issued_at,
+        })
+    }
+
+    fn resolve(&self, row: ClientRow) -> Result<RegisteredOAuthClient, OAuthClientRegistryError> {
+        match (&self.custody, row.client_secret) {
+            (Some(custody), None) => StoredOAuthClient {
+                client_id: row.client_id,
+                secret_reference: row.secret_reference,
+                redirect_uris: row.redirect_uris,
+                client_name: row.client_name,
+                token_endpoint_auth_method: row.token_endpoint_auth_method,
+                client_id_issued_at: row.client_id_issued_at,
+            }
+            .resolve(custody),
+            (None, Some(client_secret)) if row.secret_reference.is_none() => {
+                Ok(RegisteredOAuthClient {
+                    client_id: row.client_id,
+                    client_secret,
+                    redirect_uris: row.redirect_uris,
+                    client_name: row.client_name,
+                    token_endpoint_auth_method: row.token_endpoint_auth_method,
+                    client_id_issued_at: row.client_id_issued_at,
+                })
+            }
+            _ => Err(OAuthClientRegistryError::Invalid(
+                "client credential custody does not match this registry".into(),
+            )),
+        }
+    }
+
+    /// The store if it exists. Never creates or tightens anything, so a store
+    /// that became accessible to others fails closed.
+    fn open_readable(&self) -> Result<Option<KeyedStateStore>, OAuthClientRegistryError> {
+        if !check_private_file(&self.store_path)? {
+            return Ok(None);
+        }
+        KeyedStateStore::open(&self.store_path)
+            .map(Some)
+            .map_err(OAuthClientRegistryError::from)
+    }
+
+    /// Opens the store for writing; the caller holds the writer lock. A
+    /// shared store first imports its connection grants, so pruning never
+    /// misses a grant still waiting in the JSON state.
+    fn open_writable(&self) -> Result<KeyedStateStore, OAuthClientRegistryError> {
+        let mut store = if let Some(authorizations) = &self.authorizations {
+            authorizations.open_writable()?
+        } else {
+            check_private_file(&self.store_path)?;
+            KeyedStateStore::open(&self.store_path)?
+        };
+        self.import_into(&mut store)?;
+        Ok(store)
+    }
+
+    /// Imports the JSON registry of earlier versions, if one is waiting, and
+    /// keeps it as `<name>.json.migrated`. The caller holds the writer lock.
+    fn import_legacy(&self) -> Result<(), OAuthClientRegistryError> {
+        match fs::symlink_metadata(&self.legacy_path) {
+            Ok(_) => self.open_writable().map(drop),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn import_into(&self, store: &mut KeyedStateStore) -> Result<(), OAuthClientRegistryError> {
+        let marker = format!("oauth-clients-imported:{}", self.scope);
+        if store.meta::<bool>(&marker)?.is_some() {
+            return Ok(());
+        }
+        let legacy = load_clients_with_custody(&self.legacy_path, self.custody.as_ref(), false)?;
+        let rows = legacy
+            .values()
+            .map(|client| Ok((self.key(&client.client_id), self.row(client)?)))
+            .collect::<Result<Vec<_>, OAuthClientRegistryError>>()?;
+        store.write(|writer| {
+            for (key, row) in &rows {
+                writer.put(CLIENTS, key, row)?;
+            }
+            writer.set_meta(&marker, &true)
+        })?;
+        if fs::symlink_metadata(&self.legacy_path).is_ok() {
+            fs::rename(
+                &self.legacy_path,
+                self.legacy_path.with_extension("json.migrated"),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl From<vulcan_app::AppError> for OAuthClientRegistryError {
+    fn from(error: vulcan_app::AppError) -> Self {
+        Self::Invalid(error.to_string())
+    }
+}
+
+impl From<McpStateError> for OAuthClientRegistryError {
+    fn from(error: McpStateError) -> Self {
+        match error {
+            McpStateError::Io(error) => Self::Io(error),
+            other => Self::Invalid(other.to_string()),
+        }
     }
 }
 
@@ -405,12 +688,6 @@ impl StoredOAuthClient {
             client_id_issued_at: self.client_id_issued_at,
         })
     }
-}
-
-fn load_clients(
-    path: &Path,
-) -> Result<BTreeMap<String, RegisteredOAuthClient>, OAuthClientRegistryError> {
-    load_clients_with_custody(path, None, false)
 }
 
 fn load_clients_with_custody(
@@ -566,48 +843,6 @@ fn publish_registry(path: &Path, serialized: &[u8]) -> Result<(), OAuthClientReg
     Ok(())
 }
 
-struct RegistryLock {
-    _file: File,
-}
-
-impl RegistryLock {
-    fn acquire(path: &Path) -> Result<Self, OAuthClientRegistryError> {
-        let parent = path.parent().ok_or_else(|| {
-            OAuthClientRegistryError::Invalid("registry path has no parent".to_string())
-        })?;
-        fs::create_dir_all(parent)?;
-        let lock_path = path.with_extension("lock");
-        if let Ok(metadata) = fs::symlink_metadata(&lock_path) {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(OAuthClientRegistryError::Invalid(format!(
-                    "{} must be a regular lock file",
-                    lock_path.display()
-                )));
-            }
-            require_owner_only(&lock_path, &metadata)?;
-        }
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        set_no_follow(&mut options);
-        let file = options.open(&lock_path)?;
-        let opened = file.metadata()?;
-        if !opened.is_file() {
-            return Err(OAuthClientRegistryError::Invalid(format!(
-                "{} must be a regular lock file",
-                lock_path.display()
-            )));
-        }
-        require_owner_only(&lock_path, &opened)?;
-        file.lock_exclusive()?;
-        Ok(Self { _file: file })
-    }
-}
-
 fn set_no_follow(options: &mut OpenOptions) {
     #[cfg(unix)]
     {
@@ -664,6 +899,7 @@ fn require_owner_only(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     /// Makes a hand-written fixture file owner-only, as the registry writes it.
     #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
@@ -713,16 +949,20 @@ mod tests {
         public.token_endpoint_auth_method = "none".into();
         public.client_secret.clear();
         registry.register(public.clone()).unwrap();
-        let body = fs::read_to_string(&path).unwrap();
-        assert!(!body.contains("secret-confidential"));
-        assert!(!body.contains("\"client_secret\""));
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["version"], 2);
-        assert_eq!(
-            json["clients"][0]["secret_reference"]["provider"],
-            "file_v1"
-        );
-        assert!(json["clients"][1].get("secret_reference").is_none());
+        assert!(!path.exists());
+        let store = KeyedStateStore::open(&path.with_extension("sqlite")).unwrap();
+        let rows = store.load_entries::<serde_json::Value>(CLIENTS).unwrap();
+        let confidential = &rows["mcp-instance/confidential"];
+        assert_eq!(confidential["secret_reference"]["provider"], "file_v1");
+        assert!(confidential.get("client_secret").is_none());
+        assert!(rows["mcp-instance/public"]
+            .get("secret_reference")
+            .is_none());
+        drop(store);
+        let stored = fs::read(path.with_extension("sqlite")).unwrap();
+        assert!(!stored
+            .windows(b"secret-confidential".len())
+            .any(|window| window == b"secret-confidential"));
         let restarted =
             OAuthClientRegistry::with_secret_store(path.clone(), custody.clone()).unwrap();
         assert_eq!(
@@ -730,12 +970,14 @@ mod tests {
             Some(client("confidential"))
         );
         assert_eq!(restarted.get("public").unwrap(), Some(public));
-        assert!(OAuthClientRegistry::at(path.clone()).is_err());
-        assert!(OAuthClientRegistry::with_secret_store(
+        // Another instance's registry never sees these clients.
+        let other = OAuthClientRegistry::with_secret_store(
             path.clone(),
-            test_custody(temporary.path(), "other-instance")
+            test_custody(temporary.path(), "other-instance"),
         )
-        .is_err());
+        .unwrap();
+        assert!(other.list().unwrap().is_empty());
+        assert!(other.get("confidential").unwrap().is_none());
         let reference = custody.reference("confidential");
         custody.store.delete(&reference.name).unwrap();
         assert!(restarted.get("confidential").is_err());
@@ -810,13 +1052,16 @@ mod tests {
             registry.list().unwrap(),
             vec![client("first"), client("second")]
         );
+        // The migrated JSON was imported and kept only as a backup.
         assert_eq!(
             OAuthClientRegistry::migrate_secrets(&path, &ordinary, false)
                 .unwrap()
                 .migrated_clients,
-            Some(2)
+            None
         );
-        assert!(!fs::read_to_string(path).unwrap().contains("secret-first"));
+        assert!(!fs::read_to_string(path.with_extension("json.migrated"))
+            .unwrap()
+            .contains("secret-first"));
     }
 
     #[test]
@@ -874,9 +1119,192 @@ mod tests {
             second.get("client-0").expect("fresh lookup"),
             Some(client("client-0"))
         );
-        assert!(fs::read_to_string(path)
-            .expect("durable registry")
-            .contains("\"version\": 1"));
+        assert!(path.with_extension("sqlite").is_file());
+        assert!(!path.exists());
+    }
+
+    fn grant_for(client_id: &str, now: u64) -> crate::mcp_state::CreateConnectionGrant {
+        use vulcan_core::{PathPermission, PermissionGrant, ResourceLimits, ResourceSpecifier};
+        crate::mcp_state::CreateConnectionGrant {
+            remote_id: crate::mcp_remote::McpRemoteId::parse("personal").unwrap(),
+            remote_instance_id: ulid::Ulid::new(),
+            client_id: client_id.to_string(),
+            subject: "https://id.example.test/alice".to_string(),
+            wiki_id: crate::registry::WikiId::parse("personal").unwrap(),
+            permission_profile: "readonly".to_string(),
+            approved_permissions: PermissionGrant {
+                read: PathPermission {
+                    allow: vec![ResourceSpecifier::All],
+                    deny: Vec::new(),
+                },
+                write: PathPermission::default(),
+                refactor: PathPermission::default(),
+                git: false,
+                network: false,
+                network_domains: Vec::new(),
+                index: false,
+                config_read: false,
+                config_write: false,
+                execute: false,
+                shell: false,
+                limits: ResourceLimits::default(),
+            },
+            tool_packs: vec!["status".to_string()],
+            scopes: vec!["mcp:tools".to_string()],
+            audience: "https://mcp.example.test/personal".to_string(),
+            created_at: now,
+            expires_at: now + 3_600,
+        }
+    }
+
+    fn issued(id: &str, at: u64) -> RegisteredOAuthClient {
+        RegisteredOAuthClient {
+            client_id_issued_at: at,
+            ..client(id)
+        }
+    }
+
+    #[test]
+    fn named_registrations_share_the_grant_store_and_drop_unused_clients() {
+        let temporary = tempfile::tempdir().unwrap();
+        let authorizations = McpAuthorizationStore::at(temporary.path());
+        let custody = test_custody(temporary.path(), "mcp-instance");
+        let legacy = temporary
+            .path()
+            .join("mcp-remotes/personal/oauth-clients.json");
+        let registry = OAuthClientRegistry::with_authorizations(
+            authorizations.clone(),
+            legacy.clone(),
+            custody.clone(),
+        )
+        .unwrap();
+        registry.register(issued("connected", 1_000)).unwrap();
+        registry.register(issued("abandoned", 1_000)).unwrap();
+        authorizations
+            .create_grant(grant_for("connected", 1_000), false)
+            .unwrap();
+        assert!(authorizations.path().is_file());
+        assert_eq!(registry.list().unwrap().len(), 2);
+
+        // Within a day an unconnected client is still mid-authorization.
+        registry
+            .register(issued("recent", 1_000 + UNUSED_CLIENT_GRACE_SECONDS - 1))
+            .unwrap();
+        assert!(registry.get("abandoned").unwrap().is_some());
+
+        registry
+            .register(issued("later", 1_001 + UNUSED_CLIENT_GRACE_SECONDS))
+            .unwrap();
+        assert!(registry.get("abandoned").unwrap().is_none());
+        assert_eq!(
+            custody.store.inspect(&custody.reference("abandoned").name),
+            vulcan_secrets::SecretStoreState::Missing
+        );
+        let remaining = registry
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|client| client.client_id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            remaining,
+            BTreeSet::from(["connected".into(), "later".into(), "recent".into()])
+        );
+        let restarted =
+            OAuthClientRegistry::with_authorizations(authorizations, legacy, custody).unwrap();
+        assert_eq!(
+            restarted.get("connected").unwrap(),
+            Some(issued("connected", 1_000))
+        );
+    }
+
+    #[test]
+    fn pruning_respects_grants_still_waiting_in_the_legacy_json_state() {
+        let temporary = tempfile::tempdir().unwrap();
+        let custody = test_custody(temporary.path(), "mcp-instance");
+        // Grants written by an earlier version, before the SQLite store.
+        let source = tempfile::tempdir().unwrap();
+        let earlier = McpAuthorizationStore::at(source.path());
+        let grant = earlier
+            .create_grant(grant_for("connected", 1_000), false)
+            .unwrap();
+        let grants = KeyedStateStore::open(earlier.path())
+            .unwrap()
+            .load_entries::<serde_json::Value>("grants")
+            .unwrap();
+        let legacy_grants = temporary.path().join("daemon/mcp-authorizations.json");
+        fs::create_dir_all(legacy_grants.parent().unwrap()).unwrap();
+        fs::write(
+            &legacy_grants,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "grants": grants.values().collect::<Vec<_>>(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        set_owner_only(&File::open(&legacy_grants).unwrap()).unwrap();
+        // Clients written by an earlier version, after secret migration.
+        let legacy_clients = temporary.path().join("oauth-clients.json");
+        let staging = OAuthClientRegistry::ephemeral();
+        staging.register(issued("connected", 1_000)).unwrap();
+        save_clients_with_custody(
+            &legacy_clients,
+            &staging
+                .list()
+                .unwrap()
+                .into_iter()
+                .map(|client| (client.client_id.clone(), client))
+                .collect(),
+            Some(&custody),
+        )
+        .unwrap();
+
+        let authorizations = McpAuthorizationStore::at(temporary.path());
+        let registry = OAuthClientRegistry::with_authorizations(
+            authorizations.clone(),
+            legacy_clients.clone(),
+            custody,
+        )
+        .unwrap();
+        registry
+            .register(issued("later", 1_001 + UNUSED_CLIENT_GRACE_SECONDS))
+            .unwrap();
+        assert!(registry.get("connected").unwrap().is_some());
+        assert_eq!(authorizations.show_grant(grant.id).unwrap(), grant);
+        assert!(legacy_grants.with_extension("json.migrated").is_file());
+        assert!(legacy_clients.with_extension("json.migrated").is_file());
+    }
+
+    #[test]
+    fn a_full_registry_refuses_new_clients() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("oauth-clients.json");
+        let registry = OAuthClientRegistry::at(path.clone()).unwrap();
+        let mut store = KeyedStateStore::open(&path.with_extension("sqlite")).unwrap();
+        store
+            .write(|writer| {
+                for index in 0..MAX_CLIENTS_PER_SCOPE {
+                    let id = format!("client-{index}");
+                    let row = DurableClients {
+                        store_path: PathBuf::new(),
+                        legacy_path: PathBuf::new(),
+                        scope: LOCAL_SCOPE.into(),
+                        custody: None,
+                        authorizations: None,
+                    }
+                    .row(&client(&id))
+                    .expect("row");
+                    writer.put(CLIENTS, &format!("{LOCAL_SCOPE}/{id}"), &row)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        assert!(matches!(
+            registry.register(client("one-too-many")),
+            Err(OAuthClientRegistryError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -914,8 +1342,12 @@ mod tests {
             .register(client("new"))
             .expect("migrating registration");
         assert_eq!(registry.list().expect("migrated clients").len(), 2);
-        fs::write(&path, br#"{"version":2,"clients":[]}"#).expect("future version");
-        assert!(OAuthClientRegistry::at(path).is_err());
+        assert!(!path.exists());
+        assert!(path.with_extension("json.migrated").is_file());
+        let other = temporary.path().join("other-clients.json");
+        fs::write(&other, br#"{"version":2,"clients":[]}"#).expect("custody registry");
+        set_owner_only(&File::open(&other).expect("other handle")).expect("owner-only");
+        assert!(OAuthClientRegistry::at(other).is_err());
     }
 
     #[test]
@@ -923,10 +1355,11 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary state");
         let path = temporary.path().join("oauth-clients.json");
         let registry = OAuthClientRegistry::at(path.clone()).expect("store");
-        fs::create_dir(&path).expect("block publication with a directory");
+        let store = path.with_extension("sqlite");
+        fs::create_dir(&store).expect("block publication with a directory");
         assert!(registry.register(client("unpublished")).is_err());
         assert!(registry.get("unpublished").is_err());
-        fs::remove_dir(&path).expect("remove blocking directory");
+        fs::remove_dir(&store).expect("remove blocking directory");
         assert!(registry
             .get("unpublished")
             .expect("empty registry")

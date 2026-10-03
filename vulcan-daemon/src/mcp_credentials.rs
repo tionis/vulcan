@@ -6,6 +6,7 @@ use crate::mcp_oauth_clients::{
     OAuthClientSecretMigration,
 };
 use crate::mcp_remote::McpRemoteDefinition;
+use crate::mcp_state::McpAuthorizationStore;
 use base64::prelude::{Engine, BASE64_URL_SAFE_NO_PAD};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,7 @@ pub struct McpRemoteCredentials {
     bindings: ProtectedFileSecretStore,
     references: McpRemoteCredentialReferences,
     legacy_directory: PathBuf,
+    state_root: PathBuf,
 }
 
 impl std::fmt::Debug for McpRemoteCredentials {
@@ -115,7 +117,21 @@ impl McpRemoteCredentials {
             bindings: ProtectedFileSecretStore::at(state_root.join("mcp-credential-bindings")),
             references: McpRemoteCredentialReferences::for_instance(remote.instance_id),
             legacy_directory: state_root.join("mcp-remotes").join(remote.id.as_str()),
+            state_root: state_root.to_path_buf(),
         }
+    }
+
+    /// The remote's dynamic client registry, stored beside its connection
+    /// grants. `legacy_path` is where earlier versions kept it as JSON.
+    pub fn client_registry(
+        &self,
+        legacy_path: PathBuf,
+    ) -> Result<OAuthClientRegistry, McpCredentialError> {
+        Ok(OAuthClientRegistry::with_authorizations(
+            McpAuthorizationStore::at(&self.state_root),
+            legacy_path,
+            self.client_custody()?,
+        )?)
     }
 
     pub fn client_custody(&self) -> Result<OAuthClientSecretCustody, McpCredentialError> {

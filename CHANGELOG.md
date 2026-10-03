@@ -19,6 +19,15 @@
   `prefer_local` merge-policy resolution can also be used in a shared `sync.merge_policy` for other
   per-device state; `sync.merge_automation = "require_review"` still turns it into review.
 
+- A named MCP remote's dynamically registered OAuth clients moved from
+  `mcp-remotes/<name>/oauth-clients.json`, rewritten whole on every registration and capped at
+  1 MiB, into the store that holds its connection grants. Because registration needs no
+  authentication, anyone who could reach the endpoint could fill that file until new clients were
+  refused. Registration now drops clients that no connection grant refers to a day after they
+  registered, with their secrets. The JSON registry is imported on first start and kept as
+  `oauth-clients.json.migrated`; a registry that still holds inline secrets needs
+  `vulcan mcp remote migrate-credentials` first, as before. The foreground `vulcan mcp --http`
+  registry moved to SQLite beside its JSON path the same way.
 - Remote MCP connection grants and refresh-token families moved from
   `daemon/mcp-authorizations.json`, which every authenticated request parsed in full up to three
   times, to an owner-only SQLite store (`daemon/mcp-authorizations.sqlite`). A request now reads

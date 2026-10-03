@@ -469,7 +469,7 @@ Vulcan's own operational state (registries, journals, trust lists, credentials, 
 - **Large immutable content** (pull base snapshots, conflict evidence) stays in content-addressed files referenced by hash rather than inside a database.
 - Human-edited configuration remains TOML.
 
-Stores are deliberately per component rather than one database per vault or daemon: workflows keep independent locks, corruption stays contained, and a quiescent component's files can be copied safely. A cost that grows with vault size or history on every operation (whole-file rewrites, per-commit or per-entry processes) is treated as a defect.
+Stores are grouped by scope and sensitivity rather than merged into one database per vault or daemon: per-device daemon state, vault state, and a repository's sync caches live with what they describe; owner-only authorization state is not mixed with ordinary bookkeeping; and each component versions its own schema, so corruption or a failed migration stays contained and a quiescent component's files can be copied safely. Components whose records must change together share a store: remote MCP connection grants, refresh-token families, and the dynamic client registrations they refer to are one store, so registration can drop clients no grant uses. Because `keyed_state` already separates records into namespaces, two stores can later be merged by importing one into the other. A cost that grows with vault size or history on every operation (whole-file rewrites, per-commit or per-entry processes) is treated as a defect.
 
 #### Vault-native and canonical stores
 

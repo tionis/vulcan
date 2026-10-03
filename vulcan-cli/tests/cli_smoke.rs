@@ -8502,7 +8502,7 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
     use fs2::FileExt;
     use vulcan_daemon::mcp_credentials::{McpRemoteCredentialReferences, McpRemoteCredentials};
-    use vulcan_daemon::mcp_oauth_clients::{OAuthClientRegistry, RegisteredOAuthClient};
+    use vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient;
     use vulcan_secrets::{ProtectedFileSecretStore, SecretStore, SecretStoreState};
     let temporary = TempDir::new().unwrap();
     let config_home = temporary.path().join("config");
@@ -8563,10 +8563,17 @@ fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
         token_endpoint_auth_method: "client_secret_post".into(),
         client_id_issued_at: 1,
     };
-    OAuthClientRegistry::at(client_path.clone())
-        .unwrap()
-        .register(registered.clone())
-        .unwrap();
+    // A registry written by an earlier version, with its secret inline.
+    fs::write(
+        &client_path,
+        serde_json::to_vec(&serde_json::json!({ "version": 1, "clients": [&registered] })).unwrap(),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&client_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let before = fs::read(&client_path).unwrap();
     let authorization = vulcan_daemon::mcp_state::McpAuthorizationStore::at(&state_root);
     let now = std::time::SystemTime::now()
@@ -8660,13 +8667,6 @@ fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
         credentials.issuer_secret().unwrap(),
         "legacy-issuer-private-marker"
     );
-    assert_eq!(
-        OAuthClientRegistry::with_secret_store(client_path, credentials.client_custody().unwrap())
-            .unwrap()
-            .get("legacy-client")
-            .unwrap(),
-        Some(registered)
-    );
     assert!(legacy.join("oauth-signing-key").exists());
     assert_eq!(
         fs::read(authorization.path()).unwrap(),
@@ -8707,6 +8707,11 @@ fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
     for output in [&restored.stdout, &restored.stderr] {
         assert!(!String::from_utf8_lossy(output).contains("private-marker"));
     }
+    // Opening the migrated registry imports it beside the connection grants.
+    let clients = credentials.client_registry(client_path.clone()).unwrap();
+    assert_eq!(clients.get("legacy-client").unwrap(), Some(registered));
+    assert!(!client_path.exists());
+    assert!(client_path.with_extension("json.migrated").is_file());
 }
 
 #[test]
