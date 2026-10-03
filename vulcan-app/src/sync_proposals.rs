@@ -2174,7 +2174,7 @@ fn prepare_manual_resolution_scope(
         &conflict_store,
         &repository_key,
         &record,
-        &options_group_ids(proposal_options),
+        &options_group_ids(proposal_options, &record),
         &accepted,
     )?;
     let local = selection.as_ref().map_or_else(
@@ -2215,8 +2215,21 @@ fn prepare_manual_resolution_scope(
     })
 }
 
-fn options_group_ids(options: &ResolutionProposalOptions) -> Vec<String> {
-    let mut group_ids = options.group_ids.clone();
+/// The groups a proposal covers. A carried-forward replacement cannot be
+/// reconstructed by re-running its merge, so without an explicit selection it
+/// covers all of its groups, which overlay reviewed content on the live tree.
+fn options_group_ids(
+    options: &ResolutionProposalOptions,
+    record: &SyncConflictRecord,
+) -> Vec<String> {
+    let mut group_ids = if options.group_ids.is_empty() && record.carried_from.is_some() {
+        conflict_groups(record)
+            .into_iter()
+            .map(|group| group.id)
+            .collect()
+    } else {
+        options.group_ids.clone()
+    };
     group_ids.sort();
     group_ids.dedup();
     group_ids
@@ -2619,7 +2632,7 @@ fn locked_generation_inputs(
             &store,
             repository_key,
             record,
-            &options_group_ids(options),
+            &options_group_ids(options, record),
             accepted,
         )?,
         None => None,
@@ -2699,7 +2712,8 @@ fn prepare_resolution_scope(
             "conflict `{conflict_id}` was superseded by later synchronization and is retained only as history; choose a currently unresolved record from `vulcan sync conflicts`"
         )));
     }
-    let selected_paths = selected_paths_for_group_ids(&record, &options_group_ids(options))?;
+    let selected_paths =
+        selected_paths_for_group_ids(&record, &options_group_ids(options, &record))?;
     if require_agent_eligible {
         validate_agent_conflict_scope(&record, selected_paths.as_ref())?;
     }

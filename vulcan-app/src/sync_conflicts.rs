@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{
     conflict_recovery_ref, conflict_ref, conflict_resolved_ref, remote_conflict_ref,
-    GitAutomaticMergeValidation, GitCaptureRequest, GitConflictClassification, GitConflictScope,
-    GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest,
-    GitOid, GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict,
-    GitSyncOptions, GitSyncRefs, GitTreeEntry, SyncCancellationToken,
+    GitAutomaticMergeValidation, GitCaptureRequest, GitCarriedPath, GitConflictClassification,
+    GitConflictProjection, GitConflictRefs, GitConflictScope, GitConflictSide,
+    GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest, GitOid, GitPushResult,
+    GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict, GitSyncOptions,
+    GitSyncRefs, GitTreeEntry, SyncCancellationToken,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 4;
@@ -72,6 +73,12 @@ pub struct SyncConflictRecord {
     pub projection: Option<SyncConflictProjectionRecord>,
     pub paths: Vec<SyncConflictPathRecord>,
     pub diagnostics: String,
+    /// The overtaken conflict this one replaced when a sync carried it
+    /// forward onto a later live version. Such a record's local side is
+    /// already an ancestor of its remote side, so it resolves by overlaying
+    /// its groups on the live tree rather than by re-running the merge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2119,6 +2126,63 @@ fn selected_side_paths(
         .collect())
 }
 
+/// What one carry-forward pass changed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CarryForwardSummary {
+    /// Conflicts carried forward and superseded.
+    pub carried: usize,
+    /// Worktree paths rewritten with a merged local change, to publish next.
+    pub written_paths: Vec<String>,
+    /// Replacement conflicts recorded against the current frontier.
+    pub replacements: Vec<String>,
+}
+
+struct RecordCarryForward {
+    written_paths: Vec<String>,
+    replacement: Option<String>,
+}
+
+/// Resolves a conflict path inside the worktree, refusing anything but plain
+/// relative components.
+fn carried_worktree_path(work_tree: &Path, path: &str) -> Result<PathBuf, AppError> {
+    let relative = Path::new(path);
+    if path.is_empty()
+        || !relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(AppError::operation(format!(
+            "refusing unsafe conflict path `{path}`"
+        )));
+    }
+    Ok(work_tree.join(relative))
+}
+
+#[cfg(unix)]
+fn set_carried_mode(path: &Path, mode: Option<&str>) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+    let executable = mode == Some("100755");
+    let mut permissions = fs::metadata(path)
+        .map_err(AppError::operation)?
+        .permissions();
+    let current = permissions.mode();
+    let wanted = if executable {
+        current | ((current & 0o444) >> 2)
+    } else {
+        current & !0o111
+    };
+    if wanted != current {
+        permissions.set_mode(wanted);
+        fs::set_permissions(path, permissions).map_err(AppError::operation)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_carried_mode(_path: &Path, _mode: Option<&str>) -> Result<(), AppError> {
+    Ok(())
+}
+
 /// Leaf tree entries of `revision` keyed by path, without loading contents.
 fn tree_entries_by_path(
     engine: &dyn GitEngine,
@@ -2492,6 +2556,17 @@ impl SyncConflictStore {
         repository_key: &str,
         conflict: &GitSyncConflict,
     ) -> Result<SyncConflictRecord, AppError> {
+        self.persist_with_origin(engine, repository, repository_key, conflict, None)
+    }
+
+    fn persist_with_origin(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        repository_key: &str,
+        conflict: &GitSyncConflict,
+        carried_from: Option<&str>,
+    ) -> Result<SyncConflictRecord, AppError> {
         validate_hex_id("repository key", repository_key)?;
         validate_hex_id("conflict ID", &conflict.id)?;
         let directory = self.conflict_directory(repository_key, &conflict.id)?;
@@ -2585,6 +2660,7 @@ impl SyncConflictStore {
             }),
             paths,
             diagnostics: conflict.diagnostics.clone(),
+            carried_from: carried_from.map(str::to_string),
         };
         write_paged_record_noclobber(&directory, &record)?;
         self.prune_resolved_artifacts(repository_key)?;
@@ -3005,67 +3081,292 @@ impl SyncConflictStore {
         Ok(superseded)
     }
 
-    /// Supersedes unresolved conflicts that no resolution can complete any more:
-    /// every unfinished group has a path whose tree entry on the accepted
-    /// `frontier` differs from the conflict's recorded live input. Such groups
-    /// were overtaken by later accepted edits, so side, file, and editor
-    /// resolution all refuse them, and without this the record would stay
-    /// actionable forever. A record with even one group still resolvable on the
-    /// frontier remains actionable. The immutable evidence and preserved refs
-    /// are kept; only supersession metadata is written.
-    pub fn supersede_stale_unresolved(
+    /// Carries overtaken conflicts forward onto the accepted `frontier`.
+    ///
+    /// A conflict is overtaken when every unfinished group has a path whose
+    /// tree entry on the frontier differs from the conflict's recorded live
+    /// input: later accepted edits changed it again, so no resolution of the
+    /// recorded sides can complete it. Each such path is re-merged from the
+    /// preserved base and local sides onto the frontier version. Clean results
+    /// are written to the worktree as ordinary local edits for the next sync
+    /// to publish; paths that still conflict move to a replacement conflict
+    /// recorded against the frontier, which resolves like any other. The old
+    /// record is then superseded, and its evidence and refs are kept.
+    ///
+    /// Conflicts with any still-resolvable group, structural groups, or a
+    /// worktree that no longer matches the frontier are left untouched. The
+    /// caller holds the vault and repository locks.
+    pub fn carry_forward_stale_unresolved(
         &self,
         engine: &dyn GitEngine,
         repository: &GitRepository,
         repository_key: &str,
         frontier: &GitOid,
-    ) -> Result<usize, AppError> {
+        options: &GitSyncOptions,
+    ) -> Result<CarryForwardSummary, AppError> {
         validate_hex_id("repository key", repository_key)?;
+        let work_tree = repository.work_tree.clone().ok_or_else(|| {
+            AppError::operation("cannot carry sync conflicts forward in a bare repository")
+        })?;
         let mut frontier_entries: Option<BTreeMap<String, GitTreeEntry>> = None;
-        let mut superseded = 0;
+        let mut summary = CarryForwardSummary::default();
         for record in self.list(repository_key)? {
-            let progress = self.group_progress(repository_key, &record)?;
-            if self.resolution_state_with_progress(repository_key, &record.id, &progress)?
-                != SyncConflictResolutionState::Unresolved
-            {
+            let Some(paths) = self.overtaken_paths(
+                engine,
+                repository,
+                repository_key,
+                frontier,
+                &record,
+                &mut frontier_entries,
+            )?
+            else {
                 continue;
-            }
-            let unfinished = progress
-                .groups
-                .iter()
-                .filter(|group| {
-                    matches!(
-                        group.state,
-                        SyncConflictGroupState::Pending | SyncConflictGroupState::NeedsRebase
-                    )
-                })
-                .collect::<Vec<_>>();
-            // Without complete group evidence a hidden group might still be live.
-            if unfinished.is_empty() || !progress.groups_complete {
-                continue;
-            }
-            let original =
-                GitOid::parse(conflict_live_input(&record)?).map_err(AppError::operation)?;
-            if original == *frontier {
-                continue;
-            }
-            let frontier_entries = match &mut frontier_entries {
-                Some(entries) => entries,
-                slot => slot.insert(tree_entries_by_path(engine, repository, frontier)?),
             };
-            let original_entries = tree_entries_by_path(engine, repository, &original)?;
-            let all_stale = unfinished.iter().all(|group| {
-                group.paths.iter().any(|path| {
-                    original_entries.get(path.as_str()) != frontier_entries.get(path.as_str())
-                })
-            });
-            if !all_stale {
-                continue;
+            // One conflict's failure must not block the others or the sync.
+            if let Ok(Some(outcome)) = self.carry_forward_record(
+                engine, repository, &work_tree, frontier, options, &record, &paths,
+            ) {
+                summary.written_paths.extend(outcome.written_paths);
+                summary.replacements.extend(outcome.replacement);
+                summary.carried += 1;
             }
-            self.write_supersession(repository_key, &record.id, frontier.as_str(), None)?;
-            superseded += 1;
         }
-        Ok(superseded)
+        Ok(summary)
+    }
+
+    /// The unfinished paths of an unresolved conflict whose every unfinished
+    /// group was overtaken on `frontier`, or `None` when it is not overtaken.
+    fn overtaken_paths(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        repository_key: &str,
+        frontier: &GitOid,
+        record: &SyncConflictRecord,
+        frontier_entries: &mut Option<BTreeMap<String, GitTreeEntry>>,
+    ) -> Result<Option<Vec<String>>, AppError> {
+        let progress = self.group_progress(repository_key, record)?;
+        if self.resolution_state_with_progress(repository_key, &record.id, &progress)?
+            != SyncConflictResolutionState::Unresolved
+            || !progress.groups_complete
+            || record.base_revision.is_none()
+        {
+            return Ok(None);
+        }
+        let kinds = conflict_groups(record)
+            .into_iter()
+            .map(|group| (group.id, group.kind))
+            .collect::<BTreeMap<_, _>>();
+        let unfinished = progress
+            .groups
+            .iter()
+            .filter(|group| {
+                matches!(
+                    group.state,
+                    SyncConflictGroupState::Pending | SyncConflictGroupState::NeedsRebase
+                )
+            })
+            .collect::<Vec<_>>();
+        if unfinished.is_empty()
+            || unfinished
+                .iter()
+                .any(|group| kinds.get(&group.id) != Some(&SyncConflictGroupKind::Path))
+        {
+            return Ok(None);
+        }
+        let original = GitOid::parse(conflict_live_input(record)?).map_err(AppError::operation)?;
+        if original == *frontier {
+            return Ok(None);
+        }
+        let frontier_entries = match frontier_entries {
+            Some(entries) => entries,
+            slot => slot.insert(tree_entries_by_path(engine, repository, frontier)?),
+        };
+        let original_entries = tree_entries_by_path(engine, repository, &original)?;
+        let overtaken = unfinished.iter().all(|group| {
+            group.paths.iter().any(|path| {
+                original_entries.get(path.as_str()) != frontier_entries.get(path.as_str())
+            })
+        });
+        if !overtaken {
+            return Ok(None);
+        }
+        let mut paths = unfinished
+            .iter()
+            .flat_map(|group| group.paths.iter().cloned())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        Ok(Some(paths))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn carry_forward_record(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        work_tree: &Path,
+        frontier: &GitOid,
+        options: &GitSyncOptions,
+        record: &SyncConflictRecord,
+        paths: &[String],
+    ) -> Result<Option<RecordCarryForward>, AppError> {
+        let base = GitOid::parse(
+            record
+                .base_revision
+                .as_deref()
+                .ok_or_else(|| AppError::operation("conflict has no merge base"))?,
+        )
+        .map_err(AppError::operation)?;
+        let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+        let objects = |revision: &GitOid| {
+            engine
+                .path_objects(repository, revision, paths)
+                .map_err(AppError::operation)
+        };
+        let (base_objects, local_objects, current_objects) =
+            (objects(&base)?, objects(&local)?, objects(frontier)?);
+        let mut merged = Vec::new();
+        let mut unresolved = Vec::new();
+        for path in paths {
+            match vulcan_sync::merge_carried_path(
+                engine,
+                options,
+                path,
+                base_objects.get(path),
+                local_objects.get(path),
+                current_objects.get(path),
+            )
+            .map_err(AppError::operation)?
+            {
+                GitCarriedPath::Unchanged => {}
+                GitCarriedPath::Merged(resolved) => merged.push(resolved),
+                GitCarriedPath::Unresolved => unresolved.push(path.clone()),
+            }
+        }
+        // Merged bytes replace only files still exactly at the frontier
+        // version; an unsynchronized edit waits for the next sync instead.
+        let mut writes = Vec::with_capacity(merged.len());
+        for resolved in &merged {
+            let target = carried_worktree_path(work_tree, &resolved.path)?;
+            let expected = current_objects
+                .get(&resolved.path)
+                .and_then(|object| object.data.as_deref());
+            let metadata = fs::symlink_metadata(&target).ok();
+            if !metadata.is_some_and(|metadata| metadata.is_file())
+                || expected.is_none()
+                || fs::read(&target).ok().as_deref() != expected
+            {
+                return Ok(None);
+            }
+            writes.push((target, resolved));
+        }
+        for (target, resolved) in &writes {
+            durable_file::replace(target, resolved.data.as_deref().unwrap_or_default())?;
+            set_carried_mode(target, resolved.mode.as_deref())?;
+        }
+        let replacement = if unresolved.is_empty() {
+            None
+        } else {
+            Some(self.persist_carried_replacement(
+                engine,
+                repository,
+                &record.repository_key,
+                record,
+                &base,
+                &local,
+                frontier,
+                &unresolved,
+            )?)
+        };
+        self.write_supersession(
+            &record.repository_key,
+            &record.id,
+            frontier.as_str(),
+            replacement.as_deref(),
+        )?;
+        Ok(Some(RecordCarryForward {
+            written_paths: merged.into_iter().map(|resolved| resolved.path).collect(),
+            replacement,
+        }))
+    }
+
+    /// Records the still-conflicting paths against `frontier`: the preserved
+    /// base and local sides stay the same, and the frontier becomes both the
+    /// remote side and the applied projection, so side, file, and editor
+    /// resolution all work against what is live now.
+    #[allow(clippy::too_many_arguments)]
+    fn persist_carried_replacement(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        repository_key: &str,
+        record: &SyncConflictRecord,
+        base: &GitOid,
+        local: &GitOid,
+        frontier: &GitOid,
+        paths: &[String],
+    ) -> Result<String, AppError> {
+        let id = vulcan_sync::sync_conflict_id(
+            record.policy_version,
+            &record.policy_hash,
+            Some(base),
+            local,
+            frontier,
+            paths,
+        );
+        let preserved_ref = |role: &str, commit: &GitOid| {
+            let reference = conflict_ref(&id, role).map_err(AppError::operation)?;
+            engine
+                .update_ref(repository, &reference, commit)
+                .map_err(AppError::operation)?;
+            Ok::<_, AppError>(reference)
+        };
+        let preserved_refs = GitConflictRefs {
+            base: Some(preserved_ref("base", base)?),
+            local: preserved_ref("local", local)?,
+            remote: preserved_ref("remote", frontier)?,
+            record: preserved_ref("record", frontier)?,
+        };
+        let classifications = record
+            .paths
+            .iter()
+            .filter(|path| paths.contains(&path.path))
+            .filter_map(|path| path.classification.clone())
+            .collect();
+        let conflict = GitSyncConflict {
+            id: id.clone(),
+            scope: GitConflictScope::Paths,
+            base: Some(base.clone()),
+            remote: frontier.clone(),
+            local: local.clone(),
+            paths: paths.to_vec(),
+            classifications,
+            policy_version: record.policy_version,
+            policy_hash: record.policy_hash.clone(),
+            preserved_refs,
+            provenance_revision: frontier.clone(),
+            projection: Some(GitConflictProjection {
+                tree: engine
+                    .tree_oid(repository, frontier)
+                    .map_err(AppError::operation)?,
+                published: true,
+                applied: true,
+            }),
+            merge_tree: None,
+            diagnostics: format!(
+                "carried forward from conflict {}: these files changed again on the live branch and still conflict with this device's version",
+                record.id
+            ),
+        };
+        self.persist_with_origin(
+            engine,
+            repository,
+            repository_key,
+            &conflict,
+            Some(&record.id),
+        )?;
+        Ok(id)
     }
 
     fn write_supersession(
@@ -4572,6 +4873,7 @@ mod tests {
                 remote: absent_side("remote"),
             }],
             diagnostics: "conflict".to_string(),
+            carried_from: None,
         };
         assign_conflict_groups(record.scope, &mut record.paths);
         record
@@ -4756,6 +5058,7 @@ mod tests {
                 remote: absent_side("remote"),
             }],
             diagnostics: "CONFLICT (file location)".to_string(),
+            carried_from: None,
         };
 
         let error = reject_synthesized_path_side_resolution(&record)

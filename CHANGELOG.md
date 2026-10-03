@@ -38,10 +38,11 @@
   second, daemon-only key, so every vault bound to the device-key transport failed daemon syncs
   with "the device key changed since binding; re-bind" while `vulcan sync run` worked. The stray
   key under `~/.local/state/vulcan/sync/device-identity` is no longer read and can be deleted.
-- A sync conflict whose conflicted files were all changed again by later accepted syncs is now
-  superseded automatically instead of staying unresolved forever. No resolution could complete
-  such a conflict, so the wiki previously stayed marked conflicted. Its preserved evidence remains
-  inspectable; a conflict with any still-resolvable group stays active.
+- A sync conflict whose conflicted files were all changed again by later syncs no longer stays
+  unresolved forever. The next sync re-merges this device's version onto the live one: clean
+  merges are published automatically, and files that still conflict move to a new conflict that
+  resolves against the live version. Previously no resolution could complete such a conflict, so
+  the wiki stayed marked conflicted. The original conflict's evidence remains inspectable.
 
 - The trusted-vault list is written atomically and durably. A crash mid-write previously could
   truncate it, after which every vault was silently treated as untrusted.

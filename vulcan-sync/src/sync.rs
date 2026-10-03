@@ -4349,23 +4349,125 @@ fn conflict_identity(
             detail: error.to_string(),
         })
     })?;
+    Ok((
+        sync_conflict_id(policy.version, &policy_hash, base, local, remote, paths),
+        policy_hash,
+    ))
+}
+
+/// Deterministic conflict ID from the policy identity, merge base,
+/// order-independent candidate tips, and sorted conflicted paths.
+#[must_use]
+pub fn sync_conflict_id(
+    policy_version: u32,
+    policy_hash: &str,
+    base: Option<&GitOid>,
+    local: &GitOid,
+    remote: &GitOid,
+    paths: &[String],
+) -> String {
     let mut candidates = [local.as_str(), remote.as_str()];
     candidates.sort_unstable();
     let mut canonical_paths = paths.to_vec();
     canonical_paths.sort();
     canonical_paths.dedup();
     let identity = format!(
-        "{}\0{policy_hash}\0{}\0{}\0{}\0{}",
-        policy.version,
+        "{policy_version}\0{policy_hash}\0{}\0{}\0{}\0{}",
         base.map_or("-", GitOid::as_str),
         candidates[0],
         candidates[1],
         canonical_paths.join("\0")
     );
-    Ok((
-        blake3::hash(identity.as_bytes()).to_hex()[..32].to_string(),
-        policy_hash,
-    ))
+    blake3::hash(identity.as_bytes()).to_hex()[..32].to_string()
+}
+
+/// How a preserved local side fares when merged onto a later accepted version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitCarriedPath {
+    /// The accepted version already holds the local result; nothing to carry.
+    Unchanged,
+    /// The local change merges onto the accepted version without review.
+    Merged(GitResolvedPath),
+    /// The local change still conflicts with the accepted version.
+    Unresolved,
+}
+
+/// Merges one preserved conflict path's local side onto the current
+/// accepted version, as a sync would: a line merge first, then the shared
+/// merge policy's structured or `prefer_local` handling for paths that still
+/// overlap. Deletions, non-regular files, and mode conflicts stay unresolved.
+pub fn merge_carried_path(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    path: &str,
+    base: Option<&GitPathObject>,
+    local: Option<&GitPathObject>,
+    current: Option<&GitPathObject>,
+) -> Result<GitCarriedPath, GitSyncError> {
+    let same = |left: Option<&GitPathObject>, right: Option<&GitPathObject>| match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.mode == right.mode && left.oid == right.oid,
+        _ => false,
+    };
+    if same(local, current) || same(local, base) {
+        return Ok(GitCarriedPath::Unchanged);
+    }
+    let (Some(base), Some(local), Some(current)) = (base, local, current) else {
+        return Ok(GitCarriedPath::Unresolved);
+    };
+    if ![base, local, current].into_iter().all(is_projectable_blob) {
+        return Ok(GitCarriedPath::Unresolved);
+    }
+    let MergedObjectMode::Resolved(Some(mode)) =
+        merge_object_mode(Some(base), Some(local), Some(current))
+    else {
+        return Ok(GitCarriedPath::Unresolved);
+    };
+    let merged = |data: Vec<u8>| {
+        if current.data.as_deref() == Some(data.as_slice()) && current.mode == mode {
+            GitCarriedPath::Unchanged
+        } else {
+            GitCarriedPath::Merged(GitResolvedPath {
+                path: path.to_string(),
+                mode: Some(mode.clone()),
+                data: Some(data),
+            })
+        }
+    };
+    let sides = [
+        object_data(Some(base)),
+        object_data(Some(local)),
+        object_data(Some(current)),
+    ];
+    let kind = MergeFileKind::classify(path, &sides);
+    if kind != MergeFileKind::Binary {
+        if let Some(data) = engine.merge_file(
+            sides[0].unwrap_or_default(),
+            sides[1].unwrap_or_default(),
+            sides[2].unwrap_or_default(),
+        )? {
+            return Ok(merged(data));
+        }
+    }
+    let input = StructuredPathInput {
+        path,
+        base: Some(base),
+        local: Some(local),
+        remote: Some(current),
+        local_identity: local.oid.as_str(),
+        remote_identity: current.oid.as_str(),
+    };
+    Ok(
+        match try_structured_path(options, &input)
+            .map_err(|detail| GitSyncError::Git(GitEngineError::UnsupportedRepository { detail }))?
+        {
+            Some((resolved, _)) => match resolved.data {
+                Some(data) => merged(data),
+                None => GitCarriedPath::Unresolved,
+            },
+            None => GitCarriedPath::Unresolved,
+        },
+    )
 }
 
 struct ConflictPreservationRequest<'a> {
@@ -7643,6 +7745,92 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             serde_json::json!({"base": true, "reader": 2, "writer": 1})
         );
         assert!(!reader.join("removed.md").exists());
+    }
+
+    fn carried_object(data: &str) -> GitPathObject {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        data.hash(&mut hasher);
+        GitPathObject {
+            oid: GitOid::parse(format!("{:040x}", hasher.finish())).expect("object id"),
+            mode: "100644".to_string(),
+            kind: "blob".to_string(),
+            data: Some(data.as_bytes().to_vec()),
+        }
+    }
+
+    fn carry(path: &str, base: &str, local: Option<&str>, current: &str) -> GitCarriedPath {
+        let local = local.map(carried_object);
+        merge_carried_path(
+            &GitCliEngine::default(),
+            &GitSyncOptions::default(),
+            path,
+            Some(&carried_object(base)),
+            local.as_ref(),
+            Some(&carried_object(current)),
+        )
+        .expect("carried merge")
+    }
+
+    fn carried_bytes(outcome: GitCarriedPath) -> String {
+        match outcome {
+            GitCarriedPath::Merged(resolved) => {
+                String::from_utf8(resolved.data.expect("merged bytes")).expect("utf-8")
+            }
+            other => panic!("expected a merged result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn carried_paths_merge_like_a_sync_onto_the_current_version() {
+        // Already live, or never changed locally: nothing to carry.
+        assert_eq!(
+            carry("Note.md", "a\n", Some("l\n"), "l\n"),
+            GitCarriedPath::Unchanged
+        );
+        assert_eq!(
+            carry("Note.md", "a\n", Some("a\n"), "r\n"),
+            GitCarriedPath::Unchanged
+        );
+        // Non-overlapping line changes merge.
+        assert_eq!(
+            carried_bytes(carry(
+                "Note.md",
+                "a\nb\nc\n",
+                Some("L\nb\nc\n"),
+                "a\nb\nC\n"
+            )),
+            "L\nb\nC\n"
+        );
+        // Overlapping Markdown body edits still need review.
+        assert_eq!(
+            carry("Note.md", "a\n", Some("l\n"), "r\n"),
+            GitCarriedPath::Unresolved
+        );
+        // A local deletion is never carried silently.
+        assert_eq!(
+            carry("Note.md", "a\n", None, "r\n"),
+            GitCarriedPath::Unresolved
+        );
+        // Overlapping JSON keys use the structured merger.
+        let merged: serde_json::Value = serde_json::from_str(&carried_bytes(carry(
+            "data.json",
+            "{\"a\":1}",
+            Some("{\"a\":1,\"l\":2}"),
+            "{\"a\":1,\"r\":3}",
+        )))
+        .expect("merged JSON");
+        assert_eq!(merged, serde_json::json!({"a": 1, "l": 2, "r": 3}));
+        // The workspace layout keeps this device's copy.
+        assert_eq!(
+            carried_bytes(carry(
+                ".obsidian/workspace.json",
+                "{\"active\":\"base\"}",
+                Some("{\"active\":\"local\"}"),
+                "{\"active\":\"remote\"}",
+            )),
+            "{\"active\":\"local\"}"
+        );
     }
 
     #[test]

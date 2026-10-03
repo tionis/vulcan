@@ -558,6 +558,15 @@ pub trait GitEngine: Send + Sync {
     fn write_blob(&self, repository: &GitRepository, data: &[u8])
         -> Result<GitOid, GitEngineError>;
 
+    /// Three-way merges file contents line by line, as Git merges a text
+    /// file, without any repository state. Returns `None` when they conflict.
+    fn merge_file(
+        &self,
+        base: &[u8],
+        local: &[u8],
+        remote: &[u8],
+    ) -> Result<Option<Vec<u8>>, GitEngineError>;
+
     /// Writes multiple blobs while preserving input order. Engines may
     /// override this to use one bounded process transaction.
     fn write_blobs(
@@ -3803,6 +3812,32 @@ impl GitEngine for GitCliEngine {
             )?
             .trim(),
         )
+    }
+
+    fn merge_file(
+        &self,
+        base: &[u8],
+        local: &[u8],
+        remote: &[u8],
+    ) -> Result<Option<Vec<u8>>, GitEngineError> {
+        let directory = tempfile::tempdir()?;
+        let mut paths = Vec::with_capacity(3);
+        for (name, data) in [("local", local), ("base", base), ("remote", remote)] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, data)?;
+            paths.push(path);
+        }
+        let mut command = self.command();
+        command
+            .args(["merge-file", "-p", "--quiet", "--"])
+            .args(&paths);
+        let output = self.execute(command)?;
+        match output.status.code() {
+            Some(0) => Ok(Some(output.stdout)),
+            // The exit status counts conflicts, saturating at 127.
+            Some(1..=127) => Ok(None),
+            _ => Err(command_failed("merge file contents", &output)),
+        }
     }
 
     fn resolve_merge_tree_with_paths(

@@ -1349,7 +1349,7 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine(
 
 /// Runs a profile-aware synchronization cycle with the extra repository
 /// preflight required for unattended files-only operation.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Finite sync composes independent repository, state, observer, and policy inputs.
+#[allow(clippy::too_many_arguments)] // Finite sync composes independent repository, state, observer, and policy inputs.
 pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
     engine: &dyn GitEngine,
     paths: &VaultPaths,
@@ -1360,6 +1360,47 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
     profile: SyncContentProfile,
     unattended: bool,
 ) -> Result<VaultSyncReport, AppError> {
+    let (report, carried) = sync_git_vault_cycle(
+        engine,
+        paths,
+        options,
+        state_store,
+        cancellation,
+        delegate,
+        profile,
+        unattended,
+    )?;
+    if !carried {
+        return Ok(report);
+    }
+    // Carrying an overtaken conflict forward wrote merged local changes into
+    // the worktree; publish them in this same synchronization.
+    let (report, _) = sync_git_vault_cycle(
+        engine,
+        paths,
+        options,
+        state_store,
+        cancellation,
+        delegate,
+        profile,
+        unattended,
+    )?;
+    Ok(report)
+}
+
+/// One finite synchronization transaction, and whether it carried a conflict
+/// forward by writing merged local changes that still need publishing.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn sync_git_vault_cycle(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    cancellation: &SyncCancellationToken,
+    delegate: &mut dyn GitSyncObserver,
+    profile: SyncContentProfile,
+    unattended: bool,
+) -> Result<(VaultSyncReport, bool), AppError> {
     let started = Instant::now();
     let subprocesses_before = engine.subprocess_count();
     check_sync_start(cancellation)?;
@@ -1443,8 +1484,15 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
         )
     };
     let conflict_state_started = Instant::now();
-    let conflict_record =
-        persist_and_update_conflicts(engine, &sync, &mut journal, state_store, !options.dry_run)?;
+    let (conflict_record, carried) = persist_and_update_conflicts(
+        engine,
+        paths,
+        &effective_options,
+        &sync,
+        &mut journal,
+        state_store,
+        !options.dry_run,
+    )?;
     let conflict_state = conflict_state_started.elapsed();
     journal.git_dir = Some(sync.repository.git_dir.clone());
     journal.local_snapshot = sync.local_snapshot.as_ref().map(ToString::to_string);
@@ -1477,20 +1525,23 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
     );
     let operational_stats =
         sync_operational_stats(engine, &timings, &sync, conflict_record.as_ref());
-    Ok(VaultSyncReport {
-        sync,
-        cache_refresh,
-        cache_refresh_error,
-        registration,
-        conflict_record,
-        operational_stats,
-        state: VaultSyncStateReport {
-            repository_key,
-            journal_path,
-            recovered_from,
-            retained,
+    Ok((
+        VaultSyncReport {
+            sync,
+            cache_refresh,
+            cache_refresh_error,
+            registration,
+            conflict_record,
+            operational_stats,
+            state: VaultSyncStateReport {
+                repository_key,
+                journal_path,
+                recovered_from,
+                retained,
+            },
         },
-    })
+        carried,
+    ))
 }
 
 fn run_sync_backend_with_vault_lock(
@@ -1712,15 +1763,15 @@ fn refresh_cache_after_sync(
 
 fn supersede_obsolete_conflicts(
     engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
     sync: &GitSyncReport,
     current_conflict: Option<&SyncConflictRecord>,
     state_store: &SyncStateStore,
     journal: &SyncJournal,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let store = SyncConflictStore::from_state_store(state_store);
-    // The accepted live frontier this cycle ended on; stale groups are judged
-    // against it, never against a merely local revision.
-    let frontier = if let Some(record) = current_conflict {
+    if let Some(record) = current_conflict {
         let current_revision = record
             .provenance_revision
             .as_deref()
@@ -1730,77 +1781,124 @@ fn supersede_obsolete_conflicts(
             Some(&record.id),
             current_revision,
         )?;
-        Some(vulcan_sync::GitOid::parse(current_revision).map_err(AppError::operation)?)
-    } else {
-        if matches!(
-            sync.outcome,
-            GitSyncOutcome::Paused | GitSyncOutcome::Planned
-        ) {
-            return Ok(());
-        }
-        let current_revision = sync
-            .accepted
-            .as_ref()
-            .or(sync.remote_before.as_ref())
-            .or(sync.local_before.as_ref());
-        if let Some(current_revision) = current_revision {
-            store.supersede_unresolved_except(
-                &journal.repository_key,
-                None,
-                current_revision.as_str(),
-            )?;
-        }
-        sync.accepted.clone().or_else(|| sync.remote_before.clone())
+        return Ok(false);
+    }
+    if matches!(
+        sync.outcome,
+        GitSyncOutcome::Paused | GitSyncOutcome::Planned
+    ) {
+        return Ok(false);
+    }
+    let current_revision = sync
+        .accepted
+        .as_ref()
+        .or(sync.remote_before.as_ref())
+        .or(sync.local_before.as_ref());
+    if let Some(current_revision) = current_revision {
+        store.supersede_unresolved_except(
+            &journal.repository_key,
+            None,
+            current_revision.as_str(),
+        )?;
+    }
+    // The accepted live frontier this cycle ended on; overtaken conflicts are
+    // judged against it, never against a merely local revision.
+    let Some(frontier) = sync.accepted.as_ref().or(sync.remote_before.as_ref()) else {
+        return Ok(false);
     };
-    if let Some(frontier) = frontier {
-        store.supersede_stale_unresolved(
+    Ok(carry_forward_overtaken_conflicts(
+        engine, paths, options, sync, &store, journal, frontier,
+    ))
+}
+
+/// Carries overtaken conflicts forward under the vault and repository locks.
+/// Carrying forward is opportunistic: if the locks are busy or it fails, the
+/// conflicts stay as they are and the next sync tries again.
+fn carry_forward_overtaken_conflicts(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    sync: &GitSyncReport,
+    store: &SyncConflictStore,
+    journal: &SyncJournal,
+    frontier: &vulcan_sync::GitOid,
+) -> bool {
+    let Ok(_vault_lock) = paths
+        .vulcan_dir()
+        .is_dir()
+        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
+        .transpose()
+    else {
+        return false;
+    };
+    let Ok(_repository_lock) = vulcan_sync::RepositoryLock::acquire(&sync.repository.git_dir)
+    else {
+        return false;
+    };
+    store
+        .carry_forward_stale_unresolved(
             engine,
             &sync.repository,
             &journal.repository_key,
-            &frontier,
-        )?;
-    }
-    Ok(())
+            frontier,
+            options,
+        )
+        .is_ok_and(|summary| !summary.written_paths.is_empty())
 }
 
 fn persist_and_update_conflicts(
     engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
     sync: &GitSyncReport,
     journal: &mut SyncJournal,
     state_store: &SyncStateStore,
     persist: bool,
-) -> Result<Option<SyncConflictRecord>, AppError> {
+) -> Result<(Option<SyncConflictRecord>, bool), AppError> {
     let record = persist_sync_conflict(engine, sync, journal, state_store, persist)?;
-    update_conflict_lifecycle(
+    let carried = update_conflict_lifecycle(
         engine,
+        paths,
+        options,
         sync,
         record.as_ref(),
         state_store,
         journal,
         !persist,
     )?;
-    Ok(record)
+    Ok((record, carried))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_conflict_lifecycle(
     engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
     sync: &GitSyncReport,
     current_conflict: Option<&SyncConflictRecord>,
     state_store: &SyncStateStore,
     journal: &mut SyncJournal,
     dry_run: bool,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     if dry_run {
-        return Ok(());
+        return Ok(false);
     }
-    if let Err(error) =
-        supersede_obsolete_conflicts(engine, sync, current_conflict, state_store, journal)
-    {
-        journal.error = Some(error.to_string());
-        state_store.save(journal)?;
-        return Err(error);
+    match supersede_obsolete_conflicts(
+        engine,
+        paths,
+        options,
+        sync,
+        current_conflict,
+        state_store,
+        journal,
+    ) {
+        Ok(carried) => Ok(carried),
+        Err(error) => {
+            journal.error = Some(error.to_string());
+            state_store.save(journal)?;
+            Err(error)
+        }
     }
-    Ok(())
 }
 
 fn check_sync_start(cancellation: &SyncCancellationToken) -> Result<(), AppError> {
@@ -2828,6 +2926,7 @@ mod tests {
             projection: None,
             paths,
             diagnostics: "d".repeat(10_000),
+            carried_from: None,
         };
 
         let encoded = serde_json::to_vec(&Wrapper {
@@ -3407,11 +3506,18 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(projection.applied);
     }
 
-    #[test]
-    fn later_frontier_change_supersedes_an_unresolvable_conflict_but_keeps_evidence() {
-        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
-        fs::write(fixture.writer.join("Home.md"), "writer one\n").expect("writer edit");
-        fs::write(fixture.reader.join("Home.md"), "reader\n").expect("reader edit");
+    /// Writer and reader edit `Home.md` from `base`, the reader syncs into a
+    /// conflict, then the writer replaces its version with `writer_later`
+    /// and the reader syncs again. Returns the first conflict and the report.
+    fn overtaken_conflict(
+        base: &str,
+        writer_first: &str,
+        reader: &str,
+        writer_later: &str,
+    ) -> (StructuredSyncFixture, SyncConflictRecord, VaultSyncReport) {
+        let fixture = structured_sync_fixture(&[("Home.md", base)]);
+        fs::write(fixture.writer.join("Home.md"), writer_first).expect("writer edit");
+        fs::write(fixture.reader.join("Home.md"), reader).expect("reader edit");
         sync_git_vault_with_state_store(
             &VaultPaths::new(&fixture.writer),
             &GitSyncOptions::default(),
@@ -3426,8 +3532,13 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         .expect("first conflict")
         .conflict_record
         .expect("first conflict record");
-
-        fs::write(fixture.writer.join("Home.md"), "writer two\n").expect("writer advances");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer observes the projection");
+        fs::write(fixture.writer.join("Home.md"), writer_later).expect("writer advances");
         sync_git_vault_with_state_store(
             &VaultPaths::new(&fixture.writer),
             &GitSyncOptions::default(),
@@ -3441,52 +3552,190 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         )
         .expect("later successful sync");
         assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
+        (fixture, first, later)
+    }
 
-        // Every pending group changed on the accepted frontier, so no
-        // resolution mode could complete it; it must not stay actionable.
-        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(
+    fn conflict_listing(
+        fixture: &StructuredSyncFixture,
+    ) -> crate::sync_conflicts::SyncConflictListReport {
+        crate::sync_conflicts::list_sync_conflicts_with_state_store(
             &VaultPaths::new(&fixture.reader),
             &fixture.store,
         )
-        .expect("active conflicts");
-        assert_eq!(listed.count, 0);
+        .expect("conflicts")
+    }
+
+    fn historical_conflict(
+        fixture: &StructuredSyncFixture,
+        id: &str,
+    ) -> crate::sync_conflicts::SyncConflictDetailReport {
+        crate::sync_conflicts::get_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            id,
+            &fixture.store,
+        )
+        .expect("conflict evidence is retained")
+    }
+
+    #[test]
+    fn overtaken_conflict_that_still_overlaps_moves_to_a_resolvable_replacement() {
+        let (fixture, first, _) =
+            overtaken_conflict("base\n", "writer one\n", "reader\n", "writer two\n");
+
+        let listed = conflict_listing(&fixture);
+        assert_eq!(listed.count, 1);
         assert_eq!(listed.superseded_count, 1);
-        let historical = crate::sync_conflicts::get_sync_conflict_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &first.id,
-            &fixture.store,
-        )
-        .expect("historical conflict evidence is retained");
+        let historical = historical_conflict(&fixture, &first.id);
         assert_eq!(
             historical.resolution,
             crate::sync_conflicts::SyncConflictResolutionState::Superseded
         );
-        let supersession = historical.supersession.expect("supersession metadata");
-        assert_eq!(supersession.replacement_conflict_id, None);
+        let replacement_id = historical
+            .supersession
+            .expect("supersession metadata")
+            .replacement_conflict_id
+            .expect("replacement conflict");
+        let replacement = historical_conflict(&fixture, &replacement_id);
         assert_eq!(
-            Some(supersession.current_revision.as_str()),
-            later
-                .sync
-                .accepted
-                .as_ref()
-                .map(vulcan_sync::GitOid::as_str)
+            replacement.record.carried_from.as_deref(),
+            Some(first.id.as_str())
         );
-        let group_id = historical.record.paths[0].group_id.clone();
-        let stale_resolution = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+        assert_eq!(replacement.record.paths.len(), 1);
+        let path = &replacement.record.paths[0];
+        assert_eq!(path.path, "Home.md");
+        // The replacement compares this device's version with what is live now.
+        assert_eq!(path.local.bytes, Some("reader\n".len() as u64));
+        assert_eq!(path.remote.bytes, Some("writer two\n".len() as u64));
+
+        let resolved = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
             &VaultPaths::new(&fixture.reader),
-            &first.id,
+            &replacement_id,
             &crate::sync_conflicts::ResolveSyncConflictOptions {
                 side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
-                group_ids: vec![group_id],
+                group_ids: Vec::new(),
                 remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
                 live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
                     .expect("live ref"),
-                dry_run: true,
+                dry_run: false,
             },
             &fixture.store,
         )
-        .expect_err("superseded conflict is history only");
-        assert!(stale_resolution.to_string().contains("superseded"));
+        .expect("replacement resolves against the live version");
+        assert_eq!(resolved.remaining_groups.unwrap_or_default(), 0);
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer receives the resolution");
+        assert_eq!(
+            fs::read_to_string(fixture.writer.join("Home.md")).expect("published"),
+            "reader\n"
+        );
+        assert_eq!(conflict_listing(&fixture).count, 0);
+    }
+
+    #[test]
+    fn replacement_conflict_accepts_reviewed_file_content() {
+        let (fixture, first, _) =
+            overtaken_conflict("base\n", "writer one\n", "reader\n", "writer two\n");
+        let replacement_id = historical_conflict(&fixture, &first.id)
+            .supersession
+            .and_then(|supersession| supersession.replacement_conflict_id)
+            .expect("replacement conflict");
+        let approval_options = crate::sync_proposals::ApproveResolutionProposalOptions {
+            remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+            live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                .expect("live ref"),
+            dry_run: false,
+            automatic: false,
+        };
+        let proposal = crate::sync_proposals::create_supplied_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &replacement_id,
+            &crate::sync_proposals::ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+                // No explicit selection: a replacement covers all its groups.
+                group_ids: Vec::new(),
+            },
+            &approval_options,
+            vec![crate::sync_proposals::ResolutionAgentPathOutput {
+                path: "Home.md".to_string(),
+                content: b"reader and writer two\n".to_vec(),
+            }],
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("reviewed proposal on the replacement");
+        crate::sync_proposals::approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &replacement_id,
+            &proposal.proposal_id,
+            &approval_options,
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("reviewed approval");
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("reviewed"),
+            "reader and writer two\n"
+        );
+        assert_eq!(conflict_listing(&fixture).count, 0);
+    }
+
+    #[test]
+    fn overtaken_conflict_that_now_merges_cleanly_is_published_automatically() {
+        let (fixture, first, later) = overtaken_conflict(
+            "a\nb\nc\n",
+            "writer\nb\nc\n",
+            "reader\nb\nc\n",
+            "a\nb\nwriter later\n",
+        );
+
+        assert!(later.sync.accepted.is_some());
+        let listed = conflict_listing(&fixture);
+        assert_eq!(listed.count, 0);
+        assert_eq!(listed.superseded_count, 1);
+        let supersession = historical_conflict(&fixture, &first.id)
+            .supersession
+            .expect("supersession metadata");
+        assert_eq!(supersession.replacement_conflict_id, None);
+        // The reader's change is merged and published in the same sync.
+        let merged = "reader\nb\nwriter later\n";
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("merged locally"),
+            merged
+        );
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer receives the merge");
+        assert_eq!(
+            fs::read_to_string(fixture.writer.join("Home.md")).expect("published"),
+            merged
+        );
+    }
+
+    #[test]
+    fn overtaken_conflict_already_matching_the_live_version_is_retired() {
+        let (fixture, first, _) =
+            overtaken_conflict("base\n", "writer one\n", "reader\n", "reader\n");
+
+        let listed = conflict_listing(&fixture);
+        assert_eq!(listed.count, 0);
+        assert_eq!(listed.superseded_count, 1);
+        let supersession = historical_conflict(&fixture, &first.id)
+            .supersession
+            .expect("supersession metadata");
+        assert_eq!(supersession.replacement_conflict_id, None);
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("live version"),
+            "reader\n"
+        );
     }
 
     #[test]

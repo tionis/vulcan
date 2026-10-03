@@ -3249,6 +3249,11 @@ fn print_sync_conflict_detail(
                 .map_or_else(String::new, |offset| format!(", next offset {offset}"))
         );
     }
+    if let Some(original) = &report.record.carried_from {
+        println!(
+            "Carried forward from conflict {original}: its files changed again on the live branch; this record compares your version with what is live now."
+        );
+    }
     if report.resolution == SyncConflictResolutionState::Superseded {
         println!("Action: none; later synchronization superseded this immutable history record.");
         if let Some(supersession) = &report.supersession {
