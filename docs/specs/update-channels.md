@@ -151,8 +151,13 @@ only for its compiled channel, so `main-2026-09` cannot authorize `stable` even 
 signature is otherwise valid. Multiple entries and envelope signatures allow bounded overlap during
 future rotations.
 
-The rolling build workflow deliberately publishes a checksum-only descriptor first. Its successful
-completion triggers the separate `sign-rolling-release.yml` workflow, whose only signing job uses
+The rolling build workflow never publishes an unsigned descriptor under the client-facing name. It
+stages its checksum-only envelope as `vulcan-update-channel.unsigned.json` beside the previous
+build, whose signed `vulcan-update-channel.json` and referenced archives it deliberately keeps:
+GitHub can continue resolving a release download name to a replaced asset for minutes, so a client
+reading the old descriptor during the handoff must still find its archives. The next build prunes
+that retained generation. The gate also treats a staged descriptor for the same commit as already
+built, because only the signer (not a rebuild) can complete it. Its successful completion triggers the separate `sign-rolling-release.yml` workflow, whose only signing job uses
 the protected `rolling-release-signing` environment. The job checks out the exact source commit,
 materializes the environment secret into a mode-restricted ephemeral runner file, invokes
 `scripts/release/sign_rolling_release.py --expected-commit <sha>`, and deletes that file when the
@@ -165,9 +170,14 @@ per-build tag, the signer no longer requires the tag to name that commit; it tie
 the expected commit and the successful workflow runs instead. It downloads the complete published
 release and independently checks the release inventory, canonical manifest, exact
 six-archive/two-Debian artifact set, sizes, SHA-256 hashes, `SHA256SUMS`, rolling version, source
-commit, channel, timestamp, URLs, layouts, and canonical unsigned payload. It then rechecks the
-release for races, replaces only `vulcan-update-channel.json`, and reads the uploaded bytes back. An already-valid signature is an
-inexpensive idempotent no-op; any other existing signature fails closed. No developer workstation,
+commit, channel, timestamp, URLs, layouts, and canonical unsigned staged payload. It then rechecks
+the release for races, publishes the signed `vulcan-update-channel.json`, reads the uploaded bytes
+back through the API, removes the staged envelope, and polls the public
+`releases/download/rolling-main/vulcan-update-channel.json` URL that clients use until it serves the
+signed bytes. Failing to converge within ten minutes fails the workflow even though the signature
+was published, so download-path lag stays visible. An already-valid signature is an inexpensive
+idempotent no-op that also removes a leftover staged envelope; any other existing signature fails
+closed. No developer workstation,
 resident process, or systemd timer participates in the normal rolling release path.
 
 The separate stable-channel identity was created on 2026-09-02:
@@ -188,7 +198,7 @@ After a version-tag workflow succeeds, an operator supplies both the exact immut
 full commit ID. The signer requires the non-prerelease tag to be exactly `v<version>`, verifies the
 successful `release.yml` tag run for that commit, downloads and validates the complete release with
 the same canonical artifact checks as the rolling signer, rechecks the release for races, replaces
-only the descriptor, and verifies readback:
+only the descriptor, and verifies both API readback and the public download URL:
 
 ```sh
 python scripts/release/sign_stable_release.py \

@@ -11,6 +11,12 @@ import pathlib
 import subprocess
 import tempfile
 
+# Clients only ever read the canonical name. The rolling build publishes its
+# checksum-only envelope under the staged name so an unsigned descriptor never
+# replaces the signed one that clients (and GitHub's download caches) serve.
+CANONICAL_DESCRIPTOR = "vulcan-update-channel.json"
+STAGED_DESCRIPTOR = "vulcan-update-channel.unsigned.json"
+
 TARGET_FORMATS = {
     "aarch64-linux-android": "tar.gz",
     "aarch64-apple-darwin": "tar.gz",
@@ -70,10 +76,13 @@ def generate(
     output: pathlib.Path,
     signing_key: pathlib.Path | None = None,
     key_id: str | None = None,
+    staged: bool = False,
 ) -> pathlib.Path:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1 or manifest.get("product") != "vulcan":
         raise ValueError("unsupported release manifest")
+    if staged and (signing_key is not None or key_id):
+        raise ValueError("a staged update channel must be published unsigned")
     if channel not in {"stable", "main"}:
         raise ValueError(f"unsupported update channel: {channel}")
     if not base_url.startswith("https://"):
@@ -147,7 +156,7 @@ def generate(
         "signatures": signatures,
     }
     output.mkdir(parents=True, exist_ok=True)
-    destination = output / "vulcan-update-channel.json"
+    destination = output / (STAGED_DESCRIPTOR if staged else CANONICAL_DESCRIPTOR)
     destination.write_text(
         json.dumps(envelope, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -166,6 +175,11 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument("--signing-key", type=pathlib.Path)
     parser.add_argument("--key-id")
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help=f"write the unsigned envelope as {STAGED_DESCRIPTOR} for a later signing handoff",
+    )
     arguments = parser.parse_args()
     destination = generate(
         arguments.manifest.resolve(),
@@ -176,6 +190,7 @@ def main() -> None:
         arguments.output.resolve(),
         arguments.signing_key.resolve() if arguments.signing_key else None,
         arguments.key_id,
+        arguments.staged,
     )
     print(destination)
 

@@ -35,6 +35,7 @@ manifest_script = load_script("manifest")
 channels_script = load_script("channels")
 update_channel_script = load_script("update_channel")
 rolling_signer_script = load_script("sign_rolling_release")
+rolling_prune_script = load_script("rolling_prune")
 stable_signer_script = load_script("sign_stable_release")
 
 
@@ -407,7 +408,7 @@ class ReleasePackagingTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
-    def rolling_release_fixture(self) -> tuple[dict, str, str]:
+    def rolling_release_fixture(self, staged: bool = False) -> tuple[dict, str, str]:
         source_commit = "a" * 40
         version = "1.2.4-dev.20260901.42.gaaaaaaaa"
         for target in manifest_script.EXPECTED_TARGETS:
@@ -439,6 +440,7 @@ class ReleasePackagingTests(unittest.TestCase):
             source_commit,
             "2026-09-01T12:00:00Z",
             self.output,
+            staged=staged,
         )
         for path in list(self.output.glob("*.artifact.json")) + list(
             self.output.glob("*.sha256")
@@ -547,6 +549,154 @@ class ReleasePackagingTests(unittest.TestCase):
                 source_commit,
                 "tionis/vulcan",
             )
+
+    def test_staged_update_channel_is_unsigned_under_a_non_client_name(self) -> None:
+        _, source_commit, _ = self.rolling_release_fixture(staged=True)
+        staged = self.output / update_channel_script.STAGED_DESCRIPTOR
+        self.assertTrue(staged.is_file())
+        self.assertFalse((self.output / update_channel_script.CANONICAL_DESCRIPTOR).exists())
+        self.assertEqual(json.loads(staged.read_text(encoding="utf-8"))["signatures"], [])
+        self.assertEqual(
+            rolling_signer_script.descriptor_source_commit(staged), source_commit
+        )
+        manifest = next(self.output.glob("vulcan-*-manifest.json"))
+        with self.assertRaisesRegex(ValueError, "staged update channel must be published unsigned"):
+            update_channel_script.generate(
+                manifest,
+                "main",
+                "https://github.com/tionis/vulcan/releases/download/rolling-main",
+                source_commit,
+                "2026-09-01T12:00:00Z",
+                self.root / "signed-staged",
+                signing_key=self.root / "unused.pem",
+                key_id="main-2026-09",
+                staged=True,
+            )
+
+    def test_rolling_signer_validates_a_staged_release_beside_the_previous_build(self) -> None:
+        release, source_commit, version = self.rolling_release_fixture(staged=True)
+        # The previous build's signed descriptor and one of its archives survive
+        # until the signer publishes the replacement.
+        previous_descriptor = self.output / update_channel_script.CANONICAL_DESCRIPTOR
+        previous_descriptor.write_text('{"previous": true}\n', encoding="utf-8")
+        previous_archive = (
+            self.output / "vulcan-1.2.4-dev.20260831.41.gbbbbbbbb-x86_64-unknown-linux-gnu.tar.gz"
+        )
+        previous_archive.write_bytes(b"previous archive")
+        release["assets"].extend(
+            {
+                "id": 9000 + index,
+                "name": path.name,
+                "label": "",
+                "size": path.stat().st_size,
+                "updated_at": "2026-08-31T12:01:00Z",
+            }
+            for index, path in enumerate((previous_descriptor, previous_archive))
+        )
+        validated = rolling_signer_script.validate_downloaded_release(
+            self.output,
+            release,
+            source_commit,
+            "tionis/vulcan",
+            descriptor_name=rolling_signer_script.STAGED_DESCRIPTOR,
+        )
+        self.assertEqual(validated.version, version)
+        self.assertEqual(validated.descriptor.name, rolling_signer_script.STAGED_DESCRIPTOR)
+
+    def test_staged_rolling_signer_requires_the_staged_descriptor(self) -> None:
+        release, source_commit, _ = self.rolling_release_fixture()
+        with self.assertRaisesRegex(ValueError, "missing vulcan-update-channel.unsigned.json"):
+            rolling_signer_script.validate_downloaded_release(
+                self.output,
+                release,
+                source_commit,
+                "tionis/vulcan",
+                descriptor_name=rolling_signer_script.STAGED_DESCRIPTOR,
+            )
+
+    def test_signer_waits_for_the_public_download_path_to_serve_signed_bytes(self) -> None:
+        responses = iter([b"stale unsigned", None, b"signed"])
+        now = [0.0]
+
+        def sleep(seconds: float) -> None:
+            now[0] += seconds
+
+        elapsed = rolling_signer_script.await_public_descriptor(
+            "https://github.com/tionis/vulcan/releases/download/rolling-main/x.json",
+            b"signed",
+            fetch=lambda _url: next(responses),
+            sleep=sleep,
+            clock=lambda: now[0],
+            timeout=60,
+            interval=15,
+        )
+        self.assertEqual(elapsed, 30)
+
+        now[0] = 0.0
+        with self.assertRaisesRegex(ValueError, "still did not serve it after 60s"):
+            rolling_signer_script.await_public_descriptor(
+                "https://github.com/tionis/vulcan/releases/download/rolling-main/x.json",
+                b"signed",
+                fetch=lambda _url: b"stale unsigned",
+                sleep=sleep,
+                clock=lambda: now[0],
+                timeout=60,
+                interval=15,
+            )
+        self.assertEqual(
+            rolling_signer_script.public_descriptor_url("tionis/vulcan", "rolling-main"),
+            "https://github.com/tionis/vulcan/releases/download/rolling-main/"
+            "vulcan-update-channel.json",
+        )
+
+    def test_rolling_prune_retains_the_previous_signed_generation(self) -> None:
+        base_url = "https://github.com/tionis/vulcan/releases/download/rolling-main"
+        previous = "vulcan-0.2.2-dev.20261001.52.gaaaaaaaa-x86_64-unknown-linux-gnu.tar.gz"
+        descriptor = self.root / "published.json"
+        payload = {"artifacts": [{"url": f"{base_url}/{previous}"}]}
+        descriptor.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "payload": base64.b64encode(json.dumps(payload).encode()).decode(),
+                    "signatures": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        retained = rolling_prune_script.referenced_archives(descriptor, base_url)
+        self.assertEqual(retained, {previous})
+        self.assertEqual(rolling_prune_script.referenced_archives(None, base_url), set())
+
+        release = {
+            "assets": [
+                {"id": 1, "name": "vulcan-update-channel.json", "label": ""},
+                {"id": 2, "name": "vulcan-update-channel.unsigned.json", "label": ""},
+                {"id": 3, "name": previous, "label": ""},
+                {"id": 4, "name": "vulcan-0.2.2-dev.20260930.51.gcccccccc-x86_64-unknown-linux-gnu.tar.gz", "label": ""},
+                {"id": 5, "name": "vulcan_0.2.2.dev.new_amd64.deb", "label": "vulcan_0.2.2~dev.new_amd64.deb"},
+                {"id": 6, "name": "vulcan-0.2.2-dev.20261001.52.gaaaaaaaa-manifest.json", "label": ""},
+            ]
+        }
+        current = {"vulcan-update-channel.unsigned.json", "vulcan_0.2.2~dev.new_amd64.deb"}
+        self.assertEqual(
+            rolling_prune_script.superseded_assets(release, current, retained),
+            [
+                (4, "vulcan-0.2.2-dev.20260930.51.gcccccccc-x86_64-unknown-linux-gnu.tar.gz"),
+                (6, "vulcan-0.2.2-dev.20261001.52.gaaaaaaaa-manifest.json"),
+            ],
+        )
+
+        foreign = self.root / "foreign.json"
+        foreign_payload = {"artifacts": [{"url": "https://example.invalid/evil.tar.gz"}]}
+        foreign.write_text(
+            json.dumps(
+                {"payload": base64.b64encode(json.dumps(foreign_payload).encode()).decode()}
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "foreign archive URL"):
+            rolling_prune_script.referenced_archives(foreign, base_url)
 
     def test_rolling_signer_anchors_on_the_source_commit_not_the_tag(self) -> None:
         release, source_commit, _ = self.rolling_release_fixture()
@@ -701,9 +851,10 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertNotIn("git push origin refs/tags/main --force", rolling)
         self.assertNotIn("tag_name: main", rolling)
         self.assertIn("retention-days: 1", rolling)
-        self.assertIn("asset_label", rolling)
-        self.assertIn("(.label // \"\")", rolling)
-        self.assertIn('! -f "artifacts/$asset_label"', rolling)
+        self.assertIn("scripts/release/rolling_prune.py", rolling)
+        self.assertIn("--published-descriptor", rolling)
+        self.assertIn("--staged", rolling)
+        self.assertIn("vulcan-update-channel.unsigned.json", rolling)
         self.assertIn("hosted signing workflow", rolling)
         self.assertNotIn("--signing-key", rolling)
         self.assertNotIn("cargo test --workspace", rolling)

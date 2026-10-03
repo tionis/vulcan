@@ -55,9 +55,11 @@ workspace test gate and every archive build succeed.
 
 For the bounded rolling `main` prerelease, confirm the gate selected a new commit with successful
 push CI, the embedded version uses the documented `-dev.<date>.<run>.g<commit>` form, the fixed
-release was updated only after all target/package smoke checks passed, and obsolete assets were
-pruned only after their replacements uploaded successfully. A no-change scheduled run must not
-build or publish artifacts. Confirm the separate hosted signing workflow reports `signed` or
-`already_signed` for the same commit, its readback matches, and
+release was updated only after all target/package smoke checks passed, the new descriptor was
+staged as `vulcan-update-channel.unsigned.json`, and pruning removed only assets outside the new
+build and the previous signed generation. A no-change scheduled run must not build or publish
+artifacts. Confirm the separate hosted signing workflow reports `signed` or `already_signed` for the
+same commit, its readback matches, `public_propagation_seconds` is reported, the staged envelope is
+gone, and
 `vulcan self-update check --channel main` verifies `main-2026-09` without `--allow-unsigned` from a
 post-bootstrap portable build. The normal path must not depend on a developer workstation timer.

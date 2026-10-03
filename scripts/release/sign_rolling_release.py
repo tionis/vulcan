@@ -18,7 +18,10 @@ import re
 import stat
 import subprocess
 import tempfile
-from typing import NamedTuple
+import time
+import urllib.error
+import urllib.request
+from typing import Callable, NamedTuple
 
 import update_channel
 
@@ -26,6 +29,12 @@ import update_channel
 MAIN_KEY_ID = "main-2026-09"
 MAIN_PUBLIC_KEY = "6gbtjy5nGZoT8kFAfYELB5x73S34kjv+/tPn8XEjrg0="
 ROLLING_TAG = "rolling-main"
+CANONICAL_DESCRIPTOR = update_channel.CANONICAL_DESCRIPTOR
+STAGED_DESCRIPTOR = update_channel.STAGED_DESCRIPTOR
+# GitHub can keep resolving a release download name to a replaced asset for a
+# while; bound how long the signer waits for the public URL to converge.
+PUBLIC_PROPAGATION_TIMEOUT_SECONDS = 600
+PUBLIC_PROPAGATION_INTERVAL_SECONDS = 15
 TARGET_FORMATS = update_channel.TARGET_FORMATS
 DEBIAN_TARGETS = {
     "aarch64-unknown-linux-gnu": "arm64",
@@ -274,6 +283,7 @@ def validate_downloaded_release(
     channel: str = "main",
     prerelease: bool = True,
     release_kind: str = "rolling",
+    descriptor_name: str = CANONICAL_DESCRIPTOR,
 ) -> ValidatedRelease:
     inventory = validate_release_snapshot(
         release,
@@ -350,9 +360,9 @@ def validate_downloaded_release(
     if checksums is None or checksums.read_bytes() != expected_checksums:
         raise ValueError("SHA256SUMS does not exactly match the canonical manifest")
 
-    descriptor = logical_assets.get("vulcan-update-channel.json")
+    descriptor = logical_assets.get(descriptor_name)
     if descriptor is None:
-        raise ValueError("rolling release is missing vulcan-update-channel.json")
+        raise ValueError(f"{release_kind} release is missing {descriptor_name}")
     envelope = load_json(descriptor, "update-channel envelope")
     if set(envelope) != {"schema_version", "payload", "signatures"}:
         raise ValueError("update-channel envelope has an unexpected schema")
@@ -473,6 +483,62 @@ def already_signed_descriptor(
     )
 
 
+def descriptor_source_commit(descriptor: pathlib.Path) -> str | None:
+    """Return the source commit an envelope names, without trusting it."""
+    try:
+        envelope = load_json(descriptor, "update-channel envelope")
+        payload = json.loads(base64.b64decode(envelope["payload"], validate=True))
+    except (KeyError, TypeError, ValueError):
+        return None
+    commit = payload.get("source_commit") if isinstance(payload, dict) else None
+    return commit if isinstance(commit, str) else None
+
+
+def public_descriptor_url(repo: str, tag: str) -> str:
+    return f"https://github.com/{repo}/releases/download/{tag}/{CANONICAL_DESCRIPTOR}"
+
+
+def fetch_public(url: str) -> bytes | None:
+    request = urllib.request.Request(url, headers={"User-Agent": "vulcan-release-signer"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read(1024 * 1024 + 1)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+
+
+def await_public_descriptor(
+    url: str,
+    expected: bytes,
+    *,
+    fetch: Callable[[str], bytes | None] = fetch_public,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    timeout: float = PUBLIC_PROPAGATION_TIMEOUT_SECONDS,
+    interval: float = PUBLIC_PROPAGATION_INTERVAL_SECONDS,
+) -> float:
+    """Poll the client-facing URL until it serves exactly the signed bytes.
+
+    The API readback proves the asset exists; only this proves that clients,
+    which resolve the public download path, receive it.
+    """
+    started = clock()
+    while True:
+        if fetch(url) == expected:
+            return clock() - started
+        elapsed = clock() - started
+        if elapsed >= timeout:
+            raise ValueError(
+                f"signed descriptor was uploaded, but {url} still did not serve it after "
+                f"{int(elapsed)}s; clients may see a stale descriptor until GitHub converges"
+            )
+        sleep(min(interval, max(timeout - elapsed, 0)))
+
+
+def delete_asset(repo: str, tag: str, name: str) -> None:
+    run(["gh", "release", "delete-asset", tag, name, "--repo", repo, "--yes"])
+
+
 def release_snapshot(
     release: dict,
     tag_commit: str,
@@ -563,6 +629,8 @@ def sign_published_release(
     required_runs: list[tuple[str, str, str | None, str]],
     fast_already_signed: bool,
     tag_is_source: bool,
+    staged_descriptor: bool = False,
+    await_public: Callable[[str, bytes], float] = await_public_descriptor,
 ) -> dict:
     if key_id != expected_key_id:
         raise ValueError(f"{release_kind} release signer requires key ID {expected_key_id}")
@@ -602,31 +670,65 @@ def sign_published_release(
         prerelease=prerelease,
         release_kind=release_kind,
     )
-    with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-probe-") as probe:
-        run(
-            [
-                "gh",
-                "release",
-                "download",
-                tag,
-                "--repo",
-                repo,
-                "--pattern",
-                "vulcan-update-channel.json",
-                "--dir",
-                probe,
-            ]
-        )
-        existing = already_signed_descriptor(
-            pathlib.Path(probe, "vulcan-update-channel.json"),
-            source_commit,
-            signing_key,
-            key_id,
-            channel=channel,
-            prerelease=prerelease,
-            release_kind=release_kind,
-        )
+    inventory = before[2]
+    staged_present = any(
+        STAGED_DESCRIPTOR in (name, label) for name, (_, _, _, label) in inventory.items()
+    )
+    canonical_present = any(
+        CANONICAL_DESCRIPTOR in (name, label) for name, (_, _, _, label) in inventory.items()
+    )
+    existing = None
+    if canonical_present or not staged_descriptor:
+        with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-probe-") as probe:
+            run(
+                [
+                    "gh",
+                    "release",
+                    "download",
+                    tag,
+                    "--repo",
+                    repo,
+                    "--pattern",
+                    CANONICAL_DESCRIPTOR,
+                    "--dir",
+                    probe,
+                ]
+            )
+            probed = pathlib.Path(probe, CANONICAL_DESCRIPTOR)
+            # In the staged layout the canonical descriptor normally still
+            # names the previous build; it is replaced, not validated, here.
+            if not staged_descriptor or descriptor_source_commit(probed) == source_commit:
+                existing = already_signed_descriptor(
+                    probed,
+                    source_commit,
+                    signing_key,
+                    key_id,
+                    channel=channel,
+                    prerelease=prerelease,
+                    release_kind=release_kind,
+                )
     if existing is not None and fast_already_signed:
+        if staged_descriptor and staged_present and not dry_run:
+            # A previous run published the signature but stopped before
+            # removing the staged envelope. Never touch a newer build's one.
+            with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-staged-") as staged:
+                run(
+                    [
+                        "gh",
+                        "release",
+                        "download",
+                        tag,
+                        "--repo",
+                        repo,
+                        "--pattern",
+                        STAGED_DESCRIPTOR,
+                        "--dir",
+                        staged,
+                    ]
+                )
+                staged_commit = descriptor_source_commit(pathlib.Path(staged, STAGED_DESCRIPTOR))
+            if staged_commit == source_commit:
+                delete_asset(repo, tag, STAGED_DESCRIPTOR)
         return {
             "action": "already_signed",
             "repo": repo,
@@ -648,6 +750,7 @@ def sign_published_release(
             channel=channel,
             prerelease=prerelease,
             release_kind=release_kind,
+            descriptor_name=STAGED_DESCRIPTOR if staged_descriptor else CANONICAL_DESCRIPTOR,
         )
         signed = signed_envelope(validated.payload, signing_key, key_id)
         current = validated.descriptor.read_bytes()
@@ -667,6 +770,7 @@ def sign_published_release(
         if current != canonical_pretty(envelope):
             raise ValueError("unsigned update-channel envelope is not canonical")
         action = "would_sign" if dry_run else "signed"
+        propagation_seconds = None
         if not dry_run:
             latest_release, latest_commit = fetch_release(
                 repo,
@@ -685,14 +789,19 @@ def sign_published_release(
                 != before
             ):
                 raise ValueError(f"{release_kind} release changed while it was being validated")
-            validated.descriptor.write_bytes(signed)
+            # gh names the uploaded asset after the file, so the signed bytes
+            # always land under the canonical client-facing name.
+            upload_directory = directory / "signed"
+            upload_directory.mkdir()
+            upload = upload_directory / CANONICAL_DESCRIPTOR
+            upload.write_bytes(signed)
             run(
                 [
                     "gh",
                     "release",
                     "upload",
                     tag,
-                    str(validated.descriptor),
+                    str(upload),
                     "--repo",
                     repo,
                     "--clobber",
@@ -708,13 +817,16 @@ def sign_published_release(
                         "--repo",
                         repo,
                         "--pattern",
-                        "vulcan-update-channel.json",
+                        CANONICAL_DESCRIPTOR,
                         "--dir",
                         readback,
                     ]
                 )
-                if pathlib.Path(readback, "vulcan-update-channel.json").read_bytes() != signed:
+                if pathlib.Path(readback, CANONICAL_DESCRIPTOR).read_bytes() != signed:
                     raise ValueError("signed descriptor readback did not match uploaded bytes")
+            if staged_descriptor:
+                delete_asset(repo, tag, STAGED_DESCRIPTOR)
+            propagation_seconds = await_public(public_descriptor_url(repo, tag), signed)
     return {
         "action": action,
         "repo": repo,
@@ -723,6 +835,7 @@ def sign_published_release(
         "source_commit": validated.source_commit,
         "key_id": key_id,
         "dry_run": dry_run,
+        "public_propagation_seconds": propagation_seconds,
     }
 
 
@@ -755,6 +868,7 @@ def sign_rolling_release(
         ],
         fast_already_signed=True,
         tag_is_source=False,
+        staged_descriptor=True,
     )
 
 

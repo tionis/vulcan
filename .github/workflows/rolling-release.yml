@@ -59,12 +59,16 @@ jobs:
             exit 1
           fi
 
-          previous_commit=""
+          # The signed descriptor names the build clients receive; a staged
+          # unsigned one names a build still awaiting the signing workflow,
+          # which a rebuild cannot repair (dispatch the signer instead).
           temporary="$(mktemp -d)"
-          if gh release download rolling-main \
-            --pattern vulcan-update-channel.json \
-            --dir "$temporary" >/dev/null 2>&1; then
-            previous_commit="$(python - "$temporary/vulcan-update-channel.json" <<'PY'
+          for descriptor in vulcan-update-channel.json vulcan-update-channel.unsigned.json; do
+            previous_commit=""
+            if gh release download rolling-main \
+              --pattern "$descriptor" \
+              --dir "$temporary" >/dev/null 2>&1; then
+              previous_commit="$(python - "$temporary/$descriptor" <<'PY'
           import base64
           import json
           import pathlib
@@ -74,15 +78,16 @@ jobs:
           payload = json.loads(base64.b64decode(envelope["payload"]))
           print(payload["source_commit"])
           PY
-          )"
-          fi
+              )"
+            fi
+            if [[ "$previous_commit" == "$source_commit" && "$FORCE_RELEASE" != "true" ]]; then
+              rm -rf "$temporary"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "Rolling main release $descriptor already names $source_commit; nothing to build."
+              exit 0
+            fi
+          done
           rm -rf "$temporary"
-
-          if [[ "$previous_commit" == "$source_commit" && "$FORCE_RELEASE" != "true" ]]; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "Rolling main release already names $source_commit; nothing to build."
-            exit 0
-          fi
 
           version="$(python - "$GITHUB_RUN_NUMBER" "$source_commit" <<'PY'
           import datetime
@@ -343,6 +348,7 @@ jobs:
           --source-commit '${{ needs.gate.outputs.source_commit }}'
           --published-at '${{ needs.gate.outputs.published_at }}'
           --output artifacts
+          --staged
 
       - name: Remove internal per-artifact records
         run: rm artifacts/*.artifact.json artifacts/*.sha256
@@ -369,7 +375,7 @@ jobs:
           body: |
             Automated development build from `${{ needs.gate.outputs.source_commit }}`.
 
-            This rolling release is replaced in place and is not a stable release. The build workflow publishes a checksum-verified descriptor first; a separate hosted signing workflow validates the completed release and replaces only that descriptor with a `main-2026-09` signature. Inspect the descriptor's signatures if that bounded handoff has not completed yet.
+            This rolling release is replaced in place and is not a stable release. The build workflow stages an unsigned `vulcan-update-channel.unsigned.json`; a separate hosted signing workflow validates the completed release, publishes the `main-2026-09`-signed `vulcan-update-channel.json`, and removes the staged file. Until then, clients keep receiving the previous signed build.
           files: artifacts/*
 
       - name: Prune superseded rolling assets
@@ -377,14 +383,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          while IFS=$'\t' read -r asset_id asset_name asset_label; do
-            # GitHub sanitizes some uploaded names (notably Debian's `~`) while
-            # softprops restores the original filename as the asset label.
-            if [[ ! -f "artifacts/$asset_name" && ! -f "artifacts/$asset_label" ]]; then
-              gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id"
-            fi
-          done < <(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/rolling-main" \
-            --jq '.assets[] | [.id, .name, (.label // "")] | @tsv')
+          # Keep the currently signed descriptor and the archives it references:
+          # clients keep receiving it until the signing workflow publishes the
+          # new one and GitHub's download path catches up.
+          temporary="$(mktemp -d)"
+          trap 'rm -rf "$temporary"' EXIT
+          published=()
+          if gh release download rolling-main \
+            --pattern vulcan-update-channel.json \
+            --dir "$temporary/published" >/dev/null 2>&1; then
+            published=(--published-descriptor "$temporary/published/vulcan-update-channel.json")
+          fi
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/rolling-main" > "$temporary/release.json"
+          python scripts/release/rolling_prune.py \
+            --release-json "$temporary/release.json" \
+            --artifacts artifacts \
+            --base-url 'https://github.com/tionis/vulcan/releases/download/rolling-main' \
+            "${published[@]}" > "$temporary/superseded.tsv"
+          while IFS=$'\t' read -r asset_id asset_name; do
+            echo "Deleting superseded asset $asset_name"
+            gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id"
+          done < "$temporary/superseded.tsv"
 
       - name: Remove the legacy branch-colliding tag
         shell: bash

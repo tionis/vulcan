@@ -154,9 +154,17 @@ pub fn check_for_update(
         request.expected_channel,
     )?;
     if request.require_signature && verified_key_id.is_none() {
-        return Err(AppError::operation(
-            "update channel is not signed by a trusted key; refusing the update",
-        ));
+        // An envelope with no signatures at all is what a publisher serves
+        // between uploading a build and signing it; download caches can keep
+        // serving it for a while. Signatures from unknown keys are different:
+        // they usually mean this binary predates the channel's current key.
+        return Err(AppError::operation(if envelope.signatures.is_empty() {
+            "update channel metadata carries no signatures yet; a newly published build may \
+             still be awaiting signing or cache propagation, so retry in a few minutes \
+             (refusing the update)"
+        } else {
+            "update channel is not signed by a trusted key; refusing the update"
+        }));
     }
     let payload: UpdateChannelPayload = serde_json::from_slice(&payload_bytes)
         .map_err(|error| AppError::operation(format!("invalid update channel payload: {error}")))?;
@@ -944,6 +952,24 @@ mod tests {
         request.trusted_keys = &[];
         let report = check_for_update(&source, &request).expect("unsigned metadata check");
         assert!(prepare_update(&source, report, true).is_err());
+    }
+
+    #[test]
+    fn an_envelope_without_signatures_reports_a_pending_signing_handoff() {
+        let (mut source, request) = fixture(true);
+        let channel_url = request.channel_url.to_string();
+        let mut envelope: UpdateChannelEnvelope =
+            serde_json::from_slice(&source.0[&channel_url]).expect("fixture envelope");
+        envelope.signatures.clear();
+        source.0.insert(
+            channel_url,
+            serde_json::to_vec(&envelope).expect("serialize envelope"),
+        );
+        let error = check_for_update(&source, &request).expect_err("unsigned must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("carries no signatures yet"), "{message}");
+        assert!(message.contains("refusing the update"), "{message}");
+        assert!(!message.contains("trusted key"), "{message}");
     }
 
     #[test]
