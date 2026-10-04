@@ -28,6 +28,8 @@ mod cel;
 pub use cel::*;
 mod query;
 pub use query::*;
+mod query_sql;
+pub use query_sql::MdbaseSqlPredicate;
 mod api;
 pub use api::*;
 mod records;

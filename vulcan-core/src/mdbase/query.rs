@@ -227,6 +227,23 @@ pub struct MdbasePreparedQuery {
 }
 
 impl MdbasePreparedQuery {
+    /// Already-compiled scalar filter preparation. Does not trigger compilation
+    /// for lazily prepared structured queries, and never bypasses projections or
+    /// context-dependent input checks. This is not a row-skipping safety proof.
+    #[must_use]
+    pub fn sql_filter_predicate(&self) -> Option<&super::MdbaseSqlPredicate> {
+        if !self.plan.named_projections.is_empty() || self.plan.invocation_context.is_some() {
+            return None;
+        }
+        self.programs
+            .slots
+            .get(&self.plan.filter.as_ref()?.source)?
+            .get()?
+            .as_ref()
+            .ok()?
+            .sql_predicate()
+    }
+
     /// Inspect the immutable plan without invalidating its retained programs.
     #[must_use]
     pub fn plan(&self) -> &StructuredQueryPlan {

@@ -75,9 +75,17 @@ pub struct MdbaseCelProgram {
     stats: MdbaseCelProgramStats,
     projection_dependencies: BTreeSet<String>,
     uses_link_resolution: bool,
+    sql_predicate: Option<super::MdbaseSqlPredicate>,
 }
 
 impl MdbaseCelProgram {
+    /// Conservative scalar candidate predicate, not proof that CEL input checks
+    /// or diagnostics may be skipped. Unsupported expressions remain residual.
+    #[must_use]
+    pub fn sql_predicate(&self) -> Option<&super::MdbaseSqlPredicate> {
+        self.sql_predicate.as_ref()
+    }
+
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
@@ -208,6 +216,7 @@ impl MdbaseCelEngine {
             functions.contains(&"link") || functions.contains(&"asFile")
         };
         Ok(MdbaseCelProgram {
+            sql_predicate: super::query_sql::prepare(&expression),
             source: source.to_string(),
             program,
             stats,

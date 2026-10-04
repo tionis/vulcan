@@ -29,7 +29,7 @@ const TYPE_CANDIDATE_SQL: &str = "SELECT DISTINCT membership.path
       AND record.dependency_digest = ?2 AND record.record_model_version = ?3
       AND record.metadata_json IS NOT NULL
     ORDER BY membership.path";
-const ALL_CANDIDATE_SQL: &str = "SELECT path FROM mdbase_record_cache
+const ALL_CANDIDATE_SQL: &str = "SELECT path FROM mdbase_record_cache AS record
     WHERE collection_root = ?1 AND dependency_digest = ?2 AND record_model_version = ?3
       AND metadata_json IS NOT NULL
     ORDER BY path";
@@ -50,6 +50,51 @@ pub fn select_cached_mdbase_candidate_paths(
     dependency_digest: &str,
     filter: Option<&PermissionFilter>,
 ) -> Result<Vec<String>, MdbaseRecordCacheError> {
+    select_candidate_paths(
+        connection,
+        collection,
+        plan,
+        dependency_digest,
+        filter,
+        None,
+    )
+}
+
+/// Refine type candidates using a compiled CEL scalar predicate. This only
+/// returns a conservative superset of predicate matches and diagnostic rows.
+/// It does NOT prove CEL input bounds, projection effects, source freshness, or
+/// complete cache coverage. Public query execution must establish those before
+/// skipping any record; this primitive alone must not replace residual execution.
+/// No pagination is pushed down. Denied rows never evaluate JSON expressions.
+pub fn select_cached_mdbase_predicate_candidate_paths(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    plan: &crate::query::StructuredQueryPlan,
+    dependency_digest: &str,
+    filter: Option<&PermissionFilter>,
+    predicate: &super::MdbaseSqlPredicate,
+) -> Result<Vec<String>, MdbaseRecordCacheError> {
+    let transaction = connection.unchecked_transaction()?;
+    let paths = select_candidate_paths(
+        &transaction,
+        collection,
+        plan,
+        dependency_digest,
+        filter,
+        Some(predicate),
+    )?;
+    transaction.commit()?;
+    Ok(paths)
+}
+
+fn select_candidate_paths(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    plan: &crate::query::StructuredQueryPlan,
+    dependency_digest: &str,
+    filter: Option<&PermissionFilter>,
+    predicate: Option<&super::MdbaseSqlPredicate>,
+) -> Result<Vec<String>, MdbaseRecordCacheError> {
     let mut parameters = vec![
         rusqlite::types::Value::Text(cache_collection_root(collection)?),
         rusqlite::types::Value::Text(dependency_digest.to_string()),
@@ -66,7 +111,37 @@ pub fn select_cached_mdbase_candidate_paths(
         parameters.push(rusqlite::types::Value::Text(serde_json::to_string(&types)?));
         TYPE_CANDIDATE_SQL
     };
-    let mut statement = connection.prepare_cached(sql)?;
+    let sql = if let Some(predicate) = predicate {
+        // CASE is an evaluation barrier, unlike WHERE conjunct order: SQLite
+        // must not parse a hidden payload even if malformed JSON is stored there.
+        let visible = if filter.is_some() {
+            let paths = select_candidate_paths(
+                connection,
+                collection,
+                plan,
+                dependency_digest,
+                filter,
+                None,
+            )?;
+            parameters.push(rusqlite::types::Value::Text(serde_json::to_string(&paths)?));
+            format!(
+                "record.path IN (SELECT value FROM json_each(?{}))",
+                parameters.len()
+            )
+        } else {
+            "1".to_string()
+        };
+        let predicate = predicate.render(&mut parameters);
+        let (selection, ordering) = sql
+            .rsplit_once("ORDER BY")
+            .expect("fixed candidate SQL has ordering");
+        format!(
+            "{selection} AND CASE WHEN {visible} THEN ({predicate}) ELSE 0 END ORDER BY {ordering}"
+        )
+    } else {
+        sql.to_string()
+    };
+    let mut statement = connection.prepare_cached(&sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
         row.get::<_, String>(0)
     })?;
@@ -1196,6 +1271,88 @@ mod tests {
         let contracts =
             load_mdbase_contract_registry(&collection, &types).expect("contracts should load");
         (collection, types, contracts)
+    }
+
+    #[test]
+    fn sql_predicate_candidates_keep_defaults_uncertainty_and_permission_boundaries() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  read_defaults: {status: open}\n---\n");
+        for (path, fields) in [
+            ("default.md", ""),
+            ("open.md", "status: open\n"),
+            ("closed.md", "status: closed\n"),
+            ("null.md", "status: null\n"),
+            ("wrong.md", "status: [open]\n"),
+            ("secret.md", "status: hidden\n"),
+        ] {
+            write(
+                &directory.path().join(path),
+                &format!("---\ntype: task\n{fields}---\nBody\n"),
+            );
+        }
+        write(
+            &directory.path().join("untyped.md"),
+            "---\nstatus: open\n---\n",
+        );
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        let refreshed =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let mut plan = super::super::compile_mdbase_query(&serde_json::json!({
+            "types": ["TASK", "task"], "where": "status == 'open'", "limit": 1, "offset": 99
+        }))
+        .unwrap();
+        let program = super::super::MdbaseCelEngine::default()
+            .compile("status == 'open'")
+            .unwrap();
+        let predicate = program.sql_predicate().unwrap();
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("secret.md".into())],
+        });
+        // No hidden JSON parsing and no body-bearing payload hydration.
+        database.connection().execute("UPDATE mdbase_record_cache SET effective_frontmatter_json = '{' WHERE path = 'secret.md'", []).unwrap();
+        database
+            .connection()
+            .execute("UPDATE mdbase_record_cache SET local_record_json = '{'", [])
+            .unwrap();
+        let select = |plan: &crate::query::StructuredQueryPlan, digest: &str| {
+            select_cached_mdbase_predicate_candidate_paths(
+                database.connection(),
+                &collection,
+                plan,
+                digest,
+                Some(&filter),
+                predicate,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            select(&plan, &refreshed.dependency_digest),
+            ["default.md", "null.md", "open.md", "wrong.md"]
+        );
+        assert!(select(&plan, "stale controls").is_empty());
+        plan.types.clear();
+        assert_eq!(
+            select(&plan, &refreshed.dependency_digest),
+            ["default.md", "null.md", "open.md", "untyped.md", "wrong.md"]
+        );
+        assert!(select_cached_mdbase_predicate_candidate_paths(
+            database.connection(),
+            &collection,
+            &plan,
+            &refreshed.dependency_digest,
+            None,
+            predicate
+        )
+        .is_err());
     }
 
     #[test]
