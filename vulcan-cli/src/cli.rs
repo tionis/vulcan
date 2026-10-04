@@ -536,6 +536,7 @@ Examples:
   vulcan sync doctor
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
+  vulcan sync conflicts-archive --older-than-days 7 --dry-run
   vulcan sync devices list --wiki personal
   vulcan sync devices fetch <device-id> --wiki personal --dry-run
   vulcan sync devices prune-backup <device-id> --wiki personal --dry-run
@@ -4613,6 +4614,26 @@ pub enum SyncCommand {
         path_limit: Option<usize>,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
+    },
+    #[command(
+        about = "Move long-closed conflicts into the compact conflict archive",
+        long_about = "Move conflicts that were resolved or superseded at least --older-than-days ago into the per-repository conflict archive (refs/vulcan/conflict-archive). Sync does this automatically after 30 days. Archived conflicts stay readable with `vulcan sync conflicts <id>` but can no longer be resolved."
+    )]
+    ConflictsArchive {
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_name = "DAYS",
+            help = "Archive conflicts closed at least this many days ago"
+        )]
+        older_than_days: u64,
+        #[arg(
+            long,
+            help = "List the conflicts that would move without changing anything"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Create a review-only conflict proposal with an LLM provider")]
     Propose {

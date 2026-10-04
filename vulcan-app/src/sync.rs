@@ -3944,6 +3944,60 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn archiving_on_demand_previews_then_moves_closed_conflicts() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        fs::write(fixture.writer.join("Home.md"), "writer\n").expect("writer edit");
+        fs::write(fixture.reader.join("Home.md"), "reader\n").expect("reader edit");
+        for root in [&fixture.writer, &fixture.reader] {
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(root),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("sync");
+        }
+        let conflict = conflict_listing(&fixture).conflicts[0].id.clone();
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: false,
+            },
+            &fixture.store,
+        )
+        .expect("resolve");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("sync records the closure");
+        let archive = |dry_run| {
+            crate::sync_conflicts::archive_sync_conflicts_with_state_store(
+                &VaultPaths::new(&fixture.reader),
+                std::time::Duration::ZERO,
+                dry_run,
+                &fixture.store,
+            )
+            .expect("archive")
+        };
+
+        let preview = archive(true);
+        assert_eq!(preview.archived, [conflict.clone()]);
+        assert_eq!(conflict_listing(&fixture).archived_count, 0);
+        let applied = archive(false);
+        assert_eq!((applied.archived.len(), applied.archived_total), (1, 1));
+        assert_eq!(conflict_listing(&fixture).archived_count, 1);
+        assert_eq!(historical_conflict(&fixture, &conflict).record.id, conflict);
+        assert!(archive(false).archived.is_empty());
+    }
+
+    #[test]
     fn overtaken_conflict_that_now_merges_cleanly_is_published_automatically() {
         let (fixture, first, later) = overtaken_conflict(
             "a\nb\nc\n",

@@ -3225,6 +3225,43 @@ fn parses_sync_retention_plan_command() {
 }
 
 #[test]
+fn parses_sync_conflicts_archive() {
+    let archive = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "conflicts-archive",
+        "--wiki",
+        "personal",
+        "--older-than-days",
+        "7",
+        "--dry-run",
+    ])
+    .expect("conflicts archive should parse");
+    assert!(matches!(
+        archive.command,
+        Command::Sync {
+            command: SyncCommand::ConflictsArchive {
+                wiki: Some(ref wiki),
+                older_than_days: 7,
+                dry_run: true,
+            }
+        } if wiki == "personal"
+    ));
+    let defaults = Cli::try_parse_from(["vulcan", "sync", "conflicts-archive"])
+        .expect("defaults should parse");
+    assert!(matches!(
+        defaults.command,
+        Command::Sync {
+            command: SyncCommand::ConflictsArchive {
+                wiki: None,
+                older_than_days: 30,
+                dry_run: false,
+            }
+        }
+    ));
+}
+
+#[test]
 fn parses_sync_semantic_commands() {
     assert!(Cli::try_parse_from([
         "vulcan",

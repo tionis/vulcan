@@ -686,6 +686,46 @@ pub fn list_sync_conflicts_with_state_store(
     })
 }
 
+/// Moves conflicts closed for at least `older_than` into the conflict archive
+/// now, as sync maintenance does after 30 days. A dry run reports what would
+/// move without taking locks or changing anything.
+pub fn archive_sync_conflicts(
+    paths: &vulcan_core::VaultPaths,
+    older_than: std::time::Duration,
+    dry_run: bool,
+) -> Result<ConflictArchiveReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    archive_sync_conflicts_with_state_store(paths, older_than, dry_run, &state_store)
+}
+
+pub fn archive_sync_conflicts_with_state_store(
+    paths: &vulcan_core::VaultPaths,
+    older_than: std::time::Duration,
+    dry_run: bool,
+    state_store: &SyncStateStore,
+) -> Result<ConflictArchiveReport, AppError> {
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
+    let repository_key = crate::sync_state::repository_state_key(&work_tree);
+    let engine = vulcan_sync::GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&work_tree)
+        .map_err(AppError::operation)?;
+    let _vault_lock = (!dry_run && paths.vulcan_dir().is_dir())
+        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
+        .transpose()
+        .map_err(AppError::operation)?;
+    let _repository_lock = (!dry_run)
+        .then(|| vulcan_sync::RepositoryLock::acquire(&repository.git_dir))
+        .transpose()?;
+    SyncConflictStore::from_state_store(state_store).archive_closed(
+        &engine,
+        &repository,
+        &repository_key,
+        older_than,
+        dry_run,
+    )
+}
+
 pub fn get_sync_conflict(
     paths: &vulcan_core::VaultPaths,
     conflict_id: &str,

@@ -338,7 +338,8 @@ they commit.
   immutable refs remain the durable byte archive until the conflict has been closed for 30 days,
   when sync moves it into `refs/vulcan/conflict-archive`. Archived conflicts are still readable
   with `vulcan sync conflicts <id>` (listings show `archived_count`) but cannot be resolved; never
-  delete that ref or the per-conflict refs by hand.
+  delete that ref or the per-conflict refs by hand. To archive sooner, preview
+  `vulcan sync conflicts-archive --older-than-days <n> --dry-run`, then rerun without `--dry-run`.
 - Use JSON `operational_stats`, or the concise `--verbose` human line, to assess one cycle's scale:
   automatic and conflicted paths, groups, formatting candidates, preserved input bytes, Git
   subprocesses, and coarse timings. These are content-free observations for that cycle, not durable

@@ -518,6 +518,11 @@ fn handle_non_cycle_sync_command(
         command @ SyncCommand::Conflicts { .. } => {
             handle_sync_conflicts_command(cli, paths, command)
         }
+        SyncCommand::ConflictsArchive {
+            wiki,
+            older_than_days,
+            dry_run,
+        } => run_sync_conflicts_archive(cli, paths, wiki.as_deref(), *older_than_days, *dry_run),
         SyncCommand::Propose {
             conflict_id,
             wiki,
@@ -3106,6 +3111,33 @@ const fn device_relation_label(relation: SyncDeviceRelation) -> &'static str {
         SyncDeviceRelation::ContainsLive => "contains accepted live plus device-only commits",
         SyncDeviceRelation::Diverged => "diverged and contains device-only history",
     }
+}
+
+fn run_sync_conflicts_archive(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    older_than_days: u64,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let older_than = std::time::Duration::from_secs(older_than_days.saturating_mul(24 * 60 * 60));
+    let report = vulcan_app::sync_conflicts::archive_sync_conflicts(&paths, older_than, dry_run)
+        .map_err(CliError::operation)?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    let verb = if dry_run { "Would archive" } else { "Archived" };
+    println!(
+        "{verb} {} closed conflict(s); the archive holds {}.",
+        report.archived.len(),
+        report.archived_total
+    );
+    for id in &report.archived {
+        println!("  {id}");
+    }
+    Ok(())
 }
 
 fn run_sync_conflicts(
