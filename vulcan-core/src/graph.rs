@@ -1,4 +1,4 @@
-use crate::permissions::{PermissionError, PermissionFilter};
+use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::VaultPaths;
 use rusqlite::{params, params_from_iter, Connection};
 use serde::Serialize;
@@ -656,6 +656,63 @@ pub fn resolve_note_reference_with_filter(
         }
     }
 
+    Ok(NoteReference {
+        id: note.id,
+        path: note.path,
+        matched_by: note.matched_by,
+    })
+}
+
+/// Resolve only among statically and dynamically readable indexed notes.
+/// Callers retaining a profile guard must bind and recheck its policy snapshot
+/// and current grant around the complete operation that consumes this result.
+pub fn resolve_note_reference_with_guard(
+    paths: &VaultPaths,
+    identifier: &str,
+    guard: &dyn PermissionGuard,
+) -> Result<NoteReference, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let scope = guard
+        .read_filter()
+        .document_scope_sql("_resolve_permission");
+    let sql = format!(
+        "{}SELECT documents.id, documents.path, documents.filename FROM documents \
+         WHERE documents.extension = 'md' {} ORDER BY documents.path",
+        scope.cte, scope.clause,
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(scope.params.iter()), |row| {
+        Ok(IndexedNote {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            filename: row.get(2)?,
+            aliases: Vec::new(),
+        })
+    })?;
+    let mut aliases = connection
+        .prepare("SELECT alias_text FROM aliases WHERE document_id = ?1 ORDER BY alias_text")?;
+    let mut notes = Vec::new();
+    for row in rows {
+        let mut note = row?;
+        if guard.has_policy_hook() {
+            match guard.check_policy_decision("read", Some(&note.path)) {
+                Ok(()) => {}
+                Err(
+                    PermissionError::PolicyHookDenied { .. } | PermissionError::PathDenied { .. },
+                ) => {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        note.aliases = aliases
+            .query_map([&note.id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        notes.push(note);
+    }
+    // Keep every authorized identity, including duplicate basenames. Resolution
+    // and ambiguity reporting must use the same scoped candidate universe.
+    let note = IndexedNoteSet::build(notes).resolve(identifier)?;
     Ok(NoteReference {
         id: note.id,
         path: note.path,
@@ -2172,6 +2229,106 @@ mod tests {
     };
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn guarded_resolution_preserves_tags_policy_and_visible_ambiguity() {
+        struct Guard {
+            profile: ProfilePermissionGuard,
+            denied: std::cell::Cell<bool>,
+            failed: std::cell::Cell<bool>,
+            calls: std::cell::RefCell<Vec<String>>,
+        }
+        impl PermissionGuard for Guard {
+            fn profile_name(&self) -> &'static str {
+                "scoped"
+            }
+            fn grant(&self) -> &crate::permissions::PermissionGrant {
+                self.profile.grant()
+            }
+            fn has_policy_hook(&self) -> bool {
+                true
+            }
+            fn check_policy_decision(
+                &self,
+                action: &'static str,
+                resource: Option<&str>,
+            ) -> Result<(), PermissionError> {
+                assert_eq!(action, "read");
+                let path = resource.unwrap();
+                self.calls.borrow_mut().push(path.into());
+                if self.failed.get() {
+                    return Err(PermissionError::PolicyHookFailed {
+                        profile: "scoped".into(),
+                        action,
+                        resource: resource.map(str::to_string),
+                        reason: "unavailable".into(),
+                    });
+                }
+                if self.denied.get() && path == "Policy/Task.md" {
+                    return Err(PermissionError::PathDenied {
+                        profile: "scoped".into(),
+                        action,
+                        path: path.into(),
+                    });
+                }
+                Ok(())
+            }
+        }
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = { allow = [] }\n").unwrap();
+        for (folder, tags) in [
+            ("Hidden", "[]"),
+            ("Denied", "[visible, secret]"),
+            ("Policy", "[visible]"),
+            ("Visible", "[visible]"),
+        ] {
+            fs::create_dir_all(temp.path().join(folder)).unwrap();
+            fs::write(
+                temp.path().join(folder).join("Task.md"),
+                format!("---\ntags: {tags}\naliases: [Shared]\n---\nTask\n"),
+            )
+            .unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let guard = Guard {
+            profile: ProfilePermissionGuard::new(
+                &paths,
+                resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+            ),
+            denied: std::cell::Cell::new(true),
+            failed: std::cell::Cell::new(false),
+            calls: std::cell::RefCell::default(),
+        };
+        for identifier in ["Task", "task.md", "Shared", "visible/task"] {
+            guard.calls.borrow_mut().clear();
+            let resolved = resolve_note_reference_with_guard(&paths, identifier, &guard).unwrap();
+            assert_eq!(resolved.path, "Visible/Task.md");
+            assert_eq!(*guard.calls.borrow(), ["Policy/Task.md", "Visible/Task.md"]);
+        }
+        for identifier in ["Hidden/Task.md", "Denied/Task.md", "Policy/Task.md"] {
+            assert!(matches!(
+                resolve_note_reference_with_guard(&paths, identifier, &guard),
+                Err(GraphQueryError::NoteNotFound { .. })
+            ));
+        }
+        guard.denied.set(false);
+        for identifier in ["Task", "Shared"] {
+            let error = resolve_note_reference_with_guard(&paths, identifier, &guard).unwrap_err();
+            let GraphQueryError::AmbiguousIdentifier { matches, .. } = error else {
+                panic!("expected scoped ambiguity: {error}");
+            };
+            assert_eq!(matches, ["Policy/Task.md", "Visible/Task.md"]);
+        }
+        guard.failed.set(true);
+        assert!(matches!(
+            resolve_note_reference_with_guard(&paths, "Task", &guard),
+            Err(GraphQueryError::Permission(
+                PermissionError::PolicyHookFailed { .. }
+            ))
+        ));
+    }
 
     #[test]
     fn scoped_note_resolution_excludes_hidden_filename_and_alias_candidates() {

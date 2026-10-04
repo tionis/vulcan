@@ -17,7 +17,7 @@ use vulcan_app::tasks::{
     apply_task_reschedule_with_guard, apply_task_set_with_guard, apply_task_track_start_with_guard,
     apply_task_track_stop_with_guard, build_task_due_report,
     build_task_pomodoro_status_report_with_guard, build_task_reminders_report,
-    build_task_show_report, build_task_track_log_report, build_task_track_status_report,
+    build_task_show_report_with_guard, build_task_track_log_report, build_task_track_status_report,
     build_task_track_summary_report, build_tasks_blocked_report, build_tasks_eval_report,
     build_tasks_graph_report, build_tasks_list_report_with_guard, build_tasks_next_report,
     build_tasks_query_result_with_guard, build_tasks_view_list_report, build_tasks_view_report,
@@ -110,7 +110,7 @@ pub(crate) fn handle_tasks_command(
             print_task_add_report(cli.output, &report)
         }
         TasksCommand::Show { task } => {
-            let report = run_tasks_show_command(paths, task)?;
+            let report = run_tasks_show_command(paths, task, &guard)?;
             print_task_show_report(cli.output, &report)
         }
         TasksCommand::Edit { task, no_commit } => {
@@ -712,8 +712,12 @@ fn run_tasks_convert_command(
     Ok(report)
 }
 
-fn run_tasks_show_command(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, CliError> {
-    build_task_show_report(paths, task).map_err(CliError::operation)
+fn run_tasks_show_command(
+    paths: &VaultPaths,
+    task: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<TaskShowReport, CliError> {
+    build_task_show_report_with_guard(paths, task, guard).map_err(CliError::operation)
 }
 
 #[allow(clippy::too_many_arguments)]

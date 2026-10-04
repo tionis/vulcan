@@ -30,6 +30,94 @@ use vulcan_core::{
 };
 
 #[test]
+fn guarded_task_show_reads_uncached_paths_with_static_path_authority() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\n").unwrap();
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Public/Task.md",
+        "Uncached",
+        "open",
+        &[],
+        "Body\n",
+    )
+    .unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let report = super::build_task_show_report_with_guard(&paths, "Public/Task", &guard).unwrap();
+    assert_eq!(report.title, "Uncached");
+    let error =
+        super::build_task_show_report_with_guard(&paths, "Hidden/Task", &guard).unwrap_err();
+    assert!(error.to_string().contains("permission denied"));
+}
+
+#[test]
+fn guarded_task_show_uses_read_only_scope_and_rejects_stale_authority() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let profile = "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = \"none\"\n";
+    fs::write(paths.config_file(), profile).unwrap();
+    let config = load_vault_config(&paths).config;
+    for (folder, tags) in [
+        ("Visible", vec!["task", "visible"]),
+        ("Hidden", vec!["task"]),
+        ("Denied", vec!["task", "visible", "secret"]),
+    ] {
+        seed_tasknote(
+            &paths,
+            &config,
+            &format!("{folder}/Task.md"),
+            folder,
+            "open",
+            &[
+                ("tags", serde_yaml::to_value(tags).unwrap()),
+                ("aliases", serde_yaml::to_value(["Shared"]).unwrap()),
+            ],
+            &format!("{folder} sentinel\n"),
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    for identifier in ["Task", "Shared", "Visible/Task.md"] {
+        let report = super::build_task_show_report_with_guard(&paths, identifier, &guard).unwrap();
+        assert_eq!(report.path, "Visible/Task.md");
+        assert_eq!(report.body, "Visible sentinel\n");
+    }
+    for identifier in ["Hidden/Task.md", "Denied/Task.md"] {
+        assert!(super::build_task_show_report_with_guard(&paths, identifier, &guard).is_err());
+    }
+    // Show must use current source properties, not stale cached content.
+    let visible = temp.path().join("Visible/Task.md");
+    let source = fs::read_to_string(&visible).unwrap();
+    fs::write(&visible, source.replace("Visible", "Updated")).unwrap();
+    let report = super::build_task_show_report_with_guard(&paths, "Task", &guard).unwrap();
+    assert_eq!(report.title, "Updated");
+    assert_eq!(report.body, "Updated sentinel\n");
+    fs::write(&visible, source.replace("visible", "secret")).unwrap();
+    let error = super::build_task_show_report_with_guard(&paths, "Task", &guard).unwrap_err();
+    assert!(error.to_string().contains("no longer readable"));
+    fs::write(&visible, &source).unwrap();
+    fs::write(
+        paths.config_file(),
+        profile.replace("tag:visible", "tag:revoked"),
+    )
+    .unwrap();
+    let error = super::build_task_show_report_with_guard(&paths, "Task", &guard).unwrap_err();
+    assert!(error.to_string().contains("authority changed"));
+}
+
+#[test]
 fn guarded_daily_sessions_do_not_expose_or_complete_hidden_tasks() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

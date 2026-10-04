@@ -1106,12 +1106,78 @@ pub fn prepare_task_editor_path(
 pub fn build_task_show_report(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, AppError> {
     let _read_guard = consistent_task_read(paths)?;
     let loaded = load_tasknote_note(paths, task)?;
+    Ok(task_show_report(loaded))
+}
+
+pub fn build_task_show_report_with_guard(
+    paths: &VaultPaths,
+    task: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<TaskShowReport, AppError> {
+    TaskReadScope::Guard(guard).recheck(paths)?;
+    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    let scope = TaskReadScope::Guard(&snapshot);
+    let _read_guard = consistent_task_read(paths)?;
+    let result = (|| {
+        scope.recheck(paths)?;
+        let path = resolve_task_read_path(paths, task, &snapshot)?;
+        let source = read_task_source(paths, &path).map_err(AppError::operation)?;
+        // The vault is canonical. A show read parses only its authorized source,
+        // without loading a global index or requiring any mutation permission.
+        let loaded = parse_loaded_tasknote(
+            paths,
+            task,
+            path,
+            source,
+            None,
+            Some(&snapshot.read_filter()),
+        )?;
+        Ok(task_show_report(loaded))
+    })();
+    scope.recheck(paths)?;
+    result
+}
+
+fn resolve_task_read_path(
+    paths: &VaultPaths,
+    task: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<String, AppError> {
+    match vulcan_core::graph::resolve_note_reference_with_guard(paths, task, guard) {
+        Ok(note) => Ok(note.path),
+        Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. })
+            if !guard.has_policy_hook()
+                && !guard
+                    .grant()
+                    .read
+                    .allow
+                    .iter()
+                    .chain(&guard.grant().read.deny)
+                    .any(|specifier| {
+                        matches!(
+                            specifier,
+                            vulcan_core::permissions::ResourceSpecifier::Tag(_)
+                        )
+                    }) =>
+        {
+            // Preserve direct-path reads without a populated cache only when
+            // static path rules alone prove access. Never retry a policy denial
+            // or infer tag authority from an unread indexed/source document.
+            let path = normalize_note_path(task)?;
+            guard.check_read_path(&path).map_err(AppError::operation)?;
+            Ok(path)
+        }
+        Err(error) => Err(AppError::operation(error)),
+    }
+}
+
+fn task_show_report(loaded: LoadedTaskNote) -> TaskShowReport {
     let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
     let now_ms = current_utc_timestamp_ms();
     let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
         tasknote_time_metrics(&loaded.indexed, now_ms);
 
-    Ok(TaskShowReport {
+    TaskShowReport {
         path: loaded.path,
         title: loaded.indexed.title,
         status: loaded.indexed.status,
@@ -1141,7 +1207,7 @@ pub fn build_task_show_report(paths: &VaultPaths, task: &str) -> Result<TaskShow
         custom_fields: Value::Object(loaded.indexed.custom_fields),
         frontmatter: loaded.frontmatter_json,
         body: loaded.body,
-    })
+    }
 }
 
 pub fn apply_task_track_start(
@@ -4847,8 +4913,42 @@ fn load_tasknote_note_with_guard(
 ) -> Result<LoadedTaskNote, AppError> {
     let path = resolve_task_mutation_path(paths, task, guard)?;
     let source = read_task_source(paths, &path).map_err(AppError::operation)?;
+    let read_filter = guard.map(PermissionGuard::read_filter);
+    let cached_properties =
+        vulcan_core::properties::load_note_index_with_filter(paths, read_filter.as_ref())
+            .ok()
+            .and_then(|index| {
+                index
+                    .into_values()
+                    .find(|note| note.document_path == path)
+                    .map(|note| note.properties)
+            });
+    parse_loaded_tasknote(paths, task, path, source, cached_properties, None)
+}
+
+fn parse_loaded_tasknote(
+    paths: &VaultPaths,
+    task: &str,
+    path: String,
+    source: String,
+    cached_properties: Option<Value>,
+    read_filter: Option<&vulcan_core::PermissionFilter>,
+) -> Result<LoadedTaskNote, AppError> {
     let config = load_vault_config(paths).config;
     let parsed = vulcan_core::parse_document(&source, &config);
+    if let Some(filter) = read_filter {
+        let tags = parsed
+            .tags
+            .iter()
+            .map(|tag| tag.tag_text.clone())
+            .collect::<Vec<_>>();
+        if !filter.path_permission().is_allowed_with_tags(&path, &tags) {
+            return Err(AppError::operation_with_code(
+                "permission_denied",
+                "task source is no longer readable under the selected grant",
+            ));
+        }
+    }
     let indexed_properties = extract_indexed_properties(&parsed, &config)
         .map_err(AppError::operation)?
         .map(|properties| serde_json::from_str::<Value>(&properties.canonical_json))
@@ -4857,18 +4957,9 @@ fn load_tasknote_note_with_guard(
     let (frontmatter, body) =
         parse_frontmatter_document(&source, false).map_err(AppError::operation)?;
     let frontmatter = frontmatter.unwrap_or_default();
-    let read_filter = guard.map(PermissionGuard::read_filter);
-    let frontmatter_json =
-        vulcan_core::properties::load_note_index_with_filter(paths, read_filter.as_ref())
-            .ok()
-            .and_then(|index| {
-                index
-                    .into_values()
-                    .find(|note| note.document_path == path)
-                    .map(|note| note.properties)
-            })
-            .or(indexed_properties)
-            .unwrap_or_else(|| Value::Object(Map::new()));
+    let frontmatter_json = cached_properties
+        .or(indexed_properties)
+        .unwrap_or_else(|| Value::Object(Map::new()));
     let title = Path::new(&path)
         .file_stem()
         .and_then(|stem| stem.to_str())

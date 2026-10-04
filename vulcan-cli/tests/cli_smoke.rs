@@ -13974,6 +13974,79 @@ fn tasks_show_json_output_reports_tasknote_details() {
 }
 
 #[test]
+#[cfg(feature = "js_runtime")]
+fn tasks_show_scopes_identifiers_and_source_reads_without_write_grants() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("vault");
+    let config_home = temp.path().join("xdg");
+    fs::create_dir_all(root.join(".vulcan/plugins")).unwrap();
+    fs::create_dir_all(&config_home).unwrap();
+    for (folder, tags) in [
+        ("Hidden", "[task]"),
+        ("Denied", "[task, visible, secret]"),
+        ("Policy", "[task, visible]"),
+        ("Visible", "[task, visible]"),
+    ] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+        fs::write(root.join(folder).join("Task.md"), format!(
+            "---\ntags: {tags}\naliases: [Shared]\ntitle: {folder}\nstatus: open\n---\n{folder} body\n"
+        )).unwrap();
+    }
+    fs::write(root.join(".vulcan/config.toml"), concat!(
+        "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
+        "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
+    )).unwrap();
+    let hook = root.join(".vulcan/plugins/guard.js");
+    fs::write(&hook, "function policy_hook(input) { return input.resource === 'Policy/Task.md' ? 'deny' : 'pass'; }\n").unwrap();
+    let xdg = config_home.to_str().unwrap();
+    trust_and_scan_vault(xdg, root.to_str().unwrap());
+    let show = |identifier: &str| {
+        cargo_vulcan_with_xdg_config(xdg)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "guarded",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+                "tasks",
+                "show",
+                identifier,
+            ])
+            .assert()
+    };
+    for identifier in ["Task", "Shared", "Visible/Task.md"] {
+        let report = parse_stdout_json(&show(identifier).success());
+        assert_eq!(report["path"], "Visible/Task.md");
+        assert_eq!(report["title"], "Visible");
+        assert_eq!(report["body"], "Visible body\n");
+    }
+    for identifier in ["Hidden/Task.md", "Denied/Task.md", "Policy/Task.md"] {
+        let result = show(identifier).failure();
+        let error = String::from_utf8_lossy(&result.get_output().stdout);
+        assert!(error.contains("note not found"), "{error}");
+        assert!(!error.contains("body"));
+    }
+    fs::write(&hook, "function policy_hook() { return 'pass'; }\n").unwrap();
+    let result = show("Shared").failure();
+    let error = String::from_utf8_lossy(&result.get_output().stdout);
+    assert!(error.contains("ambiguous"), "{error}");
+    assert!(error.contains("Policy/Task.md") && error.contains("Visible/Task.md"));
+    assert!(!error.contains("Hidden/") && !error.contains("Denied/"));
+    fs::write(
+        &hook,
+        "function policy_hook() { throw new Error('broken hook'); }\n",
+    )
+    .unwrap();
+    let result = show("Task").failure();
+    let error = String::from_utf8_lossy(&result.get_output().stdout);
+    assert!(!error.contains("note not found"), "{error}");
+    assert!(error.contains("policy"), "{error}");
+}
+
+#[test]
 fn tasks_track_start_stop_and_status_json_output_manage_time_entries() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
