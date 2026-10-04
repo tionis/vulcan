@@ -335,7 +335,10 @@ they commit.
   replacement or run sync again to obtain a current conflict. Keep base/local/remote refs and
   device-local artifacts.
   A fully applied resolution prunes its artifact copies automatically (newest 32 retained); the
-  immutable refs remain the durable byte archive.
+  immutable refs remain the durable byte archive until the conflict has been closed for 30 days,
+  when sync moves it into `refs/vulcan/conflict-archive`. Archived conflicts are still readable
+  with `vulcan sync conflicts <id>` (listings show `archived_count`) but cannot be resolved; never
+  delete that ref or the per-conflict refs by hand.
 - Use JSON `operational_stats`, or the concise `--verbose` human line, to assess one cycle's scale:
   automatic and conflicted paths, groups, formatting candidates, preserved input bytes, Git
   subprocesses, and coarse timings. These are content-free observations for that cycle, not durable

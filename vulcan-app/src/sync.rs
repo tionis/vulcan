@@ -1838,9 +1838,10 @@ fn supersede_obsolete_conflicts(
     ))
 }
 
-/// Carries overtaken conflicts forward under the vault and repository locks.
-/// Carrying forward is opportunistic: if the locks are busy or it fails, the
-/// conflicts stay as they are and the next sync tries again.
+/// Carries overtaken conflicts forward, then archives long-closed ones, under
+/// the vault and repository locks. Both are opportunistic: if the locks are
+/// busy or a step fails, the conflicts stay as they are and the next sync
+/// tries again.
 fn carry_forward_overtaken_conflicts(
     engine: &dyn GitEngine,
     paths: &VaultPaths,
@@ -1862,7 +1863,7 @@ fn carry_forward_overtaken_conflicts(
     else {
         return false;
     };
-    store
+    let carried = store
         .carry_forward_stale_unresolved(
             engine,
             &sync.repository,
@@ -1870,7 +1871,15 @@ fn carry_forward_overtaken_conflicts(
             frontier,
             options,
         )
-        .is_ok_and(|summary| !summary.written_paths.is_empty())
+        .is_ok_and(|summary| !summary.written_paths.is_empty());
+    let _ = store.archive_closed(
+        engine,
+        &sync.repository,
+        &journal.repository_key,
+        crate::sync_conflicts::CONFLICT_ARCHIVE_AFTER,
+        false,
+    );
+    carried
 }
 
 fn persist_and_update_conflicts(
@@ -3795,6 +3804,142 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             assert_eq!(reader_refs(), expected);
             assert_eq!(conflict_listing(&fixture).count, 1);
             previous = Some(current);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One conflict's whole lifecycle reads best as one story.
+    fn long_closed_conflicts_move_to_the_archive_and_stay_readable() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        let sync = |root: &std::path::Path| {
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(root),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("sync")
+        };
+        fs::write(fixture.writer.join("Home.md"), "writer\n").expect("writer edit");
+        fs::write(fixture.reader.join("Home.md"), "reader\n").expect("reader edit");
+        sync(&fixture.writer);
+        let conflict = sync(&fixture.reader).conflict_record.expect("conflict");
+        let side = |side| crate::sync_conflicts::ResolveSyncConflictOptions {
+            side,
+            group_ids: Vec::new(),
+            remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+            live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                .expect("live ref"),
+            dry_run: false,
+        };
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &side(crate::sync_conflicts::SyncConflictResolutionSide::Local),
+            &fixture.store,
+        )
+        .expect("resolve");
+        // The next sync notices the conflict closed; a fresh closure stays.
+        sync(&fixture.reader);
+        let key = &conflict.repository_key;
+        let repository_root = fixture.store.root().join(key);
+        let marker = repository_root.join("closed-conflicts").join(&conflict.id);
+        assert!(marker.is_file());
+        assert!(repository_root
+            .join("conflicts")
+            .join(&conflict.id)
+            .is_dir());
+
+        // Thirty-one days later it moves to the archive.
+        fs::File::options()
+            .write(true)
+            .open(&marker)
+            .expect("marker")
+            .set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 60 * 60),
+            )
+            .expect("backdate");
+        sync(&fixture.reader);
+        assert!(!repository_root
+            .join("conflicts")
+            .join(&conflict.id)
+            .exists());
+        assert!(!marker.exists());
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .args(args)
+                .output()
+                .expect("git");
+            String::from_utf8(output.stdout).expect("utf-8")
+        };
+        assert!(git(&["for-each-ref", "refs/vulcan/conflicts"]).is_empty());
+        assert!(!git(&["rev-parse", "--verify", "refs/vulcan/conflict-archive"]).is_empty());
+        // The conflicted versions stay reachable as the original blobs.
+        let sides = git(&[
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "refs/vulcan/conflict-archive",
+            "--",
+            &format!("{}/{}/sides", &conflict.id[..2], conflict.id),
+        ]);
+        assert_eq!(sides.lines().count(), 3, "{sides}");
+        let local = git(&[
+            "show",
+            &format!(
+                "refs/vulcan/conflict-archive:{}/{}/sides/000000-local",
+                &conflict.id[..2],
+                conflict.id
+            ),
+        ]);
+        assert_eq!(local, "reader\n");
+
+        let detail = historical_conflict(&fixture, &conflict.id);
+        assert_eq!(
+            detail.resolution,
+            crate::sync_conflicts::SyncConflictResolutionState::Resolved
+        );
+        assert_eq!(detail.record.paths[0].path, "Home.md");
+        let listed = conflict_listing(&fixture);
+        assert_eq!((listed.count, listed.archived_count), (0, 1));
+        let refused = crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &side(crate::sync_conflicts::SyncConflictResolutionSide::Remote),
+            &fixture.store,
+        )
+        .expect_err("archived conflicts are history only");
+        assert!(refused.to_string().contains("archived"), "{refused}");
+
+        // A later run extends the archive instead of replacing it.
+        sync(&fixture.writer);
+        fs::write(fixture.writer.join("Home.md"), "writer two\n").expect("writer edit");
+        fs::write(fixture.reader.join("Home.md"), "reader two\n").expect("reader edit");
+        sync(&fixture.writer);
+        let second = sync(&fixture.reader)
+            .conflict_record
+            .expect("second conflict");
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &second.id,
+            &side(crate::sync_conflicts::SyncConflictResolutionSide::Remote),
+            &fixture.store,
+        )
+        .expect("resolve second");
+        sync(&fixture.reader);
+        fs::File::options()
+            .write(true)
+            .open(repository_root.join("closed-conflicts").join(&second.id))
+            .expect("second marker")
+            .set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 60 * 60),
+            )
+            .expect("backdate second");
+        sync(&fixture.reader);
+        assert_eq!(conflict_listing(&fixture).archived_count, 2);
+        for id in [&conflict.id, &second.id] {
+            assert_eq!(historical_conflict(&fixture, id).record.id, *id);
         }
     }
 

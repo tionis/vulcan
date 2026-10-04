@@ -11,12 +11,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{
-    conflict_recovery_ref, conflict_ref, conflict_resolved_ref, remote_conflict_ref,
-    GitAutomaticMergeValidation, GitCaptureRequest, GitCarriedPath, GitConflictClassification,
-    GitConflictProjection, GitConflictRefs, GitConflictScope, GitConflictSide,
-    GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest, GitOid, GitPushResult,
-    GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict, GitSyncOptions,
-    GitSyncRefs, GitTreeEntry, SyncCancellationToken,
+    conflict_archive_ref, conflict_recovery_ref, conflict_ref, conflict_resolved_ref,
+    remote_conflict_ref, GitAutomaticMergeValidation, GitCaptureRequest, GitCarriedPath,
+    GitConflictClassification, GitConflictProjection, GitConflictRefs, GitConflictScope,
+    GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest,
+    GitOid, GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict,
+    GitSyncOptions, GitSyncRefs, GitTreeEntry, SyncCancellationToken, LOCAL_VULCAN_REF_ROOT,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 4;
@@ -49,6 +49,17 @@ const OPEN_CONFLICTS_DIR: &str = "open-conflicts";
 /// superseded. Those states are final, so a full re-index skips these
 /// conflicts by a marker check instead of reading their records again.
 const CLOSED_CONFLICTS_DIR: &str = "closed-conflicts";
+/// Closed conflicts move to the archive this long after they were found
+/// resolved or superseded.
+pub const CONFLICT_ARCHIVE_AFTER: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+/// At most this many conflicts move per archive run, bounding each run.
+const MAX_ARCHIVED_PER_RUN: usize = 256;
+/// Device-local mirror of the archive's conflict count, so listings report
+/// it without reading Git.
+const ARCHIVED_COUNT_FILE: &str = "archived-conflicts";
+/// The archive tree's own conflict count.
+const ARCHIVE_COUNT_PATH: &str = "count";
 /// Holds the modification time of `conflicts/` when the index last covered
 /// every conflict directory. Creating a conflict directory, by this or any
 /// other version, changes that time and triggers one full re-index.
@@ -570,6 +581,8 @@ pub struct SyncConflictListReport {
     /// superseded history is reported separately and excluded here.
     pub count: usize,
     pub superseded_count: usize,
+    /// Closed conflicts moved to the archive; still readable by ID.
+    pub archived_count: usize,
     pub conflicts: Vec<SyncConflictSummary>,
 }
 
@@ -662,11 +675,13 @@ pub fn list_sync_conflicts_with_state_store(
             (state == SyncConflictResolutionState::Unresolved).then_some(summary)
         })
         .collect::<Vec<_>>();
+    let archived_count = store.archived_count(&repository_key);
     Ok(SyncConflictListReport {
         vault: work_tree,
         repository_key,
         count: conflicts.len(),
         superseded_count,
+        archived_count,
         conflicts,
     })
 }
@@ -687,6 +702,22 @@ pub fn get_sync_conflict_with_state_store(
     let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let store = SyncConflictStore::from_state_store(state_store);
+    if !store.is_live(&repository_key, conflict_id)? {
+        if let Some((_temporary, archived)) =
+            archived_conflict_store(&work_tree, &repository_key, conflict_id)?
+        {
+            return conflict_detail(&archived, &repository_key, conflict_id);
+        }
+    }
+    conflict_detail(&store, &repository_key, conflict_id)
+}
+
+fn conflict_detail(
+    store: &SyncConflictStore,
+    repository_key: &str,
+    conflict_id: &str,
+) -> Result<SyncConflictDetailReport, AppError> {
+    let repository_key = repository_key.to_string();
     let record = store.get(&repository_key, conflict_id)?;
     let progress = store.group_progress(&repository_key, &record)?;
     let resolution =
@@ -730,7 +761,13 @@ pub fn get_sync_conflict_page_with_state_store(
     }
     let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
-    let store = SyncConflictStore::from_state_store(state_store);
+    let live = SyncConflictStore::from_state_store(state_store);
+    let archived = if live.is_live(&repository_key, conflict_id)? {
+        None
+    } else {
+        archived_conflict_store(&work_tree, &repository_key, conflict_id)?
+    };
+    let store = archived.as_ref().map_or(&live, |(_, archived)| archived);
     let (record, total, progress) =
         store.get_page_and_progress(&repository_key, conflict_id, offset, limit)?;
     let resolution =
@@ -777,7 +814,7 @@ pub fn resolve_sync_conflict_with_state_store(
         conflict_id: conflict_id.to_string(),
     };
     let store = SyncConflictStore::from_state_store(state_store);
-    let record = store.get(&repository_key, conflict_id)?;
+    let record = live_record(&store, &work_tree, &repository_key, conflict_id)?;
     if !same_work_tree(&record.work_tree, &work_tree) {
         return Err(AppError::operation(
             "sync conflict record does not belong to the selected worktree",
@@ -2149,6 +2186,124 @@ fn selected_side_paths(
         .collect())
 }
 
+/// What one conflict archive run moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConflictArchiveReport {
+    pub dry_run: bool,
+    /// Conflicts moved (or, in a dry run, that would move) this run.
+    pub archived: Vec<String>,
+    /// Conflicts in the archive after this run.
+    pub archived_total: usize,
+}
+
+/// Where one conflict lives inside the archive tree: sharded by its first
+/// two hex digits, so each run rewrites only the touched shards.
+fn archive_prefix(conflict_id: &str) -> String {
+    format!("{}/{conflict_id}", &conflict_id[..2])
+}
+
+/// Every file of a conflict directory except the artifact copies, whose
+/// contents the archive references as the original Git blobs instead.
+fn archive_files(directory: &Path) -> Result<Vec<(String, Vec<u8>)>, AppError> {
+    let mut files = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in fs::read_dir(&current).map_err(AppError::operation)? {
+            let entry = entry.map_err(AppError::operation)?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(directory)
+                .map_err(AppError::operation)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let kind = entry.file_type().map_err(AppError::operation)?;
+            if kind.is_dir() {
+                if relative != "artifacts" {
+                    pending.push(path);
+                }
+            } else if kind.is_file() {
+                files.push((relative, fs::read(&path).map_err(AppError::operation)?));
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// The live record of a conflict to resolve. Archived conflicts are closed
+/// history, so say so instead of reporting a missing file.
+fn live_record(
+    store: &SyncConflictStore,
+    work_tree: &Path,
+    repository_key: &str,
+    conflict_id: &str,
+) -> Result<SyncConflictRecord, AppError> {
+    if !store.is_live(repository_key, conflict_id)?
+        && archived_conflict_store(work_tree, repository_key, conflict_id)?.is_some()
+    {
+        return Err(AppError::operation(format!(
+            "conflict `{conflict_id}` was resolved or superseded and has been archived; `vulcan sync conflicts {conflict_id}` still shows it"
+        )));
+    }
+    store.get(repository_key, conflict_id)
+}
+
+/// Archive file contents keyed by their path inside the archive tree.
+type ArchiveFiles = Vec<(String, Vec<u8>)>;
+
+/// Materializes one archived conflict into a temporary store so the ordinary
+/// readers can serve it; `None` when the archive does not hold it.
+fn archived_conflict_store(
+    work_tree: &Path,
+    repository_key: &str,
+    conflict_id: &str,
+) -> Result<Option<(tempfile::TempDir, SyncConflictStore)>, AppError> {
+    validate_hex_id("conflict ID", conflict_id)?;
+    let engine = vulcan_sync::GitCliEngine::default();
+    let Ok(repository) = engine.discover_repository(work_tree) else {
+        return Ok(None);
+    };
+    let reference = conflict_archive_ref().map_err(AppError::operation)?;
+    let Some(archive) = engine
+        .read_ref(&repository, &reference)
+        .map_err(AppError::operation)?
+    else {
+        return Ok(None);
+    };
+    let prefix = archive_prefix(conflict_id);
+    let entries = engine
+        .tree_entries_under(&repository, &archive, &prefix)
+        .map_err(AppError::operation)?
+        .into_iter()
+        .filter(|entry| !entry.path.starts_with(&format!("{prefix}/sides/")))
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let blobs = engine
+        .read_blobs(
+            &repository,
+            &entries
+                .iter()
+                .map(|entry| entry.oid.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(AppError::operation)?;
+    let temporary = tempfile::tempdir().map_err(AppError::operation)?;
+    let store = SyncConflictStore::at(temporary.path().to_path_buf());
+    let directory = store.conflict_directory(repository_key, conflict_id)?;
+    for entry in &entries {
+        let relative = &entry.path[prefix.len() + 1..];
+        let target = directory.join(relative);
+        fs::create_dir_all(target.parent().unwrap_or(&directory)).map_err(AppError::operation)?;
+        let bytes = blobs
+            .get(&entry.oid)
+            .ok_or_else(|| AppError::operation("the conflict archive is missing an object"))?;
+        fs::write(&target, bytes).map_err(AppError::operation)?;
+    }
+    Ok(Some((temporary, store)))
+}
+
 /// What one carry-forward pass changed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CarryForwardSummary {
@@ -2205,6 +2360,28 @@ fn set_carried_mode(path: &Path, mode: Option<&str>) -> Result<(), AppError> {
 #[allow(clippy::unnecessary_wraps)] // One fallible contract across platforms.
 fn set_carried_mode(_path: &Path, _mode: Option<&str>) -> Result<(), AppError> {
     Ok(())
+}
+
+/// The conflict count recorded in an archive commit's tree.
+fn archive_count(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    archive: &GitOid,
+) -> Result<usize, AppError> {
+    let entries = engine
+        .tree_entries_for_paths(repository, archive, &[ARCHIVE_COUNT_PATH.to_string()])
+        .map_err(AppError::operation)?;
+    let Some(entry) = entries.first() else {
+        return Ok(0);
+    };
+    let blobs = engine
+        .read_blobs(repository, std::slice::from_ref(&entry.oid))
+        .map_err(AppError::operation)?;
+    Ok(blobs
+        .get(&entry.oid)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap_or(0))
 }
 
 /// Leaf tree entries at `paths` in `revision`, keyed by path, without
@@ -3511,6 +3688,229 @@ impl SyncConflictStore {
                 .join(&intermediate.id),
         )
         .map(drop)
+    }
+
+    /// Moves conflicts closed (resolved or superseded) for at least
+    /// `older_than` into the archive: one local ref,
+    /// `refs/vulcan/conflict-archive`, naming a parentless commit whose tree
+    /// holds each conflict's record, pages, decisions, and proposals as blobs
+    /// under `<first two hex digits>/<id>/`, plus its conflicted file versions
+    /// as entries pointing at the existing Git blobs under `sides/`. Once the
+    /// ref moves, the conflict's directory, markers, and local refs go away;
+    /// readers then serve it from the archive. At most a bounded batch moves
+    /// per run. The caller holds the vault and repository locks.
+    pub fn archive_closed(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        repository_key: &str,
+        older_than: std::time::Duration,
+        dry_run: bool,
+    ) -> Result<ConflictArchiveReport, AppError> {
+        validate_hex_id("repository key", repository_key)?;
+        let candidates = self.archive_candidates(repository_key, older_than)?;
+        let reference = conflict_archive_ref().map_err(AppError::operation)?;
+        let current = engine
+            .read_ref(repository, &reference)
+            .map_err(AppError::operation)?;
+        let previous_total = match &current {
+            Some(commit) => archive_count(engine, repository, commit)?,
+            None => 0,
+        };
+        if dry_run || candidates.is_empty() {
+            return Ok(ConflictArchiveReport {
+                dry_run,
+                archived_total: previous_total + if dry_run { candidates.len() } else { 0 },
+                archived: candidates,
+            });
+        }
+        let (mut files, sides) = self.archive_entries(repository_key, &candidates)?;
+        let total = previous_total + candidates.len();
+        files.push((
+            ARCHIVE_COUNT_PATH.to_string(),
+            total.to_string().into_bytes(),
+        ));
+        let blobs = engine
+            .write_blobs(
+                repository,
+                &files
+                    .iter()
+                    .map(|(_, bytes)| bytes.as_slice())
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(AppError::operation)?;
+        let mut entries = files
+            .into_iter()
+            .zip(blobs)
+            .map(|((path, _), oid)| GitTreeEntry {
+                path,
+                oid,
+                mode: "100644".to_string(),
+                kind: "blob".to_string(),
+            })
+            .collect::<Vec<_>>();
+        entries.extend(sides);
+        let base = current
+            .as_ref()
+            .map(|commit| engine.tree_oid(repository, commit))
+            .transpose()
+            .map_err(AppError::operation)?;
+        let tree = engine
+            .tree_with_entries(repository, base.as_ref(), &entries)
+            .map_err(AppError::operation)?;
+        // Parentless: the newest tree holds everything, so earlier archive
+        // versions are garbage-collected instead of accumulating.
+        let commit = engine
+            .create_commit(repository, &tree, &[], "vulcan conflict archive\n")
+            .map_err(AppError::operation)?;
+        if engine
+            .compare_and_swap_ref(repository, &reference, &commit, current.as_ref())
+            .map_err(AppError::operation)?
+            == vulcan_sync::GitRefUpdateResult::Stale
+        {
+            return Err(AppError::operation(
+                "the conflict archive changed concurrently; the next run retries",
+            ));
+        }
+        durable_file::replace(
+            &self.root.join(repository_key).join(ARCHIVED_COUNT_FILE),
+            total.to_string().as_bytes(),
+        )?;
+        for id in &candidates {
+            self.remove_archived(engine, repository, repository_key, id)?;
+        }
+        Ok(ConflictArchiveReport {
+            dry_run,
+            archived: candidates,
+            archived_total: total,
+        })
+    }
+
+    /// The archive entries for `candidates`: each conflict's files (artifact
+    /// copies excluded) and its conflicted versions as the original blobs.
+    fn archive_entries(
+        &self,
+        repository_key: &str,
+        candidates: &[String],
+    ) -> Result<(ArchiveFiles, Vec<GitTreeEntry>), AppError> {
+        let mut files = Vec::new();
+        let mut sides = Vec::new();
+        for id in candidates {
+            let prefix = archive_prefix(id);
+            let record = self.get(repository_key, id)?;
+            for (index, path) in record.paths.iter().enumerate() {
+                for (role, side) in [
+                    ("base", &path.base),
+                    ("local", &path.local),
+                    ("remote", &path.remote),
+                ] {
+                    let (Some(object), Some(mode)) = (&side.object_id, &side.mode) else {
+                        continue;
+                    };
+                    if side.kind.as_deref() != Some("blob")
+                        || !matches!(mode.as_str(), "100644" | "100755" | "120000")
+                    {
+                        continue;
+                    }
+                    sides.push(GitTreeEntry {
+                        path: format!("{prefix}/sides/{index:06}-{role}"),
+                        oid: GitOid::parse(object).map_err(AppError::operation)?,
+                        mode: mode.clone(),
+                        kind: "blob".to_string(),
+                    });
+                }
+            }
+            let directory = self.conflict_directory(repository_key, id)?;
+            for (relative, bytes) in archive_files(&directory)? {
+                files.push((format!("{prefix}/{relative}"), bytes));
+            }
+        }
+        Ok((files, sides))
+    }
+
+    /// Closed conflicts old enough to archive, oldest closure first, at most
+    /// one run's batch. Reads only the closed markers, never the records.
+    fn archive_candidates(
+        &self,
+        repository_key: &str,
+        older_than: std::time::Duration,
+    ) -> Result<Vec<String>, AppError> {
+        let closed = self.root.join(repository_key).join(CLOSED_CONFLICTS_DIR);
+        let entries = match fs::read_dir(&closed) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(AppError::operation(error)),
+        };
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(older_than)
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let mut candidates = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(AppError::operation)?;
+            let id = entry.file_name().to_string_lossy().to_string();
+            if validate_hex_id("conflict ID", &id).is_err() {
+                continue;
+            }
+            let closed_at = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .map_err(AppError::operation)?;
+            let directory = self.conflict_directory(repository_key, &id)?;
+            if closed_at <= cutoff && directory.join("record.json").is_file() {
+                candidates.push((closed_at, id));
+            }
+        }
+        candidates.sort();
+        Ok(candidates
+            .into_iter()
+            .take(MAX_ARCHIVED_PER_RUN)
+            .map(|(_, id)| id)
+            .collect())
+    }
+
+    /// Drops an archived conflict's local refs, directory, and markers.
+    fn remove_archived(
+        &self,
+        engine: &dyn GitEngine,
+        repository: &GitRepository,
+        repository_key: &str,
+        conflict_id: &str,
+    ) -> Result<(), AppError> {
+        let prefix = GitRefName::parse(format!("{LOCAL_VULCAN_REF_ROOT}/conflicts/{conflict_id}"))
+            .map_err(AppError::operation)?;
+        for reference in engine
+            .list_refs(repository, &prefix)
+            .map_err(AppError::operation)?
+        {
+            engine
+                .delete_ref(repository, &reference.name, &reference.target)
+                .map_err(AppError::operation)?;
+        }
+        let directory = self.conflict_directory(repository_key, conflict_id)?;
+        if directory.exists() {
+            fs::remove_dir_all(&directory).map_err(AppError::operation)?;
+        }
+        let root = self.root.join(repository_key);
+        durable_file::remove(&root.join(OPEN_CONFLICTS_DIR).join(conflict_id))?;
+        durable_file::remove(&root.join(CLOSED_CONFLICTS_DIR).join(conflict_id))?;
+        Ok(())
+    }
+
+    /// Whether the conflict's record is in the live store (not archived).
+    pub fn is_live(&self, repository_key: &str, conflict_id: &str) -> Result<bool, AppError> {
+        Ok(self
+            .conflict_directory(repository_key, conflict_id)?
+            .join("record.json")
+            .is_file())
+    }
+
+    /// Conflicts in the archive, from the device-local mirror of its count.
+    #[must_use]
+    pub fn archived_count(&self, repository_key: &str) -> usize {
+        fs::read_to_string(self.root.join(repository_key).join(ARCHIVED_COUNT_FILE))
+            .ok()
+            .and_then(|count| count.trim().parse().ok())
+            .unwrap_or(0)
     }
 
     /// Records the still-conflicting paths against `frontier`: the preserved

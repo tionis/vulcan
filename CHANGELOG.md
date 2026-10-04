@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Sync conflicts closed for 30 days move into a compact per-repository archive
+  (`refs/vulcan/conflict-archive`) during sync. Their records, decisions, and conflicted file
+  versions stay readable with `vulcan sync conflicts <id>`, while their directories and per-conflict
+  Git refs no longer accumulate. `vulcan sync conflicts` reports the archived count.
+
 - Every sync used to read every conflict record ever preserved for the repository to decide
   which unresolved ones to supersede or carry forward. A device-local index of open conflicts
   now limits that to the conflicts still open; resolved and superseded records are no longer

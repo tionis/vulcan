@@ -3157,6 +3157,12 @@ fn print_sync_conflict_list(
             report.superseded_count
         );
     }
+    if report.archived_count > 0 {
+        println!(
+            "Archived closed conflicts (readable by ID): {}",
+            report.archived_count
+        );
+    }
     for conflict in &report.conflicts {
         println!(
             "{}\t{:?}\t{} path(s), {} pending group(s)\t{}",
