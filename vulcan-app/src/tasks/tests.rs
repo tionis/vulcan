@@ -30,6 +30,143 @@ use vulcan_core::{
 };
 
 #[test]
+fn guarded_tasks_eval_scopes_sources_and_results_before_limits() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let profile = "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = \"none\"\n";
+    fs::write(paths.config_file(), profile).unwrap();
+    for (path, source) in [
+        ("AHidden.md", "- [ ] Hidden sentinel\n"),
+        ("ZVisible.md", "---\ntags: [visible]\n---\n- [ ] Visible task\n"),
+        ("Public/Dashboard.md", "---\ntags: [visible]\naliases: [Review]\n---\n```tasks\nnot done\ngroup by path\nlimit 1\n```\n\n```tasks\nunsupported sentinel\n```\n"),
+        ("Private/Dashboard.md", "---\ntags: [visible, secret]\naliases: [Review]\n---\n```tasks\nhidden source sentinel\n```\n"),
+    ] {
+        let target = temp.path().join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, source).unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let unrestricted = build_tasks_eval_report(
+        &paths,
+        &TaskEvalRequest {
+            file: "Public/Dashboard.md".into(),
+            block: Some(0),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        unrestricted.blocks[0].result.as_ref().unwrap().tasks[0]["path"],
+        "AHidden.md"
+    );
+    for file in ["Dashboard", "Review", "Public/Dashboard.md"] {
+        let report = super::build_tasks_eval_report_with_guard(
+            &paths,
+            &TaskEvalRequest {
+                file: file.into(),
+                block: None,
+            },
+            &guard,
+        )
+        .unwrap();
+        assert_eq!(report.file, "Public/Dashboard.md");
+        assert_eq!(report.blocks.len(), 2);
+        let result = report.blocks[0].result.as_ref().unwrap();
+        assert_eq!(result.result_count, 1);
+        assert_eq!(result.tasks[0]["path"], "ZVisible.md");
+        assert_eq!(result.groups.len(), 1);
+        assert!(report.blocks[1].error.is_some());
+        assert!(report.blocks[1].result.is_none());
+    }
+    let request = TaskEvalRequest {
+        file: "Private/Dashboard.md".into(),
+        block: Some(42),
+    };
+    let error = super::build_tasks_eval_report_with_guard(&paths, &request, &guard).unwrap_err();
+    assert!(error.to_string().contains("note not found"));
+    fs::write(
+        paths.config_file(),
+        profile.replace("tag:visible", "tag:revoked"),
+    )
+    .unwrap();
+    let error = super::build_tasks_eval_report_with_guard(&paths, &request, &guard).unwrap_err();
+    assert!(error.to_string().contains("authority changed"));
+}
+
+#[test]
+fn task_read_decisions_are_shared_only_within_one_operation() {
+    use vulcan_core::permissions::{PermissionError, PermissionGrant};
+    use vulcan_core::PermissionGuard;
+    struct Guard {
+        grant: PermissionGrant,
+        calls: std::cell::Cell<usize>,
+    }
+    impl PermissionGuard for Guard {
+        fn profile_name(&self) -> &'static str {
+            "test"
+        }
+        fn grant(&self) -> &PermissionGrant {
+            &self.grant
+        }
+        fn has_policy_hook(&self) -> bool {
+            true
+        }
+        fn check_policy_decision(
+            &self,
+            action: &'static str,
+            resource: Option<&str>,
+        ) -> Result<(), PermissionError> {
+            self.calls.set(self.calls.get() + 1);
+            match resource {
+                Some("deny") => Err(PermissionError::PathDenied {
+                    profile: "test".into(),
+                    action,
+                    path: "deny".into(),
+                }),
+                Some("fail") => Err(PermissionError::PolicyHookFailed {
+                    profile: "test".into(),
+                    action,
+                    resource: resource.map(str::to_string),
+                    reason: "broken".into(),
+                }),
+                _ => Ok(()),
+            }
+        }
+    }
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let guard = Guard {
+        grant: resolve_permission_profile(&paths, None).unwrap().grant,
+        calls: std::cell::Cell::new(0),
+    };
+    let decisions = super::TaskReadDecisions::new(&guard);
+    for resource in ["allow", "deny", "fail"] {
+        let first = decisions.check_policy_decision("read", Some(resource));
+        assert_eq!(
+            first,
+            decisions.check_policy_decision("read", Some(resource))
+        );
+    }
+    assert_eq!(guard.calls.get(), 3);
+    decisions
+        .check_policy_decision("write", Some("allow"))
+        .unwrap();
+    decisions
+        .check_policy_decision("write", Some("allow"))
+        .unwrap();
+    assert_eq!(guard.calls.get(), 5);
+    super::TaskReadDecisions::new(&guard)
+        .check_policy_decision("read", Some("allow"))
+        .unwrap();
+    assert_eq!(guard.calls.get(), 6);
+}
+
+#[test]
 fn guarded_task_show_reads_uncached_paths_with_static_path_authority() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

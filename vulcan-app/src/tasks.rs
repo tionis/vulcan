@@ -31,15 +31,14 @@ use vulcan_core::ordinary_write::{recover_ordinary_write_batch, OrdinaryWriteCha
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::extract_indexed_properties;
 use vulcan_core::{
-    active_tasknote_time_entry, evaluate_base_file, evaluate_tasks_query,
-    expected_periodic_note_path, extract_tasknote, inspect_base_file, load_tasks_blocks,
-    load_vault_config, parse_tasknote_natural_language, parse_tasknote_reminders,
-    parse_tasknote_time_entries, parse_tasks_query, period_range_for_date, resolve_note_reference,
-    shape_tasks_query_result, task_upcoming_occurrences, tasknotes_default_date_value,
-    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
-    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
-    BasesEvalReport, BasesEvaluator, GraphQueryError, IndexedTaskNote, NoteRecord, PermissionGuard,
-    ProfilePermissionGuard, RefactorChange, TaskNotesSavedViewConfig,
+    active_tasknote_time_entry, evaluate_base_file, expected_periodic_note_path, extract_tasknote,
+    inspect_base_file, load_tasks_blocks, load_vault_config, parse_tasknote_natural_language,
+    parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
+    period_range_for_date, resolve_note_reference, shape_tasks_query_result,
+    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
+    tasknotes_status_state, BasesEvalReport, BasesEvaluator, GraphQueryError, IndexedTaskNote,
+    NoteRecord, PermissionGuard, ProfilePermissionGuard, RefactorChange, TaskNotesSavedViewConfig,
     TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksQueryResult, VaultConfig,
     VaultPaths,
 };
@@ -1643,9 +1642,94 @@ pub fn build_tasks_eval_report(
     let _read_guard = consistent_task_read(paths)?;
     let blocks =
         load_tasks_blocks(paths, &request.file, request.block).map_err(AppError::operation)?;
+    let notes = TaskReadScope::Filter(None).load(paths)?;
+    Ok(evaluate_tasks_blocks(paths, &request.file, blocks, &notes))
+}
+
+pub fn build_tasks_eval_report_with_guard(
+    paths: &VaultPaths,
+    request: &TaskEvalRequest,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksEvalReport, AppError> {
+    TaskReadScope::Guard(guard).recheck(paths)?;
+    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    let scope = TaskReadScope::Guard(&snapshot);
+    let _read_guard = consistent_task_read(paths)?;
+    let result = (|| {
+        scope.recheck(paths)?;
+        let decisions = TaskReadDecisions::new(&snapshot);
+        let blocks = vulcan_core::tasks::load_tasks_blocks_with_guard(
+            paths,
+            &request.file,
+            request.block,
+            &decisions,
+        )
+        .map_err(AppError::operation)?;
+        // Resolve the source and derive every block result from one set of read
+        // decisions. A failed policy/index read is an operation error, never a
+        // successful report containing only block-level syntax diagnostics.
+        let notes = vulcan_core::properties::load_note_index_with_guard(paths, &decisions)
+            .map_err(AppError::operation)?;
+        Ok(evaluate_tasks_blocks(paths, &request.file, blocks, &notes))
+    })();
+    scope.recheck(paths)?;
+    result
+}
+
+type TaskReadDecision = Result<(), vulcan_core::permissions::PermissionError>;
+
+struct TaskReadDecisions<'a> {
+    guard: &'a dyn PermissionGuard,
+    decisions: std::cell::RefCell<HashMap<String, TaskReadDecision>>,
+}
+
+impl<'a> TaskReadDecisions<'a> {
+    fn new(guard: &'a dyn PermissionGuard) -> Self {
+        Self {
+            guard,
+            decisions: std::cell::RefCell::default(),
+        }
+    }
+}
+
+impl PermissionGuard for TaskReadDecisions<'_> {
+    fn profile_name(&self) -> &str {
+        self.guard.profile_name()
+    }
+    fn grant(&self) -> &vulcan_core::permissions::PermissionGrant {
+        self.guard.grant()
+    }
+    fn has_policy_hook(&self) -> bool {
+        self.guard.has_policy_hook()
+    }
+    fn check_policy_decision(
+        &self,
+        action: &'static str,
+        resource: Option<&str>,
+    ) -> TaskReadDecision {
+        let Some(path) = resource.filter(|_| action == "read") else {
+            return self.guard.check_policy_decision(action, resource);
+        };
+        if let Some(decision) = self.decisions.borrow().get(path) {
+            return decision.clone();
+        }
+        let decision = self.guard.check_policy_decision(action, resource);
+        self.decisions
+            .borrow_mut()
+            .insert(path.to_string(), decision.clone());
+        decision
+    }
+}
+
+fn evaluate_tasks_blocks(
+    paths: &VaultPaths,
+    requested_file: &str,
+    blocks: Vec<vulcan_core::tasks::TasksBlockRecord>,
+    notes: &HashMap<String, NoteRecord>,
+) -> TasksEvalReport {
     let file = blocks
         .first()
-        .map_or_else(|| request.file.clone(), |block| block.file.clone());
+        .map_or_else(|| requested_file.to_string(), |block| block.file.clone());
     let config = load_vault_config(paths).config.tasks;
     let mut reports = Vec::with_capacity(blocks.len());
 
@@ -1653,7 +1737,10 @@ pub fn build_tasks_eval_report(
         let effective_source = tasks_query_source(&config, &block.source, true);
         let effective_source_override =
             (effective_source != block.source).then(|| effective_source.clone());
-        let (mut result, error) = match evaluate_tasks_query(paths, &effective_source) {
+        let (mut result, error) = match vulcan_core::tasks::evaluate_tasks_query_with_note_index(
+            &effective_source,
+            notes,
+        ) {
             Ok(result) => (Some(result), None),
             Err(error) => (None, Some(error.to_string())),
         };
@@ -1671,10 +1758,10 @@ pub fn build_tasks_eval_report(
         });
     }
 
-    Ok(TasksEvalReport {
+    TasksEvalReport {
         file,
         blocks: reports,
-    })
+    }
 }
 
 pub fn build_tasks_list_report(

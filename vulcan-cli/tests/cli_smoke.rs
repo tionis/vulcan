@@ -11970,6 +11970,84 @@ fn tasks_query_json_output_evaluates_tasks_dsl() {
 }
 
 #[test]
+#[cfg(feature = "js_runtime")]
+fn tasks_eval_scopes_block_sources_and_results_with_policy_hooks() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("vault");
+    let config_home = temp.path().join("xdg");
+    fs::create_dir_all(root.join(".vulcan/plugins")).unwrap();
+    fs::create_dir_all(&config_home).unwrap();
+    for (path, source) in [
+        ("AHidden.md", "- [ ] Hidden task\n"),
+        ("APolicy.md", "---\ntags: [visible]\n---\n- [ ] Policy task\n"),
+        ("BVisible.md", "---\ntags: [visible]\n---\n- [ ] Visible task\n"),
+        ("Public/Dashboard.md", "---\ntags: [visible]\naliases: [Review]\n---\n```tasks\nnot done\ngroup by path\nlimit 1\n```\n"),
+        ("Private/Dashboard.md", "---\ntags: [visible]\naliases: [Review]\n---\n```tasks\nhidden policy source sentinel\n```\n"),
+        ("Denied/Dashboard.md", "---\ntags: [visible, secret]\naliases: [Review]\n---\n```tasks\nhidden static source sentinel\n```\n"),
+    ] {
+        let target = root.join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, source).unwrap();
+    }
+    fs::write(root.join(".vulcan/config.toml"), concat!(
+        "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
+        "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
+    )).unwrap();
+    let hook = root.join(".vulcan/plugins/guard.js");
+    fs::write(&hook, "function policy_hook(input) { return ['APolicy.md', 'Private/Dashboard.md'].includes(input.resource) ? 'deny' : 'pass'; }\n").unwrap();
+    let xdg = config_home.to_str().unwrap();
+    trust_and_scan_vault(xdg, root.to_str().unwrap());
+    let eval = |identifier: &str| {
+        cargo_vulcan_with_xdg_config(xdg)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "guarded",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+                "tasks",
+                "eval",
+                identifier,
+                "--block",
+                "0",
+            ])
+            .assert()
+    };
+    for identifier in ["Dashboard", "Review", "Public/Dashboard.md"] {
+        let report = parse_stdout_json(&eval(identifier).success());
+        assert_eq!(report["file"], "Public/Dashboard.md");
+        let result = &report["blocks"][0]["result"];
+        assert_eq!(result["result_count"], 1);
+        assert_eq!(result["tasks"][0]["path"], "BVisible.md");
+        assert_eq!(result["groups"].as_array().unwrap().len(), 1);
+    }
+    for identifier in ["Private/Dashboard.md", "Denied/Dashboard.md"] {
+        let result = eval(identifier).failure();
+        let error = String::from_utf8_lossy(&result.get_output().stdout);
+        assert!(error.contains("note not found"), "{error}");
+        assert!(!error.contains("source sentinel"));
+    }
+    fs::write(&hook, "function policy_hook() { return 'pass'; }\n").unwrap();
+    let result = eval("Review").failure();
+    let error = String::from_utf8_lossy(&result.get_output().stdout);
+    assert!(error.contains("ambiguous"), "{error}");
+    assert!(!error.contains("Denied/"));
+    for source in [
+        "function policy_hook() { throw new Error('broken'); }\n",
+        "function policy_hook() { return true; }\n",
+    ] {
+        fs::write(&hook, source).unwrap();
+        let result = eval("Public/Dashboard.md").failure();
+        let report = parse_stdout_json(&result);
+        assert!(report.get("blocks").is_none());
+        assert!(report.to_string().contains("policy"));
+    }
+}
+
+#[test]
 fn tasks_eval_json_output_evaluates_selected_block_with_defaults() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -1,7 +1,7 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 5
+version: 6
 tools:
   - tasks_query
   - query
@@ -23,6 +23,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 
 - Use `tasks query` or `tasks list` to inspect existing task state before mutating anything.
 - Use `tasks show <path-or-name>` for one TaskNotes note's current details and body; an exact path disambiguates multiple readable notes with the same filename or alias.
+- Use `tasks eval <file> [--block <zero-based-index>]` for indexed Tasks query blocks in a note.
 - Reach for `tasks create`, `tasks complete`, `tasks next`, or `tasks blocked` when the workflow is task-specific.
 - Combine task views with daily note review when date-based workflows matter.
 - Use `help` when the Tasks query syntax or recurrence behavior is unclear.
@@ -32,6 +33,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 - Keep the selected `--permissions` profile on task mutations, including previews. Routing requires read access to `mdbase.yaml` even when that file is absent or the target is ordinary Markdown. A denied control read is not permission to retry with an unrestricted profile.
 - Use `tasks query` or `tasks list` with the selected read scope: path/tag grants and policy decisions precede limits and grouping, and list expression filters see only readable backlink sources. CLI and MCP query/list use the same boundary. Counts describe the readable scope, not the whole vault; do not infer equivalent guarantees for other task-report commands.
 - CLI `tasks show` resolves filenames and aliases only among readable indexed notes, then securely reads that source without requiring write permission. Hidden notes do not appear in ambiguity diagnostics. Direct paths can work without an index under static path-only grants; tag/policy-scoped resolution needs indexed candidates. Details come from current source, and changed source tags can invalidate cached read access. A not-found result is not proof that no hidden task exists; do not retry with a broader profile.
+- CLI `tasks eval` authorizes the indexed source note before loading its query blocks and applies the same read scope before result limits and grouping. All blocks reuse one authorized note index and one decision per readable candidate for that operation; later reads evaluate policy again. A source/policy/index failure fails the operation, unlike a readable block's syntax error reported in that block's `error` field. Keep source grants and result visibility distinct; source access does not grant access to every task it queries.
 - An explicit policy-hook denial hides that note from query/list; a broken, unavailable, or invalid hook is an error, not an empty successful result. Reads use one captured hook-source revision and reject changed grants, hook source, or trust before returning. On an authority-change error, review the current policy and start a fresh read/session with the intended profile; do not broaden permissions or treat the error as proof that no tasks exist.
 - A profile with `write = "none"` skips automatic task archiving. Read-only query/list access does not need MDB-control grants for that upkeep, and due completed tasks remain in place. This does not disable separate pomodoro transitions or authorize any mutation.
 - Tracking, pomodoro status, and other task reports can trigger configured automatic transitions. Those writes need the caller's authority too; daily-note pomodoro storage and archive destinations require their own path grants. Do not broaden grants merely to make a report succeed.

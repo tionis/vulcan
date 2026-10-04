@@ -18,8 +18,9 @@ use vulcan_app::tasks::{
     apply_task_track_stop_with_guard, build_task_due_report,
     build_task_pomodoro_status_report_with_guard, build_task_reminders_report,
     build_task_show_report_with_guard, build_task_track_log_report, build_task_track_status_report,
-    build_task_track_summary_report, build_tasks_blocked_report, build_tasks_eval_report,
-    build_tasks_graph_report, build_tasks_list_report_with_guard, build_tasks_next_report,
+    build_task_track_summary_report, build_tasks_blocked_report,
+    build_tasks_eval_report_with_guard, build_tasks_graph_report,
+    build_tasks_list_report_with_guard, build_tasks_next_report,
     build_tasks_query_result_with_guard, build_tasks_view_list_report, build_tasks_view_report,
     process_due_tasknote_auto_archives_with_guard as app_process_due_tasknote_auto_archives,
     TaskAddReport, TaskAddRequest as AppTaskAddRequest,
@@ -333,7 +334,7 @@ pub(crate) fn handle_tasks_command(
             print_tasks_query_result(cli.output, &result)
         }
         TasksCommand::Eval { file, block } => {
-            let report = run_tasks_eval_command(paths, file, *block)?;
+            let report = run_tasks_eval_command(paths, file, *block, &guard)?;
             print_tasks_eval_report(cli.output, &report)
         }
         TasksCommand::List {
@@ -990,13 +991,15 @@ fn run_tasks_eval_command(
     paths: &VaultPaths,
     file: &str,
     block: Option<usize>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<TasksEvalReport, CliError> {
-    build_tasks_eval_report(
+    build_tasks_eval_report_with_guard(
         paths,
         &TaskEvalRequest {
             file: file.to_string(),
             block,
         },
+        guard,
     )
     .map_err(CliError::operation)
 }

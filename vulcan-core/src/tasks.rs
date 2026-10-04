@@ -66,6 +66,25 @@ pub fn load_tasks_blocks(
 ) -> Result<Vec<TasksBlockRecord>, TasksError> {
     let resolved = resolve_note_reference(paths, file)
         .map_err(|error| TasksError::Message(error.to_string()))?;
+    load_tasks_blocks_for_path(paths, &resolved.path, block)
+}
+
+pub fn load_tasks_blocks_with_guard(
+    paths: &VaultPaths,
+    file: &str,
+    block: Option<usize>,
+    guard: &dyn crate::PermissionGuard,
+) -> Result<Vec<TasksBlockRecord>, TasksError> {
+    let resolved = crate::graph::resolve_note_reference_with_guard(paths, file, guard)
+        .map_err(|error| TasksError::Message(error.to_string()))?;
+    load_tasks_blocks_for_path(paths, &resolved.path, block)
+}
+
+fn load_tasks_blocks_for_path(
+    paths: &VaultPaths,
+    path: &str,
+    block: Option<usize>,
+) -> Result<Vec<TasksBlockRecord>, TasksError> {
     let database =
         CacheDatabase::open(paths).map_err(|error| TasksError::Message(error.to_string()))?;
     let connection = database.connection();
@@ -79,10 +98,10 @@ pub fn load_tasks_blocks(
         )
         .map_err(|error| TasksError::Message(error.to_string()))?;
     let rows = statement
-        .query_map([resolved.path.as_str()], |row| {
+        .query_map([path], |row| {
             let block_index = row.get::<_, i64>(0)?;
             Ok(TasksBlockRecord {
-                file: resolved.path.clone(),
+                file: path.to_string(),
                 block_index: usize::try_from(block_index).unwrap_or_default(),
                 line_number: row.get(1)?,
                 source: row.get(2)?,
@@ -101,17 +120,13 @@ pub fn load_tasks_blocks(
             .find(|candidate| candidate.block_index == requested_block)
             .map(|candidate| vec![candidate])
             .ok_or_else(|| {
-                TasksError::Message(format!(
-                    "no tasks block {requested_block} found in {}",
-                    resolved.path
-                ))
+                TasksError::Message(format!("no tasks block {requested_block} found in {path}"))
             });
     }
 
     if blocks.is_empty() {
         return Err(TasksError::Message(format!(
-            "no tasks blocks found in {}",
-            resolved.path
+            "no tasks blocks found in {path}"
         )));
     }
 
@@ -127,6 +142,42 @@ mod tests {
     use crate::{scan_vault, ScanMode};
 
     use super::*;
+
+    #[test]
+    fn guarded_tasks_blocks_resolve_only_readable_sources() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n").unwrap();
+        for (folder, tags, source) in [
+            ("Public", "[visible]", "not done"),
+            ("Private", "[visible, secret]", "hidden sentinel"),
+        ] {
+            fs::create_dir_all(temp.path().join(folder)).unwrap();
+            fs::write(
+                temp.path().join(folder).join("Dashboard.md"),
+                format!("---\ntags: {tags}\naliases: [Review]\n---\n```tasks\n{source}\n```\n"),
+            )
+            .unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let guard = crate::ProfilePermissionGuard::new(
+            &paths,
+            crate::resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        for identifier in ["Dashboard", "Review", "Public/Dashboard.md"] {
+            let blocks = load_tasks_blocks_with_guard(&paths, identifier, Some(0), &guard).unwrap();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].file, "Public/Dashboard.md");
+            assert_eq!(blocks[0].source, "not done");
+        }
+        for block in [None, Some(0), Some(42)] {
+            let error = load_tasks_blocks_with_guard(&paths, "Private/Dashboard.md", block, &guard)
+                .unwrap_err();
+            assert!(error.to_string().contains("note not found"));
+            assert!(!error.to_string().contains("hidden sentinel"));
+        }
+    }
 
     #[test]
     fn load_tasks_blocks_reads_indexed_query_blocks() {
