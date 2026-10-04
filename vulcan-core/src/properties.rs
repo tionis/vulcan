@@ -507,13 +507,19 @@ pub fn query_notes_with_filter(
     let NoteFilterSql {
         cte,
         clause: filter_clause,
-        mut params,
+        params: filter_params,
     } = build_note_filter_clause(&sql_filters)?;
     let permission_sql = filter
         .map(|filter| filter.document_scope_sql("_permission_documents"))
         .unwrap_or_default();
-    let combined_cte = combine_cte_fragments([cte, permission_sql.cte.clone()]);
-    params.extend(permission_sql.params.into_iter().map(SqlValue::Text));
+    // Permission CTE bindings precede filter CTE and WHERE bindings in SQL.
+    let combined_cte = combine_cte_fragments([permission_sql.cte.clone(), cte]);
+    let params = permission_sql
+        .params
+        .into_iter()
+        .map(SqlValue::Text)
+        .chain(filter_params)
+        .collect::<Vec<_>>();
 
     let mut sql = combined_cte;
     sql.push_str(
@@ -583,7 +589,7 @@ pub fn query_notes_with_filter(
     )?;
     let mut doc_ids_and_notes: Vec<(String, NoteRecord)> = rows.collect::<Result<Vec<_>, _>>()?;
 
-    hydrate_note_records(connection, &config, &mut doc_ids_and_notes)?;
+    hydrate_note_records(connection, &config, &mut doc_ids_and_notes, filter)?;
 
     let mut notes: Vec<NoteRecord> = doc_ids_and_notes
         .into_iter()
@@ -755,7 +761,7 @@ pub fn load_note_index_with_filter(
         ));
     }
 
-    hydrate_note_records(connection, &config, &mut doc_ids_and_notes)?;
+    hydrate_note_records(connection, &config, &mut doc_ids_and_notes, filter)?;
 
     let mut map = HashMap::new();
     for (_, note) in doc_ids_and_notes {
@@ -824,6 +830,7 @@ fn hydrate_note_records(
     connection: &rusqlite::Connection,
     config: &VaultConfig,
     doc_ids_and_notes: &mut Vec<(String, NoteRecord)>,
+    filter: Option<&PermissionFilter>,
 ) -> Result<(), rusqlite::Error> {
     if doc_ids_and_notes.is_empty() {
         return Ok(());
@@ -876,15 +883,25 @@ fn hydrate_note_records(
     }
 
     let mut inlink_map: HashMap<String, Vec<String>> = HashMap::new();
+    // Incoming sources must be readable, but need not match the user's query.
+    let permission_sql = filter
+        .map(|filter| filter.document_scope_sql("_inlink_source_permission"))
+        .unwrap_or_default();
     let inlink_sql = format!(
-        "SELECT links.resolved_target_id, source.path, source.extension
+        "{}SELECT links.resolved_target_id, documents.path, documents.extension
          FROM links
-         JOIN documents AS source ON source.id = links.source_document_id
+         JOIN documents ON documents.id = links.source_document_id
          WHERE links.link_kind = 'wikilink'
-           AND links.resolved_target_id IN ({placeholders})"
+           AND links.resolved_target_id IN ({placeholders}){}",
+        permission_sql.cte, permission_sql.clause,
     );
+    let inlink_params = permission_sql
+        .params
+        .into_iter()
+        .chain(doc_ids.iter().map(|id| (*id).to_string()))
+        .collect::<Vec<_>>();
     let mut inlink_stmt = connection.prepare(&inlink_sql)?;
-    let inlink_rows = inlink_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+    let inlink_rows = inlink_stmt.query_map(params_from_iter(inlink_params.iter()), |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -2691,6 +2708,62 @@ mod tests {
             allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
             deny: Vec::new(),
         })
+    }
+
+    #[test]
+    fn scoped_hydration_filters_backlink_sources_not_query_results() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        fs::create_dir_all(temp.path().join("Public")).unwrap();
+        fs::create_dir_all(temp.path().join("Hidden")).unwrap();
+        fs::write(
+            temp.path().join("Public/Target.md"),
+            "---\ntags: [visible]\ncategories: [project]\n---\n[[Hidden/Secret]]\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("Public/Source.md"),
+            "#visible\n[[Public/Target]]\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("Public/Denied.md"),
+            "#visible\n[[Public/Target]]\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("Hidden/Secret.md"), "[[Public/Target]]\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let query = NoteQuery {
+            filters: vec!["file.path = \"Public/Target.md\"".into()],
+            sort_by: None,
+            sort_descending: false,
+        };
+        for allow in [
+            ResourceSpecifier::Folder("Public/**".into()),
+            ResourceSpecifier::Tag("visible".into()),
+        ] {
+            let filter = PermissionFilter::new(PathPermission {
+                allow: vec![allow],
+                deny: vec![ResourceSpecifier::Note("Public/Denied.md".into())],
+            });
+            for with_filter_cte in [false, true] {
+                let mut scoped_query = query.clone();
+                if with_filter_cte {
+                    scoped_query
+                        .filters
+                        .push("categories has_tag project".into());
+                }
+                let scoped = query_notes_with_filter(&paths, &scoped_query, Some(&filter)).unwrap();
+                assert_eq!(scoped.notes.len(), 1);
+                assert_eq!(scoped.notes[0].inlinks, vec!["[[Public/Source]]"]);
+                assert_eq!(scoped.notes[0].links, vec!["[[Hidden/Secret]]"]);
+            }
+            let index = load_note_index_with_filter(&paths, Some(&filter)).unwrap();
+            assert_eq!(index["Target"].inlinks, vec!["[[Public/Source]]"]);
+        }
+        let unrestricted = query_notes(&paths, &query).unwrap();
+        assert_eq!(unrestricted.notes[0].inlinks.len(), 3);
     }
 
     #[test]

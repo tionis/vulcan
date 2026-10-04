@@ -917,10 +917,10 @@ fn matching_note_paths_for_filters(
     let filter_sql = build_note_filter_clause_from_expressions(filters)?;
     let permission_sql = filter.map(|filter| filter.document_scope_sql("_permission_documents"));
     let mut sql = combine_cte_fragments([
-        filter_sql.cte,
         permission_sql
             .as_ref()
             .map_or_else(String::new, |sql| sql.cte.clone()),
+        filter_sql.cte,
     ]);
     sql.push_str(
         "SELECT documents.path
@@ -932,7 +932,7 @@ fn matching_note_paths_for_filters(
     if let Some(permission_sql) = permission_sql.as_ref() {
         sql.push_str(&permission_sql.clause);
     }
-    let mut params = filter_sql.params;
+    let mut params = Vec::new();
     if let Some(permission_sql) = permission_sql.as_ref() {
         params.extend(
             permission_sql
@@ -942,6 +942,7 @@ fn matching_note_paths_for_filters(
                 .map(rusqlite::types::Value::from),
         );
     }
+    params.extend(filter_sql.params);
     let mut statement = database
         .connection()
         .prepare(&sql)

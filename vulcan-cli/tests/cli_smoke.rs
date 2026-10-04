@@ -11136,6 +11136,46 @@ fn dataview_inline_json_output_reports_expression_errors() {
 }
 
 #[test]
+fn scoped_dql_inlinks_exclude_hidden_sources_but_keep_readable_nonresults() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join(".vulcan")).unwrap();
+    fs::create_dir_all(root.join("Public")).unwrap();
+    fs::create_dir_all(root.join("Hidden")).unwrap();
+    fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"], deny = [\"note:Public/Denied.md\"] }\nwrite = \"none\"\n").unwrap();
+    fs::write(root.join("Public/Target.md"), "Target\n").unwrap();
+    for path in ["Public/Source.md", "Public/Denied.md", "Hidden/Secret.md"] {
+        fs::write(root.join(path), "[[Public/Target]]\n").unwrap();
+    }
+    run_scan(root);
+    let result = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--permissions",
+            "scoped",
+            "--refresh",
+            "off",
+            "--output",
+            "json",
+            "query",
+            "--language",
+            "dql",
+            r#"TABLE file.path, file.inlinks FROM "Public" WHERE file.name = "Target""#,
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&result);
+    assert_eq!(json["result_count"], 1);
+    assert_eq!(json["rows"][0]["file.path"], "Public/Target.md");
+    assert_eq!(
+        json["rows"][0]["file.inlinks"],
+        serde_json::json!(["[[Public/Source]]"])
+    );
+}
+
+#[test]
 fn dataview_query_json_output_evaluates_dql_strings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

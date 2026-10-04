@@ -1,7 +1,7 @@
 ---
 name: dataview-and-bases
 description: Work with Dataview, DataviewJS, Bases, and .base files. Use when the user asks about Dataview DQL, inline fields, DataviewJS blocks, Bases views, formulas, saved task views, or .base editing/evaluation.
-version: 1
+version: 2
 tools:
   - dataview
   - bases
@@ -32,6 +32,7 @@ and translating view logic into Vulcan queries.
 
 - Prefer canonical `query` for agent workflows unless the user specifically needs Dataview/Bases compatibility.
 - DataviewJS runs inside Vulcan's JS sandbox; write/network helpers depend on sandbox and permissions.
+- With a read-scoped query, `file.inlinks` describes readable backlink sources, including readable notes outside the query's selected rows. Do not treat its count as a whole-vault count or broaden the grant to discover hidden sources. Authored outgoing links in readable notes are still source content, not proof that their targets are readable.
 - `.base` edits should preserve view structure and formulas; avoid broad text rewrites.
 
 ## Example Moves
