@@ -1,7 +1,9 @@
 //! Reusable mdbase collection read and journaled write workflows.
 
+mod query_profile;
 mod write_lifecycle;
 mod write_validation;
+pub use query_profile::{build_mdbase_query_report_profiled, MdbaseQueryMetrics};
 
 use crate::{plugins, AppError};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -13,9 +15,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
     apply_mdbase_write_transaction_with_control_filter, authorize_mdbase_write_validation_scope,
-    build_mdbase_write_preview_with_control_filter, compile_mdbase_prepared_query,
-    discover_mdbase_files, is_mdbase_record_path, load_mdbase_collection,
-    load_mdbase_records_with_contracts_filtered, mdbase_content_revision,
+    build_mdbase_write_preview_with_control_filter, discover_mdbase_files, is_mdbase_record_path,
+    load_mdbase_collection, load_mdbase_records_with_contracts_filtered, mdbase_content_revision,
     MdbaseAuthorizedValidationScope, MdbaseCollection, MdbaseConsistentReadGuard,
     MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
     MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult, MdbaseRecordDiagnostic,
@@ -493,43 +494,40 @@ pub fn build_mdbase_query_report(
     query: &serde_json::Value,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseQueryResult, AppError> {
-    let loaded = load_collection_authorized(paths, filter)?;
-    let prepared = compile_mdbase_prepared_query(query).map_err(AppError::operation)?;
-    let records = load_query_records(paths, &loaded, filter)?;
-    let mut report = prepared
-        .execute(
-            &records,
-            &loaded.types,
-            &loaded.collection.config.settings.id_field,
-            loaded.collection.config.settings.timezone.as_deref(),
-            DateTime::<Utc>::from(SystemTime::now()),
-        )
-        .map_err(AppError::operation)?;
-    report
-        .diagnostics
-        .splice(0..0, registry_diagnostics(&loaded, filter));
-    Ok(report)
+    build_mdbase_query_report_profiled(paths, query, filter, &mut MdbaseQueryMetrics::default())
 }
 
 fn load_query_records(
     paths: &VaultPaths,
     loaded: &LoadedCollection,
     filter: Option<&PermissionFilter>,
+    metrics: &mut MdbaseQueryMetrics,
 ) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
     // The shared cache dependency digest includes the lockfile, while ordinary
     // source queries do not consume it. Cache reuse must not broaden required
     // authority or probe an unreadable lockfile (including its absence).
     if filter.is_some_and(|filter| !filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME)) {
-        return load_mdbase_records_with_contracts_filtered(
+        return load_query_source_records(loaded, filter, metrics);
+    }
+    load_query_records_with_boundary(paths, loaded, filter, metrics, || {})
+}
+
+fn load_query_source_records(
+    loaded: &LoadedCollection,
+    filter: Option<&PermissionFilter>,
+    metrics: &mut MdbaseQueryMetrics,
+) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
+    metrics.source_loads += 1;
+    query_profile::time(&mut metrics.source_fallback_seconds, || {
+        load_mdbase_records_with_contracts_filtered(
             &loaded.collection,
             &loaded.types,
             &loaded.contracts,
             false,
             filter,
         )
-        .map_err(AppError::operation);
-    }
-    load_query_records_with_boundary(paths, loaded, filter, || {})
+    })
+    .map_err(AppError::operation)
 }
 
 fn query_cache_error(error: vulcan_core::mdbase::MdbaseRecordCacheError) -> AppError {
@@ -547,55 +545,66 @@ fn load_query_records_with_boundary(
     paths: &VaultPaths,
     loaded: &LoadedCollection,
     filter: Option<&PermissionFilter>,
+    metrics: &mut MdbaseQueryMetrics,
     before_verification: impl FnOnce(),
 ) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
     use vulcan_core::mdbase::{
-        capture_mdbase_record_manifest, load_cached_mdbase_record_set, rebuild_mdbase_record_cache,
-        refresh_mdbase_record_cache,
+        capture_mdbase_record_manifest, load_cached_mdbase_record_set_profiled,
+        rebuild_mdbase_record_cache, refresh_mdbase_record_cache,
     };
-    let manifest = capture_mdbase_record_manifest(
-        &loaded.collection,
-        &loaded.types,
-        &loaded.contracts,
-        filter,
-    )
+    let manifest = query_profile::time(&mut metrics.manifest_before_seconds, || {
+        capture_mdbase_record_manifest(&loaded.collection, &loaded.types, &loaded.contracts, filter)
+    })
     .map_err(query_cache_error)?;
+    metrics.completed_manifests += 1;
+    metrics.completed_manifest_records += manifest.len();
+    metrics.completed_manifest_bytes += manifest.values().map(|entry| entry.file.size).sum::<u64>();
     let unrestricted = filter.is_none_or(|filter| filter.path_permission().is_unrestricted());
     // An unavailable disposable cache must not make canonical records unreadable.
     // Restricted callers do not create, refresh, or repair unrestricted rows.
-    let mut database = if unrestricted {
-        vulcan_core::CacheDatabase::open(paths).ok()
-    } else {
-        None
-    };
-    let cached = |connection: &rusqlite::Connection| {
-        load_cached_mdbase_record_set(
+    let mut database = query_profile::time(&mut metrics.cache_open_seconds, || {
+        if unrestricted {
+            vulcan_core::CacheDatabase::open(paths).ok()
+        } else {
+            None
+        }
+    });
+    let cached = |connection: &rusqlite::Connection, metrics: &mut MdbaseQueryMetrics| {
+        metrics.cache_attempts += 1;
+        let records = load_cached_mdbase_record_set_profiled(
             connection,
             &loaded.collection,
             &loaded.types,
             &loaded.contracts,
             &manifest,
             filter,
+            &mut metrics.cached_load,
         )
         .ok()
-        .flatten()
+        .flatten();
+        metrics.cache_hits += usize::from(records.is_some());
+        records
     };
     let mut records = if unrestricted {
         database
             .as_ref()
-            .and_then(|database| cached(database.connection()))
+            .and_then(|database| cached(database.connection(), metrics))
     } else {
-        rusqlite::Connection::open_with_flags(
-            paths.cache_db(),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
+        query_profile::time(&mut metrics.cache_open_seconds, || {
+            rusqlite::Connection::open_with_flags(
+                paths.cache_db(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+        })
         .ok()
         .as_ref()
-        .and_then(cached)
+        .and_then(|connection| cached(connection, metrics))
     };
     if records.is_none() && unrestricted {
         if let Some(database) = database.as_mut() {
             // Rebuild discards corrupt derived JSON, never canonical source.
+            metrics.cache_refresh_attempts += 1;
+            let refresh_start = std::time::Instant::now();
             let refreshed = refresh_mdbase_record_cache(
                 database,
                 &loaded.collection,
@@ -603,6 +612,7 @@ fn load_query_records_with_boundary(
                 &loaded.contracts,
             )
             .or_else(|_| {
+                metrics.cache_rebuild_attempts += 1;
                 rebuild_mdbase_record_cache(
                     database,
                     &loaded.collection,
@@ -610,30 +620,21 @@ fn load_query_records_with_boundary(
                     &loaded.contracts,
                 )
             });
+            metrics.cache_refresh_seconds += refresh_start.elapsed().as_secs_f64();
             if refreshed.is_ok() {
-                records = cached(database.connection());
+                records = cached(database.connection(), metrics);
             }
         }
     }
-    let records = match records {
-        Some(records) => records,
-        None => load_mdbase_records_with_contracts_filtered(
-            &loaded.collection,
-            &loaded.types,
-            &loaded.contracts,
-            false,
-            filter,
-        )
-        .map_err(AppError::operation)?,
-    };
+    let records = records.map_or_else(|| load_query_source_records(loaded, filter, metrics), Ok)?;
     before_verification();
-    let current = capture_mdbase_record_manifest(
-        &loaded.collection,
-        &loaded.types,
-        &loaded.contracts,
-        filter,
-    )
+    let current = query_profile::time(&mut metrics.manifest_after_seconds, || {
+        capture_mdbase_record_manifest(&loaded.collection, &loaded.types, &loaded.contracts, filter)
+    })
     .map_err(query_cache_error)?;
+    metrics.completed_manifests += 1;
+    metrics.completed_manifest_records += current.len();
+    metrics.completed_manifest_bytes += current.values().map(|entry| entry.file.size).sum::<u64>();
     if current != manifest
         || records.records.len() != manifest.len()
         || records.records.iter().any(|record| {
@@ -1383,7 +1384,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (tempfile::TempDir, VaultPaths) {
+    pub(super) fn fixture() -> (tempfile::TempDir, VaultPaths) {
         let directory = tempdir().expect("temp directory");
         fs::write(
             directory.path().join("mdbase.yaml"),
@@ -1442,7 +1443,7 @@ mod tests {
         );
     }
 
-    fn read_control_grant() -> Vec<ResourceSpecifier> {
+    pub(super) fn read_control_grant() -> Vec<ResourceSpecifier> {
         vec![
             ResourceSpecifier::Note("mdbase.yaml".to_string()),
             ResourceSpecifier::Folder("_types/**".to_string()),
@@ -1587,8 +1588,12 @@ mod tests {
         for mutation in ["edit", "create", "delete", "control"] {
             let (directory, paths) = fixture();
             let loaded = load_collection_authorized(&paths, None).unwrap();
-            let error =
-                load_query_records_with_boundary(&paths, &loaded, None, || match mutation {
+            let error = load_query_records_with_boundary(
+                &paths,
+                &loaded,
+                None,
+                &mut MdbaseQueryMetrics::default(),
+                || match mutation {
                     "edit" => {
                         fs::write(directory.path().join("tasks/public.md"), "Changed\n").unwrap();
                     }
@@ -1600,8 +1605,9 @@ mod tests {
                     )
                     .unwrap(),
                     _ => unreachable!(),
-                })
-                .unwrap_err();
+                },
+            )
+            .unwrap_err();
             assert_eq!(error.code(), Some("stale_state"), "{mutation}: {error}");
         }
     }
@@ -1710,7 +1716,7 @@ mod tests {
             Some(&filter),
         )
         .unwrap();
-        let mut oracle = compile_mdbase_prepared_query(&query)
+        let mut oracle = vulcan_core::mdbase::compile_mdbase_prepared_query(&query)
             .unwrap()
             .execute(
                 &source,

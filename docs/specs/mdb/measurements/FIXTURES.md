@@ -48,4 +48,19 @@ Fixture verification reads all payload bytes outside the timed region and theref
 
 `--samples 1000` supports larger diagnostic runs, but the driver deliberately reports `acceptance_gate_result: not_evaluated`: reference-host designation, stage/source-read work counters, cold I/O, retained-memory behavior, concurrent writers, additional query frontends, and the full acceptance protocol remain separate work. The optional `VULCAN_TEST_BINARY` test exercises the driver itself against all nine queries on 120 records, both unrestricted and permission-filtered. Assistant-skill review: this developer measurement tool does not change installed query workflows.
 
-This artifact establishes reproducible workload generation only. It contains no latency samples, memory measurements, work counters, reference-machine designation, or performance pass. The full baseline and acceptance procedure in the parent performance contract remains outstanding. Assistant-skill review: developer-only fixture tooling changes no installed command or authorization workflow; existing query and permission skills need no change.
+## Shared-service stage diagnostics
+
+The developer-only ignored test runs the same shared query service with explicit diagnostic metrics, not a new CLI request or response format:
+
+```sh
+VULCAN_MDB_PROFILE_FIXTURE=/tmp/mdb-10k cargo +1.88.0 test --release -p vulcan-app shared_query_stage_benchmark -- --ignored --nocapture --test-threads=1
+VULCAN_MDB_PROFILE_FIXTURE=/tmp/mdb-10k VULCAN_MDB_PROFILE_SCOPE=benchmark_public cargo +1.88.0 test --release -p vulcan-app shared_query_stage_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+Use only the generated public 10K/100K fixture. Verify its payload with `verify_fixture` from `scripts/measure_mdb_cli.py` before and after the run; this validation is outside timing and warms OS file caches. The test checks the version/count/seed, executes one first request plus nine varied repeated requests, and independently checks totals, ordered paths, body omission, diagnostics, and response bounds. It emits one JSON diagnostic per request. Pin the source revision or source-file hashes when measuring an uncommitted implementation, and record the release test executable hash/features and host conditions with captured results. Do not overlap other builds or tests with the measured test body.
+
+Request timing starts after reading/parsing the canonical query and includes per-request permission-profile resolution, the synchronous service call, and compact canonical response serialization. It excludes Cargo/build/test startup, CLI formatting, output of diagnostic lines, and subsequent oracle assertions. Service metrics separate control loading/read-guard acquisition, canonical preparation, record preparation, and residual execution. Nested record metrics separate the two manifest captures, cache opening, cache SQL/payload decoding, collection overlays, refresh/rebuild attempts, and source fallback. Do not add nested times to their parents.
+
+Counters describe completed visible manifests/bytes, decoded authorized cached records, overlay passes/records, cache attempts/hits, refresh/rebuild attempts, and source loads. Metrics reset before each operation, contain no record paths/values, and survive errors with partial work counts. They are not a complete I/O audit: partial failed manifest reads and source-fallback/refresh internals are not counted as completed manifests; schema/CEL compilation, query-candidate work, watcher freshness, and syscall counts remain separate instrumentation work. Neither these ten diagnostic requests nor the presence of a cache proves a warm indexed generation or an acceptance pass. Assistant-skill review: developer instrumentation only; installed query workflows and canonical envelopes are unchanged.
+
+This document supplies reproducible tooling, not a performance pass. The full baseline and acceptance procedure in the parent performance contract remains outstanding.

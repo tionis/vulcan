@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 mod control_dependencies;
 type ControlSources = Vec<(PathBuf, String)>;
@@ -181,11 +182,97 @@ pub fn load_cached_mdbase_record_set(
     expected: &BTreeMap<String, MdbaseCachedRecordExpectation>,
     filter: Option<&PermissionFilter>,
 ) -> Result<Option<super::MdbaseRecordSet>, MdbaseRecordCacheError> {
-    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
-    if has_dynamic_local_membership(types) {
-        return Ok(None);
-    }
-    let root = cache_collection_root(collection)?;
+    load_cached_mdbase_record_set_profiled(
+        connection,
+        collection,
+        types,
+        contracts,
+        expected,
+        filter,
+        &mut MdbaseCachedLoadMetrics::default(),
+    )
+}
+
+/// Diagnostic work accumulated over cached-load attempts, including misses.
+/// Contains no paths or values; decoded records and overlay counts describe only
+/// the caller-visible scope. Timings are nested within the caller's load time.
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct MdbaseCachedLoadMetrics {
+    pub total_seconds: f64,
+    pub control_verification_seconds: f64,
+    pub sqlite_decode_seconds: f64,
+    pub collection_overlay_seconds: f64,
+    pub decoded_records: usize,
+    pub overlay_records: usize,
+    pub overlay_passes: usize,
+}
+
+/// Same cache/authorization contract as `load_cached_mdbase_record_set`, with
+/// aggregate diagnostic metrics. Accumulates across attempts; it never logs or
+/// changes canonical result envelopes. Error paths retain completed work counts.
+pub fn load_cached_mdbase_record_set_profiled(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    expected: &BTreeMap<String, MdbaseCachedRecordExpectation>,
+    filter: Option<&PermissionFilter>,
+    metrics: &mut MdbaseCachedLoadMetrics,
+) -> Result<Option<super::MdbaseRecordSet>, MdbaseRecordCacheError> {
+    let start = Instant::now();
+    let result = (|| {
+        let controls = time_cached_load(&mut metrics.control_verification_seconds, || {
+            verify_mdbase_control_snapshots(collection, types, contracts, filter)
+        })?;
+        if has_dynamic_local_membership(types) {
+            return Ok(None);
+        }
+        let root = cache_collection_root(collection)?;
+        let Some(records) = time_cached_load(&mut metrics.sqlite_decode_seconds, || {
+            load_local_payloads(
+                connection,
+                &root,
+                &controls.combined,
+                expected,
+                filter,
+                &mut metrics.decoded_records,
+            )
+        })?
+        else {
+            return Ok(None);
+        };
+        if time_cached_load(&mut metrics.control_verification_seconds, || {
+            verify_mdbase_control_snapshots(collection, types, contracts, filter)
+        })? != controls
+        {
+            return Err(MdbaseRecordCacheError::StaleControls);
+        }
+        metrics.overlay_records += records.len();
+        metrics.overlay_passes += 1;
+        Ok(Some(time_cached_load(
+            &mut metrics.collection_overlay_seconds,
+            || super::records::finish_local_record_set(collection, types, contracts, records),
+        )))
+    })();
+    metrics.total_seconds += start.elapsed().as_secs_f64();
+    result
+}
+
+fn time_cached_load<T>(seconds: &mut f64, operation: impl FnOnce() -> T) -> T {
+    let start = Instant::now();
+    let result = operation();
+    *seconds += start.elapsed().as_secs_f64();
+    result
+}
+
+fn load_local_payloads(
+    connection: &Connection,
+    root: &str,
+    dependency_digest: &str,
+    expected: &BTreeMap<String, MdbaseCachedRecordExpectation>,
+    filter: Option<&PermissionFilter>,
+    decoded_records: &mut usize,
+) -> Result<Option<Vec<MdbaseRecordDocument>>, MdbaseRecordCacheError> {
     let transaction = connection.unchecked_transaction()?;
     let mut records = Vec::new();
     {
@@ -227,12 +314,13 @@ pub fn load_cached_mdbase_record_set(
                         root,
                         path,
                         expectation.revision,
-                        controls.combined,
+                        dependency_digest,
                         MDBASE_RECORD_MODEL_VERSION
                     ],
                     |row| parse_json_column(0, &row.get::<_, String>(0)?),
                 )
                 .optional()?;
+            *decoded_records += usize::from(record.is_some());
             let Some(record) = record.filter(|record| {
                 record.path == *path
                     && record.revision == expectation.revision
@@ -245,12 +333,7 @@ pub fn load_cached_mdbase_record_set(
         }
     }
     transaction.commit()?;
-    if verify_mdbase_control_snapshots(collection, types, contracts, filter)? != controls {
-        return Err(MdbaseRecordCacheError::StaleControls);
-    }
-    Ok(Some(super::records::finish_local_record_set(
-        collection, types, contracts, records,
-    )))
+    Ok(Some(records))
 }
 
 fn is_local_record(record: &MdbaseRecordDocument) -> bool {
