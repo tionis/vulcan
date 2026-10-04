@@ -74,6 +74,7 @@ pub struct MdbaseCelProgram {
     program: Program,
     stats: MdbaseCelProgramStats,
     projection_dependencies: BTreeSet<String>,
+    uses_link_resolution: bool,
 }
 
 impl MdbaseCelProgram {
@@ -95,6 +96,14 @@ impl MdbaseCelProgram {
     #[must_use]
     pub fn requires_link_index(&self) -> bool {
         self.program.references().functions().contains(&"asFile")
+    }
+
+    /// Whether evaluation can consult collection link resolution, including
+    /// `link()` without traversal. This is an execution dependency, not the
+    /// lifecycle namespace-authorization classifier above.
+    #[must_use]
+    pub const fn uses_link_resolution(&self) -> bool {
+        self.uses_link_resolution
     }
 }
 
@@ -193,11 +202,17 @@ impl MdbaseCelEngine {
                 )
             })?
             .map_err(|error| MdbaseCelError::new("expression_compile_error", error.to_string()))?;
+        let uses_link_resolution = {
+            let references = program.references();
+            let functions = references.functions();
+            functions.contains(&"link") || functions.contains(&"asFile")
+        };
         Ok(MdbaseCelProgram {
             source: source.to_string(),
             program,
             stats,
             projection_dependencies,
+            uses_link_resolution,
         })
     }
 
@@ -1512,6 +1527,31 @@ fn inspect_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolution_dependency_includes_link_without_changing_traversal_scope() {
+        let engine = MdbaseCelEngine::default();
+        for (source, expected) in [
+            ("'link' == 'asFile'", false),
+            ("file.basename == 'link'", false),
+            ("file.asLink()", false),
+            ("link('target')", true),
+            ("false && link('target') != null", true),
+            ("record.target.asFile()", true),
+            ("[1].map(i, link('target'))", true),
+        ] {
+            assert_eq!(
+                engine.compile(source).unwrap().uses_link_resolution(),
+                expected,
+                "{source}"
+            );
+        }
+        // Do not silently widen the separately reviewed lifecycle scope rule.
+        assert!(!engine
+            .compile("link('target')")
+            .unwrap()
+            .requires_link_index());
+    }
 
     #[test]
     fn link_index_dependency_uses_calls_not_literal_text_or_branch_results() {

@@ -267,6 +267,8 @@ impl MdbasePreparedQuery {
                 compilations: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
                 uncached: false,
+                #[cfg(test)]
+                eager_links: false,
             },
         }
     }
@@ -283,7 +285,7 @@ impl MdbasePreparedQuery {
             records,
             types,
             &self.plan,
-            id_field,
+            &QueryLinkIndex::new(records, id_field),
             collection_timezone,
             now,
             &self.programs,
@@ -299,6 +301,8 @@ struct QueryPrograms {
     compilations: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     uncached: bool,
+    #[cfg(test)]
+    eager_links: bool,
 }
 
 impl QueryPrograms {
@@ -337,6 +341,48 @@ impl QueryPrograms {
         let program = self.program(source)?;
         self.engine.evaluate_context(program, context)
     }
+
+    fn evaluate_record_context(
+        &self,
+        source: &str,
+        mut context: MdbaseCelContext,
+        links: &QueryLinkIndex<'_>,
+    ) -> Result<MdbaseCelEvaluation, MdbaseCelError> {
+        // Compile only when this expression would ordinarily execute. In
+        // particular, unused selections and empty/type-filtered collections
+        // must not acquire earlier errors or hydration work.
+        let needs_links = self.program(source)?.uses_link_resolution();
+        #[cfg(test)]
+        let needs_links = needs_links || self.eager_links;
+        if needs_links {
+            context = context.with_link_index(Arc::clone(links.get()));
+        }
+        self.evaluate_context(source, &context)
+    }
+}
+
+/// One operation's authorized records, never retained with a prepared plan.
+/// Index construction copies file/body/link/tag values for every target,
+/// so even a shared index must not be constructed for unrelated expressions.
+struct QueryLinkIndex<'a> {
+    records: &'a MdbaseRecordSet,
+    id_field: &'a str,
+    index: OnceLock<Arc<MdbaseCelLinkIndex>>,
+}
+
+impl<'a> QueryLinkIndex<'a> {
+    fn new(records: &'a MdbaseRecordSet, id_field: &'a str) -> Self {
+        Self {
+            records,
+            id_field,
+            index: OnceLock::new(),
+        }
+    }
+
+    fn get(&self) -> &Arc<MdbaseCelLinkIndex> {
+        self.index
+            .get_or_init(|| Arc::new(MdbaseCelLinkIndex::new(self.records, self.id_field)))
+    }
 }
 
 pub fn execute_mdbase_query(
@@ -354,7 +400,7 @@ fn execute_prepared_query(
     records: &MdbaseRecordSet,
     types: &MdbaseTypeRegistry,
     plan: &StructuredQueryPlan,
-    id_field: &str,
+    link_index: &QueryLinkIndex<'_>,
     collection_timezone: Option<&str>,
     now: DateTime<Utc>,
     engine: &QueryPrograms,
@@ -380,7 +426,6 @@ fn execute_prepared_query(
             })
         })
         .transpose()?;
-    let link_index = Arc::new(MdbaseCelLinkIndex::new(records, id_field));
     let mut diagnostics = Vec::new();
     let mut candidates = Vec::new();
     for record in &records.records {
@@ -391,7 +436,7 @@ fn execute_prepared_query(
             types,
             invocation_context,
             &clock,
-            &link_index,
+            link_index,
             &mut diagnostics,
         )? {
             candidates.push(candidate);
@@ -436,7 +481,7 @@ fn evaluate_query_candidate<'a>(
     types: &MdbaseTypeRegistry,
     invocation_context: Option<&MdbaseRecordDocument>,
     clock: &MdbaseCelClock,
-    link_index: &Arc<MdbaseCelLinkIndex>,
+    link_index: &QueryLinkIndex<'_>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
 ) -> Result<Option<QueryCandidate<'a>>, MdbaseQueryError> {
     if !plan.types.is_empty()
@@ -464,9 +509,8 @@ fn evaluate_query_candidate<'a>(
             clock.clone(),
         )
         .map_err(cel_query_error)?;
-        let context = context.with_link_index(Arc::clone(link_index));
         let result = engine
-            .evaluate_context(&named.expression.source, &context)
+            .evaluate_record_context(&named.expression.source, context, link_index)
             .map_err(cel_query_error)?;
         projection.insert(named.name.clone(), result.value);
         diagnostics.extend(result.diagnostics);
@@ -481,9 +525,8 @@ fn evaluate_query_candidate<'a>(
             clock.clone(),
         )
         .map_err(cel_query_error)?;
-        let context = context.with_link_index(Arc::clone(link_index));
         let result = engine
-            .evaluate_context(&filter.source, &context)
+            .evaluate_record_context(&filter.source, context, link_index)
             .map_err(cel_query_error)?;
         diagnostics.extend(result.diagnostics);
         if !result.value.is_boolean() && !result.value.is_null() {
@@ -536,7 +579,7 @@ fn evaluate_selection(
     projection: &serde_json::Map<String, serde_json::Value>,
     invocation_context: Option<&MdbaseRecordDocument>,
     clock: &MdbaseCelClock,
-    link_index: &Arc<MdbaseCelLinkIndex>,
+    link_index: &QueryLinkIndex<'_>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
 ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, MdbaseQueryError> {
     let Some(selection) = &plan.selection else {
@@ -563,9 +606,8 @@ fn evaluate_selection(
                     clock.clone(),
                 )
                 .map_err(cel_query_error)?;
-                let context = context.with_link_index(Arc::clone(link_index));
                 let result = engine
-                    .evaluate_context(&expression.source, &context)
+                    .evaluate_record_context(&expression.source, context, link_index)
                     .map_err(cel_query_error)?;
                 values.insert(name.clone(), result.value);
                 diagnostics.extend(result.diagnostics);
@@ -1320,6 +1362,140 @@ mod tests {
         .unwrap();
         assert_eq!(prepared.plan().named_projections[0].name, "second");
         assert_eq!(prepared.plan().named_projections[1].name, "first");
+    }
+
+    #[test]
+    fn metadata_queries_and_unexecuted_selections_do_not_build_link_indexes() {
+        let records = MdbaseRecordSet {
+            records: vec![
+                record("a.md", "Alpha", "open"),
+                record("b.md", "Beta", "done"),
+            ],
+        };
+        for query in [
+            serde_json::json!({"where": "status == 'open'", "select": ["title"]}),
+            serde_json::json!({"where": "false", "select": [{"name": "target", "expr": "link('a')"}]}),
+            serde_json::json!({"types": ["absent"], "where": "link('a') != null"}),
+            serde_json::json!({"projections": {"name": {"expr": "file.basename"}}, "select": ["projection.name"]}),
+        ] {
+            let prepared = compile_mdbase_prepared_query(&query).unwrap();
+            let mut eager = compile_mdbase_prepared_query(&query).unwrap();
+            eager.programs.eager_links = true;
+            let types = MdbaseTypeRegistry::default();
+            let links = QueryLinkIndex::new(&records, "id");
+            let now = Utc::now();
+            let actual = execute_prepared_query(
+                &records,
+                &types,
+                prepared.plan(),
+                &links,
+                None,
+                now,
+                &prepared.programs,
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                eager.execute(&records, &types, "id", None, now).unwrap()
+            );
+            assert!(links.index.get().is_none(), "unexpected index for {query}");
+        }
+    }
+
+    #[test]
+    fn link_dependent_queries_share_one_index_and_do_not_retain_old_scope() {
+        let query = serde_json::json!({
+            "projections": {"destination": {"expr": "link('target.md').resolved_path"}},
+            "where": "file.path == 'source.md' && link('source.md') != null",
+            "select": ["projection.destination", {"name": "target", "expr": "link('target.md').asFile()"}]
+        });
+        let prepared = compile_mdbase_prepared_query(&query).unwrap();
+        let mut eager = compile_mdbase_prepared_query(&query).unwrap();
+        eager.programs.eager_links = true;
+        let types = MdbaseTypeRegistry::default();
+        let now = Utc::now();
+        for title in [Some("Before"), None, Some("Replacement")] {
+            let mut records = MdbaseRecordSet {
+                records: vec![record("source.md", "Source", "open")],
+            };
+            if let Some(title) = title {
+                records.records.push(record("target.md", title, "open"));
+            }
+            let links = QueryLinkIndex::new(&records, "id");
+            let actual = execute_prepared_query(
+                &records,
+                &types,
+                prepared.plan(),
+                &links,
+                None,
+                now,
+                &prepared.programs,
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                eager.execute(&records, &types, "id", None, now).unwrap()
+            );
+            let retained = links.index.get().expect("link dependency hydrates index");
+            assert!(Arc::ptr_eq(retained, links.get()));
+            // The operation releases all evaluator references; the one shared
+            // allocation lives only in this execution, not the prepared plan.
+            assert_eq!(Arc::strong_count(retained), 1);
+            let values = actual.results[0].values.as_ref().unwrap();
+            match title {
+                Some(title) => {
+                    assert_eq!(values["destination"], "target.md");
+                    assert_eq!(values["target"]["body"], format!("{title} body"));
+                }
+                None => assert!(values["target"].is_null()),
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_link_hydration_preserves_metadata_input_limits_and_diagnostics() {
+        let query =
+            serde_json::json!({"where": "false", "projections": {"failure": {"expr": "1 / 0"}}});
+        let prepared = compile_mdbase_prepared_query(&query).unwrap();
+        let mut eager = compile_mdbase_prepared_query(&query).unwrap();
+        eager.programs.eager_links = true;
+        let types = MdbaseTypeRegistry::default();
+        let now = Utc::now();
+        let mut records = MdbaseRecordSet {
+            records: vec![record("a.md", "A", "open")],
+        };
+        let actual = prepared.execute(&records, &types, "id", None, now).unwrap();
+        assert_eq!(
+            actual,
+            eager.execute(&records, &types, "id", None, now).unwrap()
+        );
+        assert_eq!(actual.diagnostics.len(), 1);
+        assert_eq!(actual.meta.total_count, 0);
+        // Even a false metadata filter must not hide excessive unused body
+        // input. Lazy index construction does not narrow the CEL input context.
+        records.records[0].body = "x".repeat(1024 * 1024 + 1);
+        let links = QueryLinkIndex::new(&records, "id");
+        let actual = execute_prepared_query(
+            &records,
+            &types,
+            prepared.plan(),
+            &links,
+            None,
+            now,
+            &prepared.programs,
+        )
+        .unwrap_err();
+        assert_eq!(
+            actual,
+            eager
+                .execute(&records, &types, "id", None, now)
+                .unwrap_err()
+        );
+        assert_eq!(actual.diagnostics[0].code, "invalid_query");
+        assert!(actual.diagnostics[0]
+            .message
+            .contains("exceeding the limit"));
+        assert!(links.index.get().is_none());
     }
 
     #[test]
