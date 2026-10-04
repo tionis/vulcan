@@ -369,6 +369,25 @@ pub trait GitEngine: Send + Sync {
         revision: &GitOid,
     ) -> Result<Vec<GitTreeEntry>, GitEngineError>;
 
+    /// Builds a tree from `base` (a tree or commit; empty when `None`) with
+    /// `entries` added or replaced. Uses a scratch index, so no index or
+    /// worktree state is touched; the entries' objects must already exist.
+    fn tree_with_entries(
+        &self,
+        repository: &GitRepository,
+        base: Option<&GitOid>,
+        entries: &[GitTreeEntry],
+    ) -> Result<GitOid, GitEngineError>;
+
+    /// Lists every leaf entry beneath the directory `prefix` in a commit or
+    /// tree, without listing the rest of the tree or loading contents.
+    fn tree_entries_under(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        prefix: &str,
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError>;
+
     /// Lists the leaf entries at exactly `paths` in a commit or tree, without
     /// loading object contents. Engines should keep the work proportional to
     /// the selected paths rather than to the whole tree.
@@ -3199,6 +3218,76 @@ impl GitEngine for GitCliEngine {
             ["ls-tree", "-r", "-z", revision.as_str()],
         )?;
         parse_tree_entries(&output.stdout)
+    }
+
+    fn tree_with_entries(
+        &self,
+        repository: &GitRepository,
+        base: Option<&GitOid>,
+        entries: &[GitTreeEntry],
+    ) -> Result<GitOid, GitEngineError> {
+        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
+        let index_path = scratch.path().join("index");
+        match base {
+            Some(base) => self.index_output(
+                repository,
+                &index_path,
+                "seed a tree",
+                ["read-tree", base.as_str()],
+            )?,
+            None => self.index_output(
+                repository,
+                &index_path,
+                "seed an empty tree",
+                ["read-tree", "--empty"],
+            )?,
+        };
+        if !entries.is_empty() {
+            let mut input = Vec::new();
+            for entry in entries {
+                validate_repository_path(&entry.path)?;
+                input.extend_from_slice(
+                    format!("{} {}\t", entry.mode, entry.oid.as_str()).as_bytes(),
+                );
+                input.extend_from_slice(entry.path.as_bytes());
+                input.push(0);
+            }
+            let mut command = self.index_command(repository, &index_path)?;
+            command.args(["update-index", "-z", "--index-info"]);
+            ensure_success(
+                "add entries to a tree",
+                self.execute_with_input(command, "add entries to a tree", &input)?,
+            )?;
+        }
+        GitOid::parse(
+            self.index_capture(repository, &index_path, "write a tree", ["write-tree"])?
+                .trim(),
+        )
+    }
+
+    fn tree_entries_under(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        prefix: &str,
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError> {
+        validate_repository_path(prefix)?;
+        let mut command = self.repository_command(repository);
+        command.env("GIT_LITERAL_PATHSPECS", "1").args([
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            revision.as_str(),
+            "--",
+            prefix,
+        ]);
+        let output = ensure_success("list a Git subtree", self.execute(command)?)?;
+        let directory = format!("{prefix}/");
+        Ok(parse_tree_entries(&output.stdout)?
+            .into_iter()
+            .filter(|entry| entry.path.starts_with(&directory))
+            .collect())
     }
 
     fn tree_entries_for_paths(
@@ -8091,6 +8180,65 @@ mod tests {
             run_git_capture(temporary.path(), &["write-tree"]),
             index_before
         );
+    }
+
+    #[test]
+    fn trees_built_from_entries_extend_a_base_and_list_by_subtree() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("note.md"), "note\n").expect("note");
+        let head = commit_all(temporary.path(), "worktree");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        assert!(engine
+            .worktree_matches_tree(&repository, &head)
+            .expect("compare"));
+        let blobs = engine
+            .write_blobs(&repository, &[b"x\n", b"y\n", b"z\n", b"w\n"])
+            .expect("blobs");
+        let entry = |path: &str, oid: &GitOid| GitTreeEntry {
+            path: path.to_string(),
+            oid: oid.clone(),
+            mode: "100644".to_string(),
+            kind: "blob".to_string(),
+        };
+        let first = engine
+            .tree_with_entries(
+                &repository,
+                None,
+                &[
+                    entry("ab/x", &blobs[0]),
+                    entry("ab/y", &blobs[1]),
+                    entry("cd/z", &blobs[2]),
+                ],
+            )
+            .expect("tree from nothing");
+        let second = engine
+            .tree_with_entries(&repository, Some(&first), &[entry("ab/w", &blobs[3])])
+            .expect("tree extending a base");
+
+        let mut under = engine
+            .tree_entries_under(&repository, &second, "ab")
+            .expect("subtree listing");
+        under.sort_by(|left, right| left.path.cmp(&right.path));
+        assert_eq!(
+            under
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["ab/w", "ab/x", "ab/y"]
+        );
+        assert_eq!(under[0].oid, blobs[3]);
+        assert!(engine
+            .tree_entries_under(&repository, &second, "missing")
+            .expect("missing subtree")
+            .is_empty());
+        // Building trees never disturbs the worktree comparison index.
+        assert!(engine
+            .worktree_matches_tree(&repository, &head)
+            .expect("compare again"));
     }
 
     #[test]

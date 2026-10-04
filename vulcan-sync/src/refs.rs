@@ -67,6 +67,11 @@ pub fn conflict_ref(conflict_id: &str, role: &str) -> Result<GitRefName, GitEngi
     local_ref(&["conflicts", conflict_id, role])
 }
 
+/// Local ref naming the archive of closed sync conflicts.
+pub fn conflict_archive_ref() -> Result<GitRefName, GitEngineError> {
+    local_ref(&["conflict-archive"])
+}
+
 pub fn remote_conflict_ref(conflict_id: &str, role: &str) -> Result<GitRefName, GitEngineError> {
     GitRefName::parse(format!(
         "{REMOTE_CONFLICT_BRANCH_ROOT}/{conflict_id}/{role}"

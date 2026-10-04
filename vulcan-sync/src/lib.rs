@@ -61,9 +61,9 @@ pub use platform::{
     GitPlatformPreflight, GIT_PLATFORM_PREFLIGHT_VERSION,
 };
 pub use refs::{
-    checkpoint_ref, conflict_proposal_resolution_ref, conflict_recovery_ref, conflict_ref,
-    conflict_resolved_ref, detached_recovery_ref, device_recovery_live_ref, device_recovery_ref,
-    local_epoch_ref, local_recovery_ref_namespaces, local_sync_ref,
+    checkpoint_ref, conflict_archive_ref, conflict_proposal_resolution_ref, conflict_recovery_ref,
+    conflict_ref, conflict_resolved_ref, detached_recovery_ref, device_recovery_live_ref,
+    device_recovery_ref, local_epoch_ref, local_recovery_ref_namespaces, local_sync_ref,
     remote_conflict_proposal_resolution_ref, remote_conflict_ref, remote_device_ref,
     remote_epoch_ref, remote_registration_ref, semantic_proposal_ref, sync_profile_key,
     DEFAULT_REMOTE_LIVE_REF, LOCAL_FORGE_DESCRIPTOR_MIRROR_REF, LOCAL_RECOVERY_REF_NAMESPACES,
