@@ -707,6 +707,58 @@ pub fn load_named_template(
     })
 }
 
+pub(crate) fn load_named_template_with_guard(
+    paths: &VaultPaths,
+    config: &VaultConfig,
+    name: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<LoadedTemplateSource, AppError> {
+    let mut templates: Vec<TemplateCandidate> = Vec::new();
+    let roots = [
+        (Some(Path::new(".vulcan/templates")), "vulcan"),
+        (config.templates.templater_folder.as_deref(), "templater"),
+        (config.templates.obsidian_folder.as_deref(), "obsidian"),
+    ];
+    for (root, source) in roots {
+        let Some(root) = root.filter(|root| !root.as_os_str().is_empty()) else {
+            continue;
+        };
+        for candidate in list_templates_in_directory(
+            &paths.vault_root().join(root),
+            &root.to_string_lossy(),
+            source,
+        )? {
+            // Remove inaccessible candidates before source-precedence resolution.
+            // An unreadable local template cannot shadow a readable imported one.
+            if guard.check_read_path(&candidate.display_path).is_ok()
+                && !templates
+                    .iter()
+                    .any(|existing| existing.name == candidate.name)
+            {
+                templates.push(candidate);
+            }
+        }
+    }
+    templates.sort_by(|left, right| left.name.cmp(&right.name));
+    let template = resolve_template_file(paths, &templates, name).map_err(|_| {
+        if guard.grant().read.is_unrestricted() && !guard.has_policy_hook() {
+            AppError::operation_with_code("template_not_found", "template not found")
+        } else {
+            AppError::operation("template not found in readable scope")
+        }
+    })?;
+    guard
+        .check_read_path(&template.display_path)
+        .map_err(AppError::operation)?;
+    let source = secure_read_to_string(paths.vault_root(), Path::new(&template.display_path))
+        .map_err(AppError::operation)?;
+    Ok(LoadedTemplateSource {
+        template,
+        templates,
+        source,
+    })
+}
+
 pub fn render_loaded_template(
     paths: &VaultPaths,
     vault_config: &VaultConfig,

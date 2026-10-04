@@ -1,7 +1,7 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 1
+version: 2
 tools:
   - tasks_query
   - query
@@ -22,20 +22,24 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 ## Recommended Flow
 
 - Use `tasks query` or `tasks list` to inspect existing task state before mutating anything.
-- Reach for `tasks append`, `tasks complete`, `tasks upcoming`, or `tasks blocked` when the workflow is task-specific.
+- Reach for `tasks create`, `tasks complete`, `tasks next`, or `tasks blocked` when the workflow is task-specific.
 - Combine task views with daily note review when date-based workflows matter.
 - Use `help` when the Tasks query syntax or recurrence behavior is unclear.
 
 ## Guardrails
 
+- Keep the selected `--permissions` profile on task mutations, including previews. Routing requires read access to `mdbase.yaml` even when that file is absent or the target is ordinary Markdown. A denied control read is not permission to retry with an unrestricted profile.
+- Tracking, pomodoro status, and other task reports can trigger configured automatic transitions. Those writes need the caller's authority too; daily-note pomodoro storage and archive destinations require their own path grants. Do not broaden grants merely to make a report succeed.
+- Task-add and missing daily-note pomodoro templates are selected from readable candidates and rendered with the caller's authority. A dry run cannot create template side notes; use a non-mutating template for a preview that depends on rendered content. Template denial must not be treated as an empty template or retried with broader grants. Only unrestricted reads without policy hooks retain the periodic-note warning-and-empty-template fallback for a genuinely absent template; corrupt readable templates still fail.
+- `tasks edit` requires read/write authority for the task and execute authority before launching the external editor. This is a direct filesystem edit followed by a rescan, not a validated MDB transaction or a sandbox for the editor process. Use structured task commands for validated changes; do not use the editor to bypass a validation denial.
 - Do not assume task mutation exists everywhere the query layer does; inspect the concrete command first.
 - Recurring tasks and dependencies need more care than one-off checkbox edits.
 - Hand-written inline tasks should use the Tasks plugin markers Vulcan indexes: `📅` due (`📆`/`🗓` are also read), `⏳` scheduled, `🛫` start, `➕` created, `✅` done, `❌` cancelled, `🏁` on-completion action, and priorities `🔺` highest, `⏫` high, `🔼` medium, `🔽` low, `⏬` lowest.
 - If the task is actually about TaskNotes note files, prefer the TaskNotes-aware commands rather than hand-editing the generated note.
 - In an mdbase collection, task create/update/convert/archive workflows preflight proposed records and commit through the validated journal. Treat a validation failure as a schema or collection-rule conflict; do not bypass it with a direct Markdown edit.
 - If a task line is converted from an ordinary note into a managed TaskNotes record, the source rewrite and new task are one journaled change; inspect both paths if the transaction reports a conflict.
-- For a plain-Markdown line-to-task conversion, a changed source or newly occupied target fails instead of overwriting it. Its two-file create/rewrite is journaled for roll-forward recovery on the next conversion or named MCP startup. If recovery reports an external edit, inspect both files and preserve the journal for explicit repair; do not retry or delete the journal blindly.
-- Ordinary TaskNotes archive moves reject a changed source or occupied archive path. A crash can temporarily leave both files present, but the next task mutation or named MCP startup uses the ordinary-write journal to finish the move if neither file changed externally. On a blocked recovery, inspect both paths and use `vulcan repair ordinary-write status` to review the journal; after manual reconciliation, `accept-current` requires its exact transaction ID and review token. Never delete either file or the journal blindly.
+- For a plain-Markdown line-to-task conversion, a changed source or newly occupied target fails instead of overwriting it. Its two-file create/rewrite is journaled. Guarded task commands refuse a pending journal rather than borrowing the previous writer's recovery authority. Inspect both files and preserve the journal for an authorized repair workflow; do not retry or delete it blindly.
+- Ordinary TaskNotes archive moves reject a changed source or occupied archive path. A crash can temporarily leave both files present. Inspect both paths and use `vulcan repair ordinary-write status` to review the journal; after manual reconciliation, `accept-current` requires its exact transaction ID and review token. Never delete either file or the journal blindly.
 - Direct CLI and MCP task show, query, list, view, due, reminder, dependency, and time-tracking reports refuse a pending ordinary-write journal. Inspect it with `vulcan repair ordinary-write status` before using those reports; a task conversion or archive move may otherwise be only partly published.
 - Ordinary task edits that use the shared note-write boundary also refuse a pending journal, including writes to unrelated notes. Repair the interrupted batch before retrying those edits.
 - Ordinary inline task create, complete, and reschedule writes are serialized with other Vulcan vault writes and reject a note changed after planning. On a changed-note error, reread the task and its source note before deciding whether to retry; never overwrite the newer edit.

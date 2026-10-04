@@ -1396,6 +1396,7 @@ pub fn read_note_for_update(paths: &VaultPaths, path: &str) -> Result<Option<Str
     }
 }
 
+#[cfg(test)]
 pub(crate) fn write_ordinary_note_if_unchanged(
     paths: &VaultPaths,
     path: &str,
@@ -1758,6 +1759,31 @@ pub fn render_periodic_note_contents(
     warnings: &mut Vec<String>,
     permission_profile: Option<&str>,
 ) -> Result<String, AppError> {
+    let guard = permission_profile
+        .map(|profile| {
+            resolve_permission_profile(paths, Some(profile))
+                .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                .map_err(AppError::operation)
+        })
+        .transpose()?;
+    render_periodic_note_contents_with_guard(
+        paths,
+        period_type,
+        relative_path,
+        warnings,
+        guard.as_ref(),
+        false,
+    )
+}
+
+pub(crate) fn render_periodic_note_contents_with_guard(
+    paths: &VaultPaths,
+    period_type: &str,
+    relative_path: &str,
+    warnings: &mut Vec<String>,
+    guard: Option<&ProfilePermissionGuard>,
+    dry_run: bool,
+) -> Result<String, AppError> {
     let config = load_vault_config(paths).config;
     let template_name = config
         .periodic
@@ -1767,23 +1793,33 @@ pub fn render_periodic_note_contents(
         return Ok(String::new());
     };
 
-    let loaded = match load_named_template(paths, &config, template_name) {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            warnings.push(format!(
+    let loaded = if let Some(guard) = guard {
+        match crate::templates::load_named_template_with_guard(paths, &config, template_name, guard)
+        {
+            Ok(loaded) => loaded,
+            Err(error) if error.code() == Some("template_not_found") => {
+                // Only an unrestricted, hook-free reader can distinguish true
+                // absence from a template hidden by its authority ceiling.
+                warnings.push(format!(
+                    "failed to resolve periodic template `{template_name}` for `{period_type}`: {error}"
+                ));
+                return Ok(String::new());
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        match load_named_template(paths, &config, template_name) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                warnings.push(format!(
                 "failed to resolve periodic template `{template_name}` for `{period_type}`: {error}"
             ));
-            return Ok(String::new());
+                return Ok(String::new());
+            }
         }
     };
     let vars = HashMap::new();
-    let mutation_guard = permission_profile
-        .map(|profile| {
-            resolve_permission_profile(paths, Some(profile))
-                .map(|selection| ProfilePermissionGuard::new(paths, selection))
-                .map_err(AppError::operation)
-        })
-        .transpose()?;
+    let read_filter = guard.map(PermissionGuard::read_filter);
     let rendered = render_loaded_template_with_authority(
         paths,
         &config,
@@ -1793,11 +1829,11 @@ pub fn render_periodic_note_contents(
             target_contents: None,
             engine: TemplateEngineKind::Auto,
             vars: &vars,
-            allow_mutations: true,
+            allow_mutations: !dry_run,
             run_mode: TemplateRunMode::Create,
         },
-        None,
-        mutation_guard.as_ref(),
+        read_filter.as_ref(),
+        guard,
     )?;
     warnings.extend(loaded.template.warning);
     warnings.extend(rendered.warnings);

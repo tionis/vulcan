@@ -641,7 +641,9 @@ pub fn resolve_note_reference_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<NoteReference, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
+    // Scope the candidate universe before resolving filenames or aliases. Hidden
+    // notes must neither win resolution nor appear in ambiguity diagnostics.
+    let notes = filtered_note_set(&connection, filter)?;
     let note = notes.resolve(identifier)?;
     if let Some(filter) = filter {
         if !filter.is_allowed(&note.path) {
@@ -2170,6 +2172,49 @@ mod tests {
     };
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn scoped_note_resolution_excludes_hidden_filename_and_alias_candidates() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\n",
+        )
+        .unwrap();
+        for folder in ["Public", "Hidden"] {
+            fs::create_dir_all(temp.path().join(folder)).unwrap();
+            fs::write(
+                temp.path().join(folder).join("Task.md"),
+                "---\naliases: [Shared]\n---\nTask\n",
+            )
+            .unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        for identifier in ["Task", "Shared"] {
+            assert!(matches!(
+                resolve_note_reference(&paths, identifier),
+                Err(GraphQueryError::AmbiguousIdentifier { .. })
+            ));
+            let resolved =
+                resolve_note_reference_with_filter(&paths, identifier, Some(&guard.read_filter()))
+                    .unwrap();
+            assert_eq!(resolved.path, "Public/Task.md");
+        }
+        assert!(matches!(
+            resolve_note_reference_with_filter(
+                &paths,
+                "Hidden/Task.md",
+                Some(&guard.read_filter())
+            ),
+            Err(GraphQueryError::NoteNotFound { .. })
+        ));
+    }
 
     #[test]
     fn note_link_confidence_excludes_unreadable_backlink_sources() {

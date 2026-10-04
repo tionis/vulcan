@@ -4,14 +4,13 @@ use crate::mdbase::{
     MdbaseManagedNoteWriteRequest, MdbaseManagedWriteMode, MdbaseWriteOperation,
 };
 use crate::notes::{
-    normalize_date_argument, normalize_note_path, render_periodic_note_contents,
-    resolve_existing_note_path, write_ordinary_note_if_unchanged,
-    write_ordinary_note_if_unchanged_with_profile,
+    normalize_date_argument, normalize_note_path, render_periodic_note_contents_with_guard,
+    resolve_existing_note_path, write_ordinary_note_if_unchanged_with_profile,
 };
 use crate::templates::{
     load_named_template, merge_template_frontmatter, parse_frontmatter_document,
-    render_loaded_template, render_note_from_parts, LoadedTemplateRenderRequest,
-    TemplateEngineKind, TemplateRunMode, TemplateTimestamp,
+    render_note_from_parts, LoadedTemplateRenderRequest, TemplateEngineKind, TemplateRunMode,
+    TemplateTimestamp,
 };
 use crate::AppError;
 use regex::Regex;
@@ -20,6 +19,7 @@ use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use vulcan_core::config::TasksDefaultSource;
 use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
@@ -237,11 +237,20 @@ pub fn apply_task_set(
     paths: &VaultPaths,
     request: &TaskSetRequest,
 ) -> Result<TaskMutationReport, AppError> {
+    apply_task_set_with_guard(paths, request, None)
+}
+
+pub fn apply_task_set_with_guard(
+    paths: &VaultPaths,
+    request: &TaskSetRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
     apply_tasknote_mutation(
         paths,
         &request.task,
         "set",
         request.dry_run,
+        guard,
         |frontmatter, loaded| {
             let key = tasknote_frontmatter_key(&loaded.config, &request.property);
             let parsed = parse_tasknote_cli_value(&request.value);
@@ -298,7 +307,8 @@ pub fn apply_task_reschedule_with_guard(
     request: &TaskRescheduleRequest,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskMutationReport, AppError> {
-    if let Ok(loaded) = load_tasknote_note(paths, &request.task) {
+    preflight_task_mutation_guard(paths, guard)?;
+    if let Ok(loaded) = load_tasknote_note_with_guard(paths, &request.task, guard) {
         let due_value = resolve_tasknote_date_input(&loaded.config, &request.due, false)?;
         return apply_loaded_tasknote_mutation_with_guard(
             paths,
@@ -349,7 +359,8 @@ pub fn apply_task_complete_with_guard(
     request: &TaskCompleteRequest,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskMutationReport, AppError> {
-    if let Ok(loaded) = load_tasknote_note(paths, &request.task) {
+    preflight_task_mutation_guard(paths, guard)?;
+    if let Ok(loaded) = load_tasknote_note_with_guard(paths, &request.task, guard) {
         return apply_loaded_tasknote_mutation_with_guard(
             paths,
             &loaded,
@@ -459,11 +470,20 @@ pub fn apply_task_archive(
     paths: &VaultPaths,
     request: &TaskArchiveRequest,
 ) -> Result<TaskMutationReport, AppError> {
+    apply_task_archive_with_guard(paths, request, None)
+}
+
+pub fn apply_task_archive_with_guard(
+    paths: &VaultPaths,
+    request: &TaskArchiveRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
     apply_tasknote_mutation(
         paths,
         &request.task,
         "archive",
         request.dry_run,
+        guard,
         prepare_tasknote_archive_plan,
     )
 }
@@ -472,13 +492,25 @@ pub fn process_due_tasknote_auto_archives(
     paths: &VaultPaths,
     exclude_task: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
-    recover_pending_ordinary_task_write(paths)?;
+    process_due_tasknote_auto_archives_with_guard(paths, exclude_task, None)
+}
+
+pub fn process_due_tasknote_auto_archives_with_guard(
+    paths: &VaultPaths,
+    exclude_task: Option<&str>,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<Vec<String>, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
+    if guard.is_none() {
+        recover_pending_ordinary_task_write(paths)?;
+    }
     let config = load_vault_config(paths).config;
     let now_ms = current_utc_timestamp_ms();
     let excluded_path = exclude_task
-        .and_then(|task| load_tasknote_note(paths, task).ok())
+        .and_then(|task| load_tasknote_note_with_guard(paths, task, guard).ok())
         .map(|loaded| loaded.path);
-    let candidates = load_tasknote_records(paths)?
+    let read_filter = guard.map(PermissionGuard::read_filter);
+    let candidates = load_tasknote_records_with_filter(paths, read_filter.as_ref())?
         .into_iter()
         .filter(|record| excluded_path.as_ref() != Some(&record.path))
         .filter(|record| {
@@ -515,12 +547,13 @@ pub fn process_due_tasknote_auto_archives(
     let mut changed_paths = Vec::new();
 
     for path in candidates {
-        let loaded = load_tasknote_note(paths, &path)?;
-        let report = apply_loaded_tasknote_mutation(
+        let loaded = load_tasknote_note_with_guard(paths, &path, guard)?;
+        let report = apply_loaded_tasknote_mutation_with_guard(
             paths,
             &loaded,
             "auto_archive",
             false,
+            guard,
             prepare_tasknote_archive_plan,
         )?;
         changed_paths.extend(report.changed_paths);
@@ -536,6 +569,16 @@ pub fn apply_task_add(
     paths: &VaultPaths,
     request: &TaskAddRequest,
 ) -> Result<TaskAddReport, AppError> {
+    apply_task_add_with_guard(paths, request, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn apply_task_add_with_guard(
+    paths: &VaultPaths,
+    request: &TaskAddRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskAddReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
     let config = load_vault_config(paths).config;
     let reference_ms = tasknote_reference_ms();
     let raw_title = request.text.trim();
@@ -691,6 +734,14 @@ pub fn apply_task_add(
         sanitize_tasknote_filename(&title)
     );
     let absolute_path = paths.vault_root().join(&relative_path);
+    if let Some(guard) = guard {
+        guard
+            .check_read_path(&relative_path)
+            .map_err(AppError::operation)?;
+        guard
+            .check_write_path(&relative_path)
+            .map_err(AppError::operation)?;
+    }
     if absolute_path.exists() {
         return Err(AppError::operation(format!(
             "destination task already exists: {relative_path}"
@@ -781,9 +832,14 @@ pub fn apply_task_add(
     }
 
     let (template_frontmatter, template_body) = match request.template.as_deref() {
-        Some(template_name) => {
-            load_tasknote_template(paths, &config, template_name, &relative_path)?
-        }
+        Some(template_name) => load_tasknote_template(
+            paths,
+            &config,
+            template_name,
+            &relative_path,
+            request.dry_run,
+            guard,
+        )?,
         None => (None, String::new()),
     };
     let merged_frontmatter =
@@ -799,10 +855,17 @@ pub fn apply_task_add(
         Some(&rendered),
         MdbaseWriteOperation::Create,
         request.dry_run,
-        None,
+        guard,
     )?;
     if !request.dry_run && !routed {
-        write_ordinary_note_if_unchanged(paths, &relative_path, None, &rendered, "task add")?;
+        write_ordinary_note_if_unchanged_with_profile(
+            paths,
+            &relative_path,
+            None,
+            &rendered,
+            "task add",
+            task_mutation_profile(paths, guard)?,
+        )?;
     }
 
     Ok(TaskAddReport {
@@ -841,8 +904,20 @@ pub fn apply_task_create_with_guard(
     request: &TaskCreateRequest,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskCreateReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
     let config = load_vault_config(paths).config;
-    let (relative_path, heading) = resolve_tasks_create_target(paths, request.note.as_deref())?;
+    let (relative_path, heading) = if let Some(guard) = guard {
+        let (target, heading) = request.note.as_deref().map_or_else(
+            || (config.inbox.path.as_str(), config.inbox.heading.clone()),
+            |note| (note, None),
+        );
+        (
+            resolve_task_mutation_path(paths, target, Some(guard))?,
+            heading,
+        )
+    } else {
+        resolve_tasks_create_target(paths, request.note.as_deref())?
+    };
     let absolute_path = paths.vault_root().join(&relative_path);
     if absolute_path.exists() && !absolute_path.is_file() {
         return Err(AppError::operation(format!(
@@ -918,12 +993,21 @@ pub fn apply_task_convert(
     paths: &VaultPaths,
     request: &TaskConvertRequest,
 ) -> Result<TaskConvertReport, AppError> {
+    apply_task_convert_with_guard(paths, request, None)
+}
+
+pub fn apply_task_convert_with_guard(
+    paths: &VaultPaths,
+    request: &TaskConvertRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskConvertReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
     if let Some(line_number) = request.line {
-        return apply_task_convert_line(paths, &request.file, line_number, request.dry_run);
+        return apply_task_convert_line(paths, &request.file, line_number, request.dry_run, guard);
     }
 
     let config = load_vault_config(paths).config;
-    let (relative_path, source) = read_existing_note_source(paths, &request.file)?;
+    let (relative_path, source) = read_existing_note_source(paths, &request.file, guard)?;
     let (frontmatter, body) =
         parse_frontmatter_document(&source, false).map_err(AppError::operation)?;
     let mut frontmatter = frontmatter.unwrap_or_default();
@@ -970,16 +1054,17 @@ pub fn apply_task_convert(
             Some(&rendered),
             MdbaseWriteOperation::Update,
             request.dry_run,
-            None,
+            guard,
         )?
     };
     if !request.dry_run && !task_changes.is_empty() && !routed {
-        write_ordinary_note_if_unchanged(
+        write_ordinary_note_if_unchanged_with_profile(
             paths,
             &relative_path,
             Some(&source),
             &rendered,
             "task conversion",
+            task_mutation_profile(paths, guard)?,
         )?;
     }
 
@@ -998,6 +1083,19 @@ pub fn apply_task_convert(
         body,
         changed_paths,
     })
+}
+
+/// Authorize a direct external-editor handoff, not a validated collection write.
+/// The caller must rescan the editor's actual bytes after the process exits.
+pub fn prepare_task_editor_path(
+    paths: &VaultPaths,
+    task: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<String, AppError> {
+    preflight_task_mutation_guard(paths, Some(guard))?;
+    guard.check_execute().map_err(AppError::operation)?;
+    let _read_guard = consistent_task_read(paths)?;
+    Ok(load_tasknote_note_with_guard(paths, task, Some(guard))?.path)
 }
 
 pub fn build_task_show_report(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, AppError> {
@@ -1045,7 +1143,16 @@ pub fn apply_task_track_start(
     paths: &VaultPaths,
     request: &TaskTrackStartRequest,
 ) -> Result<TaskTrackReport, AppError> {
-    let loaded = load_tasknote_note(paths, &request.task)?;
+    apply_task_track_start_with_guard(paths, request, None)
+}
+
+pub fn apply_task_track_start_with_guard(
+    paths: &VaultPaths,
+    request: &TaskTrackStartRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskTrackReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
+    let loaded = load_tasknote_note_with_guard(paths, &request.task, guard)?;
     let now_ms = current_utc_timestamp_ms();
     if active_tasknote_time_entry(&loaded.indexed.time_entries, now_ms).is_some() {
         return Err(AppError::operation(format!(
@@ -1063,11 +1170,12 @@ pub fn apply_task_track_start(
         .unwrap_or("Work session")
         .to_string();
 
-    let report = apply_loaded_tasknote_mutation(
+    let report = apply_loaded_tasknote_mutation_with_guard(
         paths,
         &loaded,
         "track_start",
         request.dry_run,
+        guard,
         |frontmatter, loaded| {
             let key = &loaded.config.tasknotes.field_mapping.time_entries;
             let yaml_key = YamlValue::String(key.clone());
@@ -1132,18 +1240,28 @@ pub fn apply_task_track_stop(
     paths: &VaultPaths,
     request: &TaskTrackStopRequest,
 ) -> Result<TaskTrackReport, AppError> {
+    apply_task_track_stop_with_guard(paths, request, None)
+}
+
+pub fn apply_task_track_stop_with_guard(
+    paths: &VaultPaths,
+    request: &TaskTrackStopRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskTrackReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
     let now_ms = current_utc_timestamp_ms();
-    let record = resolve_active_tasknote_record(paths, request.task.as_deref(), now_ms)?;
-    let loaded = load_tasknote_note(paths, &record.path)?;
+    let record = resolve_active_tasknote_record(paths, request.task.as_deref(), now_ms, guard)?;
+    let loaded = load_tasknote_note_with_guard(paths, &record.path, guard)?;
     let active_entry = active_tasknote_time_entry(&loaded.indexed.time_entries, now_ms)
         .ok_or_else(|| AppError::operation(format!("no active session for {}", loaded.path)))?;
     let stop_time = current_utc_timestamp_string();
 
-    let report = apply_loaded_tasknote_mutation(
+    let report = apply_loaded_tasknote_mutation_with_guard(
         paths,
         &loaded,
         "track_stop",
         request.dry_run,
+        guard,
         |frontmatter, loaded| {
             let key = &loaded.config.tasknotes.field_mapping.time_entries;
             let yaml_key = YamlValue::String(key.clone());
@@ -2937,22 +3055,40 @@ pub fn apply_task_pomodoro_start(
     paths: &VaultPaths,
     request: &TaskPomodoroStartRequest,
 ) -> Result<TaskPomodoroReport, AppError> {
-    let mut changed_paths = if request.dry_run {
-        process_due_task_pomodoros(paths, true)?
-    } else {
-        process_due_task_pomodoros(paths, false)?
-    };
-    if resolve_active_task_pomodoro_session(paths, None)?.is_some() {
+    apply_task_pomodoro_start_with_guard(paths, request, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn apply_task_pomodoro_start_with_guard(
+    paths: &VaultPaths,
+    request: &TaskPomodoroStartRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskPomodoroReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
+    let mut loaded = load_tasknote_note_with_guard(paths, &request.task, guard)?;
+    let now_ms = current_utc_timestamp_ms();
+    let storage_note_path =
+        task_pomodoro_storage_target_path(&loaded.config, &loaded.path, now_ms)?;
+    if let Some(guard) = guard {
+        guard
+            .check_read_path(&storage_note_path)
+            .map_err(AppError::operation)?;
+        guard
+            .check_write_path(&storage_note_path)
+            .map_err(AppError::operation)?;
+    }
+    let mut changed_paths = process_due_task_pomodoros(paths, request.dry_run, guard)?;
+    if resolve_active_task_pomodoro_session(paths, None, guard, &changed_paths)?.is_some() {
         return Err(AppError::operation(
             "a TaskNotes pomodoro session is already active",
         ));
     }
 
-    let loaded = load_tasknote_note(paths, &request.task)?;
-    let now_ms = current_utc_timestamp_ms();
+    if changed_paths.contains(&loaded.path) && !request.dry_run {
+        loaded = load_tasknote_note_with_guard(paths, &request.task, guard)?;
+    }
     let start_time = current_utc_timestamp_string();
     let config = loaded.config.clone();
-    let storage_note_path = task_pomodoro_storage_target_path(&config, &loaded.path, now_ms)?;
     let session = TaskPomodoroSession {
         id: current_utc_timestamp_ms().to_string(),
         start_time: start_time.clone(),
@@ -2973,11 +3109,12 @@ pub fn apply_task_pomodoro_start(
         config.tasknotes.pomodoro.storage_location,
         vulcan_core::config::TaskNotesPomodoroStorageLocation::Task
     ) {
-        apply_loaded_tasknote_mutation(
+        apply_loaded_tasknote_mutation_with_guard(
             paths,
             &loaded,
             "pomodoro_start",
             request.dry_run,
+            guard,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -3004,12 +3141,13 @@ pub fn apply_task_pomodoro_start(
             },
         )?
     } else {
-        apply_note_frontmatter_mutation(
+        apply_note_frontmatter_mutation_with_guard(
             paths,
             &storage_note_path,
             Some("daily"),
             "pomodoro_start",
             request.dry_run,
+            guard,
             |frontmatter, _loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -3032,7 +3170,7 @@ pub fn apply_task_pomodoro_start(
     changed_paths.dedup();
 
     let completed_work_sessions = completed_work_task_pomodoros(
-        &collect_tasknotes_pomodoro_sessions_with_overrides(paths, &changed_paths)?,
+        &collect_tasknotes_pomodoro_sessions_with_overrides(paths, &changed_paths, guard)?,
     );
     let (suggested_break_type, suggested_break_minutes) =
         suggested_task_pomodoro_break(&config, completed_work_sessions.saturating_add(1));
@@ -3056,13 +3194,27 @@ pub fn apply_task_pomodoro_stop(
     paths: &VaultPaths,
     request: &TaskPomodoroStopRequest,
 ) -> Result<TaskPomodoroReport, AppError> {
-    let mut changed_paths = if request.dry_run {
-        process_due_task_pomodoros(paths, true)?
-    } else {
-        process_due_task_pomodoros(paths, false)?
-    };
-    let active = resolve_active_task_pomodoro_session(paths, request.task.as_deref())?
-        .ok_or_else(|| AppError::operation("no active TaskNotes pomodoro session"))?;
+    apply_task_pomodoro_stop_with_guard(paths, request, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn apply_task_pomodoro_stop_with_guard(
+    paths: &VaultPaths,
+    request: &TaskPomodoroStopRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskPomodoroReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
+    if let Some(task) = request.task.as_deref() {
+        resolve_task_mutation_path(paths, task, guard)?;
+    }
+    let mut changed_paths = process_due_task_pomodoros(paths, request.dry_run, guard)?;
+    let active = resolve_active_task_pomodoro_session(
+        paths,
+        request.task.as_deref(),
+        guard,
+        &changed_paths,
+    )?
+    .ok_or_else(|| AppError::operation("no active TaskNotes pomodoro session"))?;
 
     let config = load_vault_config(paths).config;
     let now_ms = current_utc_timestamp_ms();
@@ -3078,12 +3230,13 @@ pub fn apply_task_pomodoro_stop(
             .task_path
             .as_deref()
             .unwrap_or(storage_note_path.as_str());
-        let loaded = load_tasknote_note(paths, target_task)?;
-        apply_loaded_tasknote_mutation(
+        let loaded = load_tasknote_note_with_guard(paths, target_task, guard)?;
+        apply_loaded_tasknote_mutation_with_guard(
             paths,
             &loaded,
             "pomodoro_stop",
             request.dry_run,
+            guard,
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -3122,12 +3275,13 @@ pub fn apply_task_pomodoro_stop(
             },
         )?
     } else {
-        apply_note_frontmatter_mutation(
+        apply_note_frontmatter_mutation_with_guard(
             paths,
             &storage_note_path,
             Some("daily"),
             "pomodoro_stop",
             request.dry_run,
+            guard,
             |frontmatter, _loaded| {
                 let mut changes = Vec::new();
                 if let Some(change) = update_pomodoro_session_sequence(
@@ -3161,7 +3315,7 @@ pub fn apply_task_pomodoro_stop(
     changed_paths.dedup();
 
     let completed_work_sessions = completed_work_task_pomodoros(
-        &collect_tasknotes_pomodoro_sessions_with_overrides(paths, &changed_paths)?,
+        &collect_tasknotes_pomodoro_sessions_with_overrides(paths, &changed_paths, guard)?,
     );
     let (suggested_break_type, suggested_break_minutes) =
         suggested_task_pomodoro_break(&config, completed_work_sessions);
@@ -3183,9 +3337,18 @@ pub fn apply_task_pomodoro_stop(
 pub fn build_task_pomodoro_status_report(
     paths: &VaultPaths,
 ) -> Result<TaskPomodoroStatusReport, AppError> {
-    let changed_paths = process_due_task_pomodoros(paths, false)?;
+    build_task_pomodoro_status_report_with_guard(paths, None)
+}
+
+pub fn build_task_pomodoro_status_report_with_guard(
+    paths: &VaultPaths,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskPomodoroStatusReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
+    let changed_paths = process_due_task_pomodoros(paths, false, guard)?;
     let config = load_vault_config(paths).config;
-    let sessions = collect_tasknotes_pomodoro_sessions_with_overrides(paths, &changed_paths)?;
+    let sessions =
+        collect_tasknotes_pomodoro_sessions_with_overrides(paths, &changed_paths, guard)?;
     let completed_work_sessions = completed_work_task_pomodoros(&sessions);
     let mut active_sessions = sessions
         .iter()
@@ -3230,12 +3393,13 @@ fn apply_task_convert_line(
     file: &str,
     line_number: i64,
     dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskConvertReport, AppError> {
-    if !dry_run {
+    if !dry_run && guard.is_none() {
         recover_pending_ordinary_task_write(paths)?;
     }
     let config = load_vault_config(paths).config;
-    let (source_path, source) = read_existing_note_source(paths, file)?;
+    let (source_path, source) = read_existing_note_source(paths, file, guard)?;
     let selection = resolve_task_convert_line(&source, line_number)?;
     let planned = build_converted_tasknote(
         paths,
@@ -3243,6 +3407,7 @@ fn apply_task_convert_line(
         &selection.title_input,
         &selection.details,
         selection.completed,
+        guard,
     )?;
     let replacement_line = format!(
         "{}[[{}]]",
@@ -3271,16 +3436,18 @@ fn apply_task_convert_line(
             },
         ],
         dry_run,
+        guard,
     )?;
 
     if !dry_run && !routed {
-        write_ordinary_task_conversion(
+        write_ordinary_task_conversion_with_guard(
             paths,
             &source_path,
             &source,
             &updated_source,
             &planned.relative_path,
             &rendered_task,
+            guard,
         )?;
     }
 
@@ -3301,6 +3468,7 @@ fn apply_task_convert_line(
     })
 }
 
+#[cfg(test)]
 fn write_ordinary_task_conversion(
     paths: &VaultPaths,
     source_path: &str,
@@ -3308,6 +3476,26 @@ fn write_ordinary_task_conversion(
     source_after: &str,
     task_path: &str,
     task_contents: &str,
+) -> Result<(), AppError> {
+    write_ordinary_task_conversion_with_guard(
+        paths,
+        source_path,
+        source_before,
+        source_after,
+        task_path,
+        task_contents,
+        None,
+    )
+}
+
+fn write_ordinary_task_conversion_with_guard(
+    paths: &VaultPaths,
+    source_path: &str,
+    source_before: &str,
+    source_after: &str,
+    task_path: &str,
+    task_contents: &str,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<(), AppError> {
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
     vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(
@@ -3325,8 +3513,15 @@ fn write_ordinary_task_conversion(
             },
         ],
         || {
+            let profile = task_mutation_profile(paths, guard).map_err(|error| error.to_string())?;
             for path in [source_path, task_path] {
-                if crate::notes::note_path_is_mdbase_managed(paths, path, None)
+                if let Some(guard) = guard {
+                    guard
+                        .check_read_path(path)
+                        .and_then(|()| guard.check_write_path(path))
+                        .map_err(|error| error.to_string())?;
+                }
+                if crate::notes::note_path_is_mdbase_managed(paths, path, profile)
                     .map_err(|error| error.to_string())?
                 {
                     return Err(
@@ -3342,10 +3537,13 @@ fn write_ordinary_task_conversion(
     .map_err(|error| AppError::operation_with_code(error.code, error.message))
 }
 
-fn read_existing_note_source(paths: &VaultPaths, note: &str) -> Result<(String, String), AppError> {
-    let relative_path = resolve_existing_note_path(paths, note)?;
-    let source =
-        fs::read_to_string(paths.vault_root().join(&relative_path)).map_err(AppError::operation)?;
+fn read_existing_note_source(
+    paths: &VaultPaths,
+    note: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<(String, String), AppError> {
+    let relative_path = resolve_task_mutation_path(paths, note, guard)?;
+    let source = read_task_source(paths, &relative_path).map_err(AppError::operation)?;
     Ok((relative_path, source))
 }
 
@@ -3558,10 +3756,17 @@ fn load_tasknote_template(
     config: &VaultConfig,
     template_name: &str,
     target_path: &str,
+    dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<(Option<YamlMapping>, String), AppError> {
-    let loaded = load_named_template(paths, config, template_name)?;
+    let loaded = if let Some(guard) = guard {
+        crate::templates::load_named_template_with_guard(paths, config, template_name, guard)?
+    } else {
+        load_named_template(paths, config, template_name)?
+    };
     let vars = HashMap::new();
-    let rendered = render_loaded_template(
+    let read_filter = guard.map(PermissionGuard::read_filter);
+    let rendered = crate::templates::render_loaded_template_with_authority(
         paths,
         config,
         &loaded,
@@ -3570,9 +3775,11 @@ fn load_tasknote_template(
             target_contents: None,
             engine: TemplateEngineKind::Auto,
             vars: &vars,
-            allow_mutations: true,
+            allow_mutations: !dry_run,
             run_mode: TemplateRunMode::Create,
         },
+        read_filter.as_ref(),
+        guard,
     )?;
     let (frontmatter, body) =
         parse_frontmatter_document(&rendered.content, true).map_err(AppError::operation)?;
@@ -3867,6 +4074,7 @@ fn build_converted_tasknote(
     title_input: &str,
     details: &str,
     completed: bool,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<PlannedConvertedTaskNote, AppError> {
     let reference_ms = tasknote_reference_ms();
     let raw_title = title_input.trim();
@@ -4001,6 +4209,14 @@ fn build_converted_tasknote(
         config.tasknotes.tasks_folder.trim_end_matches('/'),
         sanitize_tasknote_filename(&title)
     );
+    if let Some(guard) = guard {
+        guard
+            .check_read_path(&relative_path)
+            .map_err(AppError::operation)?;
+        guard
+            .check_write_path(&relative_path)
+            .map_err(AppError::operation)?;
+    }
     if paths.vault_root().join(&relative_path).exists() {
         return Err(AppError::operation(format!(
             "destination task already exists: {relative_path}"
@@ -4292,14 +4508,16 @@ fn route_task_note_batch(
     paths: &VaultPaths,
     changes: &[MdbaseManagedNoteWriteChange<'_>],
     dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<bool, AppError> {
+    let permission_profile = task_mutation_profile(paths, guard)?;
     let request = |dry_run| MdbaseManagedNoteWriteBatchRequest {
         changes,
         operation: MdbaseWriteOperation::Batch,
         mode: MdbaseManagedWriteMode::Validated,
         allow_mixed_paths: true,
         dry_run,
-        permission_profile: None,
+        permission_profile,
         quiet: true,
     };
     let routed = apply_managed_mdbase_note_writes(paths, &request(true))?.is_some();
@@ -4318,29 +4536,26 @@ fn apply_tasknote_mutation<F>(
     task: &str,
     action: &str,
     dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
     mutate: F,
 ) -> Result<TaskMutationReport, AppError>
 where
     F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, AppError>,
 {
-    if !dry_run {
+    if guard.is_some() {
+        // Recovery is a separate privileged workflow, not authority implicitly
+        // borrowed by a scoped mutation from an earlier writer's journal.
+        vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    } else if !dry_run {
         recover_pending_ordinary_task_write(paths)?;
     }
-    let loaded = load_tasknote_note(paths, task)?;
-    apply_loaded_tasknote_mutation(paths, &loaded, action, dry_run, mutate)
-}
-
-fn apply_loaded_tasknote_mutation<F>(
-    paths: &VaultPaths,
-    loaded: &LoadedTaskNote,
-    action: &str,
-    dry_run: bool,
-    mutate: F,
-) -> Result<TaskMutationReport, AppError>
-where
-    F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, AppError>,
-{
-    apply_loaded_tasknote_mutation_with_guard(paths, loaded, action, dry_run, None, mutate)
+    let _ = task_mutation_profile(paths, guard)?;
+    if let Some(guard) = guard {
+        crate::mdbase::load_mdbase_routing_collection(paths, guard)?;
+    }
+    let loaded = load_tasknote_note_with_guard(paths, task, guard)?;
+    apply_loaded_tasknote_mutation_with_guard(paths, &loaded, action, dry_run, guard, mutate)
 }
 
 fn apply_loaded_tasknote_mutation_with_guard<F>(
@@ -4503,9 +4718,25 @@ fn recover_pending_ordinary_task_write(paths: &VaultPaths) -> Result<(), AppErro
     Ok(())
 }
 
+fn read_task_source(paths: &VaultPaths, path: &str) -> Result<String, std::io::Error> {
+    let mut file =
+        vulcan_core::paths::secure_open_regular_read(paths.vault_root(), Path::new(path))?;
+    let mut source = String::new();
+    file.read_to_string(&mut source)?;
+    Ok(source)
+}
+
 fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, AppError> {
-    let path = resolve_existing_note_path(paths, task)?;
-    let source = fs::read_to_string(paths.vault_root().join(&path)).map_err(AppError::operation)?;
+    load_tasknote_note_with_guard(paths, task, None)
+}
+
+fn load_tasknote_note_with_guard(
+    paths: &VaultPaths,
+    task: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<LoadedTaskNote, AppError> {
+    let path = resolve_task_mutation_path(paths, task, guard)?;
+    let source = read_task_source(paths, &path).map_err(AppError::operation)?;
     let config = load_vault_config(paths).config;
     let parsed = vulcan_core::parse_document(&source, &config);
     let indexed_properties = extract_indexed_properties(&parsed, &config)
@@ -4516,16 +4747,18 @@ fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, 
     let (frontmatter, body) =
         parse_frontmatter_document(&source, false).map_err(AppError::operation)?;
     let frontmatter = frontmatter.unwrap_or_default();
-    let frontmatter_json = load_note_index(paths)
-        .ok()
-        .and_then(|index| {
-            index
-                .into_values()
-                .find(|note| note.document_path == path)
-                .map(|note| note.properties)
-        })
-        .or(indexed_properties)
-        .unwrap_or_else(|| Value::Object(Map::new()));
+    let read_filter = guard.map(PermissionGuard::read_filter);
+    let frontmatter_json =
+        vulcan_core::properties::load_note_index_with_filter(paths, read_filter.as_ref())
+            .ok()
+            .and_then(|index| {
+                index
+                    .into_values()
+                    .find(|note| note.document_path == path)
+                    .map(|note| note.properties)
+            })
+            .or(indexed_properties)
+            .unwrap_or_else(|| Value::Object(Map::new()));
     let title = Path::new(&path)
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -4745,8 +4978,16 @@ fn task_time_entry_report(entry: vulcan_core::TaskNotesTimeEntry) -> TaskTimeEnt
 }
 
 fn load_tasknote_records(paths: &VaultPaths) -> Result<Vec<TaskNoteRecord>, AppError> {
+    load_tasknote_records_with_filter(paths, None)
+}
+
+fn load_tasknote_records_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&vulcan_core::PermissionFilter>,
+) -> Result<Vec<TaskNoteRecord>, AppError> {
     let config = load_vault_config(paths).config;
-    let note_index = load_note_index(paths).map_err(AppError::operation)?;
+    let note_index = vulcan_core::properties::load_note_index_with_filter(paths, filter)
+        .map_err(AppError::operation)?;
     let mut records = note_index
         .into_values()
         .filter_map(|note| {
@@ -4776,27 +5017,31 @@ fn load_note_frontmatter_for_mutation(
     paths: &VaultPaths,
     relative_path: &str,
     create_periodic: Option<&str>,
+    guard: Option<&ProfilePermissionGuard>,
+    dry_run: bool,
 ) -> Result<LoadedNoteMutation, AppError> {
-    let absolute_path = paths.vault_root().join(relative_path);
-    let (source, created) = if absolute_path.is_file() {
-        (
-            fs::read_to_string(&absolute_path).map_err(AppError::operation)?,
-            false,
-        )
-    } else if absolute_path.exists() {
-        return Err(AppError::operation(format!(
-            "path exists but is not a note file: {relative_path}"
-        )));
-    } else if let Some(period_type) = create_periodic {
-        let mut warnings = Vec::new();
-        (
-            render_periodic_note_contents(paths, period_type, relative_path, &mut warnings, None)?,
-            true,
-        )
-    } else {
-        return Err(AppError::operation(format!(
-            "note not found: {relative_path}"
-        )));
+    let (source, created) = match read_task_source(paths, relative_path) {
+        Ok(source) => (source, false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(period_type) = create_periodic else {
+                return Err(AppError::operation(format!(
+                    "note not found: {relative_path}"
+                )));
+            };
+            let mut warnings = Vec::new();
+            (
+                render_periodic_note_contents_with_guard(
+                    paths,
+                    period_type,
+                    relative_path,
+                    &mut warnings,
+                    guard,
+                    dry_run,
+                )?,
+                true,
+            )
+        }
+        Err(error) => return Err(AppError::operation(error)),
     };
 
     let (frontmatter, body) =
@@ -4810,6 +5055,7 @@ fn load_note_frontmatter_for_mutation(
     })
 }
 
+#[cfg(test)]
 fn apply_note_frontmatter_mutation<F>(
     paths: &VaultPaths,
     relative_path: &str,
@@ -4821,7 +5067,40 @@ fn apply_note_frontmatter_mutation<F>(
 where
     F: FnOnce(&mut YamlMapping, &LoadedNoteMutation) -> Result<Vec<RefactorChange>, AppError>,
 {
-    let loaded = load_note_frontmatter_for_mutation(paths, relative_path, create_periodic)?;
+    apply_note_frontmatter_mutation_with_guard(
+        paths,
+        relative_path,
+        create_periodic,
+        action,
+        dry_run,
+        None,
+        mutate,
+    )
+}
+
+fn apply_note_frontmatter_mutation_with_guard<F>(
+    paths: &VaultPaths,
+    relative_path: &str,
+    create_periodic: Option<&str>,
+    action: &str,
+    dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
+    mutate: F,
+) -> Result<TaskMutationReport, AppError>
+where
+    F: FnOnce(&mut YamlMapping, &LoadedNoteMutation) -> Result<Vec<RefactorChange>, AppError>,
+{
+    preflight_task_mutation_guard(paths, guard)?;
+    if let Some(guard) = guard {
+        guard
+            .check_read_path(relative_path)
+            .map_err(AppError::operation)?;
+        guard
+            .check_write_path(relative_path)
+            .map_err(AppError::operation)?;
+    }
+    let loaded =
+        load_note_frontmatter_for_mutation(paths, relative_path, create_periodic, guard, dry_run)?;
     let mut frontmatter = loaded.frontmatter.clone();
     let mut changes = mutate(&mut frontmatter, &loaded)?;
     let rendered =
@@ -4846,19 +5125,20 @@ where
                 MdbaseWriteOperation::Update
             },
             dry_run,
-            None,
+            guard,
         )?
     } else {
         false
     };
 
     if !dry_run && has_writes && !routed {
-        write_ordinary_note_if_unchanged(
+        write_ordinary_note_if_unchanged_with_profile(
             paths,
             &loaded.path,
             (!loaded.created).then_some(loaded.source.as_str()),
             &rendered,
             action,
+            task_mutation_profile(paths, guard)?,
         )?;
     }
 
@@ -4883,11 +5163,27 @@ where
     })
 }
 
+fn pomodoro_session_is_readable(
+    stored: &StoredPomodoroSession,
+    guard: Option<&ProfilePermissionGuard>,
+) -> bool {
+    guard.is_none_or(|guard| {
+        guard.check_read_path(&stored.storage_note_path).is_ok()
+            && stored
+                .task_path
+                .as_ref()
+                .is_none_or(|path| guard.check_read_path(path).is_ok())
+    })
+}
+
 fn collect_tasknotes_pomodoro_sessions(
     paths: &VaultPaths,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Vec<StoredPomodoroSession>, AppError> {
     let config = load_vault_config(paths).config;
-    let note_index = load_note_index(paths).map_err(AppError::operation)?;
+    let filter = guard.map(PermissionGuard::read_filter);
+    let note_index = vulcan_core::properties::load_note_index_with_filter(paths, filter.as_ref())
+        .map_err(AppError::operation)?;
     let field_name = config.tasknotes.field_mapping.pomodoros.clone();
     let mut task_titles = HashMap::new();
     let mut task_sessions = Vec::new();
@@ -4949,6 +5245,7 @@ fn collect_tasknotes_pomodoro_sessions(
         vulcan_core::config::TaskNotesPomodoroStorageLocation::Task => task_sessions,
         vulcan_core::config::TaskNotesPomodoroStorageLocation::DailyNote => daily_sessions,
     };
+    sessions.retain(|stored| pomodoro_session_is_readable(stored, guard));
     sessions.sort_by(|left, right| {
         left.storage_note_path
             .cmp(&right.storage_note_path)
@@ -4961,14 +5258,16 @@ fn collect_tasknotes_pomodoro_sessions(
 fn collect_tasknotes_pomodoro_sessions_with_overrides(
     paths: &VaultPaths,
     changed_paths: &[String],
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Vec<StoredPomodoroSession>, AppError> {
     let config = load_vault_config(paths).config;
-    let mut sessions = collect_tasknotes_pomodoro_sessions(paths)?;
+    let mut sessions = collect_tasknotes_pomodoro_sessions(paths, guard)?;
     if changed_paths.is_empty() {
         return Ok(sessions);
     }
 
-    let task_titles = load_tasknote_records(paths)?
+    let filter = guard.map(PermissionGuard::read_filter);
+    let task_titles = load_tasknote_records_with_filter(paths, filter.as_ref())?
         .into_iter()
         .map(|record| (record.path, record.indexed.title))
         .collect::<HashMap<_, _>>();
@@ -4979,13 +5278,18 @@ fn collect_tasknotes_pomodoro_sessions_with_overrides(
             .any(|path| path == &stored.storage_note_path)
     });
     for path in changed_paths {
+        if let Some(guard) = guard {
+            guard.check_read_path(path).map_err(AppError::operation)?;
+        }
         sessions.extend(load_stored_pomodoro_sessions_from_path(
             paths,
             &config,
             path,
             &task_titles,
+            guard,
         )?);
     }
+    sessions.retain(|stored| pomodoro_session_is_readable(stored, guard));
     sessions.sort_by(|left, right| {
         left.storage_note_path
             .cmp(&right.storage_note_path)
@@ -5000,13 +5304,13 @@ fn load_stored_pomodoro_sessions_from_path(
     config: &VaultConfig,
     relative_path: &str,
     task_titles: &HashMap<String, String>,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Vec<StoredPomodoroSession>, AppError> {
-    let absolute_path = paths.vault_root().join(relative_path);
-    if !absolute_path.is_file() {
-        return Ok(Vec::new());
-    }
-
-    let source = fs::read_to_string(&absolute_path).map_err(AppError::operation)?;
+    let source = match read_task_source(paths, relative_path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(AppError::operation(error)),
+    };
     let (frontmatter, _) =
         parse_frontmatter_document(&source, false).map_err(AppError::operation)?;
     let frontmatter = frontmatter.unwrap_or_default();
@@ -5016,7 +5320,7 @@ fn load_stored_pomodoro_sessions_from_path(
         return Ok(Vec::new());
     }
 
-    if let Ok(loaded) = load_tasknote_note(paths, relative_path) {
+    if let Ok(loaded) = load_tasknote_note_with_guard(paths, relative_path, guard) {
         return Ok(sessions
             .into_iter()
             .filter_map(|value| parse_task_pomodoro_session_yaml(&value))
@@ -5082,15 +5386,17 @@ fn tasknote_time_entry_yaml_value(
 fn resolve_active_task_pomodoro_session(
     paths: &VaultPaths,
     task: Option<&str>,
+    guard: Option<&ProfilePermissionGuard>,
+    changed_paths: &[String],
 ) -> Result<Option<StoredPomodoroSession>, AppError> {
-    let sessions = collect_tasknotes_pomodoro_sessions(paths)?;
+    let sessions = collect_tasknotes_pomodoro_sessions_with_overrides(paths, changed_paths, guard)?;
     let active_sessions = sessions
         .into_iter()
         .filter(|stored| stored.session.end_time.is_none())
         .collect::<Vec<_>>();
 
     if let Some(task) = task {
-        let task_path = load_tasknote_note(paths, task)?.path;
+        let task_path = load_tasknote_note_with_guard(paths, task, guard)?.path;
         let mut matches = active_sessions
             .into_iter()
             .filter(|stored| stored.task_path.as_deref() == Some(task_path.as_str()))
@@ -5154,10 +5460,14 @@ fn update_pomodoro_session_sequence(
 }
 
 #[allow(clippy::too_many_lines)]
-fn process_due_task_pomodoros(paths: &VaultPaths, dry_run: bool) -> Result<Vec<String>, AppError> {
+fn process_due_task_pomodoros(
+    paths: &VaultPaths,
+    dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<Vec<String>, AppError> {
     let now_ms = current_utc_timestamp_ms();
     let config = load_vault_config(paths).config;
-    let due_sessions = collect_tasknotes_pomodoro_sessions(paths)?
+    let due_sessions = collect_tasknotes_pomodoro_sessions(paths, guard)?
         .into_iter()
         .filter_map(|stored| {
             let due_ms = task_pomodoro_due_completion_ms(&stored.session)?;
@@ -5173,12 +5483,13 @@ fn process_due_task_pomodoros(paths: &VaultPaths, dry_run: bool) -> Result<Vec<S
             config.tasknotes.pomodoro.storage_location,
             vulcan_core::config::TaskNotesPomodoroStorageLocation::Task
         ) {
-            let loaded = load_tasknote_note(paths, &stored.storage_note_path)?;
-            apply_loaded_tasknote_mutation(
+            let loaded = load_tasknote_note_with_guard(paths, &stored.storage_note_path, guard)?;
+            apply_loaded_tasknote_mutation_with_guard(
                 paths,
                 &loaded,
                 "pomodoro_complete",
                 dry_run,
+                guard,
                 |frontmatter, loaded| {
                     let mut changes = Vec::new();
                     if let Some(change) = update_pomodoro_session_sequence(
@@ -5224,12 +5535,13 @@ fn process_due_task_pomodoros(paths: &VaultPaths, dry_run: bool) -> Result<Vec<S
                 },
             )?
         } else {
-            apply_note_frontmatter_mutation(
+            apply_note_frontmatter_mutation_with_guard(
                 paths,
                 &stored.storage_note_path,
                 Some("daily"),
                 "pomodoro_complete",
                 dry_run,
+                guard,
                 |frontmatter, _loaded| {
                     let mut changes = Vec::new();
                     if let Some(change) = update_pomodoro_session_sequence(
@@ -5301,9 +5613,10 @@ fn resolve_active_tasknote_record(
     paths: &VaultPaths,
     task: Option<&str>,
     now_ms: i64,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskNoteRecord, AppError> {
     if let Some(task) = task {
-        let loaded = load_tasknote_note(paths, task)?;
+        let loaded = load_tasknote_note_with_guard(paths, task, guard)?;
         return Ok(TaskNoteRecord {
             path: loaded.path,
             completed: tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status)
@@ -5312,7 +5625,8 @@ fn resolve_active_tasknote_record(
         });
     }
 
-    let active_records = load_tasknote_records(paths)?
+    let read_filter = guard.map(PermissionGuard::read_filter);
+    let active_records = load_tasknote_records_with_filter(paths, read_filter.as_ref())?
         .into_iter()
         .filter(|record| active_tasknote_time_entry(&record.indexed.time_entries, now_ms).is_some())
         .collect::<Vec<_>>();
@@ -5330,11 +5644,55 @@ fn resolve_active_tasknote_record(
     }
 }
 
-fn resolve_inline_task(paths: &VaultPaths, task: &str) -> Result<ResolvedInlineTask, AppError> {
-    let note_index = load_note_index(paths).map_err(AppError::operation)?;
+fn preflight_task_mutation_guard(
+    paths: &VaultPaths,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<(), AppError> {
+    if let Some(guard) = guard {
+        task_mutation_profile(paths, Some(guard))?;
+        crate::mdbase::load_mdbase_routing_collection(paths, guard)?;
+        vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    }
+    Ok(())
+}
+
+fn resolve_task_mutation_path(
+    paths: &VaultPaths,
+    task: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<String, AppError> {
+    let Some(guard) = guard else {
+        return resolve_existing_note_path(paths, task);
+    };
+    let path = match vulcan_core::resolve_note_reference_with_filter(
+        paths,
+        task,
+        Some(&guard.read_filter()),
+    ) {
+        Ok(note) => note.path,
+        Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => {
+            // Authorize even missing paths before inspecting their disk state.
+            normalize_note_path(task)?
+        }
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    guard.check_read_path(&path).map_err(AppError::operation)?;
+    guard.check_write_path(&path).map_err(AppError::operation)?;
+    Ok(path)
+}
+
+fn resolve_inline_task(
+    paths: &VaultPaths,
+    task: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<ResolvedInlineTask, AppError> {
+    let filter = guard.map(PermissionGuard::read_filter);
+    let note_index = vulcan_core::properties::load_note_index_with_filter(paths, filter.as_ref())
+        .map_err(AppError::operation)?;
 
     if let Some((note_ref, line_number)) = parse_task_line_reference(task) {
-        let path = resolve_existing_note_path(paths, note_ref)?;
+        let path = resolve_task_mutation_path(paths, note_ref, guard)?;
         if let Some(task) = find_inline_task_in_path(&note_index, &path, line_number) {
             return Ok(task);
         }
@@ -5343,7 +5701,25 @@ fn resolve_inline_task(paths: &VaultPaths, task: &str) -> Result<ResolvedInlineT
         )));
     }
 
-    if let Ok(path) = resolve_existing_note_path(paths, task) {
+    // A readable note that is not writable is not an invitation to retry its
+    // identifier as task text. Preserve the permission denial across fallback.
+    if let Some(guard) = guard {
+        if let Ok(note) =
+            vulcan_core::resolve_note_reference_with_filter(paths, task, Some(&guard.read_filter()))
+        {
+            guard
+                .check_read_path(&note.path)
+                .map_err(AppError::operation)?;
+            guard
+                .check_write_path(&note.path)
+                .map_err(AppError::operation)?;
+        }
+    }
+
+    if let Some(path) = resolve_task_mutation_path(paths, task, guard)
+        .ok()
+        .filter(|path| note_index.values().any(|note| &note.document_path == path))
+    {
         let mut tasks = inline_tasks_for_path(&note_index, &path);
         return match tasks.len() {
             0 => Err(AppError::operation(format!(
@@ -5439,11 +5815,18 @@ fn apply_inline_task_reschedule(
     request: &TaskRescheduleRequest,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskMutationReport, AppError> {
-    let resolved = resolve_inline_task(paths, &request.task)?;
+    let resolved = resolve_inline_task(paths, &request.task, guard)?;
+    if let Some(guard) = guard {
+        guard
+            .check_read_path(&resolved.path)
+            .map_err(AppError::operation)?;
+        guard
+            .check_write_path(&resolved.path)
+            .map_err(AppError::operation)?;
+    }
     let config = load_vault_config(paths).config;
     let due_value = resolve_tasknote_date_input(&config, &request.due, false)?;
-    let absolute_path = paths.vault_root().join(&resolved.path);
-    let source = fs::read_to_string(&absolute_path).map_err(AppError::operation)?;
+    let source = read_task_source(paths, &resolved.path).map_err(AppError::operation)?;
     let (rendered, change) =
         reschedule_inline_task_source(&source, resolved.line_number, &due_value)?;
     let changes = change.into_iter().collect::<Vec<_>>();
@@ -5494,12 +5877,19 @@ fn apply_inline_task_complete(
     request: &TaskCompleteRequest,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskMutationReport, AppError> {
-    let resolved = resolve_inline_task(paths, &request.task)?;
+    let resolved = resolve_inline_task(paths, &request.task, guard)?;
+    if let Some(guard) = guard {
+        guard
+            .check_read_path(&resolved.path)
+            .map_err(AppError::operation)?;
+        guard
+            .check_write_path(&resolved.path)
+            .map_err(AppError::operation)?;
+    }
     let config = load_vault_config(paths).config;
     let completed_symbol = first_completed_inline_status_symbol(&config);
     let completed_date = normalize_date_argument(request.date.as_deref())?;
-    let absolute_path = paths.vault_root().join(&resolved.path);
-    let source = fs::read_to_string(&absolute_path).map_err(AppError::operation)?;
+    let source = read_task_source(paths, &resolved.path).map_err(AppError::operation)?;
     let (rendered, change) = complete_inline_task_source(
         &source,
         resolved.line_number,

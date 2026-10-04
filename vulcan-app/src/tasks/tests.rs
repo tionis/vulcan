@@ -30,6 +30,701 @@ use vulcan_core::{
 };
 
 #[test]
+fn guarded_daily_sessions_do_not_expose_or_complete_hidden_tasks() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(
+        paths.config_file(),
+        "tasknotes.pomodoro.storage_location = \"daily-note\"\n",
+    )
+    .unwrap();
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Hidden/Task.md",
+        "Hidden sentinel",
+        "open",
+        &[],
+        "",
+    )
+    .unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let started = apply_task_pomodoro_start(
+        &paths,
+        &TaskPomodoroStartRequest {
+            task: "Hidden/Task.md".into(),
+            dry_run: false,
+        },
+    )
+    .unwrap();
+    let daily = paths.vault_root().join(&started.storage_note_path);
+    let content = fs::read_to_string(&daily)
+        .unwrap()
+        .replace(&started.session.start_time, "2026-04-01T08:00:00Z");
+    fs::write(&daily, &content).unwrap();
+    fs::write(paths.config_file(), format!("tasknotes.pomodoro.storage_location = \"daily-note\"\n[permissions.profiles.scoped]\nread = {{ allow = [\"note:{}\", \"note:mdbase.yaml\"] }}\nwrite = {{ allow = [\"note:{}\"] }}\n", started.storage_note_path, started.storage_note_path)).unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let report = super::build_task_pomodoro_status_report_with_guard(&paths, Some(&guard)).unwrap();
+    assert!(report.active.is_none());
+    assert_eq!(report.completed_work_sessions, 0);
+    assert!(report.changed_paths.is_empty());
+    assert!(!serde_json::to_string(&report).unwrap().contains("Hidden"));
+    for task in [None, Some("Hidden/Task.md".to_string())] {
+        assert!(super::apply_task_pomodoro_stop_with_guard(
+            &paths,
+            &TaskPomodoroStopRequest {
+                task,
+                dry_run: false
+            },
+            Some(&guard)
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(&daily).unwrap(), content);
+    }
+}
+
+#[test]
+fn task_editor_preflight_requires_execution_and_path_grants() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.noexec]\nread = \"all\"\nwrite = \"all\"\nexecute = \"deny\"\n[permissions.profiles.readonly]\nread = \"all\"\nwrite = { allow = [] }\nexecute = \"allow\"\n").unwrap();
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(&paths, &config, "Task.md", "Task", "open", &[], "").unwrap();
+    for profile in ["noexec", "readonly"] {
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some(profile)).unwrap(),
+        );
+        assert!(super::prepare_task_editor_path(&paths, "Task.md", &guard).is_err());
+    }
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
+    );
+    assert_eq!(
+        super::prepare_task_editor_path(&paths, "Task.md", &guard).unwrap(),
+        "Task.md"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn guarded_task_source_reads_reject_file_and_directory_symlinks() {
+    use std::os::unix::fs::symlink;
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Hidden/Task.md",
+        "Hidden sentinel",
+        "open",
+        &[],
+        "",
+    )
+    .unwrap();
+    fs::create_dir_all(temp.path().join("Public")).unwrap();
+    symlink(
+        temp.path().join("Hidden/Task.md"),
+        temp.path().join("Public/Linked.md"),
+    )
+    .unwrap();
+    symlink(
+        temp.path().join("Hidden"),
+        temp.path().join("Public/Folder"),
+    )
+    .unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let before = fs::read(temp.path().join("Hidden/Task.md")).unwrap();
+    for task in ["Public/Linked.md", "Public/Folder/Task.md"] {
+        assert!(super::read_task_source(&paths, task).is_err());
+        for dry_run in [true, false] {
+            let error = super::apply_task_set_with_guard(
+                &paths,
+                &TaskSetRequest {
+                    task: task.into(),
+                    property: "status".into(),
+                    value: "done".into(),
+                    dry_run,
+                },
+                Some(&guard),
+            )
+            .unwrap_err();
+            assert!(!error.to_string().contains("Hidden sentinel"));
+            assert_eq!(
+                fs::read(temp.path().join("Hidden/Task.md")).unwrap(),
+                before
+            );
+        }
+    }
+    assert!(super::read_task_source(&paths, "Public").is_err());
+    assert!(super::read_task_source(&paths, "Hidden/Task.md")
+        .unwrap()
+        .contains("Hidden sentinel"));
+}
+
+#[test]
+fn periodic_missing_template_fallback_requires_complete_read_authority() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "periodic.daily.template = \"Day\"\n[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"all\"\n").unwrap();
+    for profile in ["unrestricted", "scoped"] {
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some(profile)).unwrap(),
+        );
+        let mut warnings = Vec::new();
+        let result = crate::notes::render_periodic_note_contents_with_guard(
+            &paths,
+            "daily",
+            "Public/Daily.md",
+            &mut warnings,
+            Some(&guard),
+            true,
+        );
+        if profile == "unrestricted" {
+            assert_eq!(result.unwrap(), "");
+            assert_eq!(warnings.len(), 1);
+        } else {
+            assert!(result.is_err());
+            assert!(warnings.is_empty());
+        }
+    }
+    // A readable but corrupt source is not absence and must not silently fall back.
+    fs::create_dir_all(paths.vulcan_dir().join("templates")).unwrap();
+    fs::write(paths.vulcan_dir().join("templates/Day.md"), [0xff]).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
+    );
+    let mut warnings = Vec::new();
+    assert!(crate::notes::render_periodic_note_contents_with_guard(
+        &paths,
+        "daily",
+        "Public/Daily.md",
+        &mut warnings,
+        Some(&guard),
+        true,
+    )
+    .is_err());
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn guarded_daily_pomodoro_templates_preserve_authority_and_preview_safety() {
+    for readable in [false, true] {
+        for dry_run in [true, false] {
+            let temp = tempdir().unwrap();
+            let paths = VaultPaths::new(temp.path());
+            initialize_vulcan_dir(&paths).unwrap();
+            fs::write(paths.config_file(), "tasknotes.pomodoro.storage_location = \"daily-note\"\nperiodic.daily.template = \"Day\"\n").unwrap();
+            let initial_config = load_vault_config(&paths).config;
+            let daily = super::task_pomodoro_storage_target_path(
+                &initial_config,
+                "Public/Task.md",
+                super::current_utc_timestamp_ms(),
+            )
+            .unwrap();
+            let template_grant = if readable {
+                ", \"note:.vulcan/templates/Day.md\""
+            } else {
+                ""
+            };
+            fs::write(paths.config_file(), format!("tasknotes.pomodoro.storage_location = \"daily-note\"\nperiodic.daily.template = \"Day\"\n[permissions.profiles.scoped]\nread = {{ allow = [\"folder:Public/**\", \"note:mdbase.yaml\", \"note:{daily}\"{template_grant}] }}\nwrite = {{ allow = [\"folder:Public/**\", \"note:{daily}\"] }}\n")).unwrap();
+            fs::create_dir_all(paths.vulcan_dir().join("templates")).unwrap();
+            fs::write(
+                paths.vulcan_dir().join("templates/Day.md"),
+                "Daily template content\n",
+            )
+            .unwrap();
+            let config = load_vault_config(&paths).config;
+            seed_tasknote(&paths, &config, "Public/Task.md", "Task", "open", &[], "").unwrap();
+            scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+            let guard = ProfilePermissionGuard::new(
+                &paths,
+                resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+            );
+            let result = super::apply_task_pomodoro_start_with_guard(
+                &paths,
+                &TaskPomodoroStartRequest {
+                    task: "Public/Task.md".into(),
+                    dry_run,
+                },
+                Some(&guard),
+            );
+            assert_eq!(result.is_ok(), readable, "{result:?}");
+            assert_eq!(temp.path().join(&daily).exists(), readable && !dry_run);
+            if readable && !dry_run {
+                assert!(fs::read_to_string(temp.path().join(&daily))
+                    .unwrap()
+                    .contains("Daily template content"));
+            }
+        }
+    }
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(
+        paths.config_file(),
+        "tasknotes.pomodoro.storage_location = \"daily-note\"\nperiodic.daily.template = \"Day\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(paths.vulcan_dir().join("templates")).unwrap();
+    fs::write(
+        paths.vulcan_dir().join("templates/Day.md"),
+        "<% tp.file.create_new('side', 'Side') %>Daily\n",
+    )
+    .unwrap();
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(&paths, &config, "Public/Task.md", "Task", "open", &[], "").unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let daily = super::task_pomodoro_storage_target_path(
+        &config,
+        "Public/Task.md",
+        super::current_utc_timestamp_ms(),
+    )
+    .unwrap();
+    let _ = apply_task_pomodoro_start(
+        &paths,
+        &TaskPomodoroStartRequest {
+            task: "Public/Task.md".into(),
+            dry_run: true,
+        },
+    );
+    assert!(!temp.path().join("Side.md").exists());
+    assert!(!temp.path().join(daily).exists());
+}
+
+#[test]
+fn guarded_pomodoro_status_completes_only_visible_due_sessions() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    let config = load_vault_config(&paths).config;
+    for folder in ["Public", "Hidden"] {
+        let task = format!("{folder}/Task.md");
+        let sessions = serde_yaml::to_value(serde_json::json!([{
+            "id": folder, "startTime": "2026-04-01T08:00:00Z",
+            "plannedDuration": 1, "type": "work", "taskPath": task,
+            "completed": false,
+            "activePeriods": [{"startTime": "2026-04-01T08:00:00Z"}]
+        }]))
+        .unwrap();
+        seed_tasknote(
+            &paths,
+            &config,
+            &task,
+            "Task",
+            "open",
+            &[(config.tasknotes.field_mapping.pomodoros.as_str(), sessions)],
+            "",
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let before = fs::read(temp.path().join("Hidden/Task.md")).unwrap();
+    let report = super::build_task_pomodoro_status_report_with_guard(&paths, Some(&guard)).unwrap();
+    assert_eq!(report.completed_work_sessions, 1);
+    assert_eq!(report.changed_paths, vec!["Public/Task.md"]);
+    assert!(report.active.is_none());
+    assert_eq!(
+        fs::read(temp.path().join("Hidden/Task.md")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn guarded_pomodoro_start_denies_daily_storage_outside_scope() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "tasknotes.pomodoro.storage_location = \"daily-note\"\n[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(&paths, &config, "Public/Task.md", "Task", "open", &[], "").unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let daily = super::task_pomodoro_storage_target_path(
+        &config,
+        "Public/Task.md",
+        super::current_utc_timestamp_ms(),
+    )
+    .unwrap();
+    let before = fs::read(temp.path().join("Public/Task.md")).unwrap();
+    for dry_run in [true, false] {
+        assert!(super::apply_task_pomodoro_start_with_guard(
+            &paths,
+            &TaskPomodoroStartRequest {
+                task: "Public/Task.md".into(),
+                dry_run
+            },
+            Some(&guard)
+        )
+        .is_err());
+        assert!(!temp.path().join(&daily).exists());
+        assert_eq!(
+            fs::read(temp.path().join("Public/Task.md")).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn guarded_task_add_uses_readable_template_without_hidden_shadowing() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "tasknotes.tasks_folder = \"Public/Tasks\"\ntemplates.templater_folder = \"Public/Templates\"\n[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/Tasks/**\"] }\n").unwrap();
+    fs::create_dir_all(paths.vulcan_dir().join("templates")).unwrap();
+    fs::create_dir_all(temp.path().join("Public/Templates")).unwrap();
+    fs::write(paths.vulcan_dir().join("templates/Task.md"), [0xff, 0xfe]).unwrap();
+    fs::write(
+        temp.path().join("Public/Templates/Task.md"),
+        "Readable template\n",
+    )
+    .unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let mut request = TaskAddRequest {
+        text: "Scoped task".into(),
+        no_nlp: true,
+        status: None,
+        priority: None,
+        due: None,
+        scheduled: None,
+        contexts: vec![],
+        projects: vec![],
+        tags: vec![],
+        template: Some("Task".into()),
+        dry_run: true,
+    };
+    let report = super::apply_task_add_with_guard(&paths, &request, Some(&guard)).unwrap();
+    assert!(report.body.contains("Readable template"));
+    assert!(!temp.path().join(&report.path).exists());
+    request.dry_run = false;
+    let report = super::apply_task_add_with_guard(&paths, &request, Some(&guard)).unwrap();
+    assert!(fs::read_to_string(temp.path().join(report.path))
+        .unwrap()
+        .contains("Readable template"));
+}
+
+#[test]
+fn task_add_template_dry_run_cannot_create_side_notes() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::create_dir_all(paths.vulcan_dir().join("templates")).unwrap();
+    fs::write(
+        paths.vulcan_dir().join("templates/Task.md"),
+        "<% tp.file.create_new('Side body', 'Side') %>Main body",
+    )
+    .unwrap();
+    let request = TaskAddRequest {
+        text: "Preview task".into(),
+        no_nlp: true,
+        status: None,
+        priority: None,
+        due: None,
+        scheduled: None,
+        contexts: vec![],
+        projects: vec![],
+        tags: vec![],
+        template: Some("Task".into()),
+        dry_run: true,
+    };
+    let _ = apply_task_add(&paths, &request);
+    assert!(!temp.path().join("Side.md").exists());
+    assert!(!temp.path().join("Tasks/Preview task.md").exists());
+}
+
+#[test]
+fn guarded_conversion_checks_source_and_destination_before_writing() {
+    for line in [None, Some(1)] {
+        for dry_run in [true, false] {
+            for allow_destination in [false, true] {
+                let temp = tempdir().unwrap();
+                let paths = VaultPaths::new(temp.path());
+                initialize_vulcan_dir(&paths).unwrap();
+                let destination = if allow_destination {
+                    "Public/Tasks"
+                } else {
+                    "Hidden/Tasks"
+                };
+                fs::write(paths.config_file(), format!(
+                    "tasknotes.tasks_folder = \"{destination}\"\n[permissions.profiles.scoped]\nread = {{ allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }}\nwrite = {{ allow = [\"folder:Public/**\"] }}\n"
+                )).unwrap();
+                for folder in ["Public", "Hidden"] {
+                    fs::create_dir_all(temp.path().join(folder)).unwrap();
+                    fs::write(
+                        temp.path().join(folder).join("Inbox.md"),
+                        "- [ ] Convert me\n",
+                    )
+                    .unwrap();
+                }
+                scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+                let guard = ProfilePermissionGuard::new(
+                    &paths,
+                    resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+                );
+                let hidden_before = fs::read(temp.path().join("Hidden/Inbox.md")).unwrap();
+                assert!(super::apply_task_convert_with_guard(
+                    &paths,
+                    &TaskConvertRequest {
+                        file: "Hidden/Inbox.md".into(),
+                        line,
+                        dry_run,
+                    },
+                    Some(&guard)
+                )
+                .is_err());
+                let result = super::apply_task_convert_with_guard(
+                    &paths,
+                    &TaskConvertRequest {
+                        file: "Public/Inbox.md".into(),
+                        line,
+                        dry_run,
+                    },
+                    Some(&guard),
+                );
+                let denied = line.is_some() && !allow_destination;
+                assert_eq!(result.is_err(), denied, "{result:?}");
+                assert_eq!(
+                    fs::read(temp.path().join("Hidden/Inbox.md")).unwrap(),
+                    hidden_before
+                );
+                assert!(!temp.path().join("Hidden/Tasks").exists());
+                if denied || dry_run {
+                    assert_eq!(
+                        fs::read_to_string(temp.path().join("Public/Inbox.md")).unwrap(),
+                        "- [ ] Convert me\n"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn guarded_tracking_selects_only_visible_active_sessions() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    let config = load_vault_config(&paths).config;
+    for folder in ["Public", "Hidden"] {
+        let task = format!("{folder}/Task.md");
+        seed_tasknote(&paths, &config, &task, "Task", "open", &[], "").unwrap();
+        apply_task_track_start(
+            &paths,
+            &TaskTrackStartRequest {
+                task,
+                description: None,
+                dry_run: false,
+            },
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let before = fs::read(temp.path().join("Hidden/Task.md")).unwrap();
+    let stopped = super::apply_task_track_stop_with_guard(
+        &paths,
+        &TaskTrackStopRequest {
+            task: None,
+            dry_run: false,
+        },
+        Some(&guard),
+    )
+    .unwrap();
+    assert_eq!(stopped.path, "Public/Task.md");
+    assert_eq!(
+        fs::read(temp.path().join("Hidden/Task.md")).unwrap(),
+        before
+    );
+    for dry_run in [true, false] {
+        assert!(super::apply_task_track_start_with_guard(
+            &paths,
+            &TaskTrackStartRequest {
+                task: "Hidden/Task.md".into(),
+                description: None,
+                dry_run,
+            },
+            Some(&guard)
+        )
+        .is_err());
+    }
+    assert_eq!(
+        fs::read(temp.path().join("Hidden/Task.md")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn guarded_auto_archive_preserves_hidden_completed_tasks() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), concat!(
+        "tasknotes.archive_folder = \"Public/Archive\"\n",
+        "[[tasknotes.statuses]]\nid = \"done\"\nvalue = \"done\"\nlabel = \"Done\"\ncolor = \"#16a34a\"\nisCompleted = true\norder = 1\nautoArchive = true\nautoArchiveDelay = 0\n",
+        "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n",
+    )).unwrap();
+    let config = load_vault_config(&paths).config;
+    for folder in ["Public", "Hidden"] {
+        seed_tasknote(
+            &paths,
+            &config,
+            &format!("{folder}/Done.md"),
+            "Done",
+            "done",
+            &[(
+                config.tasknotes.field_mapping.completed_date.as_str(),
+                YamlValue::String("2026-04-01T09:00:00Z".into()),
+            )],
+            "",
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let before = fs::read(temp.path().join("Hidden/Done.md")).unwrap();
+    let changed =
+        super::process_due_tasknote_auto_archives_with_guard(&paths, None, Some(&guard)).unwrap();
+    assert_eq!(changed, vec!["Public/Archive/Done.md", "Public/Done.md"]);
+    assert_eq!(
+        fs::read(temp.path().join("Hidden/Done.md")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn guarded_inline_task_updates_ignore_hidden_text_matches() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    for folder in ["Public", "Hidden"] {
+        fs::create_dir_all(temp.path().join(folder)).unwrap();
+        fs::write(
+            temp.path().join(folder).join("Inbox.md"),
+            "- [ ] Shared task\n",
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    for task in ["Shared task", "Inbox.md:1"] {
+        let report = apply_task_complete_with_guard(
+            &paths,
+            &TaskCompleteRequest {
+                task: task.into(),
+                date: Some("2026-10-04".into()),
+                dry_run: true,
+            },
+            Some(&guard),
+        )
+        .unwrap();
+        assert_eq!(report.path, "Public/Inbox.md");
+    }
+    for task in ["Hidden/Inbox.md:1", "Hidden/Missing.md:1"] {
+        assert!(apply_task_complete_with_guard(
+            &paths,
+            &TaskCompleteRequest {
+                task: task.into(),
+                date: None,
+                dry_run: false,
+            },
+            Some(&guard)
+        )
+        .is_err());
+    }
+    assert_eq!(
+        fs::read_to_string(temp.path().join("Hidden/Inbox.md")).unwrap(),
+        "- [ ] Shared task\n"
+    );
+}
+
+#[test]
+fn guarded_task_loader_resolves_only_visible_tasks_and_denies_disk_fallback() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    let config = load_vault_config(&paths).config;
+    for folder in ["Public", "Hidden"] {
+        seed_tasknote(
+            &paths,
+            &config,
+            &format!("{folder}/Task.md"),
+            "Task",
+            "open",
+            &[],
+            "",
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let loaded = super::load_tasknote_note_with_guard(&paths, "Task", Some(&guard)).unwrap();
+    assert_eq!(loaded.path, "Public/Task.md");
+    for path in ["Hidden/Task.md", "Hidden/Missing.md"] {
+        let error = super::load_tasknote_note_with_guard(&paths, path, Some(&guard)).unwrap_err();
+        assert!(error.to_string().contains("denied"), "{error}");
+    }
+    for dry_run in [true, false] {
+        let before = fs::read(temp.path().join("Hidden/Task.md")).unwrap();
+        let result = super::apply_task_archive_with_guard(
+            &paths,
+            &TaskArchiveRequest {
+                task: "Hidden/Task.md".into(),
+                dry_run,
+            },
+            Some(&guard),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(temp.path().join("Hidden/Task.md")).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
 fn direct_task_reports_refuse_pending_ordinary_write_journal() {
     #[derive(Serialize)]
     struct JournalFixture<'a> {

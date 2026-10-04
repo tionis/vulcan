@@ -29,6 +29,299 @@ use zip::ZipArchive;
 const FIXED_NOW: &str = "2026-04-04T12:00:00Z";
 
 #[test]
+fn tasks_edit_authorizes_read_write_and_execution_before_launch() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("vault");
+    fs::create_dir_all(root.join(".vulcan")).unwrap();
+    fs::write(root.join(".vulcan/config.toml"), concat!(
+        "tasknotes.tasks_folder = \"Public\"\n",
+        "[permissions.profiles.noexec]\nread = \"all\"\nwrite = \"all\"\nexecute = \"deny\"\n",
+        "[permissions.profiles.readonly]\nread = \"all\"\nwrite = { allow = [] }\nexecute = \"allow\"\n",
+        "[permissions.profiles.hidden]\nread = { allow = [\"note:mdbase.yaml\"] }\nwrite = \"all\"\nexecute = \"allow\"\n",
+        "[permissions.profiles.allowed]\nread = \"all\"\nwrite = \"all\"\nexecute = \"allow\"\n",
+    )).unwrap();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "tasks",
+            "add",
+            "Task",
+            "--no-nlp",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let before = fs::read(root.join("Public/Task.md")).unwrap();
+    let editor = write_test_editor(dir.path(), "Raw editor content");
+    for profile in ["noexec", "readonly", "hidden"] {
+        Command::cargo_bin("vulcan")
+            .unwrap()
+            .env_remove("VISUAL")
+            .env("EDITOR", &editor)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                profile,
+                "tasks",
+                "edit",
+                "Public/Task.md",
+                "--no-commit",
+            ])
+            .assert()
+            .failure();
+        assert_eq!(fs::read(root.join("Public/Task.md")).unwrap(), before);
+    }
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .env_remove("VISUAL")
+        .env("EDITOR", &editor)
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--permissions",
+            "allowed",
+            "tasks",
+            "edit",
+            "Public/Task.md",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(root.join("Public/Task.md"))
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "Raw editor content\n"
+    );
+}
+
+#[test]
+fn task_cli_collection_constraints_require_full_dependency_authority() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    for folder in [".vulcan", "_types", "Public", "Hidden"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    fs::write(root.join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      type: {const: task}\n      title: {type: string}\ncollection:\n  unique: [{field: title, scope: collection}]\n---\n").unwrap();
+    fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_types/**\", \"folder:_contracts/**\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    let public = "---\ntype: task\ntitle: Public task\nstatus: open\ntags: [task]\n---\nBody\n";
+    fs::write(root.join("Public/Task.md"), public).unwrap();
+    fs::write(
+        root.join("Hidden/Secret.md"),
+        "---\ntype: task\ntitle: Hidden collision\n---\nSecret sentinel\n",
+    )
+    .unwrap();
+    run_scan(root);
+    let mut denial = None;
+    for title in ["Hidden collision", "Unique proposed title"] {
+        for dry_run in [true, false] {
+            let mut cmd = Command::cargo_bin("vulcan").unwrap();
+            cmd.args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "scoped",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+                "tasks",
+                "set",
+                "Public/Task.md",
+                "title",
+                title,
+                "--no-commit",
+            ]);
+            if dry_run {
+                cmd.arg("--dry-run");
+            }
+            let result = cmd.assert().failure();
+            let json = parse_stdout_json(&result);
+            let error = json["error"].as_str().unwrap();
+            assert!(error.contains("permission denied"), "{json}");
+            assert!(!error.contains("Secret"), "{json}");
+            assert!(!error.contains("Hidden collision"), "{json}");
+            if let Some(previous) = &denial {
+                assert_eq!(error, previous);
+            }
+            denial = Some(error.to_string());
+            assert_eq!(
+                fs::read_to_string(root.join("Public/Task.md")).unwrap(),
+                public
+            );
+        }
+    }
+    assert!(list_mdbase_write_outbox(&VaultPaths::new(root))
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn task_cli_readable_controls_do_not_grant_hidden_note_authority() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args(["--vault", root.to_str().unwrap(), "agent", "install"])
+        .assert()
+        .success();
+    let installed =
+        fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
+    assert!(installed.contains("--permissions"));
+    assert!(installed.contains("mdbase.yaml"));
+    fs::create_dir_all(root.join(".vulcan")).unwrap();
+    fs::write(root.join("Inbox.md"), "- [ ] Existing\n").unwrap();
+    fs::write(root.join(".vulcan/config.toml"), "tasknotes.tasks_folder = \"Hidden\"\n[permissions.profiles.scoped]\nread = { allow = [\"note:Inbox.md\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:Inbox.md\"] }\n").unwrap();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "tasks",
+            "add",
+            "Private",
+            "--no-nlp",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    fs::write(root.join("Hidden/Inline.md"), "- [ ] Hidden sentinel\n").unwrap();
+    run_scan(root);
+    let before = fs::read(root.join("Hidden/Private.md")).unwrap();
+    let commands = [
+        vec!["add", "Denied new task"],
+        vec!["create", "Denied", "--in", "Hidden/Inline.md"],
+        vec!["set", "Hidden/Private.md", "status", "done"],
+        vec!["complete", "Hidden/Private.md"],
+        vec!["reschedule", "Hidden/Inline.md:1", "--due", "2026-10-05"],
+        vec!["archive", "Hidden/Private.md"],
+        vec!["convert", "Hidden/Inline.md"],
+        vec!["convert", "Hidden/Inline.md", "--line", "1"],
+        vec!["track", "start", "Hidden/Private.md"],
+        vec!["track", "stop", "Hidden/Private.md"],
+        vec!["pomodoro", "start", "Hidden/Private.md"],
+        vec!["pomodoro", "stop", "Hidden/Private.md"],
+    ];
+    for dry_run in [true, false] {
+        for args in &commands {
+            let mut cmd = Command::cargo_bin("vulcan").unwrap();
+            cmd.args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "scoped",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+                "tasks",
+            ])
+            .args(args)
+            .arg("--no-commit");
+            if dry_run {
+                cmd.arg("--dry-run");
+            }
+            let result = cmd.assert().failure();
+            assert!(!parse_stdout_json(&result)
+                .to_string()
+                .contains("Hidden sentinel"));
+            assert_eq!(fs::read(root.join("Hidden/Private.md")).unwrap(), before);
+            assert_eq!(
+                fs::read_to_string(root.join("Hidden/Inline.md")).unwrap(),
+                "- [ ] Hidden sentinel\n"
+            );
+            assert!(!root.join("Hidden/Denied new task.md").exists());
+        }
+    }
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--permissions",
+            "scoped",
+            "--refresh",
+            "off",
+            "tasks",
+            "create",
+            "Allowed",
+            "--in",
+            "Inbox.md",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    assert!(fs::read_to_string(root.join("Inbox.md"))
+        .unwrap()
+        .contains("Allowed"));
+    assert_eq!(fs::read(root.join("Hidden/Private.md")).unwrap(), before);
+}
+
+#[test]
+fn task_cli_mutations_preserve_selected_routing_authority() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".vulcan")).unwrap();
+    fs::write(root.join("Inbox.md"), "- [ ] Existing\n").unwrap();
+    fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"note:Inbox.md\"] }\nwrite = { allow = [\"note:Inbox.md\"] }\n").unwrap();
+    run_scan(root);
+    let commands = [
+        vec!["add", "New task"],
+        vec!["create", "New task", "--in", "Inbox.md"],
+        vec!["set", "Inbox.md", "status", "done"],
+        vec!["complete", "Inbox.md:1"],
+        vec!["reschedule", "Inbox.md:1", "--due", "2026-10-05"],
+        vec!["archive", "Inbox.md"],
+        vec!["convert", "Inbox.md"],
+        vec!["convert", "Inbox.md", "--line", "1"],
+        vec!["track", "start", "Inbox.md"],
+        vec!["track", "stop"],
+        vec!["pomodoro", "start", "Inbox.md"],
+        vec!["pomodoro", "stop"],
+    ];
+    for contents in [None, Some("hidden: [invalid")] {
+        if let Some(contents) = contents {
+            fs::write(root.join("mdbase.yaml"), contents).unwrap();
+        }
+        for dry_run in [true, false] {
+            for args in &commands {
+                let mut cmd = Command::cargo_bin("vulcan").unwrap();
+                cmd.args([
+                    "--vault",
+                    root.to_str().unwrap(),
+                    "--permissions",
+                    "scoped",
+                    "--refresh",
+                    "off",
+                    "--output",
+                    "json",
+                    "tasks",
+                ])
+                .args(args)
+                .arg("--no-commit");
+                if dry_run {
+                    cmd.arg("--dry-run");
+                }
+                let result = cmd.assert().failure();
+                assert_eq!(
+                    parse_stdout_json(&result)["error"],
+                    "permission denied for required mdbase controls",
+                    "{args:?}"
+                );
+                assert_eq!(
+                    fs::read_to_string(root.join("Inbox.md")).unwrap(),
+                    "- [ ] Existing\n"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn self_update_help_exposes_channel_and_mutation_safety_controls_without_a_vault() {
     Command::cargo_bin("vulcan")
         .expect("binary")
@@ -16725,10 +17018,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(task_management.contains("task create/update/convert/archive workflows"));
     assert!(task_management.contains("commit through the validated journal"));
     assert!(task_management.contains("source rewrite and new task are one journaled change"));
-    assert!(task_management.contains("journaled for roll-forward recovery"));
-    assert!(task_management.contains("preserve the journal for explicit repair"));
+    assert!(task_management.contains("Guarded task commands refuse a pending journal"));
+    assert!(task_management.contains("authorized repair workflow"));
     assert!(task_management.contains("archive moves reject a changed source"));
-    assert!(task_management.contains("ordinary-write journal to finish the move"));
+    assert!(task_management.contains("--permissions"));
+    assert!(task_management.contains("mdbase.yaml"));
     assert!(task_management.contains("vulcan repair ordinary-write status"));
     assert!(task_management.contains("Direct CLI and MCP task show, query, list, view"));
     assert!(task_management
