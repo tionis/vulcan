@@ -495,14 +495,7 @@ pub fn build_mdbase_query_report(
 ) -> Result<MdbaseQueryResult, AppError> {
     let loaded = load_collection_authorized(paths, filter)?;
     let prepared = compile_mdbase_prepared_query(query).map_err(AppError::operation)?;
-    let records = load_mdbase_records_with_contracts_filtered(
-        &loaded.collection,
-        &loaded.types,
-        &loaded.contracts,
-        true,
-        filter,
-    )
-    .map_err(AppError::operation)?;
+    let records = load_query_records(paths, &loaded, filter)?;
     let mut report = prepared
         .execute(
             &records,
@@ -516,6 +509,145 @@ pub fn build_mdbase_query_report(
         .diagnostics
         .splice(0..0, registry_diagnostics(&loaded, filter));
     Ok(report)
+}
+
+fn load_query_records(
+    paths: &VaultPaths,
+    loaded: &LoadedCollection,
+    filter: Option<&PermissionFilter>,
+) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
+    // The shared cache dependency digest includes the lockfile, while ordinary
+    // source queries do not consume it. Cache reuse must not broaden required
+    // authority or probe an unreadable lockfile (including its absence).
+    if filter.is_some_and(|filter| !filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME)) {
+        return load_mdbase_records_with_contracts_filtered(
+            &loaded.collection,
+            &loaded.types,
+            &loaded.contracts,
+            false,
+            filter,
+        )
+        .map_err(AppError::operation);
+    }
+    load_query_records_with_boundary(paths, loaded, filter, || {})
+}
+
+fn query_cache_error(error: vulcan_core::mdbase::MdbaseRecordCacheError) -> AppError {
+    use vulcan_core::mdbase::MdbaseRecordCacheError;
+    match error {
+        MdbaseRecordCacheError::StaleRecords | MdbaseRecordCacheError::StaleControls => {
+            AppError::operation_with_code("stale_state", error.to_string())
+        }
+        MdbaseRecordCacheError::PermissionDenied => control_permission_denied(),
+        _ => AppError::operation(error),
+    }
+}
+
+fn load_query_records_with_boundary(
+    paths: &VaultPaths,
+    loaded: &LoadedCollection,
+    filter: Option<&PermissionFilter>,
+    before_verification: impl FnOnce(),
+) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
+    use vulcan_core::mdbase::{
+        capture_mdbase_record_manifest, load_cached_mdbase_record_set, rebuild_mdbase_record_cache,
+        refresh_mdbase_record_cache,
+    };
+    let manifest = capture_mdbase_record_manifest(
+        &loaded.collection,
+        &loaded.types,
+        &loaded.contracts,
+        filter,
+    )
+    .map_err(query_cache_error)?;
+    let unrestricted = filter.is_none_or(|filter| filter.path_permission().is_unrestricted());
+    // An unavailable disposable cache must not make canonical records unreadable.
+    // Restricted callers do not create, refresh, or repair unrestricted rows.
+    let mut database = if unrestricted {
+        vulcan_core::CacheDatabase::open(paths).ok()
+    } else {
+        None
+    };
+    let cached = |connection: &rusqlite::Connection| {
+        load_cached_mdbase_record_set(
+            connection,
+            &loaded.collection,
+            &loaded.types,
+            &loaded.contracts,
+            &manifest,
+            filter,
+        )
+        .ok()
+        .flatten()
+    };
+    let mut records = if unrestricted {
+        database
+            .as_ref()
+            .and_then(|database| cached(database.connection()))
+    } else {
+        rusqlite::Connection::open_with_flags(
+            paths.cache_db(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .ok()
+        .as_ref()
+        .and_then(cached)
+    };
+    if records.is_none() && unrestricted {
+        if let Some(database) = database.as_mut() {
+            // Rebuild discards corrupt derived JSON, never canonical source.
+            let refreshed = refresh_mdbase_record_cache(
+                database,
+                &loaded.collection,
+                &loaded.types,
+                &loaded.contracts,
+            )
+            .or_else(|_| {
+                rebuild_mdbase_record_cache(
+                    database,
+                    &loaded.collection,
+                    &loaded.types,
+                    &loaded.contracts,
+                )
+            });
+            if refreshed.is_ok() {
+                records = cached(database.connection());
+            }
+        }
+    }
+    let records = match records {
+        Some(records) => records,
+        None => load_mdbase_records_with_contracts_filtered(
+            &loaded.collection,
+            &loaded.types,
+            &loaded.contracts,
+            false,
+            filter,
+        )
+        .map_err(AppError::operation)?,
+    };
+    before_verification();
+    let current = capture_mdbase_record_manifest(
+        &loaded.collection,
+        &loaded.types,
+        &loaded.contracts,
+        filter,
+    )
+    .map_err(query_cache_error)?;
+    if current != manifest
+        || records.records.len() != manifest.len()
+        || records.records.iter().any(|record| {
+            manifest.get(&record.path).is_none_or(|expected| {
+                expected.revision != record.revision || expected.file != record.file
+            })
+        })
+    {
+        return Err(AppError::operation_with_code(
+            "stale_state",
+            "mdbase records changed during query preparation; retry the query",
+        ));
+    }
+    Ok(records)
 }
 
 pub fn parse_mdbase_query(source: &str) -> Result<serde_json::Value, AppError> {
@@ -1448,6 +1580,152 @@ mod tests {
             report.meta.groups.as_ref().unwrap()[0].summaries["tasks"],
             1
         );
+    }
+
+    #[test]
+    fn query_cache_rejects_source_and_control_drift_before_publication() {
+        for mutation in ["edit", "create", "delete", "control"] {
+            let (directory, paths) = fixture();
+            let loaded = load_collection_authorized(&paths, None).unwrap();
+            let error =
+                load_query_records_with_boundary(&paths, &loaded, None, || match mutation {
+                    "edit" => {
+                        fs::write(directory.path().join("tasks/public.md"), "Changed\n").unwrap();
+                    }
+                    "create" => fs::write(directory.path().join("added.md"), "Added\n").unwrap(),
+                    "delete" => fs::remove_file(directory.path().join("tasks/public.md")).unwrap(),
+                    "control" => fs::write(
+                        directory.path().join("mdbase.yaml"),
+                        "spec_version: 0.3.0\n# changed\n",
+                    )
+                    .unwrap(),
+                    _ => unreachable!(),
+                })
+                .unwrap_err();
+            assert_eq!(error.code(), Some("stale_state"), "{mutation}: {error}");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One public cache lifecycle proves repair and permission-scope isolation.
+    fn query_cache_reconciles_sources_repairs_payloads_and_preserves_restricted_scope() {
+        let (directory, paths) = fixture();
+        let query = json!({"types": ["task"], "select": ["title", "status"],
+            "order_by": [{"field": "file.path"}], "include_body": true});
+        let first = build_mdbase_query_report(&paths, &query, None).unwrap();
+        assert_eq!(first.meta.total_count, 2);
+        assert!(!paths.cache_db().exists());
+        initialize_vulcan_dir(&paths).unwrap();
+        assert_eq!(
+            build_mdbase_query_report(&paths, &query, None).unwrap(),
+            first
+        );
+        assert!(paths.cache_db().exists());
+        let connection = rusqlite::Connection::open(paths.cache_db()).unwrap();
+        let cached_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM mdbase_record_cache WHERE local_record_json IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cached_count, 2);
+
+        let public = directory.path().join("tasks/public.md");
+        let original = fs::read_to_string(&public).unwrap();
+        let mtime = fs::metadata(&public).unwrap().modified().unwrap();
+        fs::write(&public, original.replace("Public", "Edited")).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&public)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let edited = build_mdbase_query_report(&paths, &query, None).unwrap();
+        assert_ne!(edited, first);
+        fs::write(directory.path().join("tasks/added.md"), &original).unwrap();
+        assert_eq!(
+            build_mdbase_query_report(&paths, &query, None)
+                .unwrap()
+                .meta
+                .total_count,
+            3
+        );
+        fs::rename(
+            directory.path().join("tasks/added.md"),
+            directory.path().join("tasks/renamed.md"),
+        )
+        .unwrap();
+        let renamed = build_mdbase_query_report(&paths, &query, None).unwrap();
+        assert!(renamed
+            .results
+            .iter()
+            .any(|row| row.file["path"] == "tasks/renamed.md"));
+        fs::remove_file(directory.path().join("tasks/renamed.md")).unwrap();
+        assert_eq!(
+            build_mdbase_query_report(&paths, &query, None).unwrap(),
+            edited
+        );
+        let remaining: i64 = connection
+            .query_row("SELECT count(*) FROM mdbase_record_cache", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 2, "deleted records must leave the shared cache");
+
+        connection
+            .execute(
+                "UPDATE mdbase_record_cache SET local_record_json='broken'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            build_mdbase_query_report(&paths, &query, None).unwrap(),
+            edited
+        );
+        // Hidden invalid source and corrupt cached JSON must not be inspected.
+        fs::write(directory.path().join("tasks/private/secret.md"), [0xff]).unwrap();
+        connection.execute("UPDATE mdbase_record_cache SET local_record_json='hidden corruption' WHERE path='tasks/private/secret.md'", []).unwrap();
+        let mut grants = read_control_grant();
+        grants.push(ResourceSpecifier::Note("mdbase.lock.yaml".into()));
+        let filter = PermissionFilter::new(PathPermission {
+            allow: grants,
+            deny: vec![ResourceSpecifier::Folder("tasks/private/**".into())],
+        });
+        let restricted = build_mdbase_query_report(&paths, &query, Some(&filter)).unwrap();
+        assert_eq!(restricted.meta.total_count, 1);
+        let hidden: String = connection.query_row("SELECT local_record_json FROM mdbase_record_cache WHERE path='tasks/private/secret.md'", [], |row| row.get(0)).unwrap();
+        assert_eq!(hidden, "hidden corruption");
+        // Restricted fallback derives changed readable sources but leaves all
+        // shared cache rows untouched, rather than publishing a partial scope.
+        fs::write(&public, original.replace("Public", "Scoped")).unwrap();
+        let scoped = build_mdbase_query_report(&paths, &query, Some(&filter)).unwrap();
+        assert_ne!(scoped, restricted);
+        let loaded = load_collection_authorized(&paths, Some(&filter)).unwrap();
+        let source = load_mdbase_records_with_contracts_filtered(
+            &loaded.collection,
+            &loaded.types,
+            &loaded.contracts,
+            true,
+            Some(&filter),
+        )
+        .unwrap();
+        let mut oracle = compile_mdbase_prepared_query(&query)
+            .unwrap()
+            .execute(
+                &source,
+                &loaded.types,
+                &loaded.collection.config.settings.id_field,
+                loaded.collection.config.settings.timezone.as_deref(),
+                Utc::now(),
+            )
+            .unwrap();
+        oracle
+            .diagnostics
+            .splice(0..0, registry_diagnostics(&loaded, Some(&filter)));
+        assert_eq!(scoped, oracle);
+        let hidden_after: String = connection.query_row("SELECT local_record_json FROM mdbase_record_cache WHERE path='tasks/private/secret.md'", [], |row| row.get(0)).unwrap();
+        assert_eq!(hidden_after, hidden);
     }
 
     #[test]

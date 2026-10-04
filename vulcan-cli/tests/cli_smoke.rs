@@ -16691,6 +16691,16 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(js_api.contains("validation failure restores every original"));
     let vault_query = fs::read_to_string(vault_root.join(".agents/skills/vault-query/SKILL.md"))
         .expect("vault query skill should be readable");
+    assert_eq!(
+        vault_query,
+        include_str!("../../docs/assistant/skills/vault-query.md")
+    );
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["mdbase", "query", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--file"));
     assert!(vault_query.contains("Native query DSL starts with `from notes`"));
     assert!(vault_query.contains("A single `--where` value is one predicate"));
     assert!(vault_query.contains("vulcan repair ordinary-write status"));
@@ -35340,6 +35350,7 @@ fn mdbase_query_executes_canonical_yaml_with_direct_json_output() {
     let temp_dir = TempDir::new().expect("temp dir");
     let vault_root = temp_dir.path().join("collection");
     fs::create_dir_all(vault_root.join("_types")).expect("types directory");
+    vulcan_core::initialize_vulcan_dir(&VaultPaths::new(&vault_root)).unwrap();
     fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
     fs::write(
         vault_root.join("_types/task.md"),
@@ -35375,6 +35386,46 @@ fn mdbase_query_executes_canonical_yaml_with_direct_json_output() {
     assert_eq!(report["results"][0]["file"]["path"], "record.md");
     assert_eq!(report["results"][0]["values"]["title"], "Test");
     assert!(report["results"][0].get("body").is_none());
+    let database = vulcan_core::CacheDatabase::open(&VaultPaths::new(&vault_root)).unwrap();
+    let count: i64 = database
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM mdbase_record_cache WHERE local_record_json IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "public CLI query must populate the derived record cache"
+    );
+    fs::write(
+        vault_root.join("record.md"),
+        "---\ntype: task\ntitle: Next\n---\nBody\n",
+    )
+    .unwrap();
+    let output = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            vault_root.to_str().unwrap(),
+            "--output",
+            "json",
+            "--refresh",
+            "off",
+            "mdbase",
+            "query",
+            "types: [task]\nselect: [title]\n",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let current: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(current["results"][0]["values"]["title"], "Next");
 }
 
 #[cfg(unix)]

@@ -95,6 +95,74 @@ pub struct MdbaseCachedRecordExpectation {
     pub file: MdbaseRecordFileMetadata,
 }
 
+/// Discover and hash the currently readable UTF-8 source records without parsing
+/// Markdown or validating record schemas. Authorize controls before discovery
+/// and record paths before opening them. Metadata comes from the same opened
+/// descriptor as the bytes, not a second path lookup.
+///
+/// Callers retain the cooperating read guard and recheck this manifest before
+/// publishing a result. This is conservative disk reconciliation, not an atomic
+/// filesystem snapshot or a zero-source-read warm path. Directory discovery
+/// follows existing collection discovery semantics; denied file contents are
+/// never read. External editors may still race after the final verification.
+pub fn capture_mdbase_record_manifest(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    filter: Option<&PermissionFilter>,
+) -> Result<BTreeMap<String, MdbaseCachedRecordExpectation>, MdbaseRecordCacheError> {
+    use std::io::Read;
+
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
+    let paths = visible_record_paths(collection, filter)?;
+    let mut manifest = BTreeMap::new();
+    for path in &paths {
+        let read_error = |source| MdbaseRecordError::Read {
+            path: collection.root.join(path),
+            source,
+        };
+        let mut file = crate::paths::secure_open_regular_read(&collection.root, Path::new(path))
+            .map_err(read_error)?;
+        let before = file.metadata().map_err(read_error)?;
+        let mut source = String::new();
+        file.read_to_string(&mut source).map_err(read_error)?;
+        let after = file.metadata().map_err(read_error)?;
+        if before.len() != after.len()
+            || before.modified().ok() != after.modified().ok()
+            || source.len() as u64 != after.len()
+        {
+            return Err(MdbaseRecordCacheError::StaleRecords);
+        }
+        manifest.insert(
+            path.clone(),
+            MdbaseCachedRecordExpectation {
+                revision: super::mdbase_content_revision(&source),
+                file: super::records::file_metadata(path, source.len() as u64, Some(&after)),
+            },
+        );
+    }
+    if visible_record_paths(collection, filter)? != paths {
+        return Err(MdbaseRecordCacheError::StaleRecords);
+    }
+    if verify_mdbase_control_snapshots(collection, types, contracts, filter)? != controls {
+        return Err(MdbaseRecordCacheError::StaleControls);
+    }
+    Ok(manifest)
+}
+
+fn visible_record_paths(
+    collection: &MdbaseCollection,
+    filter: Option<&PermissionFilter>,
+) -> Result<Vec<String>, MdbaseRecordCacheError> {
+    let discovery =
+        super::discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
+    Ok(discovery
+        .records
+        .into_iter()
+        .filter(|path| filter.is_none_or(|filter| filter.is_allowed(path)))
+        .collect())
+}
+
 /// Load one coherent `SQLite` snapshot, then derive collection overlays only over
 /// the caller's currently visible records. Never reuse cached final diagnostics.
 ///
@@ -120,6 +188,26 @@ pub fn load_cached_mdbase_record_set(
     let root = cache_collection_root(collection)?;
     let transaction = connection.unchecked_transaction()?;
     let mut records = Vec::new();
+    {
+        let mut statement = transaction
+            .prepare("SELECT path FROM mdbase_record_cache WHERE collection_root = ?1")?;
+        let rows = statement.query_map([&root], |row| row.get::<_, String>(0))?;
+        let mut cached_paths = BTreeSet::new();
+        for path in rows {
+            let path = path?;
+            if filter.is_none_or(|filter| filter.is_allowed(&path)) {
+                cached_paths.insert(path);
+            }
+        }
+        let expected_paths = expected
+            .keys()
+            .filter(|path| filter.is_none_or(|filter| filter.is_allowed(path)))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if cached_paths != expected_paths {
+            return Ok(None);
+        }
+    }
     {
         let mut statement = transaction.prepare_cached(
             "SELECT local_record_json FROM mdbase_record_cache
@@ -1504,6 +1592,75 @@ mod tests {
     }
 
     #[test]
+    fn record_manifest_tracks_visible_source_bytes_and_membership() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(&directory.path().join("a.md"), "A\n");
+        fs::write(directory.path().join("secret.md"), [0xff]).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("secret.md".into())],
+        });
+        let capture = || {
+            capture_mdbase_record_manifest(&collection, &types, &contracts, Some(&filter)).unwrap()
+        };
+        let original = capture();
+        let record = load_mdbase_record(&collection, &types, "a.md", false).unwrap();
+        assert_eq!(original.len(), 1);
+        assert_eq!(original["a.md"].revision, record.revision);
+        assert_eq!(original["a.md"].file, record.file);
+        // A denied invalid UTF-8 source cannot turn a readable query into an
+        // error. The unrestricted operation must observe that source error.
+        assert!(capture_mdbase_record_manifest(&collection, &types, &contracts, None).is_err());
+        let mtime = fs::metadata(directory.path().join("a.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        write(&directory.path().join("a.md"), "B\n");
+        fs::File::options()
+            .write(true)
+            .open(directory.path().join("a.md"))
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let edited = capture();
+        assert_ne!(edited["a.md"].revision, original["a.md"].revision);
+        assert_eq!(edited["a.md"].file, original["a.md"].file);
+        write(&directory.path().join("new.md"), "New\n");
+        assert_eq!(capture().len(), 2);
+        fs::rename(
+            directory.path().join("new.md"),
+            directory.path().join("renamed.md"),
+        )
+        .unwrap();
+        let renamed = capture();
+        assert!(renamed.contains_key("renamed.md"));
+        assert!(!renamed.contains_key("new.md"));
+        fs::remove_file(directory.path().join("renamed.md")).unwrap();
+        assert_eq!(capture(), edited);
+        let deny_controls = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::All],
+            deny: vec![ResourceSpecifier::Note("mdbase.yaml".into())],
+        });
+        assert!(matches!(
+            capture_mdbase_record_manifest(&collection, &types, &contracts, Some(&deny_controls)),
+            Err(MdbaseRecordCacheError::PermissionDenied)
+        ));
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n# changed\n",
+        );
+        assert!(matches!(
+            capture_mdbase_record_manifest(&collection, &types, &contracts, Some(&filter)),
+            Err(MdbaseRecordCacheError::StaleControls)
+        ));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)] // Compare visible overlays before and after permission changes and corruption.
     fn cached_record_snapshot_rebuilds_visibility_sensitive_overlays_before_use() {
         let directory = tempdir().unwrap();
@@ -1640,9 +1797,12 @@ mod tests {
                 file: record.file,
             },
         )]);
-        for mutation in ["revision", "metadata", "missing", "model", "payload"] {
+        for mutation in [
+            "revision", "metadata", "missing", "omitted", "model", "payload",
+        ] {
             let mut manifest = expected.clone();
             match mutation {
+                "omitted" => manifest.clear(),
                 "revision" => manifest.get_mut("a.md").unwrap().revision = "changed-source".into(),
                 "metadata" => manifest.get_mut("a.md").unwrap().file.size += 1,
                 "missing" => {
