@@ -674,7 +674,10 @@ pub fn query_notes_with_filter(
     })
 }
 
-/// Load an index of all notes keyed by `file_name` (basename without extension).
+/// Load all notes using collision-safe expression lookup keys.
+/// Unique basenames retain their historical keys; duplicate basenames use
+/// slash-prefixed document paths. Enumerate values or resolve references rather
+/// than assuming that a basename identifies every note.
 /// This includes enough derived metadata for expression evaluation on linked notes.
 pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, PropertyError> {
     load_note_index_with_filter(paths, None)
@@ -805,10 +808,42 @@ fn load_note_index_with_read_scope(
         readable_sources.as_ref(),
     )?;
 
-    Ok(doc_ids_and_notes
+    Ok(build_note_lookup_index(
+        doc_ids_and_notes.into_iter().map(|(_, note)| note),
+    ))
+}
+
+/// Build a complete expression lookup, retaining distinct paths with identical
+/// basenames. Later records replace earlier records only at the same path (for
+/// overlays). Unique basename keys remain compatible with existing callers.
+/// Collision keys start with `/`, which cannot occur in a file basename.
+pub fn build_note_lookup_index(
+    notes: impl IntoIterator<Item = NoteRecord>,
+) -> HashMap<String, NoteRecord> {
+    let by_path = notes
         .into_iter()
-        .map(|(_, note)| (note.file_name.clone(), note))
-        .collect())
+        .map(|note| (note.document_path.clone(), note))
+        .collect::<HashMap<_, _>>();
+    let mut counts = HashMap::<&str, usize>::new();
+    for note in by_path.values() {
+        *counts.entry(&note.file_name).or_default() += 1;
+    }
+    let duplicate_names = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(name, _)| name.to_string())
+        .collect::<HashSet<_>>();
+    by_path
+        .into_values()
+        .map(|note| {
+            let key = if duplicate_names.contains(&note.file_name) {
+                format!("/{}", note.document_path)
+            } else {
+                note.file_name.clone()
+            };
+            (key, note)
+        })
+        .collect()
 }
 
 fn policy_allows_indexed_note(
@@ -2769,6 +2804,82 @@ mod tests {
             allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
             deny: Vec::new(),
         })
+    }
+
+    #[test]
+    fn note_lookup_preserves_duplicate_names_and_path_overlays() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, score) in [
+            ("Public/One/Item.md", 1),
+            ("Public/Two/Item.md", 2),
+            ("Private/Item.md", 3),
+        ] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(
+                root.join(path),
+                format!("---\nscore: {score}\naliases: [Shared]\n---\n"),
+            )
+            .unwrap();
+        }
+        fs::write(root.join("Public/Unique.md"), "# Unique\n").unwrap();
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let index = load_note_index_with_filter(&paths, Some(&public_only_filter())).unwrap();
+        assert_eq!(index.len(), 3);
+        assert!(index.contains_key("Unique"));
+        assert!(!index.contains_key("Item"));
+        assert!(index
+            .values()
+            .all(|note| note.document_path.starts_with("Public/")));
+        for (target, expected) in [
+            ("Public/One/Item", "Public/One/Item.md"),
+            ("Public/Two/Item.md", "Public/Two/Item.md"),
+            ("Item", "Public/Two/Item.md"),
+            ("Shared", "Public/Two/Item.md"),
+        ] {
+            let resolved = crate::expression::eval::resolve_note_reference(
+                &index,
+                "Public/Two/Source.md",
+                target,
+            )
+            .unwrap();
+            assert_eq!(resolved.document_path, expected);
+        }
+        for (target, expected) in [
+            ("One/Item", Some("Public/One/Item.md")),
+            ("Private/Item", None),
+            ("Elsewhere/Item", None),
+        ] {
+            assert_eq!(
+                crate::expression::eval::resolve_note_reference(
+                    &index,
+                    "Public/Two/Source.md",
+                    target,
+                )
+                .map(|note| note.document_path.as_str()),
+                expected
+            );
+        }
+        let mut replacement = index
+            .values()
+            .find(|note| note.document_path == "Public/One/Item.md")
+            .unwrap()
+            .clone();
+        replacement.properties = serde_json::json!({"score": 9});
+        let overlay = build_note_lookup_index(index.values().cloned().chain([replacement]));
+        assert_eq!(overlay.len(), 3);
+        assert_eq!(overlay["/Public/One/Item.md"].properties["score"], 9);
+        assert_eq!(overlay["/Public/Two/Item.md"].properties["score"], 2);
+        let mut records = overlay.values().cloned().collect::<Vec<_>>();
+        records.reverse();
+        let reversed = build_note_lookup_index(records);
+        assert_eq!(
+            reversed.keys().collect::<HashSet<_>>(),
+            overlay.keys().collect::<HashSet<_>>()
+        );
+        assert_eq!(load_note_index(&paths).unwrap().len(), 4);
     }
 
     #[test]

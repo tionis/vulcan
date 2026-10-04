@@ -511,6 +511,69 @@ fn prepare_export_data_applies_transforms_and_backlink_adjustments() {
 }
 
 #[test]
+fn transformed_export_expressions_preserve_duplicate_readable_basenames() {
+    let (_temp_dir, paths) = export_paths();
+    for (path, score) in [
+        ("Public/One/Item.md", 1),
+        ("Public/Two/Item.md", 2),
+        ("Private/Item.md", 3),
+    ] {
+        let path = paths.vault_root().join(path);
+        fs::create_dir_all(path.parent().expect("parent")).expect("note dir");
+        fs::write(path, format!("---\nscore: {score}\n---\n")).expect("item note");
+    }
+    fs::write(
+        paths.vault_root().join("Public/Src.md"),
+        concat!(
+            "---\n",
+            "one: \"[[Public/One/Item]]\"\n",
+            "two: \"[[Public/Two/Item]]\"\n",
+            "hidden: \"[[Private/Item]]\"\n",
+            "---\n",
+            "`= one.score` `= two.score` `= hidden.score`\n\n",
+            "> [!secret gm]- Internal\n",
+            "> Hidden.\n",
+        ),
+    )
+    .expect("source note");
+    scan_vault(&paths, ScanMode::Full).expect("vault scan");
+    let filter = PermissionFilter::new(PathPermission {
+        allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+        deny: Vec::new(),
+    });
+    let report = execute_export_query(
+        &paths,
+        Some(r#"from notes where file.path = "Public/Src.md""#),
+        None,
+        Some(&filter),
+    )
+    .expect("query report");
+    let transform_rules =
+        build_content_transform_rules(&["secret gm".to_string()], &[], &[], &[], &[])
+            .expect("rules");
+    let prepared = prepare_export_data(&paths, &report, Some(&filter), transform_rules.as_deref())
+        .expect("prepared export");
+
+    assert_eq!(prepared.notes.len(), 1);
+    let source = &prepared.notes[0];
+    assert!(!source.content.contains("Hidden."));
+    let values = source
+        .note
+        .inline_expressions
+        .iter()
+        .map(|expression| (expression.expression.as_str(), expression.value.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        vec![
+            ("one.score", Value::from(1)),
+            ("two.score", Value::from(2)),
+            ("hidden.score", Value::Null),
+        ]
+    );
+}
+
+#[test]
 fn shared_export_renderers_emit_expected_json_markdown_and_csv() {
     let (_temp_dir, paths) = build_export_transform_vault();
     let report = execute_export_query(

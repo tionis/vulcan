@@ -7,8 +7,8 @@ use crate::paths::{
 };
 use crate::permissions::PermissionFilter;
 use crate::properties::{
-    load_note_index_with_filter, parse_note_filter_expression, query_notes_with_filter,
-    FilterField, FilterOperator, FilterValue,
+    build_note_lookup_index, load_note_index_with_filter, parse_note_filter_expression,
+    query_notes_with_filter, FilterField, FilterOperator, FilterValue,
 };
 use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
@@ -896,11 +896,9 @@ fn evaluate_base_view(
     // Build a vault-wide note index for link resolution (asFile / linksTo).
     // Start with a lightweight full-vault index (properties only, no tags/links),
     // then overlay the current query's notes which have tags/links fully loaded.
-    let mut note_index: HashMap<String, NoteRecord> =
+    let note_index: HashMap<String, NoteRecord> =
         load_note_index_with_filter(paths, read_filter).unwrap_or_default();
-    for note in &notes {
-        note_index.insert(note.file_name.clone(), note.clone());
-    }
+    let note_index = build_note_lookup_index(note_index.into_values().chain(notes.iter().cloned()));
 
     let columns = build_view_columns(property_display_names, &view);
     let time_zone =
@@ -2547,6 +2545,80 @@ mod tests {
 
         assert_eq!(report.views[0].rows.len(), 1);
         assert_eq!(report.views[0].rows[0].document_path, "Public/Visible.md");
+    }
+
+    #[test]
+    fn filtered_bases_link_resolution_preserves_duplicate_readable_basenames() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        for (path, score) in [
+            ("Public/One/Item.md", 1),
+            ("Public/Two/Item.md", 2),
+            ("Private/Item.md", 3),
+        ] {
+            std::fs::create_dir_all(vault_root.join(path).parent().unwrap()).expect("note dir");
+            std::fs::write(vault_root.join(path), format!("---\nscore: {score}\n---\n"))
+                .expect("item note");
+        }
+        std::fs::write(
+            vault_root.join("Public/Src.md"),
+            concat!(
+                "---\n",
+                "one: \"[[Public/One/Item]]\"\n",
+                "two: \"[[Public/Two/Item]]\"\n",
+                "hidden: \"[[Private/Item]]\"\n",
+                "---\n",
+            ),
+        )
+        .expect("source note");
+        std::fs::write(
+            vault_root.join("links.base"),
+            concat!(
+                "views:\n",
+                "  - type: table\n",
+                "    name: Links\n",
+                "    order: [file.name]\n",
+                "    formulas:\n",
+                "      one_score: one.asFile().properties.score\n",
+                "      two_score: two.asFile().properties.score\n",
+                "      hidden_score: hidden.asFile().properties.score\n",
+            ),
+        )
+        .expect("base file");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+            deny: Vec::new(),
+        });
+
+        let report = evaluate_base_file_with_filter(&paths, "links.base", Some(&filter))
+            .expect("filtered base should evaluate");
+
+        let rows = &report.views[0].rows;
+        let mut row_paths = rows
+            .iter()
+            .map(|row| row.document_path.as_str())
+            .collect::<Vec<_>>();
+        row_paths.sort_unstable();
+        assert_eq!(
+            row_paths,
+            vec!["Public/One/Item.md", "Public/Src.md", "Public/Two/Item.md"]
+        );
+        let source = rows
+            .iter()
+            .find(|row| row.document_path == "Public/Src.md")
+            .expect("source row");
+        assert_eq!(
+            source.formulas.get("one_score").and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            source.formulas.get("two_score").and_then(Value::as_i64),
+            Some(2)
+        );
+        assert_eq!(source.formulas.get("hidden_score"), Some(&Value::Null));
     }
 
     #[test]

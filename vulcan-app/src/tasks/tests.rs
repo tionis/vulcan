@@ -30,6 +30,41 @@ use vulcan_core::{
 };
 
 #[test]
+fn guarded_tasknote_reports_preserve_readable_duplicate_basenames() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\n").unwrap();
+    for path in [
+        "Public/One/Task.md",
+        "Public/Two/Task.md",
+        "Private/Task.md",
+    ] {
+        fs::create_dir_all(temp.path().join(path).parent().unwrap()).unwrap();
+        fs::write(
+            temp.path().join(path),
+            format!("---\ntags: [task]\ntitle: {path}\nstatus: open\ndue: 2020-01-01\n---\n"),
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let report = super::build_task_due_report_with_guard(&paths, "7d", Some(&guard)).unwrap();
+    assert_eq!(
+        report
+            .tasks
+            .iter()
+            .map(|task| task.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Public/One/Task.md", "Public/Two/Task.md"]
+    );
+    assert_eq!(build_task_due_report(&paths, "7d").unwrap().tasks.len(), 3);
+}
+
+#[test]
 fn guarded_tasknote_reports_scope_records_and_totals_without_write_access() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

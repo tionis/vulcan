@@ -377,7 +377,15 @@ pub(crate) fn resolve_note_reference<'a>(
     lookup
         .values()
         .filter_map(|note| {
-            let rank = if note.file_name == target_basename {
+            // Path-qualified targets may match a folder suffix, but never an
+            // unrelated note that merely shares the basename.
+            let basename_matches = note.file_name == target_basename
+                && (!target_no_ext.contains('/')
+                    || note
+                        .document_path
+                        .trim_end_matches(".md")
+                        .ends_with(&format!("/{target_no_ext}")));
+            let rank = if basename_matches {
                 Some(0_usize)
             } else if note
                 .aliases

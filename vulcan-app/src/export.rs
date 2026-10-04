@@ -30,8 +30,8 @@ use vulcan_core::content_transforms::{
 use vulcan_core::parser::{LinkKind, OriginContext};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::permissions::PermissionFilter;
-use vulcan_core::properties::load_note_index;
 use vulcan_core::properties::{evaluate_note_inline_expressions, extract_indexed_properties};
+use vulcan_core::properties::{load_note_index, load_note_index_with_filter};
 use vulcan_core::resolver::{ResolverDocument, ResolverIndex, ResolverLink};
 use vulcan_core::{
     ensure_vulcan_dir, execute_query_report_with_filter, execute_selection_plan, load_vault_config,
@@ -872,13 +872,13 @@ fn evaluate_transformed_export_inline_expressions(
     exported_notes: &mut [ExportedNoteDocument],
     read_filter: Option<&PermissionFilter>,
 ) -> Result<(), AppError> {
-    let mut note_lookup = load_note_index(paths).map_err(AppError::operation)?;
-    if let Some(read_filter) = read_filter {
-        note_lookup.retain(|_, note| read_filter.is_allowed(&note.document_path));
-    }
-    for export_note in exported_notes.iter() {
-        note_lookup.insert(export_note.note.file_name.clone(), export_note.note.clone());
-    }
+    let note_lookup =
+        load_note_index_with_filter(paths, read_filter).map_err(AppError::operation)?;
+    let note_lookup = vulcan_core::properties::build_note_lookup_index(
+        note_lookup
+            .into_values()
+            .chain(exported_notes.iter().map(|note| note.note.clone())),
+    );
     for export_note in exported_notes.iter_mut() {
         export_note.note.inline_expressions =
             evaluate_note_inline_expressions(&export_note.note, &note_lookup);
