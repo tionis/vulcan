@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -96,9 +97,11 @@ pub fn evaluate_parsed_tasks_query_with_filter(
     ))
 }
 
-pub(crate) fn evaluate_tasks_query_with_note_index(
+/// Evaluate against an already authorized note universe, reusing its policy
+/// decisions for task selection and any subsequent expression evaluation.
+pub fn evaluate_tasks_query_with_note_index(
     source: &str,
-    note_index: &HashMap<String, NoteRecord>,
+    note_index: &HashMap<String, NoteRecord, impl BuildHasher>,
 ) -> Result<TasksQueryResult, TasksError> {
     let query = parse_tasks_query(source).map_err(TasksError::Parse)?;
     Ok(evaluate_parsed_tasks_query_with_note_index(
@@ -108,7 +111,7 @@ pub(crate) fn evaluate_tasks_query_with_note_index(
 
 pub(crate) fn evaluate_parsed_tasks_query_with_note_index(
     query: &TasksQuery,
-    note_index: &HashMap<String, NoteRecord>,
+    note_index: &HashMap<String, NoteRecord, impl BuildHasher>,
 ) -> TasksQueryResult {
     build_tasks_query_result(task_rows(note_index), query, true)
 }
@@ -118,7 +121,7 @@ pub fn shape_tasks_query_result(tasks: Vec<Value>, query: &TasksQuery) -> TasksQ
     build_tasks_query_result(task_rows_from_values(tasks), query, false)
 }
 
-fn task_rows(note_index: &HashMap<String, crate::NoteRecord>) -> Vec<TaskRow> {
+fn task_rows(note_index: &HashMap<String, crate::NoteRecord, impl BuildHasher>) -> Vec<TaskRow> {
     let mut notes = note_index.values().cloned().collect::<Vec<_>>();
     notes.sort_by(|left, right| left.document_path.cmp(&right.document_path));
 

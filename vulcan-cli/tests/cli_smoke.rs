@@ -35043,6 +35043,170 @@ read = { allow = ["folder:Projects/**"] }
 }
 
 #[test]
+#[cfg(feature = "js_runtime")]
+fn task_read_policy_precedes_limits_and_backlink_expressions_in_cli_and_mcp() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("vault");
+    let config_home = temp.path().join("xdg");
+    fs::create_dir_all(root.join(".vulcan/plugins")).unwrap();
+    fs::create_dir_all(&config_home).unwrap();
+    for (path, source) in [
+        ("AHidden.md", "- [ ] Hidden\n[[CTarget]]\n"),
+        (
+            "BPolicy.md",
+            "---\ntags: [visible]\n---\n- [ ] Policy task\n[[CTarget]]\n",
+        ),
+        (
+            "CTarget.md",
+            "---\ntags: [visible]\n---\n- [ ] Visible task\n",
+        ),
+        ("DSource.md", "---\ntags: [visible]\n---\n[[CTarget]]\n"),
+    ] {
+        fs::write(root.join(path), source).unwrap();
+    }
+    fs::write(root.join(".vulcan/config.toml"), concat!(
+        "[permissions.profiles.baseline]\nread = { allow = [\"tag:visible\"] }\nwrite = \"none\"\n",
+        "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"] }\nwrite = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
+    )).unwrap();
+    let hook = root.join(".vulcan/plugins/guard.js");
+    fs::write(&hook, "function policy_hook(input) { return input.action === 'read' && input.resource === 'BPolicy.md' ? 'deny' : 'pass'; }\n").unwrap();
+    let xdg = config_home.to_str().unwrap();
+    trust_and_scan_vault(xdg, root.to_str().unwrap());
+    let cli = |profile: &str, args: &[&str]| {
+        let result = cargo_vulcan_with_xdg_config(xdg)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                profile,
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+            ])
+            .args(args)
+            .assert()
+            .success();
+        parse_stdout_json(&result)
+    };
+    let source = "not done\ngroup by path\nlimit 1";
+    assert_eq!(
+        cli("baseline", &["tasks", "query", source])["tasks"][0]["path"],
+        "BPolicy.md"
+    );
+    assert_eq!(
+        cli(
+            "baseline",
+            &["tasks", "list", "--filter", "length(file.inlinks) = 1"]
+        )["result_count"],
+        0
+    );
+    let mut session = start_mcp_session_with_xdg(
+        &root,
+        xdg,
+        &[
+            "--permissions",
+            "guarded",
+            "--refresh",
+            "off",
+            "--tool-pack",
+            "tasks",
+        ],
+    );
+    session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } }
+    }));
+    for (id, tool, arguments, args) in [
+        (
+            2,
+            "task_query",
+            serde_json::json!({"query": source}),
+            vec!["tasks", "query", source],
+        ),
+        (
+            3,
+            "task_list",
+            serde_json::json!({"source": "inline", "filter": source}),
+            vec!["tasks", "list", "--source", "inline", "--filter", source],
+        ),
+        (
+            4,
+            "task_list",
+            serde_json::json!({"source": "inline", "filter": "length(file.inlinks) = 1"}),
+            vec![
+                "tasks",
+                "list",
+                "--source",
+                "inline",
+                "--filter",
+                "length(file.inlinks) = 1",
+            ],
+        ),
+    ] {
+        let report = cli("guarded", &args);
+        assert_eq!(report["result_count"], 1);
+        assert_eq!(report["tasks"][0]["path"], "CTarget.md");
+        let responses = session.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments}
+        }));
+        let result = &responses.last().unwrap()["result"];
+        assert_eq!(result["isError"], false, "{result}");
+        assert_eq!(result["structuredContent"], report);
+    }
+    // The retained MCP session must consult the current hook on the next read.
+    fs::write(
+        &hook,
+        "function policy_hook(input) { return input.action === 'read' ? 'deny' : 'pass'; }\n",
+    )
+    .unwrap();
+    let responses = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": {"name": "task_query", "arguments": {"query": source}}
+    }));
+    assert_eq!(
+        responses.last().unwrap()["result"]["structuredContent"]["result_count"],
+        0
+    );
+    // Broken policy execution or an invalid result is an operation failure,
+    // not a valid empty collection. Exercise both transports without restarting
+    // the retained MCP session.
+    for (id, source) in [
+        (
+            6,
+            "function policy_hook(input) { throw new Error('broken policy'); }",
+        ),
+        (7, "function policy_hook(input) { return true; }"),
+        (8, "function policy_hook("),
+    ] {
+        fs::write(&hook, source).unwrap();
+        cargo_vulcan_with_xdg_config(xdg)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "guarded",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+                "tasks",
+                "query",
+                "not done",
+            ])
+            .assert()
+            .failure();
+        let responses = session.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "task_query", "arguments": {"query": "not done"}}
+        }));
+        assert_eq!(responses.last().unwrap()["result"]["isError"], true);
+    }
+    session.finish();
+}
+
+#[test]
 fn policy_hooks_can_deny_reads_after_static_profile_checks() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

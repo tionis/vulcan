@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +91,14 @@ pub enum PermissionError {
         resource: Option<String>,
         reason: String,
     },
+    /// The policy could not produce a valid decision; unlike an explicit deny,
+    /// this must not be interpreted as a successfully filtered read result.
+    PolicyHookFailed {
+        profile: String,
+        action: &'static str,
+        resource: Option<String>,
+        reason: String,
+    },
 }
 
 impl Display for PermissionError {
@@ -148,6 +157,12 @@ impl Display for PermissionError {
                 }
             }
             Self::PolicyHookDenied {
+                profile,
+                action,
+                resource,
+                reason,
+            }
+            | Self::PolicyHookFailed {
                 profile,
                 action,
                 resource,
@@ -344,10 +359,28 @@ pub trait PermissionGuard {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicyHookSnapshot {
+    path: PathBuf,
+    source: String,
+}
+
+impl PolicyHookSnapshot {
+    fn capture(path: PathBuf) -> Result<Self, std::io::Error> {
+        let source = fs::read_to_string(&path)?;
+        Ok(Self { path, source })
+    }
+
+    fn is_current(&self) -> Result<bool, std::io::Error> {
+        Ok(fs::read_to_string(&self.path)? == self.source)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfilePermissionGuard {
     paths: VaultPaths,
     selection: ResolvedPermissionProfile,
     enable_policy_hooks: bool,
+    policy_snapshot: Option<Arc<PolicyHookSnapshot>>,
 }
 
 impl ProfilePermissionGuard {
@@ -357,6 +390,7 @@ impl ProfilePermissionGuard {
             paths: paths.clone(),
             selection,
             enable_policy_hooks: true,
+            policy_snapshot: None,
         }
     }
 
@@ -366,12 +400,62 @@ impl ProfilePermissionGuard {
             paths: paths.clone(),
             selection,
             enable_policy_hooks: false,
+            policy_snapshot: None,
         }
     }
 
     #[must_use]
     pub fn selection(&self) -> &ResolvedPermissionProfile {
         &self.selection
+    }
+
+    /// Capture one hook revision for all decisions in a read operation. The
+    /// caller must validate its retained grant before capturing and recheck
+    /// both that grant and this snapshot before publishing the result.
+    pub fn snapshot_read_policy(&self) -> Result<Self, PermissionError> {
+        let mut guard = self.clone();
+        if self.has_policy_hook() {
+            self.check_snapshot_trust()?;
+            let hook = self
+                .selection
+                .profile
+                .policy_hook
+                .as_ref()
+                .expect("active hook");
+            let path = resolve_policy_hook_path(self.paths.vault_root(), hook);
+            let snapshot = PolicyHookSnapshot::capture(path)
+                .map_err(|_| self.snapshot_failure("failed to read policy hook snapshot"))?;
+            guard.policy_snapshot = Some(Arc::new(snapshot));
+        }
+        Ok(guard)
+    }
+
+    pub fn recheck_read_policy_snapshot(&self) -> Result<(), PermissionError> {
+        if let Some(snapshot) = &self.policy_snapshot {
+            self.check_snapshot_trust()?;
+            if !snapshot.is_current().unwrap_or(false) {
+                return Err(self.snapshot_failure(
+                    "policy hook changed during task read; retry with current authority",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_snapshot_trust(&self) -> Result<(), PermissionError> {
+        if !crate::paths::is_trusted_vault(self.paths.vault_root()) {
+            return Err(self.snapshot_failure("policy hooks require a trusted vault"));
+        }
+        Ok(())
+    }
+
+    fn snapshot_failure(&self, reason: &str) -> PermissionError {
+        PermissionError::PolicyHookFailed {
+            profile: self.profile_name().to_string(),
+            action: "read",
+            resource: None,
+            reason: reason.to_string(),
+        }
     }
 
     fn apply_policy_hook(
@@ -387,7 +471,7 @@ impl ProfilePermissionGuard {
             return Ok(());
         };
         if !crate::paths::is_trusted_vault(self.paths.vault_root()) {
-            return Err(PermissionError::PolicyHookDenied {
+            return Err(PermissionError::PolicyHookFailed {
                 profile: self.profile_name().to_string(),
                 action,
                 resource: resource.map(normalize_permission_path),
@@ -396,16 +480,23 @@ impl ProfilePermissionGuard {
         }
 
         let hook_path = resolve_policy_hook_path(self.paths.vault_root(), policy_hook);
-        let hook_source =
-            fs::read_to_string(&hook_path).map_err(|error| PermissionError::PolicyHookDenied {
-                profile: self.profile_name().to_string(),
-                action,
-                resource: resource.map(normalize_permission_path),
-                reason: format!(
-                    "failed to read policy hook {}: {error}",
-                    hook_path.display()
-                ),
+        let fresh_source;
+        let hook_source = if let Some(snapshot) = &self.policy_snapshot {
+            snapshot.source.as_str()
+        } else {
+            fresh_source = fs::read_to_string(&hook_path).map_err(|error| {
+                PermissionError::PolicyHookFailed {
+                    profile: self.profile_name().to_string(),
+                    action,
+                    resource: resource.map(normalize_permission_path),
+                    reason: format!(
+                        "failed to read policy hook {}: {error}",
+                        hook_path.display()
+                    ),
+                }
             })?;
+            fresh_source.as_str()
+        };
 
         let input = serde_json::json!({
             "principal": null,
@@ -423,7 +514,7 @@ if (typeof __vulcanPolicyHandler !== 'function') {{\n\
 }}\n\
 __vulcanPolicyHandler(__vulcanPolicyInput);\n",
             input,
-            strip_shebang_line(&hook_source)
+            strip_shebang_line(hook_source)
         );
 
         let profile = policy_hook_profile();
@@ -446,7 +537,7 @@ __vulcanPolicyHandler(__vulcanPolicyInput);\n",
                 mutation_committer: None,
             },
         )
-        .map_err(|error| PermissionError::PolicyHookDenied {
+        .map_err(|error| PermissionError::PolicyHookFailed {
             profile: self.profile_name().to_string(),
             action,
             resource: resource.map(normalize_permission_path),
@@ -1029,7 +1120,7 @@ fn interpret_policy_hook_result(
                     resource,
                     reason,
                 }),
-                _ => Err(PermissionError::PolicyHookDenied {
+                _ => Err(PermissionError::PolicyHookFailed {
                     profile: profile.to_string(),
                     action,
                     resource,
@@ -1037,7 +1128,7 @@ fn interpret_policy_hook_result(
                 }),
             }
         }
-        _ => Err(PermissionError::PolicyHookDenied {
+        _ => Err(PermissionError::PolicyHookFailed {
             profile: profile.to_string(),
             action,
             resource,
@@ -1077,8 +1168,9 @@ fn extract_network_host(target: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        combine_cte_fragments, glob_matches, network_target_matches, parse_resource_specifier,
-        PathPermission, PermissionFilter, PermissionGrant, ResourceLimits, ResourceSpecifier,
+        combine_cte_fragments, glob_matches, interpret_policy_hook_result, network_target_matches,
+        parse_resource_specifier, PathPermission, PermissionError, PermissionFilter,
+        PermissionGrant, ResourceLimits, ResourceSpecifier,
     };
     use crate::config::{
         ConfigPermissionMode, NetworkPermissionConfig, NetworkPermissionDetails,
@@ -1090,6 +1182,114 @@ mod tests {
     fn path_segment_strategy() -> impl Strategy<Value = String> {
         proptest::string::string_regex("[A-Za-z0-9_-]{1,8}")
             .expect("path segment regex should be valid")
+    }
+
+    #[test]
+    #[cfg(feature = "js_runtime")]
+    fn read_policy_snapshot_keeps_one_revision_and_detects_drift() {
+        use super::{PermissionGuard, ProfilePermissionGuard};
+        use std::fs;
+        const CHILD_ROOT: &str = "VULCAN_POLICY_SNAPSHOT_TEST_ROOT";
+        let Some(root) = std::env::var_os(CHILD_ROOT) else {
+            // Isolate trust configuration without changing this test process's
+            // environment while other tests may be reading it.
+            let temp = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "permissions::tests::read_policy_snapshot_keeps_one_revision_and_detects_drift",
+                    "--nocapture",
+                ])
+                .env(CHILD_ROOT, temp.path())
+                .env("XDG_CONFIG_HOME", temp.path().join("xdg"))
+                .env("XDG_STATE_HOME", temp.path().join("state"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let root = std::path::PathBuf::from(root).join("vault");
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.guarded]\nread = \"all\"\nwrite = \"none\"\npolicy_hook = \".vulcan/guard.js\"\n").unwrap();
+        fs::write(root.join("Note.md"), "Note\n").unwrap();
+        let hook = root.join(".vulcan/guard.js");
+        let allow = "function policy_hook(input) { return 'pass'; }";
+        fs::write(&hook, allow).unwrap();
+        let trust = crate::paths::trusted_vaults_file().unwrap();
+        fs::create_dir_all(trust.parent().unwrap()).unwrap();
+        fs::write(
+            &trust,
+            serde_json::json!({"vaults": [root.canonicalize().unwrap()]}).to_string(),
+        )
+        .unwrap();
+        let paths = crate::VaultPaths::new(&root);
+        crate::scan_vault(&paths, crate::ScanMode::Full).unwrap();
+        let selection = super::resolve_permission_profile(&paths, Some("guarded")).unwrap();
+        let guard = ProfilePermissionGuard::new(&paths, selection.clone());
+        let snapshot = guard.snapshot_read_policy().unwrap();
+        assert!(snapshot.check_read_path("Note.md").is_ok());
+        fs::write(&hook, "function policy_hook(input) { return 'deny'; }").unwrap();
+        assert!(snapshot.check_read_path("Note.md").is_ok());
+        assert!(guard.check_read_path("Note.md").is_err());
+        assert!(snapshot.recheck_read_policy_snapshot().is_err());
+        assert!(guard
+            .snapshot_read_policy()
+            .unwrap()
+            .check_read_path("Note.md")
+            .is_err());
+        fs::write(&hook, allow).unwrap();
+        assert!(snapshot.recheck_read_policy_snapshot().is_ok());
+        fs::remove_file(&hook).unwrap();
+        assert!(snapshot.check_read_path("Note.md").is_ok());
+        assert!(snapshot.recheck_read_policy_snapshot().is_err());
+        assert!(guard.snapshot_read_policy().is_err());
+        let disabled = ProfilePermissionGuard::without_policy_hooks(&paths, selection);
+        assert!(disabled
+            .snapshot_read_policy()
+            .unwrap()
+            .check_read_path("Note.md")
+            .is_ok());
+        fs::write(&hook, allow).unwrap();
+        fs::write(&trust, "{\"vaults\":[]}").unwrap();
+        assert!(snapshot.check_read_path("Note.md").is_err());
+        assert!(snapshot.recheck_read_policy_snapshot().is_err());
+        assert!(guard.snapshot_read_policy().is_err());
+    }
+
+    #[test]
+    fn policy_decision_distinguishes_explicit_denial_from_invalid_results() {
+        for value in [
+            serde_json::json!("deny"),
+            serde_json::json!({"decision": "deny", "reason": "classified"}),
+        ] {
+            assert!(matches!(
+                interpret_policy_hook_result("test", "read", Some("Note.md"), Some(value)),
+                Err(PermissionError::PolicyHookDenied { .. })
+            ));
+        }
+        for value in [
+            None,
+            Some(serde_json::json!(true)),
+            Some(serde_json::json!("allow")),
+            Some(serde_json::json!({"decision": "invalid"})),
+        ] {
+            assert!(matches!(
+                interpret_policy_hook_result("test", "read", Some("Note.md"), value),
+                Err(PermissionError::PolicyHookFailed { .. })
+            ));
+        }
+        assert!(interpret_policy_hook_result(
+            "test",
+            "read",
+            Some("Note.md"),
+            Some(serde_json::json!("pass"))
+        )
+        .is_ok());
     }
 
     #[test]

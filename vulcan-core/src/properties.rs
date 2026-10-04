@@ -5,7 +5,9 @@ use crate::expression::parse::Parser;
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
-use crate::permissions::{combine_cte_fragments, PermissionFilter};
+use crate::permissions::{
+    combine_cte_fragments, PermissionError, PermissionFilter, PermissionGuard,
+};
 use crate::tasknotes::{extract_tasknote, tasknotes_priority_weight, tasknotes_status_state};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use regex::Regex;
@@ -102,6 +104,7 @@ pub enum PropertyError {
     InvalidFilter(String),
     Json(serde_json::Error),
     Sqlite(rusqlite::Error),
+    Permission(PermissionError),
 }
 
 impl Display for PropertyError {
@@ -114,6 +117,7 @@ impl Display for PropertyError {
             Self::InvalidFilter(filter) => write!(formatter, "invalid property filter: {filter}"),
             Self::Json(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
+            Self::Permission(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -124,6 +128,7 @@ impl Error for PropertyError {
             Self::Cache(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::Sqlite(error) => Some(error),
+            Self::Permission(error) => Some(error),
             Self::CacheMissing | Self::InvalidFilter(_) => None,
         }
     }
@@ -589,7 +594,7 @@ pub fn query_notes_with_filter(
     )?;
     let mut doc_ids_and_notes: Vec<(String, NoteRecord)> = rows.collect::<Result<Vec<_>, _>>()?;
 
-    hydrate_note_records(connection, &config, &mut doc_ids_and_notes, filter)?;
+    hydrate_note_records(connection, &config, &mut doc_ids_and_notes, filter, None)?;
 
     let mut notes: Vec<NoteRecord> = doc_ids_and_notes
         .into_iter()
@@ -680,6 +685,23 @@ pub fn load_note_index_with_filter(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+    load_note_index_with_read_scope(paths, filter, None)
+}
+
+/// Apply static document grants and per-path policy before constructing the
+/// expression lookup universe, including incoming-link sources.
+pub fn load_note_index_with_guard(
+    paths: &VaultPaths,
+    guard: &dyn PermissionGuard,
+) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+    load_note_index_with_read_scope(paths, Some(&guard.read_filter()), Some(guard))
+}
+
+fn load_note_index_with_read_scope(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+    guard: Option<&dyn PermissionGuard>,
+) -> Result<HashMap<String, NoteRecord>, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
@@ -732,6 +754,11 @@ pub fn load_note_index_with_filter(
             periodic_type,
             periodic_date,
         ) = row?;
+        // SQL already checked document tags as well as paths. Repeating
+        // check_read_path here would incorrectly reject tag-only grants.
+        if !policy_allows_indexed_note(guard, &path)? {
+            continue;
+        }
         let properties =
             serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
         doc_ids_and_notes.push((
@@ -761,13 +788,43 @@ pub fn load_note_index_with_filter(
         ));
     }
 
-    hydrate_note_records(connection, &config, &mut doc_ids_and_notes, filter)?;
+    // Preserve the complete authorized source universe, not only task-bearing
+    // notes or the eventual query results. Reuse the same policy decisions for
+    // backlinks rather than calling a potentially stateful hook again.
+    let readable_sources = guard.filter(|guard| guard.has_policy_hook()).map(|_| {
+        doc_ids_and_notes
+            .iter()
+            .map(|(_, note)| note.document_path.clone())
+            .collect::<HashSet<_>>()
+    });
+    hydrate_note_records(
+        connection,
+        &config,
+        &mut doc_ids_and_notes,
+        filter,
+        readable_sources.as_ref(),
+    )?;
 
-    let mut map = HashMap::new();
-    for (_, note) in doc_ids_and_notes {
-        map.insert(note.file_name.clone(), note);
+    Ok(doc_ids_and_notes
+        .into_iter()
+        .map(|(_, note)| (note.file_name.clone(), note))
+        .collect())
+}
+
+fn policy_allows_indexed_note(
+    guard: Option<&dyn PermissionGuard>,
+    path: &str,
+) -> Result<bool, PropertyError> {
+    let Some(guard) = guard.filter(|guard| guard.has_policy_hook()) else {
+        return Ok(true);
+    };
+    match guard.check_policy_decision("read", Some(path)) {
+        Ok(()) => Ok(true),
+        Err(PermissionError::PolicyHookDenied { .. } | PermissionError::PathDenied { .. }) => {
+            Ok(false)
+        }
+        Err(error) => Err(PropertyError::Permission(error)),
     }
-    Ok(map)
 }
 
 fn load_bookmarked_paths(vault_root: &Path) -> HashSet<String> {
@@ -831,6 +888,7 @@ fn hydrate_note_records(
     config: &VaultConfig,
     doc_ids_and_notes: &mut Vec<(String, NoteRecord)>,
     filter: Option<&PermissionFilter>,
+    readable_sources: Option<&HashSet<String>>,
 ) -> Result<(), rusqlite::Error> {
     if doc_ids_and_notes.is_empty() {
         return Ok(());
@@ -910,6 +968,9 @@ fn hydrate_note_records(
     })?;
     for inlink_row in inlink_rows {
         let (doc_id, source_path, source_ext) = inlink_row?;
+        if readable_sources.is_some_and(|sources| !sources.contains(&source_path)) {
+            continue;
+        }
         inlink_map
             .entry(doc_id)
             .or_default()
@@ -2708,6 +2769,98 @@ mod tests {
             allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
             deny: Vec::new(),
         })
+    }
+
+    #[test]
+    fn guarded_note_index_applies_policy_before_tasks_and_backlinks() {
+        struct Guard {
+            grant: crate::permissions::PermissionGrant,
+            calls: std::cell::RefCell<Vec<String>>,
+            deny: std::cell::Cell<bool>,
+        }
+        impl PermissionGuard for Guard {
+            fn profile_name(&self) -> &'static str {
+                "test"
+            }
+            fn grant(&self) -> &crate::permissions::PermissionGrant {
+                &self.grant
+            }
+            fn has_policy_hook(&self) -> bool {
+                true
+            }
+            fn check_policy_decision(
+                &self,
+                action: &'static str,
+                resource: Option<&str>,
+            ) -> Result<(), crate::permissions::PermissionError> {
+                assert_eq!(action, "read");
+                let path = resource.unwrap();
+                self.calls.borrow_mut().push(path.to_string());
+                if self.deny.get() && path == "BPolicy.md" {
+                    Err(crate::permissions::PermissionError::PathDenied {
+                        profile: "test".into(),
+                        action,
+                        path: path.into(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        for (path, source) in [
+            ("AHidden.md", "- [ ] Hidden\n[[CTarget]]\n"),
+            (
+                "BPolicy.md",
+                "---\ntags: [visible]\n---\n- [ ] Policy denied\n[[CTarget]]\n",
+            ),
+            (
+                "CTarget.md",
+                "---\ntags: [visible]\n---\n- [ ] Visible\n[[AHidden]]\n",
+            ),
+            ("DSource.md", "---\ntags: [visible]\n---\n[[CTarget]]\n"),
+            (
+                "EStaticDenied.md",
+                "---\ntags: [visible, secret]\n---\n[[CTarget]]\n",
+            ),
+        ] {
+            fs::write(temp.path().join(path), source).unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let mut grant = crate::permissions::resolve_permission_profile(&paths, None)
+            .unwrap()
+            .grant;
+        grant.read = PathPermission {
+            allow: vec![ResourceSpecifier::Tag("visible".into())],
+            deny: vec![ResourceSpecifier::Tag("secret".into())],
+        };
+        let guard = Guard {
+            grant,
+            calls: std::cell::RefCell::default(),
+            deny: std::cell::Cell::new(true),
+        };
+        let index = load_note_index_with_guard(&paths, &guard).unwrap();
+        assert_eq!(index.len(), 2);
+        assert_eq!(index["CTarget"].inlinks, vec!["[[DSource]]"]);
+        assert_eq!(index["CTarget"].links, vec!["[[AHidden]]"]);
+        let result = crate::tasks::evaluate_tasks_query_with_note_index(
+            "not done\ngroup by path\nlimit 1",
+            &index,
+        )
+        .unwrap();
+        assert_eq!(result.result_count, 1);
+        assert_eq!(result.tasks[0]["path"], "CTarget.md");
+        assert_eq!(result.groups[0].tasks[0]["path"], "CTarget.md");
+        let mut calls = guard.calls.borrow().clone();
+        calls.sort();
+        assert_eq!(calls, vec!["BPolicy.md", "CTarget.md", "DSource.md"]);
+        // A fresh read must not reuse decisions from the previous operation.
+        guard.deny.set(false);
+        let index = load_note_index_with_guard(&paths, &guard).unwrap();
+        assert_eq!(index.len(), 3);
+        assert_eq!(index["CTarget"].inlinks.len(), 2);
     }
 
     #[test]

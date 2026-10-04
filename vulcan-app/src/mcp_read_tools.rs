@@ -29,7 +29,7 @@ use crate::periodic::{
     read_latest_daily_note_where, show_periodic_note, DailyNoteReadReport, DailyReadTarget,
 };
 use crate::tasks::{
-    build_tasks_list_report_with_filter, build_tasks_query_result_with_filter, TaskListRequest,
+    build_tasks_list_report_with_guard, build_tasks_query_result_with_guard, TaskListRequest,
 };
 
 const MCP_QUERY_SOFT_MAX: usize = 200;
@@ -51,13 +51,13 @@ pub fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut Ta
     report.result_count = report.tasks.len();
 }
 
-/// Execute the MCP task-list read with source validation and row-level filtering.
+/// Execute the MCP task-list read with authority applied before evaluation.
 pub fn task_list(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     args: McpTaskListArgs,
 ) -> Result<TasksQueryResult, McpMethodError> {
-    let mut report = build_tasks_list_report_with_filter(
+    build_tasks_list_report_with_guard(
         paths,
         &TaskListRequest {
             filter: args.filter,
@@ -72,24 +72,19 @@ pub fn task_list(
             sort_by: args.sort_by,
             include_archived: args.include_archived,
         },
-        Some(&guard.read_filter()),
+        guard,
     )
-    .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    filter_tasks_query_report(guard, &mut report);
-    Ok(report)
+    .map_err(|error| McpMethodError::tool(error.to_string()))
 }
 
-/// Execute the MCP task query and remove unreadable flat and grouped rows.
+/// Execute the MCP task query over the caller's authorized note universe.
 pub fn task_query(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     args: &McpTaskQueryArgs,
 ) -> Result<TasksQueryResult, McpMethodError> {
-    let mut report =
-        build_tasks_query_result_with_filter(paths, &args.query, Some(&guard.read_filter()))
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    filter_tasks_query_report(guard, &mut report);
-    Ok(report)
+    build_tasks_query_result_with_guard(paths, &args.query, guard)
+        .map_err(|error| McpMethodError::tool(error.to_string()))
 }
 
 fn parse_tasks_default_source(
@@ -847,6 +842,103 @@ mod tests {
         assert!(report.tasks.is_empty());
         assert!(report.groups.is_empty());
         assert_eq!(report.result_count, 0);
+    }
+
+    #[test]
+    fn task_queries_reject_stale_selected_grants() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = \"all\"\nwrite = \"none\"\n",
+        )
+        .unwrap();
+        fs::write(temporary.path().join("Task.md"), "- [ ] Task\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        let query_args = serde_json::from_value(json!({"query": "not done"})).unwrap();
+        assert_eq!(
+            task_query(&paths, &guard, &query_args)
+                .unwrap()
+                .result_count,
+            1
+        );
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = \"none\"\nwrite = \"none\"\n",
+        )
+        .unwrap();
+        let list_args = || serde_json::from_value(json!({"source": "inline"})).unwrap();
+        assert!(task_query(&paths, &guard, &query_args).is_err());
+        assert!(task_list(&paths, &guard, list_args()).is_err());
+        let current = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        assert_eq!(
+            task_query(&paths, &current, &query_args)
+                .unwrap()
+                .result_count,
+            0
+        );
+        assert_eq!(
+            task_list(&paths, &current, list_args())
+                .unwrap()
+                .result_count,
+            0
+        );
+    }
+
+    #[test]
+    fn task_queries_preserve_tag_grants_and_denies_before_shaping() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = \"none\"\n").unwrap();
+        for (path, tags) in [
+            ("AHidden.md", "[]"),
+            ("BDenied.md", "[visible, secret]"),
+            ("CVisible.md", "[visible]"),
+        ] {
+            fs::write(
+                temporary.path().join(path),
+                format!("---\ntags: {tags}\n---\n- [ ] Task in {path}\n"),
+            )
+            .unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        let source = "not done\ngroup by path\nlimit 1";
+        // Core SQL selection has document tags; task-row tags need not contain
+        // the frontmatter tags authorizing their enclosing note.
+        let selected = crate::tasks::build_tasks_query_result_with_filter(
+            &paths,
+            source,
+            Some(&guard.read_filter()),
+        )
+        .unwrap();
+        assert_eq!(selected.result_count, 1);
+        assert_eq!(selected.tasks[0]["path"], "CVisible.md");
+        let query_args = serde_json::from_value(json!({"query": source})).unwrap();
+        let list_args =
+            serde_json::from_value(json!({"source": "inline", "filter": source})).unwrap();
+        for report in [
+            task_query(&paths, &guard, &query_args).unwrap(),
+            task_list(&paths, &guard, list_args).unwrap(),
+        ] {
+            assert_eq!(report.result_count, 1);
+            assert_eq!(report.tasks[0]["path"], "CVisible.md");
+            assert_eq!(report.groups.len(), 1);
+            assert_eq!(report.groups[0].tasks.len(), 1);
+            assert_eq!(report.groups[0].tasks[0]["path"], "CVisible.md");
+        }
     }
 
     #[test]

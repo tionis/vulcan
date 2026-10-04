@@ -19,8 +19,8 @@ use vulcan_app::tasks::{
     build_task_pomodoro_status_report_with_guard, build_task_reminders_report,
     build_task_show_report, build_task_track_log_report, build_task_track_status_report,
     build_task_track_summary_report, build_tasks_blocked_report, build_tasks_eval_report,
-    build_tasks_graph_report, build_tasks_list_report_with_filter, build_tasks_next_report,
-    build_tasks_query_result_with_filter, build_tasks_view_list_report, build_tasks_view_report,
+    build_tasks_graph_report, build_tasks_list_report_with_guard, build_tasks_next_report,
+    build_tasks_query_result_with_guard, build_tasks_view_list_report, build_tasks_view_report,
     process_due_tasknote_auto_archives_with_guard as app_process_due_tasknote_auto_archives,
     TaskAddReport, TaskAddRequest as AppTaskAddRequest,
     TaskArchiveRequest as AppTaskArchiveRequest, TaskCompleteRequest as AppTaskCompleteRequest,
@@ -37,9 +37,7 @@ use vulcan_app::tasks::{
     TasksBlockedReport, TasksEvalReport, TasksGraphReport, TasksNextReport,
 };
 use vulcan_core::config::TasksDefaultSource;
-use vulcan_core::{
-    BasesEvalReport, PermissionGuard, ProfilePermissionGuard, TasksQueryResult, VaultPaths,
-};
+use vulcan_core::{BasesEvalReport, ProfilePermissionGuard, TasksQueryResult, VaultPaths};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_tasks_command(
@@ -560,8 +558,7 @@ pub(crate) fn run_tasks_query_command(
     guard: &ProfilePermissionGuard,
     source: &str,
 ) -> Result<TasksQueryResult, CliError> {
-    build_tasks_query_result_with_filter(paths, source, Some(&guard.read_filter()))
-        .map_err(CliError::operation)
+    build_tasks_query_result_with_guard(paths, source, guard).map_err(CliError::operation)
 }
 
 fn run_tasks_view_list_command(paths: &VaultPaths) -> Result<TaskNotesViewListReport, CliError> {
@@ -1005,7 +1002,7 @@ pub(crate) fn run_tasks_list_command(
     guard: &ProfilePermissionGuard,
     options: TasksListOptions<'_>,
 ) -> Result<TasksQueryResult, CliError> {
-    build_tasks_list_report_with_filter(
+    build_tasks_list_report_with_guard(
         paths,
         &TaskListRequest {
             filter: options.filter.map(ToOwned::to_owned),
@@ -1020,7 +1017,7 @@ pub(crate) fn run_tasks_list_command(
             sort_by: options.sort_by.map(ToOwned::to_owned),
             include_archived: options.include_archived,
         },
-        Some(&guard.read_filter()),
+        guard,
     )
     .map_err(CliError::operation)
 }
