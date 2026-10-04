@@ -1,7 +1,7 @@
 ---
 name: js-api-guide
 description: Orient an external harness around Vulcan's JS runtime and sandbox boundaries.
-version: 3
+version: 4
 tools:
   - help
   - describe
@@ -43,6 +43,9 @@ Use this skill when the workflow genuinely needs scripting or multi-step logic r
 - Managed mdbase lifecycle policies run at commit and may generate fields before validation. Standalone mutation results reflect the persisted note. Values returned inside a `vault.transaction()` callback are provisional: read the note again with `dv.page(path)` after the transaction returns to obtain generated fields. Do not copy provisional IDs into other records and assume commit will rewrite those references.
 - Treat the sandbox and permission profile as intersecting boundaries. Neither one widens the
   other, and trust is a separate execution gate for vault-owned code.
+- Under a read-scoped profile, `dv.pages()`, `dv.page()`, and `file.inlinks` cover only notes
+  that pass the profile's path/tag grants and policy hook, including after the script's own writes.
+  Counts and backlinks describe that scope, not the whole vault.
 
 ## Example Moves
 

@@ -3528,12 +3528,7 @@ globalThis.Function = undefined;
                     .check_execute()
                     .map_err(|error| DataviewJsError::Message(error.to_string()))?;
             }
-            let mut note_index = load_note_index(paths)
-                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-            if let Some(permissions) = permissions.as_ref() {
-                let read_filter = permissions.read_filter();
-                note_index.retain(|_, note| read_filter.is_allowed(&note.document_path));
-            }
+            let note_index = load_scoped_note_index(paths, permissions.as_ref())?;
             let sandbox = options
                 .sandbox
                 .unwrap_or(loaded_config.js_runtime.default_sandbox);
@@ -4433,9 +4428,23 @@ globalThis.Function = undefined;
         f(&note_index)
     }
 
+    /// Load the page universe under the runtime's read authority. Path/tag
+    /// grants and policy apply before hydration so `file.inlinks` and linked
+    /// pages never include hidden sources. Reloads after mutations must use
+    /// this too, or the scope would silently widen mid-script.
+    fn load_scoped_note_index(
+        paths: &VaultPaths,
+        permissions: Option<&ProfilePermissionGuard>,
+    ) -> Result<HashMap<String, NoteRecord>, DataviewJsError> {
+        match permissions {
+            Some(guard) => crate::properties::load_note_index_with_guard(paths, guard),
+            None => load_note_index(paths),
+        }
+        .map_err(|error| DataviewJsError::Message(error.to_string()))
+    }
+
     fn reload_note_index(state: &JsEvalState) -> Result<(), DataviewJsError> {
-        let note_index = load_note_index(&state.paths)
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let note_index = load_scoped_note_index(&state.paths, state.permissions.as_ref())?;
         let mut current = state.note_index.lock().map_err(|_| {
             DataviewJsError::Message("DataviewJS note index lock poisoned".to_string())
         })?;
@@ -6898,6 +6907,73 @@ globalThis.Function = undefined;
             .expect_err("denied file should not be readable");
 
             assert!(error.to_string().contains("permission denied"));
+        }
+
+        #[test]
+        fn dataviewjs_page_universe_keeps_read_scope_after_mutation_reloads() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            for (path, contents) in [
+                ("Public/Target.md", "# Target\n"),
+                ("Public/Visible.md", "[[Public/Target]]\n"),
+                (
+                    "Public/Secret.md",
+                    "---\ntags: [secret]\n---\n[[Public/Target]]\n",
+                ),
+                ("Private/Hidden.md", "[[Public/Target]]\n"),
+            ] {
+                fs::create_dir_all(vault_root.join(path).parent().unwrap()).unwrap();
+                fs::write(vault_root.join(path), contents).unwrap();
+            }
+            fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+            fs::write(
+                vault_root.join(".vulcan/config.toml"),
+                concat!(
+                    "[permissions.profiles.scoped]\n",
+                    "read = { allow = [\"folder:Public/**\"], deny = [\"tag:secret\"] }\n",
+                    "write = { allow = [\"folder:Public/**\"] }\n",
+                    "execute = \"allow\"\n",
+                ),
+            )
+            .unwrap();
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_with_options(
+                &paths,
+                r#"
+                const snapshot = () => ({
+                  pages: dv.pages().file.path.array().sort(),
+                  inlinks: Array.from(dv.page("Public/Target").file.inlinks, link => String(link.path ?? link)).sort(),
+                });
+                const before = snapshot();
+                vault.create("Public/New", { content: "[[Public/Target]]\n" });
+                ({ before, after: snapshot() })
+                "#,
+                Some("Public/Visible.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    permission_profile: Some("scoped".to_string()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("scoped script should run");
+
+            let value = result.value.expect("script value");
+            assert_eq!(
+                value["before"],
+                serde_json::json!({
+                    "pages": ["Public/Target.md", "Public/Visible.md"],
+                    "inlinks": ["[[Public/Visible]]"],
+                })
+            );
+            assert_eq!(
+                value["after"],
+                serde_json::json!({
+                    "pages": ["Public/New.md", "Public/Target.md", "Public/Visible.md"],
+                    "inlinks": ["[[Public/New]]", "[[Public/Visible]]"],
+                })
+            );
         }
 
         #[cfg(unix)]

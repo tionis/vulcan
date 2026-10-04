@@ -17576,6 +17576,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(js_api.contains("standalone write is an implicit validated commit"));
     assert!(js_api.contains("complete proposed change set through one journal batch"));
     assert!(js_api.contains("validation failure restores every original"));
+    assert!(js_api.contains("including after the script's own writes"));
     let vault_query = fs::read_to_string(vault_root.join(".agents/skills/vault-query/SKILL.md"))
         .expect("vault query skill should be readable");
     assert_eq!(
