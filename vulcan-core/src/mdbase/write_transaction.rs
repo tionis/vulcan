@@ -13,7 +13,7 @@ use std::fmt::{Display, Formatter};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tempfile::NamedTempFile;
 use ulid::Ulid;
 
@@ -611,6 +611,7 @@ where
             let outcome = journal_outcome(&journal, MdbaseWriteOutcomeStatus::Committed);
             save_receipt(paths, &journal.identity, &outcome)?;
             clear_transaction(paths, &journal.transaction_id)?;
+            prune_operational_state(paths, &journal.transaction_id, SystemTime::now());
             Ok(Some(outcome))
         }
         JournalPhase::Blocked => unreachable!("blocked journals return above"),
@@ -648,7 +649,108 @@ where
     let outcome = journal_outcome(&journal, MdbaseWriteOutcomeStatus::Committed);
     save_receipt(paths, &journal.identity, &outcome)?;
     clear_transaction(paths, &journal.transaction_id)?;
+    prune_operational_state(paths, &journal.transaction_id, SystemTime::now());
     Ok(outcome)
+}
+
+/// Committed outbox events are kept for this long (and at most
+/// [`OUTBOX_MAX_EVENTS`]) for a future delivery consumer; no production
+/// consumer reads them yet, so the directory must not grow with history.
+const OUTBOX_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const OUTBOX_MAX_EVENTS: usize = 1_000;
+/// Idempotent replay window. Replaying a committed apply after its receipt
+/// expires cannot write twice: its accepted revisions no longer match and
+/// planning reports `stale_state`.
+const RECEIPT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const RECEIPT_MAX: usize = 10_000;
+/// Receipt pruning stats every receipt, so it runs at most this often.
+const RECEIPT_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Bound post-commit operational state. Runs under the write lock after a
+/// transaction is fully committed. Housekeeping failures never fail a
+/// committed write; the next commit retries.
+fn prune_operational_state(paths: &VaultPaths, keep_transaction: &str, now: SystemTime) {
+    let root = state_root(paths);
+    let _ = prune_outbox(&root.join("outbox"), keep_transaction, now);
+    let stamp = root.join("receipts.pruned");
+    let due = fs::metadata(&stamp)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_none_or(|elapsed| elapsed >= RECEIPT_PRUNE_INTERVAL);
+    if due && prune_receipts(&root.join("receipts"), now).is_ok() {
+        let _ = File::create(&stamp).and_then(|file| file.set_modified(now));
+    }
+}
+
+fn prune_outbox(directory: &Path, keep_transaction: &str, now: SystemTime) -> std::io::Result<()> {
+    let cutoff_ms = now
+        .checked_sub(OUTBOX_RETENTION)
+        .and_then(|cutoff| cutoff.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |cutoff| {
+            u64::try_from(cutoff.as_millis()).unwrap_or(u64::MAX)
+        });
+    let mut events = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+            continue;
+        };
+        // Only Vulcan-written ULID events are eligible; anything else is left
+        // for listing to report.
+        // The just-committed event is always kept and counts toward the cap.
+        if let Some(ulid) = Ulid::from_string(id)
+            .ok()
+            .filter(|_| id != keep_transaction)
+        {
+            events.push((ulid, entry.path()));
+        }
+    }
+    events.sort_by(|left, right| right.0.cmp(&left.0));
+    let mut removed = false;
+    for (index, (ulid, path)) in events.iter().enumerate() {
+        if index + 1 >= OUTBOX_MAX_EVENTS || ulid.timestamp_ms() < cutoff_ms {
+            fs::remove_file(path)?;
+            removed = true;
+        }
+    }
+    if removed {
+        sync_directory(directory).map_err(|error| std::io::Error::other(error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn prune_receipts(directory: &Path, now: SystemTime) -> std::io::Result<()> {
+    let cutoff = now.checked_sub(RECEIPT_RETENTION);
+    let mut receipts = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        // Receipts are always written with a lowercase `.json` suffix.
+        if entry
+            .path()
+            .extension()
+            .is_none_or(|extension| extension != "json")
+        {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        if metadata.is_file() {
+            receipts.push((metadata.modified()?, entry.path()));
+        }
+    }
+    receipts.sort_by(|left, right| right.0.cmp(&left.0));
+    let mut removed = false;
+    for (index, (modified, path)) in receipts.iter().enumerate() {
+        if index >= RECEIPT_MAX || cutoff.is_some_and(|cutoff| *modified < cutoff) {
+            fs::remove_file(path)?;
+            removed = true;
+        }
+    }
+    if removed {
+        sync_directory(directory).map_err(|error| std::io::Error::other(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn validate_apply(
@@ -1595,6 +1697,82 @@ mod tests {
     use std::cell::Cell;
     use tempfile::tempdir;
 
+    fn ulid_at(time: SystemTime) -> String {
+        Ulid::from_datetime(time).to_string()
+    }
+
+    #[test]
+    fn outbox_pruning_bounds_age_and_count_but_keeps_current_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path();
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(8 * 24 * 60 * 60);
+        let current = ulid_at(old);
+        let expired = ulid_at(old - Duration::from_secs(60));
+        fs::write(directory.join(format!("{current}.json")), "{}").unwrap();
+        fs::write(directory.join(format!("{expired}.json")), "{}").unwrap();
+        fs::write(directory.join("not-a-ulid.json"), "{}").unwrap();
+        let mut recent = Vec::new();
+        for offset in 0..(OUTBOX_MAX_EVENTS as u64 + 5) {
+            let id = ulid_at(now - Duration::from_millis(offset * 10));
+            fs::write(directory.join(format!("{id}.json")), "{}").unwrap();
+            recent.push(id);
+        }
+
+        prune_outbox(directory, &current, now).unwrap();
+
+        assert!(directory.join(format!("{current}.json")).exists());
+        assert!(!directory.join(format!("{expired}.json")).exists());
+        assert!(directory.join("not-a-ulid.json").exists());
+        let kept = recent
+            .iter()
+            .filter(|id| directory.join(format!("{id}.json")).exists())
+            .count();
+        assert_eq!(
+            kept,
+            OUTBOX_MAX_EVENTS - 1,
+            "the current event uses one slot"
+        );
+        // The newest events survive the cap.
+        assert!(directory.join(format!("{}.json", recent[0])).exists());
+        assert!(!directory
+            .join(format!("{}.json", recent.last().unwrap()))
+            .exists());
+    }
+
+    #[test]
+    fn receipt_pruning_expires_old_receipts_at_most_hourly() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        fs::create_dir_all(&root).unwrap();
+        let paths = VaultPaths::new(&root);
+        initialize_vulcan_dir(&paths).unwrap();
+        ensure_state_layout(&paths).unwrap();
+        let receipts = state_root(&paths).join("receipts");
+        let now = SystemTime::now();
+        let write_receipt = |name: &str, age_days: u64| {
+            let path = receipts.join(format!("{name}.json"));
+            let file = File::create(&path).unwrap();
+            file.set_modified(now - Duration::from_secs(age_days * 24 * 60 * 60))
+                .unwrap();
+            path
+        };
+        let fresh = write_receipt("fresh", 1);
+        let stale = write_receipt("stale", 31);
+
+        prune_operational_state(&paths, "", now);
+        assert!(fresh.exists());
+        assert!(!stale.exists());
+
+        // Within the interval, receipt pruning is skipped.
+        let stale = write_receipt("stale-again", 40);
+        prune_operational_state(&paths, "", now + Duration::from_secs(10 * 60));
+        assert!(stale.exists());
+        prune_operational_state(&paths, "", now + Duration::from_secs(2 * 60 * 60));
+        assert!(!stale.exists());
+        assert!(fresh.exists());
+    }
+
     #[test]
     fn legacy_mdbase_state_migrates_atomically_with_journal_and_snapshots() {
         let temporary = tempdir().expect("temporary directory");
@@ -1815,12 +1993,21 @@ mod tests {
             verification: verification(),
             idempotency_key: "key-1",
         };
+        // An expired undelivered event from an earlier session is pruned by
+        // the next commit instead of accumulating.
+        ensure_state_layout(&paths).unwrap();
+        let expired = state_root(&paths).join("outbox").join(format!(
+            "{}.json",
+            ulid_at(SystemTime::now() - Duration::from_secs(10 * 24 * 60 * 60))
+        ));
+        fs::write(&expired, "{}").unwrap();
         let mut reconciliations = 0;
         let outcome = apply_mdbase_write_transaction(&paths, &collection, &request, |_| {
             reconciliations += 1;
             Ok(())
         })
         .expect("apply");
+        assert!(!expired.exists());
         assert_eq!(outcome.status, MdbaseWriteOutcomeStatus::Committed);
         assert!(!outcome.replayed);
         assert_eq!(reconciliations, 1);
