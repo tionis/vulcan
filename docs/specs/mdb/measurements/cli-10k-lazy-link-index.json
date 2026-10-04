@@ -1,0 +1,847 @@
+{
+  "measurement": "production_cli_public_10k_lazy_link_index_comparison",
+  "diagnostic_status": "complete",
+  "acceptance_gate_result": "not_evaluated",
+  "builds": {
+    "before": {
+      "commit": "16f421653feea9f0e41b38f307ec6fd3433da291",
+      "command": "cargo +1.88.0 build --release -p vulcan-cli",
+      "profile": "Cargo release defaults; no profile overrides or RUSTFLAGS",
+      "features": [
+        "js_runtime",
+        "oauth",
+        "vectors",
+        "web"
+      ],
+      "binary_sha256": "ee8aad885395e3f41988672ee8411213b2e21270f3e5d37ceef66b6166a03abe"
+    },
+    "after": {
+      "commit": "56c29cdb397ab703fe45153950fa7ecc8927111a",
+      "command": "cargo +1.88.0 build --release -p vulcan-cli",
+      "profile": "Cargo release defaults; no profile overrides or RUSTFLAGS",
+      "features": [
+        "js_runtime",
+        "oauth",
+        "vectors",
+        "web"
+      ],
+      "binary_sha256": "7b84648359c09fbd787886914e099d1d87f73520a75df24938b9516599e223ab"
+    }
+  },
+  "runner": {
+    "path": "scripts/measure_mdb_cli.py",
+    "sha256": "25d015396fba19eeb796e74ccb93480dbc4fcaceeea95bb55e991875536276f7",
+    "command_template": "python3 scripts/measure_mdb_cli.py FIXTURE --binary BINARY --samples 9 [--restricted]"
+  },
+  "machine": {
+    "cpu": "Intel Core i7-8650U @ 1.90GHz",
+    "physical_cores": 4,
+    "logical_cpus": 8,
+    "memory_bytes": 33534963712,
+    "platform": "Linux-6.12.107+deb13-amd64-x86_64-with-glibc2.41",
+    "architecture": "x86_64",
+    "filesystem": "btrfs",
+    "acceptance_reference_machine": false
+  },
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 104,
+    "links": 100000,
+    "missing_status_records": 2000,
+    "payload_files": 10014,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348",
+    "private_records": 1000,
+    "records": 10000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 3333,
+      "project": 3333,
+      "task": 3334
+    }
+  },
+  "method": {
+    "concurrency": 1,
+    "repeated_samples_per_run": 9,
+    "sequence": [
+      "before",
+      "after",
+      "after",
+      "before",
+      "before_restricted",
+      "after_restricted"
+    ],
+    "refresh": "blocking",
+    "timing": "perf_counter around subprocess.run through stdout/stderr capture and exit; validation after timing",
+    "query_mix": "cycle through all nine generated task/contact/project queries",
+    "fixture_verification": "source membership and generation-order digest before/after; preflight warms OS file caches",
+    "cache_state": "existing schema-v22 cache, 10000 rows and 10000 local payloads before runs",
+    "percentiles": "nearest rank, repeated successful requests only",
+    "memory": "Linux RUSAGE_CHILDREN aggregate peak RSS KiB per driver process, not retained-memory growth",
+    "other_cargo_workloads": "no assistant Cargo jobs during measurements; host load uncontrolled"
+  },
+  "runs": [
+    {
+      "variant": "before",
+      "acceptance_gate_result": "not_evaluated",
+      "binary_sha256": "ee8aad885395e3f41988672ee8411213b2e21270f3e5d37ceef66b6166a03abe",
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 526652,
+      "complete_and_valid": true,
+      "first_request": {
+        "exact_total": 1556,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27344,
+        "wall_seconds": 3.6867536050267518
+      },
+      "fixture_unchanged": true,
+      "measurement": "public_mdb_cli_diagnostic",
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": null,
+        "refresh": "blocking",
+        "requested_repeated_samples": 9,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "repeated_requests": [
+        {
+          "exact_total": 889,
+          "iteration": 1,
+          "ok": true,
+          "query": "task-active.json",
+          "rows": 50,
+          "stdout_bytes": 27523,
+          "wall_seconds": 3.7547713220119476
+        },
+        {
+          "exact_total": 889,
+          "iteration": 2,
+          "ok": true,
+          "query": "task-done.json",
+          "rows": 50,
+          "stdout_bytes": 27278,
+          "wall_seconds": 3.4075574110029265
+        },
+        {
+          "exact_total": 1,
+          "iteration": 3,
+          "ok": true,
+          "query": "contact-1.json",
+          "rows": 1,
+          "stdout_bytes": 615,
+          "wall_seconds": 3.710818038089201
+        },
+        {
+          "exact_total": 1,
+          "iteration": 4,
+          "ok": true,
+          "query": "contact-4.json",
+          "rows": 1,
+          "stdout_bytes": 638,
+          "wall_seconds": 3.7334845260484144
+        },
+        {
+          "exact_total": 1,
+          "iteration": 5,
+          "ok": true,
+          "query": "contact-7.json",
+          "rows": 1,
+          "stdout_bytes": 632,
+          "wall_seconds": 3.597891171928495
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 6,
+          "ok": true,
+          "query": "project-open.json",
+          "rows": 50,
+          "stdout_bytes": 28242,
+          "wall_seconds": 3.6938554299995303
+        },
+        {
+          "exact_total": 888,
+          "iteration": 7,
+          "ok": true,
+          "query": "project-active.json",
+          "rows": 50,
+          "stdout_bytes": 28450,
+          "wall_seconds": 3.7320959080243483
+        },
+        {
+          "exact_total": 889,
+          "iteration": 8,
+          "ok": true,
+          "query": "project-done.json",
+          "rows": 50,
+          "stdout_bytes": 28201,
+          "wall_seconds": 3.811865929979831
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 9,
+          "ok": true,
+          "query": "task-open.json",
+          "rows": 50,
+          "stdout_bytes": 27344,
+          "wall_seconds": 3.7919473180081695
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.7320959080243483,
+        "p95": 3.811865929979831,
+        "p99": 3.811865929979831
+      }
+    },
+    {
+      "variant": "after",
+      "acceptance_gate_result": "not_evaluated",
+      "binary_sha256": "7b84648359c09fbd787886914e099d1d87f73520a75df24938b9516599e223ab",
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 293628,
+      "complete_and_valid": true,
+      "first_request": {
+        "exact_total": 1556,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27344,
+        "wall_seconds": 3.1330382919404656
+      },
+      "fixture_unchanged": true,
+      "measurement": "public_mdb_cli_diagnostic",
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": null,
+        "refresh": "blocking",
+        "requested_repeated_samples": 9,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "repeated_requests": [
+        {
+          "exact_total": 889,
+          "iteration": 1,
+          "ok": true,
+          "query": "task-active.json",
+          "rows": 50,
+          "stdout_bytes": 27523,
+          "wall_seconds": 3.14632692898158
+        },
+        {
+          "exact_total": 889,
+          "iteration": 2,
+          "ok": true,
+          "query": "task-done.json",
+          "rows": 50,
+          "stdout_bytes": 27278,
+          "wall_seconds": 3.0879168630344793
+        },
+        {
+          "exact_total": 1,
+          "iteration": 3,
+          "ok": true,
+          "query": "contact-1.json",
+          "rows": 1,
+          "stdout_bytes": 615,
+          "wall_seconds": 3.1632497350219637
+        },
+        {
+          "exact_total": 1,
+          "iteration": 4,
+          "ok": true,
+          "query": "contact-4.json",
+          "rows": 1,
+          "stdout_bytes": 638,
+          "wall_seconds": 3.179196308949031
+        },
+        {
+          "exact_total": 1,
+          "iteration": 5,
+          "ok": true,
+          "query": "contact-7.json",
+          "rows": 1,
+          "stdout_bytes": 632,
+          "wall_seconds": 3.2199079770362005
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 6,
+          "ok": true,
+          "query": "project-open.json",
+          "rows": 50,
+          "stdout_bytes": 28242,
+          "wall_seconds": 3.1708026580745354
+        },
+        {
+          "exact_total": 888,
+          "iteration": 7,
+          "ok": true,
+          "query": "project-active.json",
+          "rows": 50,
+          "stdout_bytes": 28450,
+          "wall_seconds": 3.2108893840340897
+        },
+        {
+          "exact_total": 889,
+          "iteration": 8,
+          "ok": true,
+          "query": "project-done.json",
+          "rows": 50,
+          "stdout_bytes": 28201,
+          "wall_seconds": 3.27636670100037
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 9,
+          "ok": true,
+          "query": "task-open.json",
+          "rows": 50,
+          "stdout_bytes": 27344,
+          "wall_seconds": 3.20440534199588
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.179196308949031,
+        "p95": 3.27636670100037,
+        "p99": 3.27636670100037
+      }
+    },
+    {
+      "variant": "after",
+      "acceptance_gate_result": "not_evaluated",
+      "binary_sha256": "7b84648359c09fbd787886914e099d1d87f73520a75df24938b9516599e223ab",
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 293352,
+      "complete_and_valid": true,
+      "first_request": {
+        "exact_total": 1556,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27344,
+        "wall_seconds": 3.136394768022001
+      },
+      "fixture_unchanged": true,
+      "measurement": "public_mdb_cli_diagnostic",
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": null,
+        "refresh": "blocking",
+        "requested_repeated_samples": 9,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "repeated_requests": [
+        {
+          "exact_total": 889,
+          "iteration": 1,
+          "ok": true,
+          "query": "task-active.json",
+          "rows": 50,
+          "stdout_bytes": 27523,
+          "wall_seconds": 3.193618646939285
+        },
+        {
+          "exact_total": 889,
+          "iteration": 2,
+          "ok": true,
+          "query": "task-done.json",
+          "rows": 50,
+          "stdout_bytes": 27278,
+          "wall_seconds": 3.1236810259288177
+        },
+        {
+          "exact_total": 1,
+          "iteration": 3,
+          "ok": true,
+          "query": "contact-1.json",
+          "rows": 1,
+          "stdout_bytes": 615,
+          "wall_seconds": 3.2700559169752523
+        },
+        {
+          "exact_total": 1,
+          "iteration": 4,
+          "ok": true,
+          "query": "contact-4.json",
+          "rows": 1,
+          "stdout_bytes": 638,
+          "wall_seconds": 3.182453050976619
+        },
+        {
+          "exact_total": 1,
+          "iteration": 5,
+          "ok": true,
+          "query": "contact-7.json",
+          "rows": 1,
+          "stdout_bytes": 632,
+          "wall_seconds": 3.236385840922594
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 6,
+          "ok": true,
+          "query": "project-open.json",
+          "rows": 50,
+          "stdout_bytes": 28242,
+          "wall_seconds": 3.251469878014177
+        },
+        {
+          "exact_total": 888,
+          "iteration": 7,
+          "ok": true,
+          "query": "project-active.json",
+          "rows": 50,
+          "stdout_bytes": 28450,
+          "wall_seconds": 3.249799769022502
+        },
+        {
+          "exact_total": 889,
+          "iteration": 8,
+          "ok": true,
+          "query": "project-done.json",
+          "rows": 50,
+          "stdout_bytes": 28201,
+          "wall_seconds": 3.174809994059615
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 9,
+          "ok": true,
+          "query": "task-open.json",
+          "rows": 50,
+          "stdout_bytes": 27344,
+          "wall_seconds": 3.1162028399994597
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.193618646939285,
+        "p95": 3.2700559169752523,
+        "p99": 3.2700559169752523
+      }
+    },
+    {
+      "variant": "before",
+      "acceptance_gate_result": "not_evaluated",
+      "binary_sha256": "ee8aad885395e3f41988672ee8411213b2e21270f3e5d37ceef66b6166a03abe",
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 526140,
+      "complete_and_valid": true,
+      "first_request": {
+        "exact_total": 1556,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27344,
+        "wall_seconds": 3.636458710068837
+      },
+      "fixture_unchanged": true,
+      "measurement": "public_mdb_cli_diagnostic",
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": null,
+        "refresh": "blocking",
+        "requested_repeated_samples": 9,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "repeated_requests": [
+        {
+          "exact_total": 889,
+          "iteration": 1,
+          "ok": true,
+          "query": "task-active.json",
+          "rows": 50,
+          "stdout_bytes": 27523,
+          "wall_seconds": 3.3350963350385427
+        },
+        {
+          "exact_total": 889,
+          "iteration": 2,
+          "ok": true,
+          "query": "task-done.json",
+          "rows": 50,
+          "stdout_bytes": 27278,
+          "wall_seconds": 3.6443166160024703
+        },
+        {
+          "exact_total": 1,
+          "iteration": 3,
+          "ok": true,
+          "query": "contact-1.json",
+          "rows": 1,
+          "stdout_bytes": 615,
+          "wall_seconds": 3.60914037108887
+        },
+        {
+          "exact_total": 1,
+          "iteration": 4,
+          "ok": true,
+          "query": "contact-4.json",
+          "rows": 1,
+          "stdout_bytes": 638,
+          "wall_seconds": 3.6816039629047737
+        },
+        {
+          "exact_total": 1,
+          "iteration": 5,
+          "ok": true,
+          "query": "contact-7.json",
+          "rows": 1,
+          "stdout_bytes": 632,
+          "wall_seconds": 3.602883392944932
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 6,
+          "ok": true,
+          "query": "project-open.json",
+          "rows": 50,
+          "stdout_bytes": 28242,
+          "wall_seconds": 3.6807885660091415
+        },
+        {
+          "exact_total": 888,
+          "iteration": 7,
+          "ok": true,
+          "query": "project-active.json",
+          "rows": 50,
+          "stdout_bytes": 28450,
+          "wall_seconds": 3.6115969059756026
+        },
+        {
+          "exact_total": 889,
+          "iteration": 8,
+          "ok": true,
+          "query": "project-done.json",
+          "rows": 50,
+          "stdout_bytes": 28201,
+          "wall_seconds": 3.7531711800256744
+        },
+        {
+          "exact_total": 1556,
+          "iteration": 9,
+          "ok": true,
+          "query": "task-open.json",
+          "rows": 50,
+          "stdout_bytes": 27344,
+          "wall_seconds": 3.4340585890458897
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.6115969059756026,
+        "p95": 3.7531711800256744,
+        "p99": 3.7531711800256744
+      }
+    },
+    {
+      "variant": "before_restricted",
+      "acceptance_gate_result": "not_evaluated",
+      "binary_sha256": "ee8aad885395e3f41988672ee8411213b2e21270f3e5d37ceef66b6166a03abe",
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 476036,
+      "complete_and_valid": true,
+      "first_request": {
+        "exact_total": 1222,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27453,
+        "wall_seconds": 3.143716323073022
+      },
+      "fixture_unchanged": true,
+      "measurement": "public_mdb_cli_diagnostic",
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": "benchmark_public",
+        "refresh": "blocking",
+        "requested_repeated_samples": 9,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "repeated_requests": [
+        {
+          "exact_total": 889,
+          "iteration": 1,
+          "ok": true,
+          "query": "task-active.json",
+          "rows": 50,
+          "stdout_bytes": 27523,
+          "wall_seconds": 3.063279115012847
+        },
+        {
+          "exact_total": 889,
+          "iteration": 2,
+          "ok": true,
+          "query": "task-done.json",
+          "rows": 50,
+          "stdout_bytes": 27278,
+          "wall_seconds": 3.294044603011571
+        },
+        {
+          "exact_total": 1,
+          "iteration": 3,
+          "ok": true,
+          "query": "contact-1.json",
+          "rows": 1,
+          "stdout_bytes": 615,
+          "wall_seconds": 3.271841635927558
+        },
+        {
+          "exact_total": 1,
+          "iteration": 4,
+          "ok": true,
+          "query": "contact-4.json",
+          "rows": 1,
+          "stdout_bytes": 638,
+          "wall_seconds": 3.173233337001875
+        },
+        {
+          "exact_total": 1,
+          "iteration": 5,
+          "ok": true,
+          "query": "contact-7.json",
+          "rows": 1,
+          "stdout_bytes": 632,
+          "wall_seconds": 3.3938067530980334
+        },
+        {
+          "exact_total": 1223,
+          "iteration": 6,
+          "ok": true,
+          "query": "project-open.json",
+          "rows": 50,
+          "stdout_bytes": 28333,
+          "wall_seconds": 3.339398688985966
+        },
+        {
+          "exact_total": 888,
+          "iteration": 7,
+          "ok": true,
+          "query": "project-active.json",
+          "rows": 50,
+          "stdout_bytes": 28450,
+          "wall_seconds": 3.323574831010774
+        },
+        {
+          "exact_total": 889,
+          "iteration": 8,
+          "ok": true,
+          "query": "project-done.json",
+          "rows": 50,
+          "stdout_bytes": 28201,
+          "wall_seconds": 3.085776825901121
+        },
+        {
+          "exact_total": 1222,
+          "iteration": 9,
+          "ok": true,
+          "query": "task-open.json",
+          "rows": 50,
+          "stdout_bytes": 27453,
+          "wall_seconds": 3.450407263939269
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.294044603011571,
+        "p95": 3.450407263939269,
+        "p99": 3.450407263939269
+      }
+    },
+    {
+      "variant": "after_restricted",
+      "acceptance_gate_result": "not_evaluated",
+      "binary_sha256": "7b84648359c09fbd787886914e099d1d87f73520a75df24938b9516599e223ab",
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 194860,
+      "complete_and_valid": true,
+      "first_request": {
+        "exact_total": 1222,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27453,
+        "wall_seconds": 2.635944218025543
+      },
+      "fixture_unchanged": true,
+      "measurement": "public_mdb_cli_diagnostic",
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": "benchmark_public",
+        "refresh": "blocking",
+        "requested_repeated_samples": 9,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "repeated_requests": [
+        {
+          "exact_total": 889,
+          "iteration": 1,
+          "ok": true,
+          "query": "task-active.json",
+          "rows": 50,
+          "stdout_bytes": 27523,
+          "wall_seconds": 2.654642099980265
+        },
+        {
+          "exact_total": 889,
+          "iteration": 2,
+          "ok": true,
+          "query": "task-done.json",
+          "rows": 50,
+          "stdout_bytes": 27278,
+          "wall_seconds": 2.893236245959997
+        },
+        {
+          "exact_total": 1,
+          "iteration": 3,
+          "ok": true,
+          "query": "contact-1.json",
+          "rows": 1,
+          "stdout_bytes": 615,
+          "wall_seconds": 2.943665793049149
+        },
+        {
+          "exact_total": 1,
+          "iteration": 4,
+          "ok": true,
+          "query": "contact-4.json",
+          "rows": 1,
+          "stdout_bytes": 638,
+          "wall_seconds": 3.043845051084645
+        },
+        {
+          "exact_total": 1,
+          "iteration": 5,
+          "ok": true,
+          "query": "contact-7.json",
+          "rows": 1,
+          "stdout_bytes": 632,
+          "wall_seconds": 3.0854657229501754
+        },
+        {
+          "exact_total": 1223,
+          "iteration": 6,
+          "ok": true,
+          "query": "project-open.json",
+          "rows": 50,
+          "stdout_bytes": 28333,
+          "wall_seconds": 2.888955002068542
+        },
+        {
+          "exact_total": 888,
+          "iteration": 7,
+          "ok": true,
+          "query": "project-active.json",
+          "rows": 50,
+          "stdout_bytes": 28450,
+          "wall_seconds": 2.9561456580413505
+        },
+        {
+          "exact_total": 889,
+          "iteration": 8,
+          "ok": true,
+          "query": "project-done.json",
+          "rows": 50,
+          "stdout_bytes": 28201,
+          "wall_seconds": 2.95366252399981
+        },
+        {
+          "exact_total": 1222,
+          "iteration": 9,
+          "ok": true,
+          "query": "task-open.json",
+          "rows": 50,
+          "stdout_bytes": 27453,
+          "wall_seconds": 2.979448915924877
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 2.95366252399981,
+        "p95": 3.0854657229501754,
+        "p99": 3.0854657229501754
+      }
+    }
+  ],
+  "limitations": [
+    "Diagnostic comparison, not reference-machine or 1000-sample acceptance",
+    "Single client, no concurrent writers or retained-memory growth measurement",
+    "Power, frequency, background load, and OS page cache are uncontrolled",
+    "Both versions retain full-source reconciliation and visible-record hydration; no selective SQL or retained-freshness gate",
+    "First request per process is separate; preflight fixture hashing warms OS file caches",
+    "No stage/source-read counters; timing alone does not attribute all remaining cost",
+    "Driver checks exact totals, ordered paths, omitted body, diagnostics, response bounds and source/binary stability; it does not compare every returned metadata value. Query unit tests separately compare eager/lazy result and error envelopes."
+  ],
+  "recorded_at_utc": "2026-10-04 03:55:20 UTC",
+  "completed_at_utc": "2026-10-04 04:00:42 UTC",
+  "summary": {
+    "before": {
+      "successful_requests": 20,
+      "repeated_samples": 18,
+      "p50": 3.6807885660091415,
+      "p95": 3.811865929979831,
+      "p99": 3.811865929979831,
+      "max_child_peak_rss_kib": 526652
+    },
+    "after": {
+      "successful_requests": 20,
+      "repeated_samples": 18,
+      "p50": 3.182453050976619,
+      "p95": 3.27636670100037,
+      "p99": 3.27636670100037,
+      "max_child_peak_rss_kib": 293628
+    },
+    "before_restricted": {
+      "successful_requests": 10,
+      "repeated_samples": 9,
+      "p50": 3.294044603011571,
+      "p95": 3.450407263939269,
+      "p99": 3.450407263939269,
+      "max_child_peak_rss_kib": 476036
+    },
+    "after_restricted": {
+      "successful_requests": 10,
+      "repeated_samples": 9,
+      "p50": 2.95366252399981,
+      "p95": 3.0854657229501754,
+      "p99": 3.0854657229501754,
+      "max_child_peak_rss_kib": 194860
+    }
+  },
+  "conclusion": "All 60 requests passed semantic and bounded-response checks with unchanged fixtures/binaries. The lazy-index build has lower observed repeated latency and peak child RSS in this diagnostic; every measured query remains multi-second. No acceptance gate or unreachability declaration. Full-source reconciliation, all-visible-record preparation and residual execution remain priorities."
+}
