@@ -50,6 +50,19 @@ signature verification. Multiple signatures permit an overlap window during key 
 signature is trusted only when both its `key_id` and Ed25519 public key match a key compiled into or
 otherwise configured by the client.
 
+Two signature algorithms exist, both over Ed25519 keys:
+
+- `ed25519`: `signature` is the base64 raw 64-byte Ed25519 signature over the payload bytes.
+- `sshsig-ed25519`: `signature` is the base64 binary (de-armored) blob that
+  `ssh-keygen -Y sign -n vulcan-update@tionis.dev` emits for the payload bytes, as specified by
+  OpenSSH's `PROTOCOL.sshsig`. The client requires signature version 1, the exact namespace
+  `vulcan-update@tionis.dev`, an empty reserved field, the `sha512` message hash, an `ssh-ed25519`
+  key equal to the trusted key, and no trailing bytes. This lets a key that never leaves a
+  smartcard sign through `ssh-agent`, and the namespace keeps signatures that key makes for other
+  purposes (such as Git commits) from authorizing updates.
+
+Unknown algorithms are ignored, so an envelope can carry signatures that older clients skip.
+
 The decoded version-1 payload is:
 
 ```json
@@ -191,7 +204,22 @@ The separate stable-channel identity was created on 2026-09-02:
   `8a6aea759c18b6d82d1492fb83e6efcddb3562aeb8a60d9f054119b4bceceafd`
 - authority: `stable` only; it must never authorize `main` metadata
 
-The live private key is restricted to the signing machine at
+Its hardware-held successor was added on 2026-10-04:
+
+- key ID: `stable-2026-10`
+- algorithm: `sshsig-ed25519`
+- raw Ed25519 public key (base64): `dk91fcu3uqtH5h0q/FWJ/qjlBb65wGojrngIuiusEU4=`
+- OpenSSH public key:
+  `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHZPdX3Lt7qrR+YdKvxVif6o5QW+ucBqI654CLorrBFO`
+- OpenSSH fingerprint: `SHA256:HYpEy7eKcHkSUuL1y4ADmFk89G0zkkI0jfVXucG/juQ`
+- SHA-256 fingerprint of the raw 32-byte public key:
+  `d468ccf04842c27b6c1f2234534c51d425f7b6b68ebf7689a1b05a73303806b6`
+- custody: the operator's OpenPGP card, exposed to `ssh-agent` by `gpg-agent`; no private key file
+  exists. The signer passes the public key file to `ssh-keygen -Y sign -f`, and the card prompts for
+  its PIN or touch.
+- authority: `stable` only
+
+The live `stable-2026-09` private key is restricted to the signing machine at
 `~/.config/vulcan/release-signing/stable-2026-09.pem`. Its only Git-canonical recovery copy is the
 SOPS-encrypted Grimoire admin secret
 `secrets/groups/admin/vulcan-update-stable.sops.yaml`. Stable signing is approval-gated rather than
@@ -221,6 +249,9 @@ python scripts/release/sign_stable_release.py \
   --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem
 ```
 
+Pass `--ssh-signing-key <file>.pub` to sign with `stable-2026-10` as well, or alone once
+`stable-2026-09` is retired. Each run asks each signer exactly once.
+
 The `v0.2.1` release is the first stable release containing this public key and is therefore the
 trust bootstrap. Older binaries cannot authenticate that release and need one out-of-band
 checksummed archive/package installation; do not teach them to accept the signature by weakening
@@ -230,6 +261,17 @@ to retrofit or sign.
 
 Rotation uses an overlap release whose envelope carries signatures from both the retiring and new
 stable keys while clients embed both public keys. A later out-of-band release removes the retiring
-key. If the old private key is lost before overlap, or suspected compromised, stop signing with it,
+key.
+
+The `stable-2026-09` to `stable-2026-10` rotation proceeds as follows:
+
+1. The first release that embeds `stable-2026-10` must carry a `stable-2026-09` signature, because
+   every installed binary trusts only that key. Adding the card signature is harmless.
+2. Subsequent releases carry both signatures for as long as binaries from before step 1 should keep
+   self-updating. Each such binary verifies the `stable-2026-09` signature and, once updated, trusts
+   both keys.
+3. A later release stops embedding `stable-2026-09` and is signed only with the card. Binaries that
+   never updated past step 1 can no longer verify the channel and need one checksummed manual
+   installation. Afterwards, retire the PEM file and its recovery copy. If the old private key is lost before overlap, or suspected compromised, stop signing with it,
 remove its trust in a manually verified release, install that release through checksums/packages,
 and resume with a new identity. A compromised key cannot securely authorize its own revocation.

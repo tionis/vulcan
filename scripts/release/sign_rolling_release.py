@@ -45,6 +45,22 @@ ROLLING_VERSION = re.compile(
 )
 
 
+ED25519_ALGORITHM = "ed25519"
+SSHSIG_ALGORITHM = "sshsig-ed25519"
+# Must match SSHSIG_NAMESPACE in vulcan-app/src/update.rs.
+SSHSIG_NAMESPACE = "vulcan-update@tionis.dev"
+
+
+class Signer(NamedTuple):
+    """One envelope signature: a PEM private key (`ed25519`) or an SSH public
+    key whose private half is held by ssh-agent, e.g. on a smartcard
+    (`sshsig-ed25519`)."""
+
+    key_id: str
+    algorithm: str
+    path: pathlib.Path
+
+
 class ValidatedRelease(NamedTuple):
     version: str
     source_commit: str
@@ -211,6 +227,97 @@ def validate_key(
         raise ValueError(
             f"signing key does not match the compiled {release_kind}-channel public key"
         )
+
+
+def ssh_ed25519_public_key(text: str) -> bytes:
+    """Return the raw 32-byte key from an OpenSSH `ssh-ed25519` public key line."""
+    fields = text.split()
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        raise ValueError("SSH signing key must be an ssh-ed25519 public key")
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+    except ValueError as error:
+        raise ValueError("SSH signing key is not valid base64") from error
+    expected_prefix = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20"
+    if len(blob) != len(expected_prefix) + 32 or not blob.startswith(expected_prefix):
+        raise ValueError("SSH signing key is not a well-formed ssh-ed25519 key")
+    return blob[len(expected_prefix) :]
+
+
+def validate_ssh_key(
+    public_key: pathlib.Path,
+    *,
+    expected_public_key: str,
+    release_kind: str,
+) -> None:
+    if not public_key.is_file():
+        raise ValueError("SSH signing key must be an existing public key file")
+    try:
+        raw = ssh_ed25519_public_key(public_key.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as error:
+        raise ValueError(f"cannot read SSH signing key: {error}") from error
+    if raw != base64.b64decode(expected_public_key, validate=True):
+        raise ValueError(
+            f"SSH signing key does not match the compiled {release_kind}-channel public key"
+        )
+
+
+def validate_signers(
+    signers: list[Signer],
+    expected_keys: dict[str, tuple[str, str]],
+    release_kind: str,
+) -> None:
+    if not signers:
+        raise ValueError(f"{release_kind} release signing requires at least one signing key")
+    if len({signer.key_id for signer in signers}) != len(signers):
+        raise ValueError("each signing key ID may sign only once")
+    for signer in signers:
+        expected = expected_keys.get(signer.key_id)
+        if expected is None:
+            raise ValueError(
+                f"{release_kind} release signer does not accept key ID {signer.key_id}; "
+                f"expected one of {', '.join(sorted(expected_keys))}"
+            )
+        algorithm, public_key = expected
+        if signer.algorithm != algorithm:
+            raise ValueError(f"key ID {signer.key_id} signs with {algorithm}, not {signer.algorithm}")
+        if algorithm == ED25519_ALGORITHM:
+            validate_key(
+                signer.path, expected_public_key=public_key, release_kind=release_kind
+            )
+        else:
+            validate_ssh_key(
+                signer.path, expected_public_key=public_key, release_kind=release_kind
+            )
+
+
+def sshsig_sign(payload: bytes, public_key: pathlib.Path) -> bytes:
+    """Sign through ssh-agent and return the de-armored SSHSIG blob.
+
+    `ssh-keygen -Y sign -f <key>.pub` asks the agent holding the private half,
+    so a smartcard may prompt for its PIN or a touch here.
+    """
+    result = subprocess.run(
+        ["ssh-keygen", "-q", "-Y", "sign", "-f", str(public_key), "-n", SSHSIG_NAMESPACE],
+        input=payload,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"ssh-keygen could not sign the update channel: {detail}")
+    lines = result.stdout.decode("ascii", errors="replace").strip().splitlines()
+    if (
+        len(lines) < 3
+        or lines[0] != "-----BEGIN SSH SIGNATURE-----"
+        or lines[-1] != "-----END SSH SIGNATURE-----"
+    ):
+        raise ValueError("ssh-keygen returned an unexpected signature format")
+    blob = base64.b64decode("".join(lines[1:-1]), validate=True)
+    if not blob.startswith(b"SSHSIG"):
+        raise ValueError("ssh-keygen returned an unexpected signature format")
+    return blob
 
 
 def validate_artifact_record(record: object, version: str) -> tuple[str, str]:
@@ -419,18 +526,26 @@ def validate_downloaded_release(
     )
 
 
-def signed_envelope(payload: bytes, signing_key: pathlib.Path, key_id: str) -> bytes:
-    signature = update_channel.sign_payload(payload, signing_key)
+def signed_envelope(payload: bytes, signers: list[Signer]) -> bytes:
+    signatures = []
+    for signer in signers:
+        if signer.algorithm == ED25519_ALGORITHM:
+            signature = update_channel.sign_payload(payload, signer.path)
+        elif signer.algorithm == SSHSIG_ALGORITHM:
+            signature = sshsig_sign(payload, signer.path)
+        else:
+            raise ValueError(f"unsupported signing algorithm {signer.algorithm}")
+        signatures.append(
+            {
+                "algorithm": signer.algorithm,
+                "key_id": signer.key_id,
+                "signature": base64.b64encode(signature).decode("ascii"),
+            }
+        )
     envelope = {
         "schema_version": 1,
         "payload": base64.b64encode(payload).decode("ascii"),
-        "signatures": [
-            {
-                "algorithm": "ed25519",
-                "key_id": key_id,
-                "signature": base64.b64encode(signature).decode("ascii"),
-            }
-        ],
+        "signatures": signatures,
     }
     return canonical_pretty(envelope)
 
@@ -438,8 +553,7 @@ def signed_envelope(payload: bytes, signing_key: pathlib.Path, key_id: str) -> b
 def already_signed_descriptor(
     descriptor: pathlib.Path,
     source_commit: str,
-    signing_key: pathlib.Path,
-    key_id: str,
+    signers: list[Signer],
     *,
     channel: str = "main",
     prerelease: bool = True,
@@ -472,7 +586,7 @@ def already_signed_descriptor(
         raise ValueError(
             f"signed update-channel payload does not identify the {release_kind} release"
         )
-    if descriptor.read_bytes() != signed_envelope(payload_bytes, signing_key, key_id):
+    if descriptor.read_bytes() != signed_envelope(payload_bytes, signers):
         raise ValueError("refusing an update descriptor with unexpected signatures")
     return ValidatedRelease(
         version=payload["version"],
@@ -662,8 +776,7 @@ def fetch_runs(repo: str, workflow: str, source_commit: str) -> object:
 
 def sign_published_release(
     repo: str,
-    signing_key: pathlib.Path,
-    key_id: str,
+    signers: list[Signer],
     expected_commit: str | None,
     dry_run: bool,
     *,
@@ -671,8 +784,7 @@ def sign_published_release(
     channel: str,
     prerelease: bool,
     release_kind: str,
-    expected_key_id: str,
-    expected_public_key: str,
+    expected_keys: dict[str, tuple[str, str]],
     required_runs: list[tuple[str, str, str | None, str]],
     fast_already_signed: bool,
     tag_is_source: bool,
@@ -687,13 +799,8 @@ def sign_published_release(
             return await_public(latest_descriptor_url(repo), signed)
         return await_public(public_descriptor_url(repo, tag), signed)
 
-    if key_id != expected_key_id:
-        raise ValueError(f"{release_kind} release signer requires key ID {expected_key_id}")
-    validate_key(
-        signing_key,
-        expected_public_key=expected_public_key,
-        release_kind=release_kind,
-    )
+    validate_signers(signers, expected_keys, release_kind)
+    key_ids = [signer.key_id for signer in signers]
     release, tag_commit = fetch_release(
         repo,
         tag,
@@ -733,7 +840,9 @@ def sign_published_release(
         CANONICAL_DESCRIPTOR in (name, label) for name, (_, _, _, label) in inventory.items()
     )
     existing = None
-    if canonical_present or not staged_descriptor:
+    # The probe re-signs to compare bytes; skip it where its answer is unused
+    # so a hardware signer is only asked once per run.
+    if fast_already_signed and (canonical_present or not staged_descriptor):
         with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-probe-") as probe:
             run(
                 [
@@ -756,8 +865,7 @@ def sign_published_release(
                 existing = already_signed_descriptor(
                     probed,
                     source_commit,
-                    signing_key,
-                    key_id,
+                    signers,
                     channel=channel,
                     prerelease=prerelease,
                     release_kind=release_kind,
@@ -790,7 +898,7 @@ def sign_published_release(
             "tag": tag,
             "version": existing.version,
             "source_commit": existing.source_commit,
-            "key_id": key_id,
+            "key_ids": key_ids,
             "dry_run": dry_run,
         }
     with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-sign-") as temporary:
@@ -807,7 +915,7 @@ def sign_published_release(
             release_kind=release_kind,
             descriptor_name=STAGED_DESCRIPTOR if staged_descriptor else CANONICAL_DESCRIPTOR,
         )
-        signed = signed_envelope(validated.payload, signing_key, key_id)
+        signed = signed_envelope(validated.payload, signers)
         current = validated.descriptor.read_bytes()
         envelope = load_json(validated.descriptor, "update-channel envelope")
         if current == signed:
@@ -817,7 +925,7 @@ def sign_published_release(
                 "tag": tag,
                 "version": validated.version,
                 "source_commit": validated.source_commit,
-                "key_id": key_id,
+                "key_ids": key_ids,
                 "dry_run": dry_run,
                 # Repairs a run that signed but stopped before promotion.
                 "public_propagation_seconds": (
@@ -892,7 +1000,7 @@ def sign_published_release(
         "tag": tag,
         "version": validated.version,
         "source_commit": validated.source_commit,
-        "key_id": key_id,
+        "key_ids": key_ids,
         "dry_run": dry_run,
         "public_propagation_seconds": propagation_seconds,
     }
@@ -911,16 +1019,14 @@ def sign_rolling_release(
         )
     return sign_published_release(
         repo,
-        signing_key,
-        key_id,
+        [Signer(key_id, ED25519_ALGORITHM, signing_key)],
         expected_commit,
         dry_run,
         tag=ROLLING_TAG,
         channel="main",
         prerelease=True,
         release_kind="rolling",
-        expected_key_id=MAIN_KEY_ID,
-        expected_public_key=MAIN_PUBLIC_KEY,
+        expected_keys={MAIN_KEY_ID: (ED25519_ALGORITHM, MAIN_PUBLIC_KEY)},
         required_runs=[
             ("CI", "CI", "push", "main"),
             ("rolling-release.yml", "rolling release", None, "main"),

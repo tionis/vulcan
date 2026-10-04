@@ -116,7 +116,7 @@ verifies signed metadata against trusted keys, checks the archive's exact size a
 and atomically replaces the running executable. `--allow-downgrade` is the explicit exception for a
 reinstall or rollback. Restart a running daemon after applying an update.
 
-Current builds embed the separate `stable-2026-09` identity with stable-only authority. The
+Current builds embed the separate `stable-2026-09` identity, and its hardware-held successor `stable-2026-10`, with stable-only authority. The
 `v0.2.1` release is the first stable trust bootstrap: once its descriptor is signed, ordinary
 self-update commands verify it without an exception. A binary from before that release cannot
 authenticate the bootstrap descriptor; install `v0.2.1` from a manually verified checksum/archive

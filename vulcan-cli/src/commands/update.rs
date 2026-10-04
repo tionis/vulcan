@@ -49,6 +49,13 @@ const TRUSTED_UPDATE_KEYS: &[(&str, &str, &str)] = &[
         "stable",
         "sOrBt76ruZ2kSR+4glX9k/ZjSoS1YSvmK9yMSVCiWpE=",
     ),
+    // Hardware-held (OpenPGP card, via ssh-agent) successor; signs with
+    // `sshsig-ed25519`. Overlaps stable-2026-09 during rotation.
+    (
+        "stable-2026-10",
+        "stable",
+        "dk91fcu3uqtH5h0q/FWJ/qjlBb65wGojrngIuiusEU4=",
+    ),
     (
         "main-2026-09",
         "main",
@@ -902,13 +909,17 @@ mod tests {
     #[test]
     fn embedded_update_keys_are_scoped_to_independent_channels() {
         let keys = trusted_update_keys().expect("decode trusted update keys");
-        assert_eq!(keys.len(), 2);
+        assert_eq!(keys.len(), 3);
         assert_eq!(keys[0].key_id, "stable-2026-09");
         assert_eq!(keys[0].channel, "stable");
-        assert_eq!(keys[1].key_id, "main-2026-09");
-        assert_eq!(keys[1].channel, "main");
+        assert_eq!(keys[1].key_id, "stable-2026-10");
+        assert_eq!(keys[1].channel, "stable");
+        assert_eq!(keys[2].key_id, "main-2026-09");
+        assert_eq!(keys[2].channel, "main");
         assert!(keys.iter().all(|key| key.public_key.len() == 32));
-        assert_ne!(keys[0].public_key, keys[1].public_key);
+        let distinct: std::collections::BTreeSet<_> =
+            keys.iter().map(|key| key.public_key).collect();
+        assert_eq!(distinct.len(), keys.len());
     }
 
     #[test]

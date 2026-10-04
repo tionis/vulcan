@@ -16,7 +16,9 @@ workspace test gate and every archive build succeed.
   sizes, hashes, formats, and top-level directories match the canonical manifest.
 - [ ] After the version-tag workflow succeeds, independently resolve the immutable tag to its full
   commit ID. Run `scripts/release/sign_stable_release.py` first with `--dry-run`, then without it,
-  supplying that exact `--tag`, `--expected-commit`, and the protected `stable-2026-09` key. Require
+  supplying that exact `--tag`, `--expected-commit`, and the protected `stable-2026-09` key, plus
+  `--ssh-signing-key` for the card-held `stable-2026-10` key while the rotation in
+  `docs/specs/update-channels.md` calls for it. Require
   `signed` or `already_signed` plus exact readback and a reported `public_propagation_seconds`;
   never copy the private key into Actions. The release stays out of `latest` until this step
   promotes it, so the stable channel never serves its unsigned descriptor; confirm GitHub now

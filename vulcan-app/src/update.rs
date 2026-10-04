@@ -8,7 +8,7 @@ use flate2::read::GzDecoder;
 use fs2::FileExt as _;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
@@ -18,6 +18,15 @@ const CHANNEL_METADATA_LIMIT: usize = 1024 * 1024;
 const UPDATE_ARCHIVE_LIMIT: usize = 256 * 1024 * 1024;
 const UPDATE_BINARY_LIMIT: u64 = 192 * 1024 * 1024;
 const UPDATE_TAR_EXPANDED_LIMIT: u64 = 224 * 1024 * 1024;
+/// Envelope algorithm for a raw Ed25519 signature over the payload bytes.
+pub const ED25519_ALGORITHM: &str = "ed25519";
+/// Envelope algorithm for an OpenSSH `ssh-keygen -Y sign` signature (SSHSIG,
+/// Ed25519 key, SHA-512 message hash) over the payload bytes. It lets a
+/// hardware-held SSH key sign releases through ssh-agent.
+pub const SSHSIG_ED25519_ALGORITHM: &str = "sshsig-ed25519";
+/// SSHSIG namespace binding update signatures to this one purpose, so an SSH
+/// key that also signs commits or files cannot be replayed as an update key.
+pub const SSHSIG_NAMESPACE: &str = "vulcan-update@tionis.dev";
 const SUPPORTED_UPDATE_TARGETS: &[(&str, &str)] = &[
     ("aarch64-apple-darwin", "tar.gz"),
     ("aarch64-unknown-linux-gnu", "tar.gz"),
@@ -464,7 +473,8 @@ fn verify_signatures(
 ) -> Result<Option<String>, AppError> {
     let mut matching_signature_failed = false;
     for signature_record in signatures {
-        if signature_record.algorithm != "ed25519" {
+        let algorithm = signature_record.algorithm.as_str();
+        if algorithm != ED25519_ALGORITHM && algorithm != SSHSIG_ED25519_ALGORITHM {
             continue;
         }
         let matching_keys = trusted_keys
@@ -474,14 +484,19 @@ fn verify_signatures(
             let verifying_key = VerifyingKey::from_bytes(&trusted.public_key).map_err(|error| {
                 AppError::operation(format!("invalid trusted update key: {error}"))
             })?;
-            let signature_bytes = BASE64.decode(&signature_record.signature).ok();
-            let signature = signature_bytes
-                .as_deref()
-                .and_then(|bytes| Signature::from_slice(bytes).ok());
-            if signature
-                .as_ref()
-                .is_some_and(|signature| verifying_key.verify_strict(payload, signature).is_ok())
-            {
+            let verified = BASE64
+                .decode(&signature_record.signature)
+                .ok()
+                .is_some_and(|bytes| {
+                    if algorithm == ED25519_ALGORITHM {
+                        Signature::from_slice(&bytes).is_ok_and(|signature| {
+                            verifying_key.verify_strict(payload, &signature).is_ok()
+                        })
+                    } else {
+                        verify_sshsig(payload, &bytes, &verifying_key)
+                    }
+                });
+            if verified {
                 return Ok(Some(trusted.key_id.clone()));
             }
             matching_signature_failed = true;
@@ -493,6 +508,84 @@ fn verify_signatures(
         ));
     }
     Ok(None)
+}
+
+/// Reads one SSH wire-format `string` (u32 big-endian length + bytes).
+fn read_ssh_string<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let (length, rest) = input.split_first_chunk::<4>()?;
+    let length = usize::try_from(u32::from_be_bytes(*length)).ok()?;
+    if rest.len() < length {
+        return None;
+    }
+    let (value, rest) = rest.split_at(length);
+    *input = rest;
+    Some(value)
+}
+
+fn write_ssh_string(output: &mut Vec<u8>, value: &[u8]) {
+    let length = u32::try_from(value.len()).expect("SSH string fits in u32");
+    output.extend_from_slice(&length.to_be_bytes());
+    output.extend_from_slice(value);
+}
+
+/// Parses an `ssh-ed25519` wire blob (`string type, string data`) whose data
+/// has exactly `N` bytes.
+fn parse_ssh_ed25519<const N: usize>(blob: &[u8]) -> Option<[u8; N]> {
+    let mut input = blob;
+    if read_ssh_string(&mut input)? != b"ssh-ed25519" {
+        return None;
+    }
+    let data = read_ssh_string(&mut input)?;
+    if !input.is_empty() {
+        return None;
+    }
+    data.try_into().ok()
+}
+
+/// Verifies a binary (de-armored) SSHSIG blob as produced by
+/// `ssh-keygen -Y sign -n vulcan-update@tionis.dev`, per OpenSSH's
+/// PROTOCOL.sshsig. Only Ed25519 keys and SHA-512 message hashes are
+/// accepted, and the embedded key must be the trusted key itself.
+fn verify_sshsig(payload: &[u8], blob: &[u8], trusted: &VerifyingKey) -> bool {
+    const MAGIC: &[u8] = b"SSHSIG";
+    let Some(mut input) = blob.strip_prefix(MAGIC) else {
+        return false;
+    };
+    let Some((version, rest)) = input.split_first_chunk::<4>() else {
+        return false;
+    };
+    if u32::from_be_bytes(*version) != 1 {
+        return false;
+    }
+    input = rest;
+    let (Some(public_key), Some(namespace), Some(reserved), Some(hash_algorithm), Some(signature)) = (
+        read_ssh_string(&mut input),
+        read_ssh_string(&mut input),
+        read_ssh_string(&mut input),
+        read_ssh_string(&mut input),
+        read_ssh_string(&mut input),
+    ) else {
+        return false;
+    };
+    if !input.is_empty()
+        || namespace != SSHSIG_NAMESPACE.as_bytes()
+        || !reserved.is_empty()
+        || hash_algorithm != b"sha512"
+        || parse_ssh_ed25519::<32>(public_key).as_ref() != Some(trusted.as_bytes())
+    {
+        return false;
+    }
+    let Some(signature) = parse_ssh_ed25519::<64>(signature) else {
+        return false;
+    };
+    let mut signed = MAGIC.to_vec();
+    write_ssh_string(&mut signed, namespace);
+    write_ssh_string(&mut signed, reserved);
+    write_ssh_string(&mut signed, hash_algorithm);
+    write_ssh_string(&mut signed, &Sha512::digest(payload));
+    trusted
+        .verify_strict(&signed, &Signature::from_bytes(&signature))
+        .is_ok()
 }
 
 fn extract_binary(archive: &[u8], artifact: &UpdateArtifact) -> Result<Vec<u8>, AppError> {
@@ -952,6 +1045,126 @@ mod tests {
         request.trusted_keys = &[];
         let report = check_for_update(&source, &request).expect("unsigned metadata check");
         assert!(prepare_update(&source, report, true).is_err());
+    }
+
+    // Produced by OpenSSH 10.0: `ssh-keygen -Y sign -f k -n vulcan-update@tionis.dev payload`.
+    const SSHSIG_FIXTURE_PAYLOAD: &[u8] = br#"{"fixture":"vulcan sshsig interop"}"#;
+    const SSHSIG_FIXTURE_PUBLIC_KEY: &str = "LgRCWWhAgkXI1+85RSa/Brgdv94x1U88w5AdFBTnMhg=";
+    const SSHSIG_FIXTURE_SIGNATURE: &str = "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgLgRCWWhAgkXI1+85RSa/Brgdv94x1U88w5AdFBTnMhgAAAAYdnVsY2FuLXVwZGF0ZUB0aW9uaXMuZGV2AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQHwDgc+H+VK9Sk0fcKQrV98Z7Io2txCjipgv//W9J3AAaGXGETKZPS7iEt3OLhiopa9qWUweri3GG90n7Mvhqg8=";
+
+    fn sshsig_fixture_key() -> TrustedUpdateKey {
+        TrustedUpdateKey {
+            key_id: "stable-card".to_string(),
+            channel: "stable".to_string(),
+            public_key: BASE64
+                .decode(SSHSIG_FIXTURE_PUBLIC_KEY)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        }
+    }
+
+    fn sshsig_record(signature: &str) -> UpdateSignature {
+        UpdateSignature {
+            algorithm: SSHSIG_ED25519_ALGORITHM.to_string(),
+            key_id: "stable-card".to_string(),
+            signature: signature.to_string(),
+        }
+    }
+
+    #[test]
+    fn openssh_signatures_verify_under_the_update_namespace() {
+        let keys = [sshsig_fixture_key()];
+        assert_eq!(
+            verify_signatures(
+                SSHSIG_FIXTURE_PAYLOAD,
+                &[sshsig_record(SSHSIG_FIXTURE_SIGNATURE)],
+                &keys,
+                "stable",
+            )
+            .expect("verify OpenSSH signature")
+            .as_deref(),
+            Some("stable-card")
+        );
+        // A different payload, channel, or algorithm label must not verify.
+        assert!(verify_signatures(
+            b"{}",
+            &[sshsig_record(SSHSIG_FIXTURE_SIGNATURE)],
+            &keys,
+            "stable"
+        )
+        .is_err());
+        assert_eq!(
+            verify_signatures(
+                SSHSIG_FIXTURE_PAYLOAD,
+                &[sshsig_record(SSHSIG_FIXTURE_SIGNATURE)],
+                &keys,
+                "main"
+            )
+            .expect("foreign channel is ignored"),
+            None
+        );
+        let mut raw_label = sshsig_record(SSHSIG_FIXTURE_SIGNATURE);
+        raw_label.algorithm = ED25519_ALGORITHM.to_string();
+        assert!(verify_signatures(SSHSIG_FIXTURE_PAYLOAD, &[raw_label], &keys, "stable").is_err());
+    }
+
+    #[test]
+    fn sshsig_rejects_other_namespaces_keys_and_trailing_data() {
+        let trusted = VerifyingKey::from_bytes(&sshsig_fixture_key().public_key).unwrap();
+        let blob = BASE64.decode(SSHSIG_FIXTURE_SIGNATURE).unwrap();
+        assert!(verify_sshsig(SSHSIG_FIXTURE_PAYLOAD, &blob, &trusted));
+
+        let mut trailing = blob.clone();
+        trailing.push(0);
+        assert!(!verify_sshsig(SSHSIG_FIXTURE_PAYLOAD, &trailing, &trusted));
+        assert!(!verify_sshsig(
+            SSHSIG_FIXTURE_PAYLOAD,
+            &blob[..blob.len() - 1],
+            &trusted
+        ));
+
+        // Re-sign a structurally valid blob under another namespace: a key
+        // that also signs files or commits must not authorize updates.
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let other = signing_key.verifying_key();
+        let forge = |namespace: &str| {
+            let mut key_blob = Vec::new();
+            write_ssh_string(&mut key_blob, b"ssh-ed25519");
+            write_ssh_string(&mut key_blob, other.as_bytes());
+            let mut signed = b"SSHSIG".to_vec();
+            write_ssh_string(&mut signed, namespace.as_bytes());
+            write_ssh_string(&mut signed, b"");
+            write_ssh_string(&mut signed, b"sha512");
+            write_ssh_string(&mut signed, &Sha512::digest(SSHSIG_FIXTURE_PAYLOAD));
+            let mut signature_blob = Vec::new();
+            write_ssh_string(&mut signature_blob, b"ssh-ed25519");
+            write_ssh_string(&mut signature_blob, &signing_key.sign(&signed).to_bytes());
+            let mut blob = b"SSHSIG".to_vec();
+            blob.extend_from_slice(&1_u32.to_be_bytes());
+            write_ssh_string(&mut blob, &key_blob);
+            write_ssh_string(&mut blob, namespace.as_bytes());
+            write_ssh_string(&mut blob, b"");
+            write_ssh_string(&mut blob, b"sha512");
+            write_ssh_string(&mut blob, &signature_blob);
+            blob
+        };
+        assert!(verify_sshsig(
+            SSHSIG_FIXTURE_PAYLOAD,
+            &forge(SSHSIG_NAMESPACE),
+            &other
+        ));
+        assert!(!verify_sshsig(
+            SSHSIG_FIXTURE_PAYLOAD,
+            &forge("git"),
+            &other
+        ));
+        // The embedded key must be the trusted key, not merely self-consistent.
+        assert!(!verify_sshsig(
+            SSHSIG_FIXTURE_PAYLOAD,
+            &forge(SSHSIG_NAMESPACE),
+            &trusted
+        ));
     }
 
     #[test]

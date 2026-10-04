@@ -649,6 +649,117 @@ class ReleasePackagingTests(unittest.TestCase):
             "vulcan-update-channel.json",
         )
 
+    def ssh_keypair(self, name: str) -> pathlib.Path:
+        key = self.root / name
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", str(key)],
+            check=True,
+        )
+        return key
+
+    def pem_key(self, name: str) -> pathlib.Path:
+        key = self.root / f"{name}.pem"
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "Ed25519", "-out", str(key)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        key.chmod(0o600)
+        return key
+
+    def test_overlap_envelope_carries_pem_and_ssh_signatures(self) -> None:
+        signer = rolling_signer_script
+        ssh_key = self.ssh_keypair("card")
+        pem = self.pem_key("stable")
+        payload = b'{"fixture":"overlap"}'
+        signers = [
+            signer.Signer("stable-2026-09", signer.ED25519_ALGORITHM, pem),
+            # A private key file stands in for the agent-held card key.
+            signer.Signer("stable-2026-10", signer.SSHSIG_ALGORITHM, ssh_key),
+        ]
+        envelope_bytes = signer.signed_envelope(payload, signers)
+        # Both schemes are deterministic, which the byte-comparison
+        # idempotency checks rely on.
+        self.assertEqual(envelope_bytes, signer.signed_envelope(payload, signers))
+        envelope = json.loads(envelope_bytes)
+        self.assertEqual(base64.b64decode(envelope["payload"]), payload)
+        self.assertEqual(
+            [(entry["algorithm"], entry["key_id"]) for entry in envelope["signatures"]],
+            [("ed25519", "stable-2026-09"), ("sshsig-ed25519", "stable-2026-10")],
+        )
+        self.assertEqual(len(base64.b64decode(envelope["signatures"][0]["signature"])), 64)
+
+        # The stored blob is exactly what `ssh-keygen -Y verify` accepts.
+        blob = base64.b64decode(envelope["signatures"][1]["signature"])
+        armored = self.root / "payload.sig"
+        armored.write_text(
+            "-----BEGIN SSH SIGNATURE-----\n"
+            + base64.b64encode(blob).decode("ascii")
+            + "\n-----END SSH SIGNATURE-----\n",
+            encoding="ascii",
+        )
+        allowed = self.root / "allowed_signers"
+        allowed.write_text(
+            "release " + ssh_key.with_suffix(".pub").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        for namespace, expected in ((signer.SSHSIG_NAMESPACE, 0), ("file", 255)):
+            result = subprocess.run(
+                [
+                    "ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", "release",
+                    "-n", namespace, "-s", str(armored),
+                ],
+                input=payload,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_signers_must_match_the_compiled_key_ring(self) -> None:
+        signer = rolling_signer_script
+        ssh_key = self.ssh_keypair("card")
+        public = ssh_key.with_suffix(".pub")
+        raw = signer.ssh_ed25519_public_key(public.read_text(encoding="utf-8"))
+        expected = {
+            "stable-2026-10": (signer.SSHSIG_ALGORITHM, base64.b64encode(raw).decode()),
+        }
+        signer.validate_signers(
+            [signer.Signer("stable-2026-10", signer.SSHSIG_ALGORITHM, public)],
+            expected,
+            "stable",
+        )
+        other = self.ssh_keypair("other").with_suffix(".pub")
+        cases = [
+            ([], "at least one signing key"),
+            ([signer.Signer("stable-2026-11", signer.SSHSIG_ALGORITHM, public)], "does not accept key ID"),
+            ([signer.Signer("stable-2026-10", signer.ED25519_ALGORITHM, public)], "signs with sshsig-ed25519"),
+            ([signer.Signer("stable-2026-10", signer.SSHSIG_ALGORITHM, other)], "does not match the compiled"),
+            (
+                [signer.Signer("stable-2026-10", signer.SSHSIG_ALGORITHM, public)] * 2,
+                "may sign only once",
+            ),
+        ]
+        for signers, message in cases:
+            with self.assertRaisesRegex(ValueError, message):
+                signer.validate_signers(signers, expected, "stable")
+        with self.assertRaisesRegex(ValueError, "ssh-ed25519 public key"):
+            signer.ssh_ed25519_public_key("ssh-rsa AAAA comment")
+
+    def test_signer_constants_match_the_rust_client(self) -> None:
+        repository = SCRIPT_ROOT.parents[1]
+        client = (repository / "vulcan-app/src/update.rs").read_text(encoding="utf-8")
+        cli = (repository / "vulcan-cli/src/commands/update.rs").read_text(encoding="utf-8")
+        self.assertIn(f'"{rolling_signer_script.SSHSIG_NAMESPACE}"', client)
+        self.assertIn(f'"{rolling_signer_script.SSHSIG_ALGORITHM}"', client)
+        self.assertIn(stable_signer_script.STABLE_CARD_KEY_ID, cli)
+        self.assertIn(stable_signer_script.STABLE_CARD_PUBLIC_KEY, cli)
+        with self.assertRaisesRegex(ValueError, "at least one signing key"):
+            stable_signer_script.sign_stable_release(
+                "tionis/vulcan", "v1.2.3", "a" * 40, None, "stable-2026-09", True
+            )
+
     def test_stable_promotion_never_moves_latest_backwards(self) -> None:
         promote = rolling_signer_script.should_promote
         self.assertTrue(promote("v0.2.2", None))
