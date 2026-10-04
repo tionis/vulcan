@@ -20,6 +20,37 @@ use std::time::Instant;
 mod control_dependencies;
 type ControlSources = Vec<(PathBuf, String)>;
 
+/// Private cache payload; never changes the canonical record envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalRecordSnapshot {
+    #[serde(flatten)]
+    record: MdbaseRecordDocument,
+    body_facts: super::links::BodyLinkFacts,
+}
+
+impl std::ops::Deref for LocalRecordSnapshot {
+    type Target = MdbaseRecordDocument;
+
+    fn deref(&self) -> &Self::Target {
+        &self.record
+    }
+}
+
+fn finish_local_snapshots(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    snapshots: impl IntoIterator<Item = LocalRecordSnapshot>,
+) -> super::MdbaseRecordSet {
+    let mut records = Vec::new();
+    let mut facts = BTreeMap::new();
+    for snapshot in snapshots {
+        facts.insert(snapshot.record.path.clone(), snapshot.body_facts);
+        records.push(snapshot.record);
+    }
+    super::records::finish_local_record_set(collection, types, contracts, records, &facts)
+}
+
 const TYPE_CANDIDATE_SQL: &str = "SELECT DISTINCT membership.path
     FROM json_each(?4) AS wanted
     CROSS JOIN mdbase_record_types AS membership
@@ -419,7 +450,7 @@ fn load_cached_snapshot(
         metrics.overlay_records += records.len();
         metrics.overlay_passes += 1;
         let records = time_cached_load(&mut metrics.collection_overlay_seconds, || {
-            super::records::finish_local_record_set(collection, types, contracts, records)
+            finish_local_snapshots(collection, types, contracts, records)
         });
         Ok(Some(match candidates {
             Some((plan, paths)) => {
@@ -447,7 +478,7 @@ fn load_local_payloads(
     filter: Option<&PermissionFilter>,
     decoded_records: &mut usize,
     verify_scalars: bool,
-) -> Result<Option<(Vec<MdbaseRecordDocument>, bool)>, MdbaseRecordCacheError> {
+) -> Result<Option<(Vec<LocalRecordSnapshot>, bool)>, MdbaseRecordCacheError> {
     let transaction = connection;
     let mut records = Vec::new();
     let mut scalars_match = true;
@@ -490,7 +521,7 @@ fn load_local_payloads(
             if filter.is_some_and(|filter| !filter.is_allowed(path)) {
                 continue;
             }
-            let payload: Option<(MdbaseRecordDocument, String)> = statement
+            let payload: Option<(LocalRecordSnapshot, String)> = statement
                 .query_row(
                     params![
                         root,
@@ -1096,13 +1127,13 @@ fn derive_collection_cache(
     contracts: &MdbaseContractRegistry,
     collection_root: &str,
     dependency_digest: &str,
-    local_records: &BTreeMap<String, MdbaseRecordDocument>,
+    local_records: &BTreeMap<String, LocalRecordSnapshot>,
 ) -> BTreeMap<String, MdbaseCachedRecord> {
-    let records = super::records::finish_local_record_set(
+    let records = finish_local_snapshots(
         collection,
         types,
         contracts,
-        local_records.values().cloned().collect(),
+        local_records.values().cloned(),
     );
     records
         .records
@@ -1147,7 +1178,7 @@ fn load_local_records(
     connection: &Connection,
     root: &str,
     digest: &str,
-) -> Result<BTreeMap<String, MdbaseRecordDocument>, MdbaseRecordCacheError> {
+) -> Result<BTreeMap<String, LocalRecordSnapshot>, MdbaseRecordCacheError> {
     let mut statement = connection.prepare(
         "SELECT path, local_record_json FROM mdbase_record_cache
          WHERE collection_root = ?1 AND dependency_digest = ?2
@@ -1165,8 +1196,8 @@ fn load_local_records(
 fn derive_local_records(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
-    mut previous: BTreeMap<String, MdbaseRecordDocument>,
-) -> Result<(BTreeMap<String, MdbaseRecordDocument>, usize, usize), MdbaseRecordCacheError> {
+    mut previous: BTreeMap<String, LocalRecordSnapshot>,
+) -> Result<(BTreeMap<String, LocalRecordSnapshot>, usize, usize), MdbaseRecordCacheError> {
     let discovery =
         super::discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
     let clock = super::records::operation_clock(collection);
@@ -1197,7 +1228,7 @@ fn derive_local_records(
             record
         } else {
             derived += 1;
-            super::records::build_mdbase_record(
+            let record = super::records::build_mdbase_record(
                 collection,
                 types,
                 &path,
@@ -1205,7 +1236,9 @@ fn derive_local_records(
                 Some(&metadata),
                 false,
                 &clock,
-            )
+            );
+            let body_facts = super::links::BodyLinkFacts::parse(&record.body);
+            LocalRecordSnapshot { record, body_facts }
         };
         records.insert(path, record);
     }
@@ -2061,6 +2094,7 @@ mod tests {
                 )
             })
             .collect();
+        super::super::links::take_body_fact_parse_count();
         let full = load_cached_mdbase_record_set(
             database.connection(),
             &collection,
@@ -2072,6 +2106,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(full, source);
+        assert_eq!(super::super::links::take_body_fact_parse_count(), 0);
         assert!(full
             .get("a.md")
             .unwrap()
@@ -2091,6 +2126,7 @@ mod tests {
         )
         .unwrap();
         database.connection().execute("UPDATE mdbase_record_cache SET local_record_json = 'corrupt denied payload' WHERE path = 'secret.md'", []).unwrap();
+        super::super::links::take_body_fact_parse_count();
         let filtered = load_cached_mdbase_record_set(
             database.connection(),
             &collection,
@@ -2102,6 +2138,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(filtered, filtered_source);
+        assert_eq!(super::super::links::take_body_fact_parse_count(), 0);
         let public = filtered.get("a.md").unwrap();
         assert_eq!(public.effective_frontmatter["status"], "open");
         assert!(public
@@ -2133,6 +2170,95 @@ mod tests {
             ),
             Err(MdbaseRecordCacheError::PermissionDenied)
         ));
+    }
+
+    #[test]
+    fn cached_body_facts_reuse_parsing_but_not_target_answers() {
+        use super::super::links::take_body_fact_parse_count;
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(
+            &directory.path().join("a.md"),
+            "#tag [[target|Alias]] ![[asset.png]] [web](https://example.test)\n",
+        );
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        take_body_fact_parse_count();
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(take_body_fact_parse_count(), 1);
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(take_body_fact_parse_count(), 0);
+        write(&directory.path().join("target.md"), "Target\n");
+        let added =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (added.local_records_derived, added.local_records_reused),
+            (1, 1)
+        );
+        assert_eq!(take_body_fact_parse_count(), 1);
+        let root = cache_collection_root(&collection).unwrap();
+        let locals =
+            load_local_records(database.connection(), &root, &added.dependency_digest).unwrap();
+        let cached = finish_local_snapshots(&collection, &types, &contracts, locals.into_values());
+        assert_eq!(take_body_fact_parse_count(), 0);
+        let source = super::super::load_mdbase_records_with_contracts(
+            &collection,
+            &types,
+            &contracts,
+            false,
+        )
+        .unwrap();
+        assert_eq!(cached, source);
+        assert!(cached
+            .get("a.md")
+            .unwrap()
+            .links
+            .iter()
+            .any(|link| link.resolved_path.as_deref() == Some("target.md")));
+        assert_eq!(cached.get("a.md").unwrap().tags, ["tag"]);
+        assert!(serde_json::to_value(&cached).unwrap()["records"][0]
+            .get("body_facts")
+            .is_none());
+        take_body_fact_parse_count();
+        write(&directory.path().join("a.md"), "#changed [[missing]]\n");
+        let edited =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(
+            (edited.local_records_derived, edited.local_records_reused),
+            (1, 1)
+        );
+        assert_eq!(take_body_fact_parse_count(), 1);
+        database
+            .connection()
+            .execute(
+                "UPDATE mdbase_record_cache SET record_model_version = ?1",
+                [MDBASE_RECORD_MODEL_VERSION - 1],
+            )
+            .unwrap();
+        let migrated =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert!(migrated.dependency_changed);
+        assert_eq!(migrated.local_records_derived, 2);
+        assert_eq!(take_body_fact_parse_count(), 2);
+        database.connection().execute("UPDATE mdbase_record_cache SET local_record_json = json_remove(local_record_json, '$.body_facts')", []).unwrap();
+        let manifest =
+            capture_mdbase_record_manifest(&collection, &types, &contracts, None).unwrap();
+        assert!(load_cached_mdbase_record_set(
+            database.connection(),
+            &collection,
+            &types,
+            &contracts,
+            &manifest,
+            None
+        )
+        .is_err());
+        rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(take_body_fact_parse_count(), 2);
     }
 
     #[test]

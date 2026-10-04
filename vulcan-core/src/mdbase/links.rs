@@ -52,7 +52,7 @@ pub struct MdbaseLink {
     pub resolution: MdbaseLinkResolution,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ParsedLink {
     raw: String,
     target: String,
@@ -60,6 +60,35 @@ struct ParsedLink {
     anchor: Option<String>,
     format: MdbaseLinkFormat,
     embed: bool,
+}
+
+/// Source-local parse facts only: no target resolution or visible-scope answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct BodyLinkFacts {
+    links: Vec<ParsedLink>,
+    tags: Vec<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BODY_FACT_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn take_body_fact_parse_count() -> usize {
+    BODY_FACT_PARSES.with(|count| count.replace(0))
+}
+
+impl BodyLinkFacts {
+    pub(super) fn parse(body: &str) -> Self {
+        #[cfg(test)]
+        BODY_FACT_PARSES.with(|count| count.set(count.get() + 1));
+        let parsed = parse_document(body, &VaultConfig::default());
+        Self {
+            links: parsed.links.iter().filter_map(parsed_body_link).collect(),
+            tags: parsed.tags.into_iter().map(|tag| tag.tag_text).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +145,15 @@ pub(crate) fn resolve_collection_links(
     types: &MdbaseTypeRegistry,
     records: &mut [MdbaseRecordDocument],
 ) {
+    resolve_collection_links_with_body_facts(collection, types, records, &BTreeMap::new());
+}
+
+pub(super) fn resolve_collection_links_with_body_facts(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    records: &mut [MdbaseRecordDocument],
+    body_facts: &BTreeMap<String, BodyLinkFacts>,
+) {
     let id_field = collection.config.settings.id_field.as_str();
     let index = LinkTargetIndex::new(records, id_field);
     for record in records {
@@ -134,10 +172,20 @@ pub(crate) fn resolve_collection_links(
                 }
             }
         }
-        let parsed = parse_document(&record.body, &VaultConfig::default());
-        links.extend(parsed.links.iter().filter_map(|link| {
-            parsed_body_link(link).map(|parsed| resolve_link(parsed, record, None, &index))
-        }));
+        let fallback;
+        let facts = if let Some(facts) = body_facts.get(&record.path) {
+            facts
+        } else {
+            fallback = BodyLinkFacts::parse(&record.body);
+            &fallback
+        };
+        links.extend(
+            facts
+                .links
+                .iter()
+                .cloned()
+                .map(|parsed| resolve_link(parsed, record, None, &index)),
+        );
         links.sort_by(|left, right| {
             left.source
                 .cmp(&right.source)
@@ -146,7 +194,7 @@ pub(crate) fn resolve_collection_links(
         });
         add_link_diagnostics(collection, record, &links);
         record.links = links;
-        record.tags = collect_record_tags(record, parsed.tags.into_iter().map(|tag| tag.tag_text));
+        record.tags = collect_record_tags(record, facts.tags.iter().cloned());
     }
 }
 

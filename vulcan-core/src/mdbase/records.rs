@@ -22,9 +22,9 @@ pub use draft::*;
 #[cfg(test)]
 mod snapshot_tests;
 
-// Version 6 retains persisted frontmatter and file metadata in cache projections;
-// older rows cannot supply the metadata needed by indexed query execution.
-pub const MDBASE_RECORD_MODEL_VERSION: u32 = 6;
+// Version 7 adds required source-local body parse facts to private cache payloads.
+// Older rows must be rederived before cached overlays can avoid body parsing.
+pub const MDBASE_RECORD_MODEL_VERSION: u32 = 7;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
 ///
@@ -222,12 +222,30 @@ pub fn analyze_mdbase_record_set_sources(
 fn finish_record_set(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
+    records: Vec<MdbaseRecordDocument>,
+) -> MdbaseRecordSet {
+    finish_record_set_with_body_facts(collection, types, records, None)
+}
+
+fn finish_record_set_with_body_facts(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
     mut records: Vec<MdbaseRecordDocument>,
+    body_facts: Option<&BTreeMap<String, super::links::BodyLinkFacts>>,
 ) -> MdbaseRecordSet {
     if collection.config.settings.validation != MdbaseValidationLevel::Off {
         validate_cross_file_uniqueness(collection, types, &mut records);
     }
-    super::resolve_collection_links(collection, types, &mut records);
+    if let Some(facts) = body_facts {
+        super::links::resolve_collection_links_with_body_facts(
+            collection,
+            types,
+            &mut records,
+            facts,
+        );
+    } else {
+        super::resolve_collection_links(collection, types, &mut records);
+    }
     for record in &mut records {
         sort_record_diagnostics(&mut record.diagnostics);
     }
@@ -261,11 +279,12 @@ pub(super) fn finish_local_record_set(
     types: &MdbaseTypeRegistry,
     contracts: &MdbaseContractRegistry,
     records: Vec<MdbaseRecordDocument>,
+    body_facts: &BTreeMap<String, super::links::BodyLinkFacts>,
 ) -> MdbaseRecordSet {
     apply_record_set_contracts(
         collection,
         contracts,
-        finish_record_set(collection, types, records),
+        finish_record_set_with_body_facts(collection, types, records, Some(body_facts)),
     )
 }
 
