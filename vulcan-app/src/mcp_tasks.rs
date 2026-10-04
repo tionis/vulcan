@@ -9,8 +9,7 @@ use crate::mcp_protocol::{
 };
 use crate::scan::refresh_cache_incrementally;
 use crate::tasks::{
-    apply_task_complete, apply_task_complete_with_guard, apply_task_create,
-    apply_task_create_with_guard, apply_task_reschedule, apply_task_reschedule_with_guard,
+    apply_task_complete_with_guard, apply_task_create_with_guard, apply_task_reschedule_with_guard,
     TaskCompleteRequest, TaskCreateReport, TaskCreateRequest, TaskMutationReport,
     TaskRescheduleRequest,
 };
@@ -29,7 +28,7 @@ pub fn task_create(
         dry_run: true,
     };
     if !args.dry_run {
-        let planned = apply_task_create(paths, &request)
+        let planned = apply_task_create_with_guard(paths, &request, Some(guard))
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
         for path in &planned.changed_paths {
             check_write_path_access(guard, path)?;
@@ -61,7 +60,7 @@ pub fn task_complete(
         dry_run: true,
     };
     if !args.dry_run {
-        let planned = apply_task_complete(paths, &request)
+        let planned = apply_task_complete_with_guard(paths, &request, Some(guard))
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
         for path in &planned.changed_paths {
             check_write_path_access(guard, path)?;
@@ -93,7 +92,7 @@ pub fn task_reschedule(
         dry_run: true,
     };
     if !args.dry_run {
-        let planned = apply_task_reschedule(paths, &request)
+        let planned = apply_task_reschedule_with_guard(paths, &request, Some(guard))
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
         for path in &planned.changed_paths {
             check_write_path_access(guard, path)?;
@@ -140,6 +139,74 @@ mod tests {
     use std::fs;
     use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::resolve_permission_profile;
+
+    #[test]
+    fn task_planning_and_apply_deny_hidden_controls_before_inspection() {
+        for control in [None, Some("hidden_synthetic_control: [invalid\n")] {
+            let temporary = tempfile::tempdir().unwrap();
+            let paths = VaultPaths::new(temporary.path());
+            initialize_vulcan_dir(&paths).unwrap();
+            fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+            fs::create_dir_all(temporary.path().join("Public")).unwrap();
+            let source = "- [ ] Visible synthetic task\n";
+            fs::write(temporary.path().join("Public/Tasks.md"), source).unwrap();
+            if let Some(control) = control {
+                fs::write(temporary.path().join("mdbase.yaml"), control).unwrap();
+            }
+            vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+            let guard = ProfilePermissionGuard::new(
+                &paths,
+                resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+            );
+            for dry_run in [true, false] {
+                let errors = [
+                    task_create(
+                        &paths,
+                        &guard,
+                        "scoped",
+                        serde_json::from_value(json!({
+                            "text": "New task", "note": "Public/Tasks.md",
+                            "dry_run": dry_run, "no_commit": true,
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap_err(),
+                    task_complete(
+                        &paths,
+                        &guard,
+                        "scoped",
+                        serde_json::from_value(json!({
+                            "task": "Public/Tasks.md:1", "date": "2026-04-04",
+                            "dry_run": dry_run, "no_commit": true,
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap_err(),
+                    task_reschedule(
+                        &paths,
+                        &guard,
+                        "scoped",
+                        serde_json::from_value(json!({
+                            "task": "Public/Tasks.md:1", "due": "2026-04-05",
+                            "dry_run": dry_run, "no_commit": true,
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap_err(),
+                ];
+                for error in errors {
+                    let McpMethodError::Tool { message, .. } = error else {
+                        panic!("unexpected protocol error: {error:?}");
+                    };
+                    assert_eq!(message, "permission denied for required mdbase controls");
+                }
+                assert_eq!(
+                    fs::read_to_string(temporary.path().join("Public/Tasks.md")).unwrap(),
+                    source
+                );
+            }
+        }
+    }
 
     #[test]
     fn task_create_denies_readonly_before_write_and_applies_under_writable_grant() {
