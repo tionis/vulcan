@@ -12324,6 +12324,93 @@ fn tasks_dependency_and_next_reports_apply_policy_scope() {
 }
 
 #[test]
+#[cfg(feature = "js_runtime")]
+fn tasknote_reports_apply_policy_scope_before_totals() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("vault");
+    let config_home = temp.path().join("xdg");
+    fs::create_dir_all(root.join(".vulcan/plugins")).unwrap();
+    fs::create_dir_all(&config_home).unwrap();
+    for (path, tags) in [
+        ("Hidden.md", "[task]"),
+        ("Policy.md", "[task, visible]"),
+        ("Denied.md", "[task, visible, secret]"),
+        ("Visible.md", "[task, visible]"),
+    ] {
+        fs::write(root.join(path), format!(
+            "---\ntags: {tags}\ntitle: {path}\nstatus: open\ndue: 2020-01-01\nreminders:\n  - id: reminder\n    type: absolute\n    absoluteTime: '2020-01-01T08:00:00Z'\ntimeEntries:\n  - startTime: '2020-01-01T09:00:00Z'\n---\n"
+        )).unwrap();
+    }
+    fs::write(root.join(".vulcan/config.toml"), concat!(
+        "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
+        "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
+    )).unwrap();
+    let hook = root.join(".vulcan/plugins/guard.js");
+    fs::write(&hook, "function policy_hook(input) { return input.resource === 'Policy.md' ? 'deny' : 'pass'; }\n").unwrap();
+    let xdg = config_home.to_str().unwrap();
+    trust_and_scan_vault(xdg, root.to_str().unwrap());
+    let run = |args: &[&str]| {
+        cargo_vulcan_with_xdg_config(xdg)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "guarded",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+                "tasks",
+            ])
+            .args(args)
+            .assert()
+    };
+    let reports: &[(&[&str], &str)] = &[
+        (&["due"], "tasks"),
+        (&["reminders"], "reminders"),
+        (&["track", "status"], "active_sessions"),
+        (&["track", "summary", "--period", "all"], "top_tasks"),
+    ];
+    for (args, field) in reports {
+        let report = parse_stdout_json(&run(args).success());
+        let rows = report[*field].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{report}");
+        assert_eq!(rows[0]["path"], "Visible.md");
+        for hidden in ["Hidden.md", "Policy.md", "Denied.md"] {
+            assert!(!report.to_string().contains(hidden));
+        }
+    }
+    let log = parse_stdout_json(&run(&["track", "log", "Visible"]).success());
+    assert_eq!(log["path"], "Visible.md");
+    for hidden in ["Hidden.md", "Policy.md", "Denied.md"] {
+        run(&["track", "log", hidden]).failure();
+    }
+    fs::write(&hook, "function policy_hook() { return 'deny'; }\n").unwrap();
+    for (args, field) in reports {
+        assert!(parse_stdout_json(&run(args).success())[*field]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    for source in [
+        "function policy_hook() { throw new Error('broken'); }\n",
+        "function policy_hook() { return true; }\n",
+    ] {
+        fs::write(&hook, source).unwrap();
+        for (args, _) in reports {
+            assert!(parse_stdout_json(&run(args).failure())
+                .to_string()
+                .contains("policy"));
+        }
+        assert!(
+            parse_stdout_json(&run(&["track", "log", "Visible"]).failure())
+                .to_string()
+                .contains("policy")
+        );
+    }
+}
+
+#[test]
 fn tasks_next_json_output_lists_upcoming_recurring_instances() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

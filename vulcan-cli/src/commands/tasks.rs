@@ -15,13 +15,14 @@ use vulcan_app::tasks::{
     apply_task_convert_with_guard, apply_task_create_with_guard,
     apply_task_pomodoro_start_with_guard, apply_task_pomodoro_stop_with_guard,
     apply_task_reschedule_with_guard, apply_task_set_with_guard, apply_task_track_start_with_guard,
-    apply_task_track_stop_with_guard, build_task_due_report,
-    build_task_pomodoro_status_report_with_guard, build_task_reminders_report,
-    build_task_show_report_with_guard, build_task_track_log_report, build_task_track_status_report,
-    build_task_track_summary_report, build_tasks_blocked_report_with_guard,
-    build_tasks_eval_report_with_guard, build_tasks_graph_report_with_guard,
-    build_tasks_list_report_with_guard, build_tasks_next_report_with_guard,
-    build_tasks_query_result_with_guard, build_tasks_view_list_report, build_tasks_view_report,
+    apply_task_track_stop_with_guard, build_task_due_report_with_guard,
+    build_task_pomodoro_status_report_with_guard, build_task_reminders_report_with_guard,
+    build_task_show_report_with_guard, build_task_track_log_report_with_guard,
+    build_task_track_status_report_with_guard, build_task_track_summary_report_with_guard,
+    build_tasks_blocked_report_with_guard, build_tasks_eval_report_with_guard,
+    build_tasks_graph_report_with_guard, build_tasks_list_report_with_guard,
+    build_tasks_next_report_with_guard, build_tasks_query_result_with_guard,
+    build_tasks_view_list_report, build_tasks_view_report,
     process_due_tasknote_auto_archives_with_guard as app_process_due_tasknote_auto_archives,
     TaskAddReport, TaskAddRequest as AppTaskAddRequest,
     TaskArchiveRequest as AppTaskArchiveRequest, TaskCompleteRequest as AppTaskCompleteRequest,
@@ -443,15 +444,15 @@ pub(crate) fn handle_tasks_command(
                 print_task_track_report(cli.output, &report)
             }
             TasksTrackCommand::Status => {
-                let report = run_tasks_track_status_command(paths)?;
+                let report = run_tasks_track_status_command(paths, &guard)?;
                 print_task_track_status_report(cli.output, &report)
             }
             TasksTrackCommand::Log { task } => {
-                let report = run_tasks_track_log_command(paths, task)?;
+                let report = run_tasks_track_log_command(paths, &guard, task)?;
                 print_task_track_log_report(cli.output, &report)
             }
             TasksTrackCommand::Summary { period } => {
-                let report = run_tasks_track_summary_command(paths, *period)?;
+                let report = run_tasks_track_summary_command(paths, &guard, *period)?;
                 print_task_track_summary_report(cli.output, &report)
             }
         },
@@ -526,11 +527,11 @@ pub(crate) fn handle_tasks_command(
             }
         },
         TasksCommand::Reminders { upcoming } => {
-            let report = run_tasks_reminders_command(paths, upcoming)?;
+            let report = run_tasks_reminders_command(paths, &guard, upcoming)?;
             print_task_reminders_report(cli.output, &report)
         }
         TasksCommand::Due { within } => {
-            let report = run_tasks_due_command(paths, within)?;
+            let report = run_tasks_due_command(paths, &guard, within)?;
             print_task_due_report(cli.output, &report)
         }
         TasksCommand::View { command } => match command {
@@ -772,19 +773,24 @@ fn run_tasks_track_stop_command(
     Ok(report)
 }
 
-fn run_tasks_track_status_command(paths: &VaultPaths) -> Result<TaskTrackStatusReport, CliError> {
-    build_task_track_status_report(paths).map_err(CliError::operation)
+fn run_tasks_track_status_command(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<TaskTrackStatusReport, CliError> {
+    build_task_track_status_report_with_guard(paths, Some(guard)).map_err(CliError::operation)
 }
 
 fn run_tasks_track_log_command(
     paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
     task: &str,
 ) -> Result<TaskTrackLogReport, CliError> {
-    build_task_track_log_report(paths, task).map_err(CliError::operation)
+    build_task_track_log_report_with_guard(paths, task, guard).map_err(CliError::operation)
 }
 
 fn run_tasks_track_summary_command(
     paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
     period: TasksTrackSummaryPeriodArg,
 ) -> Result<TaskTrackSummaryReport, CliError> {
     let period = match period {
@@ -793,7 +799,8 @@ fn run_tasks_track_summary_command(
         TasksTrackSummaryPeriodArg::Month => AppTaskTrackSummaryPeriod::Month,
         TasksTrackSummaryPeriodArg::All => AppTaskTrackSummaryPeriod::All,
     };
-    build_task_track_summary_report(paths, period).map_err(CliError::operation)
+    build_task_track_summary_report_with_guard(paths, period, Some(guard))
+        .map_err(CliError::operation)
 }
 
 fn run_tasks_pomodoro_start_command(
@@ -859,15 +866,21 @@ fn run_tasks_pomodoro_status_command(
     Ok(report)
 }
 
-fn run_tasks_due_command(paths: &VaultPaths, within: &str) -> Result<TaskDueReport, CliError> {
-    build_task_due_report(paths, within).map_err(CliError::operation)
+fn run_tasks_due_command(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    within: &str,
+) -> Result<TaskDueReport, CliError> {
+    build_task_due_report_with_guard(paths, within, Some(guard)).map_err(CliError::operation)
 }
 
 fn run_tasks_reminders_command(
     paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
     upcoming: &str,
 ) -> Result<TaskRemindersReport, CliError> {
-    build_task_reminders_report(paths, upcoming).map_err(CliError::operation)
+    build_task_reminders_report_with_guard(paths, upcoming, Some(guard))
+        .map_err(CliError::operation)
 }
 
 fn run_tasks_edit_command(

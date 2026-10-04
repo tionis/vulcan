@@ -30,6 +30,94 @@ use vulcan_core::{
 };
 
 #[test]
+fn guarded_tasknote_reports_scope_records_and_totals_without_write_access() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let profile = "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = \"none\"\n";
+    fs::write(paths.config_file(), profile).unwrap();
+    for (path, tags) in [
+        ("Hidden.md", "[task]"),
+        ("Denied.md", "[task, visible, secret]"),
+        ("Visible.md", "[task, visible]"),
+    ] {
+        fs::write(temp.path().join(path), format!(
+            "---\ntags: {tags}\ntitle: {path}\nstatus: open\ndue: 2020-01-01\nreminders:\n  - id: reminder\n    type: absolute\n    absoluteTime: '2020-01-01T08:00:00Z'\ntimeEntries:\n  - startTime: '2020-01-01T09:00:00Z'\n---\n"
+        )).unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    assert_eq!(build_task_due_report(&paths, "7d").unwrap().tasks.len(), 3);
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let due = super::build_task_due_report_with_guard(&paths, "7d", Some(&guard)).unwrap();
+    assert_eq!(due.tasks.len(), 1);
+    assert_eq!(due.tasks[0].path, "Visible.md");
+    let reminders =
+        super::build_task_reminders_report_with_guard(&paths, "7d", Some(&guard)).unwrap();
+    assert_eq!(reminders.reminders.len(), 1);
+    assert_eq!(reminders.reminders[0].path, "Visible.md");
+    let log = super::build_task_track_log_report_with_guard(&paths, "Visible", &guard).unwrap();
+    assert_eq!(log.path, "Visible.md");
+    assert_eq!(log.entries.len(), 1);
+    for path in ["Hidden.md", "Denied.md"] {
+        assert!(super::build_task_track_log_report_with_guard(&paths, path, &guard).is_err());
+    }
+    let status = super::build_task_track_status_report_with_guard(&paths, Some(&guard)).unwrap();
+    assert_eq!(status.total_active_sessions, 1);
+    assert_eq!(status.active_sessions[0].path, "Visible.md");
+    assert_eq!(
+        status.total_elapsed_minutes,
+        status.active_sessions[0].session.duration_minutes
+    );
+    let summary = super::build_task_track_summary_report_with_guard(
+        &paths,
+        TaskTrackSummaryPeriod::All,
+        Some(&guard),
+    )
+    .unwrap();
+    assert_eq!(summary.tasks_with_time, 1);
+    assert_eq!(summary.active_tasks, 1);
+    assert_eq!(summary.top_tasks[0].path, "Visible.md");
+    assert_eq!(summary.total_minutes, summary.top_tasks[0].minutes);
+    // Source changes must not reuse cached time entries or cached tag grants.
+    fs::write(
+        temp.path().join("Visible.md"),
+        "---\ntags: [task, visible]\ntitle: Fresh source\nstatus: open\n---\n",
+    )
+    .unwrap();
+    let log = super::build_task_track_log_report_with_guard(&paths, "Visible", &guard).unwrap();
+    assert_eq!(log.title, "Fresh source");
+    assert!(log.entries.is_empty());
+    fs::write(
+        temp.path().join("Visible.md"),
+        "---\ntags: [task]\nstatus: open\n---\n",
+    )
+    .unwrap();
+    assert!(super::build_task_track_log_report_with_guard(&paths, "Visible", &guard).is_err());
+    fs::write(
+        paths.config_file(),
+        profile.replace("tag:visible", "tag:revoked"),
+    )
+    .unwrap();
+    for error in [
+        super::build_task_track_log_report_with_guard(&paths, "Visible", &guard).unwrap_err(),
+        super::build_task_due_report_with_guard(&paths, "7d", Some(&guard)).unwrap_err(),
+        super::build_task_reminders_report_with_guard(&paths, "7d", Some(&guard)).unwrap_err(),
+        super::build_task_track_status_report_with_guard(&paths, Some(&guard)).unwrap_err(),
+        super::build_task_track_summary_report_with_guard(
+            &paths,
+            TaskTrackSummaryPeriod::All,
+            Some(&guard),
+        )
+        .unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("authority changed"));
+    }
+}
+
+#[test]
 fn guarded_task_report_rechecks_authority_after_derivation_even_on_error() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

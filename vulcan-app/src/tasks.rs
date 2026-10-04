@@ -1119,22 +1119,23 @@ pub fn build_task_show_report_with_guard(
     let _read_guard = consistent_task_read(paths)?;
     let result = (|| {
         scope.recheck(paths)?;
-        let path = resolve_task_read_path(paths, task, &snapshot)?;
-        let source = read_task_source(paths, &path).map_err(AppError::operation)?;
-        // The vault is canonical. A show read parses only its authorized source,
-        // without loading a global index or requiring any mutation permission.
-        let loaded = parse_loaded_tasknote(
-            paths,
-            task,
-            path,
-            source,
-            None,
-            Some(&snapshot.read_filter()),
-        )?;
+        let loaded = load_tasknote_for_read(paths, task, &snapshot)?;
         Ok(task_show_report(loaded))
     })();
     scope.recheck(paths)?;
     result
+}
+
+fn load_tasknote_for_read(
+    paths: &VaultPaths,
+    task: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<LoadedTaskNote, AppError> {
+    let path = resolve_task_read_path(paths, task, guard)?;
+    let source = read_task_source(paths, &path).map_err(AppError::operation)?;
+    // Source bytes are canonical; do not borrow mutation authority or cached
+    // properties, and recheck tag grants against the current source.
+    parse_loaded_tasknote(paths, task, path, source, None, Some(&guard.read_filter()))
 }
 
 fn resolve_task_read_path(
@@ -1428,9 +1429,23 @@ pub fn apply_task_track_stop_with_guard(
 pub fn build_task_track_status_report(
     paths: &VaultPaths,
 ) -> Result<TaskTrackStatusReport, AppError> {
-    let _read_guard = consistent_task_read(paths)?;
+    build_task_track_status_report_with_guard(paths, None)
+}
+
+pub fn build_task_track_status_report_with_guard(
+    paths: &VaultPaths,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskTrackStatusReport, AppError> {
+    with_task_read_scope(paths, guard, |scope| {
+        Ok(task_track_status_report(load_tasknote_records_with_scope(
+            paths, scope,
+        )?))
+    })
+}
+
+fn task_track_status_report(records: Vec<TaskNoteRecord>) -> TaskTrackStatusReport {
     let now_ms = current_utc_timestamp_ms();
-    let mut active_sessions = load_tasknote_records(paths)?
+    let mut active_sessions = records
         .into_iter()
         .filter_map(|record| {
             let session = active_tasknote_time_entry(&record.indexed.time_entries, now_ms)?;
@@ -1454,21 +1469,34 @@ pub fn build_task_track_status_report(
         .map(|item| item.session.duration_minutes)
         .sum();
 
-    Ok(TaskTrackStatusReport {
+    TaskTrackStatusReport {
         total_active_sessions: active_sessions.len(),
         total_elapsed_minutes,
         active_sessions,
-    })
+    }
 }
 
 pub fn build_task_due_report(paths: &VaultPaths, within: &str) -> Result<TaskDueReport, AppError> {
-    let _read_guard = consistent_task_read(paths)?;
+    build_task_due_report_with_guard(paths, within, None)
+}
+
+pub fn build_task_due_report_with_guard(
+    paths: &VaultPaths,
+    within: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskDueReport, AppError> {
+    with_task_read_scope(paths, guard, |scope| {
+        task_due_report(load_tasknote_records_with_scope(paths, scope)?, within)
+    })
+}
+
+fn task_due_report(records: Vec<TaskNoteRecord>, within: &str) -> Result<TaskDueReport, AppError> {
     let window_ms = parse_duration_string(within).ok_or_else(|| {
         AppError::operation(format!("failed to parse due window duration: {within}"))
     })?;
     let now_ms = current_utc_timestamp_ms();
     let deadline_ms = now_ms.saturating_add(window_ms.max(0));
-    let mut tasks = load_tasknote_records(paths)?
+    let mut tasks = records
         .into_iter()
         .filter(|record| !record.indexed.archived && !record.completed)
         .filter_map(|record| {
@@ -1503,7 +1531,23 @@ pub fn build_task_reminders_report(
     paths: &VaultPaths,
     upcoming: &str,
 ) -> Result<TaskRemindersReport, AppError> {
-    let _read_guard = consistent_task_read(paths)?;
+    build_task_reminders_report_with_guard(paths, upcoming, None)
+}
+
+pub fn build_task_reminders_report_with_guard(
+    paths: &VaultPaths,
+    upcoming: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskRemindersReport, AppError> {
+    with_task_read_scope(paths, guard, |scope| {
+        task_reminders_report(load_tasknote_records_with_scope(paths, scope)?, upcoming)
+    })
+}
+
+fn task_reminders_report(
+    records: Vec<TaskNoteRecord>,
+    upcoming: &str,
+) -> Result<TaskRemindersReport, AppError> {
     let window_ms = parse_duration_string(upcoming).ok_or_else(|| {
         AppError::operation(format!(
             "failed to parse reminder window duration: {upcoming}"
@@ -1513,7 +1557,7 @@ pub fn build_task_reminders_report(
     let deadline_ms = now_ms.saturating_add(window_ms.max(0));
     let mut reminders = Vec::new();
 
-    for record in load_tasknote_records(paths)?
+    for record in records
         .into_iter()
         .filter(|record| !record.indexed.archived && !record.completed)
     {
@@ -1944,6 +1988,16 @@ fn derive_task_report_with_guard<R>(
     guard: Option<&ProfilePermissionGuard>,
     derive: impl FnOnce(TasksQueryResult) -> Result<R, AppError>,
 ) -> Result<R, AppError> {
+    with_task_read_scope(paths, guard, |scope| {
+        build_tasks_query_result_with_options(paths, source, false, scope).and_then(derive)
+    })
+}
+
+fn with_task_read_scope<R>(
+    paths: &VaultPaths,
+    guard: Option<&ProfilePermissionGuard>,
+    derive: impl FnOnce(TaskReadScope<'_>) -> Result<R, AppError>,
+) -> Result<R, AppError> {
     let snapshot = guard
         .map(|guard| {
             TaskReadScope::Guard(guard).recheck(paths)?;
@@ -1955,8 +2009,7 @@ fn derive_task_report_with_guard<R>(
         .map_or(TaskReadScope::Filter(None), TaskReadScope::Guard);
     scope.recheck(paths)?;
     let _read_guard = consistent_task_read(paths)?;
-    let report =
-        build_tasks_query_result_with_options(paths, source, false, scope).and_then(derive);
+    let report = derive(scope);
     scope.recheck(paths)?;
     report
 }
@@ -3271,6 +3324,25 @@ pub fn build_task_track_log_report(
 ) -> Result<TaskTrackLogReport, AppError> {
     let _read_guard = consistent_task_read(paths)?;
     let loaded = load_tasknote_note(paths, task)?;
+    Ok(task_track_log_report(loaded))
+}
+
+pub fn build_task_track_log_report_with_guard(
+    paths: &VaultPaths,
+    task: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<TaskTrackLogReport, AppError> {
+    with_task_read_scope(paths, Some(guard), |scope| {
+        let TaskReadScope::Guard(snapshot) = scope else {
+            unreachable!("a supplied guard always produces a guarded scope")
+        };
+        Ok(task_track_log_report(load_tasknote_for_read(
+            paths, task, snapshot,
+        )?))
+    })
+}
+
+fn task_track_log_report(loaded: LoadedTaskNote) -> TaskTrackLogReport {
     let now_ms = current_utc_timestamp_ms();
     let entries = parse_tasknote_time_entries(&loaded.indexed.time_entries, now_ms)
         .into_iter()
@@ -3279,7 +3351,7 @@ pub fn build_task_track_log_report(
     let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
         tasknote_time_metrics(&loaded.indexed, now_ms);
 
-    Ok(TaskTrackLogReport {
+    TaskTrackLogReport {
         path: loaded.path,
         title: loaded.indexed.title,
         total_time_minutes,
@@ -3287,14 +3359,35 @@ pub fn build_task_track_log_report(
         estimate_remaining_minutes,
         efficiency_ratio,
         entries,
-    })
+    }
 }
 
 pub fn build_task_track_summary_report(
     paths: &VaultPaths,
     period: TaskTrackSummaryPeriod,
 ) -> Result<TaskTrackSummaryReport, AppError> {
-    let _read_guard = consistent_task_read(paths)?;
+    build_task_track_summary_report_with_guard(paths, period, None)
+}
+
+pub fn build_task_track_summary_report_with_guard(
+    paths: &VaultPaths,
+    period: TaskTrackSummaryPeriod,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskTrackSummaryReport, AppError> {
+    with_task_read_scope(paths, guard, |scope| {
+        task_track_summary_report(
+            paths,
+            period,
+            load_tasknote_records_with_scope(paths, scope)?,
+        )
+    })
+}
+
+fn task_track_summary_report(
+    paths: &VaultPaths,
+    period: TaskTrackSummaryPeriod,
+    records: Vec<TaskNoteRecord>,
+) -> Result<TaskTrackSummaryReport, AppError> {
     let config = load_vault_config(paths).config;
     let (from, to, from_ms, now_ms) = resolve_task_track_summary_window(&config, period)?;
     let mut total_minutes = 0_i64;
@@ -3304,7 +3397,7 @@ pub fn build_task_track_summary_report(
     let mut task_totals = Vec::new();
     let mut project_totals = HashMap::<String, i64>::new();
 
-    for record in load_tasknote_records(paths)? {
+    for record in records {
         let entries = parse_tasknote_time_entries(&record.indexed.time_entries, now_ms);
         let mut task_minutes = 0_i64;
         let mut has_active_session = false;
@@ -5330,17 +5423,19 @@ fn task_time_entry_report(entry: vulcan_core::TaskNotesTimeEntry) -> TaskTimeEnt
     }
 }
 
-fn load_tasknote_records(paths: &VaultPaths) -> Result<Vec<TaskNoteRecord>, AppError> {
-    load_tasknote_records_with_filter(paths, None)
-}
-
 fn load_tasknote_records_with_filter(
     paths: &VaultPaths,
     filter: Option<&vulcan_core::PermissionFilter>,
 ) -> Result<Vec<TaskNoteRecord>, AppError> {
+    load_tasknote_records_with_scope(paths, TaskReadScope::Filter(filter))
+}
+
+fn load_tasknote_records_with_scope(
+    paths: &VaultPaths,
+    scope: TaskReadScope<'_>,
+) -> Result<Vec<TaskNoteRecord>, AppError> {
     let config = load_vault_config(paths).config;
-    let note_index = vulcan_core::properties::load_note_index_with_filter(paths, filter)
-        .map_err(AppError::operation)?;
+    let note_index = scope.load(paths)?;
     let mut records = note_index
         .into_values()
         .filter_map(|note| {
