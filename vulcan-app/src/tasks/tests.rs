@@ -919,6 +919,71 @@ fn guarded_pomodoro_status_completes_only_visible_due_sessions() {
 }
 
 #[test]
+fn read_only_pomodoro_status_uses_tag_scope_without_upkeep() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = \"none\"\n",
+    )
+    .unwrap();
+    let config = load_vault_config(&paths).config;
+    for (path, tags, start) in [
+        ("Visible.md", "[task, visible]", "2999-01-01T08:00:00Z"),
+        (
+            "Secret.md",
+            "[task, visible, secret]",
+            "2999-01-01T09:00:00Z",
+        ),
+        ("Due.md", "[task, visible]", "2020-01-01T08:00:00Z"),
+    ] {
+        let sessions = serde_yaml::to_value(serde_json::json!([{
+            "id": path, "startTime": start,
+            "plannedDuration": 25, "type": "work", "taskPath": path,
+            "completed": false,
+            "activePeriods": [{"startTime": start}]
+        }]))
+        .unwrap();
+        seed_tasknote(
+            &paths,
+            &config,
+            path,
+            "Task",
+            "open",
+            &[
+                ("tags", serde_yaml::from_str(tags).unwrap()),
+                (config.tasknotes.field_mapping.pomodoros.as_str(), sessions),
+            ],
+            "",
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let before = fs::read(temp.path().join("Due.md")).unwrap();
+
+    // Two readable sessions are active (the due one is not completed without
+    // write access); the tag-denied session is invisible.
+    let error =
+        super::build_task_pomodoro_status_report_with_guard(&paths, Some(&guard)).unwrap_err();
+    assert!(error.to_string().contains("multiple active"), "{error}");
+    assert_eq!(fs::read(temp.path().join("Due.md")).unwrap(), before);
+
+    fs::remove_file(temp.path().join("Due.md")).unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let report = super::build_task_pomodoro_status_report_with_guard(&paths, Some(&guard)).unwrap();
+    let active = report
+        .active
+        .expect("tag-granted session should be visible");
+    assert_eq!(active.storage_note_path, "Visible.md");
+    assert!(report.changed_paths.is_empty());
+}
+
+#[test]
 fn guarded_pomodoro_start_denies_daily_storage_outside_scope() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

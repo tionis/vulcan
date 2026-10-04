@@ -17,7 +17,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -3843,8 +3843,14 @@ pub fn build_task_pomodoro_status_report_with_guard(
     paths: &VaultPaths,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskPomodoroStatusReport, AppError> {
-    preflight_task_mutation_guard(paths, guard)?;
-    let changed_paths = process_due_task_pomodoros(paths, false, guard)?;
+    // Like automatic archiving, due-session completion is upkeep. A caller
+    // without write grants still gets a scoped read-only status.
+    let changed_paths = if guard.is_some_and(|guard| guard.grant().write.allow.is_empty()) {
+        Vec::new()
+    } else {
+        preflight_task_mutation_guard(paths, guard)?;
+        process_due_task_pomodoros(paths, false, guard)?
+    };
     let config = load_vault_config(paths).config;
     let sessions =
         collect_tasknotes_pomodoro_sessions_with_overrides(paths, &changed_paths, guard)?;
@@ -5689,27 +5695,32 @@ where
     })
 }
 
-fn pomodoro_session_is_readable(
-    stored: &StoredPomodoroSession,
-    guard: Option<&ProfilePermissionGuard>,
-) -> bool {
-    guard.is_none_or(|guard| {
-        guard.check_read_path(&stored.storage_note_path).is_ok()
-            && stored
-                .task_path
-                .as_ref()
-                .is_none_or(|path| guard.check_read_path(path).is_ok())
-    })
-}
-
 fn collect_tasknotes_pomodoro_sessions(
     paths: &VaultPaths,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Vec<StoredPomodoroSession>, AppError> {
+    collect_tasknotes_pomodoro_sessions_in_scope(paths, guard).map(|(sessions, _)| sessions)
+}
+
+/// Collect pomodoro sessions from the caller's guarded note universe and
+/// return that universe's paths. Path/tag grants and policy apply once per
+/// note before any session is parsed; a session is visible only when both
+/// its storage note and its task note are in the universe. Policy failures
+/// propagate rather than hiding sessions.
+fn collect_tasknotes_pomodoro_sessions_in_scope(
+    paths: &VaultPaths,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<(Vec<StoredPomodoroSession>, HashSet<String>), AppError> {
     let config = load_vault_config(paths).config;
-    let filter = guard.map(PermissionGuard::read_filter);
-    let note_index = vulcan_core::properties::load_note_index_with_filter(paths, filter.as_ref())
-        .map_err(AppError::operation)?;
+    let note_index = match guard {
+        Some(guard) => vulcan_core::properties::load_note_index_with_guard(paths, guard),
+        None => vulcan_core::properties::load_note_index_with_filter(paths, None),
+    }
+    .map_err(AppError::operation)?;
+    let readable = note_index
+        .values()
+        .map(|note| note.document_path.clone())
+        .collect::<HashSet<_>>();
     let field_name = config.tasknotes.field_mapping.pomodoros.clone();
     let mut task_titles = HashMap::new();
     let mut task_sessions = Vec::new();
@@ -5771,14 +5782,26 @@ fn collect_tasknotes_pomodoro_sessions(
         vulcan_core::config::TaskNotesPomodoroStorageLocation::Task => task_sessions,
         vulcan_core::config::TaskNotesPomodoroStorageLocation::DailyNote => daily_sessions,
     };
-    sessions.retain(|stored| pomodoro_session_is_readable(stored, guard));
+    sessions.retain(|stored| pomodoro_session_in_scope(stored, &readable));
+    sort_pomodoro_sessions(&mut sessions);
+    Ok((sessions, readable))
+}
+
+fn pomodoro_session_in_scope(stored: &StoredPomodoroSession, readable: &HashSet<String>) -> bool {
+    readable.contains(&stored.storage_note_path)
+        && stored
+            .task_path
+            .as_ref()
+            .is_none_or(|path| readable.contains(path))
+}
+
+fn sort_pomodoro_sessions(sessions: &mut [StoredPomodoroSession]) {
     sessions.sort_by(|left, right| {
         left.storage_note_path
             .cmp(&right.storage_note_path)
             .then_with(|| left.session.start_time.cmp(&right.session.start_time))
             .then_with(|| left.session.id.cmp(&right.session.id))
     });
-    Ok(sessions)
 }
 
 fn collect_tasknotes_pomodoro_sessions_with_overrides(
@@ -5787,7 +5810,7 @@ fn collect_tasknotes_pomodoro_sessions_with_overrides(
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Vec<StoredPomodoroSession>, AppError> {
     let config = load_vault_config(paths).config;
-    let mut sessions = collect_tasknotes_pomodoro_sessions(paths, guard)?;
+    let (mut sessions, mut readable) = collect_tasknotes_pomodoro_sessions_in_scope(paths, guard)?;
     if changed_paths.is_empty() {
         return Ok(sessions);
     }
@@ -5804,8 +5827,21 @@ fn collect_tasknotes_pomodoro_sessions_with_overrides(
             .any(|path| path == &stored.storage_note_path)
     });
     for path in changed_paths {
-        if let Some(guard) = guard {
-            guard.check_read_path(path).map_err(AppError::operation)?;
+        // A note this operation just rewrote may be absent from the cached
+        // universe; authorize it directly, surfacing policy failures.
+        if let Some(guard) = guard.filter(|_| !readable.contains(path)) {
+            match guard.check_read_path(path) {
+                Ok(()) => {
+                    readable.insert(path.clone());
+                }
+                Err(
+                    vulcan_core::PermissionError::PathDenied { .. }
+                    | vulcan_core::PermissionError::PolicyHookDenied { .. },
+                ) => continue,
+                Err(error) => return Err(AppError::operation(error)),
+            }
+        } else if guard.is_none() {
+            readable.insert(path.clone());
         }
         sessions.extend(load_stored_pomodoro_sessions_from_path(
             paths,
@@ -5815,13 +5851,8 @@ fn collect_tasknotes_pomodoro_sessions_with_overrides(
             guard,
         )?);
     }
-    sessions.retain(|stored| pomodoro_session_is_readable(stored, guard));
-    sessions.sort_by(|left, right| {
-        left.storage_note_path
-            .cmp(&right.storage_note_path)
-            .then_with(|| left.session.start_time.cmp(&right.session.start_time))
-            .then_with(|| left.session.id.cmp(&right.session.id))
-    });
+    sessions.retain(|stored| pomodoro_session_in_scope(stored, &readable));
+    sort_pomodoro_sessions(&mut sessions);
     Ok(sessions)
 }
 

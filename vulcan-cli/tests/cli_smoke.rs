@@ -12511,6 +12511,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
     assert!(task_skill.contains("`tasks view list`"));
+    assert!(task_skill.contains("`tasks pomodoro status` shows only sessions"));
 }
 
 #[test]
@@ -12528,7 +12529,12 @@ fn tasknote_reports_apply_policy_scope_before_totals() {
         ("Visible.md", "[task, visible]"),
     ] {
         fs::write(root.join(path), format!(
-            "---\ntags: {tags}\ntitle: {path}\nstatus: open\ndue: 2020-01-01\nreminders:\n  - id: reminder\n    type: absolute\n    absoluteTime: '2020-01-01T08:00:00Z'\ntimeEntries:\n  - startTime: '2020-01-01T09:00:00Z'\n---\n"
+            "---\ntags: {tags}\ntitle: {path}\nstatus: open\ndue: 2020-01-01\nreminders:\n  - id: reminder\n    type: absolute\n    absoluteTime: '2020-01-01T08:00:00Z'\ntimeEntries:\n  - startTime: '2020-01-01T09:00:00Z'\n{pomodoros}---\n",
+            pomodoros = if path == "Policy.md" {
+                "pomodoros:\n  - id: hidden\n    startTime: '2999-01-01T08:00:00Z'\n    plannedDuration: 25\n    type: work\n    taskPath: Policy.md\n    activePeriods:\n      - startTime: '2999-01-01T08:00:00Z'\n"
+            } else {
+                ""
+            }
         )).unwrap();
     }
     fs::write(root.join(".vulcan/config.toml"), concat!(
@@ -12570,6 +12576,9 @@ fn tasknote_reports_apply_policy_scope_before_totals() {
             assert!(!report.to_string().contains(hidden));
         }
     }
+    let pomodoro = parse_stdout_json(&run(&["pomodoro", "status"]).success());
+    assert!(pomodoro["active"].is_null(), "{pomodoro}");
+    assert!(!pomodoro.to_string().contains("Policy.md"), "{pomodoro}");
     let log = parse_stdout_json(&run(&["track", "log", "Visible"]).success());
     assert_eq!(log["path"], "Visible.md");
     for hidden in ["Hidden.md", "Policy.md", "Denied.md"] {
@@ -12592,6 +12601,9 @@ fn tasknote_reports_apply_policy_scope_before_totals() {
                 .to_string()
                 .contains("policy"));
         }
+        assert!(parse_stdout_json(&run(&["pomodoro", "status"]).failure())
+            .to_string()
+            .contains("policy"));
         assert!(
             parse_stdout_json(&run(&["track", "log", "Visible"]).failure())
                 .to_string()
