@@ -6,6 +6,7 @@ use crate::mdbase::{
 use crate::notes::{
     normalize_date_argument, normalize_note_path, render_periodic_note_contents,
     resolve_existing_note_path, write_ordinary_note_if_unchanged,
+    write_ordinary_note_if_unchanged_with_profile,
 };
 use crate::templates::{
     load_named_template, merge_template_frontmatter, parse_frontmatter_document,
@@ -26,9 +27,7 @@ use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
 };
 use vulcan_core::expression::parse_expression;
-use vulcan_core::ordinary_write::{
-    apply_ordinary_write_batch, recover_ordinary_write_batch, OrdinaryWriteChange,
-};
+use vulcan_core::ordinary_write::{recover_ordinary_write_batch, OrdinaryWriteChange};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
@@ -800,6 +799,7 @@ pub fn apply_task_add(
         Some(&rendered),
         MdbaseWriteOperation::Create,
         request.dry_run,
+        None,
     )?;
     if !request.dry_run && !routed {
         write_ordinary_note_if_unchanged(paths, &relative_path, None, &rendered, "task add")?;
@@ -880,14 +880,16 @@ pub fn apply_task_create_with_guard(
         Some(&insertion.updated),
         operation,
         request.dry_run,
+        guard,
     )?;
     if !request.dry_run && !routed {
-        write_ordinary_note_if_unchanged(
+        write_ordinary_note_if_unchanged_with_profile(
             paths,
             &relative_path,
             (!created_note).then_some(existing.as_str()),
             &insertion.updated,
             "task create",
+            task_mutation_profile(paths, guard)?,
         )?;
     }
 
@@ -968,6 +970,7 @@ pub fn apply_task_convert(
             Some(&rendered),
             MdbaseWriteOperation::Update,
             request.dry_run,
+            None,
         )?
     };
     if !request.dry_run && !task_changes.is_empty() && !routed {
@@ -3307,7 +3310,7 @@ fn write_ordinary_task_conversion(
     task_contents: &str,
 ) -> Result<(), AppError> {
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
-    apply_ordinary_write_batch(
+    vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(
         paths,
         &[
             OrdinaryWriteChange {
@@ -3321,6 +3324,19 @@ fn write_ordinary_task_conversion(
                 after: Some(source_after.to_string()),
             },
         ],
+        || {
+            for path in [source_path, task_path] {
+                if crate::notes::note_path_is_mdbase_managed(paths, path, None)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(
+                        "mdbase collection changed during task conversion; retry the operation"
+                            .into(),
+                    );
+                }
+            }
+            Ok(())
+        },
     )
     .map(|_| ())
     .map_err(|error| AppError::operation_with_code(error.code, error.message))
@@ -4230,6 +4246,23 @@ fn markdown_heading_level(line: &str) -> Option<usize> {
         .then_some(hashes)
 }
 
+fn task_mutation_profile<'a>(
+    paths: &VaultPaths,
+    guard: Option<&'a ProfilePermissionGuard>,
+) -> Result<Option<&'a str>, AppError> {
+    let Some(guard) = guard else { return Ok(None) };
+    let name = guard.selection().name.as_str();
+    let current =
+        vulcan_core::resolve_permission_profile(paths, Some(name)).map_err(AppError::operation)?;
+    if &current != guard.selection() {
+        return Err(AppError::operation_with_code(
+            "permission_denied",
+            "task mutation authority changed; resolve a new guard",
+        ));
+    }
+    Ok(Some(name))
+}
+
 fn route_task_note_write(
     paths: &VaultPaths,
     path: &str,
@@ -4237,6 +4270,7 @@ fn route_task_note_write(
     after: Option<&str>,
     operation: MdbaseWriteOperation,
     dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<bool, AppError> {
     apply_managed_mdbase_note_write(
         paths,
@@ -4247,7 +4281,7 @@ fn route_task_note_write(
             operation,
             mode: MdbaseManagedWriteMode::Validated,
             dry_run,
-            permission_profile: None,
+            permission_profile: task_mutation_profile(paths, guard)?,
             quiet: true,
         },
     )
@@ -4364,7 +4398,7 @@ where
                 mode: MdbaseManagedWriteMode::Validated,
                 allow_mixed_paths: false,
                 dry_run,
-                permission_profile: None,
+                permission_profile: task_mutation_profile(paths, guard)?,
                 quiet: true,
             },
         )?
@@ -4377,6 +4411,7 @@ where
             Some(&rendered),
             MdbaseWriteOperation::Update,
             dry_run,
+            guard,
         )?
     };
 
@@ -4388,14 +4423,16 @@ where
                 &loaded.source,
                 destination,
                 &rendered,
+                task_mutation_profile(paths, guard)?,
             )?;
         } else {
-            write_ordinary_note_if_unchanged(
+            write_ordinary_note_if_unchanged_with_profile(
                 paths,
                 &loaded.path,
                 Some(&loaded.source),
                 &rendered,
                 "task mutation",
+                task_mutation_profile(paths, guard)?,
             )?;
         }
     }
@@ -4424,9 +4461,10 @@ fn move_ordinary_tasknote_if_unchanged(
     source_before: &str,
     destination_path: &str,
     destination_contents: &str,
+    permission_profile: Option<&str>,
 ) -> Result<(), AppError> {
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
-    apply_ordinary_write_batch(
+    vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(
         paths,
         &[
             OrdinaryWriteChange {
@@ -4440,6 +4478,18 @@ fn move_ordinary_tasknote_if_unchanged(
                 after: None,
             },
         ],
+        || {
+            for path in [source_path, destination_path] {
+                if crate::notes::note_path_is_mdbase_managed(paths, path, permission_profile)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(
+                        "mdbase collection changed during task move; retry the operation".into(),
+                    );
+                }
+            }
+            Ok(())
+        },
     )
     .map(|_| ())
     .map_err(|error| AppError::operation_with_code(error.code, error.message))
@@ -4796,6 +4846,7 @@ where
                 MdbaseWriteOperation::Update
             },
             dry_run,
+            None,
         )?
     } else {
         false
@@ -5413,15 +5464,17 @@ fn apply_inline_task_reschedule(
             Some(&rendered),
             MdbaseWriteOperation::Update,
             request.dry_run,
+            guard,
         )?
     };
     if !request.dry_run && !changes.is_empty() && !routed {
-        write_ordinary_note_if_unchanged(
+        write_ordinary_note_if_unchanged_with_profile(
             paths,
             &resolved.path,
             Some(&source),
             &rendered,
             "task reschedule",
+            task_mutation_profile(paths, guard)?,
         )?;
     }
 
@@ -5471,15 +5524,17 @@ fn apply_inline_task_complete(
             Some(&rendered),
             MdbaseWriteOperation::Update,
             request.dry_run,
+            guard,
         )?
     };
     if !request.dry_run && !changes.is_empty() && !routed {
-        write_ordinary_note_if_unchanged(
+        write_ordinary_note_if_unchanged_with_profile(
             paths,
             &resolved.path,
             Some(&source),
             &rendered,
             "task complete",
+            task_mutation_profile(paths, guard)?,
         )?;
     }
 

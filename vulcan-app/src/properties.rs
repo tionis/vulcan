@@ -1,12 +1,13 @@
 //! Reusable property mutation workflows.
 
 use crate::mdbase::{
-    apply_managed_mdbase_note_writes, MdbaseManagedNoteWriteBatchRequest,
-    MdbaseManagedNoteWriteChange, MdbaseManagedWriteMode, MdbaseWriteOperation,
+    apply_managed_mdbase_note_writes, load_mdbase_routing_collection,
+    MdbaseManagedNoteWriteBatchRequest, MdbaseManagedNoteWriteChange, MdbaseManagedWriteMode,
+    MdbaseWriteOperation,
 };
 use crate::AppError;
 use std::path::Path;
-use vulcan_core::mdbase::{is_mdbase_record_path, load_mdbase_collection};
+use vulcan_core::mdbase::is_mdbase_record_path;
 use vulcan_core::paths::secure_write;
 use vulcan_core::write_lock::acquire_write_lock;
 use vulcan_core::{
@@ -35,9 +36,9 @@ pub fn apply_bulk_property_mutation(
             .map_err(AppError::operation)?;
     }
 
+    let collection = load_mdbase_routing_collection(paths, &guard)?;
     let planned = plan_property_mutations_on_paths(paths, note_paths, key, value)
         .map_err(AppError::operation)?;
-    let collection = load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?;
     let mut managed_indexes = Vec::new();
     let mut ordinary_indexes = Vec::new();
     for (index, plan) in planned.iter().enumerate() {
@@ -81,6 +82,14 @@ pub fn apply_bulk_property_mutation(
         }
         if !ordinary_indexes.is_empty() {
             let _lock = acquire_write_lock(paths).map_err(AppError::operation)?;
+            recheck_ordinary_property_routes(
+                paths,
+                &guard,
+                &ordinary_indexes
+                    .iter()
+                    .map(|index| planned[*index].path.as_str())
+                    .collect::<Vec<_>>(),
+            )?;
             for index in ordinary_indexes {
                 let plan = &planned[index];
                 secure_write(paths.vault_root(), Path::new(&plan.path), &plan.after)
@@ -109,6 +118,32 @@ pub fn apply_bulk_property_mutation(
             })
             .collect(),
     })
+}
+
+fn recheck_ordinary_property_routes(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    note_paths: &[&str],
+) -> Result<(), AppError> {
+    let current = resolve_permission_profile(paths, Some(&guard.selection().name))
+        .map_err(AppError::operation)?;
+    if &current != guard.selection() {
+        return Err(AppError::operation_with_code(
+            "permission_denied",
+            "property mutation authority changed; retry the operation",
+        ));
+    }
+    if let Some(collection) = load_mdbase_routing_collection(paths, guard)? {
+        for path in note_paths {
+            if is_mdbase_record_path(&collection, path).map_err(AppError::operation)? {
+                return Err(AppError::operation_with_code(
+                    "stale_state",
+                    "mdbase collection changed during property mutation; retry the operation",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn apply_managed_property_batch(
@@ -175,6 +210,59 @@ mod tests {
         .expect("ordinary note");
         let paths = VaultPaths::new(directory.path());
         (directory, paths)
+    }
+
+    #[test]
+    fn ordinary_property_routing_recheck_rejects_new_collection_membership() {
+        let directory = tempdir().unwrap();
+        let paths = VaultPaths::new(directory.path());
+        let guard =
+            ProfilePermissionGuard::new(&paths, resolve_permission_profile(&paths, None).unwrap());
+        recheck_ordinary_property_routes(&paths, &guard, &["note.md"]).unwrap();
+        fs::write(
+            directory.path().join("mdbase.yaml"),
+            "spec_version: '0.3.0'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            recheck_ordinary_property_routes(&paths, &guard, &["note.md"])
+                .unwrap_err()
+                .code(),
+            Some("stale_state")
+        );
+    }
+
+    #[test]
+    fn property_routing_requires_config_read_even_for_ordinary_notes() {
+        let (directory, paths) = fixture();
+        fs::create_dir(directory.path().join(".vulcan")).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Archive/**\"] }\nwrite = { allow = [\"folder:Archive/**\"] }\n").unwrap();
+        let note_path = directory.path().join("Archive/ordinary.md");
+        let before = fs::read_to_string(&note_path).unwrap();
+        for config in [Some("secret: [invalid"), None] {
+            match config {
+                Some(config) => fs::write(directory.path().join("mdbase.yaml"), config).unwrap(),
+                None => fs::remove_file(directory.path().join("mdbase.yaml")).unwrap(),
+            }
+            for dry_run in [true, false] {
+                let error = apply_bulk_property_mutation(
+                    &paths,
+                    &["Archive/ordinary.md".into()],
+                    "status",
+                    Some("done"),
+                    dry_run,
+                    Some("scoped"),
+                    true,
+                )
+                .unwrap_err();
+                assert_eq!(error.code(), Some("permission_denied"));
+                assert_eq!(
+                    error.message(),
+                    "permission denied for required mdbase controls"
+                );
+                assert_eq!(fs::read_to_string(&note_path).unwrap(), before);
+            }
+        }
     }
 
     #[test]

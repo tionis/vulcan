@@ -693,6 +693,57 @@ fn apply_task_create_appends_inline_task_to_target_note() {
 }
 
 #[test]
+fn guarded_task_routing_never_borrows_default_control_authority() {
+    let directory = tempdir().unwrap();
+    let paths = VaultPaths::new(directory.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let config = "[permissions.profiles.scoped]\nread = { allow = [\"folder:Allowed/**\"] }\nwrite = { allow = [\"folder:Allowed/**\"] }\n";
+    fs::write(paths.config_file(), config).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    for content in [None, Some("hidden: [invalid")] {
+        if let Some(content) = content {
+            fs::write(directory.path().join("mdbase.yaml"), content).unwrap();
+        }
+        for dry_run in [true, false] {
+            let error = apply_task_create_with_guard(
+                &paths,
+                &TaskCreateRequest {
+                    text: "Scoped task".into(),
+                    note: Some("Allowed/Inbox".into()),
+                    due: None,
+                    priority: None,
+                    dry_run,
+                },
+                Some(&guard),
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), Some("permission_denied"));
+            assert_eq!(
+                error.message(),
+                "permission denied for required mdbase controls"
+            );
+            assert!(!directory.path().join("Allowed/Inbox.md").exists());
+        }
+    }
+    // A same-name profile widened since the caller acquired its guard must not
+    // silently lend the new authority to this invocation.
+    fs::write(
+        paths.config_file(),
+        config.replace(
+            "read = { allow = [\"folder:Allowed/**\"] }",
+            "read = \"all\"",
+        ),
+    )
+    .unwrap();
+    let error = super::task_mutation_profile(&paths, Some(&guard)).unwrap_err();
+    assert_eq!(error.code(), Some("permission_denied"));
+    assert!(error.message().contains("authority changed"));
+}
+
+#[test]
 fn guarded_task_create_checks_the_actual_write_path_before_mutation() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
@@ -1099,6 +1150,34 @@ fn apply_task_convert_line_dry_run_reports_both_changed_paths() {
 }
 
 #[test]
+fn ordinary_task_conversion_routing_recheck_rejects_new_collection_membership() {
+    let directory = tempdir().unwrap();
+    let paths = VaultPaths::new(directory.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(directory.path().join("Inbox.md"), "Original\n").unwrap();
+    fs::write(
+        directory.path().join("mdbase.yaml"),
+        "spec_version: '0.3.0'\n",
+    )
+    .unwrap();
+    let error = write_ordinary_task_conversion(
+        &paths,
+        "Inbox.md",
+        "Original\n",
+        "Converted\n",
+        "Task.md",
+        "Task\n",
+    )
+    .unwrap_err();
+    assert!(error.message().contains("mdbase collection changed"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("Inbox.md")).unwrap(),
+        "Original\n"
+    );
+    assert!(!directory.path().join("Task.md").exists());
+}
+
+#[test]
 fn ordinary_task_line_conversion_refuses_stale_source_and_late_target_collision() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
@@ -1197,6 +1276,7 @@ fn ordinary_task_move_refuses_stale_source_and_late_destination_collision() {
         "old task\n",
         "Archive/Done.md",
         "archived task\n",
+        None,
     )
     .expect_err("stale move must fail");
     assert_eq!(error.code(), Some("ordinary_write_stale"));
@@ -1214,6 +1294,7 @@ fn ordinary_task_move_refuses_stale_source_and_late_destination_collision() {
         "newer task\n",
         "Archive/Done.md",
         "archived task\n",
+        None,
     )
     .is_err());
     assert_eq!(

@@ -26,6 +26,33 @@ use vulcan_core::{
 };
 
 #[test]
+fn template_batch_routing_requires_control_read_before_config_observation() {
+    let directory = tempdir().unwrap();
+    let paths = VaultPaths::new(directory.path());
+    fs::create_dir(directory.path().join(".vulcan")).unwrap();
+    fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Allowed/**\"] }\nwrite = { allow = [\"folder:Allowed/**\"] }\n").unwrap();
+    let changes = [vulcan_core::ordinary_write::OrdinaryWriteChange {
+        path: "Allowed/new.md".into(),
+        before: None,
+        after: Some("New\n".into()),
+    }];
+    for config in [None, Some("hidden: [invalid")] {
+        if let Some(config) = config {
+            fs::write(directory.path().join("mdbase.yaml"), config).unwrap();
+        }
+        let error = super::validate_template_batch(
+            &paths,
+            &changes,
+            &std::collections::BTreeSet::new(),
+            Some("scoped"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "permission denied for required mdbase controls");
+        assert!(!directory.path().join("Allowed/new.md").exists());
+    }
+}
+
+#[test]
 fn scoped_template_move_rejects_rewrites_outside_its_grant() {
     let temp_dir = tempdir().expect("temp dir");
     let root = temp_dir.path();

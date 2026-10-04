@@ -1,4 +1,4 @@
-use crate::notes::{note_path_is_mdbase_managed, write_ordinary_note_if_unchanged};
+use crate::notes::{note_path_is_mdbase_managed, write_ordinary_note_if_unchanged_with_profile};
 use crate::AppError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,14 @@ fn write_template_result_with_staged_creates(
         .map_err(|_| AppError::operation("template staging lock poisoned"))?
         .clone();
     if staged.creates.is_empty() && staged.moved.is_none() {
-        return write_ordinary_note_if_unchanged(paths, path, before, after, operation);
+        return write_ordinary_note_if_unchanged_with_profile(
+            paths,
+            path,
+            before,
+            after,
+            operation,
+            permission_profile,
+        );
     }
     if staged.creates.contains_key(path) {
         return Err(AppError::operation(format!(
@@ -156,7 +163,9 @@ fn validate_template_batch(
         })
         .transpose()?;
     for change in changes {
-        if note_path_is_mdbase_managed(paths, &change.path).map_err(|error| error.to_string())? {
+        if note_path_is_mdbase_managed(paths, &change.path, permission_profile)
+            .map_err(|error| error.to_string())?
+        {
             return Err(format!(
                 "template write target became an mdbase-managed note: {}",
                 change.path
@@ -2037,12 +2046,15 @@ impl<'a> TemplateSession<'a> {
             stage_template_create(staged, self.request.paths, &normalized, content)
                 .map_err(NativeExpressionError::Message)?;
         } else {
-            write_ordinary_note_if_unchanged(
+            write_ordinary_note_if_unchanged_with_profile(
                 self.request.paths,
                 &normalized,
                 None,
                 &content,
                 "template file create",
+                self.mutation_guard
+                    .as_ref()
+                    .map(|guard| guard.selection().name.as_str()),
             )
             .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         }
@@ -3032,12 +3044,16 @@ fn js_file_create_new(
     if let Some(staged) = state.staged_creates.as_ref() {
         stage_template_create(staged, &state.paths, &normalized, content)?;
     } else {
-        write_ordinary_note_if_unchanged(
+        write_ordinary_note_if_unchanged_with_profile(
             &state.paths,
             &normalized,
             None,
             &content,
             "template file create",
+            state
+                .mutation_guard
+                .as_ref()
+                .map(|guard| guard.selection().name.as_str()),
         )
         .map_err(|error| error.to_string())?;
     }

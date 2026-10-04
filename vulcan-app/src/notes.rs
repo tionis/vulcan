@@ -21,7 +21,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::html::HtmlRenderOptions;
-use vulcan_core::mdbase::{is_mdbase_record_path, load_mdbase_collection};
+use vulcan_core::mdbase::is_mdbase_record_path;
 use vulcan_core::paths::{
     normalize_relative_input_path, secure_create_atomic, secure_read_to_string, secure_replace,
     RelativePathOptions,
@@ -1020,7 +1020,7 @@ fn persist_note_create_content(
     permission_profile: Option<&str>,
     quiet: bool,
 ) -> Result<String, AppError> {
-    if note_path_is_mdbase_managed(paths, path)? {
+    if note_path_is_mdbase_managed(paths, path, permission_profile)? {
         return apply_mdbase_note_content_change(
             paths,
             &MdbaseManagedNoteWriteRequest {
@@ -1044,7 +1044,14 @@ fn persist_note_create_content(
         content,
         quiet,
     )?;
-    write_ordinary_note_if_unchanged(paths, path, None, content, "create")?;
+    write_ordinary_note_if_unchanged_with_profile(
+        paths,
+        path,
+        None,
+        content,
+        "create",
+        permission_profile,
+    )?;
     dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, quiet);
     Ok(content.to_string())
 }
@@ -1063,13 +1070,13 @@ fn persist_note_create_with_staged_creates(
         )));
     }
     for side_path in staged.keys() {
-        if note_path_is_mdbase_managed(paths, side_path)? {
+        if note_path_is_mdbase_managed(paths, side_path, permission_profile)? {
             return Err(AppError::operation(format!(
                 "tp.file.create_new cannot create an mdbase-managed note: {side_path}"
             )));
         }
     }
-    if note_path_is_mdbase_managed(paths, path)? {
+    if note_path_is_mdbase_managed(paths, path, permission_profile)? {
         return Err(AppError::operation(
             "template side effects cannot be combined with an mdbase-managed note create",
         ));
@@ -1102,7 +1109,7 @@ fn persist_note_create_with_staged_creates(
         let guard = note_create_mutation_guard(paths, permission_profile)
             .map_err(|error| error.to_string())?;
         for change in &changes {
-            if note_path_is_mdbase_managed(paths, &change.path)
+            if note_path_is_mdbase_managed(paths, &change.path, permission_profile)
                 .map_err(|error| error.to_string())?
             {
                 return Err(format!(
@@ -1213,7 +1220,7 @@ pub fn apply_note_append(
         ),
     };
 
-    if note_path_is_mdbase_managed(paths, &target.path)? {
+    if note_path_is_mdbase_managed(paths, &target.path, permission_profile)? {
         content = apply_mdbase_note_content_change(
             paths,
             &MdbaseManagedNoteWriteRequest {
@@ -1241,12 +1248,13 @@ pub fn apply_note_append(
             &content,
             quiet,
         )?;
-        write_ordinary_note_if_unchanged(
+        write_ordinary_note_if_unchanged_with_profile(
             paths,
             &target.path,
             (!target.created).then_some(target.existing.as_str()),
             &content,
             "append",
+            permission_profile,
         )?;
         if target.created {
             dispatch_note_create_plugin_hooks(
@@ -1281,7 +1289,7 @@ pub fn apply_note_set(
 ) -> Result<NoteSetReport, AppError> {
     let path = resolve_existing_note_path(paths, &request.note)?;
     // Managed records take the vault lock inside their journaled transaction.
-    let managed = note_path_is_mdbase_managed(paths, &path)?;
+    let managed = note_path_is_mdbase_managed(paths, &path, permission_profile)?;
     let existing =
         secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
     let mut content = if request.preserve_frontmatter {
@@ -1316,7 +1324,14 @@ pub fn apply_note_set(
             &content,
             quiet,
         )?;
-        write_ordinary_note_if_unchanged(paths, &path, Some(&existing), &content, "set")?;
+        write_ordinary_note_if_unchanged_with_profile(
+            paths,
+            &path,
+            Some(&existing),
+            &content,
+            "set",
+            permission_profile,
+        )?;
     }
 
     Ok(NoteSetReport {
@@ -1341,7 +1356,7 @@ pub fn write_note_content(
     permission_profile: Option<&str>,
     quiet: bool,
 ) -> Result<String, AppError> {
-    if note_path_is_mdbase_managed(paths, path)? {
+    if note_path_is_mdbase_managed(paths, path, permission_profile)? {
         return apply_mdbase_note_content_change(
             paths,
             &MdbaseManagedNoteWriteRequest {
@@ -1360,7 +1375,14 @@ pub fn write_note_content(
             },
         );
     }
-    write_ordinary_note_if_unchanged(paths, path, before, after, operation)?;
+    write_ordinary_note_if_unchanged_with_profile(
+        paths,
+        path,
+        before,
+        after,
+        operation,
+        permission_profile,
+    )?;
     Ok(after.to_string())
 }
 
@@ -1381,12 +1403,23 @@ pub(crate) fn write_ordinary_note_if_unchanged(
     after: &str,
     operation: &str,
 ) -> Result<(), AppError> {
+    write_ordinary_note_if_unchanged_with_profile(paths, path, before, after, operation, None)
+}
+
+pub(crate) fn write_ordinary_note_if_unchanged_with_profile(
+    paths: &VaultPaths,
+    path: &str,
+    before: Option<&str>,
+    after: &str,
+    operation: &str,
+    permission_profile: Option<&str>,
+) -> Result<(), AppError> {
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
     let _write_lock =
         vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
     vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
         .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-    if note_path_is_mdbase_managed(paths, path)? {
+    if note_path_is_mdbase_managed(paths, path, permission_profile)? {
         return Err(AppError::operation(format!(
             "mdbase collection changed during note {operation}; retry the operation"
         )));
@@ -1410,13 +1443,14 @@ fn delete_ordinary_note_if_unchanged(
     paths: &VaultPaths,
     path: &str,
     before: &str,
+    permission_profile: Option<&str>,
 ) -> Result<(), AppError> {
     vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
     let _write_lock =
         vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
     vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
         .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-    if note_path_is_mdbase_managed(paths, path)? {
+    if note_path_is_mdbase_managed(paths, path, permission_profile)? {
         return Err(AppError::operation(
             "mdbase collection changed during note delete; retry the operation",
         ));
@@ -1434,9 +1468,12 @@ fn delete_ordinary_note_if_unchanged(
 pub(crate) fn note_path_is_mdbase_managed(
     paths: &VaultPaths,
     path: &str,
+    permission_profile: Option<&str>,
 ) -> Result<bool, AppError> {
-    load_mdbase_collection(paths.vault_root())
-        .map_err(AppError::operation)?
+    let selection =
+        resolve_permission_profile(paths, permission_profile).map_err(AppError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    crate::mdbase::load_mdbase_routing_collection(paths, &guard)?
         .map(|collection| is_mdbase_record_path(&collection, path))
         .transpose()
         .map_err(AppError::operation)
@@ -1535,7 +1572,7 @@ fn persist_note_patch_content(
     quiet: bool,
 ) -> Result<String, AppError> {
     if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
-        if note_path_is_mdbase_managed(paths, relative_path)? {
+        if note_path_is_mdbase_managed(paths, relative_path, permission_profile)? {
             return apply_mdbase_note_content_change(
                 paths,
                 &MdbaseManagedNoteWriteRequest {
@@ -1559,7 +1596,14 @@ fn persist_note_patch_content(
                 content,
                 quiet,
             )?;
-            write_ordinary_note_if_unchanged(paths, relative_path, Some(source), content, "patch")?;
+            write_ordinary_note_if_unchanged_with_profile(
+                paths,
+                relative_path,
+                Some(source),
+                content,
+                "patch",
+                permission_profile,
+            )?;
         }
     } else if !request.dry_run {
         vulcan_core::paths::write_file_atomic(&request.target.absolute_path, content)
@@ -1583,7 +1627,7 @@ pub fn apply_note_delete(
     let source =
         secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
 
-    if note_path_is_mdbase_managed(paths, &path)? {
+    if note_path_is_mdbase_managed(paths, &path, permission_profile)? {
         if !apply_mdbase_note_change(
             paths,
             &MdbaseManagedNoteWriteRequest {
@@ -1602,7 +1646,7 @@ pub fn apply_note_delete(
             ));
         }
     } else if !request.dry_run {
-        delete_ordinary_note_if_unchanged(paths, &path, &source)?;
+        delete_ordinary_note_if_unchanged(paths, &path, &source, permission_profile)?;
         dispatch_note_delete_plugin_hooks(paths, permission_profile, &path, quiet);
     }
 
@@ -2883,7 +2927,7 @@ mod tests {
             Some("ordinary_write_pending")
         );
         assert_eq!(
-            super::delete_ordinary_note_if_unchanged(&paths, "Read.md", "# Read\nOriginal\n")
+            super::delete_ordinary_note_if_unchanged(&paths, "Read.md", "# Read\nOriginal\n", None)
                 .expect_err("delete must fail closed")
                 .code(),
             Some("ordinary_write_pending")
@@ -3514,6 +3558,57 @@ folder_templates = [{ folder = "Projects", template = "project" }]
         assert_eq!(fs::read_to_string(note).expect("current note"), "newer\n");
     }
 
+    #[test]
+    fn ordinary_note_routing_and_locked_rechecks_preserve_explicit_profile() {
+        let directory = tempdir().unwrap();
+        let paths = VaultPaths::new(directory.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:note.md\"] }\nwrite = { allow = [\"note:note.md\"] }\n").unwrap();
+        let note = directory.path().join("note.md");
+        fs::write(&note, "original\n").unwrap();
+        for config in [None, Some("hidden: [malformed")] {
+            if let Some(config) = config {
+                fs::write(directory.path().join("mdbase.yaml"), config).unwrap();
+            }
+            let errors = [
+                super::write_note_content(
+                    &paths,
+                    "note.md",
+                    Some("original\n"),
+                    "updated\n",
+                    "set",
+                    Some("scoped"),
+                    true,
+                )
+                .unwrap_err(),
+                super::write_ordinary_note_if_unchanged_with_profile(
+                    &paths,
+                    "note.md",
+                    Some("original\n"),
+                    "updated\n",
+                    "set",
+                    Some("scoped"),
+                )
+                .unwrap_err(),
+                super::delete_ordinary_note_if_unchanged(
+                    &paths,
+                    "note.md",
+                    "original\n",
+                    Some("scoped"),
+                )
+                .unwrap_err(),
+            ];
+            for error in errors {
+                assert_eq!(error.code(), Some("permission_denied"));
+                assert_eq!(
+                    error.message(),
+                    "permission denied for required mdbase controls"
+                );
+            }
+            assert_eq!(fs::read_to_string(&note).unwrap(), "original\n");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn ordinary_note_set_publishes_a_complete_replacement_file() {
@@ -3616,7 +3711,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
         initialize_vulcan_dir(&paths).expect("init");
         let note = temp_dir.path().join("note.md");
         fs::write(&note, "newer\n").expect("concurrent write");
-        let error = super::delete_ordinary_note_if_unchanged(&paths, "note.md", "original\n")
+        let error = super::delete_ordinary_note_if_unchanged(&paths, "note.md", "original\n", None)
             .expect_err("stale delete should fail");
         assert!(error
             .to_string()

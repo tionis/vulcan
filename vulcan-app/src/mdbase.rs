@@ -959,9 +959,10 @@ pub fn apply_managed_mdbase_note_writes(
     if request.changes.is_empty() {
         return Ok(None);
     }
-    let Some(collection) =
-        load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)?
-    else {
+    let selection = resolve_permission_profile(paths, request.permission_profile)
+        .map_err(AppError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    let Some(collection) = load_mdbase_routing_collection(paths, &guard)? else {
         return Ok(None);
     };
     let managed = request
@@ -979,9 +980,6 @@ pub fn apply_managed_mdbase_note_writes(
             "managed mdbase write batches cannot mix collection records with ordinary Markdown paths",
         ));
     }
-    let selection = resolve_permission_profile(paths, request.permission_profile)
-        .map_err(AppError::operation)?;
-    let guard = ProfilePermissionGuard::new(paths, selection);
     // Prove affected-path authority before inspecting record-dependent type
     // membership. The full constraint scope is proved by plan_mdbase_write.
     for change in request.changes {
@@ -1286,6 +1284,20 @@ fn load_control_registries(
             error => AppError::operation(error),
         })?;
     Ok((types, contracts))
+}
+
+/// Authorize the routing control before observing even its absence. This does
+/// not load registries or prove write-integrity scope; managed planning does so
+/// after classification. Callers must retain their own authority, not substitute
+/// the vault's default profile for an already scoped request.
+pub(crate) fn load_mdbase_routing_collection(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<Option<MdbaseCollection>, AppError> {
+    if guard.has_policy_hook() || !guard.read_filter().is_allowed("mdbase.yaml") {
+        return Err(control_permission_denied());
+    }
+    load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)
 }
 
 fn control_permission_denied() -> AppError {
@@ -2076,6 +2088,108 @@ mod tests {
     }
 
     #[test]
+    fn managed_routing_denies_before_config_presence_parsing_or_path_classification() {
+        for config in [
+            None,
+            Some("secret: [invalid"),
+            Some("spec_version: '0.3.0'\nsettings:\n  exclude: [Archive/**]\n"),
+        ] {
+            let directory = tempdir().unwrap();
+            let paths = VaultPaths::new(directory.path());
+            fs::create_dir(directory.path().join(".vulcan")).unwrap();
+            fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:tasks/**\", \"folder:Archive/**\"] }\nwrite = { allow = [\"folder:tasks/**\", \"folder:Archive/**\"] }\n").unwrap();
+            if let Some(config) = config {
+                fs::write(directory.path().join("mdbase.yaml"), config).unwrap();
+            }
+            let changes = [
+                MdbaseManagedNoteWriteChange {
+                    path: "tasks/new.md",
+                    before: None,
+                    after: Some("New\n"),
+                },
+                MdbaseManagedNoteWriteChange {
+                    path: "Archive/ordinary.md",
+                    before: None,
+                    after: Some("Ordinary\n"),
+                },
+            ];
+            for changes in [&changes[..1], &changes[1..], &changes[..]] {
+                for mode in [
+                    MdbaseManagedWriteMode::Validated,
+                    MdbaseManagedWriteMode::RawRepair,
+                ] {
+                    for dry_run in [true, false] {
+                        let error = apply_managed_mdbase_note_writes(
+                            &paths,
+                            &MdbaseManagedNoteWriteBatchRequest {
+                                changes,
+                                operation: MdbaseWriteOperation::Batch,
+                                mode,
+                                allow_mixed_paths: true,
+                                dry_run,
+                                permission_profile: Some("scoped"),
+                                quiet: true,
+                            },
+                        )
+                        .unwrap_err();
+                        assert_eq!(error.code(), Some("permission_denied"));
+                        assert_eq!(
+                            error.message(),
+                            "permission denied for required mdbase controls"
+                        );
+                    }
+                }
+            }
+            assert!(!directory.path().join("tasks").exists());
+            assert!(!directory.path().join("Archive").exists());
+            assert!(!paths.cache_db().exists());
+        }
+    }
+
+    #[test]
+    fn authorized_routing_distinguishes_absence_and_exclusion_without_loading_registries() {
+        let directory = tempdir().unwrap();
+        let paths = VaultPaths::new(directory.path());
+        fs::create_dir(directory.path().join(".vulcan")).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\"] }\nwrite = { allow = [] }\n").unwrap();
+        let change = [MdbaseManagedNoteWriteChange {
+            path: "Archive/ordinary.md",
+            before: None,
+            after: Some("Ordinary\n"),
+        }];
+        let request = MdbaseManagedNoteWriteBatchRequest {
+            changes: &change,
+            operation: MdbaseWriteOperation::Create,
+            mode: MdbaseManagedWriteMode::Validated,
+            allow_mixed_paths: false,
+            dry_run: true,
+            permission_profile: Some("scoped"),
+            quiet: true,
+        };
+        assert!(apply_managed_mdbase_note_writes(&paths, &request)
+            .unwrap()
+            .is_none());
+        fs::write(
+            directory.path().join("mdbase.yaml"),
+            "spec_version: '0.3.0'\nsettings:\n  exclude: [Archive/**]\n",
+        )
+        .unwrap();
+        assert!(apply_managed_mdbase_note_writes(&paths, &request)
+            .unwrap()
+            .is_none());
+        // An authorized parse failure is still an error, never ordinary fallback.
+        fs::write(directory.path().join("mdbase.yaml"), "invalid: [").unwrap();
+        assert!(apply_managed_mdbase_note_writes(&paths, &request).is_err());
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\"] }\npolicy_hook = 'missing-policy.js'\n").unwrap();
+        let error = apply_managed_mdbase_note_writes(&paths, &request).unwrap_err();
+        assert_eq!(error.code(), Some("permission_denied"));
+        assert_eq!(
+            error.message(),
+            "permission denied for required mdbase controls"
+        );
+    }
+
+    #[test]
     fn write_planning_and_apply_require_control_authority_before_config_reads() {
         let (directory, paths) = fixture();
         fs::create_dir(directory.path().join(".vulcan")).unwrap();
@@ -2516,6 +2630,49 @@ mod tests {
         assert_eq!(outbox.len(), 1);
         assert_eq!(outbox[0].operation, "batch");
         assert_eq!(outbox[0].paths.len(), 2);
+    }
+
+    #[test]
+    fn script_routing_denies_config_without_falling_back_to_ordinary_writes() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:tasks/**\"] }\nwrite = { allow = [\"folder:tasks/**\"] }\nexecute = 'allow'\n").unwrap();
+        let original = fs::read_to_string(directory.path().join("tasks/public.md")).unwrap();
+        for config in [Some("hidden: [invalid"), None] {
+            match config {
+                Some(config) => fs::write(directory.path().join("mdbase.yaml"), config).unwrap(),
+                None => fs::remove_file(directory.path().join("mdbase.yaml")).unwrap(),
+            }
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                r#"vault.set("tasks/public", "---\ntype: task\ntitle: Updated\n---\nBody\n")"#,
+                None,
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    permission_profile: Some("scoped".into()),
+                    mutation_committer: Some(mdbase_js_mutation_committer(
+                        &paths,
+                        Some("scoped"),
+                        true,
+                    )),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("permission denied for required mdbase controls"),
+                "{error}"
+            );
+            assert!(!error.to_string().contains("hidden"));
+            assert_eq!(
+                fs::read_to_string(directory.path().join("tasks/public.md")).unwrap(),
+                original
+            );
+            assert!(list_mdbase_write_outbox(&paths).unwrap().is_empty());
+        }
     }
 
     #[test]

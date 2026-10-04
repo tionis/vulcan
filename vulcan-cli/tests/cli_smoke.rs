@@ -31848,7 +31848,7 @@ fn mcp_note_delete_preview_hides_unreadable_backlinks() {
     initialize_vulcan_dir(&vault_root);
     fs::write(
         vault_root.join(".vulcan/config.toml"),
-        "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\"] }\nwrite = { allow = [\"note:Target.md\"] }\n",
+        "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:Target.md\"] }\n",
     )
     .expect("config");
     fs::write(vault_root.join("Target.md"), "# Target\n").expect("target note");
@@ -35507,6 +35507,86 @@ fn mdbase_read_uses_nested_schema_bases_and_reloads_controls_between_calls() {
         }
         assert!(!root.join(".vulcan").exists());
     }
+}
+
+#[test]
+fn installed_note_skills_route_writes_only_with_config_read_authority() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::write(root.join("a.md"), "Original\n").unwrap();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args(["--vault", root.to_str().unwrap(), "agent", "install"])
+        .assert()
+        .success();
+    for name in ["note-operations", "configuration-and-permissions"] {
+        let skill =
+            fs::read_to_string(root.join(format!(".agents/skills/{name}/SKILL.md"))).unwrap();
+        assert!(skill.contains("`mdbase.yaml`"));
+        assert!(skill.contains("absent"));
+    }
+    let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
+    fs::create_dir_all(root.join(".vulcan")).unwrap();
+    fs::write(root.join(".vulcan/config.toml"), config).unwrap();
+    run_scan(root);
+    for contents in [
+        None,
+        Some("hidden: [invalid"),
+        Some("spec_version: '0.3.0'\n"),
+    ] {
+        if let Some(contents) = contents {
+            fs::write(root.join("mdbase.yaml"), contents).unwrap();
+        }
+        let result = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "scoped",
+                "--output",
+                "json",
+                "note",
+                "append",
+                "a.md",
+                "Added",
+                "--no-commit",
+            ])
+            .assert()
+            .failure();
+        assert_eq!(
+            parse_stdout_json(&result)["error"],
+            "permission denied for required mdbase controls"
+        );
+        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "Original\n");
+    }
+    fs::remove_file(root.join("mdbase.yaml")).unwrap();
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        config.replace(
+            "read = { allow = [\"note:a.md\"] }",
+            "read = { allow = [\"note:a.md\", \"note:mdbase.yaml\"] }",
+        ),
+    )
+    .unwrap();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--permissions",
+            "scoped",
+            "note",
+            "append",
+            "a.md",
+            "Added",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    assert!(fs::read_to_string(root.join("a.md"))
+        .unwrap()
+        .contains("Added"));
 }
 
 #[test]
