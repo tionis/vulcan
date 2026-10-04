@@ -68,6 +68,11 @@
 
 ### Fixed
 
+- After `vulcan sync semantic-plan` or a semantic auto-commit, the next sync no longer retries
+  until it gives up. Building the plan's trees left the private sync index without file stat data,
+  so an unchanged worktree looked modified; plan trees are also built with a fixed number of Git
+  processes instead of two per changed path.
+
 - A structured sync merge whose result matched this device's files no longer retries until it
   gives up. Building the merged tree reused the private sync index and left it without file stat
   data, so the following working-tree check reported unchanged files as modified.

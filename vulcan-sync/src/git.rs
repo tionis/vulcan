@@ -3254,35 +3254,47 @@ impl GitEngine for GitCliEngine {
         paths: &[String],
     ) -> Result<GitOid, GitEngineError> {
         repository.require_work_tree()?;
-        let index_path = repository.sync_index();
-        let index_parent = index_path
-            .parent()
-            .expect("the sync index path always has a parent");
-        std::fs::create_dir_all(index_parent)?;
-        remove_file_if_present(&index_path)?;
+        // Build in a scratch index. The shared sync index caches worktree stat
+        // data; a tree written here has none, and a proposed tree equal to the
+        // worktree's would make a later comparison report it as modified.
+        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
+        let index_path = scratch.path().join("index");
         self.index_output(
             repository,
             &index_path,
             "seed a proposed tree",
             ["read-tree", base.as_str()],
         )?;
-        for path in paths {
-            validate_repository_path(path)?;
-            if let Some(object) = self.path_object(repository, target, path)? {
-                let mut command = self.index_command(repository, &index_path)?;
-                command
-                    .args(["update-index", "--add", "--cacheinfo"])
-                    .arg(&object.mode)
-                    .arg(object.oid.as_str())
-                    .arg(path);
-                ensure_success("add a path to a proposed tree", self.execute(command)?)?;
-            } else {
-                let mut command = self.index_command(repository, &index_path)?;
-                command
-                    .args(["update-index", "--force-remove", "--"])
-                    .arg(path);
-                ensure_success("remove a path from a proposed tree", self.execute(command)?)?;
+        if !paths.is_empty() {
+            for path in paths {
+                validate_repository_path(path)?;
             }
+            let targets = self
+                .tree_entries_for_paths(repository, target, paths)?
+                .into_iter()
+                .map(|entry| (entry.path.clone(), entry))
+                .collect::<BTreeMap<_, _>>();
+            // One NUL-separated --index-info batch: mode 0 removes a path.
+            let missing = "0".repeat(base.as_str().len());
+            let mut input = Vec::new();
+            for path in paths {
+                match targets.get(path) {
+                    Some(entry) => {
+                        input.extend_from_slice(
+                            format!("{} {}\t", entry.mode, entry.oid.as_str()).as_bytes(),
+                        );
+                    }
+                    None => input.extend_from_slice(format!("0 {missing}\t").as_bytes()),
+                }
+                input.extend_from_slice(path.as_bytes());
+                input.push(0);
+            }
+            let mut command = self.index_command(repository, &index_path)?;
+            command.args(["update-index", "-z", "--index-info"]);
+            ensure_success(
+                "update paths in a proposed tree",
+                self.execute_with_input(command, "update paths in a proposed tree", &input)?,
+            )?;
         }
         GitOid::parse(
             self.index_capture(
@@ -8139,6 +8151,45 @@ mod tests {
             .expect("chunked listing");
         assert_eq!(engine.subprocess_count().unwrap_or_default() - before, 2);
         assert_eq!(entries.len(), 300);
+    }
+
+    #[test]
+    fn proposed_trees_keep_the_worktree_comparison_index_valid() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("a.md"), "a\n").expect("a");
+        fs::write(temporary.path().join("b.md"), "b\n").expect("b");
+        let base = commit_all(temporary.path(), "base");
+        fs::write(temporary.path().join("a.md"), "a two\n").expect("a two");
+        fs::remove_file(temporary.path().join("b.md")).expect("remove b");
+        let target = commit_all(temporary.path(), "target");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        assert!(engine
+            .worktree_matches_tree(&repository, &target)
+            .expect("initial comparison"));
+
+        // A semantic plan's last step reproduces the worktree's own tree.
+        let before = engine.subprocess_count().unwrap_or_default();
+        let tree = engine
+            .tree_with_paths(
+                &repository,
+                &base,
+                &target,
+                &["a.md".to_string(), "b.md".to_string()],
+            )
+            .expect("proposed tree");
+        // Seed, one scoped listing, one batched update, and the write.
+        assert_eq!(engine.subprocess_count().unwrap_or_default() - before, 4);
+        assert_eq!(
+            tree,
+            engine.tree_oid(&repository, &target).expect("target tree")
+        );
+        assert!(engine
+            .worktree_matches_tree(&repository, &target)
+            .expect("comparison after the proposed tree"));
     }
 
     #[test]
