@@ -570,25 +570,24 @@ use vulcan_core::vault_discovery::{
 };
 use vulcan_core::{
     bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
-    doctor_fix, doctor_vault, evaluate_base_file, evaluate_base_file_with_filter,
-    evaluate_dql_with_filter, export_static_search_index_with_filter, link_mentions,
-    list_checkpoints, list_saved_reports, load_saved_report, load_vault_config, merge_tags,
-    move_note, plan_base_note_create, query_change_report, query_notes_with_filter,
-    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, resolve_note_reference, resolve_permission_profile, save_saved_report, scan_vault,
-    scan_vault_with_progress, search_vault_with_filter, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
-    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion,
-    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport,
-    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport,
-    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, SelectionPlan, VaultPaths,
-    WatchOptions, WatchReport,
+    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
+    export_static_search_index_with_filter, link_mentions, list_checkpoints, list_saved_reports,
+    load_saved_report, load_vault_config, merge_tags, move_note, plan_base_note_create,
+    query_change_report, query_notes_with_filter, rebuild_vault_with_progress, rename_alias,
+    rename_block_ref, rename_heading, rename_property, repair_fts, resolve_note_reference,
+    resolve_permission_profile, save_saved_report, scan_vault, scan_vault_with_progress,
+    search_vault_with_filter, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
+    BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport, CacheVerifyReport,
+    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput,
+    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionsReport,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter,
+    PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, SelectionPlan, VaultPaths, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -701,9 +700,15 @@ pub(crate) fn selected_read_permission_filter(
     cli: &Cli,
     paths: &VaultPaths,
 ) -> Result<Option<PermissionFilter>, CliError> {
-    let guard = selected_permission_guard(cli, paths)?;
+    Ok(restricted_read_filter(&selected_permission_guard(
+        cli, paths,
+    )?))
+}
+
+/// The guard's static read filter, or `None` when it grants every path.
+pub(crate) fn restricted_read_filter(guard: &ProfilePermissionGuard) -> Option<PermissionFilter> {
     let filter = guard.read_filter();
-    Ok((!filter.path_permission().is_unrestricted()).then_some(filter))
+    (!filter.path_permission().is_unrestricted()).then_some(filter)
 }
 
 const SCAN_PROGRESS_STEP: usize = 250;
@@ -4268,6 +4273,7 @@ fn execute_saved_report(
     provider: Option<String>,
     controls: &ListOutputControls,
     read_filter: Option<&PermissionFilter>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<SavedExecution, CliError> {
     match &definition.query {
         SavedReportQuery::Search {
@@ -4322,7 +4328,7 @@ fn execute_saved_report(
             .map_err(CliError::operation)?,
         )),
         SavedReportQuery::Bases { file } => Ok(SavedExecution::Bases(
-            evaluate_base_file_with_filter(paths, file, read_filter)
+            vulcan_app::browse::evaluate_base_file_with_guard(paths, file, guard)
                 .map_err(CliError::operation)?,
         )),
     }
@@ -4353,8 +4359,9 @@ fn run_saved_reports_batch(
     controls: &ListOutputControls,
     names: &[String],
     all: bool,
-    read_filter: Option<&PermissionFilter>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<BatchRunReport, CliError> {
+    let read_filter = restricted_read_filter(guard);
     if all && !names.is_empty() {
         return Err(CliError::operation(
             "batch accepts either explicit report names or --all, not both",
@@ -4392,7 +4399,8 @@ fn run_saved_reports_batch(
                             &definition,
                             provider.cloned(),
                             &effective_controls,
-                            read_filter,
+                            read_filter.as_ref(),
+                            guard,
                         )
                         .and_then(|execution| {
                             let rows = saved_execution_rows(&execution, &effective_controls);
@@ -4509,7 +4517,7 @@ fn execute_automation_run(
     use_stderr_color: bool,
     controls: &ListOutputControls,
     command: &AutomationCommand,
-    read_filter: Option<&PermissionFilter>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<AutomationRunReport, CliError> {
     let AutomationCommand::Run {
         reports,
@@ -4592,7 +4600,7 @@ fn execute_automation_run(
             controls,
             reports,
             *all_reports,
-            read_filter,
+            guard,
         )?)
     } else {
         None
@@ -5794,6 +5802,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             SavedCommand::Run { name, export } => {
                 let read_filter = selected_read_permission_filter(cli, &paths)?;
+                let guard = selected_permission_guard(cli, &paths)?;
                 let definition = load_saved_report(&paths, name).map_err(CliError::operation)?;
                 let effective_controls =
                     list_controls.with_saved_defaults(definition.fields.clone(), definition.limit);
@@ -5804,6 +5813,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     cli.provider.clone(),
                     &effective_controls,
                     read_filter.as_ref(),
+                    &guard,
                 )?;
                 match execution {
                     SavedExecution::Search(report) => print_search_report(
@@ -6863,7 +6873,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 )
             }
             AutomationCommand::Run { fail_on_issues, .. } => {
-                let read_filter = selected_read_permission_filter(cli, &paths)?;
+                let guard = selected_permission_guard(cli, &paths)?;
                 let report = execute_automation_run(
                     &paths,
                     cli.provider.as_ref(),
@@ -6871,7 +6881,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     use_stderr_color,
                     &list_controls,
                     command,
-                    read_filter.as_ref(),
+                    &guard,
                 )?;
                 let report_failures = report
                     .reports

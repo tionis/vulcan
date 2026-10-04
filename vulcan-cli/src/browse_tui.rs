@@ -156,7 +156,7 @@ fn run_event_loop(
                     let open_result = with_terminal_suspended(terminal, || {
                         let report =
                             evaluate_base_file(&paths, &path).map_err(|error| error.to_string())?;
-                        bases_tui::run_bases_tui(&paths, &path, &report)
+                        bases_tui::run_bases_tui(&paths, &path, &report, None)
                             .map_err(|error| error.to_string())?;
                         refresh_cache_incrementally(&paths)
                             .map(|_| ())

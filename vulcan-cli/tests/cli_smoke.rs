@@ -12325,6 +12325,169 @@ fn tasks_dependency_and_next_reports_apply_policy_scope() {
 
 #[test]
 #[cfg(feature = "js_runtime")]
+fn bases_evaluation_applies_read_and_policy_scope() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("vault");
+    let config_home = temp.path().join("xdg");
+    fs::create_dir_all(root.join(".vulcan/plugins")).unwrap();
+    fs::create_dir_all(root.join("Public/One")).unwrap();
+    fs::create_dir_all(root.join("Public/Two")).unwrap();
+    fs::create_dir_all(root.join("Private")).unwrap();
+    fs::create_dir_all(&config_home).unwrap();
+    for path in ["Public/One/Task.md", "Public/Two/Task.md"] {
+        fs::write(
+            root.join(path),
+            "---\ntags: [task]\ntitle: Visible task\nstatus: open\n---\n[[Public/Target]]\n",
+        )
+        .unwrap();
+    }
+    fs::write(root.join("Public/Target.md"), "---\ntitle: Target\n---\n").unwrap();
+    fs::write(
+        root.join("Public/Policy.md"),
+        "---\ntags: [task]\ntitle: Policy sentinel\nstatus: open\n---\n[[Public/Target]]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Private/Hidden.md"),
+        "---\ntags: [task]\ntitle: Hidden sentinel\nstatus: open\n---\n[[Public/Target]]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Public/All.base"),
+        "views:\n  - type: table\n    name: All\n    order: [file.name, file.inlinks, title]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("TaskNotes/Views/Private")).unwrap();
+    fs::write(
+        root.join("TaskNotes/Views/Tasks.base"),
+        "source:\n  type: tasknotes\nviews:\n  - type: table\n    name: Tasks\n    order: [file.name, title]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("TaskNotes/Views/Private/Hidden.base"),
+        "source:\n  type: tasknotes\nviews:\n  - type: table\n    name: Classified\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Private/Secret.base"),
+        "views:\n  - type: table\n    name: All\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        concat!(
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"folder:TaskNotes/**\"], ",
+            "deny = [\"folder:TaskNotes/Views/Private/**\"] }\n",
+            "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
+        ),
+    )
+    .unwrap();
+    let hook = root.join(".vulcan/plugins/guard.js");
+    fs::write(
+        &hook,
+        "function policy_hook(input) { return input.resource === 'Public/Policy.md' ? 'deny' : 'pass'; }\n",
+    )
+    .unwrap();
+    let xdg = config_home.to_str().unwrap();
+    trust_and_scan_vault(xdg, root.to_str().unwrap());
+    cargo_vulcan_with_xdg_config(xdg)
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "saved",
+            "create",
+            "bases",
+            "all-notes",
+        ])
+        .arg("Public/All.base")
+        .assert()
+        .success();
+    let run = |args: &[&str]| {
+        cargo_vulcan_with_xdg_config(xdg)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "scoped",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+            ])
+            .args(args)
+            .assert()
+    };
+    let row_paths = |report: &Value| {
+        let mut paths = report["views"][0]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["document_path"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
+    let readable = [
+        "Public/One/Task.md",
+        "Public/Target.md",
+        "Public/Two/Task.md",
+    ];
+    for args in [
+        &["bases", "eval", "Public/All.base"][..],
+        &["saved", "run", "all-notes"][..],
+    ] {
+        let report = parse_stdout_json(&run(args).success());
+        assert_eq!(row_paths(&report), readable, "{report}");
+        for hidden in ["Hidden", "Policy"] {
+            assert!(!report.to_string().contains(hidden), "{report}");
+        }
+    }
+    let view = parse_stdout_json(&run(&["tasks", "view", "show", "Tasks"]).success());
+    assert_eq!(
+        row_paths(&view),
+        ["Public/One/Task.md", "Public/Two/Task.md"],
+        "{view}"
+    );
+    assert!(!view.to_string().contains("sentinel"));
+    run(&["bases", "eval", "Private/Secret.base"]).failure();
+    let views = parse_stdout_json(&run(&["tasks", "view", "list"]).success());
+    assert!(views.to_string().contains("Tasks"), "{views}");
+    assert!(!views.to_string().contains("Classified"), "{views}");
+    for hidden in ["Classified", "TaskNotes/Views/Private/Hidden.base"] {
+        run(&["tasks", "view", "show", hidden]).failure();
+    }
+
+    fs::write(
+        &hook,
+        "function policy_hook() { throw new Error('broken'); }\n",
+    )
+    .unwrap();
+    for args in [
+        &["bases", "eval", "Public/All.base"][..],
+        &["tasks", "view", "show", "Tasks"][..],
+        &["tasks", "view", "list"][..],
+        &["saved", "run", "all-notes"][..],
+    ] {
+        assert!(parse_stdout_json(&run(args).failure())
+            .to_string()
+            .contains("policy"));
+    }
+
+    cargo_vulcan_with_xdg_config(xdg)
+        .args(["--vault", root.to_str().unwrap(), "agent", "install"])
+        .assert()
+        .success();
+    let bases_skill =
+        fs::read_to_string(root.join(".agents/skills/dataview-and-bases/SKILL.md")).unwrap();
+    assert!(bases_skill.contains("`bases eval`, `bases tui`, and saved Bases reports"));
+    assert!(bases_skill.contains("--permissions"));
+    let task_skill =
+        fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
+    assert!(task_skill.contains("`tasks view list`"));
+}
+
+#[test]
+#[cfg(feature = "js_runtime")]
 fn tasknote_reports_apply_policy_scope_before_totals() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("vault");

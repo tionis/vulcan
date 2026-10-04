@@ -65,6 +65,73 @@ fn guarded_tasknote_reports_preserve_readable_duplicate_basenames() {
 }
 
 #[test]
+fn guarded_bases_and_tasknote_views_scope_rows_and_reject_changed_authority() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let profile = "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"folder:TaskNotes/**\"] }\nwrite = \"none\"\n";
+    fs::write(paths.config_file(), profile).unwrap();
+    for path in [
+        "Public/One/Task.md",
+        "Public/Two/Task.md",
+        "Private/Task.md",
+    ] {
+        fs::create_dir_all(temp.path().join(path).parent().unwrap()).unwrap();
+        fs::write(
+            temp.path().join(path),
+            format!("---\ntags: [task]\ntitle: {path}\nstatus: open\n---\n"),
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(temp.path().join("TaskNotes/Views")).unwrap();
+    fs::write(
+        temp.path().join("TaskNotes/Views/Open.base"),
+        "source:\n  type: tasknotes\nviews:\n  - type: table\n    name: Open\n",
+    )
+    .unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let paths_of = |report: &vulcan_core::BasesEvalReport| {
+        let mut rows = report.views[0]
+            .rows
+            .iter()
+            .map(|row| row.document_path.clone())
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows
+    };
+    let expected = vec![
+        "Public/One/Task.md".to_string(),
+        "Public/Two/Task.md".to_string(),
+    ];
+    let view = super::build_tasks_view_report_with_guard(&paths, "Open", &guard).unwrap();
+    assert_eq!(paths_of(&view), expected);
+    let base =
+        crate::browse::evaluate_base_file_with_guard(&paths, "TaskNotes/Views/Open.base", &guard)
+            .unwrap();
+    assert_eq!(paths_of(&base), expected);
+    assert_eq!(
+        paths_of(&build_tasks_view_report(&paths, "Open").unwrap()).len(),
+        3
+    );
+
+    fs::write(
+        paths.config_file(),
+        profile.replace("folder:Public/**", "folder:Revoked/**"),
+    )
+    .unwrap();
+    let error = super::build_tasks_view_report_with_guard(&paths, "Open", &guard).unwrap_err();
+    assert!(error.to_string().contains("authority changed"), "{error}");
+    let error =
+        crate::browse::evaluate_base_file_with_guard(&paths, "TaskNotes/Views/Open.base", &guard)
+            .unwrap_err();
+    assert!(error.to_string().contains("authority changed"), "{error}");
+}
+
+#[test]
 fn guarded_tasknote_reports_scope_records_and_totals_without_write_access() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

@@ -1608,18 +1608,7 @@ enum TaskReadScope<'a> {
 impl TaskReadScope<'_> {
     fn recheck(self, paths: &VaultPaths) -> Result<(), AppError> {
         if let Self::Guard(guard) = self {
-            let current =
-                vulcan_core::resolve_permission_profile(paths, Some(guard.profile_name()))
-                    .map_err(AppError::operation)?;
-            if &current != guard.selection() {
-                return Err(AppError::operation_with_code(
-                    "permission_denied",
-                    "task read authority changed; resolve a new guard",
-                ));
-            }
-            guard
-                .recheck_read_policy_snapshot()
-                .map_err(AppError::operation)?;
+            crate::browse::recheck_read_authority(paths, guard, "task")?;
         }
         Ok(())
     }
@@ -1886,6 +1875,50 @@ pub fn build_tasks_view_list_report(
     paths: &VaultPaths,
 ) -> Result<TaskNotesViewListReport, AppError> {
     let _read_guard = consistent_task_read(paths)?;
+    tasks_view_catalog(paths, None)
+}
+
+/// List `TaskNotes` views whose `.base` sources the caller may read. Unreadable
+/// view files are omitted without being parsed; policy failures abort.
+pub fn build_tasks_view_list_report_with_guard(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<TaskNotesViewListReport, AppError> {
+    TaskReadScope::Guard(guard).recheck(paths)?;
+    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    let scope = TaskReadScope::Guard(&snapshot);
+    scope.recheck(paths)?;
+    let report = {
+        let _read_guard = consistent_task_read(paths)?;
+        tasks_view_catalog(paths, Some(&snapshot))
+    };
+    scope.recheck(paths)?;
+    report
+}
+
+/// Whether a guard may read a view source. Explicit denials are `false`;
+/// a policy that cannot decide is an error, never an omission.
+fn tasks_view_source_readable(
+    guard: Option<&ProfilePermissionGuard>,
+    file: &str,
+) -> Result<bool, AppError> {
+    let Some(guard) = guard else {
+        return Ok(true);
+    };
+    match guard.check_read_path(file) {
+        Ok(()) => Ok(true),
+        Err(
+            vulcan_core::PermissionError::PathDenied { .. }
+            | vulcan_core::PermissionError::PolicyHookDenied { .. },
+        ) => Ok(false),
+        Err(error) => Err(AppError::operation(error)),
+    }
+}
+
+fn tasks_view_catalog(
+    paths: &VaultPaths,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskNotesViewListReport, AppError> {
     let config = load_vault_config(paths).config;
     let mut files = Vec::new();
     let root = paths.vault_root().join("TaskNotes/Views");
@@ -1893,6 +1926,9 @@ pub fn build_tasks_view_list_report(
 
     let mut views = Vec::new();
     for file in files {
+        if !tasks_view_source_readable(guard, &file)? {
+            continue;
+        }
         let info = inspect_base_file(paths, &file).map_err(AppError::operation)?;
         let file_stem = Path::new(&file)
             .file_stem()
@@ -1938,15 +1974,50 @@ pub fn build_tasks_view_report(
     name: &str,
 ) -> Result<BasesEvalReport, AppError> {
     let _read_guard = consistent_task_read(paths)?;
-    let target = resolve_tasknotes_view_target(paths, name)?;
+    build_tasks_view_report_in_scope(paths, name, None)
+}
+
+/// Evaluate a `TaskNotes` view under the caller's read authority: `.base`
+/// sources must be readable, and rows and linked notes come from one
+/// policy-snapshot universe that is rechecked after derivation.
+pub fn build_tasks_view_report_with_guard(
+    paths: &VaultPaths,
+    name: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<BasesEvalReport, AppError> {
+    TaskReadScope::Guard(guard).recheck(paths)?;
+    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    let scope = TaskReadScope::Guard(&snapshot);
+    scope.recheck(paths)?;
+    let report = {
+        let _read_guard = consistent_task_read(paths)?;
+        build_tasks_view_report_in_scope(paths, name, Some(&snapshot))
+    };
+    scope.recheck(paths)?;
+    report
+}
+
+fn build_tasks_view_report_in_scope(
+    paths: &VaultPaths,
+    name: &str,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<BasesEvalReport, AppError> {
+    let target = resolve_tasknotes_view_target(paths, name, guard)?;
+    let evaluator = BasesEvaluator::new();
     if let Some(saved_view) = target.saved_view.as_ref() {
         let tasknotes = load_vault_config(paths).config.tasknotes;
         let yaml = render_tasknotes_saved_view_base_yaml(&tasknotes, saved_view)?;
-        return BasesEvaluator::new()
-            .evaluate_yaml(paths, &target.file, &yaml)
-            .map_err(AppError::operation);
+        return match guard {
+            Some(guard) => evaluator.evaluate_yaml_with_guard(paths, &target.file, &yaml, guard),
+            None => evaluator.evaluate_yaml(paths, &target.file, &yaml),
+        }
+        .map_err(AppError::operation);
     }
-    let mut report = evaluate_base_file(paths, &target.file).map_err(AppError::operation)?;
+    let mut report = match guard {
+        Some(guard) => evaluator.evaluate_file_with_guard(paths, &target.file, guard),
+        None => evaluate_base_file(paths, &target.file),
+    }
+    .map_err(AppError::operation)?;
     if let Some(view_name) = target.view_name.as_deref() {
         report
             .views
@@ -2189,6 +2260,7 @@ fn tasks_graph_report(tasks: &[Value]) -> TasksGraphReport {
 fn resolve_tasknotes_view_target(
     paths: &VaultPaths,
     name: &str,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskNotesViewTarget, AppError> {
     if is_explicit_tasknotes_view_path(name) {
         let normalized = normalize_relative_input_path(
@@ -2199,6 +2271,12 @@ fn resolve_tasknotes_view_target(
             },
         )
         .map_err(AppError::operation)?;
+        // Authorize before parsing so existence is not disclosed.
+        if let Some(guard) = guard {
+            guard
+                .check_read_path(&normalized)
+                .map_err(AppError::operation)?;
+        }
         let _ = inspect_base_file(paths, &normalized).map_err(AppError::operation)?;
         return Ok(TaskNotesViewTarget {
             file: normalized,
@@ -2207,7 +2285,7 @@ fn resolve_tasknotes_view_target(
         });
     }
 
-    let catalog = build_tasks_view_list_report(paths)?;
+    let catalog = tasks_view_catalog(paths, guard)?;
     if let Some(target) = unique_tasknotes_view_name_match(&catalog.views, name)? {
         return Ok(target);
     }

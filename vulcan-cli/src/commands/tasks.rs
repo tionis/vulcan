@@ -22,7 +22,7 @@ use vulcan_app::tasks::{
     build_tasks_blocked_report_with_guard, build_tasks_eval_report_with_guard,
     build_tasks_graph_report_with_guard, build_tasks_list_report_with_guard,
     build_tasks_next_report_with_guard, build_tasks_query_result_with_guard,
-    build_tasks_view_list_report, build_tasks_view_report,
+    build_tasks_view_list_report_with_guard, build_tasks_view_report_with_guard,
     process_due_tasknote_auto_archives_with_guard as app_process_due_tasknote_auto_archives,
     TaskAddReport, TaskAddRequest as AppTaskAddRequest,
     TaskArchiveRequest as AppTaskArchiveRequest, TaskCompleteRequest as AppTaskCompleteRequest,
@@ -536,7 +536,7 @@ pub(crate) fn handle_tasks_command(
         }
         TasksCommand::View { command } => match command {
             TasksViewCommand::Show { name, export } => {
-                let report = run_tasks_view_command(paths, name)?;
+                let report = run_tasks_view_command(paths, &guard, name)?;
                 let export = resolve_cli_export(export)?;
                 print_bases_report(
                     cli.output,
@@ -548,7 +548,7 @@ pub(crate) fn handle_tasks_command(
                 )
             }
             TasksViewCommand::List => {
-                let report = run_tasks_view_list_command(paths)?;
+                let report = run_tasks_view_list_command(paths, &guard)?;
                 print_tasknotes_view_list_report(cli.output, &report)
             }
         },
@@ -563,12 +563,19 @@ pub(crate) fn run_tasks_query_command(
     build_tasks_query_result_with_guard(paths, source, guard).map_err(CliError::operation)
 }
 
-fn run_tasks_view_list_command(paths: &VaultPaths) -> Result<TaskNotesViewListReport, CliError> {
-    build_tasks_view_list_report(paths).map_err(CliError::operation)
+fn run_tasks_view_list_command(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<TaskNotesViewListReport, CliError> {
+    build_tasks_view_list_report_with_guard(paths, guard).map_err(CliError::operation)
 }
 
-fn run_tasks_view_command(paths: &VaultPaths, name: &str) -> Result<BasesEvalReport, CliError> {
-    build_tasks_view_report(paths, name).map_err(CliError::operation)
+fn run_tasks_view_command(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    name: &str,
+) -> Result<BasesEvalReport, CliError> {
+    build_tasks_view_report_with_guard(paths, name, guard).map_err(CliError::operation)
 }
 
 #[allow(

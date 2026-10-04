@@ -12,10 +12,10 @@ use crate::{
 };
 use serde_json::Value;
 use std::io::{self, IsTerminal};
+use vulcan_app::browse::evaluate_base_file_with_guard;
 use vulcan_core::{
-    bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport,
-    PermissionGuard, VaultPaths,
+    bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, BaseViewGroupBy,
+    BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, PermissionGuard, VaultPaths,
 };
 
 pub(crate) fn print_bases_report(
@@ -362,10 +362,9 @@ pub(crate) fn handle_bases_command(
 ) -> Result<(), CliError> {
     match command {
         BasesCommand::Eval { file, export } => {
-            crate::selected_permission_guard(cli, paths)?
-                .check_read_path(file)
-                .map_err(CliError::operation)?;
-            let report = evaluate_base_file(paths, file).map_err(CliError::operation)?;
+            let guard = crate::selected_permission_guard(cli, paths)?;
+            let report =
+                evaluate_base_file_with_guard(paths, file, &guard).map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             print_bases_report(
                 cli.output,
@@ -408,12 +407,12 @@ pub(crate) fn handle_bases_command(
             print_bases_create_report(cli.output, &report)
         }
         BasesCommand::Tui { file } => {
-            crate::selected_permission_guard(cli, paths)?
-                .check_read_path(file)
-                .map_err(CliError::operation)?;
-            let report = evaluate_base_file(paths, file).map_err(CliError::operation)?;
+            let guard = crate::selected_permission_guard(cli, paths)?;
+            let report =
+                evaluate_base_file_with_guard(paths, file, &guard).map_err(CliError::operation)?;
             if cli.output == OutputFormat::Human && stdout_is_tty && io::stdin().is_terminal() {
-                bases_tui::run_bases_tui(paths, file, &report).map_err(CliError::operation)
+                bases_tui::run_bases_tui(paths, file, &report, Some(guard))
+                    .map_err(CliError::operation)
             } else {
                 print_bases_report(
                     cli.output,

@@ -16,6 +16,7 @@ use rusqlite::types::Type as SqlType;
 use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
@@ -495,11 +496,34 @@ pub fn query_notes(paths: &VaultPaths, query: &NoteQuery) -> Result<NotesReport,
     query_notes_with_filter(paths, query, None)
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn query_notes_with_filter(
     paths: &VaultPaths,
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
+) -> Result<NotesReport, PropertyError> {
+    query_notes_with_scope(paths, query, filter, None)
+}
+
+/// Query notes inside an already-authorized lookup universe, such as one from
+/// [`load_note_index_with_guard`]. Rows, incoming-link sources, expression
+/// filters, and inline expressions are limited to that universe, so policy
+/// decisions are reused rather than repeated per query.
+#[allow(clippy::implicit_hasher)]
+pub fn query_notes_in_authorized_scope(
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    authorized_index: &HashMap<String, NoteRecord>,
+) -> Result<NotesReport, PropertyError> {
+    query_notes_with_scope(paths, query, filter, Some(authorized_index))
+}
+
+#[allow(clippy::too_many_lines)]
+fn query_notes_with_scope(
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -593,17 +617,38 @@ pub fn query_notes_with_filter(
         },
     )?;
     let mut doc_ids_and_notes: Vec<(String, NoteRecord)> = rows.collect::<Result<Vec<_>, _>>()?;
+    let readable_sources = authorized_index.map(|index| {
+        index
+            .values()
+            .map(|note| note.document_path.clone())
+            .collect::<HashSet<_>>()
+    });
+    if let Some(readable_sources) = readable_sources.as_ref() {
+        doc_ids_and_notes.retain(|(_, note)| readable_sources.contains(&note.document_path));
+    }
 
-    hydrate_note_records(connection, &config, &mut doc_ids_and_notes, filter, None)?;
+    hydrate_note_records(
+        connection,
+        &config,
+        &mut doc_ids_and_notes,
+        filter,
+        readable_sources.as_ref(),
+    )?;
 
     let mut notes: Vec<NoteRecord> = doc_ids_and_notes
         .into_iter()
         .map(|(_, note)| note)
         .collect();
 
+    let load_index = || -> Result<Cow<'_, HashMap<String, NoteRecord>>, PropertyError> {
+        match authorized_index {
+            Some(index) => Ok(Cow::Borrowed(index)),
+            None => Ok(Cow::Owned(load_note_index_with_filter(paths, filter)?)),
+        }
+    };
     let mut note_index = None;
     if !post_filters.is_empty() {
-        let loaded_note_index = load_note_index_with_filter(paths, filter)?;
+        let loaded_note_index = load_index()?;
         let formulas = BTreeMap::new();
         let mut filtered = Vec::with_capacity(notes.len());
         let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
@@ -659,7 +704,7 @@ pub fn query_notes_with_filter(
     {
         let loaded_note_index = match note_index {
             Some(index) => index,
-            None => load_note_index_with_filter(paths, filter)?,
+            None => load_index()?,
         };
         for note in &mut notes {
             note.inline_expressions = evaluate_note_inline_expressions(note, &loaded_note_index);

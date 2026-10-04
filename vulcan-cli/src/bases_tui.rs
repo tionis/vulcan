@@ -18,7 +18,7 @@ use std::fs;
 use std::io;
 use vulcan_core::{
     evaluate_base_file, scan_vault, set_note_property, BasesEvalReport, BasesEvaluatedView,
-    BasesRow, ScanMode, VaultPaths,
+    BasesRow, PermissionGuard, ProfilePermissionGuard, ScanMode, VaultPaths,
 };
 
 const MAX_TABLE_COLUMNS: usize = 5;
@@ -29,6 +29,7 @@ pub fn run_bases_tui(
     paths: &VaultPaths,
     base_file: &str,
     report: &BasesEvalReport,
+    guard: Option<ProfilePermissionGuard>,
 ) -> Result<(), io::Error> {
     enable_raw_mode()?;
     let _restore = TerminalRestore;
@@ -38,6 +39,7 @@ pub fn run_bases_tui(
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
     let mut state = BasesTuiState::new(paths.clone(), base_file.to_string(), report.clone());
+    state.guard = guard;
 
     let result = run_event_loop(&mut terminal, &mut state);
 
@@ -67,6 +69,10 @@ fn run_event_loop(
                 TuiAction::Continue => {}
                 TuiAction::Quit => break,
                 TuiAction::CreateNote => {
+                    if let Err(error) = state.check_write(&state.base_file.clone()) {
+                        state.set_status(error);
+                        continue;
+                    }
                     let paths = state.paths.clone();
                     let base_file = state.base_file.clone();
                     let view_index = state.active_view;
@@ -482,6 +488,9 @@ struct BasesTuiState {
     status_message: Option<String>,
     filtered: Vec<usize>,
     viewport: Viewport,
+    /// Caller authority for reloads and edits. `None` keeps the historical
+    /// unscoped behavior for surfaces that do not yet carry a guard (browse).
+    guard: Option<ProfilePermissionGuard>,
 }
 
 impl BasesTuiState {
@@ -516,10 +525,18 @@ impl BasesTuiState {
             status_message: None,
             filtered: Vec::new(),
             viewport: Viewport::default(),
+            guard: None,
         };
         state.refilter();
         state.refresh_preview();
         state
+    }
+
+    fn check_write(&self, path: &str) -> Result<(), String> {
+        self.guard
+            .as_ref()
+            .map_or(Ok(()), |guard| guard.check_write_path(path))
+            .map_err(|error| error.to_string())
     }
 
     fn active_view(&self) -> Option<&BasesEvaluatedView> {
@@ -954,8 +971,16 @@ impl BasesTuiState {
             )
         });
         let selected_path = self.selected_row_path();
-        let report =
-            evaluate_base_file(&self.paths, &self.base_file).map_err(|error| error.to_string())?;
+        let report = match self.guard.as_ref() {
+            Some(guard) => vulcan_app::browse::evaluate_base_file_with_guard(
+                &self.paths,
+                &self.base_file,
+                guard,
+            )
+            .map_err(|error| error.to_string())?,
+            None => evaluate_base_file(&self.paths, &self.base_file)
+                .map_err(|error| error.to_string())?,
+        };
         self.report = report;
         self.active_view = current_view
             .and_then(|(name, view_type, _)| {
@@ -990,6 +1015,7 @@ impl BasesTuiState {
             return Err("No selected note to edit.".to_string());
         };
         let (key, value) = parse_property_edit_input(&self.property_input)?;
+        self.check_write(&note_path)?;
         let report = set_note_property(&self.paths, &note_path, &key, value.as_deref(), false)
             .map_err(|error| error.to_string())?;
         self.reload_report()?;

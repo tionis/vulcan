@@ -524,7 +524,7 @@ mod tests {
         match std::env::var("VULCAN_TUI_SMOKE").as_deref() {
             Ok("bases") => {
                 let report = vulcan_core::evaluate_base_file(&paths, "All.base").unwrap();
-                crate::bases_tui::run_bases_tui(&paths, "All.base", &report).unwrap();
+                crate::bases_tui::run_bases_tui(&paths, "All.base", &report, None).unwrap();
             }
             Ok("browse") => {
                 crate::browse_tui::run_browse_tui(&paths, vulcan_core::AutoScanMode::Off, true)

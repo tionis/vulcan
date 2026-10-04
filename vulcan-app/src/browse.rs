@@ -8,6 +8,7 @@ use std::process::Command as ProcessCommand;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     doctor_vault as core_doctor_vault, evaluate_base_file as core_evaluate_base_file,
+    evaluate_base_file_with_guard as core_evaluate_base_file_with_guard,
     evaluate_dataview_js_query as core_evaluate_dataview_js_query,
     evaluate_dataview_js_with_options as core_evaluate_dataview_js_with_options,
     evaluate_dql as core_evaluate_dql, evaluate_dql_with_filter as core_evaluate_dql_with_filter,
@@ -142,6 +143,46 @@ pub fn list_tagged_note_identities(
 
 pub fn evaluate_base_file(paths: &VaultPaths, path: &str) -> Result<BasesEvalReport, AppError> {
     core_evaluate_base_file(paths, path).map_err(AppError::operation)
+}
+
+/// Evaluate a base under the caller's read authority. The evaluation uses one
+/// immutable policy snapshot and rechecks the profile, hook trust, and grants
+/// before and after derivation so a changed authority never yields a report.
+pub fn evaluate_base_file_with_guard(
+    paths: &VaultPaths,
+    path: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<BasesEvalReport, AppError> {
+    recheck_read_authority(paths, guard, "bases")?;
+    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    recheck_read_authority(paths, &snapshot, "bases")?;
+    let report = {
+        let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+        core_evaluate_base_file_with_guard(paths, path, &snapshot)
+    };
+    recheck_read_authority(paths, &snapshot, "bases")?;
+    report.map_err(AppError::operation)
+}
+
+/// Reject a guard whose profile selection or policy snapshot is no longer
+/// current. `subject` names the read surface in the error message.
+pub(crate) fn recheck_read_authority(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    subject: &str,
+) -> Result<(), AppError> {
+    let current = vulcan_core::resolve_permission_profile(paths, Some(guard.profile_name()))
+        .map_err(AppError::operation)?;
+    if &current != guard.selection() {
+        return Err(AppError::operation_with_code(
+            "permission_denied",
+            format!("{subject} read authority changed; resolve a new guard"),
+        ));
+    }
+    guard
+        .recheck_read_policy_snapshot()
+        .map_err(AppError::operation)
 }
 
 pub fn load_dataview_blocks(

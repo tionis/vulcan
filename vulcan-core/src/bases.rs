@@ -5,10 +5,11 @@ use crate::paths::{
     normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathError,
     RelativePathOptions,
 };
-use crate::permissions::PermissionFilter;
+use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::properties::{
-    build_note_lookup_index, load_note_index_with_filter, parse_note_filter_expression,
-    query_notes_with_filter, FilterField, FilterOperator, FilterValue,
+    build_note_lookup_index, load_note_index_with_filter, load_note_index_with_guard,
+    parse_note_filter_expression, query_notes_in_authorized_scope, query_notes_with_filter,
+    FilterField, FilterOperator, FilterValue,
 };
 use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
@@ -151,6 +152,41 @@ pub trait BasesSource: Send + Sync {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError>;
+
+    /// Produce rows for a guarded evaluation. `authorized_index` is the
+    /// complete policy-authorized note universe for this evaluation. The
+    /// default delegates to [`BasesSource::rows`]; the evaluator still
+    /// authorizes every returned row, so overriding is an optimization and
+    /// lets sources keep expression filters inside the authorized universe.
+    fn rows_in_scope(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+        authorized_index: &HashMap<String, NoteRecord>,
+    ) -> Result<Vec<NoteRecord>, BasesError> {
+        let _ = authorized_index;
+        self.rows(paths, request)
+    }
+}
+
+fn query_source_notes(
+    paths: &VaultPaths,
+    request: &BasesSourceRequest,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+) -> Result<Vec<NoteRecord>, BasesError> {
+    let query = NoteQuery {
+        filters: request.filters.clone(),
+        sort_by: None,
+        sort_descending: false,
+    };
+    match authorized_index {
+        Some(index) => {
+            query_notes_in_authorized_scope(paths, &query, request.read_filter.as_ref(), index)
+        }
+        None => query_notes_with_filter(paths, &query, request.read_filter.as_ref()),
+    }
+    .map(|report| report.notes)
+    .map_err(BasesError::Property)
 }
 
 #[derive(Debug, Default)]
@@ -162,17 +198,16 @@ impl BasesSource for FileSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        query_notes_with_filter(
-            paths,
-            &NoteQuery {
-                filters: request.filters.clone(),
-                sort_by: None,
-                sort_descending: false,
-            },
-            request.read_filter.as_ref(),
-        )
-        .map(|report| report.notes)
-        .map_err(BasesError::Property)
+        query_source_notes(paths, request, None)
+    }
+
+    fn rows_in_scope(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+        authorized_index: &HashMap<String, NoteRecord>,
+    ) -> Result<Vec<NoteRecord>, BasesError> {
+        query_source_notes(paths, request, Some(authorized_index))
     }
 }
 
@@ -185,30 +220,37 @@ impl BasesSource for TaskNotesSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        let config = load_vault_config(paths).config;
-        let include_archived = tasknotes_source_include_archived(request.config.as_ref());
-        let mut rows = query_notes_with_filter(
-            paths,
-            &NoteQuery {
-                filters: request.filters.clone(),
-                sort_by: None,
-                sort_descending: false,
-            },
-            request.read_filter.as_ref(),
-        )
-        .map_err(BasesError::Property)?
-        .notes;
-        rows.retain(|note| {
-            extract_tasknote(
-                &note.document_path,
-                &note.file_name,
-                &note.properties,
-                &config.tasknotes,
-            )
-            .is_some_and(|tasknote| include_archived || !tasknote.archived)
-        });
-        Ok(rows)
+        tasknote_source_rows(paths, request, None)
     }
+
+    fn rows_in_scope(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+        authorized_index: &HashMap<String, NoteRecord>,
+    ) -> Result<Vec<NoteRecord>, BasesError> {
+        tasknote_source_rows(paths, request, Some(authorized_index))
+    }
+}
+
+fn tasknote_source_rows(
+    paths: &VaultPaths,
+    request: &BasesSourceRequest,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+) -> Result<Vec<NoteRecord>, BasesError> {
+    let config = load_vault_config(paths).config;
+    let include_archived = tasknotes_source_include_archived(request.config.as_ref());
+    let mut rows = query_source_notes(paths, request, authorized_index)?;
+    rows.retain(|note| {
+        extract_tasknote(
+            &note.document_path,
+            &note.file_name,
+            &note.properties,
+            &config.tasknotes,
+        )
+        .is_some_and(|tasknote| include_archived || !tasknote.archived)
+    });
+    Ok(rows)
 }
 
 #[derive(Default)]
@@ -252,6 +294,39 @@ impl BasesEvaluator {
         self.evaluate_yaml_with_filter(paths, &normalized, &source, read_filter)
     }
 
+    /// Evaluate a base under a caller guard. The `.base` source must be
+    /// readable, and rows, incoming links, and linked-note expressions are
+    /// limited to one policy-authorized note universe. Policy failures are
+    /// returned as errors rather than empty results.
+    pub fn evaluate_file_with_guard(
+        &self,
+        paths: &VaultPaths,
+        relative_path: &str,
+        guard: &dyn PermissionGuard,
+    ) -> Result<BasesEvalReport, BasesError> {
+        let normalized = normalize_base_path(relative_path)?;
+        guard
+            .check_read_path(&normalized)
+            .map_err(|error| BasesError::Property(PropertyError::Permission(error)))?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
+        let parsed = parse_base_file(&source)?;
+        self.evaluate_parsed(paths, &normalized, parsed, BaseReadScope::Guard(guard))
+    }
+
+    /// Evaluate base YAML that does not come from a vault `.base` file (for
+    /// example a configured `TaskNotes` view) under a caller guard. Callers that
+    /// read YAML from the vault must authorize that source themselves.
+    pub fn evaluate_yaml_with_guard(
+        &self,
+        paths: &VaultPaths,
+        normalized: &str,
+        yaml: &str,
+        guard: &dyn PermissionGuard,
+    ) -> Result<BasesEvalReport, BasesError> {
+        let parsed = parse_base_file(yaml)?;
+        self.evaluate_parsed(paths, normalized, parsed, BaseReadScope::Guard(guard))
+    }
+
     pub fn evaluate_yaml(
         &self,
         paths: &VaultPaths,
@@ -269,7 +344,12 @@ impl BasesEvaluator {
         read_filter: Option<&PermissionFilter>,
     ) -> Result<BasesEvalReport, BasesError> {
         let parsed = parse_base_file(yaml)?;
-        self.evaluate_parsed(paths, normalized, parsed, read_filter)
+        self.evaluate_parsed(
+            paths,
+            normalized,
+            parsed,
+            BaseReadScope::Filter(read_filter),
+        )
     }
 
     fn evaluate_parsed(
@@ -277,7 +357,7 @@ impl BasesEvaluator {
         paths: &VaultPaths,
         normalized: &str,
         parsed: ParsedBaseFile,
-        read_filter: Option<&PermissionFilter>,
+        scope: BaseReadScope<'_>,
     ) -> Result<BasesEvalReport, BasesError> {
         let ParsedBaseFile {
             source,
@@ -289,9 +369,18 @@ impl BasesEvaluator {
         } = parsed;
         let mut diagnostics = parsed_diagnostics;
         let mut views = Vec::new();
+        let read_filter = match scope {
+            BaseReadScope::Filter(filter) => filter.cloned(),
+            BaseReadScope::Guard(guard) => Some(guard.read_filter()),
+        };
         let mut context = BaseEvaluationContext {
             diagnostics: &mut diagnostics,
-            read_filter,
+            read_filter: read_filter.as_ref(),
+            guard: match scope {
+                BaseReadScope::Filter(_) => None,
+                BaseReadScope::Guard(guard) => Some(guard),
+            },
+            note_index: None,
         };
 
         for view in parsed_views {
@@ -337,9 +426,71 @@ impl BasesEvaluator {
     }
 }
 
+#[derive(Clone, Copy)]
+enum BaseReadScope<'a> {
+    Filter(Option<&'a PermissionFilter>),
+    Guard(&'a dyn PermissionGuard),
+}
+
 struct BaseEvaluationContext<'a> {
     diagnostics: &'a mut Vec<BasesDiagnostic>,
     read_filter: Option<&'a PermissionFilter>,
+    guard: Option<&'a dyn PermissionGuard>,
+    /// Authorized lookup universe, loaded once per evaluation.
+    note_index: Option<HashMap<String, NoteRecord>>,
+}
+
+impl BaseEvaluationContext<'_> {
+    fn note_index(
+        &mut self,
+        paths: &VaultPaths,
+    ) -> Result<&HashMap<String, NoteRecord>, BasesError> {
+        if self.note_index.is_none() {
+            let index = match self.guard {
+                // A guarded universe must not silently degrade to empty.
+                Some(guard) => load_note_index_with_guard(paths, guard)?,
+                // Unguarded custom sources may run without a cache.
+                None => load_note_index_with_filter(paths, self.read_filter).unwrap_or_default(),
+            };
+            self.note_index = Some(index);
+        }
+        Ok(self.note_index.get_or_insert_with(HashMap::new))
+    }
+}
+
+/// Keep only rows inside the guarded universe. Indexed rows take incoming
+/// links from the authorized index. Existing vault files outside that
+/// universe are dropped without a second policy decision, since a path grant
+/// alone cannot express tag denials. Rows a custom source synthesized for
+/// absent paths need a direct path grant. Denials drop rows; other policy
+/// failures abort the evaluation.
+fn authorize_guarded_rows(
+    paths: &VaultPaths,
+    rows: Vec<NoteRecord>,
+    guard: &dyn PermissionGuard,
+    authorized_index: &HashMap<String, NoteRecord>,
+) -> Result<Vec<NoteRecord>, BasesError> {
+    let by_path = authorized_index
+        .values()
+        .map(|note| (note.document_path.as_str(), note))
+        .collect::<HashMap<_, _>>();
+    let mut authorized = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        if let Some(indexed) = by_path.get(row.document_path.as_str()) {
+            row.inlinks.clone_from(&indexed.inlinks);
+            authorized.push(row);
+            continue;
+        }
+        if paths.vault_root().join(&row.document_path).exists() {
+            continue;
+        }
+        match guard.check_read_path(&row.document_path) {
+            Ok(()) => authorized.push(row),
+            Err(PermissionError::PathDenied { .. } | PermissionError::PolicyHookDenied { .. }) => {}
+            Err(error) => return Err(BasesError::Property(PropertyError::Permission(error))),
+        }
+    }
+    Ok(authorized)
 }
 
 // ── View-spec public structs ────────────────────────────────────────────────
@@ -826,6 +977,14 @@ pub fn evaluate_base_file_with_filter(
     BasesEvaluator::new().evaluate_file_with_filter(paths, relative_path, read_filter)
 }
 
+pub fn evaluate_base_file_with_guard(
+    paths: &VaultPaths,
+    relative_path: &str,
+    guard: &dyn PermissionGuard,
+) -> Result<BasesEvalReport, BasesError> {
+    BasesEvaluator::new().evaluate_file_with_guard(paths, relative_path, guard)
+}
+
 pub fn inspect_base_file(
     paths: &VaultPaths,
     relative_path: &str,
@@ -864,14 +1023,22 @@ fn evaluate_base_view(
         return Ok(None);
     };
 
-    let notes = match source_impl.rows(
-        paths,
-        &BasesSourceRequest {
-            filters: view_filters.clone(),
-            config: source.config.clone(),
-            read_filter: read_filter.cloned(),
-        },
-    ) {
+    let request = BasesSourceRequest {
+        filters: view_filters.clone(),
+        config: source.config.clone(),
+        read_filter: read_filter.cloned(),
+    };
+    let source_rows = match context.guard {
+        Some(guard) => {
+            let authorized_index = context.note_index(paths)?;
+            source_impl
+                .rows_in_scope(paths, &request, authorized_index)
+                .and_then(|rows| authorize_guarded_rows(paths, rows, guard, authorized_index))
+        }
+        None => source_impl.rows(paths, &request),
+    };
+    let diagnostics = &mut *context.diagnostics;
+    let notes = match source_rows {
         Ok(rows) => rows,
         Err(BasesError::Property(PropertyError::InvalidFilter(filter))) => {
             diagnostics.push(BasesDiagnostic {
@@ -893,12 +1060,16 @@ fn evaluate_base_view(
         Err(error) => return Err(error),
     };
 
-    // Build a vault-wide note index for link resolution (asFile / linksTo).
-    // Start with a lightweight full-vault index (properties only, no tags/links),
-    // then overlay the current query's notes which have tags/links fully loaded.
-    let note_index: HashMap<String, NoteRecord> =
-        load_note_index_with_filter(paths, read_filter).unwrap_or_default();
-    let note_index = build_note_lookup_index(note_index.into_values().chain(notes.iter().cloned()));
+    // Build the readable note universe for link resolution (asFile /
+    // linksTo), then overlay the source rows at their own paths.
+    let note_index = build_note_lookup_index(
+        context
+            .note_index(paths)?
+            .values()
+            .cloned()
+            .chain(notes.iter().cloned()),
+    );
+    let diagnostics = &mut *context.diagnostics;
 
     let columns = build_view_columns(property_display_names, &view);
     let time_zone =
@@ -2619,6 +2790,262 @@ mod tests {
             Some(2)
         );
         assert_eq!(source.formulas.get("hidden_score"), Some(&Value::Null));
+    }
+
+    struct PolicyGuard {
+        grant: crate::permissions::PermissionGrant,
+        calls: Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    impl PolicyGuard {
+        fn new(paths: &VaultPaths, fail: bool) -> Self {
+            let mut grant = crate::permissions::resolve_permission_profile(paths, None)
+                .unwrap()
+                .grant;
+            grant.read = PathPermission {
+                allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+                deny: Vec::new(),
+            };
+            Self {
+                grant,
+                calls: Mutex::default(),
+                fail,
+            }
+        }
+    }
+
+    impl PermissionGuard for PolicyGuard {
+        fn profile_name(&self) -> &'static str {
+            "test"
+        }
+        fn grant(&self) -> &crate::permissions::PermissionGrant {
+            &self.grant
+        }
+        fn has_policy_hook(&self) -> bool {
+            true
+        }
+        fn check_policy_decision(
+            &self,
+            action: &'static str,
+            resource: Option<&str>,
+        ) -> Result<(), PermissionError> {
+            let path = resource.unwrap_or_default().to_string();
+            self.calls.lock().unwrap().push(path.clone());
+            if self.fail && path == "Public/Policy.md" {
+                return Err(PermissionError::PolicyHookFailed {
+                    profile: "test".into(),
+                    action,
+                    resource: Some(path),
+                    reason: "broken".into(),
+                });
+            }
+            if path == "Public/Policy.md" || path == "Public/Synthetic.md" {
+                return Err(PermissionError::PolicyHookDenied {
+                    profile: "test".into(),
+                    action,
+                    resource: Some(path),
+                    reason: "denied".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    fn guarded_bases_vault() -> (TempDir, VaultPaths) {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path().join("vault");
+        for (path, contents) in [
+            (
+                "Public/Target.md",
+                "---\ntitle: Target\nref: \"[[Public/Target]]\"\n---\n",
+            ),
+            (
+                "Public/Visible.md",
+                "---\nref: \"[[Public/Policy]]\"\n---\n[[Public/Target]]\n",
+            ),
+            (
+                "Public/Policy.md",
+                "---\nsecret: sentinel\nref: \"[[Public/Target]]\"\n---\n[[Public/Target]]\n",
+            ),
+            (
+                "Private/Hidden.md",
+                "---\nsecret: hidden\nref: \"[[Public/Target]]\"\n---\n[[Public/Target]]\n",
+            ),
+            (
+                "Public/all.base",
+                concat!(
+                    "views:\n",
+                    "  - type: table\n",
+                    "    name: All\n",
+                    "    order: [file.name]\n",
+                    "    formulas:\n",
+                    "      ref_secret: ref.asFile().properties.secret\n",
+                    "  - type: table\n",
+                    "    name: Oracle\n",
+                    "    filters:\n",
+                    "      - 'ref.asFile().properties.secret == \"sentinel\"'\n",
+                ),
+            ),
+            (
+                "Private/private.base",
+                "views:\n  - type: table\n    name: All\n",
+            ),
+        ] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), contents).unwrap();
+        }
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        let paths = VaultPaths::new(&root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        (temp_dir, paths)
+    }
+
+    #[test]
+    fn guarded_bases_evaluation_scopes_rows_inlinks_and_linked_notes() {
+        let (_temp_dir, paths) = guarded_bases_vault();
+        let guard = PolicyGuard::new(&paths, false);
+
+        let report = evaluate_base_file_with_guard(&paths, "Public/all.base", &guard)
+            .expect("guarded base should evaluate");
+
+        let all = &report.views[0];
+        let mut row_paths = all
+            .rows
+            .iter()
+            .map(|row| row.document_path.as_str())
+            .collect::<Vec<_>>();
+        row_paths.sort_unstable();
+        assert_eq!(row_paths, vec!["Public/Target.md", "Public/Visible.md"]);
+        let visible = all
+            .rows
+            .iter()
+            .find(|row| row.document_path == "Public/Visible.md")
+            .unwrap();
+        assert_eq!(visible.formulas.get("ref_secret"), Some(&Value::Null));
+        // A hidden link target behaves like a missing one: the filter either
+        // fails like a dangling link or matches nothing.
+        assert!(
+            report
+                .views
+                .iter()
+                .find(|view| view.name.as_deref() == Some("Oracle"))
+                .is_none_or(|view| view.rows.is_empty()),
+            "expression filters must not observe policy-hidden notes"
+        );
+
+        // One policy decision per note per evaluation, plus the base source.
+        let calls = guard.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|path| *path == "Public/Policy.md")
+                .count(),
+            1
+        );
+        assert!(!calls.iter().any(|path| path.starts_with("Private/")));
+
+        let unguarded = evaluate_base_file(&paths, "Public/all.base").unwrap();
+        assert_eq!(unguarded.views[0].rows.len(), 4);
+        assert_eq!(
+            unguarded.views[1]
+                .rows
+                .iter()
+                .map(|row| row.document_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Public/Visible.md"]
+        );
+    }
+
+    #[test]
+    fn guarded_bases_inlinks_exclude_policy_and_statically_hidden_sources() {
+        let (_temp_dir, paths) = guarded_bases_vault();
+        let guard = PolicyGuard::new(&paths, false);
+        let index = crate::properties::load_note_index_with_guard(&paths, &guard).unwrap();
+        let rows = query_source_notes(
+            &paths,
+            &BasesSourceRequest {
+                filters: Vec::new(),
+                config: None,
+                read_filter: Some(guard.read_filter()),
+            },
+            Some(&index),
+        )
+        .unwrap();
+        let target = rows
+            .iter()
+            .find(|row| row.document_path == "Public/Target.md")
+            .unwrap();
+        let mut inlinks = target.inlinks.clone();
+        inlinks.sort();
+        assert_eq!(inlinks, vec!["[[Public/Target]]", "[[Public/Visible]]"]);
+    }
+
+    #[test]
+    fn guarded_bases_reject_unreadable_base_and_propagate_policy_failures() {
+        let (_temp_dir, paths) = guarded_bases_vault();
+        let guard = PolicyGuard::new(&paths, false);
+        let error = evaluate_base_file_with_guard(&paths, "Private/private.base", &guard)
+            .expect_err("unreadable base source must be rejected");
+        assert!(matches!(
+            error,
+            BasesError::Property(PropertyError::Permission(
+                PermissionError::PathDenied { .. }
+            ))
+        ));
+
+        let failing = PolicyGuard::new(&paths, true);
+        let error = evaluate_base_file_with_guard(&paths, "Public/all.base", &failing)
+            .expect_err("broken policy must not become an empty result");
+        assert!(error.to_string().contains("broken"), "{error}");
+    }
+
+    #[test]
+    fn guarded_custom_sources_cannot_return_unauthorized_rows() {
+        let (_temp_dir, paths) = guarded_bases_vault();
+        fs::write(
+            paths.vault_root().join("Public/custom.base"),
+            "source:\n  type: custom\nviews:\n  - type: table\n    name: Custom\n",
+        )
+        .unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut evaluator = BasesEvaluator::new();
+        evaluator.register_source(
+            "custom",
+            CapturingSource {
+                requests: Arc::clone(&requests),
+                rows: vec![
+                    source_note("Private/Hidden.md", json!({"secret": "hidden"})),
+                    source_note("Public/Policy.md", json!({"secret": "sentinel"})),
+                    source_note("Public/Synthetic.md", json!({"secret": "synthetic"})),
+                    source_note("Public/Generated.md", json!({"title": "generated"})),
+                    source_note("Public/Target.md", json!({"title": "Target"})),
+                ],
+            },
+        );
+        let guard = PolicyGuard::new(&paths, false);
+
+        let report = evaluator
+            .evaluate_file_with_guard(&paths, "Public/custom.base", &guard)
+            .expect("custom guarded base should evaluate");
+
+        let mut row_paths = report.views[0]
+            .rows
+            .iter()
+            .map(|row| row.document_path.as_str())
+            .collect::<Vec<_>>();
+        row_paths.sort_unstable();
+        assert_eq!(row_paths, vec!["Public/Generated.md", "Public/Target.md"]);
+        assert!(requests.lock().unwrap()[0].read_filter.is_some());
+        // Unauthorized existing notes are not re-offered to the policy hook.
+        let calls = guard.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|path| *path == "Public/Policy.md")
+                .count(),
+            1
+        );
     }
 
     #[test]
