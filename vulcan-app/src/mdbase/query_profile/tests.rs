@@ -5,6 +5,77 @@ use serde_json::json;
 use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
 
 #[test]
+fn query_sql_snapshot_matches_sources_preserves_links_and_rejects_inconsistent_columns() {
+    let (_directory, paths) = fixture();
+    let query = json!({"types": ["task"], "where": "title == 'Public'",
+        "select": ["title", {"name": "target", "expr": "link('private/secret.md').asFile().path"}]});
+    let expected = build_mdbase_query_report(&paths, &query, None).unwrap();
+    assert_eq!(expected.meta.total_count, 1);
+    let mut metrics = MdbaseQueryMetrics::default();
+    vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+    let actual = build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(metrics.execution_work.sql_rejected, 1);
+    assert_eq!(metrics.execution_work.filter_input_checks, 2);
+    assert_eq!(metrics.execution_work.filter_evaluations, 1);
+    assert_eq!(metrics.cached_load.sql_selected_records, 1);
+    assert_eq!(
+        actual.results[0].values.as_ref().unwrap()["target"],
+        "tasks/private/secret.md"
+    );
+    let database = vulcan_core::CacheDatabase::open(&paths).unwrap();
+    for statement in [
+        "UPDATE mdbase_record_cache SET effective_frontmatter_json='{}'",
+        "DELETE FROM mdbase_record_types",
+    ] {
+        database.connection().execute(statement, []).unwrap();
+        assert_eq!(
+            build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap(),
+            expected
+        );
+        assert_eq!(metrics.execution_work.sql_rejected, 0);
+        assert_eq!(metrics.execution_work.filter_evaluations, 2);
+        database.connection().execute("UPDATE mdbase_record_cache SET effective_frontmatter_json=json_extract(local_record_json, '$.effective_frontmatter')", []).unwrap();
+    }
+}
+
+#[test]
+fn query_sql_rejected_records_keep_input_errors_and_restricted_visibility() {
+    let (directory, paths) = fixture();
+    let query = json!({"types": ["task"], "where": "title == 'Public'", "select": ["title"]});
+    let mut metrics = MdbaseQueryMetrics::default();
+    std::fs::write(
+        directory.path().join("tasks/private/secret.md"),
+        format!(
+            "---\ntype: task\ntitle: Secret\n---\n{}",
+            "x".repeat(1024 * 1024)
+        ),
+    )
+    .unwrap();
+    let expected = build_mdbase_query_report(&paths, &query, None).unwrap_err();
+    assert!(expected.to_string().contains("input value size"));
+    vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+    let actual =
+        build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap_err();
+    assert_eq!(actual.to_string(), expected.to_string());
+    assert_eq!(metrics.execution_work.sql_rejected, 1);
+    assert_eq!(metrics.execution_work.filter_evaluations, 0);
+    let mut allow = read_control_grant();
+    allow.push(ResourceSpecifier::Note("mdbase.lock.yaml".into()));
+    let filter = PermissionFilter::new(PathPermission {
+        allow,
+        deny: vec![ResourceSpecifier::Folder("tasks/private/**".into())],
+    });
+    let result =
+        build_mdbase_query_report_profiled(&paths, &query, Some(&filter), &mut metrics).unwrap();
+    assert_eq!(result.meta.total_count, 1);
+    assert_eq!(metrics.execution_work.filter_input_checks, 1);
+    assert_eq!(metrics.execution_work.sql_rejected, 0);
+    assert_eq!(metrics.cache_hits, 1);
+    assert_eq!(metrics.cached_load.sql_selection_attempts, 1);
+}
+
+#[test]
 fn query_metrics_preserve_reports_and_distinguish_source_refresh_and_cached_loads() {
     let (_directory, paths) = fixture();
     let query = json!({"types": ["task"], "select": ["title"], "limit": 1});

@@ -38,6 +38,7 @@ pub struct MdbaseQueryMetrics {
     pub source_loads: usize,
     pub prepared_visible_records: usize,
     pub cached_load: MdbaseCachedLoadMetrics,
+    pub execution_work: vulcan_core::mdbase::MdbaseQueryExecutionMetrics,
 }
 
 /// Execute exactly the ordinary shared query workflow, retaining diagnostic
@@ -60,17 +61,18 @@ pub fn build_mdbase_query_report_profiled(
             compile_mdbase_prepared_query(query).map_err(AppError::operation)
         })?;
         let record_start = Instant::now();
-        let records = load_query_records(paths, &loaded, filter, metrics);
+        let records = load_query_records(paths, &loaded, filter, metrics, &prepared);
         metrics.record_preparation_seconds += record_start.elapsed().as_secs_f64();
         let records = records?;
-        metrics.prepared_visible_records = records.records.len();
+        metrics.prepared_visible_records = records.records().records.len();
         let mut report = time(&mut metrics.execution_seconds, || {
-            prepared.execute(
+            prepared.execute_snapshot(
                 &records,
                 &loaded.types,
                 &loaded.collection.config.settings.id_field,
                 loaded.collection.config.settings.timezone.as_deref(),
                 DateTime::<Utc>::from(SystemTime::now()),
+                &mut metrics.execution_work,
             )
         })
         .map_err(AppError::operation)?;

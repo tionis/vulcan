@@ -502,21 +502,22 @@ fn load_query_records(
     loaded: &LoadedCollection,
     filter: Option<&PermissionFilter>,
     metrics: &mut MdbaseQueryMetrics,
-) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
+    query: &vulcan_core::mdbase::MdbasePreparedQuery,
+) -> Result<vulcan_core::mdbase::MdbaseQuerySnapshot, AppError> {
     // The shared cache dependency digest includes the lockfile, while ordinary
     // source queries do not consume it. Cache reuse must not broaden required
     // authority or probe an unreadable lockfile (including its absence).
     if filter.is_some_and(|filter| !filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME)) {
         return load_query_source_records(loaded, filter, metrics);
     }
-    load_query_records_with_boundary(paths, loaded, filter, metrics, || {})
+    load_query_records_with_boundary(paths, loaded, filter, metrics, query, || {})
 }
 
 fn load_query_source_records(
     loaded: &LoadedCollection,
     filter: Option<&PermissionFilter>,
     metrics: &mut MdbaseQueryMetrics,
-) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
+) -> Result<vulcan_core::mdbase::MdbaseQuerySnapshot, AppError> {
     metrics.source_loads += 1;
     query_profile::time(&mut metrics.source_fallback_seconds, || {
         load_mdbase_records_with_contracts_filtered(
@@ -527,6 +528,7 @@ fn load_query_source_records(
             filter,
         )
     })
+    .map(vulcan_core::mdbase::MdbaseQuerySnapshot::from_records)
     .map_err(AppError::operation)
 }
 
@@ -546,10 +548,11 @@ fn load_query_records_with_boundary(
     loaded: &LoadedCollection,
     filter: Option<&PermissionFilter>,
     metrics: &mut MdbaseQueryMetrics,
+    query: &vulcan_core::mdbase::MdbasePreparedQuery,
     before_verification: impl FnOnce(),
-) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
+) -> Result<vulcan_core::mdbase::MdbaseQuerySnapshot, AppError> {
     use vulcan_core::mdbase::{
-        capture_mdbase_record_manifest, load_cached_mdbase_record_set_profiled,
+        capture_mdbase_record_manifest, load_cached_mdbase_query_snapshot_profiled,
         rebuild_mdbase_record_cache, refresh_mdbase_record_cache,
     };
     let manifest = query_profile::time(&mut metrics.manifest_before_seconds, || {
@@ -571,13 +574,14 @@ fn load_query_records_with_boundary(
     });
     let cached = |connection: &rusqlite::Connection, metrics: &mut MdbaseQueryMetrics| {
         metrics.cache_attempts += 1;
-        let records = load_cached_mdbase_record_set_profiled(
+        let records = load_cached_mdbase_query_snapshot_profiled(
             connection,
             &loaded.collection,
             &loaded.types,
             &loaded.contracts,
             &manifest,
             filter,
+            query,
             &mut metrics.cached_load,
         )
         .ok()
@@ -636,8 +640,8 @@ fn load_query_records_with_boundary(
     metrics.completed_manifest_records += current.len();
     metrics.completed_manifest_bytes += current.values().map(|entry| entry.file.size).sum::<u64>();
     if current != manifest
-        || records.records.len() != manifest.len()
-        || records.records.iter().any(|record| {
+        || records.records().records.len() != manifest.len()
+        || records.records().records.iter().any(|record| {
             manifest.get(&record.path).is_none_or(|expected| {
                 expected.revision != record.revision || expected.file != record.file
             })
@@ -1593,6 +1597,8 @@ mod tests {
                 &loaded,
                 None,
                 &mut MdbaseQueryMetrics::default(),
+                &vulcan_core::mdbase::compile_mdbase_prepared_query(&serde_json::json!({}))
+                    .unwrap(),
                 || match mutation {
                     "edit" => {
                         fs::write(directory.path().join("tasks/public.md"), "Changed\n").unwrap();

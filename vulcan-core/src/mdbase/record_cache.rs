@@ -280,6 +280,9 @@ pub struct MdbaseCachedLoadMetrics {
     pub decoded_records: usize,
     pub overlay_records: usize,
     pub overlay_passes: usize,
+    pub sql_selection_seconds: f64,
+    pub sql_selection_attempts: usize,
+    pub sql_selected_records: usize,
 }
 
 /// Same cache/authorization contract as `load_cached_mdbase_record_set`, with
@@ -294,6 +297,48 @@ pub fn load_cached_mdbase_record_set_profiled(
     filter: Option<&PermissionFilter>,
     metrics: &mut MdbaseCachedLoadMetrics,
 ) -> Result<Option<super::MdbaseRecordSet>, MdbaseRecordCacheError> {
+    load_cached_snapshot(
+        connection, collection, types, contracts, expected, filter, None, metrics,
+    )
+    .map(|snapshot| snapshot.map(super::MdbaseQuerySnapshot::into_records))
+}
+
+/// Load records and optional physical candidates from the same `SQLite` snapshot.
+/// Retains the ordinary loader's authorization, manifest and control contract.
+#[allow(clippy::too_many_arguments)]
+pub fn load_cached_mdbase_query_snapshot_profiled(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    expected: &BTreeMap<String, MdbaseCachedRecordExpectation>,
+    filter: Option<&PermissionFilter>,
+    query: &super::MdbasePreparedQuery,
+    metrics: &mut MdbaseCachedLoadMetrics,
+) -> Result<Option<super::MdbaseQuerySnapshot>, MdbaseRecordCacheError> {
+    load_cached_snapshot(
+        connection,
+        collection,
+        types,
+        contracts,
+        expected,
+        filter,
+        Some(query),
+        metrics,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_cached_snapshot(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    expected: &BTreeMap<String, MdbaseCachedRecordExpectation>,
+    filter: Option<&PermissionFilter>,
+    query: Option<&super::MdbasePreparedQuery>,
+    metrics: &mut MdbaseCachedLoadMetrics,
+) -> Result<Option<super::MdbaseQuerySnapshot>, MdbaseRecordCacheError> {
     let start = Instant::now();
     let result = (|| {
         let controls = time_cached_load(&mut metrics.control_verification_seconds, || {
@@ -303,19 +348,68 @@ pub fn load_cached_mdbase_record_set_profiled(
             return Ok(None);
         }
         let root = cache_collection_root(collection)?;
-        let Some(records) = time_cached_load(&mut metrics.sqlite_decode_seconds, || {
-            load_local_payloads(
-                connection,
-                &root,
-                &controls.combined,
-                expected,
-                filter,
-                &mut metrics.decoded_records,
-            )
-        })?
+        let transaction = connection.unchecked_transaction()?;
+        let Some((records, scalars_match)) =
+            time_cached_load(&mut metrics.sqlite_decode_seconds, || {
+                load_local_payloads(
+                    &transaction,
+                    &root,
+                    &controls.combined,
+                    expected,
+                    filter,
+                    &mut metrics.decoded_records,
+                    query.is_some_and(|query| query.sql_filter_predicate().is_some()),
+                )
+            })?
         else {
             return Ok(None);
         };
+        let selection_start = Instant::now();
+        let candidates = query.filter(|_| scalars_match).and_then(|query| {
+            let predicate = query.sql_filter_predicate()?;
+            metrics.sql_selection_attempts += 1;
+            let expected_types = records
+                .iter()
+                .filter(|record| {
+                    query.plan().types.is_empty()
+                        || record.types.iter().any(|name| {
+                            query
+                                .plan()
+                                .types
+                                .iter()
+                                .any(|wanted| name.eq_ignore_ascii_case(wanted))
+                        })
+                })
+                .map(|record| record.path.clone())
+                .collect::<BTreeSet<_>>();
+            let base = select_candidate_paths(
+                &transaction,
+                collection,
+                query.plan(),
+                &controls.combined,
+                filter,
+                None,
+            )
+            .ok()?;
+            if base.into_iter().collect::<BTreeSet<_>>() != expected_types {
+                return None;
+            }
+            select_candidate_paths(
+                &transaction,
+                collection,
+                query.plan(),
+                &controls.combined,
+                filter,
+                Some(predicate),
+            )
+            .ok()
+            .map(|paths| (query.plan().clone(), paths.into_iter().collect()))
+        });
+        metrics.sql_selection_seconds += selection_start.elapsed().as_secs_f64();
+        metrics.sql_selected_records += candidates
+            .as_ref()
+            .map_or(0, |(_, paths): &(_, BTreeSet<String>)| paths.len());
+        transaction.commit()?;
         if time_cached_load(&mut metrics.control_verification_seconds, || {
             verify_mdbase_control_snapshots(collection, types, contracts, filter)
         })? != controls
@@ -324,10 +418,15 @@ pub fn load_cached_mdbase_record_set_profiled(
         }
         metrics.overlay_records += records.len();
         metrics.overlay_passes += 1;
-        Ok(Some(time_cached_load(
-            &mut metrics.collection_overlay_seconds,
-            || super::records::finish_local_record_set(collection, types, contracts, records),
-        )))
+        let records = time_cached_load(&mut metrics.collection_overlay_seconds, || {
+            super::records::finish_local_record_set(collection, types, contracts, records)
+        });
+        Ok(Some(match candidates {
+            Some((plan, paths)) => {
+                super::MdbaseQuerySnapshot::with_candidates(records, plan, paths)
+            }
+            None => super::MdbaseQuerySnapshot::from_records(records),
+        }))
     })();
     metrics.total_seconds += start.elapsed().as_secs_f64();
     result
@@ -347,9 +446,11 @@ fn load_local_payloads(
     expected: &BTreeMap<String, MdbaseCachedRecordExpectation>,
     filter: Option<&PermissionFilter>,
     decoded_records: &mut usize,
-) -> Result<Option<Vec<MdbaseRecordDocument>>, MdbaseRecordCacheError> {
-    let transaction = connection.unchecked_transaction()?;
+    verify_scalars: bool,
+) -> Result<Option<(Vec<MdbaseRecordDocument>, bool)>, MdbaseRecordCacheError> {
+    let transaction = connection;
     let mut records = Vec::new();
+    let mut scalars_match = true;
     {
         let mut statement = transaction
             .prepare("SELECT path FROM mdbase_record_cache WHERE collection_root = ?1")?;
@@ -371,19 +472,25 @@ fn load_local_payloads(
         }
     }
     {
-        let mut statement = transaction.prepare_cached(
-            "SELECT local_record_json FROM mdbase_record_cache
+        let sql = format!(
+            "SELECT local_record_json, {} FROM mdbase_record_cache
              WHERE collection_root = ?1 AND path = ?2 AND revision = ?3
                AND dependency_digest = ?4 AND record_model_version = ?5
                AND local_record_json IS NOT NULL",
-        )?;
+            if verify_scalars {
+                "effective_frontmatter_json"
+            } else {
+                "''"
+            }
+        );
+        let mut statement = transaction.prepare_cached(&sql)?;
         for (path, expectation) in expected {
             // Check before fetching or decoding any denied payload, including
             // malformed JSON that would otherwise leak a hidden cache failure.
             if filter.is_some_and(|filter| !filter.is_allowed(path)) {
                 continue;
             }
-            let record: Option<MdbaseRecordDocument> = statement
+            let payload: Option<(MdbaseRecordDocument, String)> = statement
                 .query_row(
                     params![
                         root,
@@ -392,10 +499,23 @@ fn load_local_payloads(
                         dependency_digest,
                         MDBASE_RECORD_MODEL_VERSION
                     ],
-                    |row| parse_json_column(0, &row.get::<_, String>(0)?),
+                    |row| {
+                        Ok((
+                            parse_json_column(0, &row.get::<_, String>(0)?)?,
+                            row.get(1)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            *decoded_records += usize::from(record.is_some());
+            *decoded_records += usize::from(payload.is_some());
+            let record = payload.map(|(record, scalar)| {
+                scalars_match &= !verify_scalars
+                    || serde_json::to_string(&record.effective_frontmatter)
+                        .ok()
+                        .as_deref()
+                        == Some(scalar.as_str());
+                record
+            });
             let Some(record) = record.filter(|record| {
                 record.path == *path
                     && record.revision == expectation.revision
@@ -407,8 +527,7 @@ fn load_local_payloads(
             records.push(record);
         }
     }
-    transaction.commit()?;
-    Ok(Some(records))
+    Ok(Some((records, scalars_match)))
 }
 
 fn is_local_record(record: &MdbaseRecordDocument) -> bool {

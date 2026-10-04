@@ -226,7 +226,102 @@ pub struct MdbasePreparedQuery {
     programs: QueryPrograms,
 }
 
+/// One immutable authorized record snapshot and optional physical candidates.
+/// Only the coherent cache loader can attach candidates; source fallbacks retain
+/// ordinary execution. Callers still own freshness and current authorization.
+#[derive(Debug)]
+pub struct MdbaseQuerySnapshot {
+    records: MdbaseRecordSet,
+    candidates: Option<SqlCandidates>,
+}
+
+#[derive(Debug)]
+struct SqlCandidates {
+    plan: StructuredQueryPlan,
+    paths: BTreeSet<String>,
+}
+
+impl MdbaseQuerySnapshot {
+    #[must_use]
+    pub fn from_records(records: MdbaseRecordSet) -> Self {
+        Self {
+            records,
+            candidates: None,
+        }
+    }
+
+    pub(super) fn with_candidates(
+        records: MdbaseRecordSet,
+        plan: StructuredQueryPlan,
+        paths: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            records,
+            candidates: Some(SqlCandidates { plan, paths }),
+        }
+    }
+
+    #[must_use]
+    pub fn records(&self) -> &MdbaseRecordSet {
+        &self.records
+    }
+
+    #[must_use]
+    pub fn into_records(self) -> MdbaseRecordSet {
+        self.records
+    }
+}
+
+/// Per-execution visible work only, reset for every snapshot execution.
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct MdbaseQueryExecutionMetrics {
+    pub type_candidates: usize,
+    pub sql_rejected: usize,
+    pub filter_input_checks: usize,
+    pub filter_evaluations: usize,
+}
+
+struct QueryExecutionWork<'a> {
+    candidates: Option<&'a BTreeSet<String>>,
+    metrics: &'a mut MdbaseQueryExecutionMetrics,
+}
+
 impl MdbasePreparedQuery {
+    /// Execute a loader-bound physical snapshot. A different query plan or a
+    /// lazily uncompiled filter falls back to ordinary residual execution.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_snapshot(
+        &self,
+        snapshot: &MdbaseQuerySnapshot,
+        types: &MdbaseTypeRegistry,
+        id_field: &str,
+        collection_timezone: Option<&str>,
+        now: DateTime<Utc>,
+        metrics: &mut MdbaseQueryExecutionMetrics,
+    ) -> Result<MdbaseQueryResult, MdbaseQueryError> {
+        *metrics = MdbaseQueryExecutionMetrics::default();
+        let candidates = snapshot
+            .candidates
+            .as_ref()
+            .filter(|candidates| {
+                candidates.plan == self.plan && self.sql_filter_predicate().is_some()
+            })
+            .map(|candidates| &candidates.paths);
+        execute_prepared_query(
+            &snapshot.records,
+            types,
+            &self.plan,
+            &QueryLinkIndex::new(&snapshot.records, id_field),
+            collection_timezone,
+            now,
+            &self.programs,
+            &mut QueryExecutionWork {
+                candidates,
+                metrics,
+            },
+        )
+    }
+
     /// Already-compiled scalar filter preparation. Does not trigger compilation
     /// for lazily prepared structured queries, and never bypasses projections or
     /// context-dependent input checks. This is not a row-skipping safety proof.
@@ -306,6 +401,10 @@ impl MdbasePreparedQuery {
             collection_timezone,
             now,
             &self.programs,
+            &mut QueryExecutionWork {
+                candidates: None,
+                metrics: &mut MdbaseQueryExecutionMetrics::default(),
+            },
         )
     }
 }
@@ -413,6 +512,7 @@ pub fn execute_mdbase_query(
     MdbasePreparedQuery::new(plan).execute(records, types, id_field, collection_timezone, now)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_prepared_query(
     records: &MdbaseRecordSet,
     types: &MdbaseTypeRegistry,
@@ -421,6 +521,7 @@ fn execute_prepared_query(
     collection_timezone: Option<&str>,
     now: DateTime<Utc>,
     engine: &QueryPrograms,
+    work: &mut QueryExecutionWork<'_>,
 ) -> Result<MdbaseQueryResult, MdbaseQueryError> {
     let timezone = plan
         .timezone
@@ -455,6 +556,7 @@ fn execute_prepared_query(
             &clock,
             link_index,
             &mut diagnostics,
+            work,
         )? {
             candidates.push(candidate);
         }
@@ -500,6 +602,7 @@ fn evaluate_query_candidate<'a>(
     clock: &MdbaseCelClock,
     link_index: &QueryLinkIndex<'_>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
+    work: &mut QueryExecutionWork<'_>,
 ) -> Result<Option<QueryCandidate<'a>>, MdbaseQueryError> {
     if !plan.types.is_empty()
         && !record.types.iter().any(|candidate| {
@@ -510,7 +613,20 @@ fn evaluate_query_candidate<'a>(
     {
         return Ok(None);
     }
+    work.metrics.type_candidates += 1;
     let known_fields = known_fields(record, types);
+    if work
+        .candidates
+        .is_some_and(|paths| !paths.contains(&record.path))
+    {
+        // Snapshot construction only enables this for a supported filter with
+        // no pre-filter projections or invocation context. Keep the original
+        // record order and full input-bound checks, even though SQL proves false.
+        work.metrics.sql_rejected += 1;
+        work.metrics.filter_input_checks += 1;
+        validate_sql_rejection(engine, plan, record, &known_fields, clock)?;
+        return Ok(None);
+    }
     let mut projection = plan
         .named_projections
         .iter()
@@ -533,6 +649,8 @@ fn evaluate_query_candidate<'a>(
         diagnostics.extend(result.diagnostics);
     }
     if let Some(filter) = &plan.filter {
+        work.metrics.filter_input_checks += 1;
+        work.metrics.filter_evaluations += 1;
         let context = MdbaseCelContext::query(
             MdbaseCelContextKind::QueryFilter,
             record,
@@ -632,6 +750,36 @@ fn evaluate_selection(
         }
     }
     Ok(Some(values))
+}
+
+fn validate_sql_rejection(
+    engine: &QueryPrograms,
+    plan: &StructuredQueryPlan,
+    record: &MdbaseRecordDocument,
+    known_fields: &BTreeSet<String>,
+    clock: &MdbaseCelClock,
+) -> Result<(), MdbaseQueryError> {
+    let filter = plan
+        .filter
+        .as_ref()
+        .expect("physical candidates require filter");
+    let context = MdbaseCelContext::query(
+        MdbaseCelContextKind::QueryFilter,
+        record,
+        known_fields.iter().cloned(),
+        serde_json::json!({}),
+        None,
+        clock.clone(),
+    )
+    .map_err(cel_query_error)?;
+    engine
+        .engine
+        .prepare_context_input(
+            engine.program(&filter.source).map_err(cel_query_error)?,
+            &context,
+        )
+        .map_err(cel_query_error)?;
+    Ok(())
 }
 
 fn candidate_value(
@@ -1177,6 +1325,68 @@ mod tests {
     }
 
     #[test]
+    fn sql_snapshot_candidates_are_bound_to_the_query_and_preserve_input_failure_order() {
+        let prepared = compile_mdbase_prepared_query(&serde_json::json!({
+            "types": ["task"], "where": "status == 'open'", "select": ["title"], "limit": 1
+        }))
+        .unwrap();
+        let records = MdbaseRecordSet {
+            records: vec![
+                record("a.md", "Closed", "closed"),
+                record("b.md", "Open", "open"),
+            ],
+        };
+        let snapshot = MdbaseQuerySnapshot::with_candidates(
+            records.clone(),
+            prepared.plan().clone(),
+            BTreeSet::from(["b.md".to_string()]),
+        );
+        let types = MdbaseTypeRegistry::default();
+        let now = Utc::now();
+        let mut metrics = MdbaseQueryExecutionMetrics::default();
+        assert_eq!(
+            prepared
+                .execute_snapshot(&snapshot, &types, "id", None, now, &mut metrics)
+                .unwrap(),
+            prepared.execute(&records, &types, "id", None, now).unwrap()
+        );
+        assert_eq!(metrics.sql_rejected, 1);
+        assert_eq!(metrics.filter_input_checks, 2);
+        assert_eq!(metrics.filter_evaluations, 1);
+        let other =
+            compile_mdbase_prepared_query(&serde_json::json!({"where": "status == 'closed'"}))
+                .unwrap();
+        assert_eq!(
+            other
+                .execute_snapshot(&snapshot, &types, "id", None, now, &mut metrics)
+                .unwrap(),
+            other.execute(&records, &types, "id", None, now).unwrap()
+        );
+        assert_eq!(metrics.sql_rejected, 0);
+        assert_eq!(metrics.filter_evaluations, 2);
+
+        let mut oversized = records;
+        oversized.records[0].body = "x".repeat(1024 * 1024);
+        let expected = prepared
+            .execute(&oversized, &types, "id", None, now)
+            .unwrap_err();
+        let snapshot = MdbaseQuerySnapshot::with_candidates(
+            oversized,
+            prepared.plan().clone(),
+            BTreeSet::from(["b.md".to_string()]),
+        );
+        assert_eq!(
+            prepared
+                .execute_snapshot(&snapshot, &types, "id", None, now, &mut metrics)
+                .unwrap_err(),
+            expected
+        );
+        assert_eq!(metrics.type_candidates, 1);
+        assert_eq!(metrics.sql_rejected, 1);
+        assert_eq!(metrics.filter_evaluations, 0);
+    }
+
+    #[test]
     fn pinned_portable_query_compiles_to_the_shared_rich_plan() {
         let yaml: serde_yaml::Value = serde_yaml::from_str(include_str!(
             "../../resources/mdbase/v0.3/upstream/tests/fixtures/views/valid-query.yml"
@@ -1409,6 +1619,10 @@ mod tests {
                 None,
                 now,
                 &prepared.programs,
+                &mut QueryExecutionWork {
+                    candidates: None,
+                    metrics: &mut MdbaseQueryExecutionMetrics::default(),
+                },
             )
             .unwrap();
             assert_eq!(
@@ -1447,6 +1661,10 @@ mod tests {
                 None,
                 now,
                 &prepared.programs,
+                &mut QueryExecutionWork {
+                    candidates: None,
+                    metrics: &mut MdbaseQueryExecutionMetrics::default(),
+                },
             )
             .unwrap();
             assert_eq!(
@@ -1500,6 +1718,10 @@ mod tests {
             None,
             now,
             &prepared.programs,
+            &mut QueryExecutionWork {
+                candidates: None,
+                metrics: &mut MdbaseQueryExecutionMetrics::default(),
+            },
         )
         .unwrap_err();
         assert_eq!(

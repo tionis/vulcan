@@ -254,6 +254,18 @@ impl MdbaseCelEngine {
         program: &MdbaseCelProgram,
         evaluation: &MdbaseCelContext,
     ) -> Result<MdbaseCelEvaluation, MdbaseCelError> {
+        let context = self.prepare_context_input(program, evaluation)?;
+
+        self.execute_context(program, evaluation, context)
+    }
+
+    /// The same pre-execution checks used by ordinary CEL, including complete
+    /// bindings unrelated to the predicate. SQL rejection cannot bypass these.
+    pub(super) fn prepare_context_input(
+        &self,
+        program: &MdbaseCelProgram,
+        evaluation: &MdbaseCelContext,
+    ) -> Result<Context<'static>, MdbaseCelError> {
         evaluation.validate_program(program)?;
         inspect_value(
             &serde_json::to_value(&evaluation.bindings).map_err(|error| {
@@ -262,9 +274,17 @@ impl MdbaseCelEngine {
             &self.limits,
             "input",
         )?;
-
         let mut context = Context::default();
         add_json_bindings(&mut context, &evaluation.bindings)?;
+        Ok(context)
+    }
+
+    fn execute_context(
+        &self,
+        program: &MdbaseCelProgram,
+        evaluation: &MdbaseCelContext,
+        mut context: Context<'_>,
+    ) -> Result<MdbaseCelEvaluation, MdbaseCelError> {
         add_mdbase_functions(
             &mut context,
             &evaluation.clock,
