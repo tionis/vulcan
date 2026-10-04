@@ -12093,6 +12093,60 @@ fn tasks_list_json_output_accepts_dataview_expression_filters() {
 }
 
 #[test]
+fn scoped_task_queries_filter_before_limits_groups_and_backlink_expressions() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    for folder in [".vulcan", "Public", "Hidden"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\n").unwrap();
+    fs::write(
+        root.join("Hidden/First.md"),
+        "- [ ] Hidden task\n[[Public/Target]]\n",
+    )
+    .unwrap();
+    fs::write(root.join("Public/Target.md"), "- [ ] Public task\n").unwrap();
+    fs::write(root.join("Public/Source.md"), "[[Public/Target]]\n").unwrap();
+    run_scan(root);
+    let run = |scoped: bool, args: &[&str]| {
+        let mut command = Command::cargo_bin("vulcan").unwrap();
+        command.args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--refresh",
+            "off",
+            "--output",
+            "json",
+        ]);
+        if scoped {
+            command.args(["--permissions", "scoped"]);
+        }
+        let result = command.args(args).assert().success();
+        parse_stdout_json(&result)
+    };
+    let source = "not done\ngroup by path\nlimit 1";
+    for args in [
+        vec!["tasks", "query", source],
+        vec!["tasks", "list", "--filter", source],
+    ] {
+        let unfiltered = run(false, &args);
+        assert_eq!(unfiltered["tasks"][0]["path"], "Hidden/First.md");
+        let scoped = run(true, &args);
+        assert_eq!(scoped["result_count"], 1);
+        assert_eq!(scoped["tasks"][0]["path"], "Public/Target.md");
+        assert_eq!(scoped["groups"].as_array().unwrap().len(), 1);
+        assert_eq!(scoped["groups"][0]["tasks"][0]["path"], "Public/Target.md");
+    }
+    // The readable backlink source has no task and is not itself a result.
+    // Hidden backlinks must not affect the expression's derived count.
+    let args = ["tasks", "list", "--filter", "length(file.inlinks) = 1"];
+    assert_eq!(run(false, &args)["result_count"], 0);
+    let scoped = run(true, &args);
+    assert_eq!(scoped["result_count"], 1);
+    assert_eq!(scoped["tasks"][0]["path"], "Public/Target.md");
+}
+
+#[test]
 fn tasks_next_json_output_lists_upcoming_recurring_instances() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

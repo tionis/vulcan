@@ -586,6 +586,54 @@ fn guarded_tracking_selects_only_visible_active_sessions() {
 }
 
 #[test]
+fn read_only_auto_archive_leaves_due_completed_tasks_unchanged() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(paths.config_file(), concat!(
+        "tasknotes.archive_folder = \"Public/Archive\"\n",
+        "[[tasknotes.statuses]]\nid = \"done\"\nvalue = \"done\"\nlabel = \"Done\"\ncolor = \"#16a34a\"\nisCompleted = true\norder = 1\nautoArchive = true\nautoArchiveDelay = 0\n",
+        "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\n",
+    )).unwrap();
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
+        &paths,
+        &config,
+        "Public/Done.md",
+        "Done",
+        "done",
+        &[(
+            config.tasknotes.field_mapping.completed_date.as_str(),
+            YamlValue::String("2026-04-01T09:00:00Z".into()),
+        )],
+        "Keep this body.\n",
+    )
+    .unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let before = fs::read(temp.path().join("Public/Done.md")).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    // Neither missing nor malformed unreadable MDB controls should be consulted
+    // for an automatic mutation that this caller has no authority to perform.
+    for control in [None, Some("types: [not valid\n")] {
+        if let Some(control) = control {
+            fs::write(temp.path().join("mdbase.yaml"), control).unwrap();
+        }
+        let changed =
+            super::process_due_tasknote_auto_archives_with_guard(&paths, None, Some(&guard))
+                .unwrap();
+        assert!(changed.is_empty());
+        assert_eq!(
+            fs::read(temp.path().join("Public/Done.md")).unwrap(),
+            before
+        );
+        assert!(!temp.path().join("Public/Archive").exists());
+    }
+}
+
+#[test]
 fn guarded_auto_archive_preserves_hidden_completed_tasks() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

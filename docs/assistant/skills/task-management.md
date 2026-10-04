@@ -1,7 +1,7 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 2
+version: 3
 tools:
   - tasks_query
   - query
@@ -29,6 +29,8 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 ## Guardrails
 
 - Keep the selected `--permissions` profile on task mutations, including previews. Routing requires read access to `mdbase.yaml` even when that file is absent or the target is ordinary Markdown. A denied control read is not permission to retry with an unrestricted profile.
+- Use `tasks query` or `tasks list` with the selected read scope: static profile filtering precedes limits and grouping, and list expression filters see only readable backlink sources. Counts describe the readable scope, not the whole vault. Do not infer that a dynamic policy hook or another task-report command has the same pre-evaluation filtering guarantees.
+- A profile with `write = "none"` skips automatic task archiving. Read-only query/list access does not need MDB-control grants for that upkeep, and due completed tasks remain in place. This does not disable separate pomodoro transitions or authorize any mutation.
 - Tracking, pomodoro status, and other task reports can trigger configured automatic transitions. Those writes need the caller's authority too; daily-note pomodoro storage and archive destinations require their own path grants. Do not broaden grants merely to make a report succeed.
 - Task-add and missing daily-note pomodoro templates are selected from readable candidates and rendered with the caller's authority. A dry run cannot create template side notes; use a non-mutating template for a preview that depends on rendered content. Template denial must not be treated as an empty template or retried with broader grants. Only unrestricted reads without policy hooks retain the periodic-note warning-and-empty-template fallback for a genuinely absent template; corrupt readable templates still fail.
 - `tasks edit` requires read/write authority for the task and execute authority before launching the external editor. This is a direct filesystem edit followed by a rescan, not a validated MDB transaction or a sandbox for the editor process. Use structured task commands for validated changes; do not use the editor to bypass a validation denial.

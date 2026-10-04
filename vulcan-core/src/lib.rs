@@ -332,7 +332,8 @@ pub use tasknotes::{
     TaskNotesTimeEntry,
 };
 pub use tasks::{
-    evaluate_parsed_tasks_query, evaluate_tasks_query, load_tasks_blocks, parse_recurrence_text,
+    evaluate_parsed_tasks_query, evaluate_parsed_tasks_query_with_filter, evaluate_tasks_query,
+    evaluate_tasks_query_with_filter, load_tasks_blocks, parse_recurrence_text,
     parse_task_recurrence, parse_tasks_query, shape_tasks_query_result, task_recurrence_anchor,
     task_upcoming_occurrences, TaskRecurrence, TasksBlockRecord, TasksDateField, TasksDateRelation,
     TasksError, TasksFilter, TasksQuery, TasksQueryCommand, TasksQueryGroup, TasksQueryResult,

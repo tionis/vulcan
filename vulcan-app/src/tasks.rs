@@ -29,7 +29,7 @@ use vulcan_core::expression::functions::{
 use vulcan_core::expression::parse_expression;
 use vulcan_core::ordinary_write::{recover_ordinary_write_batch, OrdinaryWriteChange};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
-use vulcan_core::properties::{extract_indexed_properties, load_note_index};
+use vulcan_core::properties::extract_indexed_properties;
 use vulcan_core::{
     active_tasknote_time_entry, evaluate_base_file, evaluate_tasks_query,
     expected_periodic_note_path, extract_tasknote, inspect_base_file, load_tasks_blocks,
@@ -500,6 +500,11 @@ pub fn process_due_tasknote_auto_archives_with_guard(
     exclude_task: Option<&str>,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<Vec<String>, AppError> {
+    // Read-only callers must be able to inspect tasks without entering a mutation
+    // boundary or requiring access to MDB routing controls for automatic upkeep.
+    if guard.is_some_and(|guard| guard.grant().write.allow.is_empty()) {
+        return Ok(Vec::new());
+    }
     preflight_task_mutation_guard(paths, guard)?;
     if guard.is_none() {
         recover_pending_ordinary_task_write(paths)?;
@@ -1489,8 +1494,16 @@ pub fn build_tasks_query_result(
     paths: &VaultPaths,
     source: &str,
 ) -> Result<TasksQueryResult, AppError> {
+    build_tasks_query_result_with_filter(paths, source, None)
+}
+
+pub fn build_tasks_query_result_with_filter(
+    paths: &VaultPaths,
+    source: &str,
+    filter: Option<&vulcan_core::PermissionFilter>,
+) -> Result<TasksQueryResult, AppError> {
     let _read_guard = consistent_task_read(paths)?;
-    build_tasks_query_result_with_options(paths, source, false)
+    build_tasks_query_result_with_options(paths, source, false, filter)
 }
 
 fn consistent_task_read(
@@ -1545,6 +1558,14 @@ pub fn build_tasks_list_report(
     paths: &VaultPaths,
     request: &TaskListRequest,
 ) -> Result<TasksQueryResult, AppError> {
+    build_tasks_list_report_with_filter(paths, request, None)
+}
+
+pub fn build_tasks_list_report_with_filter(
+    paths: &VaultPaths,
+    request: &TaskListRequest,
+    read_filter: Option<&vulcan_core::PermissionFilter>,
+) -> Result<TasksQueryResult, AppError> {
     let _read_guard = consistent_task_read(paths)?;
     let config = load_vault_config(paths).config.tasks;
     let filter = request
@@ -1562,7 +1583,7 @@ pub fn build_tasks_list_report(
                 Some(prefilter_source.as_str()),
                 Some(layout_source.as_str()),
             ]);
-            build_tasks_query_result(paths, &source)
+            build_tasks_query_result_with_filter(paths, &source, read_filter)
         }
         Some(filter) => match parse_tasks_query(filter) {
             Ok(_) => {
@@ -1571,7 +1592,7 @@ pub fn build_tasks_list_report(
                     Some(filter),
                     Some(layout_source.as_str()),
                 ]);
-                build_tasks_query_result(paths, &source)
+                build_tasks_query_result_with_filter(paths, &source, read_filter)
             }
             Err(tasks_error) => build_tasks_list_dql_filter(
                 paths,
@@ -1580,6 +1601,7 @@ pub fn build_tasks_list_report(
                 &config,
                 &prefilter_source,
                 &layout_source,
+                read_filter,
             ),
         },
     }
@@ -2590,10 +2612,13 @@ fn build_tasks_query_result_with_options(
     paths: &VaultPaths,
     source: &str,
     include_global_query: bool,
+    filter: Option<&vulcan_core::PermissionFilter>,
 ) -> Result<TasksQueryResult, AppError> {
     let config = load_vault_config(paths).config.tasks;
     let effective_source = tasks_query_source(&config, source, include_global_query);
-    let mut result = evaluate_tasks_query(paths, &effective_source).map_err(AppError::operation)?;
+    let mut result =
+        vulcan_core::evaluate_tasks_query_with_filter(paths, &effective_source, filter)
+            .map_err(AppError::operation)?;
     strip_global_filter_from_output(&mut result, &config);
     Ok(result)
 }
@@ -2635,6 +2660,7 @@ fn build_tasks_list_dql_filter(
     config: &vulcan_core::config::TasksConfig,
     prefilter_source: &str,
     layout_source: &str,
+    read_filter: Option<&vulcan_core::PermissionFilter>,
 ) -> Result<TasksQueryResult, AppError> {
     let expression_source = tasks_dql_filter_expression(config, filter);
     let expression = parse_expression(&expression_source).map_err(|expression_error| {
@@ -2644,8 +2670,11 @@ fn build_tasks_list_dql_filter(
     })?;
 
     let base_source = tasks_query_source(config, prefilter_source, false);
-    let base_result = evaluate_tasks_query(paths, &base_source).map_err(AppError::operation)?;
-    let note_index = load_note_index(paths).map_err(AppError::operation)?;
+    let base_result =
+        vulcan_core::evaluate_tasks_query_with_filter(paths, &base_source, read_filter)
+            .map_err(AppError::operation)?;
+    let note_index = vulcan_core::properties::load_note_index_with_filter(paths, read_filter)
+        .map_err(AppError::operation)?;
     let note_by_path = note_index
         .values()
         .map(|note| (note.document_path.as_str(), note))

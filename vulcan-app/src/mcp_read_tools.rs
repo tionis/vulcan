@@ -28,7 +28,9 @@ use crate::periodic::{
     current_utc_date_string, list_daily_notes, normalize_date_argument, read_daily_note,
     read_latest_daily_note_where, show_periodic_note, DailyNoteReadReport, DailyReadTarget,
 };
-use crate::tasks::{build_tasks_list_report, build_tasks_query_result, TaskListRequest};
+use crate::tasks::{
+    build_tasks_list_report_with_filter, build_tasks_query_result_with_filter, TaskListRequest,
+};
 
 const MCP_QUERY_SOFT_MAX: usize = 200;
 pub const MCP_QUERY_HARD_MAX: usize = 1_000;
@@ -55,7 +57,7 @@ pub fn task_list(
     guard: &ProfilePermissionGuard,
     args: McpTaskListArgs,
 ) -> Result<TasksQueryResult, McpMethodError> {
-    let mut report = build_tasks_list_report(
+    let mut report = build_tasks_list_report_with_filter(
         paths,
         &TaskListRequest {
             filter: args.filter,
@@ -70,6 +72,7 @@ pub fn task_list(
             sort_by: args.sort_by,
             include_archived: args.include_archived,
         },
+        Some(&guard.read_filter()),
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
     filter_tasks_query_report(guard, &mut report);
@@ -82,8 +85,9 @@ pub fn task_query(
     guard: &ProfilePermissionGuard,
     args: &McpTaskQueryArgs,
 ) -> Result<TasksQueryResult, McpMethodError> {
-    let mut report = build_tasks_query_result(paths, &args.query)
-        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let mut report =
+        build_tasks_query_result_with_filter(paths, &args.query, Some(&guard.read_filter()))
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
     filter_tasks_query_report(guard, &mut report);
     Ok(report)
 }
@@ -843,6 +847,43 @@ mod tests {
         assert!(report.tasks.is_empty());
         assert!(report.groups.is_empty());
         assert_eq!(report.result_count, 0);
+    }
+
+    #[test]
+    fn task_queries_apply_read_scope_before_limits_and_groups() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\n").unwrap();
+        for folder in ["Hidden", "Public"] {
+            fs::create_dir_all(temporary.path().join(folder)).unwrap();
+            fs::write(
+                temporary.path().join(folder).join(format!("{folder}.md")),
+                format!("- [ ] {folder} task\n"),
+            )
+            .unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        let source = "not done\ngroup by path\nlimit 1";
+        let unfiltered = crate::tasks::build_tasks_query_result(&paths, source).unwrap();
+        assert_eq!(unfiltered.tasks[0]["path"], "Hidden/Hidden.md");
+        let query_args = serde_json::from_value(json!({"query": source})).unwrap();
+        let list_args =
+            serde_json::from_value(json!({"source": "inline", "filter": source})).unwrap();
+        for report in [
+            task_query(&paths, &guard, &query_args).unwrap(),
+            task_list(&paths, &guard, list_args).unwrap(),
+        ] {
+            assert_eq!(report.result_count, 1);
+            assert_eq!(report.tasks[0]["path"], "Public/Public.md");
+            assert_eq!(report.groups.len(), 1);
+            assert_eq!(report.groups[0].tasks.len(), 1);
+            assert_eq!(report.groups[0].tasks[0]["path"], "Public/Public.md");
+        }
     }
 
     #[test]

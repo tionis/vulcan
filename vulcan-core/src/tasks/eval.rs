@@ -8,7 +8,8 @@ use crate::expression::eval::compare_values;
 use crate::expression::functions::parse_date_like_string;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
-use crate::properties::{load_note_index, NoteRecord};
+use crate::permissions::PermissionFilter;
+use crate::properties::{load_note_index_with_filter, NoteRecord};
 
 use super::{
     parse_tasks_query, TasksDateRelation, TasksError, TasksFilter, TasksQuery, TasksQueryCommand,
@@ -64,15 +65,31 @@ pub fn evaluate_tasks_query(
     paths: &VaultPaths,
     source: &str,
 ) -> Result<TasksQueryResult, TasksError> {
+    evaluate_tasks_query_with_filter(paths, source, None)
+}
+
+pub fn evaluate_tasks_query_with_filter(
+    paths: &VaultPaths,
+    source: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<TasksQueryResult, TasksError> {
     let query = parse_tasks_query(source).map_err(TasksError::Parse)?;
-    evaluate_parsed_tasks_query(paths, &query)
+    evaluate_parsed_tasks_query_with_filter(paths, &query, filter)
 }
 
 pub fn evaluate_parsed_tasks_query(
     paths: &VaultPaths,
     query: &TasksQuery,
 ) -> Result<TasksQueryResult, TasksError> {
-    let note_index = load_note_index(paths)?;
+    evaluate_parsed_tasks_query_with_filter(paths, query, None)
+}
+
+pub fn evaluate_parsed_tasks_query_with_filter(
+    paths: &VaultPaths,
+    query: &TasksQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<TasksQueryResult, TasksError> {
+    let note_index = load_note_index_with_filter(paths, filter)?;
     Ok(evaluate_parsed_tasks_query_with_note_index(
         query,
         &note_index,
