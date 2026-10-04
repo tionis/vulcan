@@ -7,9 +7,9 @@ use serde_json::{Map, Value};
 use std::fs;
 use vulcan_core::config::TasksDefaultSource;
 use vulcan_core::{
-    evaluate_dql_with_filter, execute_query_report_with_filter, query_notes_with_filter,
-    search_vault_with_filter, NoteQuery, PermissionGuard, ProfilePermissionGuard, QueryAst,
-    QueryReport, SearchQuery, SearchSort, TasksQueryResult, VaultPaths,
+    execute_query_report_with_filter, query_notes_with_filter, search_vault_with_filter, NoteQuery,
+    PermissionGuard, ProfilePermissionGuard, QueryAst, QueryReport, SearchQuery, SearchSort,
+    TasksQueryResult, VaultPaths,
 };
 
 use crate::mcp_access;
@@ -427,8 +427,9 @@ pub fn query(
                 "DQL supports only `query`, `engine`, `limit`, and `offset`; use structural query mode for filters, path_prefix, filename_pattern, fields, or include_properties",
             ));
         }
-        let mut result = evaluate_dql_with_filter(paths, dql, None, Some(&guard.read_filter()))
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+        let mut result =
+            crate::browse::build_dataview_query_report_with_guard(paths, dql, None, guard)
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
         let total_count = result.rows.len();
         let start = args.offset.min(total_count);
         let end = start.saturating_add(args.limit).min(total_count);

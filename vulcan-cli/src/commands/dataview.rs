@@ -1,15 +1,14 @@
 use crate::output::{print_json, render_dataview_inline_value};
 use crate::{
     print_markdown_output, render_dataview_eval_markdown, selected_permission_guard, Cli, CliError,
-    DataviewCommand, OutputFormat, PermissionGuard,
+    DataviewCommand, OutputFormat,
 };
 use vulcan_app::browse::{
     build_dataview_eval_report, build_dataview_inline_report, build_dataview_query_js_report,
-    build_dataview_query_report, DataviewEvalReport, DataviewInlineReport,
+    build_dataview_query_report_with_guard, DataviewEvalReport, DataviewInlineReport,
 };
 use vulcan_core::{
-    load_vault_config, DataviewJsResult, DqlQueryResult, PermissionFilter, ProfilePermissionGuard,
-    VaultPaths,
+    load_vault_config, DataviewJsResult, DqlQueryResult, ProfilePermissionGuard, VaultPaths,
 };
 
 pub(crate) fn handle_dataview_command(
@@ -31,8 +30,8 @@ pub(crate) fn handle_dataview_command(
             print_dataview_inline_report(cli.output, &report)
         }
         DataviewCommand::Query { dql } => {
-            let read_filter = selected_permission_guard(cli, paths)?.read_filter();
-            let result = run_dataview_query_command(paths, dql, Some(&read_filter))?;
+            let guard = selected_permission_guard(cli, paths)?;
+            let result = run_dataview_query_command(paths, dql, &guard)?;
             crate::print_dql_query_result(
                 cli.output,
                 &result,
@@ -87,9 +86,9 @@ fn run_dataview_inline_command(
 fn run_dataview_query_command(
     paths: &VaultPaths,
     dql: &str,
-    filter: Option<&PermissionFilter>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<DqlQueryResult, CliError> {
-    build_dataview_query_report(paths, dql, None, filter).map_err(CliError::operation)
+    build_dataview_query_report_with_guard(paths, dql, None, guard).map_err(CliError::operation)
 }
 
 pub(crate) fn run_dataview_query_js_command(

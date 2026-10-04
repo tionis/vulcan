@@ -12,6 +12,7 @@ use vulcan_core::{
     evaluate_dataview_js_query as core_evaluate_dataview_js_query,
     evaluate_dataview_js_with_options as core_evaluate_dataview_js_with_options,
     evaluate_dql as core_evaluate_dql, evaluate_dql_with_filter as core_evaluate_dql_with_filter,
+    evaluate_dql_with_guard as core_evaluate_dql_with_guard,
     evaluate_note_inline_expressions as core_evaluate_note_inline_expressions,
     git_log as core_git_log, git_status as core_git_status, inspect_cache as core_inspect_cache,
     is_git_repo as core_is_git_repo, list_assistant_skills,
@@ -223,13 +224,20 @@ pub fn build_dataview_inline_report(
     file: &str,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<DataviewInlineReport, AppError> {
-    let resolved = resolve_note_reference(paths, file).map_err(AppError::operation)?;
-    if let Some(permissions) = permissions {
-        permissions
-            .check_read_path(&resolved.path)
-            .map_err(AppError::operation)?;
-    }
-    let note_index = load_note_index(paths).map_err(AppError::operation)?;
+    // Resolve and evaluate inside the caller's universe so inline expressions
+    // cannot read hidden linked notes or count hidden backlinks.
+    let (resolved, note_index) = match permissions {
+        Some(guard) => (
+            vulcan_core::graph::resolve_note_reference_with_guard(paths, file, guard)
+                .map_err(AppError::operation)?,
+            vulcan_core::properties::load_note_index_with_guard(paths, guard)
+                .map_err(AppError::operation)?,
+        ),
+        None => (
+            resolve_note_reference(paths, file).map_err(AppError::operation)?,
+            load_note_index(paths).map_err(AppError::operation)?,
+        ),
+    };
     let note = note_index
         .values()
         .find(|note| note.document_path == resolved.path)
@@ -249,6 +257,26 @@ pub fn build_dataview_query_report(
     filter: Option<&PermissionFilter>,
 ) -> Result<DqlQueryResult, AppError> {
     core_evaluate_dql_with_filter(paths, source, source_path, filter).map_err(AppError::operation)
+}
+
+/// Evaluate DQL under the caller's read authority with one immutable policy
+/// snapshot, rechecking profile, grants, and hook trust after derivation.
+pub fn build_dataview_query_report_with_guard(
+    paths: &VaultPaths,
+    source: &str,
+    source_path: Option<&str>,
+    guard: &ProfilePermissionGuard,
+) -> Result<DqlQueryResult, AppError> {
+    recheck_read_authority(paths, guard, "dataview")?;
+    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    recheck_read_authority(paths, &snapshot, "dataview")?;
+    let result = {
+        let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+        core_evaluate_dql_with_guard(paths, source, source_path, &snapshot)
+    };
+    recheck_read_authority(paths, &snapshot, "dataview")?;
+    result.map_err(AppError::operation)
 }
 
 pub fn build_dataview_query_js_report(
@@ -299,17 +327,19 @@ pub fn build_dataview_eval_report(
     let file = blocks
         .first()
         .map_or_else(|| file.to_string(), |block| block.file.clone());
-    let read_filter = permissions.map(PermissionGuard::read_filter);
     let mut reports = Vec::with_capacity(blocks.len());
 
     for block in blocks {
         let (result, error) = if block.language == "dataview" {
-            match core_evaluate_dql_with_filter(
-                paths,
-                &block.source,
-                Some(&block.file),
-                read_filter.as_ref(),
-            ) {
+            let evaluated = match permissions {
+                Some(guard) => {
+                    core_evaluate_dql_with_guard(paths, &block.source, Some(&block.file), guard)
+                }
+                None => {
+                    core_evaluate_dql_with_filter(paths, &block.source, Some(&block.file), None)
+                }
+            };
+            match evaluated {
                 Ok(result) => (Some(DataviewBlockResult::Dql(result)), None),
                 Err(error) => (None, Some(error.to_string())),
             }

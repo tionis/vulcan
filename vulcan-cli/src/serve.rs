@@ -734,9 +734,11 @@ shell = "deny"
 
         let inline = get_json(handle.addr(), "/dataview/inline?file=Dashboard", None);
         assert_eq!(inline["ok"], false);
+        // Hidden notes resolve like absent ones rather than confirming existence.
         assert!(inline["error"]
             .as_str()
-            .is_some_and(|error| error.contains("does not allow read `Dashboard.md`")));
+            .is_some_and(|error| !error.contains("does not allow read")));
+        assert!(!inline.to_string().contains("status"), "{inline}");
 
         let query_js = get_json(
             handle.addr(),

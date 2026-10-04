@@ -14,10 +14,10 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use vulcan_app::properties::apply_bulk_property_mutation;
 use vulcan_core::{
-    evaluate_dql_with_filter, execute_query_report_with_filter, list_properties, list_query_fields,
-    load_vault_config, query_backlinks_with_filter, query_links_with_filter,
-    query_notes_with_filter, search_vault_with_filter, NamedCount, NoteQuery, PermissionGuard,
-    PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
+    execute_query_report_with_filter, list_properties, list_query_fields, load_vault_config,
+    query_backlinks_with_filter, query_links_with_filter, query_notes_with_filter,
+    search_vault_with_filter, NamedCount, NoteQuery, PermissionGuard, PropertyCatalogEntry,
+    QueryAst, QueryReport, SearchQuery, VaultPaths,
 };
 
 fn consistent_read_guard(
@@ -132,9 +132,11 @@ pub(crate) fn handle_query_command(
         {
             eprintln!("(detected as Dataview query)");
         }
-        let read_filter = selected_read_permission_filter(cli, paths)?;
-        let result = evaluate_dql_with_filter(paths, dql_source, None, read_filter.as_ref())
-            .map_err(CliError::operation)?;
+        let guard = crate::selected_permission_guard(cli, paths)?;
+        let result = vulcan_app::browse::build_dataview_query_report_with_guard(
+            paths, dql_source, None, &guard,
+        )
+        .map_err(CliError::operation)?;
         let display_result_count = load_vault_config(paths)
             .config
             .dataview

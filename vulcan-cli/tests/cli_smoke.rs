@@ -12343,6 +12343,11 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     }
     fs::write(root.join("Public/Target.md"), "---\ntitle: Target\n---\n").unwrap();
     fs::write(
+        root.join("Public/Inline.md"),
+        "`= [[Private/Hidden]].title` `= length([[Public/Target]].file.inlinks)`\n",
+    )
+    .unwrap();
+    fs::write(
         root.join("Public/Policy.md"),
         "---\ntags: [task]\ntitle: Policy sentinel\nstatus: open\n---\n[[Public/Target]]\n",
     )
@@ -12428,6 +12433,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
         paths
     };
     let readable = [
+        "Public/Inline.md",
         "Public/One/Task.md",
         "Public/Target.md",
         "Public/Two/Task.md",
@@ -12442,6 +12448,19 @@ fn bases_evaluation_applies_read_and_policy_scope() {
             assert!(!report.to_string().contains(hidden), "{report}");
         }
     }
+    for args in [
+        &["dataview", "query", "LIST"][..],
+        &["query", "--engine", "dql", "LIST"][..],
+    ] {
+        let listed = parse_stdout_json(&run(args).success()).to_string();
+        assert!(listed.contains("Public/Target"), "{listed}");
+        for hidden in ["Hidden", "Policy"] {
+            assert!(!listed.contains(hidden), "{listed}");
+        }
+    }
+    let inline = parse_stdout_json(&run(&["dataview", "inline", "Public/Inline"]).success());
+    assert!(!inline.to_string().contains("sentinel"), "{inline}");
+    assert_eq!(inline["results"][1]["value"], 2, "{inline}");
     let view = parse_stdout_json(&run(&["tasks", "view", "show", "Tasks"]).success());
     assert_eq!(
         row_paths(&view),
@@ -12472,6 +12491,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
         &["tasks", "view", "show", "Tasks"][..],
         &["tasks", "view", "list"][..],
         &["saved", "run", "all-notes"][..],
+        &["dataview", "query", "LIST"][..],
     ] {
         assert!(parse_stdout_json(&run(args).failure())
             .to_string()
@@ -12487,6 +12507,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(bases_skill.contains("`bases eval`, `bases tui`, and saved Bases reports"));
     assert!(bases_skill.contains("--permissions"));
     assert!(bases_skill.contains("write access to the derived note path"));
+    assert!(bases_skill.contains("`dataview inline` use the same scope"));
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
     assert!(task_skill.contains("`tasks view list`"));

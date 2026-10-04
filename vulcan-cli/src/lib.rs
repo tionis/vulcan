@@ -564,11 +564,11 @@ use vulcan_core::vault_discovery::{
 };
 use vulcan_core::{
     bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
-    doctor_fix, doctor_vault, evaluate_dql_with_filter, export_static_search_index_with_filter,
-    link_mentions, list_checkpoints, list_saved_reports, load_saved_report, load_vault_config,
-    merge_tags, move_note, query_change_report, query_notes_with_filter,
-    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, resolve_note_reference, resolve_permission_profile, save_saved_report, scan_vault,
+    doctor_fix, doctor_vault, export_static_search_index_with_filter, link_mentions,
+    list_checkpoints, list_saved_reports, load_saved_report, load_vault_config, merge_tags,
+    move_note, query_change_report, query_notes_with_filter, rebuild_vault_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, repair_fts,
+    resolve_note_reference, resolve_permission_profile, save_saved_report, scan_vault,
     scan_vault_with_progress, search_vault_with_filter, verify_cache, watch_vault, AutoScanMode,
     BacklinkRecord, BacklinksReport, BasesEvalReport, BulkMutationReport, CacheVerifyReport,
     ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput,
@@ -9769,8 +9769,12 @@ fn render_epub_dataview_block_markdown(
     guard: &ProfilePermissionGuard,
 ) -> String {
     if language == "dataview" {
-        let read_filter = restricted_read_filter(guard);
-        match evaluate_dql_with_filter(paths, source, Some(note_path), read_filter.as_ref()) {
+        match vulcan_app::browse::build_dataview_query_report_with_guard(
+            paths,
+            source,
+            Some(note_path),
+            guard,
+        ) {
             Ok(result) => render_dql_query_markdown(&result, false),
             Err(error) => render_epub_message_html("Dataview error:", &error.to_string()),
         }

@@ -15,10 +15,11 @@ use crate::expression::eval::{
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
-use crate::permissions::{combine_cte_fragments, PermissionFilter};
+use crate::permissions::{combine_cte_fragments, PermissionFilter, PermissionGuard};
 use crate::properties::{
-    build_note_filter_clause_from_expressions, load_note_index_with_filter, FilterExpression,
-    FilterField, FilterOperator, FilterValue, NoteRecord, ParsedFilter, PropertyError,
+    build_note_filter_clause_from_expressions, load_note_index_with_filter,
+    load_note_index_with_guard, FilterExpression, FilterField, FilterOperator, FilterValue,
+    NoteRecord, ParsedFilter, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
 
@@ -154,6 +155,29 @@ pub fn evaluate_parsed_dql_with_filter(
     )
 }
 
+/// Evaluate DQL inside the caller's complete read authority. Path/tag grants
+/// and policy decisions select one note universe before hydration, so rows,
+/// `file.inlinks`, and linked-note lookups never include hidden notes. Policy
+/// failures are errors, not empty results.
+pub fn evaluate_dql_with_guard(
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
+    guard: &dyn PermissionGuard,
+) -> Result<DqlQueryResult, DqlEvalError> {
+    let config = load_vault_config(paths).config;
+    let note_lookup = load_note_index_with_guard(paths, guard)?;
+    let filter = guard.read_filter();
+    evaluate_dql_with_note_index_and_config(
+        paths,
+        source,
+        current_file,
+        Some(&filter),
+        &config,
+        &note_lookup,
+    )
+}
+
 pub(crate) fn evaluate_dql_with_note_index_and_config(
     paths: &VaultPaths,
     source: &str,
@@ -188,7 +212,13 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     let filtered_note_lookup = filter.map(|filter| {
         note_lookup
             .iter()
-            .filter(|(_, note)| filter.is_allowed(&note.document_path))
+            // Tag-aware, matching the SQL scope; a path-only check would
+            // drop notes granted by tag.
+            .filter(|(_, note)| {
+                filter
+                    .path_permission()
+                    .is_allowed_with_tags(&note.document_path, &note.tags)
+            })
             .map(|(path, note)| (path.clone(), note.clone()))
             .collect::<HashMap<_, _>>()
     });
@@ -1517,6 +1547,103 @@ LIMIT 1"#,
             Value::String("backlog".to_string())
         );
         assert_eq!(result.rows[0]["priority"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn guarded_dql_applies_tag_grants_policy_and_hidden_backlinks() {
+        struct Guard {
+            grant: crate::permissions::PermissionGrant,
+            fail: bool,
+        }
+        impl PermissionGuard for Guard {
+            fn profile_name(&self) -> &'static str {
+                "test"
+            }
+            fn grant(&self) -> &crate::permissions::PermissionGrant {
+                &self.grant
+            }
+            fn has_policy_hook(&self) -> bool {
+                true
+            }
+            fn check_policy_decision(
+                &self,
+                action: &'static str,
+                resource: Option<&str>,
+            ) -> Result<(), crate::permissions::PermissionError> {
+                let resource = resource.map(ToOwned::to_owned);
+                if resource.as_deref() != Some("Policy.md") {
+                    return Ok(());
+                }
+                Err(if self.fail {
+                    crate::permissions::PermissionError::PolicyHookFailed {
+                        profile: "test".into(),
+                        action,
+                        resource,
+                        reason: "broken".into(),
+                    }
+                } else {
+                    crate::permissions::PermissionError::PolicyHookDenied {
+                        profile: "test".into(),
+                        action,
+                        resource,
+                        reason: "denied".into(),
+                    }
+                })
+            }
+        }
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, contents) in [
+            ("Target.md", "---\ntags: [visible]\n---\n"),
+            ("Linker.md", "---\ntags: [visible]\n---\n[[Target]]\n"),
+            ("Policy.md", "---\ntags: [visible]\n---\n[[Target]]\n"),
+            (
+                "Secret.md",
+                "---\ntags: [visible, secret]\n---\n[[Target]]\n",
+            ),
+            ("Untagged.md", "[[Target]]\n"),
+        ] {
+            fs::write(root.join(path), contents).unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        let mut grant = crate::permissions::resolve_permission_profile(&paths, None)
+            .unwrap()
+            .grant;
+        grant.read = PathPermission {
+            allow: vec![ResourceSpecifier::Tag("visible".into())],
+            deny: vec![ResourceSpecifier::Tag("secret".into())],
+        };
+        let guard = Guard { grant, fail: false };
+
+        let result = evaluate_dql_with_guard(
+            &paths,
+            "TABLE length(file.inlinks) AS inlinks SORT file.name ASC",
+            None,
+            &guard,
+        )
+        .expect("guarded DQL should evaluate");
+        let rows = result
+            .rows
+            .iter()
+            .map(|row| (row["File"].clone(), row["inlinks"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                (Value::String("[[Linker]]".into()), Value::from(0)),
+                (Value::String("[[Target]]".into()), Value::from(1)),
+            ]
+        );
+
+        let failing = Guard {
+            grant: guard.grant.clone(),
+            fail: true,
+        };
+        let error = evaluate_dql_with_guard(&paths, "LIST", None, &failing)
+            .expect_err("a broken policy must fail");
+        assert!(error.to_string().contains("broken"), "{error}");
     }
 
     #[test]
