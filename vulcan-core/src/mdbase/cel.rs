@@ -13,6 +13,9 @@ use std::fmt::{Display, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
+mod value_limits;
+use value_limits::{inspect_bindings, inspect_value};
+
 pub const MDBASE_CEL_RESERVED_BINDINGS: [&str; 16] = [
     "record",
     "raw",
@@ -230,13 +233,7 @@ impl MdbaseCelEngine {
         program: &MdbaseCelProgram,
         bindings: &BTreeMap<String, serde_json::Value>,
     ) -> Result<serde_json::Value, MdbaseCelError> {
-        inspect_value(
-            &serde_json::to_value(bindings).map_err(|error| {
-                MdbaseCelError::new("expression_binding_error", error.to_string())
-            })?,
-            &self.limits,
-            "input",
-        )?;
+        inspect_bindings(bindings, &self.limits)?;
         let mut context = Context::default();
         add_json_bindings(&mut context, bindings)?;
         let value = program.program.execute(&context).map_err(|error| {
@@ -267,13 +264,7 @@ impl MdbaseCelEngine {
         evaluation: &MdbaseCelContext,
     ) -> Result<Context<'static>, MdbaseCelError> {
         evaluation.validate_program(program)?;
-        inspect_value(
-            &serde_json::to_value(&evaluation.bindings).map_err(|error| {
-                MdbaseCelError::new("expression_binding_error", error.to_string())
-            })?,
-            &self.limits,
-            "input",
-        )?;
+        inspect_bindings(&evaluation.bindings, &self.limits)?;
         let mut context = Context::default();
         add_json_bindings(&mut context, &evaluation.bindings)?;
         Ok(context)
@@ -1498,59 +1489,6 @@ fn entry_children(entries: &[IdedEntryExpr]) -> Vec<&IdedExpr> {
             EntryExpr::MapEntry(entry) => vec![&entry.key, &entry.value],
         })
         .collect()
-}
-
-fn inspect_value(
-    value: &serde_json::Value,
-    limits: &MdbaseCelLimits,
-    label: &str,
-) -> Result<(), MdbaseCelError> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|error| MdbaseCelError::new("expression_value_error", error.to_string()))?
-        .len();
-    if bytes > limits.max_value_bytes {
-        return Err(MdbaseCelError::limit(
-            &format!("{label} value size"),
-            bytes,
-            limits.max_value_bytes,
-        ));
-    }
-    let mut nodes = 0_usize;
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
-        nodes = nodes.saturating_add(1);
-        if nodes > limits.max_value_nodes {
-            return Err(MdbaseCelError::limit(
-                &format!("{label} value node count"),
-                nodes,
-                limits.max_value_nodes,
-            ));
-        }
-        match value {
-            serde_json::Value::Array(values) => {
-                if values.len() > limits.max_collection_items {
-                    return Err(MdbaseCelError::limit(
-                        &format!("{label} list iteration width"),
-                        values.len(),
-                        limits.max_collection_items,
-                    ));
-                }
-                pending.extend(values);
-            }
-            serde_json::Value::Object(values) => {
-                if values.len() > limits.max_collection_items {
-                    return Err(MdbaseCelError::limit(
-                        &format!("{label} map iteration width"),
-                        values.len(),
-                        limits.max_collection_items,
-                    ));
-                }
-                pending.extend(values.values());
-            }
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
