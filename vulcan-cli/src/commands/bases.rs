@@ -382,16 +382,17 @@ pub(crate) fn handle_bases_command(
             dry_run,
             no_commit,
         } => {
-            crate::selected_permission_guard(cli, paths)?
-                .check_read_path(file)
-                .map_err(CliError::operation)?;
-            crate::selected_permission_guard(cli, paths)?
-                .check_write_path(file)
-                .map_err(CliError::operation)?;
+            let guard = crate::selected_permission_guard(cli, paths)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
-            let report =
-                crate::create_note_from_bases_view(paths, file, 0, title.as_deref(), *dry_run)?;
+            let report = crate::create_note_from_bases_view(
+                paths,
+                file,
+                0,
+                title.as_deref(),
+                *dry_run,
+                Some(&guard),
+            )?;
             if !*dry_run {
                 crate::run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
                 auto_commit

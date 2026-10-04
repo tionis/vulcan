@@ -69,17 +69,19 @@ fn run_event_loop(
                 TuiAction::Continue => {}
                 TuiAction::Quit => break,
                 TuiAction::CreateNote => {
-                    if let Err(error) = state.check_write(&state.base_file.clone()) {
-                        state.set_status(error);
-                        continue;
-                    }
                     let paths = state.paths.clone();
+                    let guard = state.guard.clone();
                     let base_file = state.base_file.clone();
                     let view_index = state.active_view;
                     let mut created_path = None;
                     let create_result = with_terminal_suspended(terminal, || {
                         let report = create_note_from_bases_view(
-                            &paths, &base_file, view_index, None, false,
+                            &paths,
+                            &base_file,
+                            view_index,
+                            None,
+                            false,
+                            guard.as_ref(),
                         )
                         .map_err(|error| error.to_string())?;
                         created_path = Some(report.path.clone());

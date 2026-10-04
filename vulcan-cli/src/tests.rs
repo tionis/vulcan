@@ -9,6 +9,7 @@ use serde_yaml::Value as YamlValue;
 use std::fs;
 use std::process::{Command as ProcessCommand, Output as ProcessOutput};
 use tempfile::TempDir;
+use vulcan_app::templates::{parse_frontmatter_document, render_note_from_parts};
 use vulcan_core::expression::functions::parse_date_like_string;
 
 const CLI_TEST_STACK_BYTES: &str = "8388608";
@@ -4571,7 +4572,7 @@ fn bases_create_dry_run_does_not_write_note() {
     write_bases_create_fixture(temp_dir.path(), false);
     let paths = VaultPaths::new(temp_dir.path());
 
-    let report = create_note_from_bases_view(&paths, "release.base", 0, None, true)
+    let report = create_note_from_bases_view(&paths, "release.base", 0, None, true, None)
         .expect("bases create should succeed");
 
     assert_eq!(report.path, "Projects/Untitled.md");
@@ -4584,8 +4585,9 @@ fn bases_create_writes_template_with_derived_frontmatter() {
     write_bases_create_fixture(temp_dir.path(), true);
     let paths = VaultPaths::new(temp_dir.path());
 
-    let report = create_note_from_bases_view(&paths, "release.base", 0, Some("Launch Plan"), false)
-        .expect("bases create should succeed");
+    let report =
+        create_note_from_bases_view(&paths, "release.base", 0, Some("Launch Plan"), false, None)
+            .expect("bases create should succeed");
 
     assert_eq!(report.path, "Projects/Launch Plan.md");
     let source = fs::read_to_string(temp_dir.path().join(&report.path))

@@ -12450,6 +12450,8 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     );
     assert!(!view.to_string().contains("sentinel"));
     run(&["bases", "eval", "Private/Secret.base"]).failure();
+    run(&["bases", "create", "Public/All.base", "--no-commit"]).failure();
+    assert!(!root.join("Untitled.md").exists());
     let views = parse_stdout_json(&run(&["tasks", "view", "list"]).success());
     assert!(views.to_string().contains("Tasks"), "{views}");
     assert!(!views.to_string().contains("Classified"), "{views}");
@@ -12481,6 +12483,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
         fs::read_to_string(root.join(".agents/skills/dataview-and-bases/SKILL.md")).unwrap();
     assert!(bases_skill.contains("`bases eval`, `bases tui`, and saved Bases reports"));
     assert!(bases_skill.contains("--permissions"));
+    assert!(bases_skill.contains("write access to the derived note path"));
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
     assert!(task_skill.contains("`tasks view list`"));

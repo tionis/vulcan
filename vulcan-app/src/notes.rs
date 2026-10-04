@@ -989,7 +989,7 @@ fn note_create_mutation_guard(
         .transpose()
 }
 
-fn persist_note_create_with_template_effects(
+pub(crate) fn persist_note_create_with_template_effects(
     paths: &VaultPaths,
     path: &str,
     content: &str,

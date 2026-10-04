@@ -469,7 +469,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use serve::{serve_forever, ServeOptions};
 use site_server::{build_site_with_policy_and_progress, spawn_site_server, SiteServeOptions};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
 use std::fs;
@@ -514,7 +514,6 @@ use vulcan_app::integrations::{
 };
 #[cfg(test)]
 use vulcan_app::mcp_catalog::McpToolAnnotations;
-use vulcan_app::notes::json_properties_to_frontmatter;
 use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]
 use vulcan_app::publish::outline::{
@@ -551,11 +550,7 @@ use vulcan_app::templates::{
     list_templates_in_directory, prepare_template_insertion, render_template_variable,
     resolve_template_file, template_variables_for_path, TemplateCandidate, TemplateTimestamp,
 };
-use vulcan_app::templates::{
-    load_named_template, merge_template_frontmatter, parse_frontmatter_document,
-    render_loaded_template, render_note_from_parts, LoadedTemplateRenderRequest,
-    TemplateEngineKind, TemplateInsertMode, TemplateRunMode, TemplateVariables,
-};
+use vulcan_app::templates::{TemplateInsertMode, TemplateVariables};
 use vulcan_core::config::OutlineBlockReferencePolicyConfig;
 use vulcan_core::config::OutlineExcludedTargetPolicyConfig;
 #[cfg(test)]
@@ -564,7 +559,6 @@ use vulcan_core::config::{
     ContentTransformRuleConfig, ExportEpubTocStyleConfig, ExportGraphFormatConfig,
     ExportProfileConfig, ExportProfileFormat,
 };
-use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::vault_discovery::{
     discover_init_root, discover_vault_root, resolve_named_vault, VaultRootDiscovery,
 };
@@ -572,22 +566,21 @@ use vulcan_core::{
     bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
     doctor_fix, doctor_vault, evaluate_dql_with_filter, export_static_search_index_with_filter,
     link_mentions, list_checkpoints, list_saved_reports, load_saved_report, load_vault_config,
-    merge_tags, move_note, plan_base_note_create, query_change_report, query_notes_with_filter,
+    merge_tags, move_note, query_change_report, query_notes_with_filter,
     rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
     repair_fts, resolve_note_reference, resolve_permission_profile, save_saved_report, scan_vault,
     scan_vault_with_progress, search_vault_with_filter, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
-    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion,
-    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport,
-    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport,
-    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, SelectionPlan, VaultPaths,
-    WatchOptions, WatchReport,
+    BacklinkRecord, BacklinksReport, BasesEvalReport, BulkMutationReport, CacheVerifyReport,
+    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput,
+    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionsReport,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter,
+    PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, SelectionPlan, VaultPaths, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -1221,18 +1214,7 @@ struct NoteEntryInsertion {
     change: RefactorChange,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct BasesCreateReport {
-    pub(crate) file: String,
-    pub(crate) view_name: Option<String>,
-    pub(crate) view_index: usize,
-    pub(crate) dry_run: bool,
-    pub(crate) path: String,
-    pub(crate) folder: Option<String>,
-    pub(crate) template: Option<String>,
-    pub(crate) properties: BTreeMap<String, Value>,
-    pub(crate) filters: Vec<String>,
-}
+pub(crate) use vulcan_app::bases::BasesCreateReport;
 
 #[allow(clippy::large_enum_variant)]
 enum SavedExecution {
@@ -3845,129 +3827,17 @@ fn move_changed_files(summary: &MoveSummary) -> Vec<String> {
         .collect()
 }
 
+/// CLI adapter for the shared Bases note-create workflow.
 pub(crate) fn create_note_from_bases_view(
     paths: &VaultPaths,
     file: &str,
     view_index: usize,
     title: Option<&str>,
     dry_run: bool,
+    guard: Option<&ProfilePermissionGuard>,
 ) -> Result<BasesCreateReport, CliError> {
-    let context = plan_base_note_create(paths, file, view_index).map_err(CliError::operation)?;
-    let path = allocate_bases_note_path(paths, &context, title)?;
-    let contents = render_bases_note_contents(paths, &context, &path)?;
-
-    if !dry_run {
-        let absolute = paths.vault_root().join(&path);
-        if let Some(parent) = absolute.parent() {
-            fs::create_dir_all(parent).map_err(CliError::operation)?;
-        }
-        fs::write(&absolute, contents).map_err(CliError::operation)?;
-    }
-
-    Ok(BasesCreateReport {
-        file: context.file,
-        view_name: context.view_name,
-        view_index: context.view_index,
-        dry_run,
-        path,
-        folder: context.folder,
-        template: context.template,
-        properties: context.properties,
-        filters: context.filters,
-    })
-}
-
-fn allocate_bases_note_path(
-    paths: &VaultPaths,
-    context: &BasesCreateContext,
-    title: Option<&str>,
-) -> Result<String, CliError> {
-    let stem = sanitize_new_note_title(title.unwrap_or("Untitled"));
-    let folder_prefix = context
-        .folder
-        .as_deref()
-        .filter(|folder| !folder.is_empty())
-        .map_or_else(String::new, |folder| format!("{folder}/"));
-
-    for index in 0.. {
-        let suffix = if index == 0 {
-            String::new()
-        } else {
-            format!(" {}", index + 1)
-        };
-        let candidate = format!("{folder_prefix}{stem}{suffix}.md");
-        let normalized = normalize_relative_input_path(
-            &candidate,
-            RelativePathOptions {
-                expected_extension: Some("md"),
-                append_extension_if_missing: false,
-            },
-        )
-        .map_err(CliError::operation)?;
-        if !paths.vault_root().join(&normalized).exists() {
-            return Ok(normalized);
-        }
-    }
-
-    Err(CliError::operation("failed to allocate a note path"))
-}
-
-fn sanitize_new_note_title(title: &str) -> String {
-    let trimmed = title.trim();
-    let trimmed = trimmed.strip_suffix(".md").unwrap_or(trimmed);
-    let sanitized = trimmed
-        .chars()
-        .map(|character| match character {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
-            _ if character.is_control() => '-',
-            _ => character,
-        })
-        .collect::<String>();
-    let sanitized = sanitized.trim().trim_matches('.').to_string();
-    if sanitized.is_empty() {
-        "Untitled".to_string()
-    } else {
-        sanitized
-    }
-}
-
-fn render_bases_note_contents(
-    paths: &VaultPaths,
-    context: &BasesCreateContext,
-    relative_path: &str,
-) -> Result<String, CliError> {
-    let config = load_vault_config(paths).config;
-    let rendered_template = if let Some(template_name) = context.template.as_deref() {
-        let loaded = load_named_template(paths, &config, template_name)?;
-        render_loaded_template(
-            paths,
-            &config,
-            &loaded,
-            &LoadedTemplateRenderRequest {
-                target_path: relative_path,
-                target_contents: None,
-                engine: TemplateEngineKind::Auto,
-                vars: &HashMap::new(),
-                allow_mutations: true,
-                run_mode: TemplateRunMode::Create,
-            },
-        )?
-        .content
-    } else {
-        String::new()
-    };
-    let (template_frontmatter, template_body) =
-        parse_frontmatter_document(&rendered_template, true).map_err(CliError::operation)?;
-    let derived_frontmatter = build_bases_create_frontmatter(&context.properties)?;
-    let merged_frontmatter = merge_template_frontmatter(derived_frontmatter, template_frontmatter);
-
-    render_note_from_parts(merged_frontmatter.as_ref(), &template_body).map_err(CliError::operation)
-}
-
-fn build_bases_create_frontmatter(
-    properties: &BTreeMap<String, Value>,
-) -> Result<Option<vulcan_app::templates::YamlMapping>, CliError> {
-    json_properties_to_frontmatter(properties).map_err(CliError::operation)
+    vulcan_app::bases::apply_bases_note_create(paths, file, view_index, title, dry_run, guard, true)
+        .map_err(CliError::operation)
 }
 
 pub(crate) fn inbox_input_text(
