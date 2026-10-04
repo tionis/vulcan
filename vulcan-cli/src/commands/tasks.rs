@@ -18,9 +18,9 @@ use vulcan_app::tasks::{
     apply_task_track_stop_with_guard, build_task_due_report,
     build_task_pomodoro_status_report_with_guard, build_task_reminders_report,
     build_task_show_report_with_guard, build_task_track_log_report, build_task_track_status_report,
-    build_task_track_summary_report, build_tasks_blocked_report,
-    build_tasks_eval_report_with_guard, build_tasks_graph_report,
-    build_tasks_list_report_with_guard, build_tasks_next_report,
+    build_task_track_summary_report, build_tasks_blocked_report_with_guard,
+    build_tasks_eval_report_with_guard, build_tasks_graph_report_with_guard,
+    build_tasks_list_report_with_guard, build_tasks_next_report_with_guard,
     build_tasks_query_result_with_guard, build_tasks_view_list_report, build_tasks_view_report,
     process_due_tasknote_auto_archives_with_guard as app_process_due_tasknote_auto_archives,
     TaskAddReport, TaskAddRequest as AppTaskAddRequest,
@@ -370,15 +370,15 @@ pub(crate) fn handle_tasks_command(
             print_tasks_query_result(cli.output, &result)
         }
         TasksCommand::Next { count, from } => {
-            let report = run_tasks_next_command(paths, *count, from.as_deref())?;
+            let report = run_tasks_next_command(paths, *count, from.as_deref(), &guard)?;
             print_tasks_next_report(cli.output, &report)
         }
         TasksCommand::Blocked => {
-            let report = run_tasks_blocked_command(paths)?;
+            let report = run_tasks_blocked_command(paths, &guard)?;
             print_tasks_blocked_report(cli.output, &report)
         }
         TasksCommand::Graph => {
-            let report = run_tasks_graph_command(paths)?;
+            let report = run_tasks_graph_command(paths, &guard)?;
             print_tasks_graph_report(cli.output, &report)
         }
         TasksCommand::Track { command } => match command {
@@ -1033,8 +1033,9 @@ fn run_tasks_next_command(
     paths: &VaultPaths,
     count: usize,
     from: Option<&str>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<TasksNextReport, CliError> {
-    build_tasks_next_report(paths, count, from).map_err(CliError::operation)
+    build_tasks_next_report_with_guard(paths, count, from, guard).map_err(CliError::operation)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1062,12 +1063,18 @@ impl From<TasksListSourceArg> for TasksDefaultSource {
     }
 }
 
-fn run_tasks_blocked_command(paths: &VaultPaths) -> Result<TasksBlockedReport, CliError> {
-    build_tasks_blocked_report(paths).map_err(CliError::operation)
+fn run_tasks_blocked_command(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksBlockedReport, CliError> {
+    build_tasks_blocked_report_with_guard(paths, guard).map_err(CliError::operation)
 }
 
-fn run_tasks_graph_command(paths: &VaultPaths) -> Result<TasksGraphReport, CliError> {
-    build_tasks_graph_report(paths).map_err(CliError::operation)
+fn run_tasks_graph_command(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksGraphReport, CliError> {
+    build_tasks_graph_report_with_guard(paths, guard).map_err(CliError::operation)
 }
 
 fn print_tasks_query_result(

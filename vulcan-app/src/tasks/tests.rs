@@ -30,6 +30,157 @@ use vulcan_core::{
 };
 
 #[test]
+fn guarded_task_report_rechecks_authority_after_derivation_even_on_error() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let profile = "[permissions.profiles.scoped]\nread = \"all\"\nwrite = \"none\"\n";
+    fs::write(paths.config_file(), profile).unwrap();
+    fs::write(temp.path().join("Task.md"), "- [ ] Visible task\n").unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    for fail in [false, true] {
+        fs::write(paths.config_file(), profile).unwrap();
+        let result = super::derive_task_report_with_guard(&paths, "", Some(&guard), |tasks| {
+            assert_eq!(tasks.result_count, 1);
+            fs::write(
+                paths.config_file(),
+                profile.replace("read = \"all\"", "read = \"none\""),
+            )
+            .unwrap();
+            if fail {
+                Err(AppError::operation("derived failure sentinel"))
+            } else {
+                Ok(())
+            }
+        });
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("authority changed"));
+        assert!(!error.contains("derived failure sentinel"));
+    }
+}
+
+#[test]
+fn guarded_task_dependency_reports_hide_target_state_and_recheck_grants() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let profile = "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = \"none\"\n";
+    fs::write(paths.config_file(), profile).unwrap();
+    for (path, source) in [
+        ("AHidden.md", "- [x] Hidden secret 🆔 BLOCK-1\n"),
+        (
+            "BDenied.md",
+            "---\ntags: [visible, secret]\n---\n- [x] Denied secret 🆔 DENIED-1\n",
+        ),
+        (
+            "CVisible.md",
+            concat!(
+                "---\ntags: [visible]\n---\n",
+                "- [ ] Await hidden ⛔ BLOCK-1\n- [ ] Await absent ⛔ MISSING-1\n",
+                "- [ ] Await denied ⛔ DENIED-1\n- [x] Visible done 🆔 DONE-1\n",
+                "- [ ] Ready ⛔ DONE-1\n"
+            ),
+        ),
+    ] {
+        fs::write(temp.path().join(path), source).unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    assert_eq!(build_tasks_blocked_report(&paths).unwrap().tasks.len(), 1);
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let graph = super::build_tasks_graph_report_with_guard(&paths, &guard).unwrap();
+    assert_eq!(graph.nodes.len(), 5);
+    assert_eq!(graph.edges.len(), 4);
+    assert!(graph.nodes.iter().all(|node| node.path == "CVisible.md"));
+    for edge in &graph.edges {
+        if edge.blocker_id == "DONE-1" {
+            assert!(edge.resolved);
+            assert_eq!(edge.blocker_completed, Some(true));
+        } else {
+            assert!(!edge.resolved);
+            assert!(edge.blocker_key.is_none() && edge.blocker_path.is_none());
+            assert!(edge.blocker_line.is_none() && edge.blocker_text.is_none());
+            assert!(edge.blocker_completed.is_none());
+        }
+    }
+    let blocked = super::build_tasks_blocked_report_with_guard(&paths, &guard).unwrap();
+    assert_eq!(blocked.tasks.len(), 3);
+    assert!(blocked.tasks.iter().all(|task| !task.blockers[0].resolved));
+    fs::write(temp.path().join("AHidden.md"), "No task remains\n").unwrap();
+    fs::write(temp.path().join("BDenied.md"), "No task remains\n").unwrap();
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    assert_eq!(
+        graph,
+        super::build_tasks_graph_report_with_guard(&paths, &guard).unwrap()
+    );
+    assert_eq!(
+        blocked,
+        super::build_tasks_blocked_report_with_guard(&paths, &guard).unwrap()
+    );
+    fs::write(
+        paths.config_file(),
+        profile.replace("tag:visible", "tag:revoked"),
+    )
+    .unwrap();
+    for error in [
+        super::build_tasks_graph_report_with_guard(&paths, &guard).unwrap_err(),
+        super::build_tasks_blocked_report_with_guard(&paths, &guard).unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("authority changed"));
+    }
+}
+
+#[test]
+fn guarded_task_next_filters_before_occurrence_limits() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let profile = "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\nwrite = \"none\"\n";
+    fs::write(paths.config_file(), profile).unwrap();
+    for (path, tags) in [
+        ("AHidden.md", "[]"),
+        ("BDenied.md", "[visible, secret]"),
+        ("CVisible.md", "[visible]"),
+    ] {
+        fs::write(
+            temp.path().join(path),
+            format!("---\ntags: {tags}\n---\n- [ ] Review ⏳ 2026-03-30 🔁 every 2 weeks\n"),
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+    assert_eq!(
+        build_tasks_next_report(&paths, 1, Some("2026-03-29"))
+            .unwrap()
+            .occurrences[0]
+            .task["path"],
+        "AHidden.md"
+    );
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let report =
+        super::build_tasks_next_report_with_guard(&paths, 1, Some("2026-03-29"), &guard).unwrap();
+    assert_eq!(report.result_count, 1);
+    assert_eq!(report.occurrences[0].task["path"], "CVisible.md");
+    assert_eq!(report.occurrences[0].date, "2026-03-30");
+    fs::write(
+        paths.config_file(),
+        profile.replace("tag:visible", "tag:revoked"),
+    )
+    .unwrap();
+    let error = super::build_tasks_next_report_with_guard(&paths, 1, None, &guard).unwrap_err();
+    assert!(error.to_string().contains("authority changed"));
+}
+
+#[test]
 fn guarded_tasks_eval_scopes_sources_and_results_before_limits() {
     let temp = tempdir().unwrap();
     let paths = VaultPaths::new(temp.path());

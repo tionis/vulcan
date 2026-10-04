@@ -12225,6 +12225,105 @@ fn scoped_task_queries_filter_before_limits_groups_and_backlink_expressions() {
 }
 
 #[test]
+#[cfg(feature = "js_runtime")]
+fn tasks_dependency_and_next_reports_apply_policy_scope() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("vault");
+    let config_home = temp.path().join("xdg");
+    fs::create_dir_all(root.join(".vulcan/plugins")).unwrap();
+    fs::create_dir_all(&config_home).unwrap();
+    for (path, source) in [
+        ("AHidden.md", "- [x] Hidden secret 🆔 HIDDEN-1\n- [ ] Hidden repeat ⏳ 2026-03-30 🔁 every 2 weeks\n"),
+        ("BPolicy.md", "---\ntags: [visible]\n---\n- [x] Policy secret 🆔 POLICY-1\n- [ ] Policy repeat ⏳ 2026-03-30 🔁 every 2 weeks\n"),
+        ("BSecret.md", "---\ntags: [visible, secret]\n---\n- [ ] Secret repeat ⏳ 2026-03-30 🔁 every 2 weeks\n"),
+        ("CVisible.md", "---\ntags: [visible]\n---\n- [ ] Visible repeat ⏳ 2026-03-30 🔁 every 2 weeks\n- [ ] Depends hidden ⛔ HIDDEN-1\n- [ ] Depends policy ⛔ POLICY-1\n"),
+    ] { fs::write(root.join(path), source).unwrap(); }
+    fs::write(root.join(".vulcan/config.toml"), concat!(
+        "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
+        "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
+    )).unwrap();
+    let hook = root.join(".vulcan/plugins/guard.js");
+    fs::write(&hook, "function policy_hook(input) { return input.resource === 'BPolicy.md' ? 'deny' : 'pass'; }\n").unwrap();
+    let xdg = config_home.to_str().unwrap();
+    trust_and_scan_vault(xdg, root.to_str().unwrap());
+    let run = |args: &[&str]| {
+        cargo_vulcan_with_xdg_config(xdg)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "guarded",
+                "--refresh",
+                "off",
+                "--output",
+                "json",
+                "tasks",
+            ])
+            .args(args)
+            .assert()
+    };
+    let next_args = ["next", "1", "--from", "2026-03-29"];
+    let next = parse_stdout_json(&run(&next_args).success());
+    assert_eq!(next["result_count"], 1);
+    assert_eq!(next["occurrences"][0]["task"]["path"], "CVisible.md");
+    let graph = parse_stdout_json(&run(&["graph"]).success());
+    assert_eq!(graph["nodes"].as_array().unwrap().len(), 3);
+    assert_eq!(graph["edges"].as_array().unwrap().len(), 2);
+    for edge in graph["edges"].as_array().unwrap() {
+        assert_eq!(edge["resolved"], false);
+        for key in [
+            "blocker_key",
+            "blocker_path",
+            "blocker_line",
+            "blocker_text",
+            "blocker_completed",
+        ] {
+            assert!(edge[key].is_null());
+        }
+    }
+    let blocked = parse_stdout_json(&run(&["blocked"]).success());
+    assert_eq!(blocked["tasks"].as_array().unwrap().len(), 2);
+    for report in [&graph, &blocked] {
+        let text = report.to_string();
+        assert!(!text.contains("Hidden secret") && !text.contains("Policy secret"));
+        assert!(!text.contains("AHidden.md") && !text.contains("BPolicy.md"));
+    }
+    fs::write(&hook, "function policy_hook() { return 'pass'; }\n").unwrap();
+    assert_eq!(
+        parse_stdout_json(&run(&next_args).success())["occurrences"][0]["task"]["path"],
+        "BPolicy.md"
+    );
+    assert_eq!(
+        parse_stdout_json(&run(&["blocked"]).success())["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    fs::write(&hook, "function policy_hook() { return 'deny'; }\n").unwrap();
+    assert_eq!(
+        parse_stdout_json(&run(&next_args).success())["result_count"],
+        0
+    );
+    for (command, field) in [("graph", "nodes"), ("blocked", "tasks")] {
+        assert!(parse_stdout_json(&run(&[command]).success())[field]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    for source in [
+        "function policy_hook() { throw new Error('broken'); }\n",
+        "function policy_hook() { return true; }\n",
+    ] {
+        fs::write(&hook, source).unwrap();
+        for args in [&next_args[..], &["graph"][..], &["blocked"][..]] {
+            let result = run(args).failure();
+            assert!(parse_stdout_json(&result).to_string().contains("policy"));
+        }
+    }
+}
+
+#[test]
 fn tasks_next_json_output_lists_upcoming_recurring_instances() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

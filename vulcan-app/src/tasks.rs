@@ -1922,9 +1922,51 @@ pub fn build_tasks_next_report(
     count: usize,
     from: Option<&str>,
 ) -> Result<TasksNextReport, AppError> {
+    derive_task_report_with_guard(paths, "is recurring", None, |result| {
+        tasks_next_report(result, count, from)
+    })
+}
+
+pub fn build_tasks_next_report_with_guard(
+    paths: &VaultPaths,
+    count: usize,
+    from: Option<&str>,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksNextReport, AppError> {
+    derive_task_report_with_guard(paths, "is recurring", Some(guard), |result| {
+        tasks_next_report(result, count, from)
+    })
+}
+
+fn derive_task_report_with_guard<R>(
+    paths: &VaultPaths,
+    source: &str,
+    guard: Option<&ProfilePermissionGuard>,
+    derive: impl FnOnce(TasksQueryResult) -> Result<R, AppError>,
+) -> Result<R, AppError> {
+    let snapshot = guard
+        .map(|guard| {
+            TaskReadScope::Guard(guard).recheck(paths)?;
+            guard.snapshot_read_policy().map_err(AppError::operation)
+        })
+        .transpose()?;
+    let scope = snapshot
+        .as_ref()
+        .map_or(TaskReadScope::Filter(None), TaskReadScope::Guard);
+    scope.recheck(paths)?;
     let _read_guard = consistent_task_read(paths)?;
+    let report =
+        build_tasks_query_result_with_options(paths, source, false, scope).and_then(derive);
+    scope.recheck(paths)?;
+    report
+}
+
+fn tasks_next_report(
+    result: TasksQueryResult,
+    count: usize,
+    from: Option<&str>,
+) -> Result<TasksNextReport, AppError> {
     let (reference_date, reference_ms) = resolve_tasks_reference_date(from)?;
-    let result = build_tasks_query_result(paths, "is recurring")?;
     let mut occurrences = Vec::new();
 
     for task in result.tasks {
@@ -1960,9 +2002,20 @@ pub fn build_tasks_next_report(
 }
 
 pub fn build_tasks_blocked_report(paths: &VaultPaths) -> Result<TasksBlockedReport, AppError> {
-    let _read_guard = consistent_task_read(paths)?;
-    let graph = build_tasks_graph_report(paths)?;
-    let task_result = build_tasks_query_result(paths, "")?;
+    derive_task_report_with_guard(paths, "", None, |result| Ok(tasks_blocked_report(result)))
+}
+
+pub fn build_tasks_blocked_report_with_guard(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksBlockedReport, AppError> {
+    derive_task_report_with_guard(paths, "", Some(guard), |result| {
+        Ok(tasks_blocked_report(result))
+    })
+}
+
+fn tasks_blocked_report(task_result: TasksQueryResult) -> TasksBlockedReport {
+    let graph = tasks_graph_report(&task_result.tasks);
     let tasks_by_key = task_result
         .tasks
         .into_iter()
@@ -1990,21 +2043,33 @@ pub fn build_tasks_blocked_report(paths: &VaultPaths) -> Result<TasksBlockedRepo
         .collect::<Vec<_>>();
     tasks.sort_by_key(|item| task_sort_key(&item.task));
 
-    Ok(TasksBlockedReport { tasks })
+    TasksBlockedReport { tasks }
 }
 
 pub fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, AppError> {
-    let _read_guard = consistent_task_read(paths)?;
-    let result = build_tasks_query_result(paths, "")?;
-    let mut tasks = result
-        .tasks
-        .into_iter()
+    derive_task_report_with_guard(paths, "", None, |result| {
+        Ok(tasks_graph_report(&result.tasks))
+    })
+}
+
+pub fn build_tasks_graph_report_with_guard(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksGraphReport, AppError> {
+    derive_task_report_with_guard(paths, "", Some(guard), |result| {
+        Ok(tasks_graph_report(&result.tasks))
+    })
+}
+
+fn tasks_graph_report(tasks: &[Value]) -> TasksGraphReport {
+    let mut tasks = tasks
+        .iter()
         .filter_map(|task| {
-            let key = task_dependency_key(&task)?;
+            let key = task_dependency_key(task)?;
             Some((key, task))
         })
         .collect::<Vec<_>>();
-    tasks.sort_by_key(|item| task_sort_key(&item.1));
+    tasks.sort_by_key(|item| task_sort_key(item.1));
 
     let mut node_by_id = HashMap::<String, TaskDependencyNode>::new();
     let mut nodes = Vec::with_capacity(tasks.len());
@@ -2065,7 +2130,7 @@ pub fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, 
             .then_with(|| left.blocker_id.cmp(&right.blocker_id))
     });
 
-    Ok(TasksGraphReport { nodes, edges })
+    TasksGraphReport { nodes, edges }
 }
 
 fn resolve_tasknotes_view_target(
