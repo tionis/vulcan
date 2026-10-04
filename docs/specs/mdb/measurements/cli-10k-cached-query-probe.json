@@ -1,0 +1,340 @@
+{
+  "measurement": "production_cli_public_10k_disk_reconciled_cache_probe",
+  "recorded_at_utc": "2026-10-04 03:09:42 UTC",
+  "diagnostic_status": "complete",
+  "acceptance_gate_result": "not_evaluated",
+  "build": {
+    "commit": "16f421653feea9f0e41b38f307ec6fd3433da291",
+    "command": "cargo +1.88.0 build --release -p vulcan-cli",
+    "profile": "Cargo release defaults; no profile overrides or RUSTFLAGS",
+    "features": [
+      "js_runtime",
+      "oauth",
+      "vectors",
+      "web"
+    ],
+    "binary_sha256": "ee8aad885395e3f41988672ee8411213b2e21270f3e5d37ceef66b6166a03abe"
+  },
+  "runner": {
+    "path": "scripts/measure_mdb_cli.py",
+    "sha256": "25d015396fba19eeb796e74ccb93480dbc4fcaceeea95bb55e991875536276f7",
+    "command_template": "python3 scripts/measure_mdb_cli.py FIXTURE --binary target/release/vulcan --samples 9 --refresh MODE [--restricted]"
+  },
+  "machine": {
+    "cpu": "Intel Core i7-8650U @ 1.90GHz",
+    "physical_cores": 4,
+    "logical_cpus": 8,
+    "memory_bytes": 33534963712,
+    "platform": "Linux-6.12.107+deb13-amd64-x86_64-with-glibc2.41",
+    "architecture": "x86_64",
+    "filesystem": "btrfs",
+    "acceptance_reference_machine": false
+  },
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 104,
+    "links": 100000,
+    "missing_status_records": 2000,
+    "payload_files": 10014,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348",
+    "private_records": 1000,
+    "records": 10000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 3333,
+      "project": 3333,
+      "task": 3334
+    }
+  },
+  "method": {
+    "concurrency": 1,
+    "repeated_samples_per_mode": 9,
+    "timing": "perf_counter around subprocess.run through stdout/stderr capture and exit; validation after timing",
+    "query_mix": "cycle through all nine generated task/contact/project queries",
+    "fixture_verification": "source membership and generation-order digest before/after; preflight warms OS file caches",
+    "cache_state": "no cache.db before first blocking request; 10000 local payload rows confirmed afterward",
+    "refresh_semantics": "both flags use the same disk-reconciled public MDB service; off does not select a cached-only/stale-read path",
+    "percentiles": "nearest rank, repeated successful requests only",
+    "memory": "Linux RUSAGE_CHILDREN aggregate peak RSS KiB per driver process, not retained-memory growth",
+    "other_cargo_workloads": "none during measurements"
+  },
+  "runs": [
+    {
+      "mode": "blocking",
+      "permission_profile": null,
+      "cache_existed_before": false,
+      "complete_and_valid": true,
+      "fixture_unchanged": true,
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 528720,
+      "first_request": {
+        "query": "task-open.json",
+        "wall_seconds": 10.559378787060268,
+        "exact_total": 1556,
+        "rows": 50,
+        "stdout_bytes": 27344
+      },
+      "repeated_requests": [
+        {
+          "query": "task-active.json",
+          "wall_seconds": 3.354370926041156,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 27523
+        },
+        {
+          "query": "task-done.json",
+          "wall_seconds": 3.7656978640006855,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 27278
+        },
+        {
+          "query": "contact-1.json",
+          "wall_seconds": 3.5783428410068154,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 615
+        },
+        {
+          "query": "contact-4.json",
+          "wall_seconds": 3.720546846045181,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 638
+        },
+        {
+          "query": "contact-7.json",
+          "wall_seconds": 3.750774507992901,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 632
+        },
+        {
+          "query": "project-open.json",
+          "wall_seconds": 4.038960771984421,
+          "exact_total": 1556,
+          "rows": 50,
+          "stdout_bytes": 28242
+        },
+        {
+          "query": "project-active.json",
+          "wall_seconds": 3.7528479479951784,
+          "exact_total": 888,
+          "rows": 50,
+          "stdout_bytes": 28450
+        },
+        {
+          "query": "project-done.json",
+          "wall_seconds": 3.8107314410153776,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 28201
+        },
+        {
+          "query": "task-open.json",
+          "wall_seconds": 3.8053377370815724,
+          "exact_total": 1556,
+          "rows": 50,
+          "stdout_bytes": 27344
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.7528479479951784,
+        "p95": 4.038960771984421,
+        "p99": 4.038960771984421
+      }
+    },
+    {
+      "mode": "off",
+      "permission_profile": null,
+      "cache_existed_before": true,
+      "complete_and_valid": true,
+      "fixture_unchanged": true,
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 525092,
+      "first_request": {
+        "query": "task-open.json",
+        "wall_seconds": 3.272599542979151,
+        "exact_total": 1556,
+        "rows": 50,
+        "stdout_bytes": 27344
+      },
+      "repeated_requests": [
+        {
+          "query": "task-active.json",
+          "wall_seconds": 3.260011150036007,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 27523
+        },
+        {
+          "query": "task-done.json",
+          "wall_seconds": 3.481055904063396,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 27278
+        },
+        {
+          "query": "contact-1.json",
+          "wall_seconds": 3.5438090279931203,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 615
+        },
+        {
+          "query": "contact-4.json",
+          "wall_seconds": 3.656644255039282,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 638
+        },
+        {
+          "query": "contact-7.json",
+          "wall_seconds": 3.5931328600272536,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 632
+        },
+        {
+          "query": "project-open.json",
+          "wall_seconds": 3.6244929670356214,
+          "exact_total": 1556,
+          "rows": 50,
+          "stdout_bytes": 28242
+        },
+        {
+          "query": "project-active.json",
+          "wall_seconds": 3.606826644972898,
+          "exact_total": 888,
+          "rows": 50,
+          "stdout_bytes": 28450
+        },
+        {
+          "query": "project-done.json",
+          "wall_seconds": 3.6629482499556616,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 28201
+        },
+        {
+          "query": "task-open.json",
+          "wall_seconds": 3.4030825259396806,
+          "exact_total": 1556,
+          "rows": 50,
+          "stdout_bytes": 27344
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.5931328600272536,
+        "p95": 3.6629482499556616,
+        "p99": 3.6629482499556616
+      }
+    },
+    {
+      "mode": "blocking",
+      "permission_profile": "benchmark_public",
+      "cache_existed_before": true,
+      "complete_and_valid": true,
+      "fixture_unchanged": true,
+      "binary_unchanged": true,
+      "child_peak_rss_kib": 476240,
+      "first_request": {
+        "query": "task-open.json",
+        "wall_seconds": 3.164927567006089,
+        "exact_total": 1222,
+        "rows": 50,
+        "stdout_bytes": 27453
+      },
+      "repeated_requests": [
+        {
+          "query": "task-active.json",
+          "wall_seconds": 3.3047945430735126,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 27523
+        },
+        {
+          "query": "task-done.json",
+          "wall_seconds": 3.097359456936829,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 27278
+        },
+        {
+          "query": "contact-1.json",
+          "wall_seconds": 2.975572968949564,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 615
+        },
+        {
+          "query": "contact-4.json",
+          "wall_seconds": 3.069071345962584,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 638
+        },
+        {
+          "query": "contact-7.json",
+          "wall_seconds": 3.2556568100117147,
+          "exact_total": 1,
+          "rows": 1,
+          "stdout_bytes": 632
+        },
+        {
+          "query": "project-open.json",
+          "wall_seconds": 3.324231463018805,
+          "exact_total": 1223,
+          "rows": 50,
+          "stdout_bytes": 28333
+        },
+        {
+          "query": "project-active.json",
+          "wall_seconds": 3.0737730789696798,
+          "exact_total": 888,
+          "rows": 50,
+          "stdout_bytes": 28450
+        },
+        {
+          "query": "project-done.json",
+          "wall_seconds": 3.2786421780474484,
+          "exact_total": 889,
+          "rows": 50,
+          "stdout_bytes": 28201
+        },
+        {
+          "query": "task-open.json",
+          "wall_seconds": 3.3028003940125927,
+          "exact_total": 1222,
+          "rows": 50,
+          "stdout_bytes": 27453
+        }
+      ],
+      "repeated_wall_seconds": {
+        "p50": 3.2556568100117147,
+        "p95": 3.324231463018805,
+        "p99": 3.324231463018805
+      }
+    }
+  ],
+  "limitations": [
+    "Nine repeated requests per mode, not 1000; nearest-rank p95/p99 are the maximum of nine observations",
+    "No acceptance reference host designated; power, frequency, and unrelated background activity uncontrolled",
+    "No stage/source-read counters, retained-memory growth, concurrent writers, native frontend parity, or 100K scaling",
+    "Preflight warmed source file caches; first request is cache population/process startup, not cold OS storage",
+    "Old source-only probe used a different commit and query mix; timings are diagnostic, not a controlled speedup estimate"
+  ],
+  "conclusion": "Repeated requests remain orders of magnitude above the 100ms direct CLI target. Cache reuse alone does not implement selective SQL or retained freshness; targets are not declared unreachable.",
+  "response_checks": {
+    "requests": 30,
+    "failures": 0,
+    "exact_totals_and_ordered_paths": true,
+    "all_payloads_bounded": true,
+    "all_query_diagnostics_empty": true,
+    "canonical_fixture_and_binary_unchanged": true
+  }
+}

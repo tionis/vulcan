@@ -32,4 +32,20 @@ VULCAN_TEST_BINARY="$PWD/target/debug/vulcan" python3 -m unittest discover -s sc
 
 The optional CLI test uses 120 records to check actual registry loading, membership counts, all query files, restricted visibility, invalid-record validation, and effective-default versus persisted-value behavior. Unit tests independently check deterministic bytes, digest framing, semantic-case coverage, body/link counts, and overwrite refusal.
 
+## Repeatable CLI diagnostic measurements
+
+After building the desired release commit, run the diagnostic driver against only a generated public corpus:
+
+```sh
+python3 scripts/measure_mdb_cli.py /tmp/mdb-10k --binary target/release/vulcan --samples 9
+python3 scripts/measure_mdb_cli.py /tmp/mdb-10k --binary target/release/vulcan --samples 9 --refresh off
+python3 scripts/measure_mdb_cli.py /tmp/mdb-10k --binary target/release/vulcan --samples 9 --restricted
+```
+
+The driver emits JSON on stdout. It checks the versioned payload digest and source-file membership before and after requests, rejects symlinks, and records binary/runner SHA-256 values. A first request is separate from the requested repeated samples; the latter cycle through all nine parameter-varied queries. Exact totals, ordered paths, response size, omitted body, query diagnostics, exit status, and stderr are checked. A failure stops the run and makes the process exit nonzero; partial samples never establish a pass. Record the binary's commit, build command/features, and reference-machine details alongside the report.
+
+Fixture verification reads all payload bytes outside the timed region and therefore warms OS file caches. The first request may populate the MDB cache if it does not exist; neither an existing cache file nor repetition proves a warm indexed generation. Process wall times include startup, stdout/stderr capture, and exit, but exclude subsequent JSON checking. Reported percentiles use nearest rank over repeated successful requests only. Linux child peak RSS is the aggregate `RUSAGE_CHILDREN` maximum in KiB, not retained-memory growth. Run without concurrent Cargo jobs or other deliberate benchmark load.
+
+`--samples 1000` supports larger diagnostic runs, but the driver deliberately reports `acceptance_gate_result: not_evaluated`: reference-host designation, stage/source-read work counters, cold I/O, retained-memory behavior, concurrent writers, additional query frontends, and the full acceptance protocol remain separate work. The optional `VULCAN_TEST_BINARY` test exercises the driver itself against all nine queries on 120 records, both unrestricted and permission-filtered. Assistant-skill review: this developer measurement tool does not change installed query workflows.
+
 This artifact establishes reproducible workload generation only. It contains no latency samples, memory measurements, work counters, reference-machine designation, or performance pass. The full baseline and acceptance procedure in the parent performance contract remains outstanding. Assistant-skill review: developer-only fixture tooling changes no installed command or authorization workflow; existing query and permission skills need no change.
