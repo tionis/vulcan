@@ -12451,6 +12451,9 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(!view.to_string().contains("sentinel"));
     run(&["bases", "eval", "Private/Secret.base"]).failure();
     run(&["bases", "create", "Public/All.base", "--no-commit"]).failure();
+    assert!(parse_stdout_json(&run(&["browse"]).failure())
+        .to_string()
+        .contains("does not yet enforce restricted permission profiles"));
     assert!(!root.join("Untitled.md").exists());
     let views = parse_stdout_json(&run(&["tasks", "view", "list"]).success());
     assert!(views.to_string().contains("Tasks"), "{views}");
