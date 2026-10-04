@@ -1,7 +1,7 @@
 ---
 name: publishing-and-export
 description: Build static sites, export or package vault content, and operate Outline collection setup, publication, pull, exact document bindings, or named subtree routes. Use when the user asks about site builds, export profiles, EPUB/ZIP/SQLite/JSON/CSV output, Outline ZIP, collection or wiki discovery/creation, API publishing or pull, wiki synchronization, local/remote document identity, graph-based publication scope, reconciliation conflicts, render diagnostics, publish filters, content transforms, or route/link policy.
-version: 1
+version: 2
 tools:
   - site
   - export
@@ -31,6 +31,7 @@ static output target or a configured Outline publication, import, or named route
 - Use export profiles for repeatable export settings.
 - Use `vulcan site build --profile <name>` for static sites and `vulcan site doctor` for publish diagnostics.
 - Omitting a query exports the full vault. Use a query for one selection rule or `--selection-json` for an additive plan that unions query clauses and bounded or recursive graph traversals. Review global exclusions and permission boundaries because they also stop graph traversal.
+- EPUB exports render Dataview blocks, DataviewJS blocks, and embedded `.base` views with the selected `--permissions` profile. A view from an unreadable `.base` file renders as a `Bases error:` panel, and lists cover only readable notes. Do not rerun with a broader profile just to fill those panels.
 - Use `vulcan export outline-zip ... --dry-run` to inspect the complete Outline-compatible hierarchy and diagnostics before writing an archive.
 - Use `vulcan outline collections list <profile>` to discover accessible wiki names and immutable UUIDs. `create` binds the returned UUID to that profile by default; use `--no-bind-profile` only when the collection is intentionally unmanaged, and use `bind` to adopt an existing UUID. Preview create, update, bind, archive, and restore with `--dry-run`.
 - When a publication profile has no `collection_id`, set `auto_create_collection = true` or use `publish outline <profile> --create-collection` for the first live publication. The configured `collection_title` becomes the collection name and the returned UUID is stored in shared config before document reconciliation. Publish dry-run cannot inspect a collection that does not exist; preview provisioning with `outline collections create <profile> <title> --dry-run`.

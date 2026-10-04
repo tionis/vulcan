@@ -25238,6 +25238,87 @@ regex = true
 }
 
 #[test]
+#[cfg(feature = "js_runtime")]
+fn export_epub_dynamic_content_respects_read_scope() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+    fs::create_dir_all(vault_root.join("Public")).unwrap();
+    fs::create_dir_all(vault_root.join("Private")).unwrap();
+    fs::write(
+        vault_root.join("Public/Book.md"),
+        concat!(
+            "# Book\n\n",
+            "```dataview\nLIST FROM \"\"\n```\n\n",
+            "```dataviewjs\ndv.list(dv.pages().file.name)\n```\n\n",
+            "![[Public/All.base]]\n\n",
+            "![[Private/Secret.base]]\n",
+        ),
+    )
+    .unwrap();
+    fs::write(vault_root.join("Public/Visible.md"), "# Visible\n").unwrap();
+    fs::write(vault_root.join("Private/Hidden.md"), "[[Public/Visible]]\n").unwrap();
+    fs::write(
+        vault_root.join("Public/All.base"),
+        "views:\n  - type: table\n    name: All\n    order: [file.name]\n",
+    )
+    .unwrap();
+    fs::write(
+        vault_root.join("Private/Secret.base"),
+        "views:\n  - type: table\n    name: Classified\n",
+    )
+    .unwrap();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\nexecute = \"allow\"\n",
+    )
+    .unwrap();
+    run_scan(&vault_root);
+
+    let export = |profile: Option<&str>, name: &str| {
+        let export_path = temp_dir.path().join(name);
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command.args(["--vault", vault_root.to_str().unwrap()]);
+        if let Some(profile) = profile {
+            command.args(["--permissions", profile]);
+        }
+        command
+            .args(["--refresh", "off", "export", "epub"])
+            .arg(r#"from notes where file.path = "Public/Book.md""#)
+            .arg("-o")
+            .arg(&export_path)
+            .assert()
+            .success();
+        let mut archive = ZipArchive::new(fs::File::open(&export_path).unwrap()).unwrap();
+        let mut chapter = String::new();
+        archive
+            .by_name("OEBPS/text/chapter-001.xhtml")
+            .unwrap()
+            .read_to_string(&mut chapter)
+            .unwrap();
+        chapter
+    };
+
+    let unscoped = export(None, "all.epub");
+    assert!(unscoped.contains("Hidden"), "{unscoped}");
+    let scoped = export(Some("scoped"), "scoped.epub");
+    assert!(scoped.contains("Visible"), "{scoped}");
+    assert!(!scoped.contains("Hidden"), "{scoped}");
+    assert!(!scoped.contains("Classified"), "{scoped}");
+    assert!(scoped.contains("Bases error:"), "{scoped}");
+
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .args(["--vault", vault_root.to_str().unwrap(), "agent", "install"])
+        .assert()
+        .success();
+    let skill =
+        fs::read_to_string(vault_root.join(".agents/skills/publishing-and-export/SKILL.md"))
+            .unwrap();
+    assert!(skill.contains("EPUB exports render Dataview blocks"));
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn export_epub_renders_dynamic_content_tag_indexes_and_tree_nav() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

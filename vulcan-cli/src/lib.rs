@@ -570,24 +570,24 @@ use vulcan_core::vault_discovery::{
 };
 use vulcan_core::{
     bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
-    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
-    export_static_search_index_with_filter, link_mentions, list_checkpoints, list_saved_reports,
-    load_saved_report, load_vault_config, merge_tags, move_note, plan_base_note_create,
-    query_change_report, query_notes_with_filter, rebuild_vault_with_progress, rename_alias,
-    rename_block_ref, rename_heading, rename_property, repair_fts, resolve_note_reference,
-    resolve_permission_profile, save_saved_report, scan_vault, scan_vault_with_progress,
-    search_vault_with_filter, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport, CacheVerifyReport,
-    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput,
-    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionsReport,
-    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter,
-    PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, SelectionPlan, VaultPaths, WatchOptions, WatchReport,
+    doctor_fix, doctor_vault, evaluate_dql_with_filter, export_static_search_index_with_filter,
+    link_mentions, list_checkpoints, list_saved_reports, load_saved_report, load_vault_config,
+    merge_tags, move_note, plan_base_note_create, query_change_report, query_notes_with_filter,
+    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    repair_fts, resolve_note_reference, resolve_permission_profile, save_saved_report, scan_vault,
+    scan_vault_with_progress, search_vault_with_filter, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
+    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion,
+    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
+    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport,
+    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport,
+    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, SelectionPlan, VaultPaths,
+    WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -6352,6 +6352,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     backlinks,
                     frontmatter,
                 } => {
+                    let guard = selected_permission_guard(cli, &paths)?;
                     let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
@@ -6382,8 +6383,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 .unwrap_or(ExportEpubTocStyleConfig::Tree),
                         },
                         AppEpubRenderCallbacks {
-                            render_dataview_block: &render_epub_dataview_block_markdown,
-                            render_base_embed: &render_epub_base_embed_markdown,
+                            render_dataview_block: &|paths, note, language, source| {
+                                render_epub_dataview_block_markdown(
+                                    paths, note, language, source, &guard,
+                                )
+                            },
+                            render_base_embed: &|paths, base, view| {
+                                render_epub_base_embed_markdown(paths, base, view, &guard)
+                            },
                             render_inline_value: &render_dataview_inline_value,
                         },
                     )
@@ -9574,6 +9581,7 @@ fn run_epub_export_profile(
     output_path: &Path,
     request: ExportContentRequest<'_>,
     profile: &ExportProfileConfig,
+    guard: &ProfilePermissionGuard,
 ) -> Result<Value, CliError> {
     let report = execute_export_selection(
         paths,
@@ -9598,8 +9606,12 @@ fn run_epub_export_profile(
             toc_style: profile.toc.unwrap_or(ExportEpubTocStyleConfig::Tree),
         },
         AppEpubRenderCallbacks {
-            render_dataview_block: &render_epub_dataview_block_markdown,
-            render_base_embed: &render_epub_base_embed_markdown,
+            render_dataview_block: &|paths, note, language, source| {
+                render_epub_dataview_block_markdown(paths, note, language, source, guard)
+            },
+            render_base_embed: &|paths, base, view| {
+                render_epub_base_embed_markdown(paths, base, view, guard)
+            },
             render_inline_value: &render_dataview_inline_value,
         },
     )
@@ -9821,7 +9833,8 @@ fn run_export_profile(
             request,
         )?,
         ExportProfileFormat::Epub => {
-            run_epub_export_profile(cli.output, paths, &output_path, request, &profile)?
+            let guard = selected_permission_guard(cli, paths)?;
+            run_epub_export_profile(cli.output, paths, &output_path, request, &profile, &guard)?
         }
         ExportProfileFormat::Zip => {
             run_zip_export_profile(cli.output, paths, &output_path, request)?
@@ -9875,14 +9888,19 @@ fn escape_xml_text(value: &str) -> String {
     escaped
 }
 
+/// Render an EPUB Dataview block with the exporter's read authority, matching
+/// `dataview eval`: DQL uses the static read filter and `DataviewJS` runs under
+/// the selected profile.
 fn render_epub_dataview_block_markdown(
     paths: &VaultPaths,
     note_path: &str,
     language: &str,
     source: &str,
+    guard: &ProfilePermissionGuard,
 ) -> String {
     if language == "dataview" {
-        match evaluate_dql_with_filter(paths, source, Some(note_path), None) {
+        let read_filter = restricted_read_filter(guard);
+        match evaluate_dql_with_filter(paths, source, Some(note_path), read_filter.as_ref()) {
             Ok(result) => render_dql_query_markdown(&result, false),
             Err(error) => render_epub_message_html("Dataview error:", &error.to_string()),
         }
@@ -9891,7 +9909,7 @@ fn render_epub_dataview_block_markdown(
             paths,
             source,
             Some(note_path),
-            None,
+            Some(guard.profile_name()),
         ) {
             Ok(result) => render_dataview_js_markdown(&result, false),
             Err(error) => render_epub_message_html("DataviewJS error:", &error.to_string()),
@@ -9908,8 +9926,9 @@ fn render_epub_base_embed_markdown(
     paths: &VaultPaths,
     base_path: &str,
     view_name: Option<&str>,
+    guard: &ProfilePermissionGuard,
 ) -> String {
-    match evaluate_base_file(paths, base_path) {
+    match vulcan_app::browse::evaluate_base_file_with_guard(paths, base_path, guard) {
         Ok(mut report) => {
             if let Some(view_name) = view_name.map(str::trim).filter(|value| !value.is_empty()) {
                 if let Some(view) = report
