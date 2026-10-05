@@ -1561,7 +1561,7 @@ fn refresh_identity_stable(
         boundary();
     }
     // Bind publication to the walked membership, the read bytes of changed
-    // records, and the published bytes of every other record.
+    // records, and the published stat of every other record.
     let rewalked = super::discover_mdbase_record_stats_parallel(collection)
         .map_err(MdbaseRecordError::Discovery)?;
     if rewalked.len() != total
@@ -1575,6 +1575,21 @@ fn refresh_identity_stable(
         })
     {
         return Err(MdbaseRecordCacheError::StaleRecords);
+    }
+    // As in the full refresh, records just read are verified by bytes: an
+    // in-place same-size rewrite within one timestamp tick keeps its stat.
+    for (path, (record, _)) in &next {
+        let (source, metadata) = read_record_source_stably(collection, path)
+            .map_err(|_| MdbaseRecordCacheError::StaleRecords)?;
+        let file = super::records::file_metadata(path, source.len() as u64, Some(&metadata));
+        if super::mdbase_content_revision(&source) != record.revision
+            || record
+                .metadata
+                .as_ref()
+                .is_none_or(|cached| cached.file != file)
+        {
+            return Err(MdbaseRecordCacheError::StaleRecords);
+        }
     }
     if verify_mdbase_control_snapshots(collection, types, contracts, None)? != *controls {
         return Err(MdbaseRecordCacheError::StaleControls);
