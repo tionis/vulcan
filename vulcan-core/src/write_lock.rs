@@ -101,8 +101,47 @@ fn validate_lock_directory(paths: &VaultPaths) -> Result<(), std::io::Error> {
 
 impl Drop for WriteLockGuard {
     fn drop(&mut self) {
+        // Every exclusive section advances the cooperating-write epoch before
+        // releasing, so readers retaining state can detect any Vulcan write.
+        let _ = advance_write_epoch(&self.file);
         let _ = fs2::FileExt::unlock(&self.file);
     }
+}
+
+/// Monotonic count of completed exclusive write-lock sections for this vault,
+/// across processes. Retained read state compares it to detect cooperating
+/// writes without waiting for filesystem notifications. A missing lock file
+/// reads as zero. Callers hold the shared read lock for a consistent value.
+pub fn read_write_epoch(paths: &VaultPaths) -> Result<u64, std::io::Error> {
+    let path = lock_file_path(paths)?;
+    match File::open(path) {
+        Ok(file) => read_epoch(&file),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_epoch(mut file: &File) -> Result<u64, std::io::Error> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut bytes = [0; 8];
+    file.seek(SeekFrom::Start(0))?;
+    let mut filled = 0;
+    while filled < bytes.len() {
+        match file.read(&mut bytes[filled..])? {
+            0 => return Ok(0),
+            read => filled += read,
+        }
+    }
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn advance_write_epoch(mut file: &File) -> Result<(), std::io::Error> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let next = read_epoch(file)?.wrapping_add(1);
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&next.to_le_bytes())
 }
 
 impl Drop for ReadLockGuard {
@@ -114,6 +153,19 @@ impl Drop for ReadLockGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_sections_advance_the_shared_epoch() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let paths = VaultPaths::new(temporary.path());
+        assert_eq!(read_write_epoch(&paths).unwrap(), 0);
+        fs::create_dir(paths.vulcan_dir()).expect("coordination directory");
+        drop(acquire_read_lock(&paths).expect("read lock"));
+        assert_eq!(read_write_epoch(&paths).unwrap(), 0);
+        drop(acquire_write_lock(&paths).expect("write lock"));
+        drop(acquire_write_lock(&paths).expect("write lock"));
+        assert_eq!(read_write_epoch(&paths).unwrap(), 2);
+    }
 
     #[test]
     fn acquiring_a_lock_does_not_scaffold_or_change_vault_inputs() {

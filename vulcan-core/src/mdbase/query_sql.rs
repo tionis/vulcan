@@ -260,6 +260,60 @@ impl MdbaseSqlPredicate {
     }
 }
 
+impl MdbaseSqlPredicate {
+    /// Decide the predicate for one record exactly as the rendered SQL does:
+    /// `Some(result)` when every atom's value has a type this lowering decides
+    /// exactly (the CEL result, with no diagnostics), `None` when the record
+    /// needs residual CEL evaluation. `effective` is the record's effective
+    /// frontmatter object.
+    #[must_use]
+    pub fn decide(&self, path: &str, effective: &serde_json::Value) -> Option<bool> {
+        let mut matched = true;
+        for atom in &self.atoms {
+            let value = match &atom.field {
+                Field::Path => Scalar::Text(path),
+                Field::Effective(name) => match effective.get(name)? {
+                    serde_json::Value::String(text) => Scalar::Text(text),
+                    serde_json::Value::Bool(boolean) => Scalar::Boolean(*boolean),
+                    number @ serde_json::Value::Number(_) => match number.as_i64() {
+                        Some(integer) => Scalar::Integer(integer),
+                        None => return None,
+                    },
+                    _ => return None,
+                },
+            };
+            let ordering = match (&atom.literal, value) {
+                (Literal::String(literal), Scalar::Text(text)) if !text.contains('\0') => {
+                    if atom.comparison == Comparison::StartsWith {
+                        matched &= text.as_bytes().starts_with(literal.as_bytes());
+                        continue;
+                    }
+                    text.as_bytes().cmp(literal.as_bytes())
+                }
+                (Literal::Boolean(literal), Scalar::Boolean(boolean)) => boolean.cmp(literal),
+                (Literal::Integer(literal), Scalar::Integer(integer)) => integer.cmp(literal),
+                _ => return None,
+            };
+            matched &= match atom.comparison {
+                Comparison::Equal => ordering.is_eq(),
+                Comparison::NotEqual => ordering.is_ne(),
+                Comparison::Less => ordering.is_lt(),
+                Comparison::LessEqual => ordering.is_le(),
+                Comparison::Greater => ordering.is_gt(),
+                Comparison::GreaterEqual => ordering.is_ge(),
+                Comparison::StartsWith => return None,
+            };
+        }
+        Some(matched)
+    }
+}
+
+enum Scalar<'a> {
+    Text(&'a str),
+    Boolean(bool),
+    Integer(i64),
+}
+
 fn bind(parameters: &mut Vec<Value>, value: Value) -> String {
     parameters.push(value);
     format!("?{}", parameters.len())

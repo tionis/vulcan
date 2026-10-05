@@ -32,6 +32,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Work counters and stage timings for one indexed execution; no paths or values.
@@ -45,6 +46,10 @@ pub struct MdbaseIndexedQueryMetrics {
     pub residual_evaluations: usize,
     pub matched: usize,
     pub hydrated: usize,
+    /// Retained rows decoded again because their cache row changed.
+    pub reloaded_rows: usize,
+    /// A host-presented proof replaced the record walk.
+    pub trusted_proof: bool,
 }
 
 struct CandidateRow {
@@ -300,7 +305,7 @@ fn execute_proven(
     };
     let mut results = Vec::with_capacity(page.len());
     for path in page {
-        let Some((effective, file, frontmatter)) = hydrated.get(path) else {
+        let Some((effective, file, frontmatter, _)) = hydrated.get(path) else {
             return Ok(None);
         };
         let values = indexed.selections.as_ref().map(|selections| {
@@ -513,7 +518,15 @@ fn needs_persisted(plan: &crate::query::StructuredQueryPlan) -> bool {
     )
 }
 
-type PageRows = BTreeMap<String, (serde_json::Value, serde_json::Value, serde_json::Value)>;
+type PageRows = BTreeMap<
+    String,
+    (
+        serde_json::Value,
+        serde_json::Value,
+        serde_json::Value,
+        String,
+    ),
+>;
 
 /// Hydrate only the returned page: effective frontmatter and file metadata
 /// from narrow rows, persisted frontmatter from the wide row only if returned.
@@ -533,7 +546,8 @@ fn load_page(
         "'null'"
     };
     let mut statement = connection.prepare_cached(&format!(
-        "SELECT query.path, json(query.effective_frontmatter_jsonb), query.file_json, {persisted}
+        "SELECT query.path, json(query.effective_frontmatter_jsonb), query.file_json, {persisted},
+                query.revision
          FROM mdbase_record_query AS query
          WHERE query.collection_root = ?1 AND query.dependency_digest = ?2
            AND query.record_model_version = ?3
@@ -558,7 +572,383 @@ fn load_page(
                     parse_json_column(2, &file)?,
                     // A missing or mismatched wide row is not a snapshot.
                     parse_json_column(3, &frontmatter.ok_or(rusqlite::Error::InvalidQuery)?)?,
+                    row.get(4)?,
                 ),
+            ))
+        },
+    )?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Decoded indexed rows a long-lived host retains between requests. A row is
+/// reused only while the cache row read in the current transaction has the
+/// same revision and stat fingerprint, and that fingerprint equals the one the
+/// request's own walk observed; anything else is decoded again. It retains no
+/// results, grants, or freshness.
+#[derive(Default)]
+pub struct MdbaseRetainedRows {
+    dependency_digest: String,
+    rows: BTreeMap<String, RetainedRow>,
+}
+
+struct RetainedRow {
+    revision: String,
+    fingerprint: Vec<u8>,
+    /// Lowercased membership, as indexed.
+    types: Vec<String>,
+    effective: serde_json::Value,
+    file: serde_json::Value,
+    evidence: crate::mdbase::MdbaseQueryInputEvidence,
+}
+
+/// The visible record set a strict walk proved current for one read scope.
+/// A host may present it again instead of walking only under an explicit
+/// freshness policy (for example a healthy change monitor reporting no
+/// changes since before the proving walk began).
+#[derive(Debug, Clone)]
+pub struct MdbaseRetainedProof {
+    visible: Arc<BTreeSet<String>>,
+    max_path_bytes: usize,
+}
+
+impl MdbaseRetainedRows {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// [`execute_indexed_mdbase_query`] over rows retained by a long-lived host.
+/// Every request still verifies controls and walks every visible record; only
+/// unchanged decoded rows are reused, and predicates are decided in memory by
+/// [`crate::mdbase::MdbaseSqlPredicate::decide`], which mirrors the SQL lowering.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn execute_retained_mdbase_query(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    query: &MdbasePreparedQuery,
+    filter: Option<&PermissionFilter>,
+    now: DateTime<Utc>,
+    retained: &mut MdbaseRetainedRows,
+    trusted: Option<&MdbaseRetainedProof>,
+    metrics: &mut MdbaseIndexedQueryMetrics,
+) -> Result<Option<(MdbaseQueryResult, MdbaseRetainedProof)>, MdbaseQueryError> {
+    *metrics = MdbaseIndexedQueryMetrics::default();
+    let Some(indexed) = query.indexed_plan() else {
+        return Ok(None);
+    };
+    if has_dynamic_local_membership(types) {
+        return Ok(None);
+    }
+    let start = Instant::now();
+    let Ok(transaction) = connection.unchecked_transaction() else {
+        return Ok(None);
+    };
+    // Controls are verified on every request; a trusted proof replaces only
+    // the record walk, and only when every visible row is still retained.
+    let proof = if let Some(proof) = trusted {
+        let Ok(controls) = verify_mdbase_control_snapshots(collection, types, contracts, filter)
+        else {
+            return Ok(None);
+        };
+        if controls.combined != retained.dependency_digest
+            || proof
+                .visible
+                .iter()
+                .any(|path| !retained.rows.contains_key(path))
+        {
+            return Ok(None);
+        }
+        metrics.trusted_proof = true;
+        proof.clone()
+    } else {
+        let Ok(Some((visible, max_path_bytes))) = revalidate_retained(
+            &transaction,
+            collection,
+            types,
+            contracts,
+            filter,
+            retained,
+            metrics,
+        ) else {
+            return Ok(None);
+        };
+        MdbaseRetainedProof {
+            visible: Arc::new(visible),
+            max_path_bytes,
+        }
+    };
+    let visible = &*proof.visible;
+    let max_path_bytes = proof.max_path_bytes;
+    metrics.visible_records = visible.len();
+    metrics.freshness_seconds = start.elapsed().as_secs_f64();
+    let start = Instant::now();
+
+    let plan = query.plan();
+    let wanted = plan
+        .types
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let clock = query.clock(collection.config.settings.timezone.as_deref(), now)?;
+    let limits = MdbaseCelLimits::default();
+    let mut diagnostics = Vec::new();
+    let mut matched = Vec::new();
+    let mut residual = Vec::new();
+    for path in visible {
+        let row = &retained.rows[path];
+        if !wanted.is_empty() && !row.types.iter().any(|name| wanted.contains(name)) {
+            continue;
+        }
+        metrics.type_candidates += 1;
+        let Some(predicate) = indexed.predicate else {
+            matched.push(path.as_str());
+            continue;
+        };
+        if !row.evidence.passes(&limits, max_path_bytes) {
+            return Ok(None);
+        }
+        match predicate.decide(path, &row.effective) {
+            Some(true) => {
+                metrics.sql_decided += 1;
+                matched.push(path.as_str());
+            }
+            Some(false) => metrics.sql_decided += 1,
+            None => residual.push(path.as_str()),
+        }
+    }
+    if !residual.is_empty() {
+        let Ok(records) = load_local_records(
+            &transaction,
+            collection,
+            &retained.dependency_digest,
+            residual.iter().copied(),
+        ) else {
+            return Ok(None);
+        };
+        for path in residual {
+            // The cache may have moved on since the row was retained.
+            let Some(record) = records
+                .get(path)
+                .filter(|record| record.record.revision == retained.rows[path].revision)
+            else {
+                return Ok(None);
+            };
+            metrics.residual_evaluations += 1;
+            if query.evaluate_residual_filter(&record.record, types, &clock, &mut diagnostics)? {
+                matched.push(path);
+            }
+        }
+    }
+    metrics.matched = matched.len();
+    let mut keyed = matched
+        .into_iter()
+        .map(|path| {
+            let row = &retained.rows[path];
+            let keys = plan
+                .order_by
+                .iter()
+                .map(|key| indexed.value(&key.field, &row.effective, &row.file, true))
+                .collect::<Vec<_>>();
+            (path, keys)
+        })
+        .collect::<Vec<_>>();
+    keyed.sort_by(|(left_path, left), (right_path, right)| {
+        for ((key, left), right) in plan.order_by.iter().zip(left).zip(right) {
+            let order = compare_query_values(left, right, key.direction);
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+        }
+        left_path.cmp(right_path)
+    });
+    let total_count = keyed.len();
+    let start_index = plan.offset.min(total_count);
+    let end = plan.limit.map_or(total_count, |limit| {
+        start_index.saturating_add(limit).min(total_count)
+    });
+    let page = keyed[start_index..end]
+        .iter()
+        .map(|(path, _)| *path)
+        .collect::<Vec<_>>();
+    let persisted = if needs_persisted(plan) {
+        let Ok(hydrated) = load_page(
+            &transaction,
+            collection,
+            &retained.dependency_digest,
+            &page,
+            true,
+        ) else {
+            return Ok(None);
+        };
+        Some(hydrated)
+    } else {
+        None
+    };
+    let mut results = Vec::with_capacity(page.len());
+    for path in page {
+        let row = &retained.rows[path];
+        let frontmatter = match persisted.as_ref() {
+            Some(hydrated) => match hydrated.get(path) {
+                Some((_, _, frontmatter, revision)) if *revision == row.revision => {
+                    frontmatter.clone()
+                }
+                _ => return Ok(None),
+            },
+            None => serde_json::Value::Null,
+        };
+        let values = indexed.selections.as_ref().map(|selections| {
+            selections
+                .iter()
+                .map(|(output, field)| {
+                    (
+                        (*output).to_string(),
+                        indexed.value(field, &row.effective, &row.file, false),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+        });
+        results.push(indexed_query_row(
+            plan,
+            path,
+            frontmatter,
+            row.effective.clone(),
+            values,
+        ));
+    }
+    metrics.hydrated = results.len();
+    metrics.execution_seconds = start.elapsed().as_secs_f64();
+    let result = MdbaseQueryResult {
+        results,
+        meta: MdbaseQueryMeta {
+            total_count,
+            has_more: end < total_count,
+            context: None,
+            groups: None,
+        },
+        diagnostics,
+    };
+    Ok(Some((result, proof)))
+}
+
+/// Verify controls and walk every record. A retained row whose fingerprint
+/// equals the walk's describes unchanged bytes under unchanged controls and is
+/// reused without reading the cache; every other visible record is decoded
+/// from a cache row whose stored fingerprint must equal the walk's. Returns
+/// the visible paths and the longest walked path, or `None` on any miss.
+fn revalidate_retained(
+    transaction: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    filter: Option<&PermissionFilter>,
+    retained: &mut MdbaseRetainedRows,
+    metrics: &mut MdbaseIndexedQueryMetrics,
+) -> Result<Option<(BTreeSet<String>, usize)>, MdbaseRecordCacheError> {
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
+    if retained.dependency_digest != controls.combined {
+        retained.rows.clear();
+        retained.dependency_digest.clone_from(&controls.combined);
+    }
+    let walked =
+        discover_mdbase_record_stats_parallel(collection).map_err(MdbaseRecordError::Discovery)?;
+    let max_path_bytes = walked.iter().map(|(path, _)| path.len()).max().unwrap_or(0);
+    let mut visible = BTreeSet::new();
+    let mut stale = BTreeMap::new();
+    for (path, metadata) in &walked {
+        if filter.is_some_and(|filter| !filter.is_allowed(path)) {
+            continue;
+        }
+        let Some(fingerprint) = metadata.as_ref().and_then(stat_fingerprint) else {
+            return Ok(None);
+        };
+        if retained
+            .rows
+            .get(path)
+            .is_none_or(|row| row.fingerprint != fingerprint)
+        {
+            stale.insert(path.clone(), fingerprint);
+        }
+        visible.insert(path.clone());
+    }
+    // Rows for records that no longer exist are never reused or retained.
+    let present = walked
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect::<BTreeSet<_>>();
+    retained
+        .rows
+        .retain(|path, _| present.contains(path.as_str()));
+    if !stale.is_empty() {
+        let root = cache_collection_root(collection)?;
+        let paths = stale.keys().cloned().collect::<Vec<_>>();
+        let loaded = load_retained_rows(transaction, &root, &controls.combined, &paths)?;
+        if loaded.len() != stale.len()
+            || loaded.iter().any(|(path, row)| {
+                stale.get(path).map(<[u8; 40]>::as_slice) != Some(&row.fingerprint)
+            })
+        {
+            return Ok(None);
+        }
+        metrics.reloaded_rows = loaded.len();
+        retained.rows.extend(loaded);
+    }
+    Ok(Some((visible, max_path_bytes)))
+}
+
+fn load_retained_rows(
+    transaction: &Connection,
+    root: &str,
+    dependency_digest: &str,
+    paths: &[String],
+) -> Result<BTreeMap<String, RetainedRow>, MdbaseRecordCacheError> {
+    let mut statement = transaction.prepare_cached(
+        "SELECT query.path, query.revision, query.stat_fingerprint, query.input_converted,
+                query.input_bytes, query.input_nodes, query.input_width, query.input_links,
+                json(query.effective_frontmatter_jsonb), query.file_json,
+                (SELECT json_group_array(membership.type_name) FROM mdbase_record_types AS membership
+                 WHERE membership.collection_root = query.collection_root
+                   AND membership.path = query.path)
+         FROM mdbase_record_query AS query
+         WHERE query.collection_root = ?1 AND query.dependency_digest = ?2
+           AND query.record_model_version = ?3
+           AND query.path IN (SELECT value FROM json_each(?4))",
+    )?;
+    let count = |value: i64| usize::try_from(value).unwrap_or(usize::MAX);
+    let rows = statement.query_map(
+        rusqlite::params![
+            root,
+            dependency_digest,
+            MDBASE_RECORD_MODEL_VERSION,
+            serde_json::to_string(paths)?
+        ],
+        |row| {
+            let effective: String = row.get(8)?;
+            let file: String = row.get(9)?;
+            let types: String = row.get(10)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                RetainedRow {
+                    revision: row.get(1)?,
+                    fingerprint: row.get(2)?,
+                    types: parse_json_column(10, &types)?,
+                    effective: parse_json_column(8, &effective)?,
+                    file: parse_json_column(9, &file)?,
+                    evidence: crate::mdbase::MdbaseQueryInputEvidence {
+                        converted: row.get::<_, i64>(3)? != 0,
+                        bytes: count(row.get(4)?),
+                        nodes: count(row.get(5)?),
+                        width: count(row.get(6)?),
+                        links: count(row.get(7)?),
+                    },
+                },
             ))
         },
     )?;

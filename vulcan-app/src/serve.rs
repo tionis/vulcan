@@ -2,6 +2,7 @@ use crate::browse::{
     build_dataview_eval_report, build_dataview_inline_report, build_dataview_query_js_report,
     build_dataview_query_report_with_guard,
 };
+use crate::mdbase::{build_mdbase_query_report, parse_mdbase_query, MdbaseQuerySession};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -52,6 +53,7 @@ enum ServeRouteId {
     DataviewQuery,
     DataviewQueryJs,
     DataviewEval,
+    MdbaseQuery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +102,10 @@ const SERVE_ROUTES: &[ServeRouteDefinition] = &[
     ServeRouteDefinition {
         id: ServeRouteId::DataviewEval,
         path: "/dataview/eval",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseQuery,
+        path: "/mdbase/query",
     },
 ];
 
@@ -222,6 +228,11 @@ fn route_query_schema(route: ServeRouteId) -> Value {
             }),
             json!(["file"]),
         ),
+        ServeRouteId::MdbaseQuery => (
+            json!({ "query": { "type": "string", "minLength": 1,
+                "description": "canonical mdbase query as JSON or YAML" } }),
+            json!(["query"]),
+        ),
         ServeRouteId::Root | ServeRouteId::Health | ServeRouteId::GraphStats => {
             (json!({}), json!([]))
         }
@@ -273,12 +284,25 @@ impl ServeResponse {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[must_use]
 pub fn route_request(
     paths: &VaultPaths,
     options: &ServeRouteOptions,
     state: &ServeHealthState,
     request: &ServeRequest,
+) -> ServeResponse {
+    route_request_with_mdbase(paths, options, state, request, None)
+}
+
+/// [`route_request`] with a host-retained mdbase query session. Without one,
+/// `/mdbase/query` runs the one-shot service with the same results.
+#[allow(clippy::too_many_lines)]
+pub fn route_request_with_mdbase(
+    paths: &VaultPaths,
+    options: &ServeRouteOptions,
+    state: &ServeHealthState,
+    request: &ServeRequest,
+    mdbase: Option<&std::sync::Mutex<MdbaseQuerySession>>,
 ) -> ServeResponse {
     if request.method != "GET" {
         return ServeResponse::error(405, "only GET requests are supported");
@@ -397,6 +421,28 @@ pub fn route_request(
             };
             match build_dataview_inline_report(paths, file, Some(&permissions)) {
                 Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::MdbaseQuery => {
+            let Some(source) = first_param(&request.query, "query") else {
+                return ServeResponse::error(400, "missing required query parameter: query");
+            };
+            let query = match parse_mdbase_query(source) {
+                Ok(query) => query,
+                Err(error) => return ServeResponse::error(400, error.to_string()),
+            };
+            let result = match mdbase {
+                Some(session) => match session.lock() {
+                    Ok(mut session) => session.query(&query, read_filter.as_ref()),
+                    Err(_) => {
+                        return ServeResponse::error(500, "mdbase query session is unavailable")
+                    }
+                },
+                None => build_mdbase_query_report(paths, &query, read_filter.as_ref()),
+            };
+            match result {
+                Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
@@ -604,7 +650,8 @@ mod tests {
                 "/dataview/inline",
                 "/dataview/query",
                 "/dataview/query-js",
-                "/dataview/eval"
+                "/dataview/eval",
+                "/mdbase/query"
             ])
         );
         assert_eq!(

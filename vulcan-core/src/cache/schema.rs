@@ -24,7 +24,8 @@ pub fn apply_schema_v23(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
             PRIMARY KEY (collection_root, path)
          ) WITHOUT ROWID;
          CREATE INDEX idx_mdbase_record_query_freshness ON mdbase_record_query(
-            collection_root, dependency_digest, record_model_version, path, stat_fingerprint
+            collection_root, dependency_digest, record_model_version, path, stat_fingerprint,
+            revision
          );
          CREATE TRIGGER mdbase_record_query_update AFTER UPDATE ON mdbase_record_cache BEGIN
             DELETE FROM mdbase_record_query

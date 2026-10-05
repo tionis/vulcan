@@ -219,6 +219,7 @@ fn query_metrics_keep_preflight_errors_ahead_of_record_work() {
 
 #[test]
 #[ignore = "public-fixture release stage diagnostic; run alone with VULCAN_MDB_PROFILE_FIXTURE"]
+#[allow(clippy::too_many_lines)]
 fn shared_query_stage_benchmark() {
     use vulcan_core::{resolve_permission_profile, PermissionGuard, ProfilePermissionGuard};
     let root = std::path::PathBuf::from(
@@ -235,6 +236,25 @@ fn shared_query_stage_benchmark() {
         .as_deref()
         .is_none_or(|name| name == "benchmark_public"));
     let paths = VaultPaths::new(root.join("collection"));
+    let watch = std::env::var_os("VULCAN_MDB_PROFILE_WATCH").is_some();
+    let mut session = std::env::var_os("VULCAN_MDB_PROFILE_SESSION")
+        .is_some()
+        .then(|| {
+            let session = crate::mdbase::MdbaseQuerySession::new(paths.clone());
+            if watch {
+                let monitor =
+                    vulcan_core::mdbase::MdbaseChangeMonitor::watch(&root.join("collection"))
+                        .unwrap();
+                session.with_change_monitor(monitor, std::time::Duration::from_secs(30))
+            } else {
+                session
+            }
+        });
+    let samples = std::env::var("VULCAN_MDB_PROFILE_SAMPLES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(10);
+    let mut repeated = Vec::new();
     let cases = [
         ("task", "open"),
         ("task", "active"),
@@ -246,7 +266,7 @@ fn shared_query_stage_benchmark() {
         ("project", "active"),
         ("project", "done"),
     ];
-    for (iteration, (kind, parameter)) in cases.iter().cycle().take(10).enumerate() {
+    for (iteration, (kind, parameter)) in cases.iter().cycle().take(samples).enumerate() {
         let query_name = format!("{kind}-{parameter}.json");
         let query: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join("queries").join(&query_name)).unwrap())
@@ -260,18 +280,20 @@ fn shared_query_stage_benchmark() {
         let filter = guard.read_filter();
         let permission_seconds = permission_start.elapsed().as_secs_f64();
         let mut metrics = MdbaseQueryMetrics::default();
-        let result = build_mdbase_query_report_profiled(
-            &paths,
-            &query,
-            (!filter.path_permission().is_unrestricted()).then_some(&filter),
-            &mut metrics,
-        );
+        let scoped = (!filter.path_permission().is_unrestricted()).then_some(&filter);
+        let result = match session.as_mut() {
+            Some(session) => session.query_profiled(&query, scoped, &mut metrics),
+            None => build_mdbase_query_report_profiled(&paths, &query, scoped, &mut metrics),
+        };
         let report =
             result.unwrap_or_else(|error| panic!("query failed: {error}; metrics={metrics:?}"));
         let serialization_start = Instant::now();
         let bytes = serde_json::to_vec(&report).unwrap();
         let serialization_seconds = serialization_start.elapsed().as_secs_f64();
         let request_seconds = start.elapsed().as_secs_f64();
+        if iteration > 0 {
+            repeated.push(request_seconds);
+        }
         let expected_indices = expected_indices(count, kind, parameter, profile.is_some());
         let expected = expected_indices.len();
         let expected_paths = expected_indices
@@ -306,6 +328,20 @@ fn shared_query_stage_benchmark() {
             "serialized_bytes": bytes.len(), "request_seconds": request_seconds,
             "permission_seconds": permission_seconds, "serialization_seconds": serialization_seconds,
             "metrics": metrics})
+        );
+    }
+    repeated.sort_by(f64::total_cmp);
+    if !repeated.is_empty() {
+        // Nearest rank: the smallest sample with at least this share below it.
+        let rank = |percent: usize| {
+            let index = (percent * repeated.len()).div_ceil(100).max(1) - 1;
+            repeated[index.min(repeated.len() - 1)]
+        };
+        println!(
+            "{}",
+            json!({"measurement": "shared_query_stage_summary", "acceptance_gate_result": "not_evaluated",
+            "session": session.is_some(), "watched": watch, "permission_profile": profile, "samples": repeated.len(),
+            "p50": rank(50), "p95": rank(95), "p99": rank(99)})
         );
     }
 }

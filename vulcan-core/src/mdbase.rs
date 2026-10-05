@@ -36,6 +36,8 @@ mod records;
 pub use records::*;
 mod record_cache;
 pub use record_cache::*;
+mod change_monitor;
+pub use change_monitor::MdbaseChangeMonitor;
 mod links;
 pub use links::*;
 mod lifecycle;

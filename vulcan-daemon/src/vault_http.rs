@@ -19,10 +19,12 @@ use axum::{Json, Router};
 use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use vulcan_app::mdbase::MdbaseQuerySession;
 use vulcan_app::serve::{
-    route_request, serve_route_paths, ServeHealthState, ServeRequest, ServeResponse,
+    route_request_with_mdbase, serve_route_paths, ServeHealthState, ServeRequest, ServeResponse,
     ServeRouteOptions,
 };
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
@@ -30,6 +32,9 @@ use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 pub const VAULT_HTTP_MAX_REQUEST_BYTES: usize = 32 * 1024;
 pub const VAULT_HTTP_TOKEN_HEADER: &str = "x-vulcan-token";
 pub const DEFAULT_VAULT_HTTP_DEADLINE: Duration = Duration::from_secs(30);
+/// Longest a watched mdbase proof is trusted without a fresh walk, bounding
+/// the effect of a missed filesystem notification.
+pub const MDBASE_WATCHED_PROOF_MAX_AGE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct VaultHttpState {
@@ -38,6 +43,7 @@ pub struct VaultHttpState {
     health: Arc<Mutex<ServeHealthState>>,
     security: VaultHttpSecurity,
     request_deadline: Duration,
+    mdbase: Arc<OnceLock<Mutex<MdbaseQuerySession>>>,
 }
 
 impl VaultHttpState {
@@ -53,6 +59,7 @@ impl VaultHttpState {
             health: Arc::new(Mutex::new(ServeHealthState::default())),
             security,
             request_deadline: DEFAULT_VAULT_HTTP_DEADLINE,
+            mdbase: Arc::new(OnceLock::new()),
         })
     }
 
@@ -282,6 +289,16 @@ pub fn vault_watch_service(
     ))
 }
 
+/// Watched freshness when the collection root can be monitored; otherwise
+/// every request walks the collection (strict freshness).
+fn mdbase_session(paths: &VaultPaths) -> MdbaseQuerySession {
+    let session = MdbaseQuerySession::new(paths.clone());
+    match vulcan_core::mdbase::MdbaseChangeMonitor::watch(paths.vault_root()) {
+        Ok(monitor) => session.with_change_monitor(monitor, MDBASE_WATCHED_PROOF_MAX_AGE),
+        Err(_) => session,
+    }
+}
+
 async fn authorize(State(state): State<VaultHttpState>, request: Request, next: Next) -> Response {
     let audit = RequestAudit::capture("vault", request.method(), request.uri());
     let origin = match header_text(request.headers(), &ORIGIN) {
@@ -341,8 +358,12 @@ async fn dispatch(State(state): State<VaultHttpState>, request: Request<Body>) -
         },
         |health| health.clone(),
     );
+    let mdbase = Arc::clone(&state.mdbase);
     let operation = tokio::task::spawn_blocking(move || {
-        route_request(paths.as_ref(), &options, &health, &app_request)
+        // The retained session exists only once a client queries mdbase.
+        let session = (app_request.path == "/mdbase/query")
+            .then(|| mdbase.get_or_init(|| Mutex::new(mdbase_session(paths.as_ref()))));
+        route_request_with_mdbase(paths.as_ref(), &options, &health, &app_request, session)
     });
     match with_deadline(state.request_deadline, operation).await {
         Ok(Ok(response)) => app_response(response),
@@ -573,6 +594,91 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(body(response).await["ok"], true);
         }
+    }
+
+    fn percent_encode(value: &str) -> String {
+        value
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+                    char::from(byte).to_string()
+                } else {
+                    format!("%{byte:02X}")
+                }
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn mdbase_queries_reuse_a_retained_session_and_observe_edits() {
+        let vault = tempfile::tempdir().expect("vault");
+        let root = vault.path();
+        std::fs::create_dir(root.join(".vulcan")).expect("config directory");
+        std::fs::write(root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+        std::fs::create_dir(root.join("_types")).expect("types");
+        std::fs::write(
+            root.join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n---\n",
+        )
+        .expect("type");
+        std::fs::write(root.join("a.md"), "---\ntype: task\ntitle: A\n---\n").expect("record");
+        let paths = VaultPaths::new(root);
+        let query = serde_json::json!({"types": ["task"], "where": "title == 'A'"});
+        // Populate the cache once through the one-shot service.
+        let expected =
+            vulcan_app::mdbase::build_mdbase_query_report(&paths, &query, None).expect("query");
+        let state = VaultHttpState::new(
+            paths.clone(),
+            ServeRouteOptions {
+                permissions: None,
+                watch_enabled: false,
+            },
+            VaultHttpSecurity::new("secret", vec!["127.0.0.1:3210".to_string()], Vec::new()),
+        )
+        .expect("state");
+        let router = vault_router(state);
+        let uri = format!("/mdbase/query?query={}", percent_encode(&query.to_string()));
+        let request = || {
+            HttpRequest::builder()
+                .uri(&uri)
+                .header(HOST, "127.0.0.1:3210")
+                .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                .body(Body::empty())
+                .expect("request")
+        };
+        for _ in 0..2 {
+            let response = router.clone().oneshot(request()).await.expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let value = body(response).await;
+            assert_eq!(value["result"], serde_json::to_value(&expected).unwrap());
+        }
+        std::fs::write(root.join("a.md"), "---\ntype: task\ntitle: B\n---\n").expect("edit");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = router.clone().oneshot(request()).await.expect("response");
+            let value = body(response).await;
+            if value["result"]["meta"]["total_count"] == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "edit never observed: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let response = router
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/mdbase/query")
+                    .header(HOST, "127.0.0.1:3210")
+                    .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

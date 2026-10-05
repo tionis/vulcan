@@ -1,0 +1,69 @@
+{
+  "measurement": "shared_query_session_diagnostic",
+  "acceptance_gate_result": "not_evaluated",
+  "boundary": "in-process shared service: per-request permission-profile resolution, authorization, execution and compact JSON serialization; excludes HTTP transport",
+  "build": "cargo +1.88.0 test --release -p vulcan-app shared_query_stage_benchmark -- --ignored (VULCAN_MDB_PROFILE_SESSION=1, VULCAN_MDB_PROFILE_SAMPLES=1001, optional VULCAN_MDB_PROFILE_WATCH=1 and VULCAN_MDB_PROFILE_SCOPE=benchmark_public)",
+  "fixture": {
+    "generator_version": 1,
+    "seed": 42,
+    "records": 10000,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348"
+  },
+  "requests": "nine canonical fixture queries cycled; first request excluded; each request independently checked for exact totals, ordered paths, body omission, diagnostics and the 256 KiB bound",
+  "runs": [
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.017861961,
+      "p95": 0.023295607,
+      "p99": 0.02635428,
+      "permission_profile": null,
+      "samples": 1000,
+      "session": true,
+      "watched": true
+    },
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.016637562,
+      "p95": 0.0207861,
+      "p99": 0.024811878,
+      "permission_profile": "benchmark_public",
+      "samples": 1000,
+      "session": true,
+      "watched": true
+    },
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.04665333,
+      "p95": 0.070910137,
+      "p99": 0.086429944,
+      "permission_profile": null,
+      "samples": 1000,
+      "session": true,
+      "watched": false
+    },
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.054360455,
+      "p95": 0.069074728,
+      "p99": 0.085842145,
+      "permission_profile": "benchmark_public",
+      "samples": 1000,
+      "session": true,
+      "watched": false
+    }
+  ],
+  "host_conditions": "shared development host with browser and agent sessions; load average 4.1-5.7 during these runs; not the designated reference machine",
+  "freshness": {
+    "watched": "a scope's walk proof is reused while the change monitor is healthy with no notification since before that walk, the cooperating write epoch is unchanged, and the proof is under 30 s old; controls are verified every request",
+    "strict": "every request verifies controls and walks every visible record"
+  },
+  "limitations": [
+    "single client; no concurrent readers or writers",
+    "HTTP transport and daemon scheduling excluded",
+    "watched freshness observes external edits only after notification delivery"
+  ]
+}

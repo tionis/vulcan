@@ -60,6 +60,29 @@ Cache population requires an initialized vault; standalone uninitialized collect
 
 Readers lacking lockfile-read authority retain the existing source-only path: cache dependency verification includes lockfile absence, and optimization must not broaden their grants or inspect a denied control path.
 
+**Retained host sessions.** `MdbaseQuerySession` (vulcan-app) is the long-lived host form of the indexed path. The daemon's vault HTTP API serves it as `GET /mdbase/query?query=<JSON or YAML>` and creates it on first use.
+
+- **Retained state.** The session keeps authorized control registries per read scope, compiled plans, a read-only cache connection, and decoded indexed rows. It never keeps results or grants. Every request takes the cooperating read guard and verifies controls.
+- **Row reuse.** A retained row is reused only while the request's walk observes the stat fingerprint it was decoded for. Changed rows are decoded again from cache rows whose stored fingerprint must equal the walk's. Residual and persisted-page reads must match the retained revision.
+- **In-memory decisions.** Predicates are decided in memory with the same exact rules as the SQL lowering, and a differential test checks both against shared value shapes.
+- **Strict policy (default).** Every request walks.
+- **Watched policy.** It requires an attached change monitor that ignores derived directories. A scope's last walk proof is reused only while all of these hold:
+  - the monitor is healthy;
+  - it has reported no notification since before that walk began;
+  - the cooperating write epoch is unchanged (it is advanced by every exclusive vault write lock, across processes);
+  - the proof is younger than its maximum age (the daemon uses 30 s).
+
+  Cooperating writes are therefore observed immediately, and external edits once their notification is delivered. Watcher errors or rescans fall back permanently to strict walks.
+
+The [10K session diagnostic](measurements/shared-query-session-10k.json) used 1,000 samples per mode on a loaded development host, at the in-process service boundary (no HTTP):
+
+| Policy | Unrestricted p95 / p99 | Restricted p95 / p99 |
+| --- | --- | --- |
+| Watched | 23 / 26 ms | 21 / 25 ms |
+| Strict | 71 / 86 ms | 69 / 86 ms |
+
+The watched figures sit within the shared-service targets; reference-host acceptance, concurrency, and HTTP-boundary measurement remain open.
+
 **Indexed metadata reads (schema v23, record model 8).** The public query service first tries an indexed path and falls back to the disk-reconciled path below on any doubt.
 
 - **Freshness.** Freshness is proven by stat fingerprints rather than content hashes. A fingerprint is a record's device, inode, size, mtime, and ctime. Refresh captures it with fstat on the same descriptor before and after reading the bytes it hashes, so a stored fingerprint always describes exactly the cached revision. Ordinary tools can restore mtime but not ctime, so a same-size edit with a restored mtime still invalidates the row. Off Unix no fingerprint exists and the path declines. Refresh publication itself remains content-verified.

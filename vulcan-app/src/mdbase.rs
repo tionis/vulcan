@@ -1,6 +1,8 @@
 //! Reusable mdbase collection read and journaled write workflows.
 
 mod query_profile;
+mod query_session;
+pub use query_session::MdbaseQuerySession;
 mod write_lifecycle;
 mod write_validation;
 pub use query_profile::{build_mdbase_query_report_profiled, MdbaseQueryMetrics};
@@ -525,18 +527,37 @@ fn try_indexed_query(
     now: chrono::DateTime<chrono::Utc>,
     metrics: &mut MdbaseQueryMetrics,
 ) -> Option<MdbaseQueryResult> {
-    // Same lockfile rule as cached loads: no cache use without that authority.
-    if filter.is_some_and(|filter| !filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME)) {
+    if !indexed_query_allowed(filter) {
         return None;
     }
-    metrics.indexed_attempts += 1;
-    let connection = rusqlite::Connection::open_with_flags(
+    let connection = open_query_cache(paths)?;
+    try_indexed_query_with(&connection, loaded, filter, query, now, metrics)
+}
+
+/// Same lockfile rule as cached loads: no cache use without that authority.
+fn indexed_query_allowed(filter: Option<&PermissionFilter>) -> bool {
+    filter.is_none_or(|filter| filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME))
+}
+
+fn open_query_cache(paths: &VaultPaths) -> Option<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(
         paths.cache_db(),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .ok()?;
+    .ok()
+}
+
+fn try_indexed_query_with(
+    connection: &rusqlite::Connection,
+    loaded: &LoadedCollection,
+    filter: Option<&PermissionFilter>,
+    query: &vulcan_core::mdbase::MdbasePreparedQuery,
+    now: chrono::DateTime<chrono::Utc>,
+    metrics: &mut MdbaseQueryMetrics,
+) -> Option<MdbaseQueryResult> {
+    metrics.indexed_attempts += 1;
     let result = vulcan_core::mdbase::execute_indexed_mdbase_query(
-        &connection,
+        connection,
         &loaded.collection,
         &loaded.types,
         &loaded.contracts,

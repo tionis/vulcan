@@ -211,3 +211,81 @@ fn unsupported_sql_expressions_remain_residual_without_changing_compilation() {
     assert!(engine.compile(&too_many).unwrap().sql_predicate().is_none());
     assert!(engine.compile("broken(").is_err());
 }
+
+#[test]
+fn in_memory_decisions_equal_the_sql_lowering() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    let values = [
+        json!("open"),
+        json!("Open"),
+        json!("op"),
+        json!(""),
+        json!("open\u{0}x"),
+        json!("ümlaut"),
+        json!("z"),
+        json!(1),
+        json!(-5),
+        json!(9_007_199_254_740_993_i64),
+        json!(i64::MAX),
+        json!(18_446_744_073_709_551_615_u64),
+        json!(1.5),
+        json!(2.0),
+        json!(true),
+        json!(false),
+        json!(null),
+        json!(["open"]),
+        json!({"open": true}),
+    ];
+    let expressions = [
+        "status == 'open'",
+        "status != 'open'",
+        "status < 'p'",
+        "status >= 'op'",
+        "status.startsWith('op')",
+        "status == 2",
+        "status > -6",
+        "status <= 9007199254740993",
+        "status == true",
+        "status != false",
+        "file.path.startsWith('notes/')",
+        "status == 'open' && file.path == 'notes/a.md'",
+        "record.status == 'open'",
+        "missing == 'x'",
+    ];
+    let engine = MdbaseCelEngine::default();
+    for expression in expressions {
+        let program = engine.compile(expression).unwrap();
+        let predicate = program.sql_predicate().unwrap();
+        let mut parameters = Vec::new();
+        let (columns, valid, matches) =
+            predicate.render_columns(&mut parameters, "record.effective_frontmatter_jsonb");
+        let columns = columns.join(", ");
+        let sql = format!(
+            "SELECT COALESCE({valid}, 0), COALESCE({matches}, 0)
+             FROM (SELECT path, {columns} FROM (
+                 SELECT ?{path} AS path, jsonb(?{json}) AS effective_frontmatter_jsonb) AS record
+             ) AS record",
+            path = parameters.len() + 1,
+            json = parameters.len() + 2,
+        );
+        for value in &values {
+            for path in ["notes/a.md", "other/b.md"] {
+                let effective = json!({"status": value});
+                let mut bound = parameters.clone();
+                bound.push(rusqlite::types::Value::Text(path.to_string()));
+                bound.push(rusqlite::types::Value::Text(effective.to_string()));
+                let (sql_decided, sql_matched): (i64, i64) = connection
+                    .query_row(&sql, rusqlite::params_from_iter(bound), |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })
+                    .unwrap();
+                let expected = (sql_decided != 0).then_some(sql_matched != 0);
+                assert_eq!(
+                    predicate.decide(path, &effective),
+                    expected,
+                    "{expression} with {value} at {path}"
+                );
+            }
+        }
+    }
+}
