@@ -50,6 +50,9 @@ pub struct MdbaseIndexedQueryMetrics {
     pub reloaded_rows: usize,
     /// A host-presented proof replaced the record walk.
     pub trusted_proof: bool,
+    /// The walk found records the cache does not currently describe; an
+    /// authorized refresh can make the indexed path available again.
+    pub freshness_miss: bool,
 }
 
 struct CandidateRow {
@@ -87,11 +90,15 @@ pub fn execute_indexed_mdbase_query(
     let Ok(transaction) = connection.unchecked_transaction() else {
         return Ok(None);
     };
-    let Ok(Some((dependency_digest, visible))) =
-        prove_fresh(&transaction, collection, types, contracts, filter)
-    else {
-        return Ok(None);
-    };
+    let (dependency_digest, visible) =
+        match prove_fresh(&transaction, collection, types, contracts, filter) {
+            Ok(Some(proof)) => proof,
+            Ok(None) => {
+                metrics.freshness_miss = true;
+                return Ok(None);
+            }
+            Err(_) => return Ok(None),
+        };
     metrics.visible_records = visible.len();
     metrics.freshness_seconds = start.elapsed().as_secs_f64();
     let start = Instant::now();
@@ -669,7 +676,7 @@ pub fn execute_retained_mdbase_query(
         metrics.trusted_proof = true;
         proof.clone()
     } else {
-        let Ok(Some((visible, max_path_bytes))) = revalidate_retained(
+        let (visible, max_path_bytes) = match revalidate_retained(
             &transaction,
             collection,
             types,
@@ -677,8 +684,13 @@ pub fn execute_retained_mdbase_query(
             filter,
             retained,
             metrics,
-        ) else {
-            return Ok(None);
+        ) {
+            Ok(Some(proof)) => proof,
+            Ok(None) => {
+                metrics.freshness_miss = true;
+                return Ok(None);
+            }
+            Err(_) => return Ok(None),
         };
         MdbaseRetainedProof {
             visible: Arc::new(visible),

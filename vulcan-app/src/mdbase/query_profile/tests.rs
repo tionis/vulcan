@@ -146,6 +146,25 @@ fn query_metrics_preserve_reports_and_distinguish_source_refresh_and_cached_load
     assert_eq!(metrics.indexed.visible_records, 2);
     assert_eq!(metrics.indexed.hydrated, 1);
     assert_eq!(source.results.len(), 1);
+
+    // After an edit the stale proof misses, an incremental refresh publishes
+    // the change, and the retried indexed path serves the edited record.
+    let (_directory, paths) = fixture();
+    vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+    let all = json!({"types": ["task"], "select": ["title"]});
+    build_mdbase_query_report_profiled(&paths, &all, None, &mut metrics).unwrap();
+    let edited = paths.vault_root().join("tasks/public.md");
+    let source = std::fs::read_to_string(&edited).unwrap();
+    std::fs::write(&edited, source.replace("title: Public", "title: Edited")).unwrap();
+    let actual = build_mdbase_query_report_profiled(&paths, &all, None, &mut metrics).unwrap();
+    assert_eq!(metrics.cache_refresh_attempts, 1);
+    assert_eq!(metrics.indexed_attempts, 2);
+    assert_eq!(metrics.indexed_hits, 1);
+    assert!(serde_json::to_string(&actual).unwrap().contains("Edited"));
+    assert_eq!(
+        actual,
+        build_mdbase_query_report(&paths, &all, None).unwrap()
+    );
 }
 
 #[test]

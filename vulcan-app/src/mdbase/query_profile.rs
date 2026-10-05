@@ -67,9 +67,15 @@ pub fn build_mdbase_query_report_profiled(
             compile_mdbase_prepared_query(query).map_err(AppError::operation)
         })?;
         let now = DateTime::<Utc>::from(SystemTime::now());
-        if let Some(mut report) =
-            super::try_indexed_query(paths, &loaded, filter, &prepared, now, metrics)
-        {
+        let mut indexed = super::try_indexed_query(paths, &loaded, filter, &prepared, now, metrics);
+        if indexed.is_none() && metrics.indexed.freshness_miss {
+            // Bring the cache up to date incrementally, then serve the indexed
+            // path instead of decoding the whole collection.
+            if super::refresh_query_cache(paths, &loaded, filter, metrics) {
+                indexed = super::try_indexed_query(paths, &loaded, filter, &prepared, now, metrics);
+            }
+        }
+        if let Some(mut report) = indexed {
             time(&mut metrics.diagnostic_assembly_seconds, || {
                 report
                     .diagnostics

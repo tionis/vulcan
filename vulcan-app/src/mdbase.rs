@@ -534,6 +534,35 @@ fn try_indexed_query(
     try_indexed_query_with(&connection, loaded, filter, query, now, metrics)
 }
 
+/// Incrementally refresh an initialized cache for an unrestricted reader.
+/// Restricted readers never publish cache rows. Returns whether rows were
+/// refreshed; failures leave the ordinary path to reconcile from sources.
+fn refresh_query_cache(
+    paths: &VaultPaths,
+    loaded: &LoadedCollection,
+    filter: Option<&PermissionFilter>,
+    metrics: &mut MdbaseQueryMetrics,
+) -> bool {
+    if filter.is_some_and(|filter| !filter.path_permission().is_unrestricted())
+        || !paths.cache_db().exists()
+    {
+        return false;
+    }
+    let Ok(mut database) = vulcan_core::CacheDatabase::open(paths) else {
+        return false;
+    };
+    metrics.cache_refresh_attempts += 1;
+    let start = std::time::Instant::now();
+    let refreshed = vulcan_core::mdbase::refresh_mdbase_record_cache(
+        &mut database,
+        &loaded.collection,
+        &loaded.types,
+        &loaded.contracts,
+    );
+    metrics.cache_refresh_seconds += start.elapsed().as_secs_f64();
+    refreshed.is_ok()
+}
+
 /// Same lockfile rule as cached loads: no cache use without that authority.
 fn indexed_query_allowed(filter: Option<&PermissionFilter>) -> bool {
     filter.is_none_or(|filter| filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME))

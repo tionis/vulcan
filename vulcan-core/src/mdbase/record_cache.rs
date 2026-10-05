@@ -290,13 +290,11 @@ pub fn capture_mdbase_record_manifest_with_fingerprints(
     Ok((manifest, fingerprints))
 }
 
-/// Build the same manifest as [`capture_mdbase_record_manifest`] from the
-/// cache's current rows when every visible record's stat fingerprint still
-/// matches the bytes that produced its cached revision. Controls are verified
-/// as usual, and no record contents are read. Returns `None` (never a partial
-/// manifest) when any visible record is new, changed, uncached, cached for an
-/// older dependency digest or model, or lacks a fingerprint; callers then fall
-/// back to content capture.
+/// Build the same manifest as [`capture_mdbase_record_manifest`], taking each
+/// visible record's revision from the cache when its stat fingerprint still
+/// matches the bytes that produced it and hashing only the other records (new,
+/// changed, uncached, or cached for older controls or models). Controls are
+/// verified as usual. Returns `None` only when the cache cannot be read.
 pub fn capture_cached_mdbase_record_manifest(
     connection: &Connection,
     collection: &MdbaseCollection,
@@ -337,24 +335,27 @@ pub fn capture_cached_mdbase_record_manifest(
     }
     let mut manifest = BTreeMap::new();
     for path in &paths {
-        let Some((revision, Some(file), fingerprint)) = cached.remove(path) else {
-            return Ok(None);
-        };
         // Not following a final symlink keeps a swapped link from matching;
         // any other replacement changes the device/inode or ctime.
-        let Ok(metadata) = fs::symlink_metadata(collection.root.join(path)) else {
-            return Ok(None);
+        let proven = cached
+            .remove(path)
+            .and_then(|(revision, file, fingerprint)| {
+                let metadata = fs::symlink_metadata(collection.root.join(path)).ok()?;
+                (stat_fingerprint(&metadata) == Some(fingerprint)).then_some(())?;
+                let file = serde_json::from_str(&file?).ok()?;
+                Some(MdbaseCachedRecordExpectation { revision, file })
+            });
+        // Records the cache cannot vouch for are hashed from one descriptor.
+        let expectation = if let Some(expectation) = proven {
+            expectation
+        } else {
+            let (source, metadata) = read_record_source_stably(collection, path)?;
+            MdbaseCachedRecordExpectation {
+                revision: super::mdbase_content_revision(&source),
+                file: super::records::file_metadata(path, source.len() as u64, Some(&metadata)),
+            }
         };
-        if stat_fingerprint(&metadata) != Some(fingerprint) {
-            return Ok(None);
-        }
-        let Ok(file) = serde_json::from_str(&file) else {
-            return Ok(None);
-        };
-        manifest.insert(
-            path.clone(),
-            MdbaseCachedRecordExpectation { revision, file },
-        );
+        manifest.insert(path.clone(), expectation);
     }
     if visible_record_paths(collection, filter)? != paths {
         return Err(MdbaseRecordCacheError::StaleRecords);
@@ -1113,6 +1114,7 @@ fn update_mdbase_record_cache(
     update_mdbase_record_cache_with_boundary(database, collection, types, contracts, rebuild, || {})
 }
 
+#[allow(clippy::too_many_lines)]
 fn update_mdbase_record_cache_with_boundary(
     database: &mut CacheDatabase,
     collection: &MdbaseCollection,
@@ -1136,8 +1138,13 @@ fn update_mdbase_record_cache_with_boundary(
     } else {
         load_local_records(database.connection(), &collection_root, &dependency_digest)?
     };
-    let (local_records, fingerprints, local_records_derived, local_records_reused) =
-        derive_local_records(collection, types, previous_local)?;
+    let previous_query = if rebuild {
+        BTreeMap::new()
+    } else {
+        load_previous_query_rows(database.connection(), &collection_root, &dependency_digest)?
+    };
+    let (local_records, fingerprints, unread, local_records_derived, local_records_reused) =
+        derive_local_records(collection, types, previous_local, &previous_query)?;
     let (next, evidence) = derive_collection_cache(
         collection,
         types,
@@ -1145,6 +1152,14 @@ fn update_mdbase_record_cache_with_boundary(
         &collection_root,
         &dependency_digest,
         &local_records,
+        &unread
+            .iter()
+            .filter_map(|path| {
+                previous_query
+                    .get(path)
+                    .map(|previous| (path.clone(), previous.evidence))
+            })
+            .collect(),
     );
     let previous_headers = load_collection_headers(database.connection(), &collection_root)?;
     let dependency_changed = previous_headers.values().any(|(digest, version)| {
@@ -1172,7 +1187,7 @@ fn update_mdbase_record_cache_with_boundary(
     };
 
     before_publication();
-    verify_derived_record_snapshot(collection, &next)?;
+    verify_derived_record_snapshot(collection, &next, &fingerprints, &unread)?;
     if verify_mdbase_control_snapshots(collection, types, contracts, None)? != controls {
         return Err(MdbaseRecordCacheError::StaleControls);
     }
@@ -1191,26 +1206,33 @@ fn update_mdbase_record_cache_with_boundary(
             }
         }
         for (path, record) in &next {
-            if rebuild || previous.get(path) != Some(record) {
+            let unchanged = !rebuild && previous.get(path) == Some(record);
+            if !unchanged {
                 store_cached_record(transaction, record)?;
             }
-            // Local payload publication shares the final projection transaction.
-            // Metadata readers never select this body-bearing column.
-            let local = serde_json::to_string(&local_records[path])?;
-            transaction.execute(
-                "UPDATE mdbase_record_cache SET local_record_json = ?3
-                 WHERE collection_root = ?1 AND path = ?2
-                   AND local_record_json IS NOT ?3",
-                params![collection_root, path, local],
-            )?;
+            // An unread record's payload is the stored one, byte for byte.
+            if !unread.contains(path) {
+                // Local payload publication shares the final projection transaction.
+                // Metadata readers never select this body-bearing column.
+                let local = serde_json::to_string(&local_records[path])?;
+                transaction.execute(
+                    "UPDATE mdbase_record_cache SET local_record_json = ?3
+                     WHERE collection_root = ?1 AND path = ?2
+                       AND local_record_json IS NOT ?3",
+                    params![collection_root, path, local],
+                )?;
+            }
             // Narrow query row for indexed reads. The fingerprint describes
-            // the exact bytes behind this revision.
-            store_query_row(
-                transaction,
-                record,
-                fingerprints.get(path).copied().flatten(),
-                &evidence[path],
-            )?;
+            // the exact bytes behind this revision. An unread, unchanged row
+            // keeps its published query row.
+            if !(unchanged && unread.contains(path) && previous_query.contains_key(path)) {
+                store_query_row(
+                    transaction,
+                    record,
+                    fingerprints.get(path).copied().flatten(),
+                    &evidence[path],
+                )?;
+            }
         }
         Ok::<_, MdbaseRecordCacheError>(())
     })?;
@@ -1235,8 +1257,21 @@ fn update_mdbase_record_cache_with_boundary(
 fn verify_derived_record_snapshot(
     collection: &MdbaseCollection,
     records: &BTreeMap<String, MdbaseCachedRecord>,
+    fingerprints: &BTreeMap<String, Option<MdbaseStatFingerprint>>,
+    unread: &BTreeSet<String>,
 ) -> Result<(), MdbaseRecordCacheError> {
     for (path, record) in records {
+        // Unread records are verified by the same fingerprint that justified
+        // reusing them; a changed file changes its device, inode, or ctime.
+        if unread.contains(path) {
+            let current = fs::symlink_metadata(collection.root.join(path))
+                .ok()
+                .and_then(|metadata| stat_fingerprint(&metadata));
+            if current.is_none() || fingerprints.get(path).copied().flatten() != current {
+                return Err(MdbaseRecordCacheError::StaleRecords);
+            }
+            continue;
+        }
         let read_error = |source: std::io::Error| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 MdbaseRecordCacheError::StaleRecords
@@ -1277,6 +1312,7 @@ fn derive_collection_cache(
     collection_root: &str,
     dependency_digest: &str,
     local_records: &BTreeMap<String, LocalRecordSnapshot>,
+    previous_evidence: &BTreeMap<String, super::MdbaseQueryInputEvidence>,
 ) -> (
     BTreeMap<String, MdbaseCachedRecord>,
     BTreeMap<String, super::MdbaseQueryInputEvidence>,
@@ -1289,14 +1325,17 @@ fn derive_collection_cache(
     );
     // Evidence uses the unrestricted post-overlay record, the largest input
     // any scope can observe apart from bounded per-link resolution changes.
+    // Unread records keep published evidence: other records can change only
+    // their link resolution, which the per-link bound already covers.
     let evidence = records
         .records
         .iter()
         .map(|record| {
-            (
-                record.path.clone(),
-                super::mdbase_query_input_evidence(record, types),
-            )
+            let evidence = previous_evidence
+                .get(&record.path)
+                .copied()
+                .unwrap_or_else(|| super::mdbase_query_input_evidence(record, types));
+            (record.path.clone(), evidence)
         })
         .collect();
     let records = records
@@ -1361,26 +1400,88 @@ fn load_local_records(
 type DerivedLocalRecords = (
     BTreeMap<String, LocalRecordSnapshot>,
     BTreeMap<String, Option<MdbaseStatFingerprint>>,
+    BTreeSet<String>,
     usize,
     usize,
 );
+
+/// A published query row's freshness evidence from an earlier refresh.
+struct PreviousQueryRow {
+    revision: String,
+    fingerprint: MdbaseStatFingerprint,
+    evidence: super::MdbaseQueryInputEvidence,
+}
+
+fn load_previous_query_rows(
+    connection: &Connection,
+    root: &str,
+    digest: &str,
+) -> Result<BTreeMap<String, PreviousQueryRow>, MdbaseRecordCacheError> {
+    let mut statement = connection.prepare(
+        "SELECT path, revision, stat_fingerprint, input_converted, input_bytes, input_nodes,
+                input_width, input_links
+         FROM mdbase_record_query
+         WHERE collection_root = ?1 AND dependency_digest = ?2 AND record_model_version = ?3
+           AND stat_fingerprint IS NOT NULL",
+    )?;
+    let count = |value: i64| usize::try_from(value).unwrap_or(usize::MAX);
+    let rows = statement.query_map(params![root, digest, MDBASE_RECORD_MODEL_VERSION], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            PreviousQueryRow {
+                revision: row.get(1)?,
+                fingerprint: row.get(2)?,
+                evidence: super::MdbaseQueryInputEvidence {
+                    converted: row.get::<_, i64>(3)? != 0,
+                    bytes: count(row.get(4)?),
+                    nodes: count(row.get(5)?),
+                    width: count(row.get(6)?),
+                    links: count(row.get(7)?),
+                },
+            },
+        ))
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
 
 fn derive_local_records(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,
     mut previous: BTreeMap<String, LocalRecordSnapshot>,
+    previous_query: &BTreeMap<String, PreviousQueryRow>,
 ) -> Result<DerivedLocalRecords, MdbaseRecordCacheError> {
-    let discovery =
-        super::discover_mdbase_files(collection).map_err(MdbaseRecordError::Discovery)?;
+    let discovery = super::discover_mdbase_record_stats_parallel(collection)
+        .map_err(MdbaseRecordError::Discovery)?;
     let clock = super::records::operation_clock(collection);
     // CEL inference may depend on now/today. Until dependency classification is
     // complete, never reuse local membership when any match expression exists.
     let dynamic = has_dynamic_local_membership(types);
     let mut records = BTreeMap::new();
     let mut fingerprints = BTreeMap::new();
+    let mut unread = BTreeSet::new();
     let mut derived = 0;
     let mut reused = 0;
-    for path in discovery.records {
+    for (path, metadata) in discovery {
+        // An unchanged stat fingerprint proves the bytes behind the published
+        // revision, so its local derivation is reused without reading the file.
+        let fingerprint = metadata.as_ref().and_then(stat_fingerprint);
+        if !dynamic {
+            if let (Some(fingerprint), Some(published)) = (fingerprint, previous_query.get(&path)) {
+                if published.fingerprint == fingerprint {
+                    if let Some(record) = previous.remove(&path).filter(|record| {
+                        record.path == path
+                            && record.revision == published.revision
+                            && is_local_record(record)
+                    }) {
+                        reused += 1;
+                        fingerprints.insert(path.clone(), Some(fingerprint));
+                        unread.insert(path.clone());
+                        records.insert(path, record);
+                        continue;
+                    }
+                }
+            }
+        }
         let (source, metadata) = read_record_source_stably(collection, &path)?;
         fingerprints.insert(path.clone(), stat_fingerprint(&metadata));
         let revision = super::mdbase_content_revision(&source);
@@ -1411,7 +1512,7 @@ fn derive_local_records(
         };
         records.insert(path, record);
     }
-    Ok((records, fingerprints, derived, reused))
+    Ok((records, fingerprints, unread, derived, reused))
 }
 
 /// Read one record and the descriptor metadata that describes exactly those
@@ -2958,6 +3059,75 @@ mod tests {
                 "spec_version: 0.3.0\n",
             );
         }
+    }
+
+    #[test]
+    fn incremental_refresh_matches_a_full_rebuild_after_edits() {
+        fn snapshot(database: &CacheDatabase) -> Vec<String> {
+            let mut rows = Vec::new();
+            for sql in [
+                "SELECT path || '|' || revision || '|' || types_json || '|' || effective_frontmatter_json
+                    || '|' || contract_views_json || '|' || diagnostics_json || '|' || metadata_json
+                    || '|' || COALESCE(local_record_json, '') FROM mdbase_record_cache ORDER BY path",
+                "SELECT path || '|' || revision || '|' || hex(stat_fingerprint) || '|' || input_converted
+                    || '|' || input_nodes || '|' || input_width || '|' || input_links
+                    || '|' || json(effective_frontmatter_jsonb) || '|' || file_json
+                    FROM mdbase_record_query ORDER BY path",
+                "SELECT path || '|' || type_name FROM mdbase_record_types ORDER BY path, type_name",
+            ] {
+                let mut statement = database.connection().prepare(sql).unwrap();
+                rows.extend(
+                    statement
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .unwrap()
+                        .map(Result::unwrap),
+                );
+            }
+            rows
+        }
+        let directory = tempdir().expect("collection directory");
+        let root = directory.path();
+        write(&root.join("mdbase.yaml"), "spec_version: 0.3.0\n");
+        write(
+            &root.join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  read_defaults: {status: open}\n---\n",
+        );
+        write(
+            &root.join("a.md"),
+            "---\ntype: task\nid: one\n---\n[[b]] [[c]]\n",
+        );
+        write(&root.join("b.md"), "---\ntype: task\nid: two\n---\nb\n");
+        write(&root.join("d.md"), "---\ntype: task\n---\n[[a]]\n");
+        let paths = VaultPaths::new(root);
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(root);
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+
+        // A content change, a new link target, a duplicate id, a deletion, and
+        // an unchanged rewrite (new inode, same bytes).
+        write(
+            &root.join("b.md"),
+            "---\ntype: task\nid: one\nstatus: done\n---\nb\n",
+        );
+        write(&root.join("c.md"), "---\ntype: task\n---\nc\n");
+        fs::remove_file(root.join("d.md")).unwrap();
+        let a = fs::read_to_string(root.join("a.md")).unwrap();
+        fs::remove_file(root.join("a.md")).unwrap();
+        write(&root.join("a.md"), &a);
+        let refreshed =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert!(refreshed.local_records_derived >= 3, "{refreshed:?}");
+        let incremental = snapshot(&database);
+        rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(incremental, snapshot(&database));
+
+        // Unchanged records are reused without reading them.
+        let unchanged =
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(unchanged.local_records_derived, 0);
+        assert_eq!(unchanged.local_records_reused, 3);
+        assert_eq!(snapshot(&database), incremental);
     }
 
     #[test]
