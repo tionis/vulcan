@@ -359,6 +359,7 @@ fn insert_snapshot(
         insert_scan_versions(transaction, &checkpoint_id, &snapshot.documents)?;
         reconcile_vector_inputs(transaction)?;
         transaction.execute("DELETE FROM checkpoint_dirty_documents", [])?;
+        transaction.execute("DELETE FROM checkpoint_link_dirty_documents", [])?;
         transaction.execute("DELETE FROM meta WHERE key = 'checkpoint_reset'", [])?;
     } else {
         let mut statement = transaction.prepare(
@@ -612,9 +613,10 @@ fn build_incremental_snapshot(
             .collect::<Result<Vec<_>, _>>()?,
     );
     dirty.extend(changed_vector_documents(connection)?);
-    // Graph changes can affect both an unedited source's resolved link hash and
-    // an unedited target's orphan flag. Age changes do not require any hashing.
-    let links = document_link_hashes(connection)?;
+    // Graph changes can affect an unedited source's resolved link hash, which
+    // triggers record as link-dirty, and an unedited target's orphan flag.
+    // Age changes do not require any hashing.
+    let link_dirty = link_dirty_documents(connection)?;
     let outbound = count_map(connection, "SELECT source_document_id, COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL GROUP BY source_document_id")?;
     let inbound = count_map(connection, "SELECT resolved_target_id, COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL GROUP BY resolved_target_id")?;
     let now = current_unix_timestamp()?;
@@ -631,12 +633,18 @@ fn build_incremental_snapshot(
     let mut documents = Vec::new();
     let mut hash_ids = Vec::new();
     let mut hash_slots = Vec::new();
+    let mut link_ids = Vec::new();
+    let mut link_slots = Vec::new();
     for row in rows {
         let (id, path, extension, content_hash, mtime) = row?;
         let old = previous.get(&path);
         if dirty.contains(&id) || old.is_none_or(|state| state.content_hash != content_hash) {
             hash_ids.push(id.clone());
             hash_slots.push(documents.len());
+        }
+        if old.is_none() || link_dirty.contains(&id) {
+            link_ids.push(id.clone());
+            link_slots.push(documents.len());
         }
         let kind = match extension.as_str() {
             "md" => "note",
@@ -647,7 +655,7 @@ fn build_incremental_snapshot(
             path,
             document_kind: kind.into(),
             content_hash,
-            link_hash: links.get(&id).cloned().unwrap_or_default(),
+            link_hash: old.map(|state| state.link_hash.clone()).unwrap_or_default(),
             property_hash: old
                 .map(|state| state.property_hash.clone())
                 .unwrap_or_default(),
@@ -659,6 +667,13 @@ fn build_incremental_snapshot(
         });
     }
     // Bound bind parameters even for a large update or model switch.
+    for (ids, slots) in link_ids.chunks(256).zip(link_slots.chunks(256)) {
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let links = document_link_hashes_for_ids(connection, &placeholders, ids)?;
+        for (id, slot) in ids.iter().zip(slots) {
+            documents[*slot].link_hash = links.get(id).cloned().unwrap_or_default();
+        }
+    }
     for (ids, slots) in hash_ids.chunks(256).zip(hash_slots.chunks(256)) {
         let placeholders = vec!["?"; ids.len()].join(",");
         let properties = document_property_hashes_for_ids(connection, &placeholders, ids)?;
@@ -784,10 +799,44 @@ fn count_map(
     Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
 }
 
+/// Documents whose link rows or resolved target paths changed since the last
+/// scan checkpoint.
+fn link_dirty_documents(
+    connection: &Connection,
+) -> Result<std::collections::HashSet<String>, CheckpointError> {
+    let mut statement =
+        connection.prepare("SELECT document_id FROM checkpoint_link_dirty_documents")?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(ids)
+}
+
 fn document_link_hashes(
     connection: &Connection,
 ) -> Result<HashMap<String, String>, CheckpointError> {
-    let mut statement = connection.prepare(
+    link_hashes(connection, "", &[])
+}
+
+/// [`document_link_hashes`] for the given source documents only.
+fn document_link_hashes_for_ids(
+    connection: &Connection,
+    placeholders: &str,
+    ids: &[String],
+) -> Result<HashMap<String, String>, CheckpointError> {
+    link_hashes(
+        connection,
+        &format!("WHERE links.source_document_id IN ({placeholders})"),
+        ids,
+    )
+}
+
+fn link_hashes(
+    connection: &Connection,
+    filter: &str,
+    ids: &[String],
+) -> Result<HashMap<String, String>, CheckpointError> {
+    let mut statement = connection.prepare(&format!(
         "
         SELECT
             source_document_id,
@@ -800,10 +849,11 @@ fn document_link_hashes(
             COALESCE(target.path, '')
         FROM links
         LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+        {filter}
         ORDER BY source_document_id, byte_offset
-        ",
-    )?;
-    let rows = statement.query_map([], |row| {
+        "
+    ))?;
+    let rows = statement.query_map(rusqlite::params_from_iter(ids), |row| {
         Ok((
             row.get::<_, String>(0)?,
             [

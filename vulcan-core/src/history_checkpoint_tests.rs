@@ -139,6 +139,16 @@ fn snapshots_capture_indirect_graph_properties_age_and_deletion() {
     assert!(!linked[1].orphan);
     assert!(linked[2].stale);
     assert_ne!(linked[2].property_hash, initial[2].property_hash);
+    // Re-resolving an unedited source changes its hash without its own scan.
+    c.execute("UPDATE links SET resolved_target_id = NULL", [])
+        .unwrap();
+    record_scan_checkpoint_incremental(c, &[]).unwrap();
+    let (_, unresolved) = assert_current_snapshot(c);
+    assert_ne!(unresolved[0].link_hash, linked[0].link_hash);
+    c.execute("UPDATE links SET resolved_target_id = '1'", [])
+        .unwrap();
+    record_scan_checkpoint_incremental(c, &[]).unwrap();
+    assert_eq!(assert_current_snapshot(c).1, linked);
     c.execute(
         "UPDATE documents SET path = 'renamed.md' WHERE id = '1'",
         [],

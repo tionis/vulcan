@@ -385,4 +385,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 8;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 24;
+pub const SCHEMA_VERSION: u32 = 25;

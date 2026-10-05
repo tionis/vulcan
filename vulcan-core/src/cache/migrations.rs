@@ -140,6 +140,11 @@ impl MigrationRegistry {
                 "retain mdbase record identity facts for scoped refresh",
                 schema::apply_schema_v24,
             ),
+            Migration::new(
+                25,
+                "track link changes for incremental scan checkpoints",
+                schema::apply_schema_v25,
+            ),
         ])
     }
 

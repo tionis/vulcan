@@ -1,5 +1,49 @@
 use rusqlite::Transaction;
 
+/// Link-hash invalidation for incremental scan checkpoints. A document's
+/// checkpoint link hash covers its link rows and the paths of their resolved
+/// targets, so link writes and target renames or deletions mark the source.
+/// The next checkpoint is full because earlier changes were not tracked.
+/// Guards instead of `OR IGNORE`: foreign-key actions that fire these
+/// triggers do not honor the trigger's own conflict policy.
+pub fn apply_schema_v25(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TABLE checkpoint_link_dirty_documents (document_id TEXT PRIMARY KEY);
+         CREATE TRIGGER checkpoint_link_insert AFTER INSERT ON links BEGIN
+             INSERT INTO checkpoint_link_dirty_documents SELECT new.source_document_id
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_link_dirty_documents
+                               WHERE document_id = new.source_document_id);
+         END;
+         CREATE TRIGGER checkpoint_link_delete AFTER DELETE ON links BEGIN
+             INSERT INTO checkpoint_link_dirty_documents SELECT old.source_document_id
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_link_dirty_documents
+                               WHERE document_id = old.source_document_id);
+         END;
+         CREATE TRIGGER checkpoint_link_update AFTER UPDATE ON links BEGIN
+             INSERT INTO checkpoint_link_dirty_documents SELECT old.source_document_id
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_link_dirty_documents
+                               WHERE document_id = old.source_document_id);
+             INSERT INTO checkpoint_link_dirty_documents SELECT new.source_document_id
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_link_dirty_documents
+                               WHERE document_id = new.source_document_id);
+         END;
+         CREATE TRIGGER checkpoint_link_target_rename AFTER UPDATE OF path ON documents
+         WHEN old.path IS NOT new.path BEGIN
+             INSERT INTO checkpoint_link_dirty_documents
+             SELECT DISTINCT source_document_id FROM links
+             WHERE resolved_target_id = new.id AND source_document_id NOT IN
+                 (SELECT document_id FROM checkpoint_link_dirty_documents);
+         END;
+         CREATE TRIGGER checkpoint_link_target_delete BEFORE DELETE ON documents BEGIN
+             INSERT INTO checkpoint_link_dirty_documents
+             SELECT DISTINCT source_document_id FROM links
+             WHERE resolved_target_id = old.id AND source_document_id NOT IN
+                 (SELECT document_id FROM checkpoint_link_dirty_documents);
+         END;
+         INSERT OR IGNORE INTO meta(key, value) VALUES ('checkpoint_reset', '1');",
+    )
+}
+
 /// Per-record identity facts (types, basename, authored ID, uniqueness
 /// values) let a refresh prove that changed records leave every other
 /// record's overlay unchanged. Rows without them are rewritten by refresh.
@@ -960,7 +1004,11 @@ pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite:
     // Keep historical versions, just like legacy checkpoint_documents. Property
     // deletes enqueue dirty IDs, so clear live tracking only after projections.
     // Older migration registries can rebuild before v19 has introduced these.
-    for table in ["checkpoint_dirty_documents", "checkpoint_vector_inputs"] {
+    for table in [
+        "checkpoint_dirty_documents",
+        "checkpoint_link_dirty_documents",
+        "checkpoint_vector_inputs",
+    ] {
         let exists: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
             [table],
