@@ -135,6 +135,11 @@ impl MigrationRegistry {
                 "add narrow mdbase record query rows for indexed reads",
                 schema::apply_schema_v23,
             ),
+            Migration::new(
+                24,
+                "retain mdbase record identity facts for scoped refresh",
+                schema::apply_schema_v24,
+            ),
         ])
     }
 
@@ -315,7 +320,7 @@ mod tests {
         // Migration adds no narrow rows; refresh publishes them.
         assert_eq!(narrow(&connection), 0);
         let insert = "INSERT INTO mdbase_record_query VALUES ('root','a.md','rev','controls',8,
-            x'00',1,10,2,1,0,jsonb('{}'),'{}')";
+            x'00',1,10,2,1,0,jsonb('{}'),'{}',NULL)";
         connection.execute(insert, []).unwrap();
         // Payload-only updates keep the row; projection changes and deletion drop it.
         connection

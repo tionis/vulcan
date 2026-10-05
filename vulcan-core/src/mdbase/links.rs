@@ -100,7 +100,11 @@ struct LinkRule<'a> {
 
 /// Resolution-only data from the caller's visible snapshot. Never retain note
 /// bodies, exact source, arbitrary fields, diagnostics, or contract views here.
-struct LinkTargetIndex {
+/// Link targets of a record set. A record contributes only its path, types,
+/// basename, and authored ID, so resolution against an unchanged index is
+/// unchanged however else other records change.
+#[derive(Default)]
+pub(super) struct LinkTargetIndex {
     types_by_path: BTreeMap<String, Vec<String>>,
     paths_by_basename: BTreeMap<String, Vec<String>>,
     paths_by_id: BTreeMap<String, Vec<String>>,
@@ -108,35 +112,43 @@ struct LinkTargetIndex {
 
 impl LinkTargetIndex {
     fn new(records: &[MdbaseRecordDocument], id_field: &str) -> Self {
-        let mut index = Self {
-            types_by_path: BTreeMap::new(),
-            paths_by_basename: BTreeMap::new(),
-            paths_by_id: BTreeMap::new(),
-        };
+        let mut index = Self::default();
         for record in records {
-            index
-                .types_by_path
-                .entry(record.path.clone())
-                .or_insert_with(|| record.types.clone());
-            index
-                .paths_by_basename
-                .entry(record.file.basename.clone())
-                .or_default()
-                .push(record.path.clone());
             // IDs intentionally come from authored values, never read defaults.
-            if let Some(id) = record
-                .frontmatter
-                .get(id_field)
-                .and_then(serde_json::Value::as_str)
-            {
-                index
-                    .paths_by_id
-                    .entry(id.to_string())
-                    .or_default()
-                    .push(record.path.clone());
-            }
+            index.insert(
+                &record.path,
+                &record.types,
+                &record.file.basename,
+                record
+                    .frontmatter
+                    .get(id_field)
+                    .and_then(serde_json::Value::as_str),
+            );
         }
         index
+    }
+
+    /// Add one record; callers insert records in path order.
+    pub(super) fn insert(
+        &mut self,
+        path: &str,
+        types: &[String],
+        basename: &str,
+        id: Option<&str>,
+    ) {
+        self.types_by_path
+            .entry(path.to_string())
+            .or_insert_with(|| types.to_vec());
+        self.paths_by_basename
+            .entry(basename.to_string())
+            .or_default()
+            .push(path.to_string());
+        if let Some(id) = id {
+            self.paths_by_id
+                .entry(id.to_string())
+                .or_default()
+                .push(path.to_string());
+        }
     }
 }
 
@@ -157,45 +169,62 @@ pub(super) fn resolve_collection_links_with_body_facts(
     let id_field = collection.config.settings.id_field.as_str();
     let index = LinkTargetIndex::new(records, id_field);
     for record in records {
-        let behavior = compose_mdbase_type_behavior(types, &record.types);
-        let mut links = Vec::new();
-        if let Some(frontmatter) = record.effective_frontmatter.as_object() {
-            for (field, value) in &behavior.links {
-                let rule = link_rule(field, value);
-                let selected = resolve_match_field(frontmatter, field);
-                for value in selected.values {
-                    for value in link_strings(value) {
-                        if let Some(parsed) = parse_link_value(value) {
-                            links.push(resolve_link(parsed, record, Some(rule), &index));
-                        }
+        resolve_record_links(
+            collection,
+            types,
+            record,
+            body_facts.get(&record.path),
+            &index,
+        );
+    }
+}
+
+/// Resolve one record's frontmatter and body links against `index`.
+pub(super) fn resolve_record_links(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    record: &mut MdbaseRecordDocument,
+    body_facts: Option<&BodyLinkFacts>,
+    index: &LinkTargetIndex,
+) {
+    let behavior = compose_mdbase_type_behavior(types, &record.types);
+    let mut links = Vec::new();
+    if let Some(frontmatter) = record.effective_frontmatter.as_object() {
+        for (field, value) in &behavior.links {
+            let rule = link_rule(field, value);
+            let selected = resolve_match_field(frontmatter, field);
+            for value in selected.values {
+                for value in link_strings(value) {
+                    if let Some(parsed) = parse_link_value(value) {
+                        links.push(resolve_link(parsed, record, Some(rule), index));
                     }
                 }
             }
         }
-        let fallback;
-        let facts = if let Some(facts) = body_facts.get(&record.path) {
-            facts
-        } else {
-            fallback = BodyLinkFacts::parse(&record.body);
-            &fallback
-        };
-        links.extend(
-            facts
-                .links
-                .iter()
-                .cloned()
-                .map(|parsed| resolve_link(parsed, record, None, &index)),
-        );
-        links.sort_by(|left, right| {
-            left.source
-                .cmp(&right.source)
-                .then_with(|| left.field.cmp(&right.field))
-                .then_with(|| left.raw.cmp(&right.raw))
-        });
-        add_link_diagnostics(collection, record, &links);
-        record.links = links;
-        record.tags = collect_record_tags(record, facts.tags.iter().cloned());
     }
+    let fallback;
+    let facts = if let Some(facts) = body_facts {
+        facts
+    } else {
+        fallback = BodyLinkFacts::parse(&record.body);
+        &fallback
+    };
+    links.extend(
+        facts
+            .links
+            .iter()
+            .cloned()
+            .map(|parsed| resolve_link(parsed, record, None, index)),
+    );
+    links.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then_with(|| left.field.cmp(&right.field))
+            .then_with(|| left.raw.cmp(&right.raw))
+    });
+    add_link_diagnostics(collection, record, &links);
+    record.links = links;
+    record.tags = collect_record_tags(record, facts.tags.iter().cloned());
 }
 
 fn link_rule<'a>(field: &'a str, value: &'a serde_json::Value) -> LinkRule<'a> {

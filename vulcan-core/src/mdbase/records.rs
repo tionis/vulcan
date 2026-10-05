@@ -289,6 +289,88 @@ pub(super) fn finish_local_record_set(
     )
 }
 
+/// The facts through which a record affects other records' overlays: link
+/// targets (path, types, basename, authored ID) and the authored values of
+/// every uniqueness-rule field. Its path is the record's key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(super) struct MdbaseRecordIdentity {
+    pub(super) types: Vec<String>,
+    pub(super) basename: String,
+    pub(super) id: Option<String>,
+    pub(super) unique: BTreeMap<String, Vec<serde_json::Value>>,
+}
+
+/// Fields named by any uniqueness rule in `types`.
+pub(super) fn uniqueness_fields(types: &MdbaseTypeRegistry) -> std::collections::BTreeSet<String> {
+    types
+        .iter()
+        .filter_map(|definition| {
+            definition
+                .frontmatter
+                .pointer("/collection/unique")
+                .and_then(serde_json::Value::as_array)
+        })
+        .flatten()
+        .filter_map(|rule| rule.get("field").and_then(serde_json::Value::as_str))
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub(super) fn record_identity(
+    collection: &MdbaseCollection,
+    unique_fields: &std::collections::BTreeSet<String>,
+    record: &MdbaseRecordDocument,
+) -> MdbaseRecordIdentity {
+    MdbaseRecordIdentity {
+        types: record.types.clone(),
+        basename: record.file.basename.clone(),
+        id: record
+            .frontmatter
+            .get(collection.config.settings.id_field.as_str())
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string),
+        unique: unique_fields
+            .iter()
+            .map(|field| {
+                let values = record_field_values(record, field)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                (field.clone(), values)
+            })
+            .collect(),
+    }
+}
+
+/// Overlay one local record exactly as [`finish_local_record_set`] would,
+/// given that no record's identity changed since `uniqueness` (its published
+/// `duplicate_value` diagnostics) was derived and `index` holds every
+/// record's current identity.
+pub(super) fn finish_identity_stable_record(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    mut record: MdbaseRecordDocument,
+    uniqueness: impl IntoIterator<Item = MdbaseRecordDiagnostic>,
+    body_facts: &super::links::BodyLinkFacts,
+    index: &super::links::LinkTargetIndex,
+) -> MdbaseRecordDocument {
+    let validation = collection.config.settings.validation;
+    if validation != MdbaseValidationLevel::Off {
+        record.diagnostics.extend(uniqueness);
+        sort_record_diagnostics(&mut record.diagnostics);
+    }
+    super::links::resolve_record_links(collection, types, &mut record, Some(body_facts), index);
+    sort_record_diagnostics(&mut record.diagnostics);
+    apply_contract_views(
+        collection,
+        &mut record,
+        contracts,
+        validation_severity(validation),
+    );
+    record
+}
+
 fn apply_record_set_contracts(
     collection: &MdbaseCollection,
     contracts: &MdbaseContractRegistry,

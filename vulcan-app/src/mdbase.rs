@@ -761,10 +761,25 @@ fn load_query_records_with_boundary(
                     &loaded.contracts,
                 )
             });
-            metrics.cache_refresh_seconds += refresh_start.elapsed().as_secs_f64();
             if refreshed.is_ok() {
                 records = cached(database.connection(), metrics);
+                // A scoped refresh leaves unchanged payloads undecoded, so a
+                // damaged one surfaces here; rebuild it from source once.
+                if records.is_none() {
+                    metrics.cache_rebuild_attempts += 1;
+                    if rebuild_mdbase_record_cache(
+                        database,
+                        &loaded.collection,
+                        &loaded.types,
+                        &loaded.contracts,
+                    )
+                    .is_ok()
+                    {
+                        records = cached(database.connection(), metrics);
+                    }
+                }
             }
+            metrics.cache_refresh_seconds += refresh_start.elapsed().as_secs_f64();
         }
     }
     let records = records.map_or_else(|| load_query_source_records(loaded, filter, metrics), Ok)?;
@@ -1045,10 +1060,8 @@ pub fn apply_mdbase_write(
             )
             .map_err(|error| error.to_string())
         },
-        |_| {
-            let summary = vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental)
-                .map_err(|error| error.to_string())?;
-            scan = Some(summary);
+        |event| {
+            scan = Some(reconcile_committed_write(paths, &loaded, &filter, event)?);
             Ok(())
         },
     )
@@ -1069,6 +1082,52 @@ pub fn apply_mdbase_write(
         apply_auto_commit(paths, plan, &config.git, options, &mut report);
     }
     Ok(report)
+}
+
+/// Bring derived state up to date with a committed write: the note index for
+/// the written paths, then the mdbase record cache for indexed reads. The
+/// record cache is self-validating, so a failed refresh only sends readers to
+/// the reconciled path.
+fn reconcile_committed_write(
+    paths: &VaultPaths,
+    loaded: &LoadedCollection,
+    filter: &PermissionFilter,
+    event: &vulcan_core::mdbase::MdbaseWriteOutboxEvent,
+) -> Result<vulcan_core::ScanSummary, String> {
+    let summary = match written_vault_paths(paths, &loaded.collection, event) {
+        Some(changed) => vulcan_core::scan::scan_vault_paths_unlocked(paths, &changed),
+        None => vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental),
+    }
+    .map_err(|error| error.to_string())?;
+    refresh_query_cache(
+        paths,
+        loaded,
+        Some(filter),
+        &mut MdbaseQueryMetrics::default(),
+    );
+    Ok(summary)
+}
+
+/// Vault-relative paths a committed write touched, or `None` when the
+/// collection root cannot be expressed inside the vault.
+fn written_vault_paths(
+    paths: &VaultPaths,
+    collection: &MdbaseCollection,
+    event: &vulcan_core::mdbase::MdbaseWriteOutboxEvent,
+) -> Option<std::collections::BTreeSet<String>> {
+    let vault = std::fs::canonicalize(paths.vault_root()).ok()?;
+    let root = std::fs::canonicalize(&collection.root).ok()?;
+    let prefix = root.strip_prefix(&vault).ok()?;
+    event
+        .paths
+        .iter()
+        .map(|written| {
+            prefix
+                .join(&written.path)
+                .to_str()
+                .map(|path| path.replace(std::path::MAIN_SEPARATOR, "/"))
+        })
+        .collect()
 }
 
 /// Route one generic note mutation through mdbase when its old or proposed
@@ -2050,6 +2109,71 @@ mod tests {
         assert!(replay.outcome.replayed);
         assert!(replay.scan.is_none());
         assert!(replay.auto_commit.is_none());
+    }
+
+    #[test]
+    fn applied_writes_keep_indexed_reads_current_for_every_reader() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).unwrap();
+        let query = json!({"types": ["task"], "select": ["title"]});
+        build_mdbase_query_report(&paths, &query, None).unwrap();
+        vulcan_core::scan_vault(&paths, ScanMode::Incremental).unwrap();
+        let mut allow = read_control_grant();
+        allow.push(ResourceSpecifier::Note("mdbase.lock.yaml".into()));
+        let restricted = PermissionFilter::new(PathPermission {
+            allow,
+            deny: vec![ResourceSpecifier::Folder("tasks/private/**".into())],
+        });
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let plan = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Update,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/public.md".to_string(),
+                    after: Some("---\ntype: task\ntitle: Updated\n---\nBody\n".to_string()),
+                    if_revision: None,
+                }],
+            ),
+            now,
+        )
+        .unwrap();
+        let report = apply_mdbase_write(
+            &paths,
+            &plan,
+            &MdbaseWriteExecutionOptions {
+                idempotency_key: "keep-indexed-current".to_string(),
+                no_commit: true,
+                quiet: true,
+            },
+            now,
+        )
+        .unwrap();
+        // An indexed note is rescanned alone; unindexed paths fall back to
+        // ordinary discovery.
+        assert_eq!(report.scan.as_ref().map(|scan| scan.discovered), Some(1));
+        assert!(fs::read_to_string(directory.path().join("tasks/public.md"))
+            .unwrap()
+            .contains("Updated"));
+        // Restricted readers never refresh the cache, so their indexed hit
+        // proves the write published the record.
+        for filter in [Some(&restricted), None] {
+            let mut metrics = query_profile::MdbaseQueryMetrics::default();
+            let result = query_profile::build_mdbase_query_report_profiled(
+                &paths,
+                &query,
+                filter,
+                &mut metrics,
+            )
+            .unwrap();
+            assert_eq!(metrics.indexed_hits, 1);
+            assert_eq!(metrics.cache_refresh_attempts, 0);
+            assert_eq!(
+                result,
+                build_mdbase_query_report(&paths, &query, filter).unwrap()
+            );
+            assert!(serde_json::to_string(&result).unwrap().contains("Updated"));
+        }
     }
 
     #[test]

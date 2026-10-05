@@ -168,6 +168,32 @@ fn query_metrics_preserve_reports_and_distinguish_source_refresh_and_cached_load
 }
 
 #[test]
+fn damaged_local_payloads_left_by_a_scoped_refresh_are_rebuilt_on_use() {
+    let (_directory, paths) = fixture();
+    vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+    // The expression selection keeps this on the ordinary cached path, which
+    // decodes local payloads.
+    let query = json!({"types": ["task"], "select": ["title", {"name": "copy", "expr": "title"}]});
+    let expected = build_mdbase_query_report(&paths, &query, None).unwrap();
+    let mut metrics = MdbaseQueryMetrics::default();
+    build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap();
+    let database = vulcan_core::CacheDatabase::open(&paths).unwrap();
+    database
+        .connection()
+        .execute(
+            "UPDATE mdbase_record_cache SET local_record_json = 'broken'",
+            [],
+        )
+        .unwrap();
+    let actual = build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(metrics.cache_refresh_attempts, 1);
+    assert_eq!(metrics.cache_rebuild_attempts, 1);
+    assert_eq!(metrics.cache_hits, 1);
+    assert_eq!(metrics.source_loads, 0);
+}
+
+#[test]
 fn query_metrics_filter_hidden_work_and_reset_before_denied_operations() {
     let (directory, paths) = fixture();
     vulcan_core::initialize_vulcan_dir(&paths).unwrap();
@@ -446,6 +472,7 @@ fn benchmark_writes(
             now,
         )
         .unwrap();
+        let planned = start.elapsed();
         apply_mdbase_write(
             paths,
             &plan,
@@ -460,6 +487,11 @@ fn benchmark_writes(
             now,
         )
         .unwrap();
+        println!(
+            "{}",
+            json!({"measurement": "benchmark_write", "plan_seconds": planned.as_secs_f64(),
+                "apply_seconds": (start.elapsed() - planned).as_secs_f64()})
+        );
         start.elapsed()
     };
     let mut index = 0;

@@ -306,6 +306,24 @@ pub(crate) fn scan_vault_unlocked_with_renames(
     scan_inventory(paths, ScanMode::Incremental, &mut |_| {}, None, renames)
 }
 
+/// Incremental scan of vault-relative paths the caller just wrote. Updates
+/// of already indexed documents skip discovery; creates, deletes, renames,
+/// and uncertain paths fall back to ordinary discovery. Callers must already
+/// hold [`crate::write_lock::WriteLockGuard`].
+pub fn scan_vault_paths_unlocked(
+    paths: &VaultPaths,
+    changed: &BTreeSet<String>,
+) -> Result<ScanSummary, ScanError> {
+    let recovered = recover_ordinary_write_batch_unlocked(paths)?;
+    scan_inventory(
+        paths,
+        ScanMode::Incremental,
+        &mut |_| {},
+        recovered.is_none().then_some(changed),
+        &HashMap::new(),
+    )
+}
+
 /// Update known files directly. Structural/ignore changes and uncertain paths
 /// use ordinary discovery so ignored files and deleted subtrees stay correct.
 pub(crate) fn scan_watched_paths(

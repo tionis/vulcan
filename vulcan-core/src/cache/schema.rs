@@ -1,5 +1,12 @@
 use rusqlite::Transaction;
 
+/// Per-record identity facts (types, basename, authored ID, uniqueness
+/// values) let a refresh prove that changed records leave every other
+/// record's overlay unchanged. Rows without them are rewritten by refresh.
+pub fn apply_schema_v24(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch("ALTER TABLE mdbase_record_query ADD COLUMN identity_json TEXT;")
+}
+
 /// Narrow per-record query rows for indexed reads. Wide cache rows carry large
 /// body-bearing payloads that spill to overflow pages, so columns read for every
 /// record (stat fingerprint, query-input evidence, effective frontmatter, file

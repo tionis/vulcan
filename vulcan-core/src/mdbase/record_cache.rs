@@ -748,6 +748,9 @@ pub struct MdbaseRecordCacheRefresh {
     pub local_records_derived: usize,
     #[serde(default)]
     pub local_records_reused: usize,
+    /// Collection overlays were recomputed only for changed records.
+    #[serde(default)]
+    pub overlays_scoped: bool,
 }
 
 /// Content-derived revisions for every authoritative mdbase control class.
@@ -1126,6 +1129,21 @@ fn update_mdbase_record_cache_with_boundary(
     let controls = verify_mdbase_control_snapshots(collection, types, contracts, None)?;
     let dependency_digest = controls.combined.clone();
     let collection_root = cache_collection_root(collection)?;
+    let mut before_publication = Some(before_publication);
+    if !rebuild {
+        if let Some(refresh) = refresh_identity_stable(
+            database,
+            collection,
+            types,
+            contracts,
+            &controls,
+            &collection_root,
+            &mut before_publication,
+        )? {
+            return Ok(refresh);
+        }
+    }
+    let unique_fields = super::records::uniqueness_fields(types);
     // Rebuild must not deserialize disposable payloads: damaged JSON is one of
     // the reasons callers need it. Only headers are needed for change counts.
     let previous = if rebuild {
@@ -1186,7 +1204,9 @@ fn update_mdbase_record_cache_with_boundary(
         next.len().saturating_sub(added + updated)
     };
 
-    before_publication();
+    if let Some(boundary) = before_publication.take() {
+        boundary();
+    }
     verify_derived_record_snapshot(collection, &next, &fingerprints, &unread)?;
     if verify_mdbase_control_snapshots(collection, types, contracts, None)? != controls {
         return Err(MdbaseRecordCacheError::StaleControls);
@@ -1224,13 +1244,24 @@ fn update_mdbase_record_cache_with_boundary(
             }
             // Narrow query row for indexed reads. The fingerprint describes
             // the exact bytes behind this revision. An unread, unchanged row
-            // keeps its published query row.
-            if !(unchanged && unread.contains(path) && previous_query.contains_key(path)) {
+            // keeps its published query row once it carries identity facts.
+            if !(unchanged
+                && unread.contains(path)
+                && previous_query
+                    .get(path)
+                    .is_some_and(|previous| previous.identity.is_some()))
+            {
+                let identity = serde_json::to_string(&super::records::record_identity(
+                    collection,
+                    &unique_fields,
+                    &local_records[path].record,
+                ))?;
                 store_query_row(
                     transaction,
                     record,
                     fingerprints.get(path).copied().flatten(),
                     &evidence[path],
+                    &identity,
                 )?;
             }
         }
@@ -1246,6 +1277,7 @@ fn update_mdbase_record_cache_with_boundary(
         deleted,
         local_records_derived,
         local_records_reused,
+        overlays_scoped: false,
     })
 }
 
@@ -1342,29 +1374,267 @@ fn derive_collection_cache(
         .records
         .into_iter()
         .map(|record| {
-            let path = record.path.clone();
             (
-                path,
-                MdbaseCachedRecord {
-                    collection_root: collection_root.to_string(),
-                    path: record.path,
-                    revision: record.revision,
-                    dependency_digest: dependency_digest.to_string(),
-                    record_model_version: MDBASE_RECORD_MODEL_VERSION,
-                    types: record.types,
-                    effective_frontmatter: record.effective_frontmatter,
-                    display: record.display,
-                    contract_views: record.contract_views,
-                    diagnostics: record.diagnostics,
-                    metadata: Some(MdbaseCachedMetadata {
-                        frontmatter: record.frontmatter,
-                        file: record.file,
-                    }),
-                },
+                record.path.clone(),
+                cached_record(collection_root, dependency_digest, record),
             )
         })
         .collect();
     (records, evidence)
+}
+
+fn cached_record(
+    collection_root: &str,
+    dependency_digest: &str,
+    record: MdbaseRecordDocument,
+) -> MdbaseCachedRecord {
+    MdbaseCachedRecord {
+        collection_root: collection_root.to_string(),
+        path: record.path,
+        revision: record.revision,
+        dependency_digest: dependency_digest.to_string(),
+        record_model_version: MDBASE_RECORD_MODEL_VERSION,
+        types: record.types,
+        effective_frontmatter: record.effective_frontmatter,
+        display: record.display,
+        contract_views: record.contract_views,
+        diagnostics: record.diagnostics,
+        metadata: Some(MdbaseCachedMetadata {
+            frontmatter: record.frontmatter,
+            file: record.file,
+        }),
+    }
+}
+
+/// More changed records than this take the full refresh, which amortizes
+/// whole-collection work better than per-record overlays.
+const SCOPED_REFRESH_MAX_CHANGES: usize = 512;
+
+/// Publish only the records whose stat fingerprints changed, when that is
+/// provably equal to a full refresh: no record was added or removed, every
+/// published row carries identity facts under the current controls, and each
+/// changed record keeps its identity facts. Other records' overlays read
+/// changed records only through those facts, so they are unchanged, and a
+/// changed record's uniqueness diagnostics are the published ones. `None`
+/// means the full refresh must run.
+#[allow(clippy::too_many_lines)]
+fn refresh_identity_stable(
+    database: &mut CacheDatabase,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    controls: &MdbaseControlRevisions,
+    collection_root: &str,
+    before_publication: &mut Option<impl FnOnce()>,
+) -> Result<Option<MdbaseRecordCacheRefresh>, MdbaseRecordCacheError> {
+    if has_dynamic_local_membership(types) {
+        return Ok(None);
+    }
+    let digest = controls.combined.as_str();
+    let previous = load_previous_query_rows(database.connection(), collection_root, digest)?;
+    // Every wide row must be current with a local payload, or the full
+    // refresh has rows to repair or delete. Unchanged payloads are not
+    // decoded here; a consumer that finds one damaged rebuilds.
+    let (rows, current): (i64, i64) = database.connection().query_row(
+        "SELECT count(*), COALESCE(sum(dependency_digest = ?2 AND record_model_version = ?3
+                AND metadata_json IS NOT NULL AND local_record_json IS NOT NULL), 0)
+         FROM mdbase_record_cache WHERE collection_root = ?1",
+        params![collection_root, digest, MDBASE_RECORD_MODEL_VERSION],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let walked = super::discover_mdbase_record_stats_parallel(collection)
+        .map_err(MdbaseRecordError::Discovery)?;
+    let count = |value: usize| i64::try_from(value).unwrap_or(i64::MAX);
+    if walked.len() != previous.len() || rows != count(walked.len()) || current != rows {
+        return Ok(None);
+    }
+    let mut changed = Vec::new();
+    for (path, metadata) in &walked {
+        let Some(row) = previous.get(path) else {
+            return Ok(None);
+        };
+        let Some(fingerprint) = metadata.as_ref().and_then(stat_fingerprint) else {
+            return Ok(None);
+        };
+        if row.identity.is_none() {
+            return Ok(None);
+        }
+        if fingerprint != row.fingerprint {
+            changed.push(path.clone());
+        }
+    }
+    if changed.len() > SCOPED_REFRESH_MAX_CHANGES {
+        return Ok(None);
+    }
+    let total = walked.len();
+    if changed.is_empty() {
+        return Ok(Some(MdbaseRecordCacheRefresh {
+            dependency_digest: digest.to_string(),
+            dependency_changed: false,
+            added: 0,
+            updated: 0,
+            unchanged: total,
+            deleted: 0,
+            local_records_derived: 0,
+            local_records_reused: total,
+            overlays_scoped: true,
+        }));
+    }
+    let published = load_cached_records(database.connection(), collection_root, &changed)?;
+    let unique_fields = super::records::uniqueness_fields(types);
+    let clock = super::records::operation_clock(collection);
+    let mut derived = BTreeMap::new();
+    for path in &changed {
+        let (source, metadata) = read_record_source_stably(collection, path)?;
+        let Some(fingerprint) = stat_fingerprint(&metadata) else {
+            return Ok(None);
+        };
+        let record = super::records::build_mdbase_record(
+            collection,
+            types,
+            path,
+            source,
+            Some(&metadata),
+            false,
+            &clock,
+        );
+        let identity = serde_json::to_string(&super::records::record_identity(
+            collection,
+            &unique_fields,
+            &record,
+        ))?;
+        if previous[path].identity.as_deref() != Some(identity.as_str())
+            || !published.contains_key(path)
+        {
+            return Ok(None);
+        }
+        let body_facts = super::links::BodyLinkFacts::parse(&record.body);
+        derived.insert(
+            path.clone(),
+            (
+                LocalRecordSnapshot { record, body_facts },
+                fingerprint,
+                identity,
+            ),
+        );
+    }
+    let mut index = super::links::LinkTargetIndex::default();
+    for (path, row) in &previous {
+        let Some(Ok(identity)) = row
+            .identity
+            .as_deref()
+            .map(serde_json::from_str::<super::records::MdbaseRecordIdentity>)
+        else {
+            return Ok(None);
+        };
+        index.insert(
+            path,
+            &identity.types,
+            &identity.basename,
+            identity.id.as_deref(),
+        );
+    }
+    let mut next = BTreeMap::new();
+    for (path, (local, _, _)) in &derived {
+        let uniqueness = published[path]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "duplicate_value")
+            .cloned();
+        let record = super::records::finish_identity_stable_record(
+            collection,
+            types,
+            contracts,
+            local.record.clone(),
+            uniqueness,
+            &local.body_facts,
+            &index,
+        );
+        let evidence = super::mdbase_query_input_evidence(&record, types);
+        next.insert(
+            path.clone(),
+            (cached_record(collection_root, digest, record), evidence),
+        );
+    }
+
+    if let Some(boundary) = before_publication.take() {
+        boundary();
+    }
+    // Bind publication to the walked membership, the read bytes of changed
+    // records, and the published bytes of every other record.
+    let rewalked = super::discover_mdbase_record_stats_parallel(collection)
+        .map_err(MdbaseRecordError::Discovery)?;
+    if rewalked.len() != total
+        || rewalked.iter().any(|(path, metadata)| {
+            let expected = derived
+                .get(path)
+                .map(|(_, fingerprint, _)| *fingerprint)
+                .or_else(|| previous.get(path).map(|row| row.fingerprint));
+            let current = metadata.as_ref().and_then(stat_fingerprint);
+            current.is_none() || current != expected
+        })
+    {
+        return Err(MdbaseRecordCacheError::StaleRecords);
+    }
+    if verify_mdbase_control_snapshots(collection, types, contracts, None)? != *controls {
+        return Err(MdbaseRecordCacheError::StaleControls);
+    }
+    let updated = next
+        .iter()
+        .filter(|(path, (record, _))| published.get(*path) != Some(record))
+        .count();
+    database.with_transaction(|transaction| {
+        for (path, (record, evidence)) in &next {
+            let (local, fingerprint, identity) = &derived[path];
+            if published.get(path) != Some(record) {
+                store_cached_record(transaction, record)?;
+            }
+            let local = serde_json::to_string(local)?;
+            transaction.execute(
+                "UPDATE mdbase_record_cache SET local_record_json = ?3
+                 WHERE collection_root = ?1 AND path = ?2
+                   AND local_record_json IS NOT ?3",
+                params![collection_root, path, local],
+            )?;
+            store_query_row(transaction, record, Some(*fingerprint), evidence, identity)?;
+        }
+        Ok::<_, MdbaseRecordCacheError>(())
+    })?;
+    Ok(Some(MdbaseRecordCacheRefresh {
+        dependency_digest: digest.to_string(),
+        dependency_changed: false,
+        added: 0,
+        updated,
+        unchanged: total - updated,
+        deleted: 0,
+        local_records_derived: changed.len(),
+        local_records_reused: total - changed.len(),
+        overlays_scoped: true,
+    }))
+}
+
+/// Published wide rows for `paths`.
+fn load_cached_records(
+    connection: &Connection,
+    collection_root: &str,
+    paths: &[String],
+) -> Result<BTreeMap<String, MdbaseCachedRecord>, MdbaseRecordCacheError> {
+    let mut statement = connection.prepare(
+        "SELECT collection_root, path, revision, dependency_digest, record_model_version,
+                types_json, effective_frontmatter_json, display_json,
+                contract_views_json, diagnostics_json, metadata_json
+         FROM mdbase_record_cache
+         WHERE collection_root = ?1 AND path IN (SELECT value FROM json_each(?2))",
+    )?;
+    let rows = statement.query_map(
+        params![collection_root, serde_json::to_string(paths)?],
+        cached_record_from_row,
+    )?;
+    rows.map(|row| {
+        let record = row?;
+        Ok((record.path.clone(), record))
+    })
+    .collect()
 }
 
 fn load_collection_headers(
@@ -1410,6 +1680,9 @@ struct PreviousQueryRow {
     revision: String,
     fingerprint: MdbaseStatFingerprint,
     evidence: super::MdbaseQueryInputEvidence,
+    /// Serialized [`super::records::MdbaseRecordIdentity`]; absent on rows
+    /// published before schema v24.
+    identity: Option<String>,
 }
 
 fn load_previous_query_rows(
@@ -1419,7 +1692,7 @@ fn load_previous_query_rows(
 ) -> Result<BTreeMap<String, PreviousQueryRow>, MdbaseRecordCacheError> {
     let mut statement = connection.prepare(
         "SELECT path, revision, stat_fingerprint, input_converted, input_bytes, input_nodes,
-                input_width, input_links
+                input_width, input_links, identity_json
          FROM mdbase_record_query
          WHERE collection_root = ?1 AND dependency_digest = ?2 AND record_model_version = ?3
            AND stat_fingerprint IS NOT NULL",
@@ -1438,6 +1711,7 @@ fn load_previous_query_rows(
                     width: count(row.get(6)?),
                     links: count(row.get(7)?),
                 },
+                identity: row.get(8)?,
             },
         ))
     })?;
@@ -1724,6 +1998,7 @@ fn store_query_row(
     record: &MdbaseCachedRecord,
     fingerprint: Option<MdbaseStatFingerprint>,
     evidence: &super::MdbaseQueryInputEvidence,
+    identity: &str,
 ) -> Result<(), MdbaseRecordCacheError> {
     let Some(metadata) = record.metadata.as_ref() else {
         return Ok(());
@@ -1735,8 +2010,8 @@ fn store_query_row(
         "INSERT INTO mdbase_record_query (
             collection_root, path, revision, dependency_digest, record_model_version,
             stat_fingerprint, input_converted, input_bytes, input_nodes, input_width,
-            input_links, effective_frontmatter_jsonb, file_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, jsonb(?12), ?13)
+            input_links, effective_frontmatter_jsonb, file_json, identity_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, jsonb(?12), ?13, ?14)
          ON CONFLICT(collection_root, path) DO UPDATE SET
             revision = excluded.revision,
             dependency_digest = excluded.dependency_digest,
@@ -1748,7 +2023,8 @@ fn store_query_row(
             input_width = excluded.input_width,
             input_links = excluded.input_links,
             effective_frontmatter_jsonb = excluded.effective_frontmatter_jsonb,
-            file_json = excluded.file_json
+            file_json = excluded.file_json,
+            identity_json = excluded.identity_json
          WHERE revision IS NOT excluded.revision
             OR dependency_digest IS NOT excluded.dependency_digest
             OR record_model_version IS NOT excluded.record_model_version
@@ -1759,7 +2035,8 @@ fn store_query_row(
             OR input_width IS NOT excluded.input_width
             OR input_links IS NOT excluded.input_links
             OR effective_frontmatter_jsonb IS NOT excluded.effective_frontmatter_jsonb
-            OR file_json IS NOT excluded.file_json",
+            OR file_json IS NOT excluded.file_json
+            OR identity_json IS NOT excluded.identity_json",
     )?;
     statement.execute(params![
         record.collection_root,
@@ -1775,6 +2052,7 @@ fn store_query_row(
         count(evidence.links),
         effective,
         file,
+        identity,
     ])?;
     Ok(())
 }
@@ -2869,10 +3147,20 @@ mod tests {
         )
         .unwrap()
         .is_some());
+        // A scoped refresh does not decode unchanged payloads; consumers that
+        // fail to decode one rebuild, which never touches canonical source.
         assert!(
-            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).is_err()
+            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts)
+                .unwrap()
+                .overlays_scoped
+        );
+        assert!(
+            load_local_records(database.connection(), &root, &missing.dependency_digest).is_err()
         );
         rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert!(
+            load_local_records(database.connection(), &root, &missing.dependency_digest).is_ok()
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), "C\n");
     }
 
@@ -3062,20 +3350,32 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn incremental_refresh_matches_a_full_rebuild_after_edits() {
-        fn snapshot(database: &CacheDatabase) -> Vec<String> {
+        // Full refreshes keep unread records' published input evidence, an
+        // upper bound that per-link slack keeps valid when only their link
+        // resolution changed; `exact` also compares those sizes.
+        fn snapshot(database: &CacheDatabase, exact: bool) -> Vec<String> {
+            let evidence = if exact {
+                "input_bytes || '|' || input_nodes || '|' || input_width"
+            } else {
+                "''"
+            };
             let mut rows = Vec::new();
             for sql in [
                 "SELECT path || '|' || revision || '|' || types_json || '|' || effective_frontmatter_json
                     || '|' || contract_views_json || '|' || diagnostics_json || '|' || metadata_json
-                    || '|' || COALESCE(local_record_json, '') FROM mdbase_record_cache ORDER BY path",
-                "SELECT path || '|' || revision || '|' || hex(stat_fingerprint) || '|' || input_converted
-                    || '|' || input_nodes || '|' || input_width || '|' || input_links
+                    || '|' || COALESCE(local_record_json, '') FROM mdbase_record_cache ORDER BY path"
+                    .to_string(),
+                format!("SELECT path || '|' || revision || '|' || hex(stat_fingerprint) || '|' || input_converted
+                    || '|' || {evidence} || '|' || input_links
                     || '|' || json(effective_frontmatter_jsonb) || '|' || file_json
-                    FROM mdbase_record_query ORDER BY path",
-                "SELECT path || '|' || type_name FROM mdbase_record_types ORDER BY path, type_name",
+                    || '|' || identity_json
+                    FROM mdbase_record_query ORDER BY path"),
+                "SELECT path || '|' || type_name FROM mdbase_record_types ORDER BY path, type_name"
+                    .to_string(),
             ] {
-                let mut statement = database.connection().prepare(sql).unwrap();
+                let mut statement = database.connection().prepare(&sql).unwrap();
                 rows.extend(
                     statement
                         .query_map([], |row| row.get::<_, String>(0))
@@ -3085,49 +3385,129 @@ mod tests {
             }
             rows
         }
+        enum Edit {
+            Write(&'static str, &'static str),
+            Rewrite(&'static str),
+            Remove(&'static str),
+        }
         let directory = tempdir().expect("collection directory");
         let root = directory.path();
         write(&root.join("mdbase.yaml"), "spec_version: 0.3.0\n");
         write(
             &root.join("_types/task.md"),
-            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  read_defaults: {status: open}\n---\n",
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object, properties: {rank: {type: integer}}}\ncollection:\n  read_defaults: {status: open}\n  unique: [{field: code, scope: type}, {field: tags.primary, scope: collection}]\n  links:\n    parent: {target_type: task, validate_exists: true}\n---\n",
         );
         write(
             &root.join("a.md"),
-            "---\ntype: task\nid: one\n---\n[[b]] [[c]]\n",
+            "---\ntype: task\nid: one\ncode: x\nparent: '[[b]]'\n---\n[[b]] [[c]] [[missing]]\n",
         );
-        write(&root.join("b.md"), "---\ntype: task\nid: two\n---\nb\n");
-        write(&root.join("d.md"), "---\ntype: task\n---\n[[a]]\n");
+        write(
+            &root.join("b.md"),
+            "---\ntype: task\nid: two\ncode: x\n---\nb\n",
+        );
+        write(
+            &root.join("d.md"),
+            "---\ntype: task\ntags: {primary: p}\n---\n[[a]]\n",
+        );
+        write(
+            &root.join("e/d.md"),
+            "---\ntype: task\ntags: {primary: p}\n---\n[[d]]\n",
+        );
         let paths = VaultPaths::new(root);
         crate::initialize_vulcan_dir(&paths).unwrap();
         let mut database = CacheDatabase::open(&paths).unwrap();
         let (collection, types, contracts) = load_registries(root);
-        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let refresh = |database: &mut CacheDatabase| {
+            refresh_mdbase_record_cache(database, &collection, &types, &contracts).unwrap()
+        };
+        let first = refresh(&mut database);
+        assert!(!first.overlays_scoped);
+        // The first refresh after it publishes identity facts can be scoped.
+        assert!(refresh(&mut database).overlays_scoped);
 
-        // A content change, a new link target, a duplicate id, a deletion, and
-        // an unchanged rewrite (new inode, same bytes).
-        write(
-            &root.join("b.md"),
-            "---\ntype: task\nid: one\nstatus: done\n---\nb\n",
-        );
-        write(&root.join("c.md"), "---\ntype: task\n---\nc\n");
-        fs::remove_file(root.join("d.md")).unwrap();
-        let a = fs::read_to_string(root.join("a.md")).unwrap();
-        fs::remove_file(root.join("a.md")).unwrap();
-        write(&root.join("a.md"), &a);
-        let refreshed =
-            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
-        assert!(refreshed.local_records_derived >= 3, "{refreshed:?}");
-        let incremental = snapshot(&database);
-        rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
-        assert_eq!(incremental, snapshot(&database));
-
-        // Unchanged records are reused without reading them.
-        let unchanged =
-            refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
-        assert_eq!(unchanged.local_records_derived, 0);
-        assert_eq!(unchanged.local_records_reused, 3);
-        assert_eq!(snapshot(&database), incremental);
+        // Each edit is followed by an incremental refresh that must equal a
+        // full rebuild; `scoped` is whether identity facts were unchanged.
+        let rewrite = |path: &str, contents: &str| {
+            fs::remove_file(root.join(path)).ok();
+            write(&root.join(path), contents);
+        };
+        let edits = [
+            (
+                "body link to a missing target",
+                Edit::Write(
+                    "a.md",
+                    "---\ntype: task\nid: one\ncode: x\nparent: '[[b]]'\n---\n[[b]] [[nowhere]]\n",
+                ),
+                true,
+            ),
+            (
+                "non-identity field and schema error",
+                Edit::Write(
+                    "b.md",
+                    "---\ntype: task\nid: two\ncode: x\nrank: wrong\n---\nb\n",
+                ),
+                true,
+            ),
+            (
+                "frontmatter link retargeted",
+                Edit::Write(
+                    "a.md",
+                    "---\ntype: task\nid: one\ncode: x\nparent: '[[d]]'\n---\n[[b]]\n",
+                ),
+                true,
+            ),
+            ("same bytes, new inode", Edit::Rewrite("d.md"), true),
+            (
+                "duplicate resolved by changing a unique value",
+                Edit::Write("b.md", "---\ntype: task\nid: two\ncode: y\n---\nb\n"),
+                false,
+            ),
+            (
+                "authored id changed",
+                Edit::Write("b.md", "---\ntype: task\nid: one\ncode: y\n---\nb\n"),
+                false,
+            ),
+            (
+                "nested unique value changed",
+                Edit::Write(
+                    "e/d.md",
+                    "---\ntype: task\ntags: {primary: q}\n---\n[[d]]\n",
+                ),
+                false,
+            ),
+            (
+                "type membership removed",
+                Edit::Write("d.md", "---\ntitle: plain\n---\n[[a]]\n"),
+                false,
+            ),
+            (
+                "new record",
+                Edit::Write("c.md", "---\ntype: task\n---\nc\n"),
+                false,
+            ),
+            ("deleted record", Edit::Remove("e/d.md"), false),
+        ];
+        for (name, edit, scoped) in edits {
+            match edit {
+                Edit::Write(path, contents) => rewrite(path, contents),
+                Edit::Rewrite(path) => {
+                    let source = fs::read_to_string(root.join(path)).unwrap();
+                    rewrite(path, &source);
+                }
+                Edit::Remove(path) => fs::remove_file(root.join(path)).unwrap(),
+            }
+            let refreshed = refresh(&mut database);
+            assert_eq!(refreshed.overlays_scoped, scoped, "{name}: {refreshed:?}");
+            let incremental = snapshot(&database, scoped);
+            rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+            assert_eq!(incremental, snapshot(&database, scoped), "{name}");
+            // Rebuilt rows carry identity facts, so a quiet refresh is scoped.
+            let rebuilt = snapshot(&database, true);
+            let quiet = refresh(&mut database);
+            assert!(quiet.overlays_scoped, "{name}");
+            assert_eq!(quiet.local_records_derived, 0, "{name}");
+            assert_eq!(snapshot(&database, true), rebuilt, "{name}");
+        }
     }
 
     #[test]
