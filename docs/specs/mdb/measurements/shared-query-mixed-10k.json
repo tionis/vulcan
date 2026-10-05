@@ -11,7 +11,24 @@
   },
   "requests": "eight reader threads sharing one watched session, each cycling the nine canonical fixture queries from a different offset; each reader's first request excluded; every request independently checked for exact totals, ordered paths, body omission, diagnostics and the 256 KiB bound",
   "writes": "optional writer thread applies body-only edits to one schema-valid contact record through plan_mdbase_write/apply_mdbase_write, paced to at most the target rate, then restores the record; the edits change no query result",
-  "runs": [
+  "write_stages_single_reader": {
+    "note": "one watched reader plus the writer, temporary stage timers, typical steady-state write",
+    "plan_seconds": 0.062,
+    "transaction_seconds": 0.095,
+    "record_cache_refresh_seconds": 0.115,
+    "note_scan_seconds": 0.175,
+    "of_which_link_resolution_seconds": 0.06,
+    "of_which_history_checkpoint_seconds": 0.095,
+    "apply_seconds": 0.38
+  },
+  "host_conditions": "shared development host with browser and agent sessions; load average about 7-11 on 8 cores during these runs; readers are closed-loop and saturate all cores; not the designated reference machine",
+  "findings": [
+    "With proofs bound to retained-row versions, single-flight proving per scope, and pre-write proofs retained until the write's epoch advance, only 36 of 4,800 requests walked the collection. Readers measured p50 16.6 ms, p95 46.6 ms, p99 134 ms unrestricted and p50 15.2 ms, p95 62.8 ms, p99 142 ms restricted: the unrestricted p95 is under the 50 ms target, but p99 (100 ms target) and restricted p95 are not met on this loaded host.",
+    "Without single-flight (runs_without_single_flight), every write made all eight readers walk 10K records: p95 157-191 ms, p99 about 0.3 s.",
+    "Writes progress under continuous readers (writer-preference turnstile) and cost about 0.45 s with one reader, but under eight closed-loop readers they are CPU-starved to about 0.8-0.9 s, so two independent writes per second are not sustained.",
+    "Before reader/writer coordination the same workload measured reader p50 0.94 s and p95 1.43 s (readers blocked behind writes), or a starved writer that waited 11 s."
+  ],
+  "runs_without_single_flight": [
     {
       "acceptance_gate_result": "not_evaluated",
       "measurement": "shared_query_stage_summary",
@@ -51,20 +68,44 @@
       }
     }
   ],
-  "write_stages_single_reader": {
-    "note": "one watched reader plus the writer, temporary stage timers, typical steady-state write",
-    "plan_seconds": 0.062,
-    "transaction_seconds": 0.095,
-    "record_cache_refresh_seconds": 0.115,
-    "note_scan_seconds": 0.175,
-    "of_which_link_resolution_seconds": 0.06,
-    "of_which_history_checkpoint_seconds": 0.095,
-    "apply_seconds": 0.38
-  },
-  "host_conditions": "shared development host with browser and agent sessions; load average about 7-11 on 8 cores during these runs; readers are closed-loop and saturate all cores; not the designated reference machine",
-  "findings": [
-    "Readers no longer queue behind writes: retained sessions take no vault lock and serve the pre-write state while an unpublished write holds it. Reader p50 stayed at 17-18 ms, but p95 was 157 ms unrestricted and 191 ms restricted (p99 about 0.3 s), above the 50 ms gate, because every write invalidates trusted proofs and all eight readers walk the collection again on a saturated host.",
-    "Writes now progress under continuous readers (writer-preference turnstile) and the history checkpoint no longer hashes every link, so a write costs about 0.45 s with one reader; under eight closed-loop readers writes are CPU-starved to about 0.9-1.0 s, short of two independent writes per second.",
-    "Before these changes the same workload measured reader p50 0.94 s and p95 1.43 s (readers blocked behind writes) or a starved writer that waited 11 s."
+  "runs": [
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.016642176,
+      "p95": 0.046586272,
+      "p99": 0.134232656,
+      "permission_profile": null,
+      "readers": 8,
+      "samples": 4792,
+      "session": true,
+      "watched": true,
+      "write_latency": {
+        "max": 1.862773066,
+        "p50": 0.840320951,
+        "p95": 1.862773066,
+        "target_per_second": 2,
+        "writes": 14
+      }
+    },
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.015220691,
+      "p95": 0.062754599,
+      "p99": 0.142322682,
+      "permission_profile": "benchmark_public",
+      "readers": 8,
+      "samples": 4792,
+      "session": true,
+      "watched": true,
+      "write_latency": {
+        "max": 0.939415395,
+        "p50": 0.775921551,
+        "p95": 0.939415395,
+        "target_per_second": 2,
+        "writes": 19
+      }
+    }
   ]
 }

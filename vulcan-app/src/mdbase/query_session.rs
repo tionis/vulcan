@@ -61,6 +61,7 @@ pub struct MdbaseQuerySession {
     rows: RwLock<MdbaseRetainedRows>,
     watched: Option<Watched>,
     proofs: Mutex<HashMap<String, ScopeProof>>,
+    provers: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 struct Watched {
@@ -129,6 +130,7 @@ impl MdbaseQuerySession {
             rows: RwLock::new(MdbaseRetainedRows::default()),
             watched: None,
             proofs: Mutex::new(HashMap::new()),
+            provers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -245,21 +247,32 @@ impl MdbaseQuerySession {
         // Read both counters before any walk, so a change racing this request
         // invalidates the proof it produces. The epoch advances only when a
         // write section ends, after its cache publication.
-        let epoch = vulcan_core::write_lock::read_write_epoch(&self.paths).ok();
-        let generation = self
-            .watched
-            .as_ref()
-            .and_then(|watched| watched.monitor.generation());
-        if let Some(proof) = self.trusted_proof(scope, generation, epoch) {
+        let trusted = |epoch, generation, metrics: &mut MdbaseQueryMetrics| {
+            let proof = self.trusted_proof(scope, generation, epoch)?;
             let rows = self
                 .rows
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(result) = execute(&rows, &proof, true, metrics) {
+            let result = execute(&rows, &proof, true, metrics);
+            if result.is_none() {
+                // Another request reconciled past this proof; walk instead.
+                metrics.indexed = vulcan_core::mdbase::MdbaseIndexedQueryMetrics::default();
+            }
+            result
+        };
+        let (mut epoch, mut generation) = self.counters();
+        if let Some(result) = trusted(epoch, generation, metrics) {
+            return Some(result);
+        }
+        // Watched sessions prove each scope single-flight: requests that
+        // arrive during a walk wait for its proof instead of walking too.
+        let prover = self.watched.as_ref().map(|_| self.prover(scope));
+        let _proving = prover.as_deref().map(lock);
+        if prover.is_some() {
+            (epoch, generation) = self.counters();
+            if let Some(result) = trusted(epoch, generation, metrics) {
                 return Some(result);
             }
-            // Another reader reconciled past this proof; walk instead.
-            metrics.indexed = vulcan_core::mdbase::MdbaseIndexedQueryMetrics::default();
         }
         let start = Instant::now();
         let walk = walk_mdbase_retained_scope(
@@ -294,20 +307,43 @@ impl MdbaseQuerySession {
                 .ok()
                 .flatten();
             metrics.indexed = reconciled;
-            let Some(proof) = proof else {
+            let proof = if let Some(proof) = proof {
+                proof
+            } else {
                 // A write holding the vault lock may have replaced files it
                 // has not yet published; serve the state from before it
-                // rather than queue behind it. Never retained as a proof.
+                // rather than queue behind it. The proof stays valid until
+                // the write's epoch advance, a notification, or a reconcile.
                 let write = self.in_flight_write()?;
                 let proof = walk.proof_before_write(&rows, &write, filter)?;
                 metrics.indexed.before_write = true;
-                metrics.indexed.freshness_seconds = start.elapsed().as_secs_f64();
-                return execute(&rows, &proof, false, metrics);
+                proof
             };
             metrics.indexed.freshness_seconds = start.elapsed().as_secs_f64();
             (execute(&rows, &proof, false, metrics), proof)
         };
         let result = result?;
+        self.remember(scope, proof, generation, epoch);
+        Some(result)
+    }
+
+    /// The write epoch and change generation; read before any walk.
+    fn counters(&self) -> (Option<u64>, Option<u64>) {
+        (
+            vulcan_core::write_lock::read_write_epoch(&self.paths).ok(),
+            self.watched
+                .as_ref()
+                .and_then(|watched| watched.monitor.generation()),
+        )
+    }
+
+    fn remember(
+        &self,
+        scope: &str,
+        proof: MdbaseRetainedProof,
+        generation: Option<u64>,
+        epoch: Option<u64>,
+    ) {
         let mut proofs = lock(&self.proofs);
         if let (Some(generation), Some(epoch)) = (generation, epoch) {
             proofs.insert(
@@ -322,7 +358,11 @@ impl MdbaseQuerySession {
         } else {
             proofs.remove(scope);
         }
-        Some(result)
+    }
+
+    /// The single-flight proving lock for `scope`.
+    fn prover(&self, scope: &str) -> Arc<Mutex<()>> {
+        Arc::clone(lock(&self.provers).entry(scope.to_string()).or_default())
     }
 
     /// The journal of a write currently holding the vault lock.
@@ -377,6 +417,7 @@ impl MdbaseQuerySession {
         let (loaded, evicted) = lock(&self.scopes).insert(scope.to_string(), loaded);
         if let Some(evicted) = evicted {
             lock(&self.proofs).remove(&evicted);
+            lock(&self.provers).remove(&evicted);
         }
         Ok(loaded)
     }

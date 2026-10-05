@@ -2055,6 +2055,70 @@ mod tests {
         )
         .unwrap();
         assert!(observed);
+
+        // Once another request reconciles the rows to the published state, an
+        // older proof is rejected instead of pairing its membership (with c,
+        // without d) with newer rows.
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let walk = walk_mdbase_retained_scope(&collection, &types, &contracts, None)
+            .unwrap()
+            .unwrap();
+        let fresh = walk
+            .reconcile(&connection, &collection, &mut rows, &mut metrics)
+            .unwrap()
+            .unwrap();
+        assert!(execute_retained_mdbase_query(
+            &connection,
+            &collection,
+            &types,
+            &contracts,
+            &query,
+            None,
+            Utc::now(),
+            &rows,
+            &proof,
+            true,
+            &mut metrics,
+        )
+        .unwrap()
+        .is_none());
+        let after = execute(&rows, &fresh, &mut metrics);
+        assert_eq!(
+            after
+                .results
+                .iter()
+                .map(|row| row.file["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["records/a.md", "records/b.md", "records/d.md"]
+        );
+        // A later change that only adds and modifies records leaves the older
+        // visible set inside the rows; the version alone rejects it.
+        write(directory.path(), "records/a.md", "again a\n");
+        write(directory.path(), "records/e.md", "new e\n");
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let walk = walk_mdbase_retained_scope(&collection, &types, &contracts, None)
+            .unwrap()
+            .unwrap();
+        let latest = walk
+            .reconcile(&connection, &collection, &mut rows, &mut metrics)
+            .unwrap()
+            .unwrap();
+        assert!(execute_retained_mdbase_query(
+            &connection,
+            &collection,
+            &types,
+            &contracts,
+            &query,
+            None,
+            Utc::now(),
+            &rows,
+            &fresh,
+            true,
+            &mut metrics,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(execute(&rows, &latest, &mut metrics).meta.total_count, 4);
     }
 
     #[test]

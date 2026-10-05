@@ -598,6 +598,10 @@ fn load_page(
 pub struct MdbaseRetainedRows {
     dependency_digest: String,
     rows: BTreeMap<String, RetainedRow>,
+    /// Advanced by every mutation. A proof describes the rows it was made
+    /// against; once other requests reconcile them, its visible set may
+    /// pair with newer rows that no single state ever had.
+    version: u64,
 }
 
 struct RetainedRow {
@@ -619,6 +623,7 @@ pub struct MdbaseRetainedProof {
     dependency_digest: Arc<str>,
     visible: Arc<BTreeSet<String>>,
     max_path_bytes: usize,
+    rows_version: u64,
 }
 
 impl MdbaseRetainedRows {
@@ -694,7 +699,7 @@ impl MdbaseRetainedWalk {
                     .get(path)
                     .is_some_and(|row| row.fingerprint == fingerprint.as_slice())
             }))
-        .then(|| self.proof())
+        .then(|| self.proof(retained.version))
     }
 
     /// Decode every visible record whose retained row is missing or stale
@@ -711,6 +716,7 @@ impl MdbaseRetainedWalk {
         if *retained.dependency_digest != *self.dependency_digest {
             retained.rows.clear();
             retained.dependency_digest = self.dependency_digest.to_string();
+            retained.version += 1;
         }
         let stale = self
             .visible
@@ -737,13 +743,18 @@ impl MdbaseRetainedWalk {
             }
             metrics.reloaded_rows = loaded.len();
             retained.rows.extend(loaded);
+            retained.version += 1;
         }
         // Prune only on success: a miss during a write keeps the pre-write
         // rows that [`Self::proof_before_write`] serves.
+        let before = retained.rows.len();
         retained
             .rows
             .retain(|path, _| self.present.contains(path.as_str()));
-        Ok(Some(self.proof()))
+        if retained.rows.len() != before {
+            retained.version += 1;
+        }
+        Ok(Some(self.proof(retained.version)))
     }
 
     /// The pre-write proof while `write` holds the vault lock: walked records
@@ -806,14 +817,16 @@ impl MdbaseRetainedWalk {
             dependency_digest: Arc::clone(&self.dependency_digest),
             visible: Arc::new(visible),
             max_path_bytes,
+            rows_version: retained.version,
         })
     }
 
-    fn proof(&self) -> MdbaseRetainedProof {
+    fn proof(&self, rows_version: u64) -> MdbaseRetainedProof {
         MdbaseRetainedProof {
             dependency_digest: Arc::clone(&self.dependency_digest),
             visible: Arc::new(self.visible.keys().cloned().collect()),
             max_path_bytes: self.max_path_bytes,
+            rows_version,
         }
     }
 }
@@ -860,8 +873,10 @@ pub fn execute_retained_mdbase_query(
         }
         metrics.trusted_proof = true;
     }
-    // Another reader may have reconciled the rows since the proof was made.
-    if *retained.dependency_digest != *proof.dependency_digest
+    // Another reader may have reconciled the rows since the proof was made;
+    // its visible set then no longer describes them.
+    if proof.rows_version != retained.version
+        || *retained.dependency_digest != *proof.dependency_digest
         || proof
             .visible
             .iter()
