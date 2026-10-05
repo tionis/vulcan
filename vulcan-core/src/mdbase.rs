@@ -1189,6 +1189,92 @@ pub fn load_mdbase_collection(
 /// This does not affect the normal Vulcan scanner: type and contract Markdown
 /// remains visible to ordinary vault browsing and is excluded only from this
 /// collection-scoped record set.
+/// Discover record paths exactly as [`discover_mdbase_files`] does, with each
+/// record's metadata taken from its directory entry (relative to the open
+/// directory, never following a final symlink). Subdirectories are walked in
+/// parallel. A record that vanishes during the walk has no metadata. Sorted by
+/// path.
+pub fn discover_mdbase_record_stats_parallel(
+    collection: &MdbaseCollection,
+) -> Result<Vec<(String, Option<fs::Metadata>)>, MdbaseDiscoveryError> {
+    let excludes = compile_excludes(&collection.config.settings.exclude)
+        .expect("exclusion globs are validated while loading mdbase.yaml");
+    let mut stats = discover_record_stats(collection, &collection.root, "", &excludes)?;
+    stats.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(stats)
+}
+
+type RecordStats = Vec<(String, Option<fs::Metadata>)>;
+
+/// Same classification as `discover_records`, collecting directory-entry stats.
+fn discover_record_stats(
+    collection: &MdbaseCollection,
+    directory: &Path,
+    relative_directory: &str,
+    excludes: &GlobSet,
+) -> Result<RecordStats, MdbaseDiscoveryError> {
+    use rayon::prelude::*;
+
+    let mut records = Vec::new();
+    let mut subdirectories = Vec::new();
+    for entry in sorted_directory_entries(directory)? {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|source| MdbaseDiscoveryError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| MdbaseDiscoveryError::NonUtf8Path { path: path.clone() })?;
+        let relative = if relative_directory.is_empty() {
+            name
+        } else {
+            format!("{relative_directory}/{name}")
+        };
+        if file_type.is_dir() {
+            if is_control_directory(collection, &relative)
+                || is_derived_directory(&relative)
+                || is_excluded(excludes, &relative, true)
+                || path.join(MDBASE_CONFIG_FILE_NAME).is_file()
+            {
+                continue;
+            }
+            if collection.config.settings.include_subfolders {
+                subdirectories.push((path, relative));
+            }
+        } else if file_type.is_file()
+            && !(relative_directory.is_empty()
+                && matches!(
+                    relative.as_str(),
+                    MDBASE_CONFIG_FILE_NAME | MDBASE_LOCK_FILE_NAME
+                ))
+            && !is_excluded(excludes, &relative, false)
+            && collection
+                .config
+                .settings
+                .record_extensions
+                .iter()
+                .any(|extension| has_extension(&path, extension))
+        {
+            records.push((relative, entry.metadata().ok()));
+        }
+    }
+    let nested = subdirectories
+        .par_iter()
+        .map(|(path, relative)| discover_record_stats(collection, path, relative, excludes))
+        .collect::<Vec<_>>();
+    for stats in nested {
+        records.extend(stats?);
+    }
+    Ok(records)
+}
+
 pub fn discover_mdbase_files(
     collection: &MdbaseCollection,
 ) -> Result<MdbaseDiscovery, MdbaseDiscoveryError> {

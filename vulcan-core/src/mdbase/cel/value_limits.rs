@@ -45,6 +45,36 @@ pub(super) fn inspect_bindings(
     inspect(Root::Bindings(bindings), limits, "input")
 }
 
+/// Exact totals that [`inspect_bindings`] compares with its limits: encoded
+/// bytes, traversed nodes, and the widest map or list (including the root).
+pub(super) fn measure_bindings(
+    bindings: &BTreeMap<String, Value>,
+) -> Result<(usize, usize, usize), MdbaseCelError> {
+    let bytes = encoded_size(Root::Bindings(bindings))?;
+    let mut nodes = 0_usize;
+    let mut width = 0_usize;
+    let mut pending = vec![Root::Bindings(bindings)];
+    while let Some(value) = pending.pop() {
+        nodes = nodes.saturating_add(1);
+        match value {
+            Root::Bindings(values) => {
+                width = width.max(values.len());
+                pending.extend(values.values().map(Root::Value));
+            }
+            Root::Value(Value::Array(values)) => {
+                width = width.max(values.len());
+                pending.extend(values.iter().map(Root::Value));
+            }
+            Root::Value(Value::Object(values)) => {
+                width = width.max(values.len());
+                pending.extend(values.values().map(Root::Value));
+            }
+            Root::Value(_) => {}
+        }
+    }
+    Ok((bytes, nodes, width))
+}
+
 pub(super) fn inspect_value(
     value: &Value,
     limits: &MdbaseCelLimits,

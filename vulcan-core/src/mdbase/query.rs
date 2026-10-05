@@ -523,13 +523,7 @@ fn execute_prepared_query(
     engine: &QueryPrograms,
     work: &mut QueryExecutionWork<'_>,
 ) -> Result<MdbaseQueryResult, MdbaseQueryError> {
-    let timezone = plan
-        .timezone
-        .as_deref()
-        .or(collection_timezone)
-        .unwrap_or("UTC");
-    let clock = MdbaseCelClock::new(now, timezone)
-        .map_err(|error| query_error("invalid_query", error.message, Some("timezone"), None))?;
+    let clock = query_clock(plan, collection_timezone, now)?;
     let invocation_context = plan
         .invocation_context
         .as_deref()
@@ -584,6 +578,194 @@ fn execute_prepared_query(
         },
         diagnostics,
     })
+}
+
+fn query_clock(
+    plan: &StructuredQueryPlan,
+    collection_timezone: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<MdbaseCelClock, MdbaseQueryError> {
+    let timezone = plan
+        .timezone
+        .as_deref()
+        .or(collection_timezone)
+        .unwrap_or("UTC");
+    MdbaseCelClock::new(now, timezone)
+        .map_err(|error| query_error("invalid_query", error.message, Some("timezone"), None))
+}
+
+/// The physically executable shape of a prepared plan: no named projections,
+/// invocation context, grouping, summaries, body, or expression selections, and
+/// either no filter or a fully lowered scalar filter. Ordering and selection
+/// read only persisted/effective frontmatter and file metadata.
+pub(super) struct IndexedPlan<'a> {
+    pub(super) predicate: Option<&'a super::MdbaseSqlPredicate>,
+    /// Field selections as (output name, source field), in output order.
+    pub(super) selections: Option<Vec<(&'a str, &'a str)>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IndexedSource<'a> {
+    Null,
+    File(&'a str),
+    Effective(&'a str),
+}
+
+impl IndexedPlan<'_> {
+    /// Resolve one ordering or selection field exactly as `candidate_value`
+    /// does for a candidate with no named projections.
+    pub(super) fn value(
+        &self,
+        field: &str,
+        effective: &serde_json::Value,
+        file: &serde_json::Value,
+        ordering: bool,
+    ) -> serde_json::Value {
+        if field.starts_with("projection.") {
+            return serde_json::Value::Null;
+        }
+        if let Some(field) = field.strip_prefix("file.") {
+            return file.get(field).cloned().unwrap_or_default();
+        }
+        if ordering {
+            if let Some((_, source)) = self
+                .selections
+                .iter()
+                .flatten()
+                .find(|(output, _)| *output == field)
+            {
+                return self.value(source, effective, file, false);
+            }
+        }
+        effective.get(field).cloned().unwrap_or_default()
+    }
+
+    /// Where an ordering or selection field's value comes from, resolved as
+    /// [`IndexedPlan::value`] does.
+    pub(super) fn source<'f>(&'f self, field: &'f str, ordering: bool) -> IndexedSource<'f> {
+        if field.starts_with("projection.") {
+            return IndexedSource::Null;
+        }
+        if let Some(field) = field.strip_prefix("file.") {
+            return IndexedSource::File(field);
+        }
+        if ordering {
+            if let Some((_, source)) = self
+                .selections
+                .iter()
+                .flatten()
+                .find(|(output, _)| *output == field)
+            {
+                return self.source(source, false);
+            }
+        }
+        IndexedSource::Effective(field)
+    }
+}
+
+impl MdbasePreparedQuery {
+    /// Whether this plan can execute over indexed cache rows with identical
+    /// results, totals, ordering, and diagnostics.
+    pub(super) fn indexed_plan(&self) -> Option<IndexedPlan<'_>> {
+        let plan = &self.plan;
+        if !plan.named_projections.is_empty()
+            || plan.invocation_context.is_some()
+            || !plan.group_by.is_empty()
+            || !plan.summary_functions.is_empty()
+            || !plan.summaries.is_empty()
+            || plan.include_body
+        {
+            return None;
+        }
+        let predicate = match &plan.filter {
+            Some(_) => Some(self.sql_filter_predicate()?),
+            None => None,
+        };
+        let selections = match &plan.selection {
+            None => None,
+            Some(selection) => Some(
+                selection
+                    .iter()
+                    .map(|selection| match selection {
+                        QuerySelection::Field { field, output_name } => {
+                            Some((output_name.as_str(), field.as_str()))
+                        }
+                        QuerySelection::Expression { .. } => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        };
+        Some(IndexedPlan {
+            predicate,
+            selections,
+        })
+    }
+
+    pub(super) fn clock(
+        &self,
+        collection_timezone: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<MdbaseCelClock, MdbaseQueryError> {
+        query_clock(&self.plan, collection_timezone, now)
+    }
+
+    /// Evaluate this plan's filter for one record exactly as ordinary execution
+    /// does when there are no named projections or invocation context.
+    pub(super) fn evaluate_residual_filter(
+        &self,
+        record: &MdbaseRecordDocument,
+        types: &MdbaseTypeRegistry,
+        clock: &MdbaseCelClock,
+        diagnostics: &mut Vec<MdbaseDiagnostic>,
+    ) -> Result<bool, MdbaseQueryError> {
+        let Some(filter) = &self.plan.filter else {
+            return Ok(true);
+        };
+        let empty = MdbaseRecordSet::default();
+        evaluate_filter(
+            &self.programs,
+            filter,
+            record,
+            &known_fields(record, types),
+            &serde_json::Map::new(),
+            None,
+            clock,
+            &QueryLinkIndex::new(&empty, ""),
+            diagnostics,
+        )
+    }
+}
+
+pub(super) fn compare_query_values(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+    direction: QueryDirection,
+) -> Ordering {
+    compare_json(left, right, direction)
+}
+
+pub(super) fn indexed_query_row(
+    plan: &StructuredQueryPlan,
+    path: &str,
+    frontmatter: serde_json::Value,
+    effective_frontmatter: serde_json::Value,
+    values: Option<serde_json::Map<String, serde_json::Value>>,
+) -> MdbaseQueryRow {
+    MdbaseQueryRow {
+        file: serde_json::json!({"path": path}),
+        frontmatter: matches!(
+            plan.frontmatter_mode,
+            QueryFrontmatterMode::Persisted | QueryFrontmatterMode::Both
+        )
+        .then_some(frontmatter),
+        effective_frontmatter: matches!(
+            plan.frontmatter_mode,
+            QueryFrontmatterMode::Effective | QueryFrontmatterMode::Both
+        )
+        .then_some(effective_frontmatter),
+        values: values.map(serde_json::Value::Object),
+        body: None,
+    }
 }
 
 struct QueryCandidate<'a> {
@@ -651,28 +833,17 @@ fn evaluate_query_candidate<'a>(
     if let Some(filter) = &plan.filter {
         work.metrics.filter_input_checks += 1;
         work.metrics.filter_evaluations += 1;
-        let context = MdbaseCelContext::query(
-            MdbaseCelContextKind::QueryFilter,
+        if !evaluate_filter(
+            engine,
+            filter,
             record,
-            known_fields.iter().cloned(),
-            serde_json::Value::Object(projection.clone()),
+            &known_fields,
+            &projection,
             invocation_context,
-            clock.clone(),
-        )
-        .map_err(cel_query_error)?;
-        let result = engine
-            .evaluate_record_context(&filter.source, context, link_index)
-            .map_err(cel_query_error)?;
-        diagnostics.extend(result.diagnostics);
-        if !result.value.is_boolean() && !result.value.is_null() {
-            diagnostics.push(query_diagnostic(
-                "expression_evaluation_error",
-                "query filter expression must return a boolean",
-                Some("where"),
-                None,
-            ));
-        }
-        if result.value != serde_json::Value::Bool(true) {
+            clock,
+            link_index,
+            diagnostics,
+        )? {
             return Ok(None);
         }
     }
@@ -692,6 +863,42 @@ fn evaluate_query_candidate<'a>(
         projection,
         values,
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_filter(
+    engine: &QueryPrograms,
+    filter: &QueryExpressionSpec,
+    record: &MdbaseRecordDocument,
+    known_fields: &BTreeSet<String>,
+    projection: &serde_json::Map<String, serde_json::Value>,
+    invocation_context: Option<&MdbaseRecordDocument>,
+    clock: &MdbaseCelClock,
+    link_index: &QueryLinkIndex<'_>,
+    diagnostics: &mut Vec<MdbaseDiagnostic>,
+) -> Result<bool, MdbaseQueryError> {
+    let context = MdbaseCelContext::query(
+        MdbaseCelContextKind::QueryFilter,
+        record,
+        known_fields.iter().cloned(),
+        serde_json::Value::Object(projection.clone()),
+        invocation_context,
+        clock.clone(),
+    )
+    .map_err(cel_query_error)?;
+    let result = engine
+        .evaluate_record_context(&filter.source, context, link_index)
+        .map_err(cel_query_error)?;
+    diagnostics.extend(result.diagnostics);
+    if !result.value.is_boolean() && !result.value.is_null() {
+        diagnostics.push(query_diagnostic(
+            "expression_evaluation_error",
+            "query filter expression must return a boolean",
+            Some("where"),
+            None,
+        ));
+    }
+    Ok(result.value == serde_json::Value::Bool(true))
 }
 
 fn known_fields(record: &MdbaseRecordDocument, types: &MdbaseTypeRegistry) -> BTreeSet<String> {

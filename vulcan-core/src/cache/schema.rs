@@ -1,5 +1,50 @@
 use rusqlite::Transaction;
 
+/// Narrow per-record query rows for indexed reads. Wide cache rows carry large
+/// body-bearing payloads that spill to overflow pages, so columns read for every
+/// record (stat fingerprint, query-input evidence, effective frontmatter, file
+/// metadata) live here inline. Triggers delete a row whenever its source cache
+/// row is rewritten or removed; refresh republishes it in the same transaction.
+pub fn apply_schema_v23(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TABLE mdbase_record_query (
+            collection_root TEXT NOT NULL,
+            path TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            dependency_digest TEXT NOT NULL,
+            record_model_version INTEGER NOT NULL,
+            stat_fingerprint BLOB,
+            input_converted INTEGER NOT NULL,
+            input_bytes INTEGER NOT NULL,
+            input_nodes INTEGER NOT NULL,
+            input_width INTEGER NOT NULL,
+            input_links INTEGER NOT NULL,
+            effective_frontmatter_jsonb BLOB NOT NULL,
+            file_json TEXT NOT NULL,
+            PRIMARY KEY (collection_root, path)
+         ) WITHOUT ROWID;
+         CREATE INDEX idx_mdbase_record_query_freshness ON mdbase_record_query(
+            collection_root, dependency_digest, record_model_version, path, stat_fingerprint
+         );
+         CREATE TRIGGER mdbase_record_query_update AFTER UPDATE ON mdbase_record_cache BEGIN
+            DELETE FROM mdbase_record_query
+            WHERE collection_root = old.collection_root AND path = old.path
+              AND (new.revision IS NOT old.revision
+                OR new.dependency_digest IS NOT old.dependency_digest
+                OR new.record_model_version IS NOT old.record_model_version
+                OR new.types_json IS NOT old.types_json
+                OR new.effective_frontmatter_json IS NOT old.effective_frontmatter_json
+                OR new.metadata_json IS NOT old.metadata_json
+                OR new.collection_root IS NOT old.collection_root
+                OR new.path IS NOT old.path);
+         END;
+         CREATE TRIGGER mdbase_record_query_delete AFTER DELETE ON mdbase_record_cache BEGIN
+            DELETE FROM mdbase_record_query
+            WHERE collection_root = old.collection_root AND path = old.path;
+         END;",
+    )
+}
+
 /// Record-local derivation precedes visibility-sensitive collection overlays.
 /// Legacy rows must derive this payload from source, not from final diagnostics.
 pub fn apply_schema_v22(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {

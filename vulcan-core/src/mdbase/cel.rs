@@ -14,7 +14,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 mod value_limits;
-use value_limits::{inspect_bindings, inspect_value};
+use value_limits::{inspect_bindings, inspect_value, measure_bindings};
 
 pub const MDBASE_CEL_RESERVED_BINDINGS: [&str; 16] = [
     "record",
@@ -880,6 +880,66 @@ fn presence_map(value: &serde_json::Value, known_fields: &BTreeSet<String>) -> s
 }
 
 /// Shared file binding for query and authorized mutation-time CEL contexts.
+#[must_use]
+/// Scope-independent evidence that a record's query filter input passes the
+/// CEL input checks, computed from the unrestricted post-overlay record. Only
+/// link resolution varies by scope; its bytes are bounded per link at use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseQueryInputEvidence {
+    /// Binding conversion succeeded for these exact values.
+    pub converted: bool,
+    pub bytes: usize,
+    pub nodes: usize,
+    pub width: usize,
+    pub links: usize,
+}
+
+impl MdbaseQueryInputEvidence {
+    /// Whether every scope's filter input for this record passes `limits`,
+    /// given the longest record path the collection could resolve a link to.
+    #[must_use]
+    pub fn passes(&self, limits: &MdbaseCelLimits, max_path_bytes: usize) -> bool {
+        // JSON escaping expands a path at most sixfold; the resolution name and
+        // quoting differ by a small constant.
+        let per_link = max_path_bytes.saturating_mul(6).saturating_add(64);
+        self.converted
+            && self.nodes <= limits.max_value_nodes
+            && self.width <= limits.max_collection_items
+            && self
+                .bytes
+                .saturating_add(self.links.saturating_mul(per_link))
+                <= limits.max_value_bytes
+    }
+}
+
+/// Measure the exact query-filter bindings `record` produces (empty projection,
+/// no invocation context) without evaluating any expression.
+pub fn mdbase_query_input_evidence(
+    record: &MdbaseRecordDocument,
+    types: &super::MdbaseTypeRegistry,
+) -> MdbaseQueryInputEvidence {
+    let known_fields = record
+        .types
+        .iter()
+        .filter_map(|name| types.get(name))
+        .filter_map(|definition| definition.schema.get("properties")?.as_object())
+        .flat_map(serde_json::Map::keys)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut bindings = record_bindings(record, &known_fields, false);
+    bindings.insert("projection".to_string(), serde_json::json!({}));
+    bindings.insert("this".to_string(), serde_json::Value::Null);
+    let converted = add_json_bindings(&mut Context::default(), &bindings).is_ok();
+    let (bytes, nodes, width) = measure_bindings(&bindings).unwrap_or((usize::MAX, 0, 0));
+    MdbaseQueryInputEvidence {
+        converted,
+        bytes,
+        nodes,
+        width,
+        links: record.links.len(),
+    }
+}
+
 #[must_use]
 pub fn mdbase_cel_file_value(record: &MdbaseRecordDocument) -> serde_json::Value {
     let links = record

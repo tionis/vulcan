@@ -42,7 +42,11 @@ fn query_sql_snapshot_matches_sources_preserves_links_and_rejects_inconsistent_c
 #[test]
 fn query_sql_rejected_records_keep_input_errors_and_restricted_visibility() {
     let (directory, paths) = fixture();
-    let query = json!({"types": ["task"], "where": "title == 'Public'", "select": ["title"]});
+    // The expression selection keeps this on the ordinary cached path.
+    let query = json!({"types": ["task"], "where": "title == 'Public'",
+        "select": ["title", {"name": "copy", "expr": "title"}]});
+    let indexed_query =
+        json!({"types": ["task"], "where": "title == 'Public'", "select": ["title"]});
     let mut metrics = MdbaseQueryMetrics::default();
     std::fs::write(
         directory.path().join("tasks/private/secret.md"),
@@ -73,12 +77,28 @@ fn query_sql_rejected_records_keep_input_errors_and_restricted_visibility() {
     assert_eq!(metrics.execution_work.sql_rejected, 0);
     assert_eq!(metrics.cache_hits, 1);
     assert_eq!(metrics.cached_load.sql_selection_attempts, 1);
+
+    // The indexed path declines the over-limit record and the ordinary path
+    // reports the same error; hidden from a restricted reader, it is served.
+    let error =
+        build_mdbase_query_report_profiled(&paths, &indexed_query, None, &mut metrics).unwrap_err();
+    assert_eq!(error.to_string(), expected.to_string());
+    assert_eq!(metrics.indexed_hits, 0);
+    let result =
+        build_mdbase_query_report_profiled(&paths, &indexed_query, Some(&filter), &mut metrics)
+            .unwrap();
+    assert_eq!(result.meta.total_count, 1);
+    assert_eq!(metrics.indexed_hits, 1);
+    assert_eq!(metrics.indexed.type_candidates, 1);
+    assert_eq!(metrics.indexed.hydrated, 1);
 }
 
 #[test]
 fn query_metrics_preserve_reports_and_distinguish_source_refresh_and_cached_loads() {
     let (_directory, paths) = fixture();
-    let query = json!({"types": ["task"], "select": ["title"], "limit": 1});
+    // The expression selection keeps this on the ordinary cached path.
+    let query = json!({"types": ["task"], "select": ["title", {"name": "copy", "expr": "title"}],
+        "limit": 1});
     let mut metrics = MdbaseQueryMetrics::default();
     let expected = build_mdbase_query_report(&paths, &query, None).unwrap();
     let actual = build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap();
@@ -116,13 +136,24 @@ fn query_metrics_preserve_reports_and_distinguish_source_refresh_and_cached_load
     assert!(metrics.total_seconds >= metrics.record_preparation_seconds);
     assert!(metrics.record_preparation_seconds >= metrics.cached_load.total_seconds);
     assert!(metrics.cached_load.total_seconds >= metrics.cached_load.collection_overlay_seconds);
+
+    // An eligible plan over the stat-proven cache decodes nothing but its page.
+    let indexed = json!({"types": ["task"], "select": ["title"], "limit": 1});
+    let source = build_mdbase_query_report_profiled(&paths, &indexed, None, &mut metrics).unwrap();
+    assert_eq!(metrics.indexed_hits, 1);
+    assert_eq!(metrics.cache_attempts, 0);
+    assert_eq!(metrics.completed_manifests, 0);
+    assert_eq!(metrics.indexed.visible_records, 2);
+    assert_eq!(metrics.indexed.hydrated, 1);
+    assert_eq!(source.results.len(), 1);
 }
 
 #[test]
 fn query_metrics_filter_hidden_work_and_reset_before_denied_operations() {
     let (directory, paths) = fixture();
     vulcan_core::initialize_vulcan_dir(&paths).unwrap();
-    let query = json!({"select": ["title"]});
+    // The expression selection keeps this on the ordinary cached path.
+    let query = json!({"select": ["title", {"name": "copy", "expr": "title"}]});
     build_mdbase_query_report(&paths, &query, None).unwrap();
     std::fs::write(directory.path().join("tasks/private/secret.md"), [0xff]).unwrap();
     let mut allow = read_control_grant();

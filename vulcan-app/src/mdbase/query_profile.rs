@@ -31,6 +31,9 @@ pub struct MdbaseQueryMetrics {
     pub completed_manifests: usize,
     pub completed_manifest_records: usize,
     pub completed_manifest_bytes: u64,
+    /// Manifests proven from cached revisions by stat fingerprint, without
+    /// reading record contents. Content captures are the remainder.
+    pub stat_manifests: usize,
     pub cache_attempts: usize,
     pub cache_hits: usize,
     pub cache_refresh_attempts: usize,
@@ -38,6 +41,9 @@ pub struct MdbaseQueryMetrics {
     pub source_loads: usize,
     pub prepared_visible_records: usize,
     pub cached_load: MdbaseCachedLoadMetrics,
+    pub indexed_attempts: usize,
+    pub indexed_hits: usize,
+    pub indexed: vulcan_core::mdbase::MdbaseIndexedQueryMetrics,
     pub execution_work: vulcan_core::mdbase::MdbaseQueryExecutionMetrics,
 }
 
@@ -60,6 +66,17 @@ pub fn build_mdbase_query_report_profiled(
         let prepared = time(&mut metrics.query_preparation_seconds, || {
             compile_mdbase_prepared_query(query).map_err(AppError::operation)
         })?;
+        let now = DateTime::<Utc>::from(SystemTime::now());
+        if let Some(mut report) =
+            super::try_indexed_query(paths, &loaded, filter, &prepared, now, metrics)
+        {
+            time(&mut metrics.diagnostic_assembly_seconds, || {
+                report
+                    .diagnostics
+                    .splice(0..0, registry_diagnostics(&loaded, filter));
+            });
+            return Ok(report);
+        }
         let record_start = Instant::now();
         let records = load_query_records(paths, &loaded, filter, metrics, &prepared);
         metrics.record_preparation_seconds += record_start.elapsed().as_secs_f64();
@@ -71,7 +88,7 @@ pub fn build_mdbase_query_report_profiled(
                 &loaded.types,
                 &loaded.collection.config.settings.id_field,
                 loaded.collection.config.settings.timezone.as_deref(),
-                DateTime::<Utc>::from(SystemTime::now()),
+                now,
                 &mut metrics.execution_work,
             )
         })

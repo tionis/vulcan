@@ -163,19 +163,66 @@ impl MdbaseSqlPredicate {
     /// The statement must name its cache row `record`. SQL identifiers/operators
     /// come only from this closed implementation, never from query source text.
     pub(super) fn render(&self, parameters: &mut Vec<Value>) -> String {
-        let mut valid = Vec::new();
-        let mut matches = Vec::new();
-        for atom in &self.atoms {
-            let (kind, value) = match &atom.field {
+        let (valid, matches) = self.render_parts(parameters);
+        // An uncertain atom must survive even if another conjunct is false: CEL
+        // diagnostics/short-circuit behavior remain the residual evaluator's job.
+        format!("CASE WHEN {valid} THEN ({matches}) ELSE 1 END")
+    }
+
+    /// Render separate SQL expressions for "every atom has a type this lowering
+    /// decides exactly" and "every atom matches". When the first is true, the
+    /// second equals the CEL filter result with no diagnostics; otherwise the
+    /// row needs residual CEL evaluation.
+    pub(super) fn render_parts(&self, parameters: &mut Vec<Value>) -> (String, String) {
+        self.render_with(parameters, |_, field, parameters| match field {
+            Field::Path => ("'text'".to_string(), "record.path".to_string()),
+            Field::Effective(name) => {
+                let path = bind(parameters, Value::Text(format!("$.{name}")));
+                (
+                    format!("json_type(record.effective_frontmatter_json, {path})"),
+                    format!("json_extract(record.effective_frontmatter_json, {path})"),
+                )
+            }
+        })
+    }
+
+    /// Like [`Self::render_parts`], but each atom's JSON type and value are
+    /// computed once as named columns (`atom{i}_kind`, `atom{i}_value`) of an
+    /// inner query over `record`, reading `frontmatter` (a JSON or JSONB
+    /// expression). The returned expressions reference those columns.
+    pub(super) fn render_columns(
+        &self,
+        parameters: &mut Vec<Value>,
+        frontmatter: &str,
+    ) -> (Vec<String>, String, String) {
+        let mut columns = Vec::new();
+        let (valid, matches) = self.render_with(parameters, |index, field, parameters| {
+            let (kind, value) = match field {
                 Field::Path => ("'text'".to_string(), "record.path".to_string()),
                 Field::Effective(name) => {
                     let path = bind(parameters, Value::Text(format!("$.{name}")));
                     (
-                        format!("json_type(record.effective_frontmatter_json, {path})"),
-                        format!("json_extract(record.effective_frontmatter_json, {path})"),
+                        format!("json_type({frontmatter}, {path})"),
+                        format!("json_extract({frontmatter}, {path})"),
                     )
                 }
             };
+            columns.push(format!("{kind} AS atom{index}_kind"));
+            columns.push(format!("{value} AS atom{index}_value"));
+            (format!("atom{index}_kind"), format!("atom{index}_value"))
+        });
+        (columns, valid, matches)
+    }
+
+    fn render_with(
+        &self,
+        parameters: &mut Vec<Value>,
+        mut operand: impl FnMut(usize, &Field, &mut Vec<Value>) -> (String, String),
+    ) -> (String, String) {
+        let mut valid = Vec::new();
+        let mut matches = Vec::new();
+        for (index, atom) in self.atoms.iter().enumerate() {
+            let (kind, value) = operand(index, &atom.field, parameters);
             let (guard, literal) = match &atom.literal {
                 Literal::String(text) => (
                     format!("({kind} = 'text' AND instr({value}, char(0)) = 0)"),
@@ -206,12 +253,9 @@ impl MdbaseSqlPredicate {
             };
             matches.push(format!("({sql})"));
         }
-        // An uncertain atom must survive even if another conjunct is false: CEL
-        // diagnostics/short-circuit behavior remain the residual evaluator's job.
-        format!(
-            "CASE WHEN {} THEN ({}) ELSE 1 END",
-            valid.join(" AND "),
-            matches.join(" AND ")
+        (
+            format!("({})", valid.join(" AND ")),
+            format!("({})", matches.join(" AND ")),
         )
     }
 }

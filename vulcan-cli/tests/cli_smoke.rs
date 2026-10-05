@@ -17622,6 +17622,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         vault_query,
         include_str!("../../docs/assistant/skills/vault-query.md")
     );
+    assert!(vault_query.contains("run from the index without loading note bodies"));
     Command::cargo_bin("vulcan")
         .expect("binary")
         .args(["mdbase", "query", "--help"])

@@ -24,7 +24,8 @@ mod snapshot_tests;
 
 // Version 7 adds required source-local body parse facts to private cache payloads.
 // Older rows must be rederived before cached overlays can avoid body parsing.
-pub const MDBASE_RECORD_MODEL_VERSION: u32 = 7;
+// Version 8 adds stat fingerprints and query-input evidence for indexed reads.
+pub const MDBASE_RECORD_MODEL_VERSION: u32 = 8;
 
 /// Derive the opaque revision used for compare-and-swap record writes.
 ///

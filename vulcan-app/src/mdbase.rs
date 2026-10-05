@@ -513,6 +513,44 @@ fn load_query_records(
     load_query_records_with_boundary(paths, loaded, filter, metrics, query, || {})
 }
 
+/// Run the indexed query path when every visible record is proven current by
+/// stat fingerprint and the plan is physically executable. Any miss or cache
+/// failure returns `None`; the caller then runs the ordinary disk-reconciled
+/// path, which reports canonical errors. Read-only: never refreshes the cache.
+fn try_indexed_query(
+    paths: &VaultPaths,
+    loaded: &LoadedCollection,
+    filter: Option<&PermissionFilter>,
+    query: &vulcan_core::mdbase::MdbasePreparedQuery,
+    now: chrono::DateTime<chrono::Utc>,
+    metrics: &mut MdbaseQueryMetrics,
+) -> Option<MdbaseQueryResult> {
+    // Same lockfile rule as cached loads: no cache use without that authority.
+    if filter.is_some_and(|filter| !filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME)) {
+        return None;
+    }
+    metrics.indexed_attempts += 1;
+    let connection = rusqlite::Connection::open_with_flags(
+        paths.cache_db(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let result = vulcan_core::mdbase::execute_indexed_mdbase_query(
+        &connection,
+        &loaded.collection,
+        &loaded.types,
+        &loaded.contracts,
+        query,
+        filter,
+        now,
+        &mut metrics.indexed,
+    )
+    .ok()??;
+    metrics.indexed_hits += 1;
+    metrics.prepared_visible_records = metrics.indexed.visible_records;
+    Some(result)
+}
+
 fn load_query_source_records(
     loaded: &LoadedCollection,
     filter: Option<&PermissionFilter>,
@@ -543,6 +581,7 @@ fn query_cache_error(error: vulcan_core::mdbase::MdbaseRecordCacheError) -> AppE
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn load_query_records_with_boundary(
     paths: &VaultPaths,
     loaded: &LoadedCollection,
@@ -552,16 +591,11 @@ fn load_query_records_with_boundary(
     before_verification: impl FnOnce(),
 ) -> Result<vulcan_core::mdbase::MdbaseQuerySnapshot, AppError> {
     use vulcan_core::mdbase::{
-        capture_mdbase_record_manifest, load_cached_mdbase_query_snapshot_profiled,
-        rebuild_mdbase_record_cache, refresh_mdbase_record_cache,
+        backfill_mdbase_stat_fingerprints, capture_cached_mdbase_record_manifest,
+        capture_mdbase_record_manifest_with_fingerprints,
+        load_cached_mdbase_query_snapshot_profiled, rebuild_mdbase_record_cache,
+        refresh_mdbase_record_cache, MdbaseRecordCacheError,
     };
-    let manifest = query_profile::time(&mut metrics.manifest_before_seconds, || {
-        capture_mdbase_record_manifest(&loaded.collection, &loaded.types, &loaded.contracts, filter)
-    })
-    .map_err(query_cache_error)?;
-    metrics.completed_manifests += 1;
-    metrics.completed_manifest_records += manifest.len();
-    metrics.completed_manifest_bytes += manifest.values().map(|entry| entry.file.size).sum::<u64>();
     let unrestricted = filter.is_none_or(|filter| filter.path_permission().is_unrestricted());
     // An unavailable disposable cache must not make canonical records unreadable.
     // Restricted callers do not create, refresh, or repair unrestricted rows.
@@ -572,6 +606,65 @@ fn load_query_records_with_boundary(
             None
         }
     });
+    let readonly = query_profile::time(&mut metrics.cache_open_seconds, || {
+        if unrestricted {
+            None
+        } else {
+            rusqlite::Connection::open_with_flags(
+                paths.cache_db(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .ok()
+        }
+    });
+    // Prefer stat-fingerprint proof against cached revisions; any miss or cache
+    // failure (including an older read-only schema) falls back to hashing every
+    // visible record. Staleness and denials are never treated as misses.
+    let capture = |connection: Option<&rusqlite::Connection>,
+                   metrics: &mut MdbaseQueryMetrics,
+                   seconds: fn(&mut MdbaseQueryMetrics) -> &mut f64|
+     -> Result<_, AppError> {
+        let start = std::time::Instant::now();
+        let cached = connection.map(|connection| {
+            capture_cached_mdbase_record_manifest(
+                connection,
+                &loaded.collection,
+                &loaded.types,
+                &loaded.contracts,
+                filter,
+            )
+        });
+        let manifest = match cached {
+            Some(Ok(Some(manifest))) => {
+                metrics.stat_manifests += 1;
+                Ok((manifest, None))
+            }
+            Some(Err(
+                error @ (MdbaseRecordCacheError::StaleRecords
+                | MdbaseRecordCacheError::StaleControls
+                | MdbaseRecordCacheError::PermissionDenied),
+            )) => Err(error),
+            _ => capture_mdbase_record_manifest_with_fingerprints(
+                &loaded.collection,
+                &loaded.types,
+                &loaded.contracts,
+                filter,
+            )
+            .map(|(manifest, fingerprints)| (manifest, Some(fingerprints))),
+        };
+        *seconds(metrics) += start.elapsed().as_secs_f64();
+        manifest.map_err(query_cache_error)
+    };
+    let connection = database
+        .as_ref()
+        .map(vulcan_core::CacheDatabase::connection)
+        .or(readonly.as_ref());
+    let (manifest, _) = capture(connection, metrics, |metrics| {
+        &mut metrics.manifest_before_seconds
+    })?;
+    metrics.completed_manifests += 1;
+    metrics.completed_manifest_records += manifest.len();
+    metrics.completed_manifest_bytes += manifest.values().map(|entry| entry.file.size).sum::<u64>();
     let cached = |connection: &rusqlite::Connection, metrics: &mut MdbaseQueryMetrics| {
         metrics.cache_attempts += 1;
         let records = load_cached_mdbase_query_snapshot_profiled(
@@ -594,15 +687,9 @@ fn load_query_records_with_boundary(
             .as_ref()
             .and_then(|database| cached(database.connection(), metrics))
     } else {
-        query_profile::time(&mut metrics.cache_open_seconds, || {
-            rusqlite::Connection::open_with_flags(
-                paths.cache_db(),
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-        })
-        .ok()
-        .as_ref()
-        .and_then(|connection| cached(connection, metrics))
+        readonly
+            .as_ref()
+            .and_then(|connection| cached(connection, metrics))
     };
     if records.is_none() && unrestricted {
         if let Some(database) = database.as_mut() {
@@ -632,10 +719,13 @@ fn load_query_records_with_boundary(
     }
     let records = records.map_or_else(|| load_query_source_records(loaded, filter, metrics), Ok)?;
     before_verification();
-    let current = query_profile::time(&mut metrics.manifest_after_seconds, || {
-        capture_mdbase_record_manifest(&loaded.collection, &loaded.types, &loaded.contracts, filter)
-    })
-    .map_err(query_cache_error)?;
+    let connection = database
+        .as_ref()
+        .map(vulcan_core::CacheDatabase::connection)
+        .or(readonly.as_ref());
+    let (current, fingerprints) = capture(connection, metrics, |metrics| {
+        &mut metrics.manifest_after_seconds
+    })?;
     metrics.completed_manifests += 1;
     metrics.completed_manifest_records += current.len();
     metrics.completed_manifest_bytes += current.values().map(|entry| entry.file.size).sum::<u64>();
@@ -651,6 +741,17 @@ fn load_query_records_with_boundary(
             "stale_state",
             "mdbase records changed during query preparation; retry the query",
         ));
+    }
+    // Content capture proved these revisions; record their fingerprints so the
+    // next read can prove freshness by stat. Disposable-cache failures are
+    // harmless here and must not fail a verified read.
+    if let (Some(database), Some(fingerprints)) = (database.as_mut(), fingerprints) {
+        let _ = backfill_mdbase_stat_fingerprints(
+            database,
+            &loaded.collection,
+            &current,
+            &fingerprints,
+        );
     }
     Ok(records)
 }

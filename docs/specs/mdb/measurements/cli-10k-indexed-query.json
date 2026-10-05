@@ -1,0 +1,198 @@
+{
+  "measurement": "public_mdb_cli_indexed_query_diagnostic",
+  "acceptance_gate_result": "not_evaluated",
+  "source": "release build of the commit introducing schema v23 indexed reads (parent ed94ee22), cargo +1.88.0 build --release -p vulcan-cli, default features",
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 104,
+    "links": 100000,
+    "missing_status_records": 2000,
+    "payload_files": 10014,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348",
+    "private_records": 1000,
+    "records": 10000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 3333,
+      "project": 3333,
+      "task": 3334
+    }
+  },
+  "baseline_before_change": {
+    "repeated_wall_seconds": {
+      "p50": 2.7829,
+      "p95": 2.8185
+    },
+    "first_request_seconds": 11.4,
+    "child_peak_rss_kib": 449492,
+    "samples": 9,
+    "note": "same host, ordinary disk-reconciled path at ed94ee22"
+  },
+  "runs": {
+    "unrestricted_blocking_a": {
+      "complete_and_valid": true,
+      "binary_sha256": "ba5adfef9b6cff9354dbae837347529dd98c93e0560c53046fd3d1ef05ef43e1",
+      "runner_sha256": "25d015396fba19eeb796e74ccb93480dbc4fcaceeea95bb55e991875536276f7",
+      "fixture_unchanged": true,
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": null,
+        "refresh": "blocking",
+        "requested_repeated_samples": 45,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "first_request": {
+        "exact_total": 1556,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27344,
+        "wall_seconds": 0.5375577220693231
+      },
+      "repeated_wall_seconds": {
+        "p50": 0.05882002098951489,
+        "p95": 0.1253528989618644,
+        "p99": 0.2582902980502695
+      },
+      "child_peak_rss_kib": 97584,
+      "machine": {
+        "acceptance_reference_machine": false,
+        "architecture": "x86_64",
+        "platform": "Linux-6.12.107+deb13-amd64-x86_64-with-glibc2.41"
+      },
+      "repeated_requests": 45
+    },
+    "unrestricted_blocking_b": {
+      "complete_and_valid": true,
+      "binary_sha256": "ba5adfef9b6cff9354dbae837347529dd98c93e0560c53046fd3d1ef05ef43e1",
+      "runner_sha256": "25d015396fba19eeb796e74ccb93480dbc4fcaceeea95bb55e991875536276f7",
+      "fixture_unchanged": true,
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": null,
+        "refresh": "blocking",
+        "requested_repeated_samples": 45,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "first_request": {
+        "exact_total": 1556,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27344,
+        "wall_seconds": 0.05764522310346365
+      },
+      "repeated_wall_seconds": {
+        "p50": 0.056761792046017945,
+        "p95": 0.06344858696684241,
+        "p99": 0.0661510219797492
+      },
+      "child_peak_rss_kib": 98240,
+      "machine": {
+        "acceptance_reference_machine": false,
+        "architecture": "x86_64",
+        "platform": "Linux-6.12.107+deb13-amd64-x86_64-with-glibc2.41"
+      },
+      "repeated_requests": 45
+    },
+    "restricted_blocking": {
+      "complete_and_valid": true,
+      "binary_sha256": "ba5adfef9b6cff9354dbae837347529dd98c93e0560c53046fd3d1ef05ef43e1",
+      "runner_sha256": "25d015396fba19eeb796e74ccb93480dbc4fcaceeea95bb55e991875536276f7",
+      "fixture_unchanged": true,
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": "benchmark_public",
+        "refresh": "blocking",
+        "requested_repeated_samples": 45,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "first_request": {
+        "exact_total": 1222,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27453,
+        "wall_seconds": 0.07382380100898445
+      },
+      "repeated_wall_seconds": {
+        "p50": 0.0714207369601354,
+        "p95": 0.079985455959104,
+        "p99": 0.08403441403061152
+      },
+      "child_peak_rss_kib": 97968,
+      "machine": {
+        "acceptance_reference_machine": false,
+        "architecture": "x86_64",
+        "platform": "Linux-6.12.107+deb13-amd64-x86_64-with-glibc2.41"
+      },
+      "repeated_requests": 45
+    },
+    "unrestricted_refresh_off": {
+      "complete_and_valid": true,
+      "binary_sha256": "ba5adfef9b6cff9354dbae837347529dd98c93e0560c53046fd3d1ef05ef43e1",
+      "runner_sha256": "25d015396fba19eeb796e74ccb93480dbc4fcaceeea95bb55e991875536276f7",
+      "fixture_unchanged": true,
+      "method": {
+        "cache_existed_before": true,
+        "concurrency": 1,
+        "fixture_verification": "pre/post digest reads outside timing; preflight warms OS file caches",
+        "memory": "Linux aggregate child ru_maxrss in KiB; not retained memory growth",
+        "percentiles": "nearest rank; repeated successful requests only",
+        "permission_profile": null,
+        "refresh": "off",
+        "requested_repeated_samples": 45,
+        "timeout_seconds": 180,
+        "timing": "process start through exit"
+      },
+      "first_request": {
+        "exact_total": 1556,
+        "iteration": 0,
+        "ok": true,
+        "query": "task-open.json",
+        "rows": 50,
+        "stdout_bytes": 27344,
+        "wall_seconds": 0.05817636207211763
+      },
+      "repeated_wall_seconds": {
+        "p50": 0.06190739409066737,
+        "p95": 0.0850646710023284,
+        "p99": 0.10056234907824546
+      },
+      "child_peak_rss_kib": 97264,
+      "machine": {
+        "acceptance_reference_machine": false,
+        "architecture": "x86_64",
+        "platform": "Linux-6.12.107+deb13-amd64-x86_64-with-glibc2.41"
+      },
+      "repeated_requests": 45
+    }
+  },
+  "host_conditions": "shared development host with browser and other agent sessions; load average 3.3-4.9 during these runs (6-8 during earlier development runs); run a is affected by load spikes",
+  "limitations": [
+    "Not the designated reference machine; fewer than 1,000 samples per mode",
+    "No concurrent writers, 100K scaling, or retained-memory growth measurement",
+    "Every request still performs a full stat walk; cold processes compile the bundled envelope validator"
+  ]
+}

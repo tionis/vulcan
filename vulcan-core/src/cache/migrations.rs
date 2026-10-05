@@ -130,6 +130,11 @@ impl MigrationRegistry {
                 "retain local mdbase derivation before collection overlays",
                 schema::apply_schema_v22,
             ),
+            Migration::new(
+                23,
+                "add narrow mdbase record query rows for indexed reads",
+                schema::apply_schema_v23,
+            ),
         ])
     }
 
@@ -288,6 +293,55 @@ mod tests {
             MigrationRegistry::schema_v1().target_version(),
             SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn mdbase_query_rows_follow_their_wide_rows() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let mut old = MigrationRegistry::schema_v1();
+        old.migrations.retain(|migration| migration.version <= 22);
+        old.migrate(&mut connection).unwrap();
+        connection.execute("INSERT INTO mdbase_record_cache VALUES ('root','a.md','rev','controls',7,'[]','{}',NULL,'[]','[]','{}',NULL)", []).unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        let narrow = |connection: &Connection| -> i64 {
+            connection
+                .query_row("SELECT count(*) FROM mdbase_record_query", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        // Migration adds no narrow rows; refresh publishes them.
+        assert_eq!(narrow(&connection), 0);
+        let insert = "INSERT INTO mdbase_record_query VALUES ('root','a.md','rev','controls',8,
+            x'00',1,10,2,1,0,jsonb('{}'),'{}')";
+        connection.execute(insert, []).unwrap();
+        // Payload-only updates keep the row; projection changes and deletion drop it.
+        connection
+            .execute(
+                "UPDATE mdbase_record_cache SET local_record_json = '{}'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(narrow(&connection), 1);
+        connection
+            .execute("UPDATE mdbase_record_cache SET revision = 'next'", [])
+            .unwrap();
+        assert_eq!(narrow(&connection), 0);
+        connection.execute(insert, []).unwrap();
+        connection
+            .execute(
+                "UPDATE mdbase_record_cache SET effective_frontmatter_json = '{\"a\":1}'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(narrow(&connection), 0);
+        connection.execute(insert, []).unwrap();
+        connection
+            .execute("DELETE FROM mdbase_record_cache", [])
+            .unwrap();
+        assert_eq!(narrow(&connection), 0);
     }
 
     #[test]
