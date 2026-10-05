@@ -732,6 +732,11 @@ shell = "deny"
             0
         );
 
+        let dql = get_json(handle.addr(), "/dataview/query?dql=LIST", None);
+        let listed = dql["result"].to_string();
+        assert!(listed.contains("Projects/Alpha"), "{dql}");
+        assert!(!listed.contains("Dashboard"), "{dql}");
+
         let inline = get_json(handle.addr(), "/dataview/inline?file=Dashboard", None);
         assert_eq!(inline["ok"], false);
         // Hidden notes resolve like absent ones rather than confirming existence.

@@ -1,6 +1,6 @@
 use crate::browse::{
     build_dataview_eval_report, build_dataview_inline_report, build_dataview_query_js_report,
-    build_dataview_query_report,
+    build_dataview_query_report_with_guard,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -404,7 +404,7 @@ pub fn route_request(
             let Some(dql) = first_param(&request.query, "dql") else {
                 return ServeResponse::error(400, "missing required query parameter: dql");
             };
-            match build_dataview_query_report(paths, dql, None, read_filter.as_ref()) {
+            match build_dataview_query_report_with_guard(paths, dql, None, &permissions) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
