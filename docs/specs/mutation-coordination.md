@@ -7,8 +7,11 @@ remain authoritative because direct CLI commands and multiple processes must rem
 ## Canonical identities
 
 - A vault lock is identified by the canonical materialized vault root and stored at
-  `<vault>/.vulcan/write.lock`. Callers must canonicalize before constructing `VaultPaths`; two path
-  aliases must not produce two lock identities. The lock file is device-local coordination state,
+  `<vault>/.vulcan/write.lock`, with a writer-preference turnstile at `<vault>/.vulcan/write.intent`:
+  writers hold the intent lock exclusively around the vault lock, and readers pass through it shared
+  before taking the shared vault lock, so overlapping readers cannot starve a writer. Callers must
+  canonicalize before constructing `VaultPaths`; two path
+  aliases must not produce two lock identities. Both lock files are device-local coordination state,
   excluded from sync snapshots and worktree-equivalence checks, and acquiring it does not scaffold
   unrelated `.vulcan` files that could invalidate a prepared frontier.
 - A repository lock is identified by the canonical Git directory returned by repository discovery

@@ -321,6 +321,53 @@ pub fn acquire_mdbase_consistent_read(
     }
 }
 
+/// Lock-free admission for readers that prove every result against the
+/// record cache by stat fingerprint (retained query sessions). Such a reader
+/// never observes a half-applied transaction: files and cache rows agree only
+/// before the first replacement or after publication, and anything between
+/// fails the proof and falls back to [`acquire_mdbase_consistent_read`]. It
+/// must still not hide an interrupted write, so a journal with no active
+/// writer reports the same recovery error. A journal under an active writer
+/// is that writer's own transaction.
+pub fn check_mdbase_lock_free_read(paths: &VaultPaths) -> Result<(), MdbaseWriteTransactionError> {
+    match fs::symlink_metadata(journal_path(paths)) {
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        _ => {}
+    }
+    let active_writer = crate::write_lock::try_acquire_read_lock(paths)
+        .map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to inspect vault write lock", error)
+        })?
+        .is_none();
+    if active_writer {
+        return Ok(());
+    }
+    acquire_mdbase_consistent_read(paths).map(drop)
+}
+
+/// The paths an active write is replacing and their pre-write revisions
+/// (`None` for paths the write creates). Collection-relative.
+#[derive(Debug, Clone, Default)]
+pub struct MdbaseInFlightWrite {
+    pub before: BTreeMap<String, Option<String>>,
+}
+
+/// Read the journal of the write that currently holds the vault lock, for
+/// lock-free readers that serve the state from before it. Callers must have
+/// observed an active writer; any read or integrity failure yields `None`.
+#[must_use]
+pub fn load_mdbase_in_flight_write(paths: &VaultPaths) -> Option<MdbaseInFlightWrite> {
+    let journal = load_journal(paths).ok()??;
+    Some(MdbaseInFlightWrite {
+        before: journal
+            .preview
+            .changes
+            .iter()
+            .map(|change| (change.path.clone(), change.before_revision.clone()))
+            .collect(),
+    })
+}
+
 /// Load committed post-consistency events in stable transaction order.
 pub fn list_mdbase_write_outbox(
     paths: &VaultPaths,
@@ -1900,6 +1947,117 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn lock_free_readers_serve_the_state_from_before_an_unpublished_write() {
+        use crate::mdbase::{
+            compile_mdbase_prepared_query, execute_retained_mdbase_query,
+            load_mdbase_contract_registry, load_mdbase_type_registry, refresh_mdbase_record_cache,
+            walk_mdbase_retained_scope, MdbaseIndexedQueryMetrics, MdbaseRetainedRows,
+        };
+        let (directory, paths, _) = fixture();
+        write(directory.path(), "records/c.md", "before c\n");
+        let collection = load_mdbase_collection(directory.path()).unwrap().unwrap();
+        let types = load_mdbase_type_registry(&collection).unwrap();
+        let contracts = load_mdbase_contract_registry(&collection, &types).unwrap();
+        let mut database = crate::CacheDatabase::open(&paths).unwrap();
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let connection = rusqlite::Connection::open(paths.cache_db()).unwrap();
+        let query = compile_mdbase_prepared_query(&serde_json::json!({})).unwrap();
+        let mut metrics = MdbaseIndexedQueryMetrics::default();
+        let mut rows = MdbaseRetainedRows::default();
+        let execute = |rows: &MdbaseRetainedRows,
+                       proof: &crate::mdbase::MdbaseRetainedProof,
+                       metrics: &mut MdbaseIndexedQueryMetrics| {
+            execute_retained_mdbase_query(
+                &connection,
+                &collection,
+                &types,
+                &contracts,
+                &query,
+                None,
+                Utc::now(),
+                rows,
+                proof,
+                false,
+                metrics,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let walk = walk_mdbase_retained_scope(&collection, &types, &contracts, None)
+            .unwrap()
+            .unwrap();
+        let proof = walk
+            .reconcile(&connection, &collection, &mut rows, &mut metrics)
+            .unwrap()
+            .unwrap();
+        let before = execute(&rows, &proof, &mut metrics);
+        assert_eq!(before.meta.total_count, 3);
+
+        // Replace a, delete c, and create d; the core transaction publishes
+        // no record cache, so every committed boundary is an unpublished one.
+        let preview = preview(
+            &collection,
+            vec![
+                MdbaseWritePreviewChangeRequest {
+                    path: "records/a.md".to_string(),
+                    after: Some("after a\n".to_string()),
+                    if_revision: None,
+                },
+                MdbaseWritePreviewChangeRequest {
+                    path: "records/c.md".to_string(),
+                    after: None,
+                    if_revision: None,
+                },
+                MdbaseWritePreviewChangeRequest {
+                    path: "records/d.md".to_string(),
+                    after: Some("new d\n".to_string()),
+                    if_revision: None,
+                },
+            ],
+        );
+        let request = MdbaseWriteApplyRequest {
+            preview: &preview,
+            verification: verification(),
+            idempotency_key: "lock-free-reader",
+        };
+        let mut observed = false;
+        apply_with_boundary_hook(
+            &paths,
+            &collection,
+            &request,
+            |_| Ok(()),
+            |boundary| {
+                if boundary != "commit_decided" {
+                    return Ok(());
+                }
+                let walk = walk_mdbase_retained_scope(&collection, &types, &contracts, None)
+                    .unwrap()
+                    .unwrap();
+                let mut reconciled = MdbaseIndexedQueryMetrics::default();
+                assert!(walk
+                    .reconcile(&connection, &collection, &mut rows, &mut reconciled)
+                    .unwrap()
+                    .is_none());
+                assert!(reconciled.freshness_miss);
+                let in_flight = load_mdbase_in_flight_write(&paths).unwrap();
+                let proof = walk.proof_before_write(&rows, &in_flight, None).unwrap();
+                assert_eq!(execute(&rows, &proof, &mut reconciled), before);
+                // A change the write does not explain is never excused.
+                write(directory.path(), "records/b.md", "external b\n");
+                let walk = walk_mdbase_retained_scope(&collection, &types, &contracts, None)
+                    .unwrap()
+                    .unwrap();
+                assert!(walk.proof_before_write(&rows, &in_flight, None).is_none());
+                observed = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(observed);
+    }
+
+    #[test]
     fn control_filter_is_enforced_at_both_transaction_rechecks() {
         use crate::permissions::{PathPermission, ResourceSpecifier};
         for staged in [false, true] {
@@ -2138,8 +2296,19 @@ mod tests {
             acquire_mdbase_consistent_read(&paths).unwrap_err().code,
             "recovery_required"
         );
+        // Lock-free readers report an interrupted write, but treat a journal
+        // under an active writer as that writer's own transaction.
+        assert_eq!(
+            check_mdbase_lock_free_read(&paths).unwrap_err().code,
+            "recovery_required"
+        );
+        {
+            let _writer = acquire_write_lock(&paths).unwrap();
+            check_mdbase_lock_free_read(&paths).expect("active writer");
+        }
         recover_mdbase_write_transaction(&paths, &collection, |_| Ok(()))
             .expect("rollback recovery");
+        check_mdbase_lock_free_read(&paths).expect("recovered");
         assert_eq!(
             fs::read_to_string(directory.path().join("records/a.md")).unwrap(),
             "before a\n"

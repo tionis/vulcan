@@ -8,6 +8,9 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub struct WriteLockGuard {
     file: File,
+    // Released after the vault lock, so queued readers enter only once the
+    // write section is over.
+    _intent: File,
 }
 
 #[derive(Debug)]
@@ -15,33 +18,63 @@ pub struct ReadLockGuard {
     file: File,
 }
 
-pub fn acquire_write_lock(paths: &VaultPaths) -> Result<WriteLockGuard, std::io::Error> {
-    validate_lock_directory(paths)?;
-    let path = lock_file_path(paths)?;
-    let file = OpenOptions::new()
+/// Advisory locks grant no priority, so a steady stream of overlapping
+/// readers could starve a writer indefinitely. Writers therefore first take
+/// the intent lock exclusively; readers pass through it (shared) on their way
+/// to the vault lock and release it at once. A waiting writer thus blocks new
+/// readers while those already inside drain. The vault lock is only ever held
+/// exclusively by an intent holder, so the turnstile cannot deadlock.
+fn open_lock(path: PathBuf) -> Result<File, std::io::Error> {
+    OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
-        .open(path)?;
+        .open(path)
+}
+
+pub fn acquire_write_lock(paths: &VaultPaths) -> Result<WriteLockGuard, std::io::Error> {
+    validate_lock_directory(paths)?;
+    let path = lock_file_path(paths)?;
+    let intent = open_lock(path.with_file_name(INTENT_FILE_NAME))?;
+    intent.lock_exclusive()?;
+    let file = open_lock(path)?;
     file.lock_exclusive()?;
 
-    Ok(WriteLockGuard { file })
+    Ok(WriteLockGuard {
+        file,
+        _intent: intent,
+    })
 }
 
 pub fn acquire_read_lock(paths: &VaultPaths) -> Result<ReadLockGuard, std::io::Error> {
     validate_lock_directory(paths)?;
     let path = lock_file_path(paths)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?;
+    let intent = open_lock(path.with_file_name(INTENT_FILE_NAME))?;
+    fs2::FileExt::lock_shared(&intent)?;
+    let file = open_lock(path)?;
     fs2::FileExt::lock_shared(&file)?;
+    drop(intent);
 
     Ok(ReadLockGuard { file })
 }
+
+/// Take the shared vault lock only if no writer holds it, without passing
+/// the writer turnstile; `None` while a write section is active.
+pub fn try_acquire_read_lock(paths: &VaultPaths) -> Result<Option<ReadLockGuard>, std::io::Error> {
+    validate_lock_directory(paths)?;
+    let file = open_lock(lock_file_path(paths)?)?;
+    match fs2::FileExt::try_lock_shared(&file) {
+        Ok(()) => Ok(Some(ReadLockGuard { file })),
+        Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Writer-preference turnstile beside the vault lock; device-local like it.
+pub const INTENT_FILE_NAME: &str = "write.intent";
 
 #[allow(clippy::unnecessary_wraps)] // Android path resolution and directory creation are fallible.
 fn lock_file_path(paths: &VaultPaths) -> Result<PathBuf, std::io::Error> {
@@ -168,6 +201,39 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_readers_cannot_starve_a_writer() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let paths = VaultPaths::new(temporary.path());
+        fs::create_dir(paths.vulcan_dir()).expect("coordination directory");
+        let stop = AtomicBool::new(false);
+        let waited = std::thread::scope(|threads| {
+            // Staggered readers keep the shared lock continuously held.
+            for offset in 0..4 {
+                let (paths, stop) = (&paths, &stop);
+                threads.spawn(move || {
+                    std::thread::sleep(Duration::from_millis(offset * 5));
+                    while !stop.load(Ordering::SeqCst) {
+                        let _guard = acquire_read_lock(paths).expect("read lock");
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                });
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            let start = Instant::now();
+            let guard = acquire_write_lock(&paths).expect("write lock");
+            let waited = start.elapsed();
+            drop(guard);
+            // Readers proceed again once the writer leaves.
+            drop(acquire_read_lock(&paths).expect("read lock"));
+            stop.store(true, Ordering::SeqCst);
+            waited
+        });
+        assert!(waited < Duration::from_secs(1), "writer waited {waited:?}");
+    }
+
+    #[test]
     fn acquiring_a_lock_does_not_scaffold_or_change_vault_inputs() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let paths = VaultPaths::new(temporary.path());
@@ -176,6 +242,7 @@ mod tests {
         let guard = acquire_write_lock(&paths).expect("write lock");
 
         assert!(paths.vulcan_dir().join("write.lock").is_file());
+        assert!(paths.vulcan_dir().join(INTENT_FILE_NAME).is_file());
         assert!(!paths.gitignore_file().exists());
         assert!(!paths.reports_dir().exists());
         drop(guard);

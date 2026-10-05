@@ -53,6 +53,8 @@ pub struct MdbaseIndexedQueryMetrics {
     /// The walk found records the cache does not currently describe; an
     /// authorized refresh can make the indexed path available again.
     pub freshness_miss: bool,
+    /// Served the state from before a write that held the vault lock.
+    pub before_write: bool,
 }
 
 struct CandidateRow {
@@ -710,9 +712,6 @@ impl MdbaseRetainedWalk {
             retained.rows.clear();
             retained.dependency_digest = self.dependency_digest.to_string();
         }
-        retained
-            .rows
-            .retain(|path, _| self.present.contains(path.as_str()));
         let stale = self
             .visible
             .iter()
@@ -739,7 +738,75 @@ impl MdbaseRetainedWalk {
             metrics.reloaded_rows = loaded.len();
             retained.rows.extend(loaded);
         }
+        // Prune only on success: a miss during a write keeps the pre-write
+        // rows that [`Self::proof_before_write`] serves.
+        retained
+            .rows
+            .retain(|path, _| self.present.contains(path.as_str()));
         Ok(Some(self.proof()))
+    }
+
+    /// The pre-write proof while `write` holds the vault lock: walked records
+    /// that differ from the retained rows must all be paths the write is
+    /// replacing, retained at their pre-write revision, and records the write
+    /// removed count as still present. Serving that state is linearizable
+    /// because the write has not completed. `None` for any other difference.
+    #[must_use]
+    pub fn proof_before_write(
+        &self,
+        retained: &MdbaseRetainedRows,
+        write: &crate::mdbase::MdbaseInFlightWrite,
+        filter: Option<&PermissionFilter>,
+    ) -> Option<MdbaseRetainedProof> {
+        if *retained.dependency_digest != *self.dependency_digest {
+            return None;
+        }
+        let retained_at = |path: &str, revision: &Option<String>| {
+            revision.as_ref().is_some_and(|revision| {
+                retained
+                    .rows
+                    .get(path)
+                    .is_some_and(|row| row.revision == *revision)
+            })
+        };
+        let mut visible = BTreeSet::new();
+        for (path, fingerprint) in &self.visible {
+            let current = retained
+                .rows
+                .get(path)
+                .is_some_and(|row| row.fingerprint == fingerprint.as_slice());
+            match write.before.get(path) {
+                _ if current => {
+                    visible.insert(path.clone());
+                }
+                // Created by the write: absent before it.
+                Some(None) => {}
+                Some(before) if retained_at(path, before) => {
+                    visible.insert(path.clone());
+                }
+                _ => return None,
+            }
+        }
+        let mut max_path_bytes = self.max_path_bytes;
+        for (path, before) in &write.before {
+            if self.present.contains(path)
+                || before.is_none()
+                || filter.is_some_and(|filter| !filter.is_allowed(path))
+            {
+                continue;
+            }
+            // Removed by the write: present before it.
+            if !retained_at(path, before) {
+                return None;
+            }
+            max_path_bytes = max_path_bytes.max(path.len());
+            visible.insert(path.clone());
+        }
+        Some(MdbaseRetainedProof {
+            dependency_digest: Arc::clone(&self.dependency_digest),
+            visible: Arc::new(visible),
+            max_path_bytes,
+        })
     }
 
     fn proof(&self) -> MdbaseRetainedProof {

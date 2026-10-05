@@ -3,9 +3,16 @@
 //! The session keeps what is expensive to rebuild and safe to reuse between
 //! requests: authorized control registries (keyed by read scope), compiled
 //! query plans, and a read-only cache connection with its statement cache. It
-//! never retains answers. Every request acquires the cooperating read guard
-//! and verifies the retained registries against the current controls. By
-//! default it also proves the cache current with a full stat walk.
+//! never retains answers. Every request verifies the retained registries
+//! against the current controls and, by default, proves the cache current
+//! with a full stat walk.
+//!
+//! Retained execution does not take the vault read lock, so readers never
+//! queue behind a write section. A stat-proven result cannot observe a
+//! half-applied write: files and cache rows agree only before a transaction's
+//! first replacement or after its cache publication, and anything between
+//! fails the proof. Such misses, and interrupted writes, take the ordinary
+//! service with its cooperating read guard.
 //!
 //! With an attached [`MdbaseChangeMonitor`] the session uses an explicit
 //! *watched* freshness policy: a scope's last walk proof is reused only while
@@ -167,11 +174,11 @@ impl MdbaseQuerySession {
             return Err(control_permission_denied());
         }
         let now = DateTime::<Utc>::from(SystemTime::now());
-        if indexed_query_allowed(filter) {
-            let read_guard = time(&mut metrics.collection_seconds, || {
-                vulcan_core::mdbase::acquire_mdbase_consistent_read(&self.paths)
-                    .map_err(AppError::operation)
-            })?;
+        let admitted = indexed_query_allowed(filter)
+            && time(&mut metrics.collection_seconds, || {
+                vulcan_core::mdbase::check_mdbase_lock_free_read(&self.paths).is_ok()
+            });
+        if admitted {
             let scope = scope_key(filter);
             let loaded = time(&mut metrics.collection_seconds, || {
                 self.scope(&scope, filter)
@@ -184,7 +191,6 @@ impl MdbaseQuerySession {
             } else {
                 None
             };
-            drop(read_guard);
             if let Some(mut report) = result {
                 report
                     .diagnostics
@@ -236,8 +242,9 @@ impl MdbaseQuerySession {
             }
             result
         };
-        // Read both counters under the shared lock, before any walk, so a
-        // change racing this request invalidates the proof it produces.
+        // Read both counters before any walk, so a change racing this request
+        // invalidates the proof it produces. The epoch advances only when a
+        // write section ends, after its cache publication.
         let epoch = vulcan_core::write_lock::read_write_epoch(&self.paths).ok();
         let generation = self
             .watched
@@ -287,7 +294,16 @@ impl MdbaseQuerySession {
                 .ok()
                 .flatten();
             metrics.indexed = reconciled;
-            let proof = proof?;
+            let Some(proof) = proof else {
+                // A write holding the vault lock may have replaced files it
+                // has not yet published; serve the state from before it
+                // rather than queue behind it. Never retained as a proof.
+                let write = self.in_flight_write()?;
+                let proof = walk.proof_before_write(&rows, &write, filter)?;
+                metrics.indexed.before_write = true;
+                metrics.indexed.freshness_seconds = start.elapsed().as_secs_f64();
+                return execute(&rows, &proof, false, metrics);
+            };
             metrics.indexed.freshness_seconds = start.elapsed().as_secs_f64();
             (execute(&rows, &proof, false, metrics), proof)
         };
@@ -307,6 +323,16 @@ impl MdbaseQuerySession {
             proofs.remove(scope);
         }
         Some(result)
+    }
+
+    /// The journal of a write currently holding the vault lock.
+    fn in_flight_write(&self) -> Option<vulcan_core::mdbase::MdbaseInFlightWrite> {
+        let active = vulcan_core::write_lock::try_acquire_read_lock(&self.paths)
+            .ok()?
+            .is_none();
+        active
+            .then(|| vulcan_core::mdbase::load_mdbase_in_flight_write(&self.paths))
+            .flatten()
     }
 
     fn trusted_proof(
@@ -546,11 +572,10 @@ mod tests {
     fn concurrent_readers_share_a_session_and_observe_concurrent_writes() {
         fn shareable<T: Send + Sync>() {}
         shareable::<MdbaseQuerySession>();
+        // Strict sessions: these assertions do not need watched trust, and
+        // inotify instances are a scarce per-user resource on test hosts.
         let (directory, paths) = initialized();
-        let monitor =
-            MdbaseChangeMonitor::watch(&directory.path().canonicalize().unwrap()).unwrap();
-        let session = MdbaseQuerySession::new(paths.clone())
-            .with_change_monitor(monitor, Duration::from_secs(60));
+        let session = MdbaseQuerySession::new(paths.clone());
         let filter = restricted();
         let expected = queries()
             .iter()
@@ -602,5 +627,18 @@ mod tests {
             build_mdbase_query_report(&paths, &query, None).unwrap()
         );
         assert_eq!(session.query(&query, None).unwrap().meta.total_count, 0);
+
+        // Retained readers do not queue behind a write section; they observe
+        // the state from before it.
+        let before = session.query(&query, None).unwrap();
+        let writer = vulcan_core::write_lock::acquire_write_lock(&paths).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|threads| {
+            let (session, query) = (&session, &query);
+            threads.spawn(move || sender.send(session.query(query, None).unwrap()).unwrap());
+            let during = receiver.recv_timeout(Duration::from_secs(10));
+            drop(writer);
+            assert_eq!(during.expect("reader blocked by the write section"), before);
+        });
     }
 }

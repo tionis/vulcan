@@ -1084,8 +1084,9 @@ pub fn apply_mdbase_write(
     Ok(report)
 }
 
-/// Bring derived state up to date with a committed write: the note index for
-/// the written paths, then the mdbase record cache for indexed reads. The
+/// Bring derived state up to date with a committed write: first the mdbase
+/// record cache, which ends the window in which lock-free indexed readers
+/// serve the pre-write state, then the note index for the written paths. The
 /// record cache is self-validating, so a failed refresh only sends readers to
 /// the reconciled path.
 fn reconcile_committed_write(
@@ -1094,18 +1095,17 @@ fn reconcile_committed_write(
     filter: &PermissionFilter,
     event: &vulcan_core::mdbase::MdbaseWriteOutboxEvent,
 ) -> Result<vulcan_core::ScanSummary, String> {
-    let summary = match written_vault_paths(paths, &loaded.collection, event) {
-        Some(changed) => vulcan_core::scan::scan_vault_paths_unlocked(paths, &changed),
-        None => vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental),
-    }
-    .map_err(|error| error.to_string())?;
     refresh_query_cache(
         paths,
         loaded,
         Some(filter),
         &mut MdbaseQueryMetrics::default(),
     );
-    Ok(summary)
+    match written_vault_paths(paths, &loaded.collection, event) {
+        Some(changed) => vulcan_core::scan::scan_vault_paths_unlocked(paths, &changed),
+        None => vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental),
+    }
+    .map_err(|error| error.to_string())
 }
 
 /// Vault-relative paths a committed write touched, or `None` when the
