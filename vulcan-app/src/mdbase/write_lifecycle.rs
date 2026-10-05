@@ -31,7 +31,20 @@ pub(super) fn prepare_preview(
         return Ok(scoped);
     }
     reject_optional_events(loaded, &scoped, operation, clock)?;
-    let sources = write_validation::proposed_sources(loaded, &scoped)?;
+    let mut sources = write_validation::proposed_sources(loaded, &scoped)?;
+    // Only lifecycle evaluation reads the collection-resolved file value. When
+    // no affected type declares lifecycle actions, the drafts need no other
+    // records, so the rest of the collection is not analyzed here.
+    let lifecycle = loaded.types.iter().any(|definition| {
+        definition.frontmatter.get("lifecycle").is_some()
+            && scoped
+                .matched_types
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&definition.name))
+    });
+    if !lifecycle {
+        sources.retain(|path, _| scoped.changes.iter().any(|change| change.path == *path));
+    }
     let mut records =
         analyze_mdbase_record_set_sources(&loaded.collection, &loaded.types, &sources, clock);
     add_existing_metadata(loaded, &scoped, &mut records)?;

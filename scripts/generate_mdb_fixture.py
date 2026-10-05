@@ -22,7 +22,7 @@ def record_path(index):
     return f"{visibility}/{kind}/{index % 100:02d}/record-{index:06d}.md"
 
 
-def schema(kind):
+def schema(kind, constraints=False):
     properties = {
         "type": {"const": kind}, "title": {"type": "string"},
         "id": {"type": "string"}, "status": {"type": "string"},
@@ -43,10 +43,21 @@ def schema(kind):
             "schema": {"dialect": "json-schema-2020-12", "value": {
                 "type": "object", "required": ["type", "title", "id"],
                 "properties": properties}},
-            "collection": {"read_defaults": {"status": "open", "priority": 2}}}
+            "collection": collection_rules(kind, constraints)}
 
 
-def note(index, count, seed):
+def collection_rules(kind, constraints):
+    rules = {"read_defaults": {"status": "open", "priority": 2}}
+    if constraints:
+        # Collection-wide rules make every managed write validate the whole
+        # collection: unique IDs and type-checked, existence-checked links.
+        rules["unique"] = [{"field": "id", "scope": "collection"}]
+        if kind == "task":
+            rules["links"] = {"projects": {"target_type": "project", "validate_exists": True}}
+    return rules
+
+
+def note(index, count, seed, constraints=False):
     kind = KINDS[index % len(KINDS)]
     fields = {"type": kind, "id": f"fixture-{index:06d}",
               "title": f"{kind.title()} {index:06d}",
@@ -65,6 +76,10 @@ def note(index, count, seed):
         fields["status"] = ("open", "active", "done")[(index // 3) % 3]
     if index % 97 == 0:
         fields["priority"] = "deliberately-invalid"
+    if constraints and kind == "task":
+        # The nearest project record; a task at index 0 links forward.
+        project = index - 1 if index >= 1 else 2
+        fields["projects"] = [f"[[{record_path(project)}]]"]
     targets = [record_path((index + seed + offset + 1) % count)
                for offset in range(LINKS)]
     body = f"# {fields['title']}\n\n" + "\n".join(f"[[{p}]]" for p in targets) + "\n\n"
@@ -83,7 +98,7 @@ def query(kind, parameter):
             "limit": 50, "include_body": False}
 
 
-def generate(destination, count=10_000, seed=42):
+def generate(destination, count=10_000, seed=42, constraints=False):
     if count < 12 or count > 100_000:
         raise ValueError("record count must be between 12 and 100000")
     if not 0 <= seed <= 2**32 - 1:
@@ -111,9 +126,10 @@ read = { allow = ["mdbase.yaml", "mdbase.lock.yaml", "_types/**", "_contracts/**
 write = "none"
 ''')
     for kind in KINDS:
-        emit(f"collection/_types/{kind}.md", b"---\n" + encoded(schema(kind)) + b"---\n")
+        emit(f"collection/_types/{kind}.md",
+             b"---\n" + encoded(schema(kind, constraints)) + b"---\n")
     for index in range(count):
-        emit("collection/" + record_path(index), note(index, count, seed))
+        emit("collection/" + record_path(index), note(index, count, seed, constraints))
     for kind in KINDS:
         parameters = (1, 4, 7) if kind == "contact" else ("open", "active", "done")
         for parameter in parameters:
@@ -127,6 +143,8 @@ write = "none"
                 "payload_files": files, "payload_sha256": digest.hexdigest(),
                 "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
                 "acceptance_gate_result": "not_evaluated"}
+    if constraints:
+        manifest["constraints"] = "collection-unique id; validated task projects links"
     with (destination / "manifest.json").open("xb") as stream:
         stream.write(encoded(manifest))
     return manifest
@@ -137,8 +155,11 @@ def main():
     parser.add_argument("destination", type=Path, help="new directory beneath an existing parent")
     parser.add_argument("--records", type=int, choices=(10_000, 100_000), default=10_000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--constraints", action="store_true",
+                        help="add collection-wide uniqueness and validated links")
     args = parser.parse_args()
-    print(json.dumps(generate(args.destination, args.records, args.seed), sort_keys=True))
+    manifest = generate(args.destination, args.records, args.seed, args.constraints)
+    print(json.dumps(manifest, sort_keys=True))
 
 
 if __name__ == "__main__":

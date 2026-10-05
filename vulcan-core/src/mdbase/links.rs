@@ -157,7 +157,15 @@ pub(crate) fn resolve_collection_links(
     types: &MdbaseTypeRegistry,
     records: &mut [MdbaseRecordDocument],
 ) {
-    resolve_collection_links_with_body_facts(collection, types, records, &BTreeMap::new());
+    use rayon::prelude::*;
+    // Body parsing is independent per record; resolution then uses one index.
+    let facts = records
+        .par_iter()
+        .map(|record| (record.path.clone(), BodyLinkFacts::parse(&record.body)))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect();
+    resolve_collection_links_with_body_facts(collection, types, records, &facts);
 }
 
 pub(super) fn resolve_collection_links_with_body_facts(

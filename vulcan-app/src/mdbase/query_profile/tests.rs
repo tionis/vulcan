@@ -281,6 +281,13 @@ fn shared_query_stage_benchmark() {
         .as_deref()
         .is_none_or(|name| name == "benchmark_public"));
     let paths = VaultPaths::new(root.join("collection"));
+    if let Some(samples) = std::env::var("VULCAN_MDB_PROFILE_WRITE_SAMPLES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        benchmark_write_samples(&root, &paths, count, samples);
+        return;
+    }
     let watch = std::env::var_os("VULCAN_MDB_PROFILE_WATCH").is_some();
     let session = std::env::var_os("VULCAN_MDB_PROFILE_SESSION")
         .is_some()
@@ -405,7 +412,11 @@ fn shared_query_stage_benchmark() {
             })
             .collect::<Vec<_>>();
         if writes_per_second > 0 {
-            writes = benchmark_writes(&paths, writes_per_second, &reading);
+            let interval =
+                std::time::Duration::from_secs(1) / u32::try_from(writes_per_second).unwrap();
+            writes = benchmark_writes(&paths, interval, |_| {
+                reading.load(std::sync::atomic::Ordering::SeqCst) > 0
+            });
         }
         workers
             .into_iter()
@@ -435,12 +446,47 @@ fn shared_query_stage_benchmark() {
     }
 }
 
+/// Sequential managed writes without readers, after warming the note index
+/// and record cache so samples measure steady-state writes.
+fn benchmark_write_samples(
+    root: &std::path::Path,
+    paths: &VaultPaths,
+    count: usize,
+    samples: usize,
+) {
+    let constraints = std::fs::read(root.join("manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|manifest| manifest.get("constraints").cloned());
+    vulcan_core::scan_vault(paths, vulcan_core::ScanMode::Incremental).unwrap();
+    let query: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("queries/task-open.json")).unwrap())
+            .unwrap();
+    build_mdbase_query_report(paths, &query, None).unwrap();
+    let mut latencies =
+        benchmark_writes(paths, std::time::Duration::ZERO, |index| index <= samples);
+    // The first write may publish one-time state (identity facts, a full
+    // history checkpoint); it is reported separately.
+    let first = latencies.remove(0);
+    latencies.sort_by(f64::total_cmp);
+    let rank = |percent: usize| {
+        let index = (percent * latencies.len()).div_ceil(100).max(1) - 1;
+        latencies[index.min(latencies.len() - 1)]
+    };
+    println!(
+        "{}",
+        json!({"measurement": "benchmark_write_summary", "acceptance_gate_result": "not_evaluated",
+            "records": count, "constraints": constraints, "samples": latencies.len(),
+            "first_seconds": first, "p50": rank(50), "p95": rank(95), "p99": rank(99)})
+    );
+}
+
 /// Body-only edits through the mdbase mutation service at up to `per_second`
 /// writes while readers run; they change no query result. Restores the record.
 fn benchmark_writes(
     paths: &VaultPaths,
-    per_second: usize,
-    reading: &std::sync::atomic::AtomicUsize,
+    interval: std::time::Duration,
+    mut keep_going: impl FnMut(usize) -> bool,
 ) -> Vec<f64> {
     use crate::mdbase::{
         apply_mdbase_write, plan_mdbase_write, MdbaseWriteChangeRequest,
@@ -448,7 +494,6 @@ fn benchmark_writes(
     };
     let path = "public/contact/91/record-000091.md";
     let original = std::fs::read_to_string(paths.vault_root().join(path)).unwrap();
-    let interval = std::time::Duration::from_secs(1) / u32::try_from(per_second).unwrap();
     let mut latencies = Vec::new();
     let write = |index: usize, after: String| {
         let now = chrono::Utc::now();
@@ -495,7 +540,7 @@ fn benchmark_writes(
         start.elapsed()
     };
     let mut index = 0;
-    while reading.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+    while keep_going(index) {
         let elapsed = write(index, format!("{original}\nbenchmark edit {index}\n"));
         latencies.push(elapsed.as_secs_f64());
         index += 1;

@@ -211,8 +211,10 @@ pub fn analyze_mdbase_record_set_sources(
     sources: &BTreeMap<String, String>,
     clock: &MdbaseCelClock,
 ) -> MdbaseRecordSet {
+    use rayon::prelude::*;
+    // Records analyze independently; collection overlays follow in order.
     let records = sources
-        .iter()
+        .par_iter()
         .map(|(path, source)| {
             build_mdbase_record(collection, types, path, source.clone(), None, true, clock)
         })
@@ -460,18 +462,9 @@ pub(super) fn build_mdbase_record(
     include_source: bool,
     clock: &MdbaseCelClock,
 ) -> MdbaseRecordDocument {
-    let analysis = analyze_record_source(collection, types, path, &source, clock);
-    let parse_source = source.strip_prefix('\u{feff}').unwrap_or(&source);
-    let parsed = parse_document(parse_source, &VaultConfig::default());
-    let frontmatter = if parsed.raw_frontmatter.is_some() {
-        if let Some(frontmatter) = parsed.frontmatter.as_ref().and_then(yaml_mapping_to_json) {
-            frontmatter
-        } else {
-            serde_json::json!({})
-        }
-    } else {
-        serde_json::json!({})
-    };
+    // One Markdown parse yields both the analysis and the frontmatter.
+    let (analysis, frontmatter) =
+        analyze_record_source_with_frontmatter(collection, types, path, &source, clock);
 
     let body = record_body(&source).to_string();
     let behavior = compose_mdbase_type_behavior(types, &analysis.types);
@@ -502,6 +495,18 @@ fn analyze_record_source(
     source: &str,
     clock: &MdbaseCelClock,
 ) -> MdbaseRecordDraftAnalysis {
+    analyze_record_source_with_frontmatter(collection, types, path, source, clock).0
+}
+
+/// [`analyze_record_source`] plus the persisted frontmatter it parsed (an
+/// empty object when absent or malformed).
+fn analyze_record_source_with_frontmatter(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    source: &str,
+    clock: &MdbaseCelClock,
+) -> (MdbaseRecordDraftAnalysis, serde_json::Value) {
     let parse_source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let parsed = parse_document(parse_source, &VaultConfig::default());
     let severity = validation_severity(collection.config.settings.validation);
@@ -571,10 +576,13 @@ fn analyze_record_source(
         );
     }
     sort_record_diagnostics(&mut diagnostics);
-    MdbaseRecordDraftAnalysis {
-        types: matched.types,
-        diagnostics,
-    }
+    (
+        MdbaseRecordDraftAnalysis {
+            types: matched.types,
+            diagnostics,
+        },
+        frontmatter,
+    )
 }
 
 pub(super) fn operation_clock(collection: &MdbaseCollection) -> MdbaseCelClock {
@@ -831,18 +839,24 @@ fn validate_uniqueness_rule(
                 .any(|name| name.eq_ignore_ascii_case(declaring_type))
         })
         .collect::<Vec<_>>();
+    // Index candidates by value once; scanning every candidate per owner is
+    // quadratic in the collection size.
+    let mut by_value = std::collections::HashMap::<String, Vec<usize>>::new();
+    for candidate in &candidate_indices {
+        for value in record_field_values(&records[*candidate], field) {
+            let holders = by_value.entry(uniqueness_key(value)).or_default();
+            if holders.last() != Some(candidate) {
+                holders.push(*candidate);
+            }
+        }
+    }
     for owner in owners {
-        let owner_values = record_field_values(&records[owner], field);
-        let mut related_paths = candidate_indices
-            .iter()
+        let mut related_paths = record_field_values(&records[owner], field)
+            .into_iter()
+            .filter_map(|value| by_value.get(&uniqueness_key(value)))
+            .flatten()
             .copied()
             .filter(|candidate| *candidate != owner)
-            .filter(|candidate| {
-                let candidate_values = record_field_values(&records[*candidate], field);
-                owner_values
-                    .iter()
-                    .any(|owner_value| candidate_values.contains(owner_value))
-            })
             .map(|candidate| records[candidate].path.clone())
             .collect::<Vec<_>>();
         related_paths.sort();
@@ -862,6 +876,46 @@ fn validate_uniqueness_rule(
             });
         }
     }
+}
+
+/// A key equal for exactly the values `serde_json::Value` equality treats
+/// as equal. Object keys are already sorted; only negative zero needs care.
+fn uniqueness_key(value: &serde_json::Value) -> String {
+    fn write(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::Number(number)
+                if number.as_f64() == Some(0.0) && number.is_f64() =>
+            {
+                out.push_str("0.0");
+            }
+            serde_json::Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    write(item, out);
+                }
+                out.push(']');
+            }
+            serde_json::Value::Object(map) => {
+                out.push('{');
+                for (index, (key, item)) in map.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::Value::String(key.clone()).to_string());
+                    out.push(':');
+                    write(item, out);
+                }
+                out.push('}');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let mut key = String::new();
+    write(value, &mut key);
+    key
 }
 
 fn record_field_values<'a>(
@@ -1080,6 +1134,40 @@ fn sort_record_diagnostics(diagnostics: &mut [MdbaseRecordDiagnostic]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uniqueness_keys_match_json_value_equality() {
+        let values = [
+            serde_json::json!(0),
+            serde_json::json!(0.0),
+            serde_json::json!(-0.0),
+            serde_json::json!(1),
+            serde_json::json!(1.0),
+            serde_json::json!(-1),
+            serde_json::json!(u64::MAX),
+            serde_json::json!("1"),
+            serde_json::json!("a\"b"),
+            serde_json::json!(true),
+            serde_json::json!([1, 2]),
+            serde_json::json!([2, 1]),
+            serde_json::json!([[-0.0]]),
+            serde_json::json!([[0.0]]),
+            serde_json::json!({"a": 1, "b": [0.0]}),
+            serde_json::json!({"b": [-0.0], "a": 1}),
+            serde_json::json!({"a": "1"}),
+            serde_json::json!({"a,b": 1}),
+            serde_json::json!({"a": 1, "b": 1}),
+        ];
+        for left in &values {
+            for right in &values {
+                assert_eq!(
+                    uniqueness_key(left) == uniqueness_key(right),
+                    left == right,
+                    "{left} vs {right}"
+                );
+            }
+        }
+    }
     use crate::mdbase::{load_mdbase_collection, load_mdbase_type_registry};
     use std::fs;
     use tempfile::tempdir;
