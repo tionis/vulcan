@@ -256,7 +256,7 @@ fn shared_query_stage_benchmark() {
         .is_none_or(|name| name == "benchmark_public"));
     let paths = VaultPaths::new(root.join("collection"));
     let watch = std::env::var_os("VULCAN_MDB_PROFILE_WATCH").is_some();
-    let mut session = std::env::var_os("VULCAN_MDB_PROFILE_SESSION")
+    let session = std::env::var_os("VULCAN_MDB_PROFILE_SESSION")
         .is_some()
         .then(|| {
             let session = crate::mdbase::MdbaseQuerySession::new(paths.clone());
@@ -269,11 +269,20 @@ fn shared_query_stage_benchmark() {
                 session
             }
         });
-    let samples = std::env::var("VULCAN_MDB_PROFILE_SAMPLES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(10);
-    let mut repeated = Vec::new();
+    let env_number = |name: &str, default: usize| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(default)
+    };
+    let samples = env_number("VULCAN_MDB_PROFILE_SAMPLES", 10);
+    // Concurrent readers share one session; writers use the mutation service.
+    let readers = env_number("VULCAN_MDB_PROFILE_READERS", 1).max(1);
+    let writes_per_second = env_number("VULCAN_MDB_PROFILE_WRITES_PER_SECOND", 0);
+    assert!(
+        readers == 1 || session.is_some(),
+        "concurrent readers share a session"
+    );
     let cases = [
         ("task", "open"),
         ("task", "active"),
@@ -285,7 +294,7 @@ fn shared_query_stage_benchmark() {
         ("project", "active"),
         ("project", "done"),
     ];
-    for (iteration, (kind, parameter)) in cases.iter().cycle().take(samples).enumerate() {
+    let run = |reader: usize, iteration: usize, kind: &str, parameter: &str| -> f64 {
         let query_name = format!("{kind}-{parameter}.json");
         let query: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join("queries").join(&query_name)).unwrap())
@@ -300,7 +309,7 @@ fn shared_query_stage_benchmark() {
         let permission_seconds = permission_start.elapsed().as_secs_f64();
         let mut metrics = MdbaseQueryMetrics::default();
         let scoped = (!filter.path_permission().is_unrestricted()).then_some(&filter);
-        let result = match session.as_mut() {
+        let result = match session.as_ref() {
             Some(session) => session.query_profiled(&query, scoped, &mut metrics),
             None => build_mdbase_query_report_profiled(&paths, &query, scoped, &mut metrics),
         };
@@ -310,9 +319,6 @@ fn shared_query_stage_benchmark() {
         let bytes = serde_json::to_vec(&report).unwrap();
         let serialization_seconds = serialization_start.elapsed().as_secs_f64();
         let request_seconds = start.elapsed().as_secs_f64();
-        if iteration > 0 {
-            repeated.push(request_seconds);
-        }
         let expected_indices = expected_indices(count, kind, parameter, profile.is_some());
         let expected = expected_indices.len();
         let expected_paths = expected_indices
@@ -342,27 +348,129 @@ fn shared_query_stage_benchmark() {
         println!(
             "{}",
             json!({"measurement": "shared_query_stage_diagnostic", "acceptance_gate_result": "not_evaluated",
-            "iteration": iteration, "query": query_name, "permission_profile": profile,
+            "reader": reader, "iteration": iteration, "query": query_name, "permission_profile": profile,
             "records": count, "exact_total": expected, "rows": report.results.len(),
             "serialized_bytes": bytes.len(), "request_seconds": request_seconds,
             "permission_seconds": permission_seconds, "serialization_seconds": serialization_seconds,
             "metrics": metrics})
         );
-    }
+        request_seconds
+    };
+    let reading = std::sync::atomic::AtomicUsize::new(readers);
+    let mut writes = Vec::new();
+    let mut repeated = std::thread::scope(|threads| {
+        let workers = (0..readers)
+            .map(|reader| {
+                let (run, cases, reading) = (&run, &cases, &reading);
+                threads.spawn(move || {
+                    let mut seconds = Vec::new();
+                    for (iteration, (kind, parameter)) in
+                        cases.iter().cycle().skip(reader).take(samples).enumerate()
+                    {
+                        let elapsed = run(reader, iteration, kind, parameter);
+                        // The first request of each reader prepares the session.
+                        if iteration > 0 {
+                            seconds.push(elapsed);
+                        }
+                    }
+                    reading.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    seconds
+                })
+            })
+            .collect::<Vec<_>>();
+        if writes_per_second > 0 {
+            writes = benchmark_writes(&paths, writes_per_second, &reading);
+        }
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
     repeated.sort_by(f64::total_cmp);
     if !repeated.is_empty() {
         // Nearest rank: the smallest sample with at least this share below it.
-        let rank = |percent: usize| {
-            let index = (percent * repeated.len()).div_ceil(100).max(1) - 1;
-            repeated[index.min(repeated.len() - 1)]
+        let rank = |values: &[f64], percent: usize| {
+            let index = (percent * values.len()).div_ceil(100).max(1) - 1;
+            values[index.min(values.len() - 1)]
         };
+        writes.sort_by(f64::total_cmp);
+        let write_summary = (!writes.is_empty()).then(|| {
+            json!({"writes": writes.len(), "target_per_second": writes_per_second,
+                "p50": rank(&writes, 50), "p95": rank(&writes, 95), "max": writes[writes.len() - 1]})
+        });
         println!(
             "{}",
             json!({"measurement": "shared_query_stage_summary", "acceptance_gate_result": "not_evaluated",
-            "session": session.is_some(), "watched": watch, "permission_profile": profile, "samples": repeated.len(),
-            "p50": rank(50), "p95": rank(95), "p99": rank(99)})
+            "session": session.is_some(), "watched": watch, "permission_profile": profile,
+            "readers": readers, "samples": repeated.len(),
+            "p50": rank(&repeated, 50), "p95": rank(&repeated, 95), "p99": rank(&repeated, 99),
+            "write_latency": write_summary})
         );
     }
+}
+
+/// Body-only edits through the mdbase mutation service at up to `per_second`
+/// writes while readers run; they change no query result. Restores the record.
+fn benchmark_writes(
+    paths: &VaultPaths,
+    per_second: usize,
+    reading: &std::sync::atomic::AtomicUsize,
+) -> Vec<f64> {
+    use crate::mdbase::{
+        apply_mdbase_write, plan_mdbase_write, MdbaseWriteChangeRequest,
+        MdbaseWriteExecutionOptions, MdbaseWriteOperation, MdbaseWritePlanRequest,
+    };
+    let path = "public/contact/91/record-000091.md";
+    let original = std::fs::read_to_string(paths.vault_root().join(path)).unwrap();
+    let interval = std::time::Duration::from_secs(1) / u32::try_from(per_second).unwrap();
+    let mut latencies = Vec::new();
+    let write = |index: usize, after: String| {
+        let now = chrono::Utc::now();
+        let start = Instant::now();
+        let plan = plan_mdbase_write(
+            paths,
+            &MdbaseWritePlanRequest {
+                caller_id: "benchmark".to_string(),
+                instance_id: "benchmark".to_string(),
+                operation: MdbaseWriteOperation::Update,
+                changes: vec![MdbaseWriteChangeRequest {
+                    path: path.to_string(),
+                    after: Some(after),
+                    if_revision: None,
+                }],
+                matched_types: vec!["contact".to_string()],
+                generated_values: std::collections::BTreeMap::new(),
+                permission_profile: None,
+                ttl_seconds: Some(300),
+            },
+            now,
+        )
+        .unwrap();
+        apply_mdbase_write(
+            paths,
+            &plan,
+            &MdbaseWriteExecutionOptions {
+                idempotency_key: format!(
+                    "benchmark-{}-{index}",
+                    now.timestamp_nanos_opt().unwrap()
+                ),
+                no_commit: true,
+                quiet: true,
+            },
+            now,
+        )
+        .unwrap();
+        start.elapsed()
+    };
+    let mut index = 0;
+    while reading.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        let elapsed = write(index, format!("{original}\nbenchmark edit {index}\n"));
+        latencies.push(elapsed.as_secs_f64());
+        index += 1;
+        std::thread::sleep(interval.saturating_sub(elapsed));
+    }
+    write(index, original);
+    latencies
 }
 
 fn expected_indices(count: usize, kind: &str, parameter: &str, restricted: bool) -> Vec<usize> {

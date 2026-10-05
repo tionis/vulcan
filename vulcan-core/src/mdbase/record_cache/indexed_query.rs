@@ -614,6 +614,7 @@ struct RetainedRow {
 /// changes since before the proving walk began).
 #[derive(Debug, Clone)]
 pub struct MdbaseRetainedProof {
+    dependency_digest: Arc<str>,
     visible: Arc<BTreeSet<String>>,
     max_path_bytes: usize,
 }
@@ -630,10 +631,134 @@ impl MdbaseRetainedRows {
     }
 }
 
-/// [`execute_indexed_mdbase_query`] over rows retained by a long-lived host.
-/// Every request still verifies controls and walks every visible record; only
-/// unchanged decoded rows are reused, and predicates are decided in memory by
-/// [`crate::mdbase::MdbaseSqlPredicate::decide`], which mirrors the SQL lowering.
+/// One strict walk of a read scope: verified controls and the stat fingerprint
+/// of every visible record. It holds no retained rows, so hosts can take it
+/// without excluding concurrent readers.
+pub struct MdbaseRetainedWalk {
+    dependency_digest: Arc<str>,
+    visible: BTreeMap<String, [u8; 40]>,
+    present: BTreeSet<String>,
+    max_path_bytes: usize,
+}
+
+/// Whether `query` can run over retained rows at all; hosts check this before
+/// walking.
+#[must_use]
+pub fn mdbase_query_is_retainable(query: &MdbasePreparedQuery, types: &MdbaseTypeRegistry) -> bool {
+    query.indexed_plan().is_some() && !has_dynamic_local_membership(types)
+}
+
+/// Verify controls and stat every record. `None` when a visible record cannot
+/// be fingerprinted (for example, it vanished during the walk).
+pub fn walk_mdbase_retained_scope(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    filter: Option<&PermissionFilter>,
+) -> Result<Option<MdbaseRetainedWalk>, MdbaseRecordCacheError> {
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
+    let walked =
+        discover_mdbase_record_stats_parallel(collection).map_err(MdbaseRecordError::Discovery)?;
+    let max_path_bytes = walked.iter().map(|(path, _)| path.len()).max().unwrap_or(0);
+    let mut visible = BTreeMap::new();
+    for (path, metadata) in &walked {
+        if filter.is_some_and(|filter| !filter.is_allowed(path)) {
+            continue;
+        }
+        let Some(fingerprint) = metadata.as_ref().and_then(stat_fingerprint) else {
+            return Ok(None);
+        };
+        visible.insert(path.clone(), fingerprint);
+    }
+    Ok(Some(MdbaseRetainedWalk {
+        dependency_digest: controls.combined.into(),
+        visible,
+        present: walked.into_iter().map(|(path, _)| path).collect(),
+        max_path_bytes,
+    }))
+}
+
+impl MdbaseRetainedWalk {
+    /// The proof this walk establishes when every visible record is already
+    /// retained with the walked fingerprint under the walked controls. Read
+    /// only, so concurrent readers can share the retained rows; `None` means
+    /// the walk must be [reconciled](Self::reconcile).
+    #[must_use]
+    pub fn proof_if_retained(&self, retained: &MdbaseRetainedRows) -> Option<MdbaseRetainedProof> {
+        (*retained.dependency_digest == *self.dependency_digest
+            && self.visible.iter().all(|(path, fingerprint)| {
+                retained
+                    .rows
+                    .get(path)
+                    .is_some_and(|row| row.fingerprint == fingerprint.as_slice())
+            }))
+        .then(|| self.proof())
+    }
+
+    /// Decode every visible record whose retained row is missing or stale
+    /// from a cache row whose stored fingerprint equals the walk's, and drop
+    /// rows for records that no longer exist. `None`, with `freshness_miss`,
+    /// when the cache does not describe the walked records.
+    pub fn reconcile(
+        &self,
+        connection: &Connection,
+        collection: &MdbaseCollection,
+        retained: &mut MdbaseRetainedRows,
+        metrics: &mut MdbaseIndexedQueryMetrics,
+    ) -> Result<Option<MdbaseRetainedProof>, MdbaseRecordCacheError> {
+        if *retained.dependency_digest != *self.dependency_digest {
+            retained.rows.clear();
+            retained.dependency_digest = self.dependency_digest.to_string();
+        }
+        retained
+            .rows
+            .retain(|path, _| self.present.contains(path.as_str()));
+        let stale = self
+            .visible
+            .iter()
+            .filter(|(path, fingerprint)| {
+                retained
+                    .rows
+                    .get(*path)
+                    .is_none_or(|row| row.fingerprint != fingerprint.as_slice())
+            })
+            .collect::<BTreeMap<_, _>>();
+        if !stale.is_empty() {
+            let root = cache_collection_root(collection)?;
+            let paths = stale.keys().map(|path| (*path).clone()).collect::<Vec<_>>();
+            let loaded = load_retained_rows(connection, &root, &self.dependency_digest, &paths)?;
+            if loaded.len() != stale.len()
+                || loaded.iter().any(|(path, row)| {
+                    stale.get(path).map(|fingerprint| fingerprint.as_slice())
+                        != Some(row.fingerprint.as_slice())
+                })
+            {
+                metrics.freshness_miss = true;
+                return Ok(None);
+            }
+            metrics.reloaded_rows = loaded.len();
+            retained.rows.extend(loaded);
+        }
+        Ok(Some(self.proof()))
+    }
+
+    fn proof(&self) -> MdbaseRetainedProof {
+        MdbaseRetainedProof {
+            dependency_digest: Arc::clone(&self.dependency_digest),
+            visible: Arc::new(self.visible.keys().cloned().collect()),
+            max_path_bytes: self.max_path_bytes,
+        }
+    }
+}
+
+/// [`execute_indexed_mdbase_query`] over rows retained by a long-lived host,
+/// for the visible set `proof` establishes. Takes the rows by shared
+/// reference so concurrent readers can execute together. A proof from a walk
+/// of this request needs no further checks; a proof a host reuses without
+/// walking (under an explicit freshness policy) needs `verify_controls`, which
+/// re-verifies the controls against the proof's. Predicates are decided in
+/// memory by [`crate::mdbase::MdbaseSqlPredicate::decide`], which mirrors the
+/// SQL lowering. Metrics accumulate; callers reset them.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn execute_retained_mdbase_query(
     connection: &Connection,
@@ -643,11 +768,11 @@ pub fn execute_retained_mdbase_query(
     query: &MdbasePreparedQuery,
     filter: Option<&PermissionFilter>,
     now: DateTime<Utc>,
-    retained: &mut MdbaseRetainedRows,
-    trusted: Option<&MdbaseRetainedProof>,
+    retained: &MdbaseRetainedRows,
+    proof: &MdbaseRetainedProof,
+    verify_controls: bool,
     metrics: &mut MdbaseIndexedQueryMetrics,
-) -> Result<Option<(MdbaseQueryResult, MdbaseRetainedProof)>, MdbaseQueryError> {
-    *metrics = MdbaseIndexedQueryMetrics::default();
+) -> Result<Option<MdbaseQueryResult>, MdbaseQueryError> {
     let Some(indexed) = query.indexed_plan() else {
         return Ok(None);
     };
@@ -658,49 +783,29 @@ pub fn execute_retained_mdbase_query(
     let Ok(transaction) = connection.unchecked_transaction() else {
         return Ok(None);
     };
-    // Controls are verified on every request; a trusted proof replaces only
-    // the record walk, and only when every visible row is still retained.
-    let proof = if let Some(proof) = trusted {
+    if verify_controls {
         let Ok(controls) = verify_mdbase_control_snapshots(collection, types, contracts, filter)
         else {
             return Ok(None);
         };
-        if controls.combined != retained.dependency_digest
-            || proof
-                .visible
-                .iter()
-                .any(|path| !retained.rows.contains_key(path))
-        {
+        if *controls.combined != *proof.dependency_digest {
             return Ok(None);
         }
         metrics.trusted_proof = true;
-        proof.clone()
-    } else {
-        let (visible, max_path_bytes) = match revalidate_retained(
-            &transaction,
-            collection,
-            types,
-            contracts,
-            filter,
-            retained,
-            metrics,
-        ) {
-            Ok(Some(proof)) => proof,
-            Ok(None) => {
-                metrics.freshness_miss = true;
-                return Ok(None);
-            }
-            Err(_) => return Ok(None),
-        };
-        MdbaseRetainedProof {
-            visible: Arc::new(visible),
-            max_path_bytes,
-        }
-    };
+    }
+    // Another reader may have reconciled the rows since the proof was made.
+    if *retained.dependency_digest != *proof.dependency_digest
+        || proof
+            .visible
+            .iter()
+            .any(|path| !retained.rows.contains_key(path))
+    {
+        return Ok(None);
+    }
+    metrics.freshness_seconds += start.elapsed().as_secs_f64();
     let visible = &*proof.visible;
     let max_path_bytes = proof.max_path_bytes;
     metrics.visible_records = visible.len();
-    metrics.freshness_seconds = start.elapsed().as_secs_f64();
     let start = Instant::now();
 
     let plan = query.plan();
@@ -847,72 +952,7 @@ pub fn execute_retained_mdbase_query(
         },
         diagnostics,
     };
-    Ok(Some((result, proof)))
-}
-
-/// Verify controls and walk every record. A retained row whose fingerprint
-/// equals the walk's describes unchanged bytes under unchanged controls and is
-/// reused without reading the cache; every other visible record is decoded
-/// from a cache row whose stored fingerprint must equal the walk's. Returns
-/// the visible paths and the longest walked path, or `None` on any miss.
-fn revalidate_retained(
-    transaction: &Connection,
-    collection: &MdbaseCollection,
-    types: &MdbaseTypeRegistry,
-    contracts: &MdbaseContractRegistry,
-    filter: Option<&PermissionFilter>,
-    retained: &mut MdbaseRetainedRows,
-    metrics: &mut MdbaseIndexedQueryMetrics,
-) -> Result<Option<(BTreeSet<String>, usize)>, MdbaseRecordCacheError> {
-    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
-    if retained.dependency_digest != controls.combined {
-        retained.rows.clear();
-        retained.dependency_digest.clone_from(&controls.combined);
-    }
-    let walked =
-        discover_mdbase_record_stats_parallel(collection).map_err(MdbaseRecordError::Discovery)?;
-    let max_path_bytes = walked.iter().map(|(path, _)| path.len()).max().unwrap_or(0);
-    let mut visible = BTreeSet::new();
-    let mut stale = BTreeMap::new();
-    for (path, metadata) in &walked {
-        if filter.is_some_and(|filter| !filter.is_allowed(path)) {
-            continue;
-        }
-        let Some(fingerprint) = metadata.as_ref().and_then(stat_fingerprint) else {
-            return Ok(None);
-        };
-        if retained
-            .rows
-            .get(path)
-            .is_none_or(|row| row.fingerprint != fingerprint)
-        {
-            stale.insert(path.clone(), fingerprint);
-        }
-        visible.insert(path.clone());
-    }
-    // Rows for records that no longer exist are never reused or retained.
-    let present = walked
-        .iter()
-        .map(|(path, _)| path.as_str())
-        .collect::<BTreeSet<_>>();
-    retained
-        .rows
-        .retain(|path, _| present.contains(path.as_str()));
-    if !stale.is_empty() {
-        let root = cache_collection_root(collection)?;
-        let paths = stale.keys().cloned().collect::<Vec<_>>();
-        let loaded = load_retained_rows(transaction, &root, &controls.combined, &paths)?;
-        if loaded.len() != stale.len()
-            || loaded.iter().any(|(path, row)| {
-                stale.get(path).map(<[u8; 40]>::as_slice) != Some(&row.fingerprint)
-            })
-        {
-            return Ok(None);
-        }
-        metrics.reloaded_rows = loaded.len();
-        retained.rows.extend(loaded);
-    }
-    Ok(Some((visible, max_path_bytes)))
+    Ok(Some(result))
 }
 
 fn load_retained_rows(

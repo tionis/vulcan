@@ -43,7 +43,7 @@ pub struct VaultHttpState {
     health: Arc<Mutex<ServeHealthState>>,
     security: VaultHttpSecurity,
     request_deadline: Duration,
-    mdbase: Arc<OnceLock<Mutex<MdbaseQuerySession>>>,
+    mdbase: Arc<OnceLock<MdbaseQuerySession>>,
 }
 
 impl VaultHttpState {
@@ -362,7 +362,7 @@ async fn dispatch(State(state): State<VaultHttpState>, request: Request<Body>) -
     let operation = tokio::task::spawn_blocking(move || {
         // The retained session exists only once a client queries mdbase.
         let session = (app_request.path == "/mdbase/query")
-            .then(|| mdbase.get_or_init(|| Mutex::new(mdbase_session(paths.as_ref()))));
+            .then(|| mdbase.get_or_init(|| mdbase_session(paths.as_ref())));
         route_request_with_mdbase(paths.as_ref(), &options, &health, &app_request, session)
     });
     match with_deadline(state.request_deadline, operation).await {

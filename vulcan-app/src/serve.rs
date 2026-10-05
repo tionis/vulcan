@@ -302,7 +302,7 @@ pub fn route_request_with_mdbase(
     options: &ServeRouteOptions,
     state: &ServeHealthState,
     request: &ServeRequest,
-    mdbase: Option<&std::sync::Mutex<MdbaseQuerySession>>,
+    mdbase: Option<&MdbaseQuerySession>,
 ) -> ServeResponse {
     if request.method != "GET" {
         return ServeResponse::error(405, "only GET requests are supported");
@@ -433,12 +433,7 @@ pub fn route_request_with_mdbase(
                 Err(error) => return ServeResponse::error(400, error.to_string()),
             };
             let result = match mdbase {
-                Some(session) => match session.lock() {
-                    Ok(mut session) => session.query(&query, read_filter.as_ref()),
-                    Err(_) => {
-                        return ServeResponse::error(500, "mdbase query session is unavailable")
-                    }
-                },
+                Some(session) => session.query(&query, read_filter.as_ref()),
                 None => build_mdbase_query_report(paths, &query, read_filter.as_ref()),
             };
             match result {

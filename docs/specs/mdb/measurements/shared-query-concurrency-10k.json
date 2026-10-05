@@ -1,0 +1,54 @@
+{
+  "measurement": "shared_query_session_concurrency_diagnostic",
+  "acceptance_gate_result": "not_evaluated",
+  "boundary": "in-process shared service: per-request permission-profile resolution, authorization, execution and compact JSON serialization; excludes HTTP transport",
+  "build": "cargo +1.88.0 test --release -p vulcan-app shared_query_stage_benchmark -- --ignored (VULCAN_MDB_PROFILE_SESSION=1, VULCAN_MDB_PROFILE_WATCH=1, VULCAN_MDB_PROFILE_READERS=8, VULCAN_MDB_PROFILE_SAMPLES=126, optional VULCAN_MDB_PROFILE_WRITES_PER_SECOND=2)",
+  "fixture": {
+    "generator_version": 1,
+    "seed": 42,
+    "records": 10000,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348"
+  },
+  "requests": "eight reader threads sharing one watched session, each cycling the nine canonical fixture queries from a different offset; each reader's first request excluded; every request independently checked for exact totals, ordered paths, body omission, diagnostics and the 256 KiB bound",
+  "writes": "optional writer thread applies body-only edits to one schema-valid contact record through plan_mdbase_write/apply_mdbase_write, paced to at most the target rate, then restores the record; the edits change no query result",
+  "runs": [
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.017505018,
+      "p95": 0.02911468,
+      "p99": 0.041462367,
+      "permission_profile": null,
+      "readers": 8,
+      "samples": 1000,
+      "session": true,
+      "watched": true,
+      "write_latency": null
+    },
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "measurement": "shared_query_stage_summary",
+      "p50": 0.018700502,
+      "p95": 0.036221743,
+      "p99": 0.048848352,
+      "permission_profile": null,
+      "readers": 8,
+      "samples": 1000,
+      "session": true,
+      "watched": true,
+      "write_latency": {
+        "max": 18.254177236,
+        "p50": 1.916227436,
+        "p95": 18.254177236,
+        "target_per_second": 2,
+        "writes": 4
+      }
+    }
+  ],
+  "host_conditions": "shared development host with browser and agent sessions; load average about 9-11 during these runs; not the designated reference machine",
+  "findings": [
+    "Readers no longer serialize: eight concurrent readers on one watched session measured p95 29 ms and p99 41 ms unrestricted without writes.",
+    "With the writer running, reader p95 was 36 ms and p99 49 ms, but writes took p50 1.9 s (first 18 s), so only 4 writes completed instead of 2 per second; the write budget, not reader concurrency, now blocks the mixed workload.",
+    "Managed writes refresh the vault note index but not the mdbase record cache, so after a write restricted readers fall back to source reconciliation until an unrestricted reader refreshes; a restricted 8-reader run was stopped after 10 minutes for this reason and is not reported."
+  ]
+}
