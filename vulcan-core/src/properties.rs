@@ -2396,9 +2396,8 @@ fn compile_note_filters(filters: &[String]) -> Result<CompiledNoteFilters, Prope
     let mut expressions = Vec::new();
     for filter in filters {
         if let Ok(parsed) = parse_filter_expression(filter) {
-            if let (true, FilterValue::Text(tag)) = (is_tag_source(&parsed), &parsed.value) {
-                let tag = tag.strip_prefix('#').unwrap_or(tag);
-                sources.push(crate::source::SourceExpr::Tag(tag.to_string()));
+            if let Some(source) = filter_source(&parsed) {
+                sources.push(source);
                 continue;
             }
         }
@@ -2417,6 +2416,24 @@ fn compile_note_filters(filters: &[String]) -> Result<CompiledNoteFilters, Prope
         sources,
         expressions,
     })
+}
+
+/// The source a filter is, if any: tags, and folder prefixes such as Bases'
+/// `file.inFolder("x")` (`file.path starts_with "x/"`), whose expression
+/// meaning is the same byte-exact selection.
+fn filter_source(parsed: &ParsedFilter) -> Option<crate::source::SourceExpr> {
+    let FilterValue::Text(value) = &parsed.value else {
+        return None;
+    };
+    if is_tag_source(parsed) {
+        let tag = value.strip_prefix('#').unwrap_or(value);
+        return Some(crate::source::SourceExpr::Tag(tag.to_string()));
+    }
+    let folder = value.strip_suffix('/')?;
+    (parsed.field == FilterField::FilePath
+        && parsed.operator == FilterOperator::StartsWith
+        && !folder.is_empty())
+    .then(|| crate::source::SourceExpr::Folder(folder.to_string()))
 }
 
 /// `file.tags has_tag t` and `file.tags contains t` select notes tagged `t`
@@ -3462,6 +3479,13 @@ mod tests {
                 vec!["Folder%/Inner.md", "List.md", "Open.md"],
             ),
             ("file.path starts_with Folder%/", vec!["Folder%/Inner.md"]),
+            (
+                "file.path starts_with \"Folder%/\"",
+                vec!["Folder%/Inner.md"],
+            ),
+            ("file.path starts_with folder%/", vec![]),
+            ("file.path starts_with Folder_/", vec![]),
+            ("file.path starts_with Fold", vec!["Folder%/Inner.md"]),
             ("file.path starts_with folder", vec![]),
             ("file.path starts_with F_lder", vec![]),
             (

@@ -1805,6 +1805,128 @@ LIMIT 1"#,
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn guarded_from_sources_select_the_readable_part_of_their_notes() {
+        struct Guard {
+            grant: crate::permissions::PermissionGrant,
+        }
+        impl PermissionGuard for Guard {
+            fn profile_name(&self) -> &'static str {
+                "test"
+            }
+            fn grant(&self) -> &crate::permissions::PermissionGrant {
+                &self.grant
+            }
+            fn has_policy_hook(&self) -> bool {
+                true
+            }
+            fn check_policy_decision(
+                &self,
+                action: &'static str,
+                resource: Option<&str>,
+            ) -> Result<(), crate::permissions::PermissionError> {
+                if resource != Some("Folder/Policy.md") {
+                    return Ok(());
+                }
+                Err(crate::permissions::PermissionError::PolicyHookDenied {
+                    profile: "test".into(),
+                    action,
+                    resource: resource.map(ToOwned::to_owned),
+                    reason: "denied".into(),
+                })
+            }
+        }
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, contents) in [
+            ("Target.md", "---\ntags: [visible]\n---\n[[Folder/A]]\n"),
+            (
+                "Linker.md",
+                "---\ntags: [visible]\n---\n[[Target]] [[Folder/A]] [[Secret]]\n",
+            ),
+            (
+                "Secret.md",
+                "---\ntags: [visible, secret]\n---\n[[Target]]\n",
+            ),
+            ("Untagged.md", "[[Target]]\n"),
+            (
+                "Folder/A.md",
+                "---\ntags: [visible, project/x]\n---\n[[Linker]]\n",
+            ),
+            (
+                "Folder/B.md",
+                "---\ntags: [visible, secret, project]\n---\n",
+            ),
+            (
+                "Folder/Policy.md",
+                "---\ntags: [visible, project]\n---\n[[Target]]\n",
+            ),
+            ("Folder/C.md", "---\ntags: [visible]\n---\n[[Target]]\n"),
+        ] {
+            let target = root.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        let mut grant = crate::permissions::resolve_permission_profile(&paths, None)
+            .unwrap()
+            .grant;
+        grant.read = PathPermission {
+            allow: vec![ResourceSpecifier::Tag("visible".into())],
+            deny: vec![ResourceSpecifier::Tag("secret".into())],
+        };
+        let guard = Guard { grant };
+        let selected = |source: &str, guarded: bool| {
+            let query = format!("TABLE WITHOUT ID file.path AS p FROM {source}");
+            let result = if guarded {
+                evaluate_dql_with_guard(&paths, &query, Some("Target.md"), &guard)
+            } else {
+                evaluate_dql(&paths, &query, Some("Target.md"))
+            }
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+            result
+                .rows
+                .iter()
+                .map(|row| row["p"].as_str().unwrap().to_string())
+                .collect::<BTreeSet<_>>()
+        };
+        let readable = selected("\"\" OR -\"\"", true);
+        assert_eq!(
+            readable,
+            ["Folder/A.md", "Folder/C.md", "Linker.md", "Target.md"]
+                .map(String::from)
+                .into()
+        );
+        for source in [
+            "\"Folder\"",
+            "#project",
+            "#visible",
+            "[[Target]]",
+            "[[]]",
+            "outgoing([[Linker]])",
+            "outgoing([[]])",
+            "-\"Folder\"",
+            "-[[Target]]",
+            "[[Target]] OR #project",
+            "\"Folder\" AND -#project",
+            "-(#project OR [[Linker]])",
+        ] {
+            let unrestricted = selected(source, false);
+            let expected = unrestricted
+                .intersection(&readable)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            assert_eq!(selected(source, true), expected, "{source}");
+        }
+        // A hidden target cannot be named as a link source.
+        let error = evaluate_dql_with_guard(&paths, "LIST FROM [[Secret]]", None, &guard)
+            .expect_err("a hidden link target must not resolve");
+        assert!(error.to_string().contains("could not resolve"), "{error}");
+    }
+
+    #[test]
     fn evaluate_dql_with_filter_restricts_visible_notes() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
