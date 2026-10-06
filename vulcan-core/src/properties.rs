@@ -781,7 +781,7 @@ fn query_notes_core(
             }
             let index = note_index.as_ref().expect("index loaded above");
             let ctx = EvalContext::new(&note, &formulas)
-                .with_note_lookup(index)
+                .with_note_lookup(&**index)
                 .with_time_zone(time_zone);
             let mut keep = true;
             for expression in &compiled.expressions {
@@ -1012,6 +1012,42 @@ pub fn hydrate_note_index_entries(
         note_index.insert(key, note);
     }
     Ok(())
+}
+
+/// Hydrated copies of `notes` under `scope`; `universe` is the readable
+/// note universe incoming links may come from when a policy hook scopes it.
+pub(crate) fn hydrate_note_copies(
+    paths: &VaultPaths,
+    scope: NoteIndexReadScope<'_>,
+    universe: &HashSet<String>,
+    notes: Vec<NoteRecord>,
+) -> Result<Vec<NoteRecord>, PropertyError> {
+    if notes.is_empty() {
+        return Ok(notes);
+    }
+    let (filter, policy_scoped) = match scope {
+        NoteIndexReadScope::Filter(filter) => (filter.cloned(), false),
+        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), guard.has_policy_hook()),
+    };
+    let readable_sources = policy_scoped.then_some(universe);
+    let mut doc_ids_and_notes = notes
+        .into_iter()
+        .map(|note| (note.document_id.clone(), note))
+        .collect::<Vec<_>>();
+    let database = open_existing_cache(paths)?;
+    let config = crate::load_vault_config(paths).config;
+    hydrate_note_records(
+        database.connection(),
+        &config,
+        &mut doc_ids_and_notes,
+        filter.as_ref(),
+        readable_sources,
+        true,
+    )?;
+    Ok(doc_ids_and_notes
+        .into_iter()
+        .map(|(_, note)| note)
+        .collect())
 }
 
 #[allow(clippy::too_many_lines)]

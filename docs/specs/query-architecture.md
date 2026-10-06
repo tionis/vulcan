@@ -120,6 +120,19 @@ migrate one at a time.
 This removes the remaining reason to load the whole vault eagerly: link dereferences
 (`[[x]].status`, `l.file.tasks`, `asFile()`) touch only their targets.
 
+`vulcan-core::note_lookup` implements this. Resolution reads stored fields and aliases, which
+deferred loaders hydrate for every note; a file object (tags, links, inlinks, tasks, lists)
+comes from `NoteLookup::hydrated`, the only way the evaluator dereferences one (`link.file`,
+`asFile()`, `linksTo()`). `LazyNoteLookup` hydrates a dereferenced note in the frontend's read
+scope the first time it is needed and memoizes it; after a bounded number of distinct misses it
+hydrates the rest in one batch, so no query costs more than eager hydration. A hydration
+failure fails the query rather than exposing a note without its file object.
+
+Frontends pick the cheapest correct universe: DQL hydrates its `FROM` selection (bounded by a
+leading `WHERE`) and `this`, and dereferences lazily; Bases defers when no filter or formula can
+reach another note's file object; the Tasks DSL hydrates task-bearing notes; DataviewJS hydrates
+the pages a call returns and defers `dv.pages()` file fields to first read.
+
 ### 4.3 Shared predicate atoms
 
 One predicate representation replaces both `FilterExpression` and `MdbaseSqlPredicate`:

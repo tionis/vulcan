@@ -28,8 +28,8 @@ use crate::source::{SourceColumns, SourceExpr};
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
 use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr, CompiledWhereClause};
 use super::{parse_dql, DqlDiagnostic};
-use crate::expression::analysis::reaches_other_file_objects;
 use crate::expression::eval::{canonical_file_field_name, normalize_field_name};
+use crate::note_lookup::{LazyNoteLookup, NoteLookup};
 use std::borrow::Cow;
 
 #[derive(Debug)]
@@ -157,7 +157,7 @@ pub fn evaluate_parsed_dql_with_filter(
         filter,
         &config,
         &note_lookup,
-        NoteIndexScope::Authorized,
+        NoteIndexScope::Authorized { lazy: None },
     )
 }
 
@@ -174,16 +174,39 @@ pub fn evaluate_dql_with_guard(
     let config = load_vault_config(paths).config;
     let query = parse_dql(source).map_err(DqlEvalError::Parse)?;
     let filter = guard.read_filter();
-    let note_lookup = load_scoped_note_index(paths, &query, current_file, guard, &filter)?;
-    evaluate_parsed_dql_with_note_index_and_config(
+    let (note_lookup, hydrated) =
+        load_scoped_note_index(paths, &query, current_file, guard, &filter)?;
+    // Other notes' file objects hydrate when an expression dereferences them,
+    // in the same read scope; incoming links come from the readable universe.
+    let universe = note_lookup
+        .values()
+        .map(|note| note.document_path.clone())
+        .collect::<HashSet<_>>();
+    let lazy = LazyNoteLookup::new(
+        &note_lookup,
+        &hydrated,
+        Box::new(|notes| {
+            crate::properties::hydrate_note_copies(
+                paths,
+                NoteIndexReadScope::Guard(guard),
+                &universe,
+                notes,
+            )
+        }),
+    );
+    let result = evaluate_parsed_dql_with_note_index_and_config(
         paths,
         &query,
         current_file,
         Some(&filter),
         &config,
         &note_lookup,
-        NoteIndexScope::Authorized,
-    )
+        NoteIndexScope::Authorized { lazy: Some(&lazy) },
+    );
+    if let Some(error) = lazy.take_error() {
+        return Err(error.into());
+    }
+    result
 }
 
 /// Load the note index `query` needs. When no expression can reach another
@@ -198,7 +221,7 @@ fn load_scoped_note_index(
     current_file: Option<&str>,
     guard: &dyn PermissionGuard,
     filter: &PermissionFilter,
-) -> Result<HashMap<String, NoteRecord>, DqlEvalError> {
+) -> Result<(HashMap<String, NoteRecord>, HashSet<String>), DqlEvalError> {
     let compiled = compile_dql(query);
     let mut sources = compiled
         .commands
@@ -208,11 +231,14 @@ fn load_scoped_note_index(
             _ => None,
         });
     let (source, None) = (sources.next(), sources.next()) else {
-        return Ok(load_note_index_with_guard(paths, guard)?);
+        // Evaluation reports the extra FROM clauses.
+        let index = load_note_index_with_guard(paths, guard)?;
+        let all = index
+            .values()
+            .map(|note| note.document_path.clone())
+            .collect();
+        return Ok((index, all));
     };
-    if query_reaches_other_file_objects(query) {
-        return Ok(load_note_index_with_guard(paths, guard)?);
-    }
     let mut note_lookup = load_note_index_with_guard_deferring_hydration(paths, guard)?;
     let all_notes = sorted_notes(&note_lookup);
     let mut selected = match source {
@@ -261,7 +287,7 @@ fn load_scoped_note_index(
         &mut note_lookup,
         &selected,
     )?;
-    Ok(note_lookup)
+    Ok((note_lookup, selected))
 }
 
 /// The predicate of a `WHERE` that sees the page rows exactly as `FROM`
@@ -382,26 +408,6 @@ fn map_expr(expr: &Expr, replace: &mut impl FnMut(&Expr) -> Option<Expr>) -> Exp
     }
 }
 
-/// Whether evaluating `query` can build the file object (and so read the
-/// hydrated fields) of a note other than its rows and `this`: `.file` on anything but
-/// `this`, `asFile()`, or indexing that could name `file`. Conservative.
-fn query_reaches_other_file_objects(query: &DqlQuery) -> bool {
-    let commands = query.commands.iter().flat_map(|command| match command {
-        DqlDataCommand::Where(expr) => vec![expr],
-        DqlDataCommand::Sort(keys) => keys.iter().map(|key| &key.expr).collect(),
-        DqlDataCommand::GroupBy(named) | DqlDataCommand::Flatten(named) => vec![&named.expr],
-        DqlDataCommand::From(_) | DqlDataCommand::Limit(_) => Vec::new(),
-    });
-    query
-        .table_columns
-        .iter()
-        .map(|column| &column.expr)
-        .chain(query.list_expression.iter())
-        .chain(query.calendar_expression.iter())
-        .chain(commands)
-        .any(|expr| reaches_other_file_objects(expr, true))
-}
-
 pub(crate) fn evaluate_dql_with_note_index_and_config(
     paths: &VaultPaths,
     source: &str,
@@ -425,11 +431,12 @@ pub(crate) fn evaluate_dql_with_note_index_and_config(
 #[allow(clippy::too_many_lines)]
 /// Whether a note index passed to DQL evaluation is already limited to the
 /// read scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NoteIndexScope {
+#[derive(Clone, Copy)]
+pub(crate) enum NoteIndexScope<'a> {
     /// Loaded through the same filter or guard. Its notes may be partially
-    /// hydrated (no tags), so they are not checked again.
-    Authorized,
+    /// hydrated (no tags), so they are not checked again; `lazy` then
+    /// hydrates other notes when expressions dereference them (QRY.3).
+    Authorized { lazy: Option<&'a dyn NoteLookup> },
     /// Supplied by the caller; notes outside the filter are dropped, which
     /// needs their tags.
     Unchecked,
@@ -441,7 +448,7 @@ pub(crate) enum NoteIndexScope {
 fn notes_outside_scope_removed(
     note_lookup: &HashMap<String, NoteRecord>,
     filter: Option<&PermissionFilter>,
-    index_scope: NoteIndexScope,
+    index_scope: NoteIndexScope<'_>,
 ) -> Option<HashMap<String, NoteRecord>> {
     let allowed = |note: &NoteRecord| {
         filter.is_none_or(|filter| {
@@ -450,14 +457,15 @@ fn notes_outside_scope_removed(
                 .is_allowed_with_tags(&note.document_path, &note.tags)
         })
     };
-    (index_scope == NoteIndexScope::Unchecked && note_lookup.values().any(|note| !allowed(note)))
-        .then(|| {
-            note_lookup
-                .iter()
-                .filter(|(_, note)| allowed(note))
-                .map(|(path, note)| (path.clone(), note.clone()))
-                .collect()
-        })
+    (matches!(index_scope, NoteIndexScope::Unchecked)
+        && note_lookup.values().any(|note| !allowed(note)))
+    .then(|| {
+        note_lookup
+            .iter()
+            .filter(|(_, note)| allowed(note))
+            .map(|(path, note)| (path.clone(), note.clone()))
+            .collect()
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -468,7 +476,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     filter: Option<&PermissionFilter>,
     config: &VaultConfig,
     note_lookup: &HashMap<String, NoteRecord>,
-    index_scope: NoteIndexScope,
+    index_scope: NoteIndexScope<'_>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let compiled = compile_dql(query);
@@ -476,6 +484,12 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     let filtered_note_lookup = notes_outside_scope_removed(note_lookup, filter, index_scope);
     let note_lookup = filtered_note_lookup.as_ref().unwrap_or(note_lookup);
     let all_notes = sorted_notes(note_lookup);
+    // Expressions dereference other notes through the lazy lookup when the
+    // index was loaded deferred (QRY.3); sources and rows use the index.
+    let lookup: &dyn NoteLookup = match index_scope {
+        NoteIndexScope::Authorized { lazy: Some(lazy) } => lazy,
+        _ => note_lookup,
+    };
     let from_sources = compiled
         .commands
         .iter()
@@ -525,7 +539,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
                     &where_clause.expr,
                     predicate,
                     query,
-                    note_lookup,
+                    lookup,
                     source_note,
                     time_zone,
                     &mut diagnostics,
@@ -538,7 +552,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
                     for key in keys {
                         let value = match row.evaluate_with_source(
                             &key.expr,
-                            note_lookup,
+                            lookup,
                             time_zone,
                             source_note,
                         ) {
@@ -574,11 +588,11 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
             }
             CompiledDqlCommand::Limit(limit) => rows.truncate(*limit),
             CompiledDqlCommand::GroupBy(named_expr) => {
-                rows = apply_group_by(rows, named_expr, note_lookup, time_zone, &mut diagnostics)?;
+                rows = apply_group_by(rows, named_expr, lookup, time_zone, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
             CompiledDqlCommand::Flatten(named_expr) => {
-                rows = apply_flatten(rows, named_expr, note_lookup, time_zone, &mut diagnostics)?;
+                rows = apply_flatten(rows, named_expr, lookup, time_zone, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
         }
@@ -589,7 +603,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
         &config.dataview.primary_column_name,
         &config.dataview.group_column_name,
         rows,
-        note_lookup,
+        lookup,
         time_zone,
         &mut diagnostics,
     )?;
@@ -722,7 +736,7 @@ impl ExecutionRow {
     fn evaluate(
         &self,
         expr: &crate::expression::ast::Expr,
-        note_lookup: &HashMap<String, NoteRecord>,
+        note_lookup: &dyn NoteLookup,
         time_zone: DataviewTimeZone,
     ) -> Result<Value, String> {
         self.evaluate_with_source(expr, note_lookup, time_zone, None)
@@ -731,7 +745,7 @@ impl ExecutionRow {
     fn evaluate_with_source(
         &self,
         expr: &crate::expression::ast::Expr,
-        note_lookup: &HashMap<String, NoteRecord>,
+        note_lookup: &dyn NoteLookup,
         time_zone: DataviewTimeZone,
         source_note: Option<&NoteRecord>,
     ) -> Result<Value, String> {
@@ -834,7 +848,7 @@ fn apply_where_expression(
     expr: &crate::expression::ast::Expr,
     predicate: Option<&Predicate>,
     query: &DqlQuery,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     source_note: Option<&NoteRecord>,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
@@ -1132,7 +1146,7 @@ fn compare_sort_values(left: &Value, right: &Value) -> Ordering {
 fn apply_group_by(
     rows: Vec<ExecutionRow>,
     named_expr: &DqlNamedExpr,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
@@ -1202,7 +1216,7 @@ fn apply_group_by(
 fn apply_flatten(
     rows: Vec<ExecutionRow>,
     named_expr: &DqlNamedExpr,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
@@ -1283,7 +1297,7 @@ fn render_result(
     primary_column_name: &str,
     group_column_name: &str,
     rows: Vec<ExecutionRow>,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
@@ -1340,7 +1354,7 @@ fn render_table_result(
     query: &DqlQuery,
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
@@ -1377,7 +1391,7 @@ fn render_table_row(
     row: &ExecutionRow,
     query: &DqlQuery,
     primary_column_name: &str,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Value, DqlEvalError> {
@@ -1418,7 +1432,7 @@ fn render_list_result(
     query: &DqlQuery,
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
@@ -1519,7 +1533,7 @@ fn render_calendar_result(
     query: &DqlQuery,
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
@@ -1944,11 +1958,9 @@ LIMIT 1"#,
             ),
         ] {
             let query = parse_dql(source).unwrap();
-            assert_eq!(
-                query_reaches_other_file_objects(&query),
-                reaches,
-                "{source}"
-            );
+            // Reaching another note's file object used to force full
+            // hydration; it now dereferences lazily (QRY.3).
+            let _ = reaches;
             let scoped = evaluate_dql_with_guard(&paths, source, Some("Here.md"), &guard).unwrap();
             let expected = evaluate_parsed_dql_with_note_index_and_config(
                 &paths,
@@ -1972,6 +1984,7 @@ LIMIT 1"#,
             load_scoped_note_index(&paths, &query, Some("Here.md"), &guard, &filter).unwrap();
         let lists = |name: &str| {
             scoped
+                .0
                 .values()
                 .find(|note| note.document_path == name)
                 .unwrap()

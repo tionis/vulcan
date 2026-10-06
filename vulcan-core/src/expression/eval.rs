@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use crate::note_lookup::NoteLookup;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::Value;
@@ -20,9 +21,10 @@ pub struct EvalContext<'a> {
     pub time_zone: DataviewTimeZone,
     /// Scoped variables for list.filter/map/reduce callbacks.
     pub locals: BTreeMap<String, Value>,
-    /// Vault-wide note index keyed by `file_name` (basename without extension).
-    /// Used to resolve `.asFile()` and `.linksTo()` on link values.
-    pub note_lookup: Option<&'a HashMap<String, NoteRecord>>,
+    /// Link-reachable notes keyed like `build_note_lookup_index`. Used to
+    /// resolve link fields, `.asFile()`, and `.linksTo()`; dereferenced
+    /// file objects come from [`NoteLookup::hydrated`].
+    pub note_lookup: Option<&'a dyn NoteLookup>,
     /// The note that contains the query (for Dataview `this` semantics).
     /// When set, `this` resolves to this note rather than the current row's note.
     /// Used so that `WHERE file.name != this.file.name` filters out the query-containing file.
@@ -51,7 +53,7 @@ impl<'a> EvalContext<'a> {
     }
 
     #[must_use]
-    pub fn with_note_lookup(mut self, lookup: &'a HashMap<String, NoteRecord>) -> Self {
+    pub fn with_note_lookup(mut self, lookup: &'a dyn NoteLookup) -> Self {
         self.note_lookup = Some(lookup);
         self
     }
@@ -352,7 +354,7 @@ pub fn parse_wikilink_target(s: &str) -> String {
 }
 
 pub(crate) fn resolve_note_reference<'a>(
-    lookup: &'a HashMap<String, NoteRecord>,
+    lookup: &'a dyn NoteLookup,
     source_path: &str,
     target: &str,
 ) -> Option<&'a NoteRecord> {
@@ -360,13 +362,13 @@ pub(crate) fn resolve_note_reference<'a>(
     let target_no_ext = target.trim_end_matches(".md");
     let target_basename = target_no_ext.rsplit('/').next().unwrap_or(target_no_ext);
 
-    if let Some(note) = lookup.values().find(|note| {
+    if let Some(note) = lookup.notes().find(|note| {
         note.document_path == target || note.document_path.trim_end_matches(".md") == target_no_ext
     }) {
         return Some(note);
     }
 
-    if let Some(note) = lookup.get(target_no_ext) {
+    if let Some(note) = lookup.note(target_no_ext) {
         return Some(note);
     }
 
@@ -375,7 +377,7 @@ pub(crate) fn resolve_note_reference<'a>(
         .map_or("", |(folder, _)| folder);
 
     lookup
-        .values()
+        .notes()
         .filter_map(|note| {
             // Path-qualified targets may match a folder suffix, but never an
             // unrelated note that merely shares the basename.
@@ -425,7 +427,7 @@ fn resolve_link_field(ctx: &EvalContext, link: &str, field: &str) -> Value {
     };
 
     if normalize_field_name(field) == "file" {
-        return note_to_file_object(note);
+        return note_to_file_object(&lookup.hydrated(note));
     }
     resolve_property_for_note(note, field)
 }
@@ -950,6 +952,7 @@ mod tests {
     use crate::expression::parse::Parser;
     use crate::expression::value::DataviewTimeZone;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::rc::Rc;
     use std::time::Duration;
 

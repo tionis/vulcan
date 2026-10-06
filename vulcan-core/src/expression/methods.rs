@@ -161,7 +161,7 @@ fn string_method(s: &str, method: &str, args: &[Expr], ctx: &EvalContext) -> Res
             if let Some(lookup) = ctx.note_lookup {
                 if let Some(note) = resolve_note_reference(lookup, &ctx.note.document_path, &target)
                 {
-                    return Ok(note_to_file_object(note));
+                    return Ok(note_to_file_object(&lookup.hydrated(note)));
                 }
             }
             Ok(Value::Null)
@@ -179,7 +179,8 @@ fn string_method(s: &str, method: &str, args: &[Expr], ctx: &EvalContext) -> Res
                 if let Some(source_note) =
                     resolve_note_reference(lookup, &ctx.note.document_path, &source_name)
                 {
-                    let found = source_note
+                    let found = lookup
+                        .hydrated(source_note)
                         .links
                         .iter()
                         .any(|l| parse_wikilink_target(l) == target_name);

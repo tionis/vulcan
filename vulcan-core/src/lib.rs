@@ -79,6 +79,7 @@ pub mod maintenance;
 pub mod mdbase;
 pub mod move_rewrite;
 pub mod note;
+pub mod note_lookup;
 #[cfg(feature = "oauth")]
 pub mod oauth;
 pub mod ordinary_write;
