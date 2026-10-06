@@ -259,7 +259,7 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand kanban; and __fish_seen_su
 complete -c vulcan -n "__fish_vulcan_using_subcommand bases; and __fish_seen_subcommand_from eval tui create view-add view-delete view-rename" -f -a "(__fish_vulcan_dynamic_complete_bases_file)" -d "Bases file"
 
 # Daily date patterns
-complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_subcommand_from show" -f -a "(__fish_vulcan_dynamic_complete_daily_date)" -d "Date"
+complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_subcommand_from show open calendar" -f -a "(__fish_vulcan_dynamic_complete_daily_date)" -d "Date"
 
 # Script names for vulcan run
 complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(__fish_vulcan_dynamic_complete_script)" -d "Script"

@@ -11,21 +11,16 @@ use crate::{
     PeriodicSubcommand, PermissionGuard,
 };
 use serde::Serialize;
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use vulcan_app::browse::{build_periodic_list_report, PeriodicListItem};
 use vulcan_app::notes::{read_note_for_update, write_note_content};
 use vulcan_app::periodic::{
-    current_utc_date_string as app_current_utc_date_string, list_daily_notes,
+    current_local_date_string as app_current_local_date_string, list_daily_notes,
     normalize_date_argument as app_normalize_date_argument, read_daily_note,
     resolve_daily_list_window as app_resolve_daily_list_window,
     resolve_periodic_target as app_resolve_periodic_target, show_periodic_note, DailyListItem,
     DailyNoteReadReport, DailyReadTarget, PeriodicShowReport, PeriodicTarget,
-};
-use vulcan_app::templates::{
-    load_named_template, render_loaded_template, LoadedTemplateRenderRequest, TemplateEngineKind,
-    TemplateRunMode,
 };
 use vulcan_core::config::PeriodicConfig;
 use vulcan_core::{
@@ -42,6 +37,7 @@ struct PeriodicOpenReport {
     path: String,
     created: bool,
     opened_editor: bool,
+    dry_run: bool,
     warnings: Vec<String>,
 }
 
@@ -76,16 +72,49 @@ struct DailyIcsExportReport {
     content: String,
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_daily_command(
     cli: &Cli,
     paths: &VaultPaths,
-    command: &DailyCommand,
+    command: Option<&DailyCommand>,
     interactive_note_selection: bool,
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let Some(command) = command else {
+        return handle_daily_calendar_command(
+            cli,
+            paths,
+            None,
+            false,
+            interactive_note_selection,
+            list_controls,
+        );
+    };
     match command {
+        DailyCommand::Open {
+            date,
+            no_edit,
+            dry_run,
+            no_commit,
+        } => handle_daily_open_command(
+            cli,
+            paths,
+            date.as_deref(),
+            *no_edit,
+            *dry_run,
+            *no_commit,
+            interactive_note_selection,
+        ),
+        DailyCommand::Calendar { date, no_commit } => handle_daily_calendar_command(
+            cli,
+            paths,
+            date.as_deref(),
+            *no_commit,
+            interactive_note_selection,
+            list_controls,
+        ),
         DailyCommand::Latest => {
             let report = run_daily_latest_command(paths, true)?;
             if let Some(path) = report.path.as_deref() {
@@ -160,6 +189,86 @@ pub(crate) fn handle_daily_command(
             print_daily_append_report(cli.output, &report)
         }
     }
+}
+
+#[allow(clippy::fn_params_excessive_bools)]
+fn handle_daily_open_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    date: Option<&str>,
+    no_edit: bool,
+    dry_run: bool,
+    no_commit: bool,
+    interactive_note_selection: bool,
+) -> Result<(), CliError> {
+    let report = if dry_run {
+        plan_periodic_open(paths, "daily", date)?
+    } else {
+        check_periodic_write_access(cli, paths, "daily", date)?;
+        run_periodic_open_command(
+            paths,
+            "daily",
+            date,
+            no_edit,
+            no_commit,
+            cli.quiet,
+            interactive_note_selection,
+        )?
+    };
+    print_periodic_open_report(cli.output, &report)
+}
+
+/// Interactive month picker; without a terminal, lists that month's notes.
+fn handle_daily_calendar_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    date: Option<&str>,
+    no_commit: bool,
+    interactive: bool,
+    list_controls: &ListOutputControls,
+) -> Result<(), CliError> {
+    let today = current_local_date_string();
+    let initial = resolve_calendar_initial_date(date, &today)?;
+    if !interactive {
+        let config = load_vault_config(paths).config;
+        let (start, end) = period_range_for_date(&config.periodic, "monthly", &initial)
+            .ok_or_else(|| CliError::operation("failed to resolve monthly date range"))?;
+        let report = run_daily_list_command(paths, Some(&start), Some(&end), false, false)?;
+        return print_daily_list_report(cli.output, &report, list_controls);
+    }
+
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    let mut open_note = |date: &str| -> Result<String, String> {
+        check_periodic_write_access(cli, paths, "daily", Some(date))
+            .map_err(|error| error.to_string())?;
+        let report =
+            run_periodic_open_command(paths, "daily", Some(date), false, no_commit, true, true)
+                .map_err(|error| error.to_string())?;
+        let action = if report.created { "Created" } else { "Edited" };
+        Ok(match report.warnings.first() {
+            Some(warning) => format!("{action} {} (warning: {warning})", report.path),
+            None => format!("{action} {}", report.path),
+        })
+    };
+    crate::daily_tui::run_daily_calendar_tui(paths, &today, &initial, &mut open_note)
+        .map_err(CliError::operation)
+}
+
+/// `YYYY-MM` selects the first of that month; anything else goes through the
+/// shared date resolver.
+fn resolve_calendar_initial_date(date: Option<&str>, today: &str) -> Result<String, CliError> {
+    let trimmed = date.map(str::trim).unwrap_or_default();
+    let is_month = trimmed.len() == 7
+        && trimmed.as_bytes()[4] == b'-'
+        && trimmed
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || byte.is_ascii_digit());
+    if is_month {
+        return Ok(format!("{trimmed}-01"));
+    }
+    vulcan_app::periodic::normalize_date_argument_at(date, today).map_err(CliError::operation)
 }
 
 pub(crate) fn run_daily_latest_command(
@@ -360,8 +469,8 @@ fn check_periodic_write_access(
         .map_err(CliError::operation)
 }
 
-pub(crate) fn current_utc_date_string() -> String {
-    app_current_utc_date_string()
+pub(crate) fn current_local_date_string() -> String {
+    app_current_local_date_string()
 }
 
 pub(crate) fn normalize_date_argument(date: Option<&str>) -> Result<String, CliError> {
@@ -376,49 +485,6 @@ fn resolve_periodic_target(
 ) -> Result<PeriodicTarget, CliError> {
     app_resolve_periodic_target(config, period_type, date, require_enabled)
         .map_err(CliError::operation)
-}
-
-fn render_periodic_note_contents(
-    paths: &VaultPaths,
-    period_type: &str,
-    relative_path: &str,
-    warnings: &mut Vec<String>,
-) -> Result<String, CliError> {
-    let config = load_vault_config(paths).config;
-    let template_name = config
-        .periodic
-        .note(period_type)
-        .and_then(|note| note.template.as_deref());
-    let Some(template_name) = template_name else {
-        return Ok(String::new());
-    };
-
-    let loaded = match load_named_template(paths, &config, template_name) {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            warnings.push(format!(
-                "failed to resolve periodic template `{template_name}` for `{period_type}`: {error}"
-            ));
-            return Ok(String::new());
-        }
-    };
-    let rendered = render_loaded_template(
-        paths,
-        &config,
-        &loaded,
-        &LoadedTemplateRenderRequest {
-            target_path: relative_path,
-            target_contents: None,
-            engine: TemplateEngineKind::Auto,
-            vars: &HashMap::new(),
-            allow_mutations: true,
-            run_mode: TemplateRunMode::Create,
-        },
-    )?;
-    warnings.extend(loaded.template.warning);
-    warnings.extend(rendered.warnings);
-    warnings.extend(rendered.diagnostics);
-    Ok(rendered.content)
 }
 
 fn write_periodic_note_if_missing(
@@ -441,7 +507,14 @@ fn write_periodic_note_if_missing(
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
-    let contents = render_periodic_note_contents(paths, period_type, relative_path, warnings)?;
+    let contents = vulcan_app::notes::render_periodic_note_contents(
+        paths,
+        period_type,
+        relative_path,
+        warnings,
+        None,
+    )
+    .map_err(CliError::operation)?;
     write_note_content(paths, relative_path, None, &contents, "create", None, quiet)
         .map_err(CliError::operation)?;
     Ok(true)
@@ -493,7 +566,7 @@ fn run_periodic_open_command(
     }
 
     if created || opened_editor {
-        run_incremental_scan(paths, OutputFormat::Human, false, false)?;
+        run_incremental_scan(paths, OutputFormat::Human, false, quiet)?;
         commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, quiet)?;
     }
 
@@ -505,7 +578,30 @@ fn run_periodic_open_command(
         path: target.path,
         created,
         opened_editor,
+        dry_run: false,
         warnings,
+    })
+}
+
+/// Resolve what `open` would do without touching the vault.
+fn plan_periodic_open(
+    paths: &VaultPaths,
+    period_type: &str,
+    date: Option<&str>,
+) -> Result<PeriodicOpenReport, CliError> {
+    let config = load_vault_config(paths).config;
+    let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
+    let created = !paths.vault_root().join(&target.path).is_file();
+    Ok(PeriodicOpenReport {
+        period_type: target.period_type,
+        reference_date: target.reference_date,
+        start_date: target.start_date,
+        end_date: target.end_date,
+        path: target.path,
+        created,
+        opened_editor: false,
+        dry_run: true,
+        warnings: Vec::new(),
     })
 }
 
@@ -657,7 +753,7 @@ fn resolve_gap_range_for_type(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<(String, String), CliError> {
-    let today = current_utc_date_string();
+    let today = current_local_date_string();
     let from_date = match from {
         Some(value) => normalize_date_argument(Some(value))?,
         None if to.is_some() => normalize_date_argument(to)?,
@@ -756,10 +852,11 @@ fn print_periodic_open_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
-            if report.created {
-                println!("Created {}", report.path);
-            } else {
-                println!("Using {}", report.path);
+            match (report.dry_run, report.created) {
+                (true, true) => println!("Would create {}", report.path),
+                (true, false) => println!("Would use {}", report.path),
+                (false, true) => println!("Created {}", report.path),
+                (false, false) => println!("Using {}", report.path),
             }
             println!(
                 "{} period: {} to {}",
@@ -953,5 +1050,23 @@ fn print_periodic_gap_report(
             Ok(())
         }
         OutputFormat::Json => print_json_lines(rows, list_controls.fields.as_deref()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_calendar_initial_date;
+
+    #[test]
+    fn calendar_initial_date_accepts_months_and_relative_dates() {
+        let today = "2026-10-06";
+        let resolve = |value: Option<&str>| {
+            resolve_calendar_initial_date(value, today).expect("date should resolve")
+        };
+        assert_eq!(resolve(None), today);
+        assert_eq!(resolve(Some("2026-02")), "2026-02-01");
+        assert_eq!(resolve(Some("-1m")), "2026-09-06");
+        assert_eq!(resolve(Some("2025-12-24")), "2025-12-24");
+        assert!(resolve_calendar_initial_date(Some("nope"), today).is_err());
     }
 }

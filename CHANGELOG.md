@@ -2,7 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- `vulcan daily open [date]` opens or creates the daily note for any day, with `--dry-run` to
+  preview the resolved path. Date arguments across `daily` and `periodic` now accept `yesterday`,
+  `tomorrow`, signed offsets (`-1`, `+3`, `-2w`, `-1m`), and `last <weekday>` / `next <weekday>`
+  besides `YYYY-MM-DD`.
+- `vulcan daily calendar` (and bare `vulcan daily` in a terminal) is a month-calendar picker:
+  it marks days with notes and events, previews the selected note, and creates or edits any day's
+  note in `$EDITOR` from the daily template without leaving the calendar.
+
 ### Changed
+
+- "Today" for daily and periodic notes is now the local calendar day rather than the UTC date,
+  so late-evening or early-morning work no longer lands in the neighbouring day's note.
+- Creating a periodic note for another day renders template built-ins such as `{{date}}` as that
+  note's date instead of the current date. `tp.date.now()` is unchanged.
 
 - Sync conflicts closed for 30 days move into a compact per-repository archive
   (`refs/vulcan/conflict-archive`) during sync. Their records, decisions, and conflicted file

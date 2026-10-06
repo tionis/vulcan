@@ -79,6 +79,7 @@ pub fn apply_bases_note_create(
                 vars: &HashMap::new(),
                 allow_mutations: !dry_run,
                 run_mode: TemplateRunMode::Create,
+                reference_date: None,
             },
             read_filter.as_ref(),
             guard,

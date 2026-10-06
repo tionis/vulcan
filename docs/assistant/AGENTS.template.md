@@ -21,7 +21,7 @@ Useful command groups:
 
 Retrieval routing:
 
-- Daily/journal request: `daily latest`, `daily show`, or MCP `daily`; “latest” means newest existing, not today.
+- Daily/journal request: `daily latest`, `daily show`, or MCP `daily`; “latest” means newest existing, not today. Write another day's note with `daily open <date> --no-edit` or `daily append --date <date>`.
 - Known note/path/title: `note get` / MCP `note_get`.
 - Metadata, property, or path selection: `query`.
 - Subject/content discovery: `search`.

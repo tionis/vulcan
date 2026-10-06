@@ -25,7 +25,7 @@ use crate::notes::{
     NoteReadMode,
 };
 use crate::periodic::{
-    current_utc_date_string, list_daily_notes, normalize_date_argument, read_daily_note,
+    current_local_date_string, list_daily_notes, normalize_date_argument, read_daily_note,
     read_latest_daily_note_where, show_periodic_note, DailyNoteReadReport, DailyReadTarget,
 };
 use crate::tasks::{
@@ -198,7 +198,7 @@ pub fn daily(
         }
         "today" | "show" => {
             let date = if args.operation == "today" {
-                current_utc_date_string()
+                current_local_date_string()
             } else {
                 let raw = args.date.as_deref().ok_or_else(|| {
                     McpMethodError::invalid_params("daily operation `show` requires `date`")

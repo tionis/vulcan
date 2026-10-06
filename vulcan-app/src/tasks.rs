@@ -4282,6 +4282,7 @@ fn load_tasknote_template(
             vars: &vars,
             allow_mutations: !dry_run,
             run_mode: TemplateRunMode::Create,
+            reference_date: None,
         },
         read_filter.as_ref(),
         guard,

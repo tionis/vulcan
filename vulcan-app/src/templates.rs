@@ -403,6 +403,10 @@ pub struct TemplateRenderRequest<'a> {
     pub vars: &'a HashMap<String, String>,
     pub allow_mutations: bool,
     pub run_mode: TemplateRunMode,
+    /// Date (`YYYY-MM-DD`) the note is about, e.g. a back-dated daily note.
+    /// Drives `{{date}}`/`{{time}}`-style built-ins; `tp.date.now()` stays the
+    /// wall clock. `None` uses the current time.
+    pub reference_date: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -547,6 +551,10 @@ pub struct LoadedTemplateRenderRequest<'a> {
     pub vars: &'a HashMap<String, String>,
     pub allow_mutations: bool,
     pub run_mode: TemplateRunMode,
+    /// Date (`YYYY-MM-DD`) the note is about, e.g. a back-dated daily note.
+    /// Drives `{{date}}`/`{{time}}`-style built-ins; `tp.date.now()` stays the
+    /// wall clock. `None` uses the current time.
+    pub reference_date: Option<&'a str>,
 }
 
 pub fn parse_template_var_bindings(vars: &[String]) -> Result<HashMap<String, String>, CliError> {
@@ -819,6 +827,7 @@ pub(crate) fn render_loaded_template_with_staged_creates(
             vars: request.vars,
             allow_mutations: request.allow_mutations,
             run_mode: request.run_mode,
+            reference_date: request.reference_date,
         },
         read_filter,
         mutation_guard,
@@ -970,6 +979,7 @@ pub(crate) fn render_creation_trigger_with_staged_creates(
                 vars: &vars,
                 allow_mutations: true,
                 run_mode: TemplateRunMode::Create,
+                reference_date: None,
             },
             read_filter,
             mutation_guard,
@@ -1022,6 +1032,7 @@ pub(crate) fn render_creation_trigger_with_staged_creates(
             vars: &vars,
             allow_mutations: true,
             run_mode: TemplateRunMode::Create,
+            reference_date: None,
         },
         read_filter,
         mutation_guard,
@@ -1156,6 +1167,7 @@ pub fn build_template_preview_report_with_filter(
             vars: &request.vars,
             allow_mutations: false,
             run_mode: TemplateRunMode::Dynamic,
+            reference_date: None,
         },
         read_filter,
     )?;
@@ -1206,6 +1218,7 @@ pub fn apply_template_create_with_filter(
             vars: &request.vars,
             allow_mutations: true,
             run_mode: TemplateRunMode::Create,
+            reference_date: None,
         },
         read_filter,
         None,
@@ -1274,6 +1287,7 @@ pub fn apply_template_insert_with_filter(
             vars: &request.vars,
             allow_mutations: true,
             run_mode: TemplateRunMode::Append,
+            reference_date: None,
         },
         read_filter,
         None,
@@ -1325,7 +1339,10 @@ struct TemplateSession<'a> {
     request: TemplateRenderRequest<'a>,
     target_path: String,
     target_contents: String,
+    /// The note's reference moment for built-in date variables.
     timestamp: TemplateTimestamp,
+    /// Wall clock for `tp.date.*` and other "now" semantics.
+    now: TemplateTimestamp,
     warnings: Vec<String>,
     diagnostics: Vec<String>,
     changed_paths: BTreeSet<String>,
@@ -1349,10 +1366,15 @@ impl<'a> TemplateSession<'a> {
         mutation_guard: Option<&ProfilePermissionGuard>,
         staged_creates: Option<StagedTemplateCreates>,
     ) -> Self {
+        let now = TemplateTimestamp::current();
         Self {
             target_path: request.target_path.to_string(),
             target_contents: request.target_contents.unwrap_or_default().to_string(),
-            timestamp: TemplateTimestamp::current(),
+            timestamp: request
+                .reference_date
+                .and_then(|date| now.on_date(date))
+                .unwrap_or(now),
+            now,
             request,
             warnings: Vec::new(),
             diagnostics: Vec::new(),
@@ -1643,7 +1665,7 @@ impl<'a> TemplateSession<'a> {
     }
 
     fn timestamp_with_day_offset(&self, offset_days: i64) -> TemplateTimestamp {
-        TemplateTimestamp::from_millis(self.current_timestamp_millis() + offset_days * DAY_MS)
+        TemplateTimestamp::from_millis(self.timestamp.to_millis() + offset_days * DAY_MS)
     }
 
     fn render_source(
@@ -2365,8 +2387,7 @@ impl<'a> TemplateSession<'a> {
     }
 
     fn current_timestamp_millis(&self) -> i64 {
-        let strings = self.current_builtins();
-        parse_date_like_string(&strings.datetime).unwrap_or_default()
+        self.now.to_millis()
     }
 
     fn reference_timestamp(
@@ -3231,6 +3252,7 @@ fn js_system_user_command(
         vars: &state.vars,
         allow_mutations: state.allow_mutations,
         run_mode: template_run_mode_from_code(state.run_mode_code),
+        reference_date: None,
     })
     .map_err(|error| error.to_string())?;
     let shell = state.vault_config.templates.shell_path.clone();
@@ -4934,6 +4956,21 @@ impl TemplateTimestamp {
             time,
             datetime,
         }
+    }
+
+    #[must_use]
+    pub fn to_millis(self) -> i64 {
+        (self.days_since_epoch * 86_400 + self.hour * 3_600 + self.minute * 60 + self.second)
+            * 1_000
+    }
+
+    /// This timestamp's time of day moved onto `date` (`YYYY-MM-DD`).
+    #[must_use]
+    pub fn on_date(self, date: &str) -> Option<Self> {
+        let day_ms = parse_date_like_string(date)?.div_euclid(DAY_MS) * DAY_MS;
+        Some(Self::from_millis(
+            day_ms + self.to_millis().rem_euclid(DAY_MS),
+        ))
     }
 
     #[must_use]

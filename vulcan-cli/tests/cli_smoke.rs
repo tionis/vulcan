@@ -786,14 +786,14 @@ fn skill_script_process(script_path: &Path, path: &OsString) -> ProcessCommand {
 }
 
 fn cargo_vulcan_fixed_now() -> Command {
-    let mut command = Command::cargo_bin("vulcan").expect("binary should build");
-    command.env("VULCAN_FIXED_NOW", FIXED_NOW);
-    command
+    cargo_vulcan_at_time(FIXED_NOW)
 }
 
+/// Pins both the clock and the zone: relative dates such as `today` resolve
+/// against the local calendar day.
 fn cargo_vulcan_at_time(fixed_now: &str) -> Command {
     let mut command = Command::cargo_bin("vulcan").expect("binary should build");
-    command.env("VULCAN_FIXED_NOW", fixed_now);
+    command.env("VULCAN_FIXED_NOW", fixed_now).env("TZ", "UTC");
     command
 }
 
@@ -5107,6 +5107,154 @@ fn today_alias_json_output_opens_daily_note() {
         .as_bool()
         .is_some_and(|opened| !opened));
     assert!(vault_root.join("Journal/Daily/2026-04-04.md").exists());
+}
+
+#[test]
+fn daily_open_targets_relative_dates_and_renders_template_for_that_day() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates")).expect("template dir");
+    fs::write(
+        vault_root.join(".vulcan/templates/daily.md"),
+        "---\ndate: {{date}}\n---\n# {{title}}\n\n## Log\n",
+    )
+    .expect("daily template should be written");
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+
+    let json = parse_stdout_json(
+        &cargo_vulcan_at_time("2026-10-06T12:00:00Z")
+            .args([
+                "--vault",
+                vault,
+                "--output",
+                "json",
+                "daily",
+                "open",
+                "yesterday",
+            ])
+            .args(["--no-edit", "--no-commit"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(json["reference_date"], "2026-10-05");
+    assert_eq!(json["path"], "Journal/Daily/2026-10-05.md");
+    assert_eq!(json["created"], true);
+    assert_eq!(json["dry_run"], false);
+    let rendered = fs::read_to_string(vault_root.join("Journal/Daily/2026-10-05.md"))
+        .expect("daily note should be created")
+        .replace("\r\n", "\n");
+    assert!(
+        rendered.starts_with("---\ndate: 2026-10-05\n---\n# 2026-10-05\n"),
+        "back-dated note should render its own date: {rendered}"
+    );
+
+    let planned = parse_stdout_json(
+        &cargo_vulcan_at_time("2026-10-06T12:00:00Z")
+            .args(["--vault", vault, "--output", "json", "daily", "open", "-2w"])
+            .arg("--dry-run")
+            .assert()
+            .success(),
+    );
+    assert_eq!(planned["path"], "Journal/Daily/2026-09-22.md");
+    assert_eq!(planned["created"], true);
+    assert_eq!(planned["dry_run"], true);
+    assert!(!vault_root.join("Journal/Daily/2026-09-22.md").exists());
+
+    cargo_vulcan_at_time("2026-10-06T12:00:00Z")
+        .args([
+            "--vault",
+            vault,
+            "daily",
+            "append",
+            "Late entry",
+            "--date",
+            "-1",
+        ])
+        .args(["--heading", "## Log", "--no-commit"])
+        .assert()
+        .success();
+    let appended = fs::read_to_string(vault_root.join("Journal/Daily/2026-10-05.md"))
+        .expect("daily note should exist")
+        .replace("\r\n", "\n");
+    assert!(appended.contains("## Log\n\nLate entry"));
+
+    cargo_vulcan_at_time("2026-10-06T12:00:00Z")
+        .args(["--vault", vault, "daily", "open", "someday", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("last <weekday>"));
+}
+
+#[cfg(unix)]
+#[test]
+fn daily_today_follows_the_local_calendar_day() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+
+    // 23:30 UTC is already the next day at UTC+14.
+    let json = parse_stdout_json(
+        &cargo_vulcan_at_time("2026-10-06T23:30:00Z")
+            .env("TZ", "Pacific/Kiritimati")
+            .args([
+                "--vault",
+                vault,
+                "--output",
+                "json",
+                "daily",
+                "open",
+                "--dry-run",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(json["reference_date"], "2026-10-07");
+}
+
+#[test]
+fn daily_without_subcommand_lists_the_month_when_not_interactive() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+    for date in ["2026-09-30", "2026-10-02", "2026-10-05"] {
+        fs::write(
+            vault_root.join(format!("Journal/Daily/{date}.md")),
+            format!("# {date}\n"),
+        )
+        .expect("daily note");
+    }
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+
+    let rows = parse_stdout_json_lines(
+        &cargo_vulcan_at_time("2026-10-06T12:00:00Z")
+            .args(["--vault", vault, "--output", "json", "daily"])
+            .assert()
+            .success(),
+    );
+    let dates = rows
+        .iter()
+        .map(|row| row["date"].as_str().expect("date").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(dates, ["2026-10-02", "2026-10-05"]);
+
+    let september = parse_stdout_json_lines(
+        &cargo_vulcan_at_time("2026-10-06T12:00:00Z")
+            .args([
+                "--vault", vault, "--output", "json", "daily", "calendar", "2026-09",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(september.len(), 1);
+    assert_eq!(september[0]["date"], "2026-09-30");
 }
 
 #[test]
@@ -17605,6 +17753,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let daily_notes = fs::read_to_string(vault_root.join(".agents/skills/daily-notes/SKILL.md"))
         .expect("daily notes skill should be readable");
     assert!(daily_notes.contains("Direct CLI and MCP daily list, show, and latest reads refuse"));
+    assert!(daily_notes.contains("`daily open <date> --no-edit`"));
+    assert!(daily_notes.contains("`daily calendar` and bare `daily` are an interactive picker"));
     let js_api = fs::read_to_string(vault_root.join(".agents/skills/js-api-guide/SKILL.md"))
         .expect("JS API skill should be readable");
     assert_eq!(

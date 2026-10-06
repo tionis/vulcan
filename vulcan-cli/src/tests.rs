@@ -1042,14 +1042,70 @@ fn parses_daily_append_command() {
     assert_eq!(
         cli.command,
         Command::Daily {
-            command: DailyCommand::Append {
+            command: Some(DailyCommand::Append {
                 text: "Called Alice".to_string(),
                 heading: Some("## Log".to_string()),
                 date: Some("2026-04-03".to_string()),
                 no_commit: true,
-            },
+            }),
         }
     );
+}
+
+#[test]
+fn parses_daily_open_with_relative_and_negative_dates() {
+    let cli = Cli::try_parse_from(["vulcan", "daily", "open", "-1", "--no-edit"])
+        .expect("cli should parse");
+    assert_eq!(
+        cli.command,
+        Command::Daily {
+            command: Some(DailyCommand::Open {
+                date: Some("-1".to_string()),
+                no_edit: true,
+                dry_run: false,
+                no_commit: false,
+            }),
+        }
+    );
+
+    let cli = Cli::try_parse_from(["vulcan", "daily", "append", "x", "--date", "-2w"])
+        .expect("cli should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Daily {
+            command: Some(DailyCommand::Append { ref date, .. }),
+        } if date.as_deref() == Some("-2w")
+    ));
+
+    let cli = Cli::try_parse_from(["vulcan", "daily"]).expect("cli should parse");
+    assert_eq!(cli.command, Command::Daily { command: None });
+}
+
+#[test]
+fn hyphen_tolerant_periodic_dates_still_parse_trailing_flags() {
+    let cli = Cli::try_parse_from(["vulcan", "periodic", "daily", "--no-edit"])
+        .expect("cli should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Periodic {
+            ref date,
+            no_edit: true,
+            ..
+        } if date.is_none()
+    ));
+
+    let cli =
+        Cli::try_parse_from(["vulcan", "daily", "open", "--dry-run"]).expect("cli should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Daily {
+            command: Some(DailyCommand::Open {
+                date: None,
+                dry_run: true,
+                ..
+            }),
+        }
+    ));
 }
 
 #[test]
@@ -2150,14 +2206,14 @@ fn parses_daily_export_ics_command() {
     assert_eq!(
         cli.command,
         Command::Daily {
-            command: DailyCommand::ExportIcs {
+            command: Some(DailyCommand::ExportIcs {
                 from: None,
                 to: None,
                 week: false,
                 month: true,
                 path: Some(PathBuf::from("journal.ics")),
                 calendar_name: Some("Journal".to_string()),
-            },
+            }),
         }
     );
 }

@@ -408,6 +408,7 @@ fn templater_native_interpolation_reads_file_and_frontmatter_context() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -435,6 +436,7 @@ fn templater_date_now_uses_moment_tokens_and_evaluated_reference_args() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -463,6 +465,7 @@ fn templater_include_rejects_an_absolute_path() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect_err("absolute include must be rejected");
     assert!(error.to_string().contains("doesn't exist"));
@@ -494,6 +497,7 @@ fn templater_include_rejects_a_symlink_to_an_outside_file() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect_err("symlinked include must be rejected");
     assert!(error.to_string().contains("doesn't exist"));
@@ -525,6 +529,7 @@ fn templater_include_respects_the_active_read_filter() {
             vars: &vars,
             allow_mutations: false,
             run_mode: TemplateRunMode::Dynamic,
+            reference_date: None,
         },
         Some(&filter),
     )
@@ -550,9 +555,11 @@ fn native_renderer_supports_quickadd_date_and_file_tokens() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
+        reference_date: None,
     };
     let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None, None);
     session.timestamp = fixed_template_timestamp();
+    session.now = session.timestamp;
 
     let rendered = session
             .render_native_text(
@@ -589,9 +596,11 @@ fn native_renderer_supports_quickadd_value_and_vdate_tokens() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
+        reference_date: None,
     };
     let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None, None);
     session.timestamp = fixed_template_timestamp();
+    session.now = session.timestamp;
 
     let rendered = session
             .render_native_text(
@@ -635,9 +644,11 @@ fn native_renderer_supports_quickadd_global_variables() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
+        reference_date: None,
     };
     let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None, None);
     session.timestamp = fixed_template_timestamp();
+    session.now = session.timestamp;
 
     let rendered = session
         .render_native_text(
@@ -671,6 +682,7 @@ fn templater_js_interpolation_supports_string_methods() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -697,6 +709,7 @@ fn templater_js_execution_uses_tr_output_accumulator() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -736,6 +749,7 @@ fn templater_loads_user_scripts_from_configured_folder() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -763,6 +777,7 @@ fn templater_hooks_run_after_rendering() {
             vars: &vars,
             allow_mutations: true,
             run_mode: TemplateRunMode::Dynamic,
+            reference_date: None,
         })
         .expect("template should render");
 
@@ -805,6 +820,7 @@ fn templater_file_create_waits_for_the_vault_write_lock() {
             vars: &vars,
             allow_mutations: true,
             run_mode: TemplateRunMode::Create,
+            reference_date: None,
         });
         done_tx.send(result).expect("result");
     });
@@ -849,6 +865,7 @@ fn templater_system_command_functions_expand_internal_templates() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -896,6 +913,7 @@ fn templater_web_requests_respect_allowlist_and_json_path() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -922,6 +940,7 @@ fn templater_web_helpers_emit_diagnostics_without_js_runtime() {
         vars: &vars,
         allow_mutations: false,
         run_mode: TemplateRunMode::Dynamic,
+        reference_date: None,
     })
     .expect("template should render");
 
@@ -1687,4 +1706,63 @@ fn template_insert_commits_js_companion_with_final_note() {
     assert!(fs::read_to_string(root.join("Home.md"))
         .unwrap()
         .contains("Inserted\n"));
+}
+
+#[test]
+fn reference_date_drives_builtin_dates_but_not_tp_date_now() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+    let request = TemplateRenderRequest {
+        paths: &paths,
+        vault_config: &config,
+        templates: &[],
+        template_path: None,
+        template_text: "",
+        target_path: "Journal/Daily/2026-03-30.md",
+        target_contents: None,
+        engine: TemplateEngineKind::Native,
+        vars: &vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Create,
+        reference_date: Some("2026-03-30"),
+    };
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None, None, None);
+    session.now = fixed_template_timestamp();
+    session.timestamp = session
+        .now
+        .on_date("2026-03-30")
+        .expect("reference date should parse");
+
+    let builtins = session
+        .render_source(
+            "{{date}} {{date:dddd}} {{time}} {{DATE+1}}",
+            TemplateEngineKind::Native,
+            0,
+        )
+        .expect("native template should render");
+    let templater = session
+        .render_source(
+            "<% tp.date.now(\"YYYY-MM-DD\") %> <% tp.file.title %>",
+            TemplateEngineKind::Templater,
+            0,
+        )
+        .expect("templater template should render");
+
+    assert_eq!(builtins, "2026-03-30 Monday 09:30 2026-03-31");
+    assert_eq!(templater, "2026-04-04 2026-03-30");
+}
+
+#[test]
+fn template_timestamp_moves_time_of_day_onto_another_date() {
+    let moved = fixed_template_timestamp()
+        .on_date("2025-12-31")
+        .expect("date should parse");
+    assert_eq!(moved.default_date_string(), "2025-12-31");
+    assert_eq!(
+        moved.to_millis() - fixed_template_timestamp().to_millis(),
+        -94 * 86_400_000
+    );
+    assert!(fixed_template_timestamp().on_date("not a date").is_none());
 }

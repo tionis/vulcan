@@ -8306,19 +8306,73 @@
         ]
       },
       {
-        "about": "Open, inspect, and append to daily notes",
-        "after_help": "Notes:\n  `latest` reads the newest existing configured daily note; it does not mean today.\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily latest\n  vulcan daily today\n  vulcan daily today --no-edit\n  vulcan daily show 2026-04-03\n  vulcan daily list --week\n  vulcan daily export-ics --month --path Journal.ics\n  vulcan daily append \"Called Alice\" --heading \"## Log\"",
+        "about": "Open, inspect, and append to daily notes for any date",
+        "after_help": "Dates:\n  Every DATE argument accepts YYYY-MM-DD, today, yesterday, tomorrow, signed offsets\n  (-1, +3, -2w, -1m), and `last <weekday>` / `next <weekday>`. Relative dates use the\n  local calendar day.\n\nNotes:\n  Without a subcommand in an interactive terminal, `daily` opens the calendar picker.\n  `open` creates the note from the configured template when missing, then opens the editor.\n  `today` is shorthand for `open today`.\n  `latest` reads the newest existing configured daily note; it does not mean today.\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily\n  vulcan daily open yesterday\n  vulcan daily open 2026-04-03 --no-edit\n  vulcan daily open -2 --dry-run\n  vulcan daily calendar 2026-04\n  vulcan daily today\n  vulcan daily latest\n  vulcan daily show \"last friday\"\n  vulcan daily list --week\n  vulcan daily export-ics --month --path Journal.ics\n  vulcan daily append \"Called Alice\" --heading \"## Log\" --date yesterday",
         "name": "daily",
         "options": [],
         "subcommands": [
           {
-            "about": "Display the newest existing daily note",
-            "name": "latest",
-            "options": [],
+            "about": "Open or create the daily note for any date",
+            "name": "open",
+            "options": [
+              {
+                "help": "Date to open: YYYY-MM-DD, today, yesterday, -1, +2w, last friday, ... (defaults to today)",
+                "id": "date",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Create the note without opening it in the editor",
+                "id": "no_edit",
+                "long": "no-edit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_EDIT"
+                ]
+              },
+              {
+                "help": "Report the resolved date and path without creating or opening the note",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
             "subcommands": []
           },
           {
-            "about": "Open or create today's daily note",
+            "about": "Open or create today's daily note (shorthand for `open today`)",
             "name": "today",
             "options": [
               {
@@ -8350,6 +8404,44 @@
                 ]
               }
             ],
+            "subcommands": []
+          },
+          {
+            "about": "Pick a day in an interactive calendar and edit its daily note",
+            "name": "calendar",
+            "options": [
+              {
+                "help": "Initially selected date or month (YYYY-MM); defaults to today",
+                "id": "date",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATE"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for notes created or edited here",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Display the newest existing daily note",
+            "name": "latest",
+            "options": [],
             "subcommands": []
           },
           {
@@ -8533,7 +8625,7 @@
                 ]
               },
               {
-                "help": "Date to append to (defaults to today)",
+                "help": "Date to append to, e.g. yesterday or 2026-04-03 (defaults to today)",
                 "id": "date",
                 "long": "date",
                 "possible_values": [],
@@ -14758,7 +14850,7 @@
                 ]
               },
               {
-                "help": "Target date (YYYY-MM-DD); defaults to today",
+                "help": "Target date (YYYY-MM-DD, yesterday, -1, ...); defaults to today",
                 "id": "date",
                 "long": "date",
                 "possible_values": [],
@@ -14809,7 +14901,7 @@
                 ]
               },
               {
-                "help": "Target date (YYYY-MM-DD); defaults to today",
+                "help": "Target date (YYYY-MM-DD, yesterday, -1, ...); defaults to today",
                 "id": "date",
                 "long": "date",
                 "possible_values": [],

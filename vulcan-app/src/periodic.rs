@@ -1,9 +1,11 @@
 use crate::AppError;
+use chrono::{Datelike, Months, NaiveDate, TimeDelta, Weekday};
 use serde::Serialize;
 use serde_json::Value;
 use std::fs;
 use vulcan_core::config::PeriodicConfig;
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
+use vulcan_core::expression::value::DataviewTimeZone;
 use vulcan_core::{
     expected_periodic_note_path, list_daily_note_events, load_events_for_periodic_note,
     load_vault_config, match_periodic_note_path, period_range_for_date, resolve_periodic_note,
@@ -50,26 +52,111 @@ pub struct DailyListItem {
     pub events: Vec<PeriodicEventReport>,
 }
 
+/// Human-facing summary of the date forms accepted by [`normalize_date_argument`].
+pub const DATE_ARGUMENT_FORMS: &str = "YYYY-MM-DD, today, yesterday, tomorrow, \
+     +N/-N days (also Nd, Nw, Nm suffixes such as -2w), last <weekday>, next <weekday>";
+
 #[must_use]
 pub fn current_utc_date_string() -> String {
     TemplateTimestamp::current().default_date_string()
 }
 
+/// Today's date in the system's local time zone.
+///
+/// Daily notes are keyed by the user's calendar day, so "today" must not roll
+/// over at UTC midnight.
+#[must_use]
+pub fn current_local_date_string() -> String {
+    let now = vulcan_core::current_utc_timestamp_ms();
+    let local = DataviewTimeZone::System.localize_utc_ms(now);
+    TemplateTimestamp::from_millis(local).default_date_string()
+}
+
+/// Resolve a user-supplied date argument to `YYYY-MM-DD`, anchored at the local
+/// current date. See [`DATE_ARGUMENT_FORMS`] for the accepted forms.
 pub fn normalize_date_argument(date: Option<&str>) -> Result<String, AppError> {
-    match date
+    normalize_date_argument_at(date, &current_local_date_string())
+}
+
+/// Resolve a date argument relative to an explicit `today` (`YYYY-MM-DD`).
+pub fn normalize_date_argument_at(date: Option<&str>, today: &str) -> Result<String, AppError> {
+    let Some(value) = date
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase)
-    {
-        None => Ok(current_utc_date_string()),
-        Some(value) if value == "today" => Ok(current_utc_date_string()),
-        Some(value) => {
-            let timestamp = parse_date_like_string(&value)
-                .ok_or_else(|| AppError::operation(format!("invalid date: {value}")))?;
-            let (year, month, day, _, _, _, _) = date_components(timestamp);
-            Ok(format!("{year:04}-{month:02}-{day:02}"))
-        }
+    else {
+        return Ok(today.to_string());
+    };
+    let anchor = NaiveDate::parse_from_str(today, "%Y-%m-%d")
+        .map_err(|error| AppError::operation(format!("invalid reference date {today}: {error}")))?;
+    if let Some(resolved) = resolve_relative_date(&value, anchor) {
+        return Ok(resolved.format("%Y-%m-%d").to_string());
     }
+    let timestamp = parse_date_like_string(&value).ok_or_else(|| {
+        AppError::operation(format!(
+            "invalid date: {value} (expected {DATE_ARGUMENT_FORMS})"
+        ))
+    })?;
+    let (year, month, day, _, _, _, _) = date_components(timestamp);
+    Ok(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+fn resolve_relative_date(value: &str, today: NaiveDate) -> Option<NaiveDate> {
+    match value {
+        "today" => return Some(today),
+        "yesterday" => return today.pred_opt(),
+        "tomorrow" => return today.succ_opt(),
+        _ => {}
+    }
+    if let Some((direction, weekday)) = value.split_once(char::is_whitespace) {
+        let weekday = weekday.trim().parse::<Weekday>().ok()?;
+        return match direction {
+            "last" => Some(step_to_weekday(today, weekday, false)),
+            "next" => Some(step_to_weekday(today, weekday, true)),
+            _ => None,
+        };
+    }
+    resolve_offset_date(value, today)
+}
+
+/// `+N`, `-N`, `-Nd`, `+Nw`, `-Nm`: signed day, week, or month offsets.
+fn resolve_offset_date(value: &str, today: NaiveDate) -> Option<NaiveDate> {
+    let (negative, rest) = match value.as_bytes().first()? {
+        b'+' => (false, &value[1..]),
+        b'-' => (true, &value[1..]),
+        _ => return None,
+    };
+    let (digits, unit) = match rest.char_indices().last()? {
+        (index, unit @ ('d' | 'w' | 'm')) => (&rest[..index], unit),
+        _ => (rest, 'd'),
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let amount = digits.parse::<u32>().ok()?;
+    if unit == 'm' {
+        let months = Months::new(amount);
+        return if negative {
+            today.checked_sub_months(months)
+        } else {
+            today.checked_add_months(months)
+        };
+    }
+    let days = i64::from(amount) * if unit == 'w' { 7 } else { 1 };
+    let delta = TimeDelta::try_days(if negative { -days } else { days })?;
+    today.checked_add_signed(delta)
+}
+
+/// The nearest `weekday` strictly before (`forward == false`) or after `today`.
+fn step_to_weekday(today: NaiveDate, weekday: Weekday, forward: bool) -> NaiveDate {
+    let today_index = i64::from(today.weekday().num_days_from_monday());
+    let target_index = i64::from(weekday.num_days_from_monday());
+    let distance = if forward {
+        (target_index - today_index - 1).rem_euclid(7) + 1
+    } else {
+        -((today_index - target_index - 1).rem_euclid(7) + 1)
+    };
+    today + TimeDelta::days(distance)
 }
 
 pub fn resolve_periodic_target(
@@ -115,7 +202,7 @@ pub fn resolve_daily_list_window(
     week: bool,
     month: bool,
 ) -> Result<(String, String), AppError> {
-    let today = current_utc_date_string();
+    let today = current_local_date_string();
     if week {
         return period_range_for_date(config, "weekly", &today)
             .ok_or_else(|| AppError::operation("failed to resolve weekly date range"));
@@ -413,6 +500,52 @@ mod tests {
         assert!(shown.content.contains("# Friday"));
         assert_eq!(shown.start_date, "2026-04-03");
         assert_eq!(shown.end_date, "2026-04-03");
+    }
+
+    #[test]
+    fn date_arguments_resolve_relative_forms_against_reference_day() {
+        // 2026-10-06 is a Tuesday.
+        let today = "2026-10-06";
+        let resolve = |value: &str| {
+            normalize_date_argument_at(Some(value), today).expect("date should resolve")
+        };
+        assert_eq!(normalize_date_argument_at(None, today).unwrap(), today);
+        assert_eq!(resolve("  "), today);
+        assert_eq!(resolve("today"), today);
+        assert_eq!(resolve("Yesterday"), "2026-10-05");
+        assert_eq!(resolve("tomorrow"), "2026-10-07");
+        assert_eq!(resolve("-1"), "2026-10-05");
+        assert_eq!(resolve("+3"), "2026-10-09");
+        assert_eq!(resolve("-6d"), "2026-09-30");
+        assert_eq!(resolve("-2w"), "2026-09-22");
+        assert_eq!(resolve("+1m"), "2026-11-06");
+        assert_eq!(resolve("-1m"), "2026-09-06");
+        assert_eq!(resolve("last friday"), "2026-10-02");
+        assert_eq!(resolve("last tuesday"), "2026-09-29");
+        assert_eq!(resolve("next tue"), "2026-10-13");
+        assert_eq!(resolve("next monday"), "2026-10-12");
+        assert_eq!(resolve("2026-04-03"), "2026-04-03");
+        assert_eq!(resolve("2026-02"), "2026-02-01");
+    }
+
+    #[test]
+    fn month_offsets_clamp_to_month_end() {
+        assert_eq!(
+            normalize_date_argument_at(Some("-1m"), "2026-03-31").unwrap(),
+            "2026-02-28"
+        );
+    }
+
+    #[test]
+    fn invalid_date_arguments_list_accepted_forms() {
+        for value in ["someday", "-", "+x", "last", "last blursday", "soon friday"] {
+            let error = normalize_date_argument_at(Some(value), "2026-10-06")
+                .expect_err("date should be rejected");
+            assert!(
+                error.to_string().contains("yesterday"),
+                "error for {value:?} should list accepted forms: {error}"
+            );
+        }
     }
 
     #[test]

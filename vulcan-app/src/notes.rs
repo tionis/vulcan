@@ -19,7 +19,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::html::HtmlRenderOptions;
 use vulcan_core::mdbase::is_mdbase_record_path;
 use vulcan_core::paths::{
@@ -28,15 +27,15 @@ use vulcan_core::paths::{
 };
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
-    expected_periodic_note_path, load_vault_config, parse_document, parse_dql_with_diagnostics,
-    period_range_for_date, query_backlinks, query_backlinks_with_filter, query_links_with_filter,
-    query_note_link_confidence_with_filter, render_note_fragment_html, render_note_html,
-    render_vault_html, resolve_link, resolve_note_reference, resolve_note_reference_with_filter,
-    resolve_permission_profile, BacklinkRecord, DoctorByteRange, DoctorDiagnosticIssue,
-    GraphConfidenceBreakdown, GraphQueryError, LinkResolutionProblem, NoteLineSpan, NoteMatchKind,
-    ParsedDocument, PeriodicConfig, PermissionFilter, PermissionGuard, PluginEvent,
-    ProfilePermissionGuard, RefactorChange, ResolverDocument, ResolverLink, VaultConfig,
-    VaultPaths,
+    expected_periodic_note_path, load_vault_config, match_periodic_note_path, parse_document,
+    parse_dql_with_diagnostics, period_range_for_date, query_backlinks,
+    query_backlinks_with_filter, query_links_with_filter, query_note_link_confidence_with_filter,
+    render_note_fragment_html, render_note_html, render_vault_html, resolve_link,
+    resolve_note_reference, resolve_note_reference_with_filter, resolve_permission_profile,
+    BacklinkRecord, DoctorByteRange, DoctorDiagnosticIssue, GraphConfidenceBreakdown,
+    GraphQueryError, LinkResolutionProblem, NoteLineSpan, NoteMatchKind, ParsedDocument,
+    PeriodicConfig, PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard,
+    RefactorChange, ResolverDocument, ResolverLink, VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -899,6 +898,7 @@ pub fn apply_note_create(
                 vars: &vars,
                 allow_mutations: true,
                 run_mode: TemplateRunMode::Create,
+                reference_date: None,
             },
             None,
             mutation_guard.as_ref(),
@@ -1202,6 +1202,7 @@ pub fn apply_note_append(
             vars: &request.vars,
             allow_mutations: false,
             run_mode: TemplateRunMode::Append,
+            reference_date: None,
         })?;
 
     let mut warnings = target.warnings;
@@ -1820,6 +1821,11 @@ pub(crate) fn render_periodic_note_contents_with_guard(
     };
     let vars = HashMap::new();
     let read_filter = guard.map(PermissionGuard::read_filter);
+    // A note for another day renders `{{date}}` as that day, like Obsidian's
+    // Daily Notes plugin.
+    let reference_date = match_periodic_note_path(&config.periodic, relative_path)
+        .filter(|matched| matched.period_type == period_type)
+        .map(|matched| matched.start_date);
     let rendered = render_loaded_template_with_authority(
         paths,
         &config,
@@ -1831,6 +1837,7 @@ pub(crate) fn render_periodic_note_contents_with_guard(
             vars: &vars,
             allow_mutations: !dry_run,
             run_mode: TemplateRunMode::Create,
+            reference_date: reference_date.as_deref(),
         },
         read_filter.as_ref(),
         guard,
@@ -1853,24 +1860,7 @@ pub(crate) fn normalize_note_path(path: &str) -> Result<String, AppError> {
 }
 
 pub(crate) fn normalize_date_argument(date: Option<&str>) -> Result<String, AppError> {
-    match date
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-    {
-        None => Ok(current_utc_date_string()),
-        Some(value) if value == "today" => Ok(current_utc_date_string()),
-        Some(value) => {
-            let timestamp = parse_date_like_string(&value)
-                .ok_or_else(|| AppError::operation(format!("invalid date: {value}")))?;
-            let (year, month, day, _, _, _, _) = date_components(timestamp);
-            Ok(format!("{year:04}-{month:02}-{day:02}"))
-        }
-    }
-}
-
-fn current_utc_date_string() -> String {
-    TemplateTimestamp::current().default_date_string()
+    crate::periodic::normalize_date_argument(date)
 }
 
 fn merge_note_create_bodies(template_body: &str, stdin_body: &str) -> String {

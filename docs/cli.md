@@ -284,7 +284,9 @@ Shared behavior:
 
 ### Periodic note commands
 
-- `vulcan daily today [--no-edit] [--no-commit]`: open or create today's daily note.
+- `vulcan daily open [date] [--no-edit] [--dry-run] [--no-commit]`: open or create the daily note for any date (defaults to today). `--dry-run` reports the resolved date and path, and whether the note would be created, without writing.
+- `vulcan daily today [--no-edit] [--no-commit]`: shorthand for `daily open today`.
+- `vulcan daily calendar [date|YYYY-MM] [--no-commit]`: interactive month calendar. Days with notes are marked (`+`, or `*` with events), today is underlined, and the right pane previews the selected note. Enter or `e` creates the note from the daily template when missing and opens it in `$EDITOR`, then returns to the calendar. Keys: arrows/`hjkl` move, `[`/`]` or PageUp/PageDown change month, `t` jumps to today, typing `YYYY-MM-DD` jumps to a date, `q`/Esc quits. Bare `vulcan daily` opens the same picker. Without an interactive terminal, both list that month's daily notes instead.
 - `vulcan daily latest`: read the newest existing daily note from the configured daily-note folder. JSON includes `date`, `path`, `exists`, and `content`.
 - `vulcan daily show [date]`: print one daily note's contents. Defaults to today.
 - `vulcan daily list [--from <date>] [--to <date>] [--week] [--month]`: list daily notes and extracted schedule events across a date window.
@@ -298,6 +300,7 @@ Shared behavior:
 
 Behavior:
 
+- Date arguments for `daily` and `periodic` commands accept `YYYY-MM-DD`, `today`, `yesterday`, `tomorrow`, signed offsets (`-1`, `+3`, `-2w`, `+1m`), and `last <weekday>` / `next <weekday>`. Relative dates and the default "today" use the local calendar day, not UTC.
 - Periodic note defaults come from `[periodic.*]` in `.vulcan/config.toml`.
 - Custom period types use the same config map: define `[periodic.<name>]` with `unit = "days|weeks|months|quarters|years"`, `interval = <n>`, and an optional `anchor_date = "YYYY-MM-DD"` to align the cycle.
 - `daily list` uses the configured weekly start when `--week` is selected and includes parsed schedule events from the `events` cache table.
@@ -305,7 +308,7 @@ Behavior:
 - MCP initialization includes concise routing instructions. Common reads are on the default surface; adaptive packs remain opt-in for less-common capabilities because not every host refreshes callable schemas after `notifications/tools/list_changed`.
 - MCP `query` defaults to 50 compact results, supports `path_prefix`, `filename_pattern`, `limit`, `offset`, field projection, and page metadata, and requires explicit opt-in above 200 rows (hard maximum 1000).
 - `daily export-ics` uses the same cached events and emits a one-way RFC 5545 calendar export.
-- Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning.
+- Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning. Built-in template dates such as `{{date}}`, `{{date:dddd}}`, and `{{DATE+1}}` refer to the note's own period start, so a note created for yesterday is dated yesterday; Templater's `tp.date.now()` still returns the current time.
 - Use `periodic weekly` and `periodic monthly` directly; Vulcan does not ship compatibility aliases for the old top-level forms.
 - These commands participate in auto-commit when they mutate note files and vault git auto-commit is enabled.
 

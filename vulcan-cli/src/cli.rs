@@ -929,19 +929,31 @@ See also:
   `vulcan help reports` — conceptual overview of the report system";
 
 const DAILY_COMMAND_AFTER_HELP: &str = "\
+Dates:
+  Every DATE argument accepts YYYY-MM-DD, today, yesterday, tomorrow, signed offsets
+  (-1, +3, -2w, -1m), and `last <weekday>` / `next <weekday>`. Relative dates use the
+  local calendar day.
+
 Notes:
+  Without a subcommand in an interactive terminal, `daily` opens the calendar picker.
+  `open` creates the note from the configured template when missing, then opens the editor.
+  `today` is shorthand for `open today`.
   `latest` reads the newest existing configured daily note; it does not mean today.
   `list --week` and `list --month` expand around the current date using the configured periodic week start.
   `show` defaults to today. `append` creates the daily note first when it does not exist.
 
 Examples:
-  vulcan daily latest
+  vulcan daily
+  vulcan daily open yesterday
+  vulcan daily open 2026-04-03 --no-edit
+  vulcan daily open -2 --dry-run
+  vulcan daily calendar 2026-04
   vulcan daily today
-  vulcan daily today --no-edit
-  vulcan daily show 2026-04-03
+  vulcan daily latest
+  vulcan daily show \"last friday\"
   vulcan daily list --week
   vulcan daily export-ics --month --path Journal.ics
-  vulcan daily append \"Called Alice\" --heading \"## Log\"";
+  vulcan daily append \"Called Alice\" --heading \"## Log\" --date yesterday";
 
 const PERIODIC_COMMAND_AFTER_HELP: &str = "\
 Behavior:
@@ -3766,7 +3778,10 @@ pub struct InitArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct PeriodicOpenArgs {
-    #[arg(help = "Reference date for the period (defaults to today)")]
+    #[arg(
+        allow_hyphen_values = true,
+        help = "Reference date for the period (defaults to today)"
+    )]
     pub date: Option<String>,
     #[arg(long, help = "Create the note without opening it in the editor")]
     pub no_edit: bool,
@@ -3776,25 +3791,60 @@ pub struct PeriodicOpenArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum DailyCommand {
-    #[command(about = "Display the newest existing daily note")]
-    Latest,
-    #[command(about = "Open or create today's daily note")]
+    #[command(about = "Open or create the daily note for any date")]
+    Open {
+        #[arg(
+            allow_hyphen_values = true,
+            help = "Date to open: YYYY-MM-DD, today, yesterday, -1, +2w, last friday, ... (defaults to today)"
+        )]
+        date: Option<String>,
+        #[arg(long, help = "Create the note without opening it in the editor")]
+        no_edit: bool,
+        #[arg(
+            long,
+            help = "Report the resolved date and path without creating or opening the note"
+        )]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Open or create today's daily note (shorthand for `open today`)")]
     Today {
         #[arg(long, help = "Create the note without opening it in the editor")]
         no_edit: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
+    #[command(about = "Pick a day in an interactive calendar and edit its daily note")]
+    Calendar {
+        #[arg(
+            allow_hyphen_values = true,
+            help = "Initially selected date or month (YYYY-MM); defaults to today"
+        )]
+        date: Option<String>,
+        #[arg(long, help = "Suppress auto-commit for notes created or edited here")]
+        no_commit: bool,
+    },
+    #[command(about = "Display the newest existing daily note")]
+    Latest,
     #[command(about = "Display one daily note's contents")]
     Show {
-        #[arg(help = "Date to show (defaults to today)")]
+        #[arg(allow_hyphen_values = true, help = "Date to show (defaults to today)")]
         date: Option<String>,
     },
     #[command(about = "List daily notes and extracted schedule events")]
     List {
-        #[arg(long, help = "Start date for the listing window")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Start date for the listing window"
+        )]
         from: Option<String>,
-        #[arg(long, help = "End date for the listing window")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "End date for the listing window"
+        )]
         to: Option<String>,
         #[arg(long, conflicts_with = "month", help = "Use the current week")]
         week: bool,
@@ -3803,9 +3853,17 @@ pub enum DailyCommand {
     },
     #[command(about = "Export daily-note events as an ICS calendar")]
     ExportIcs {
-        #[arg(long, help = "Start date for the export window")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Start date for the export window"
+        )]
         from: Option<String>,
-        #[arg(long, help = "End date for the export window")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "End date for the export window"
+        )]
         to: Option<String>,
         #[arg(long, conflicts_with = "month", help = "Use the current week")]
         week: bool,
@@ -3822,7 +3880,11 @@ pub enum DailyCommand {
         text: String,
         #[arg(long, help = "Optional heading to append under")]
         heading: Option<String>,
-        #[arg(long, help = "Date to append to (defaults to today)")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Date to append to, e.g. yesterday or 2026-04-03 (defaults to today)"
+        )]
         date: Option<String>,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
@@ -5879,7 +5941,11 @@ pub enum PeriodicSubcommand {
     Show {
         #[arg(long = "type", help = "Period type: daily, weekly, or monthly")]
         period_type: String,
-        #[arg(long, help = "Target date (YYYY-MM-DD); defaults to today")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Target date (YYYY-MM-DD, yesterday, -1, ...); defaults to today"
+        )]
         date: Option<String>,
     },
     #[command(about = "Append text to a periodic note")]
@@ -5890,7 +5956,11 @@ pub enum PeriodicSubcommand {
         period_type: String,
         #[arg(long, help = "Heading to append under (created if missing)")]
         heading: Option<String>,
-        #[arg(long, help = "Target date (YYYY-MM-DD); defaults to today")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Target date (YYYY-MM-DD, yesterday, -1, ...); defaults to today"
+        )]
         date: Option<String>,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
@@ -7586,12 +7656,12 @@ pub enum Command {
         command: SkillCommand,
     },
     #[command(
-        about = "Open, inspect, and append to daily notes",
+        about = "Open, inspect, and append to daily notes for any date",
         after_help = DAILY_COMMAND_AFTER_HELP
     )]
     Daily {
         #[command(subcommand)]
-        command: DailyCommand,
+        command: Option<DailyCommand>,
     },
     #[command(
         about = "Open or create today's daily note",
@@ -7722,7 +7792,10 @@ pub enum Command {
         command: Option<PeriodicSubcommand>,
         #[arg(help = "Configured period type to open when no subcommand is used")]
         period_type: Option<String>,
-        #[arg(help = "Reference date for the period (defaults to today)")]
+        #[arg(
+            allow_hyphen_values = true,
+            help = "Reference date for the period (defaults to today)"
+        )]
         date: Option<String>,
         #[arg(long, help = "Create the note without opening it in the editor")]
         no_edit: bool,

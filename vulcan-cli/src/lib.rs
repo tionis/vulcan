@@ -23,10 +23,12 @@
 mod bases_tui;
 mod browse_tui;
 mod bundle_server;
+mod calendar_view;
 mod cli;
 mod commands;
 mod commit;
 mod config_tui;
+mod daily_tui;
 mod editor;
 mod js_repl;
 mod mcp;
@@ -3745,10 +3747,13 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Site { .. } => true,
         Command::Daily { command } => matches!(
             command,
-            DailyCommand::Latest
-                | DailyCommand::Show { .. }
-                | DailyCommand::List { .. }
-                | DailyCommand::ExportIcs { .. }
+            None | Some(
+                DailyCommand::Latest
+                    | DailyCommand::Calendar { .. }
+                    | DailyCommand::Show { .. }
+                    | DailyCommand::List { .. }
+                    | DailyCommand::ExportIcs { .. }
+            )
         ),
         Command::Periodic { command, .. } => {
             matches!(command, Some(PeriodicSubcommand::List { .. }))
@@ -6449,7 +6454,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Daily { ref command } => commands::periodic::handle_daily_command(
             cli,
             &paths,
-            command,
+            command.as_ref(),
             interactive_note_selection,
             &list_controls,
             stdout_is_tty,
