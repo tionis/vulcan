@@ -280,3 +280,59 @@ fn json_paths_select_exact_keys_with_any_spelling() {
         assert!(!sql_possible(&mismatch, &note), "{key}");
     }
 }
+
+#[test]
+fn dialects_combine_conjunctions_by_their_own_rules() {
+    let atom = |key: &str, literal: Literal| {
+        Predicate::Atom(Atom {
+            field: Field::Property(key.to_string()),
+            comparison: Comparison::Equal,
+            literal,
+        })
+    };
+    // `a` decides a non-match in both dialects; `b` is undecided in both.
+    let predicate = Predicate::All(vec![
+        atom("a", Literal::Text("x".to_string())),
+        atom("b", Literal::Text("x".to_string())),
+    ]);
+    let properties = json!({"a": "y"});
+    let record = RecordValues {
+        properties: &properties,
+        path: "n.md",
+        name: "n",
+        ext: "md",
+    };
+    // Dataview short-circuits on the decided non-match; CEL leaves every
+    // conjunction with an undecided atom to CEL.
+    assert_eq!(
+        predicate.decide(Dialect::Dataview, &record),
+        Decision::NoMatch
+    );
+    assert_eq!(predicate.decide(Dialect::Cel, &record), Decision::Undecided);
+    // CEL decides only exact types: an integer literal against a number with
+    // a fraction, or a string with NUL, stays undecided.
+    let properties = json!({"n": 2.5, "s": "a\u{0}b", "i": 3});
+    let record = RecordValues {
+        properties: &properties,
+        path: "n.md",
+        name: "n",
+        ext: "md",
+    };
+    assert_eq!(
+        atom("n", Literal::Integer(2)).decide(Dialect::Cel, &record),
+        Decision::Undecided
+    );
+    assert_eq!(
+        atom("s", Literal::Text("a".to_string())).decide(Dialect::Cel, &record),
+        Decision::Undecided
+    );
+    assert_eq!(
+        atom("i", Literal::Integer(3)).decide(Dialect::Cel, &record),
+        Decision::Match
+    );
+    // Dataview does not lower CEL integers.
+    assert_eq!(
+        atom("i", Literal::Integer(3)).decide(Dialect::Dataview, &record),
+        Decision::Undecided
+    );
+}

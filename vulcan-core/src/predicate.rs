@@ -26,9 +26,13 @@ use std::fmt::Write as _;
 pub(crate) enum Dialect {
     /// Dataview and Bases expressions, as `expression::eval` evaluates them.
     Dataview,
+    /// mdbase CEL. An atom is decided only when the value has exactly the
+    /// literal's type, and a conjunction only when every atom is decided, so
+    /// CEL keeps reporting every diagnostic and resource-limit error itself.
+    Cel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum Comparison {
     Equal,
     NotEqual,
@@ -36,6 +40,8 @@ pub(crate) enum Comparison {
     LessEqual,
     Greater,
     GreaterEqual,
+    /// Byte-wise string prefix (CEL `startsWith`).
+    StartsWith,
 }
 
 impl Comparison {
@@ -62,9 +68,11 @@ impl Comparison {
         }
     }
 
+    /// `StartsWith` is not an ordering; callers decide it separately.
     fn holds(self, ordering: std::cmp::Ordering) -> bool {
         use std::cmp::Ordering::{Equal, Greater, Less};
         match self {
+            Self::StartsWith => false,
             Self::Equal => ordering == Equal,
             Self::NotEqual => ordering != Equal,
             Self::Less => ordering == Less,
@@ -76,6 +84,7 @@ impl Comparison {
 
     fn sql(self) -> &'static str {
         match self {
+            Self::StartsWith => unreachable!("prefixes render separately"),
             Self::Equal => "=",
             Self::NotEqual => "!=",
             Self::Less => "<",
@@ -88,16 +97,18 @@ impl Comparison {
 
 /// A literal operand. Strings are only lowered when the dialect compares them
 /// as plain strings (never date- or duration-like).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) enum Literal {
     Null,
     Bool(bool),
     Number(f64),
+    /// A CEL `int`.
+    Integer(i64),
     Text(String),
 }
 
 /// The record value an atom compares.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum Field {
     /// A top-level property by its exact key. A record without that exact
     /// key is undecided: the evaluator may resolve a differently spelled key.
@@ -107,7 +118,7 @@ pub(crate) enum Field {
     FileExt,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct Atom {
     pub field: Field,
     pub comparison: Comparison,
@@ -115,7 +126,7 @@ pub(crate) struct Atom {
 }
 
 /// A lowered filter. Children of `All` are in evaluation order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) enum Predicate {
     Atom(Atom),
     /// Short-circuit conjunction.
@@ -220,6 +231,20 @@ impl Predicate {
     pub(crate) fn decide(&self, dialect: Dialect, record: &RecordValues<'_>) -> Decision {
         match self {
             Self::Atom(atom) => atom.decide(dialect, record),
+            Self::All(children) if dialect == Dialect::Cel => {
+                let mut matched = true;
+                for child in children {
+                    match child.decide(dialect, record) {
+                        Decision::Undecided => return Decision::Undecided,
+                        decision => matched &= decision == Decision::Match,
+                    }
+                }
+                if matched {
+                    Decision::Match
+                } else {
+                    Decision::NoMatch
+                }
+            }
             Self::All(children) => {
                 let mut decision = Decision::Match;
                 for child in children {
@@ -341,7 +366,13 @@ const EXACT_INTEGER_BOUND: f64 = 9_007_199_254_740_992.0;
 
 impl Atom {
     fn decide(&self, dialect: Dialect, record: &RecordValues<'_>) -> Decision {
-        let Dialect::Dataview = dialect;
+        if dialect == Dialect::Cel {
+            return self.decide_cel(record);
+        }
+        if matches!(self.literal, Literal::Integer(_)) || self.comparison == Comparison::StartsWith
+        {
+            return Decision::Undecided;
+        }
         if matches!(self.literal, Literal::Number(literal) if literal.abs() >= EXACT_INTEGER_BOUND)
         {
             return Decision::Undecided;
@@ -398,9 +429,58 @@ impl Atom {
             Literal::Null => self.comparison.holds(std::cmp::Ordering::Greater),
             Literal::Bool(_) => self.comparison == Comparison::NotEqual,
             // A file name or path may itself be date-like.
-            Literal::Number(_) => return Decision::Undecided,
+            Literal::Number(_) | Literal::Integer(_) => return Decision::Undecided,
         };
         if decided {
+            Decision::Match
+        } else {
+            Decision::NoMatch
+        }
+    }
+
+    /// CEL: decided only for a value of exactly the literal's type; strings
+    /// containing NUL stay with CEL.
+    fn decide_cel(&self, record: &RecordValues<'_>) -> Decision {
+        enum Scalar<'a> {
+            Text(&'a str),
+            Boolean(bool),
+            Integer(i64),
+        }
+        let value = match &self.field {
+            Field::FilePath => Scalar::Text(record.path),
+            Field::Property(key) => match record.properties.get(key) {
+                Some(Value::String(text)) => Scalar::Text(text),
+                Some(Value::Bool(boolean)) => Scalar::Boolean(*boolean),
+                Some(number @ Value::Number(_)) => match number.as_i64() {
+                    Some(integer) => Scalar::Integer(integer),
+                    None => return Decision::Undecided,
+                },
+                _ => return Decision::Undecided,
+            },
+            Field::FileName | Field::FileExt => return Decision::Undecided,
+        };
+        let matched = match (&self.literal, value) {
+            (Literal::Text(literal), Scalar::Text(text)) if !text.contains('\0') => {
+                if self.comparison == Comparison::StartsWith {
+                    text.as_bytes().starts_with(literal.as_bytes())
+                } else {
+                    self.comparison
+                        .holds(text.as_bytes().cmp(literal.as_bytes()))
+                }
+            }
+            (Literal::Bool(literal), Scalar::Boolean(boolean))
+                if self.comparison != Comparison::StartsWith =>
+            {
+                self.comparison.holds(boolean.cmp(literal))
+            }
+            (Literal::Integer(literal), Scalar::Integer(integer))
+                if self.comparison != Comparison::StartsWith =>
+            {
+                self.comparison.holds(integer.cmp(literal))
+            }
+            _ => return Decision::Undecided,
+        };
+        if matched {
             Decision::Match
         } else {
             Decision::NoMatch
@@ -413,7 +493,11 @@ impl Atom {
         columns: &SqlColumns<'_>,
         params: &mut Vec<SqlValue>,
     ) -> String {
-        let Dialect::Dataview = dialect;
+        assert_eq!(dialect, Dialect::Dataview, "CEL renders decision parts");
+        if matches!(self.literal, Literal::Integer(_)) || self.comparison == Comparison::StartsWith
+        {
+            return "1".to_string();
+        }
         let column = match &self.field {
             Field::Property(key) => return self.render_property(columns.properties, key, params),
             Field::FilePath => columns.path,
@@ -427,7 +511,7 @@ impl Atom {
             }
             Literal::Null => bool_sql(self.comparison.holds(std::cmp::Ordering::Greater)),
             Literal::Bool(_) => bool_sql(self.comparison == Comparison::NotEqual),
-            Literal::Number(_) => "1".to_string(),
+            Literal::Number(_) | Literal::Integer(_) => "1".to_string(),
         }
     }
 
@@ -488,12 +572,77 @@ impl Atom {
                     i32::from(*literal)
                 );
             }
-            Literal::Null => unreachable!("handled above"),
+            Literal::Null | Literal::Integer(_) => unreachable!("handled above"),
         }
         sql.push_str(" ELSE ");
         sql.push_str(&bool_sql(self.comparison == Comparison::NotEqual));
         sql.push_str(" END)");
         sql
+    }
+}
+
+impl Predicate {
+    /// CEL conjunction SQL as two expressions: `valid`, true when every atom's
+    /// value has the type its literal needs, and `matches`, which then equals
+    /// the CEL result. `operand` supplies each atom's JSON type and value
+    /// expressions. Literals bind as numbered `?N` parameters after any
+    /// already in `params`.
+    pub(crate) fn render_cel_parts(
+        &self,
+        params: &mut Vec<SqlValue>,
+        mut operand: impl FnMut(usize, &Field, &mut Vec<SqlValue>) -> (String, String),
+    ) -> (String, String) {
+        let atoms = match self {
+            Self::All(children) => children
+                .iter()
+                .map(|child| match child {
+                    Self::Atom(atom) => atom,
+                    _ => unreachable!("CEL lowers conjunctions of atoms"),
+                })
+                .collect::<Vec<_>>(),
+            Self::Atom(atom) => vec![atom],
+            _ => unreachable!("CEL lowers conjunctions of atoms"),
+        };
+        let mut valid = Vec::new();
+        let mut matches = Vec::new();
+        for (index, atom) in atoms.into_iter().enumerate() {
+            let (kind, value) = operand(index, &atom.field, params);
+            let (guard, literal) = match &atom.literal {
+                Literal::Text(text) => (
+                    format!("({kind} = 'text' AND instr({value}, char(0)) = 0)"),
+                    SqlValue::Text(text.clone()),
+                ),
+                Literal::Bool(boolean) => (
+                    format!("{kind} IN ('true', 'false')"),
+                    SqlValue::Integer(i64::from(*boolean)),
+                ),
+                Literal::Integer(integer) => (
+                    format!("({kind} = 'integer' AND typeof({value}) = 'integer')"),
+                    SqlValue::Integer(*integer),
+                ),
+                Literal::Null | Literal::Number(_) => {
+                    unreachable!("CEL lowers text, boolean, and integer literals")
+                }
+            };
+            valid.push(format!("({guard})"));
+            params.push(literal);
+            let parameter = format!("?{}", params.len());
+            let sql = if atom.comparison == Comparison::StartsWith {
+                format!(
+                    "substr(CAST({value} AS BLOB), 1, length(CAST({parameter} AS BLOB))) = CAST({parameter} AS BLOB)"
+                )
+            } else {
+                format!(
+                    "{value} COLLATE BINARY {} {parameter}",
+                    atom.comparison.sql()
+                )
+            };
+            matches.push(format!("({sql})"));
+        }
+        (
+            format!("({})", valid.join(" AND ")),
+            format!("({})", matches.join(" AND ")),
+        )
     }
 }
 

@@ -3,6 +3,9 @@
 //! This is not permission, snapshot, or CEL resource-limit evidence. In particular,
 //! callers cannot skip CEL input checks just because a row cannot match a filter.
 
+use crate::predicate::{
+    Atom, Comparison, Decision, Dialect, Field, Literal, Predicate, RecordValues,
+};
 use cel_parser::ast::{operators, Expr, IdedExpr};
 use cel_parser::reference::Val;
 use rusqlite::types::Value;
@@ -11,46 +14,18 @@ use serde::Serialize;
 /// An internal physical predicate retained with its canonical CEL program.
 /// Unknown/missing/wrong-typed values remain candidates for residual evaluation.
 /// No limit, ordering, projection, or diagnostic semantics are applied here.
+/// Decisions and SQL come from the shared CEL-dialect atoms (QRY.1).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MdbaseSqlPredicate {
-    atoms: Vec<Atom>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct Atom {
-    field: Field,
-    comparison: Comparison,
-    literal: Literal,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-enum Field {
-    Effective(String),
-    Path,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-enum Comparison {
-    Equal,
-    NotEqual,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
-    StartsWith,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-enum Literal {
-    String(String),
-    Boolean(bool),
-    Integer(i64),
+    predicate: Predicate,
 }
 
 pub(super) fn prepare(expression: &IdedExpr) -> Option<MdbaseSqlPredicate> {
     let mut atoms = Vec::new();
     collect(expression, &mut atoms)?;
-    Some(MdbaseSqlPredicate { atoms })
+    Some(MdbaseSqlPredicate {
+        predicate: Predicate::All(atoms.into_iter().map(Predicate::Atom).collect()),
+    })
 }
 
 fn collect(expression: &IdedExpr, atoms: &mut Vec<Atom>) -> Option<()> {
@@ -67,7 +42,7 @@ fn collect(expression: &IdedExpr, atoms: &mut Vec<Atom>) -> Option<()> {
     let atom = if call.func_name == "startsWith" && call.args.len() == 1 {
         let field = field(call.target.as_deref()?)?;
         let literal = literal(&call.args[0])?;
-        if !matches!(literal, Literal::String(_)) {
+        if !matches!(literal, Literal::Text(_)) {
             return None;
         }
         Atom {
@@ -98,7 +73,7 @@ fn collect(expression: &IdedExpr, atoms: &mut Vec<Atom>) -> Option<()> {
                     reverse(comparison),
                 )
             };
-        if matches!(literal, Literal::Boolean(_))
+        if matches!(literal, Literal::Bool(_))
             && !matches!(comparison, Comparison::Equal | Comparison::NotEqual)
         {
             return None;
@@ -119,7 +94,7 @@ fn field(expression: &IdedExpr) -> Option<Field> {
             simple_field(name)
         }
         Expr::Select(select) if !select.test => match &select.operand.expr {
-            Expr::Ident(name) if name == "file" && select.field == "path" => Some(Field::Path),
+            Expr::Ident(name) if name == "file" && select.field == "path" => Some(Field::FilePath),
             Expr::Ident(name) if name == "record" || name == "note" => simple_field(&select.field),
             _ => None,
         },
@@ -132,15 +107,15 @@ fn simple_field(name: &str) -> Option<Field> {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
-    .then(|| Field::Effective(name.to_string()))
+    .then(|| Field::Property(name.to_string()))
 }
 
 fn literal(expression: &IdedExpr) -> Option<Literal> {
     match &expression.expr {
         Expr::Literal(Val::String(value)) if !value.contains('\0') => {
-            Some(Literal::String(value.clone()))
+            Some(Literal::Text(value.clone()))
         }
-        Expr::Literal(Val::Boolean(value)) => Some(Literal::Boolean(*value)),
+        Expr::Literal(Val::Boolean(value)) => Some(Literal::Bool(*value)),
         Expr::Literal(Val::Int(value)) => Some(Literal::Integer(*value)),
         // Numeric coercion, null/presence, unsigned values and dynamic expressions
         // require separate equivalence evidence; unsupported syntax stays residual.
@@ -174,16 +149,17 @@ impl MdbaseSqlPredicate {
     /// second equals the CEL filter result with no diagnostics; otherwise the
     /// row needs residual CEL evaluation.
     pub(super) fn render_parts(&self, parameters: &mut Vec<Value>) -> (String, String) {
-        self.render_with(parameters, |_, field, parameters| match field {
-            Field::Path => ("'text'".to_string(), "record.path".to_string()),
-            Field::Effective(name) => {
-                let path = bind(parameters, Value::Text(format!("$.{name}")));
-                (
-                    format!("json_type(record.effective_frontmatter_json, {path})"),
-                    format!("json_extract(record.effective_frontmatter_json, {path})"),
-                )
-            }
-        })
+        self.predicate
+            .render_cel_parts(parameters, |_, field, parameters| match field {
+                Field::Property(name) => {
+                    let path = bind(parameters, Value::Text(format!("$.{name}")));
+                    (
+                        format!("json_type(record.effective_frontmatter_json, {path})"),
+                        format!("json_extract(record.effective_frontmatter_json, {path})"),
+                    )
+                }
+                _ => ("'text'".to_string(), "record.path".to_string()),
+            })
     }
 
     /// Like [`Self::render_parts`], but each atom's JSON type and value are
@@ -196,71 +172,26 @@ impl MdbaseSqlPredicate {
         frontmatter: &str,
     ) -> (Vec<String>, String, String) {
         let mut columns = Vec::new();
-        let (valid, matches) = self.render_with(parameters, |index, field, parameters| {
-            let (kind, value) = match field {
-                Field::Path => ("'text'".to_string(), "record.path".to_string()),
-                Field::Effective(name) => {
-                    let path = bind(parameters, Value::Text(format!("$.{name}")));
-                    (
-                        format!("json_type({frontmatter}, {path})"),
-                        format!("json_extract({frontmatter}, {path})"),
-                    )
-                }
-            };
-            columns.push(format!("{kind} AS atom{index}_kind"));
-            columns.push(format!("{value} AS atom{index}_value"));
-            (format!("atom{index}_kind"), format!("atom{index}_value"))
-        });
+        let (valid, matches) =
+            self.predicate
+                .render_cel_parts(parameters, |index, field, parameters| {
+                    let (kind, value) = match field {
+                        Field::Property(name) => {
+                            let path = bind(parameters, Value::Text(format!("$.{name}")));
+                            (
+                                format!("json_type({frontmatter}, {path})"),
+                                format!("json_extract({frontmatter}, {path})"),
+                            )
+                        }
+                        _ => ("'text'".to_string(), "record.path".to_string()),
+                    };
+                    columns.push(format!("{kind} AS atom{index}_kind"));
+                    columns.push(format!("{value} AS atom{index}_value"));
+                    (format!("atom{index}_kind"), format!("atom{index}_value"))
+                });
         (columns, valid, matches)
     }
 
-    fn render_with(
-        &self,
-        parameters: &mut Vec<Value>,
-        mut operand: impl FnMut(usize, &Field, &mut Vec<Value>) -> (String, String),
-    ) -> (String, String) {
-        let mut valid = Vec::new();
-        let mut matches = Vec::new();
-        for (index, atom) in self.atoms.iter().enumerate() {
-            let (kind, value) = operand(index, &atom.field, parameters);
-            let (guard, literal) = match &atom.literal {
-                Literal::String(text) => (
-                    format!("({kind} = 'text' AND instr({value}, char(0)) = 0)"),
-                    Value::Text(text.clone()),
-                ),
-                Literal::Boolean(boolean) => (
-                    format!("{kind} IN ('true', 'false')"),
-                    Value::Integer(i64::from(*boolean)),
-                ),
-                Literal::Integer(integer) => (
-                    format!("({kind} = 'integer' AND typeof({value}) = 'integer')"),
-                    Value::Integer(*integer),
-                ),
-            };
-            valid.push(format!("({guard})"));
-            let parameter = bind(parameters, literal);
-            let sql = match atom.comparison {
-                Comparison::StartsWith => format!("substr(CAST({value} AS BLOB), 1, length(CAST({parameter} AS BLOB))) = CAST({parameter} AS BLOB)"),
-                comparison => {
-                    let operator = match comparison {
-                        Comparison::Equal => "=", Comparison::NotEqual => "!=",
-                        Comparison::Less => "<", Comparison::LessEqual => "<=",
-                        Comparison::Greater => ">", Comparison::GreaterEqual => ">=",
-                        Comparison::StartsWith => unreachable!(),
-                    };
-                    format!("{value} COLLATE BINARY {operator} {parameter}")
-                }
-            };
-            matches.push(format!("({sql})"));
-        }
-        (
-            format!("({})", valid.join(" AND ")),
-            format!("({})", matches.join(" AND ")),
-        )
-    }
-}
-
-impl MdbaseSqlPredicate {
     /// Decide the predicate for one record exactly as the rendered SQL does:
     /// `Some(result)` when every atom's value has a type this lowering decides
     /// exactly (the CEL result, with no diagnostics), `None` when the record
@@ -268,50 +199,20 @@ impl MdbaseSqlPredicate {
     /// frontmatter object.
     #[must_use]
     pub fn decide(&self, path: &str, effective: &serde_json::Value) -> Option<bool> {
-        let mut matched = true;
-        for atom in &self.atoms {
-            let value = match &atom.field {
-                Field::Path => Scalar::Text(path),
-                Field::Effective(name) => match effective.get(name)? {
-                    serde_json::Value::String(text) => Scalar::Text(text),
-                    serde_json::Value::Bool(boolean) => Scalar::Boolean(*boolean),
-                    number @ serde_json::Value::Number(_) => match number.as_i64() {
-                        Some(integer) => Scalar::Integer(integer),
-                        None => return None,
-                    },
-                    _ => return None,
-                },
-            };
-            let ordering = match (&atom.literal, value) {
-                (Literal::String(literal), Scalar::Text(text)) if !text.contains('\0') => {
-                    if atom.comparison == Comparison::StartsWith {
-                        matched &= text.as_bytes().starts_with(literal.as_bytes());
-                        continue;
-                    }
-                    text.as_bytes().cmp(literal.as_bytes())
-                }
-                (Literal::Boolean(literal), Scalar::Boolean(boolean)) => boolean.cmp(literal),
-                (Literal::Integer(literal), Scalar::Integer(integer)) => integer.cmp(literal),
-                _ => return None,
-            };
-            matched &= match atom.comparison {
-                Comparison::Equal => ordering.is_eq(),
-                Comparison::NotEqual => ordering.is_ne(),
-                Comparison::Less => ordering.is_lt(),
-                Comparison::LessEqual => ordering.is_le(),
-                Comparison::Greater => ordering.is_gt(),
-                Comparison::GreaterEqual => ordering.is_ge(),
-                Comparison::StartsWith => return None,
-            };
+        match self.predicate.decide(
+            Dialect::Cel,
+            &RecordValues {
+                properties: effective,
+                path,
+                name: "",
+                ext: "",
+            },
+        ) {
+            Decision::Match => Some(true),
+            Decision::NoMatch => Some(false),
+            Decision::Undecided => None,
         }
-        Some(matched)
     }
-}
-
-enum Scalar<'a> {
-    Text(&'a str),
-    Boolean(bool),
-    Integer(i64),
 }
 
 fn bind(parameters: &mut Vec<Value>, value: Value) -> String {
