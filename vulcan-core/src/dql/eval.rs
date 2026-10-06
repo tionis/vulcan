@@ -19,8 +19,8 @@ use crate::paths::VaultPaths;
 use crate::permissions::{PermissionFilter, PermissionGuard};
 use crate::predicate::{Decision, Dialect, Predicate, RecordValues};
 use crate::properties::{
-    hydrate_note_list_items, load_note_index_with_filter, load_note_index_with_guard,
-    load_note_index_with_guard_deferring_lists, NoteRecord, PropertyError,
+    hydrate_note_index_entries, load_note_index_with_filter, load_note_index_with_guard,
+    load_note_index_with_guard_deferring_hydration, NoteRecord, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
 use crate::source::{SourceColumns, SourceExpr};
@@ -154,6 +154,7 @@ pub fn evaluate_parsed_dql_with_filter(
         filter,
         &config,
         &note_lookup,
+        NoteIndexScope::Authorized,
     )
 }
 
@@ -178,13 +179,15 @@ pub fn evaluate_dql_with_guard(
         Some(&filter),
         &config,
         &note_lookup,
+        NoteIndexScope::Authorized,
     )
 }
 
-/// Load the note index `query` needs. List items, the most voluminous part,
-/// are loaded only for the notes its `FROM` selects and `this` when no
-/// expression can reach another note's file object; otherwise, and without
-/// `FROM`, every note is hydrated.
+/// Load the note index `query` needs. When no expression can reach another
+/// note's file object, only the notes its `FROM` selects and `this` are
+/// hydrated (tags, links, inlinks, tasks, list items, inline expressions);
+/// every other note keeps its stored fields and the aliases link resolution
+/// reads. Otherwise, and without `FROM`, every note is hydrated.
 fn load_scoped_note_index(
     paths: &VaultPaths,
     query: &DqlQuery,
@@ -206,7 +209,7 @@ fn load_scoped_note_index(
     if query_reaches_other_file_objects(query) {
         return Ok(load_note_index_with_guard(paths, guard)?);
     }
-    let mut note_lookup = load_note_index_with_guard_deferring_lists(paths, guard)?;
+    let mut note_lookup = load_note_index_with_guard_deferring_hydration(paths, guard)?;
     let all_notes = sorted_notes(&note_lookup);
     let mut selected = source_paths(
         paths,
@@ -217,12 +220,12 @@ fn load_scoped_note_index(
         Some(filter),
     )?;
     selected.extend(current_file.map(ToString::to_string));
-    hydrate_note_list_items(paths, &mut note_lookup, &selected)?;
+    hydrate_note_index_entries(paths, guard, &mut note_lookup, &selected)?;
     Ok(note_lookup)
 }
 
-/// Whether evaluating `query` can build the file object (and so read list
-/// items) of a note other than its rows and `this`: `.file` on anything but
+/// Whether evaluating `query` can build the file object (and so read the
+/// hydrated fields) of a note other than its rows and `this`: `.file` on anything but
 /// `this`, `asFile()`, or indexing that could name `file`. Conservative.
 fn query_reaches_other_file_objects(query: &DqlQuery) -> bool {
     let commands = query.commands.iter().flat_map(|command| match command {
@@ -295,7 +298,46 @@ pub(crate) fn evaluate_dql_with_note_index_and_config(
         filter,
         config,
         note_lookup,
+        NoteIndexScope::Unchecked,
     )
+}
+
+#[allow(clippy::too_many_lines)]
+/// Whether a note index passed to DQL evaluation is already limited to the
+/// read scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoteIndexScope {
+    /// Loaded through the same filter or guard. Its notes may be partially
+    /// hydrated (no tags), so they are not checked again.
+    Authorized,
+    /// Supplied by the caller; notes outside the filter are dropped, which
+    /// needs their tags.
+    Unchecked,
+}
+
+/// A copy of `note_lookup` without the notes outside `filter`, or `None`
+/// when nothing needs removing. Tag-aware, matching the SQL scope; a
+/// path-only check would drop notes granted by tag.
+fn notes_outside_scope_removed(
+    note_lookup: &HashMap<String, NoteRecord>,
+    filter: Option<&PermissionFilter>,
+    index_scope: NoteIndexScope,
+) -> Option<HashMap<String, NoteRecord>> {
+    let allowed = |note: &NoteRecord| {
+        filter.is_none_or(|filter| {
+            filter
+                .path_permission()
+                .is_allowed_with_tags(&note.document_path, &note.tags)
+        })
+    };
+    (index_scope == NoteIndexScope::Unchecked && note_lookup.values().any(|note| !allowed(note)))
+        .then(|| {
+            note_lookup
+                .iter()
+                .filter(|(_, note)| allowed(note))
+                .map(|(path, note)| (path.clone(), note.clone()))
+                .collect()
+        })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -306,27 +348,12 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     filter: Option<&PermissionFilter>,
     config: &VaultConfig,
     note_lookup: &HashMap<String, NoteRecord>,
+    index_scope: NoteIndexScope,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let compiled = compile_dql(query);
     let mut diagnostics = DqlDiagnosticCollector::default();
-    // Tag-aware, matching the SQL scope; a path-only check would drop notes
-    // granted by tag. Indexes loaded through the same scope are copied only
-    // when some note is actually outside it.
-    let allowed = |note: &NoteRecord| {
-        filter.is_none_or(|filter| {
-            filter
-                .path_permission()
-                .is_allowed_with_tags(&note.document_path, &note.tags)
-        })
-    };
-    let filtered_note_lookup = note_lookup.values().any(|note| !allowed(note)).then(|| {
-        note_lookup
-            .iter()
-            .filter(|(_, note)| allowed(note))
-            .map(|(path, note)| (path.clone(), note.clone()))
-            .collect::<HashMap<_, _>>()
-    });
+    let filtered_note_lookup = notes_outside_scope_removed(note_lookup, filter, index_scope);
     let note_lookup = filtered_note_lookup.as_ref().unwrap_or(note_lookup);
     let all_notes = sorted_notes(note_lookup);
     let from_sources = compiled
@@ -1623,7 +1650,8 @@ LIMIT 1"#,
     }
 
     #[test]
-    fn scoped_list_hydration_equals_full_hydration() {
+    #[allow(clippy::too_many_lines)]
+    fn scoped_hydration_equals_full_hydration() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".vulcan")).unwrap();
@@ -1633,8 +1661,11 @@ LIMIT 1"#,
                 "---\ntags: [t]\nstatus: open\nparent: '[[Two]]'\n---\n- item [[Two]]\n- [ ] task one\n  - child\n",
             ),
             ("A/Three.md", "---\nstatus: open\n---\n- a\n- [x] done\n"),
-            ("B/Two.md", "---\ntags: [t]\n---\n- b item\n- [ ] task two\n"),
-            ("Here.md", "- here\n- [ ] here task\n[[One]]\n"),
+            (
+                "B/Two.md",
+                "---\ntags: [t]\naliases: [Deux]\nstatus: closed\n---\n- b item\n- [ ] task two\nx:: `= this.status`\n",
+            ),
+            ("Here.md", "---\ntags: [here]\n---\n- here\n- [ ] here task\n[[One]]\n"),
         ] {
             let target = root.join(path);
             fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -1667,6 +1698,26 @@ LIMIT 1"#,
                 true,
             ),
             ("TABLE length(file.lists) AS lists", false),
+            (
+                "TABLE file.tags AS tags, file.inlinks AS inlinks, file.outlinks AS out, \
+                 file.etags AS etags, file.aliases AS aliases FROM \"A\" OR \"B\"",
+                false,
+            ),
+            (
+                "TABLE this.file.tags AS here, this.file.inlinks AS inl FROM \"A\"",
+                false,
+            ),
+            (
+                "TABLE parent.status AS ps, [[Deux]].status AS alias FROM \"A\"",
+                false,
+            ),
+            ("LIST FROM [[Deux]]", false),
+            ("LIST FROM outgoing([[Deux]])", false),
+            (
+                "TABLE file.tasks.text AS tasks FROM #t WHERE file.hasTag(\"t\")",
+                false,
+            ),
+            ("TABLE parent.file.tags AS ptags FROM \"A\"", true),
         ] {
             let query = parse_dql(source).unwrap();
             assert_eq!(
@@ -1682,6 +1733,7 @@ LIMIT 1"#,
                 Some(&filter),
                 &config,
                 &full,
+                NoteIndexScope::Unchecked,
             )
             .unwrap();
             assert_eq!(

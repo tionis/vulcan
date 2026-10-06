@@ -859,7 +859,7 @@ pub fn load_note_index_with_filter(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
-    load_note_index_with_read_scope(paths, filter, None, true)
+    load_note_index_with_read_scope(paths, filter, None, NoteIndexHydration::Full)
 }
 
 /// Apply static document grants and per-path policy before constructing the
@@ -868,45 +868,85 @@ pub fn load_note_index_with_guard(
     paths: &VaultPaths,
     guard: &dyn PermissionGuard,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
-    load_note_index_with_read_scope(paths, Some(&guard.read_filter()), Some(guard), true)
+    load_note_index_with_read_scope(
+        paths,
+        Some(&guard.read_filter()),
+        Some(guard),
+        NoteIndexHydration::Full,
+    )
 }
 
-/// [`load_note_index_with_guard`] without list items, the most voluminous
-/// hydration. Callers that can bound which notes' lists they read fill them
-/// with [`hydrate_note_list_items`]; every other field is complete.
-pub fn load_note_index_with_guard_deferring_lists(
+/// How much of each note [`load_note_index_with_read_scope`] hydrates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoteIndexHydration {
+    /// Every field.
+    Full,
+    /// Stored fields and aliases, which link resolution reads for every
+    /// note. Tags, links, inlinks, tasks, list items, and inline expressions
+    /// are reachable only through a note's file object and stay empty until
+    /// [`hydrate_note_index_entries`] fills them.
+    AliasesOnly,
+}
+
+/// [`load_note_index_with_guard`] hydrating only what resolving links needs.
+/// Callers that can bound whose file objects they read (QRY.3) complete
+/// those notes with [`hydrate_note_index_entries`].
+pub fn load_note_index_with_guard_deferring_hydration(
     paths: &VaultPaths,
     guard: &dyn PermissionGuard,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
-    load_note_index_with_read_scope(paths, Some(&guard.read_filter()), Some(guard), false)
+    load_note_index_with_read_scope(
+        paths,
+        Some(&guard.read_filter()),
+        Some(guard),
+        NoteIndexHydration::AliasesOnly,
+    )
 }
 
-/// Load list items for the notes at `note_paths` in an index from
-/// [`load_note_index_with_guard_deferring_lists`].
+/// Fully hydrate the notes at `note_paths` in an index from
+/// [`load_note_index_with_guard_deferring_hydration`], with the same read
+/// scope: incoming links come only from notes in the index's universe.
 #[allow(clippy::implicit_hasher)]
-pub fn hydrate_note_list_items(
+pub fn hydrate_note_index_entries(
     paths: &VaultPaths,
+    guard: &dyn PermissionGuard,
     note_index: &mut HashMap<String, NoteRecord>,
     note_paths: &HashSet<String>,
 ) -> Result<(), PropertyError> {
-    let database = open_existing_cache(paths)?;
-    let doc_ids = note_index
-        .values()
-        .filter(|note| note_paths.contains(&note.document_path))
-        .map(|note| note.document_id.clone())
+    let keys = note_index
+        .iter()
+        .filter(|(_, note)| note_paths.contains(&note.document_path))
+        .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
-    if doc_ids.is_empty() {
+    if keys.is_empty() {
         return Ok(());
     }
-    let mut lists = load_list_item_map(
+    let readable_sources = guard.has_policy_hook().then(|| {
+        note_index
+            .values()
+            .map(|note| note.document_path.clone())
+            .collect::<HashSet<_>>()
+    });
+    let (keys, mut doc_ids_and_notes): (Vec<_>, Vec<_>) = keys
+        .into_iter()
+        .filter_map(|key| {
+            note_index
+                .remove(&key)
+                .map(|note| (key, (note.document_id.clone(), note)))
+        })
+        .unzip();
+    let database = open_existing_cache(paths)?;
+    let config = crate::load_vault_config(paths).config;
+    hydrate_note_records(
         database.connection(),
-        &doc_ids.iter().map(String::as_str).collect::<Vec<_>>(),
+        &config,
+        &mut doc_ids_and_notes,
+        Some(&guard.read_filter()),
+        readable_sources.as_ref(),
+        true,
     )?;
-    for note in note_index.values_mut() {
-        if let Some(mut list_items) = lists.remove(&note.document_id) {
-            list_items.sort_by_key(|item| (item.line_number, item.byte_offset));
-            note.list_items = list_items;
-        }
+    for (key, (_, note)) in keys.into_iter().zip(doc_ids_and_notes) {
+        note_index.insert(key, note);
     }
     Ok(())
 }
@@ -916,7 +956,7 @@ fn load_note_index_with_read_scope(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
     guard: Option<&dyn PermissionGuard>,
-    include_lists: bool,
+    hydration: NoteIndexHydration,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -1030,14 +1070,19 @@ fn load_note_index_with_read_scope(
             .map(|(_, note)| note.document_path.clone())
             .collect::<HashSet<_>>()
     });
-    hydrate_note_records(
-        connection,
-        &config,
-        &mut doc_ids_and_notes,
-        filter,
-        readable_sources.as_ref(),
-        include_lists,
-    )?;
+    match hydration {
+        NoteIndexHydration::Full => hydrate_note_records(
+            connection,
+            &config,
+            &mut doc_ids_and_notes,
+            filter,
+            readable_sources.as_ref(),
+            true,
+        )?,
+        NoteIndexHydration::AliasesOnly => {
+            hydrate_note_aliases(connection, &mut doc_ids_and_notes)?;
+        }
+    }
 
     Ok(build_note_lookup_index(
         doc_ids_and_notes.into_iter().map(|(_, note)| note),
@@ -1396,6 +1441,28 @@ fn hydrate_note_records(
         }
     }
 
+    Ok(())
+}
+
+/// Aliases only; see [`NoteIndexHydration::AliasesOnly`].
+fn hydrate_note_aliases(
+    connection: &rusqlite::Connection,
+    doc_ids_and_notes: &mut [(String, NoteRecord)],
+) -> Result<(), rusqlite::Error> {
+    let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+    let mut statement = connection.prepare("SELECT document_id, alias_text FROM aliases")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (doc_id, alias) = row?;
+        aliases.entry(doc_id).or_default().push(alias);
+    }
+    for (doc_id, note) in doc_ids_and_notes {
+        if let Some(note_aliases) = aliases.remove(doc_id.as_str()) {
+            note.aliases = note_aliases;
+        }
+    }
     Ok(())
 }
 
