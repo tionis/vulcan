@@ -19,7 +19,7 @@ The numbered phases describe dependency order, not a requirement to implement ev
 - **Committed hub direction:** Phase 12 owns device/file-tree synchronization and Phase 15 owns external document bindings, content routes, and knowledge-system connectors. SilverBullet, Outline, HedgeDoc, and Git wiki work should extend those shared layers rather than become parallel product architectures.
 - **Managed-directory extension:** 10.9 is in progress: its first independently usable slice adds explicit files-only/knowledge profiles to registered directories; 12.20 still owns sparse materialization, selective LFS transfer, partial clones, and separately gated shallow-history handling. These are follow-ons to the existing sync baseline, not retroactive completion claims or blockers for daemon consolidation. Keep implementation in Vulcan; reconsider product extraction only after concrete independent reuse.
 - **Committed application-platform direction:** Phase 19 owns immutable `.vapp` packages, installation/instance lifecycle, sandboxed browser applications, typed app CLI commands, QuickJS host functions, server/browser WebAssembly components, and explicit canonical app data. It builds on the daemon, WebUI, and capability model without extending the Phase 10 gate.
-- **Candidate capability tracks:** mdbase expansion and additional native vault workflows with compatibility adapters are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
+- **Candidate capability tracks:** mdbase expansion, shared query planning and execution (QRY), and additional native vault workflows with compatibility adapters are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
 - **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, a capability-oriented domain and public surface, an identified dependency/ownership boundary, a sustainable adapter compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful native slice; importing one plugin's settings is not by itself a product boundary.
 - **Placement rule:** durable Markdown semantics, parsing, diagnostics, and mutation-free exports may live in core/app tracks; daemon transports belong to Phase 10+, sync protocols to Phase 12, editor behavior to Phase 14, and supervised runtimes or first-party external integrations to Phase 15.
 
@@ -8327,7 +8327,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ## Capability tracks and connector appendices
 
-The MDB and OBS tracks preserve candidate implementation research and acceptance criteria without extending the Phase 9 completion gate. The SB appendix is a promoted connector-specific plan referenced by Phases 12 and 15. None forms a serial queue: schedule bounded slices through the numbered phase that owns their daemon, sync, UI, or runtime infrastructure.
+The MDB, QRY, and OBS tracks preserve candidate implementation research and acceptance criteria without extending the Phase 9 completion gate. The SB appendix is a promoted connector-specific plan referenced by Phases 12 and 15. None forms a serial queue: schedule bounded slices through the numbered phase that owns their daemon, sync, UI, or runtime infrastructure.
 
 ### MDB: mdbase typed Markdown collection interoperability (formerly 9.32)
 
@@ -8518,6 +8518,70 @@ Refresh reuses unchanged record-local derivations but still hashes all sources a
 #### Deferred mdbase runtime work
 
 The mdbase event/action interoperability, durable runtime, workflow execution, provider registry, type-pack installation, and migration profiles are not part of the initial MDB track. Consequently the pinned draft upstream `core_write` claim remains unavailable while its required type-pack behavior is deferred; native bounded record writes are separately named and tested. Revisit them after the Phase 10 daemon and Vulcan's shared plugin/skill-command/permission boundaries are stable. Any later integration must adapt those contracts to the daemon rather than introducing executable behavior into `vulcan-core` or bypassing Vulcan authorization.
+
+---
+
+### QRY: Shared query planning and execution
+
+**Goal:** Give every query frontend (Dataview DQL, Bases, the canonical `QueryAst`, mdbase, the Tasks DSL, and DataviewJS `dv.pages()`) one shared physical layer, one shared predicate and source representation, and one logical plan, so that an optimization or fix for one query language serves all of them.
+
+**Specification:** [Shared query planning and execution](specs/query-architecture.md) is normative for the layering, the exact-or-undecided lowering contract, and the migration order.
+
+**Boundary:** Frontends keep their own syntax, expression evaluators, diagnostics, and semantics; Dataview/Bases expressions and CEL are not unified. Shared layers decide only what they can decide exactly and hand everything else to the frontend's evaluator. Full-text and vector search are out of scope. No step may change a frontend's results except as a separately reviewed bug fix.
+
+**Gates for every item:** identical results on the fixture vaults and on a user-shaped vault; a differential test for any new lowering or lazy path; recorded before/after timings; fmt, clippy, and the full workspace suite; a skill-impact review.
+
+**Delivery placement:** Independent of Phase 10 and MDB.1–MDB.9. QRY.1–QRY.3 serve the MDB.10 requirement that collection-bound native queries receive the same optimization as canonical mdbase queries.
+
+#### QRY.0 Precursors
+
+- [x] Scope guarded DQL list-item hydration to the `FROM` selection and `this` when no expression can build another note's file object, and remove redundant whole-index copies (`9c9ca7cd`; a 2,941-note folder query fell from about 320 ms to about 120–145 ms).
+- [x] Write the [shared query architecture specification](specs/query-architecture.md) with the current-state inventory, principles, target layers, and migration order.
+
+#### QRY.1 Shared predicate atoms with dialects
+
+- [ ] Introduce one predicate atom representation (field, comparison, literal, dialect, bounded conjunction and three-valued disjunction) with one SQL renderer and one in-memory decider per atom, deciding only type-certain values and leaving the rest undecided.
+- [ ] Enumerate Dataview/Bases comparison semantics (coercions of numbers in strings, dates, durations, links, null and missing, list membership, string versus number ordering) and CEL semantics per atom; uncertain combinations stay undecided.
+- [ ] Port `MdbaseSqlPredicate` onto the shared atoms with the CEL dialect; the existing SQL/in-memory/CEL differential tests pass unchanged.
+- [ ] Port `FilterExpression` lowering (DQL `WHERE`, `FROM` tags, `QueryAst`, Bases candidates) onto the shared atoms with the Dataview dialect, and change DQL's exact SQL `WHERE` path to exact-or-undecided with residual evaluation by the Dataview evaluator.
+- [ ] Add a Dataview-dialect differential test comparing SQL decisions, in-memory decisions, and the Dataview evaluator over a value-shape matrix. Any result change it surfaces lands as a separate, reviewed bug fix with a regression test.
+- [ ] Acceptance: one lowering module serves both dialects; DQL, `QueryAst`, Bases, and mdbase results are unchanged on fixtures and a user-shaped vault; no measured regression.
+
+#### QRY.2 Shared source algebra
+
+- [ ] Introduce `SourceExpr` (recursive folder, exact path, tag with nested tags, mdbase type, incoming and outgoing link including `this`, and `and`/`or`/`not`) with SQL candidate selection per store.
+- [ ] Compile DQL `FROM`, `QueryAst` sources, Bases folder and tag filters, Tasks path and tag filters, and mdbase `types` and path prefixes into it, removing the per-frontend source selection code.
+- [ ] Acceptance: differential tests against each frontend's previous source selection, including permission scopes with tag grants and policy hooks, hidden backlinks, and `this`.
+
+#### QRY.3 Lazy note lookup
+
+- [ ] Introduce a `NoteLookup` interface for expression evaluation with path, basename, and alias resolution identical to today's, backed by cached identity facts and on-demand field-group hydration; the eager map implements it so call sites migrate one at a time.
+- [ ] Migrate DQL so it hydrates only candidates, the page, `this`, and link targets actually dereferenced; retire `query_reaches_other_file_objects` once dereferences load lazily.
+- [ ] Migrate Bases, the Tasks DSL, and DataviewJS `dv.pages()`.
+- [ ] Acceptance: scoped-versus-eager differential tests per frontend (folder, tag, link dereference, `asFile`, `linksTo`, grouping, flatten, tasks); the 2,941-note folder query and the fixture equivalents meet the MDB.10 CLI target (p95 < 100 ms) on the reference host.
+
+#### QRY.4 Note store freshness and narrow query table
+
+- [ ] Add a rebuildable, trigger-maintained narrow note query table (stat fingerprint, revision, JSONB properties, tag and link membership, file metadata, identity facts) with an additive migration.
+- [ ] Prove note freshness with the mdbase stat-fingerprint machinery (parallel walk, merge-join, documented same-tick limit), falling back to the existing incremental scan on any miss.
+- [ ] Execute plans whose residual is empty or bounded by the candidates directly over the narrow table, hydrating only the page.
+- [ ] Acceptance: indexed-versus-scanned differential tests across edits, renames, deletions, and permission scopes; warm folder, tag, and property queries need no per-request incremental scan.
+
+#### QRY.5 One logical plan
+
+- [ ] Compile DQL, Bases, `QueryAst`, and the Tasks DSL into `StructuredQueryPlan` (source, atoms, opaque residual, projections, grouping, flatten, sort, limit/offset, required hydration groups) and execute every frontend through one planner.
+- [ ] Add an explain report with the chosen candidate path, decided and residual counts, hydrated groups, and stage timings for every frontend.
+- [ ] Acceptance: per-frontend output snapshots unchanged; explain output covered by tests; skills updated if explain becomes user-facing.
+
+#### QRY.6 Retained sessions for note queries
+
+- [ ] Generalize the daemon's retained mdbase query session (per-scope proofs, retained rows bound to row versions, single-flight proving, lock-free reads with pre-write proofs) to note stores, and serve DQL, Bases, and `QueryAst` daemon requests through it.
+- [ ] Acceptance: session-versus-direct differential tests, concurrency tests matching the mdbase session tests, and the MDB.10 service-level targets for note queries under the eight-reader, two-writes-per-second workload.
+
+#### QRY.7 Cross-frontend parity and performance gate
+
+- [ ] Add shared fixtures where the same question is asked in DQL, Bases, `QueryAst`, and mdbase (for collection-bound notes), and assert identical result sets and ordering where the dialects define them identically.
+- [ ] Record 1,000-sample reference-host measurements for each frontend at 10K and 100K notes in a measurement artifact, using the MDB.10 protocol.
 
 ---
 
