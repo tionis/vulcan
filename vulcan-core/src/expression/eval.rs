@@ -358,60 +358,7 @@ pub(crate) fn resolve_note_reference<'a>(
     source_path: &str,
     target: &str,
 ) -> Option<&'a NoteRecord> {
-    let target = target.trim();
-    let target_no_ext = target.trim_end_matches(".md");
-    let target_basename = target_no_ext.rsplit('/').next().unwrap_or(target_no_ext);
-
-    if let Some(note) = lookup.notes().find(|note| {
-        note.document_path == target || note.document_path.trim_end_matches(".md") == target_no_ext
-    }) {
-        return Some(note);
-    }
-
-    if let Some(note) = lookup.note(target_no_ext) {
-        return Some(note);
-    }
-
-    let source_folder = source_path
-        .rsplit_once('/')
-        .map_or("", |(folder, _)| folder);
-
-    lookup
-        .notes()
-        .filter_map(|note| {
-            // Path-qualified targets may match a folder suffix, but never an
-            // unrelated note that merely shares the basename.
-            let basename_matches = note.file_name == target_basename
-                && (!target_no_ext.contains('/')
-                    || note
-                        .document_path
-                        .trim_end_matches(".md")
-                        .ends_with(&format!("/{target_no_ext}")));
-            let rank = if basename_matches {
-                Some(0_usize)
-            } else if note
-                .aliases
-                .iter()
-                .any(|alias| alias == target || alias == target_basename)
-            {
-                Some(1_usize)
-            } else {
-                None
-            }?;
-            Some((
-                rank,
-                folder_distance(source_folder, &note.document_path),
-                note.document_path.as_str(),
-                note,
-            ))
-        })
-        .min_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then(left.1.cmp(&right.1))
-                .then(left.2.cmp(right.2))
-        })
-        .map(|(_, _, _, note)| note)
+    lookup.resolve(source_path, target)
 }
 
 fn resolve_link_field(ctx: &EvalContext, link: &str, field: &str) -> Value {
@@ -438,24 +385,6 @@ fn resolve_property_for_note(note: &NoteRecord, name: &str) -> Value {
         .and_then(|props| normalized_object_field(props, name))
         .cloned()
         .unwrap_or(Value::Null)
-}
-
-fn folder_distance(source_folder: &str, note_path: &str) -> usize {
-    let note_folder = note_path.rsplit_once('/').map_or("", |(folder, _)| folder);
-    let source_parts: Vec<&str> = source_folder
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect();
-    let note_parts: Vec<&str> = note_folder
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect();
-    let common_prefix = source_parts
-        .iter()
-        .zip(&note_parts)
-        .take_while(|(left, right)| left == right)
-        .count();
-    source_parts.len() + note_parts.len() - (common_prefix * 2)
 }
 
 fn call_file_method(

@@ -18,7 +18,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as _};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1014,6 +1014,99 @@ pub fn hydrate_note_index_entries(
     Ok(())
 }
 
+/// A note lookup over identity facts (QRY.4) for the readable universe of
+/// `scope`: grants and the policy hook select identities exactly as
+/// [`load_note_index_with_guard`] selects notes, keys are the same, and no
+/// note's fields load until a query prefetches, reads, or dereferences it.
+pub fn load_indexed_note_lookup<'a>(
+    paths: &'a VaultPaths,
+    scope: NoteIndexReadScope<'a>,
+) -> Result<crate::note_lookup::IndexedNoteLookup<'a>, PropertyError> {
+    let (filter, guard) = match scope {
+        NoteIndexReadScope::Filter(filter) => (filter.cloned(), None),
+        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), Some(guard)),
+    };
+    let database = open_existing_cache(paths)?;
+    let permission_sql = filter
+        .as_ref()
+        .map(|filter| filter.document_scope_sql("_note_identity_permission"))
+        .unwrap_or_default();
+    let mut sql = permission_sql.cte;
+    sql.push_str(
+        "SELECT note_query.path, note_query.filename, note_query.aliases \
+         FROM documents JOIN note_query ON note_query.document_id = documents.id \
+         WHERE 1 = 1",
+    );
+    sql.push_str(&permission_sql.clause);
+    sql.push_str(" ORDER BY note_query.path");
+    let mut statement = database.connection().prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(permission_sql.params.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut admitted = Vec::new();
+    for row in rows {
+        let (path, file_name, aliases) = row?;
+        if policy_allows_indexed_note(guard, &path)? {
+            let aliases = serde_json::from_str::<Vec<String>>(&aliases).unwrap_or_default();
+            admitted.push((path, file_name, aliases));
+        }
+    }
+    let mut counts = HashMap::<&str, usize>::new();
+    for (_, file_name, _) in &admitted {
+        *counts.entry(file_name.as_str()).or_default() += 1;
+    }
+    let duplicates = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(name, _)| name.to_string())
+        .collect::<HashSet<_>>();
+    let identities = admitted
+        .into_iter()
+        .map(
+            |(path, file_name, aliases)| crate::note_lookup::IndexedIdentity {
+                key: if duplicates.contains(&file_name) {
+                    format!("/{path}")
+                } else {
+                    file_name.clone()
+                },
+                path,
+                file_name,
+                aliases,
+            },
+        )
+        .collect::<Vec<_>>();
+    let universe = identities
+        .iter()
+        .map(|identity| identity.path.clone())
+        .collect::<HashSet<_>>();
+    let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
+    let load_stored = move |document_paths: &[&str]| -> Result<Vec<NoteRecord>, PropertyError> {
+        let database = open_existing_cache(paths)?;
+        let mut statement = database.connection().prepare(&format!(
+            "SELECT {STORED_NOTE_COLUMNS} \
+             FROM documents LEFT JOIN properties ON properties.document_id = documents.id \
+             WHERE documents.path IN (SELECT value FROM json_each(?1))"
+        ))?;
+        let wanted = serde_json::to_string(document_paths).expect("paths serialize");
+        let rows = statement
+            .query_map([wanted], stored_note_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|row| stored_note_record(row, paths.vault_root(), &bookmarked_paths).1)
+            .collect())
+    };
+    Ok(crate::note_lookup::IndexedNoteLookup::new(
+        identities,
+        Box::new(load_stored),
+        Box::new(move |notes| hydrate_note_copies(paths, scope, &universe, notes)),
+    ))
+}
+
 /// Hydrated copies of `notes` under `scope`; `universe` is the readable
 /// note universe incoming links may come from when a policy hook scopes it.
 pub(crate) fn hydrate_note_copies(
@@ -1050,6 +1143,93 @@ pub(crate) fn hydrate_note_copies(
         .collect())
 }
 
+/// A `documents` row joined with its stored properties, in the column
+/// order of [`STORED_NOTE_COLUMNS`].
+type StoredNoteRow = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
+
+const STORED_NOTE_COLUMNS: &str = "documents.id, documents.path, documents.filename, \
+     documents.extension, documents.file_mtime, documents.file_size, \
+     COALESCE(properties.canonical_json, '{}'), COALESCE(properties.raw_yaml, ''), \
+     documents.periodic_type, documents.periodic_date, documents.file_ctime";
+
+fn stored_note_row(row: &rusqlite::Row<'_>) -> Result<StoredNoteRow, rusqlite::Error> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+    ))
+}
+
+/// A note with its stored fields only: properties, frontmatter, and file
+/// metadata, but no tags, links, inlinks, aliases, tasks, or lists.
+fn stored_note_record(
+    row: StoredNoteRow,
+    vault_root: &Path,
+    bookmarked_paths: &HashSet<String>,
+) -> (String, NoteRecord) {
+    let (
+        document_id,
+        path,
+        file_name,
+        file_ext,
+        file_mtime,
+        file_size,
+        props_json,
+        raw_yaml,
+        periodic_type,
+        periodic_date,
+        recorded_ctime,
+    ) = row;
+    let properties =
+        serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
+    (
+        document_id.clone(),
+        NoteRecord {
+            document_id,
+            document_path: path.clone(),
+            file_name,
+            file_ext,
+            file_mtime,
+            file_ctime: recorded_ctime
+                .unwrap_or_else(|| file_ctime_for_document(vault_root, &path, file_mtime)),
+            file_size,
+            properties,
+            tags: vec![],
+            links: vec![],
+            starred: bookmarked_paths.contains(&path),
+            inlinks: vec![],
+            aliases: vec![],
+            frontmatter: parse_frontmatter_json_object(&raw_yaml),
+            periodic_type,
+            periodic_date,
+            list_items: vec![],
+            tasks: vec![],
+            raw_inline_expressions: vec![],
+            inline_expressions: vec![],
+        },
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 fn load_note_index_with_read_scope(
     paths: &VaultPaths,
@@ -1066,13 +1246,11 @@ fn load_note_index_with_read_scope(
         .map(|filter| filter.document_scope_sql("_note_index_permission"))
         .unwrap_or_default();
     let mut sql = permission_sql.cte;
-    sql.push_str(
-        "SELECT documents.id, documents.path, documents.filename, documents.extension, \
-         documents.file_mtime, documents.file_size, COALESCE(properties.canonical_json, '{}'), \
-         COALESCE(properties.raw_yaml, ''), documents.periodic_type, documents.periodic_date, \
-         documents.file_ctime \
+    let _ = write!(
+        sql,
+        "SELECT {STORED_NOTE_COLUMNS} \
          FROM documents LEFT JOIN properties ON properties.document_id = documents.id \
-         WHERE 1 = 1",
+         WHERE 1 = 1"
     );
     sql.push_str(&permission_sql.clause);
     let params = permission_sql
@@ -1081,22 +1259,7 @@ fn load_note_index_with_read_scope(
         .map(SqlValue::Text)
         .collect::<Vec<_>>();
     let mut stmt = connection.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
-        let props_json: String = row.get(6)?;
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, i64>(5)?,
-            props_json,
-            row.get::<_, String>(7)?,
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<String>>(9)?,
-            row.get::<_, Option<i64>>(10)?,
-        ))
-    })?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), stored_note_row)?;
     // Policy hooks may be stateful, so they are consulted in order; parsing
     // stored JSON and YAML and reading creation times run in parallel.
     let mut admitted = Vec::new();
@@ -1112,51 +1275,7 @@ fn load_note_index_with_read_scope(
         use rayon::prelude::*;
         admitted
             .into_par_iter()
-            .map(
-                |(
-                    document_id,
-                    path,
-                    file_name,
-                    file_ext,
-                    file_mtime,
-                    file_size,
-                    props_json,
-                    raw_yaml,
-                    periodic_type,
-                    periodic_date,
-                    file_ctime,
-                )| {
-                    let properties = serde_json::from_str(&props_json)
-                        .unwrap_or(Value::Object(serde_json::Map::default()));
-                    (
-                        document_id.clone(),
-                        NoteRecord {
-                            document_id,
-                            document_path: path.clone(),
-                            file_name,
-                            file_ext,
-                            file_mtime,
-                            file_ctime: file_ctime.unwrap_or_else(|| {
-                                file_ctime_for_document(&vault_root, &path, file_mtime)
-                            }),
-                            file_size,
-                            properties,
-                            tags: vec![],
-                            links: vec![],
-                            starred: bookmarked_paths.contains(&path),
-                            inlinks: vec![],
-                            aliases: vec![],
-                            frontmatter: parse_frontmatter_json_object(&raw_yaml),
-                            periodic_type,
-                            periodic_date,
-                            list_items: vec![],
-                            tasks: vec![],
-                            raw_inline_expressions: vec![],
-                            inline_expressions: vec![],
-                        },
-                    )
-                },
-            )
+            .map(|row| stored_note_record(row, &vault_root, &bookmarked_paths))
             .collect::<Vec<_>>()
     };
 

@@ -28,31 +28,32 @@ fn note(path: &str) -> NoteRecord {
     }
 }
 
-fn universe(count: usize) -> HashMap<String, NoteRecord> {
+fn identities(count: usize) -> Vec<IndexedIdentity> {
     (0..count)
-        .map(|index| {
-            let note = note(&format!("n{index}.md"));
-            (note.file_name.clone(), note)
+        .map(|index| IndexedIdentity {
+            path: format!("n{index}.md"),
+            key: format!("n{index}"),
+            file_name: format!("n{index}"),
+            aliases: vec![format!("alias{index}")],
         })
         .collect()
 }
 
-#[test]
-fn hydrates_dereferenced_notes_once_and_borrows_hydrated_ones() {
-    let notes = universe(4);
-    let hydrated = HashSet::from(["n0.md".to_string()]);
-    let calls = RefCell::new(Vec::new());
-    let lookup = LazyNoteLookup::new(
-        &notes,
-        &hydrated,
-        Box::new(|batch| {
-            calls.borrow_mut().push(
-                batch
-                    .iter()
-                    .map(|note| note.document_path.clone())
-                    .collect::<Vec<_>>(),
-            );
-            Ok(batch
+struct Calls {
+    stored: RefCell<Vec<usize>>,
+    hydrated: RefCell<Vec<usize>>,
+}
+
+fn lookup(count: usize, calls: &Calls) -> IndexedNoteLookup<'_> {
+    IndexedNoteLookup::new(
+        identities(count),
+        Box::new(move |paths| {
+            calls.stored.borrow_mut().push(paths.len());
+            Ok(paths.iter().map(|path| note(path)).collect())
+        }),
+        Box::new(move |notes| {
+            calls.hydrated.borrow_mut().push(notes.len());
+            Ok(notes
                 .into_iter()
                 .map(|mut note| {
                     note.tags.push("#hydrated".to_string());
@@ -60,14 +61,31 @@ fn hydrates_dereferenced_notes_once_and_borrows_hydrated_ones() {
                 })
                 .collect())
         }),
-    );
-    // Already hydrated notes are returned as they are.
-    assert!(lookup.hydrated(&notes["n0"]).tags.is_empty());
-    assert!(calls.borrow().is_empty());
-    // A dereference hydrates just that note, once.
-    assert_eq!(lookup.hydrated(&notes["n1"]).tags, ["#hydrated"]);
-    assert_eq!(lookup.hydrated(&notes["n1"]).tags, ["#hydrated"]);
-    assert_eq!(*calls.borrow(), [vec!["n1.md".to_string()]]);
+    )
+}
+
+fn calls() -> Calls {
+    Calls {
+        stored: RefCell::new(Vec::new()),
+        hydrated: RefCell::new(Vec::new()),
+    }
+}
+
+#[test]
+fn resolves_links_from_identities_without_loading_other_notes() {
+    let calls = calls();
+    let lookup = lookup(4, &calls);
+    // Resolution reads identity facts; only the resolved note loads.
+    let resolved = lookup.resolve("n0.md", "alias2").unwrap();
+    assert_eq!(resolved.document_path, "n2.md");
+    assert_eq!(resolved.aliases, ["alias2"]);
+    assert_eq!(*calls.stored.borrow(), [1]);
+    assert!(calls.hydrated.borrow().is_empty());
+    assert_eq!(lookup.paths().count(), 4);
+    // A file-object dereference hydrates just that note, once.
+    assert_eq!(lookup.hydrated(resolved).tags, ["#hydrated"]);
+    assert_eq!(lookup.hydrated(resolved).tags, ["#hydrated"]);
+    assert_eq!(*calls.hydrated.borrow(), [1]);
     // Notes outside the universe are returned unchanged.
     let outside = note("other.md");
     assert!(lookup.hydrated(&outside).tags.is_empty());
@@ -75,43 +93,31 @@ fn hydrates_dereferenced_notes_once_and_borrows_hydrated_ones() {
 }
 
 #[test]
-fn many_dereferences_hydrate_the_rest_in_one_batch() {
-    let notes = universe(LAZY_HYDRATION_LIMIT + 10);
-    let hydrated = HashSet::new();
-    let calls = RefCell::new(Vec::new());
-    let lookup = LazyNoteLookup::new(
-        &notes,
-        &hydrated,
-        Box::new(|batch| {
-            calls.borrow_mut().push(batch.len());
-            Ok(batch)
-        }),
-    );
-    let mut keys = notes.keys().collect::<Vec<_>>();
-    keys.sort();
-    for key in &keys {
-        let _ = lookup.hydrated(&notes[*key]);
+fn prefetches_load_in_batches_and_many_misses_load_the_rest() {
+    let calls = calls();
+    let lookup = lookup(LAZY_LOAD_LIMIT + 10, &calls);
+    lookup.prefetch_hydrated(["n0.md", "n1.md", "n2.md"]);
+    assert_eq!(*calls.stored.borrow(), [3]);
+    assert_eq!(*calls.hydrated.borrow(), [3]);
+    assert!(lookup.is_hydrated("n1.md"));
+    for index in 3..(LAZY_LOAD_LIMIT + 10) {
+        let _ = lookup.note_at(&format!("n{index}.md"));
     }
-    let calls = calls.borrow();
-    // One call per note up to the limit, then every remaining note at once.
-    assert_eq!(calls.len(), LAZY_HYDRATION_LIMIT + 1);
-    assert!(calls[..LAZY_HYDRATION_LIMIT].iter().all(|size| *size == 1));
-    assert_eq!(
-        calls[LAZY_HYDRATION_LIMIT],
-        keys.len() - LAZY_HYDRATION_LIMIT
-    );
+    let stored = calls.stored.borrow();
+    // One batch, then one load per miss up to the limit, then the rest.
+    assert_eq!(stored.len(), 1 + LAZY_LOAD_LIMIT + 1);
+    assert_eq!(stored[1..=LAZY_LOAD_LIMIT], vec![1; LAZY_LOAD_LIMIT][..]);
+    assert_eq!(*stored.last().unwrap(), 10 - 3);
 }
 
 #[test]
-fn hydration_failures_are_reported_not_hidden() {
-    let notes = universe(2);
-    let hydrated = HashSet::new();
-    let lookup = LazyNoteLookup::new(
-        &notes,
-        &hydrated,
+fn load_failures_are_reported_not_hidden() {
+    let lookup = IndexedNoteLookup::new(
+        identities(2),
         Box::new(|_| Err(PropertyError::CacheMissing)),
+        Box::new(Ok),
     );
-    let _ = lookup.hydrated(&notes["n0"]);
+    assert!(lookup.note_at("n0.md").is_none());
     assert!(matches!(
         lookup.take_error(),
         Some(PropertyError::CacheMissing)

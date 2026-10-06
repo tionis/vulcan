@@ -19,8 +19,7 @@ use crate::paths::VaultPaths;
 use crate::permissions::{PermissionFilter, PermissionGuard};
 use crate::predicate::{Decision, Dialect, Predicate, RecordValues};
 use crate::properties::{
-    hydrate_note_index_entries, load_note_index_with_filter, load_note_index_with_guard,
-    load_note_index_with_guard_deferring_hydration, NoteIndexReadScope, NoteRecord, PropertyError,
+    load_note_index_with_filter, NoteIndexReadScope, NoteRecord, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
 use crate::source::{SourceColumns, SourceExpr};
@@ -29,7 +28,7 @@ use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, Dql
 use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr, CompiledWhereClause};
 use super::{parse_dql, DqlDiagnostic};
 use crate::expression::eval::{canonical_file_field_name, normalize_field_name};
-use crate::note_lookup::{LazyNoteLookup, NoteLookup};
+use crate::note_lookup::{IndexedNoteLookup, NoteLookup};
 use std::borrow::Cow;
 
 #[derive(Debug)]
@@ -156,8 +155,7 @@ pub fn evaluate_parsed_dql_with_filter(
         current_file,
         filter,
         &config,
-        &note_lookup,
-        NoteIndexScope::Authorized { lazy: None },
+        &DqlNotes::Authorized(&note_lookup),
     )
 }
 
@@ -174,54 +172,41 @@ pub fn evaluate_dql_with_guard(
     let config = load_vault_config(paths).config;
     let query = parse_dql(source).map_err(DqlEvalError::Parse)?;
     let filter = guard.read_filter();
-    let (note_lookup, hydrated) =
-        load_scoped_note_index(paths, &query, current_file, guard, &filter)?;
-    // Other notes' file objects hydrate when an expression dereferences them,
-    // in the same read scope; incoming links come from the readable universe.
-    let universe = note_lookup
-        .values()
-        .map(|note| note.document_path.clone())
-        .collect::<HashSet<_>>();
-    let lazy = LazyNoteLookup::new(
-        &note_lookup,
-        &hydrated,
-        Box::new(|notes| {
-            crate::properties::hydrate_note_copies(
-                paths,
-                NoteIndexReadScope::Guard(guard),
-                &universe,
-                notes,
-            )
-        }),
-    );
+    // Identity facts only (QRY.4): candidates load their stored fields, the
+    // rows a leading `WHERE` keeps and `this` hydrate, and other notes load
+    // only when an expression reads or dereferences them.
+    let lookup =
+        crate::properties::load_indexed_note_lookup(paths, NoteIndexReadScope::Guard(guard))?;
+    let rows = select_candidate_rows(paths, &query, current_file, &lookup, &filter)?;
     let result = evaluate_parsed_dql_with_note_index_and_config(
         paths,
         &query,
         current_file,
         Some(&filter),
         &config,
-        &note_lookup,
-        NoteIndexScope::Authorized { lazy: Some(&lazy) },
+        &DqlNotes::Indexed {
+            lookup: &lookup,
+            rows,
+        },
     );
-    if let Some(error) = lazy.take_error() {
+    if let Some(error) = lookup.take_error() {
         return Err(error.into());
     }
     result
 }
 
-/// Load the note index `query` needs. When no expression can reach another
-/// note's file object, only `this` and the notes its `FROM` selects (every
-/// note without `FROM`) that a leading `WHERE` does not decide as
-/// non-matches are hydrated (tags, links, inlinks, tasks, list items, inline
-/// expressions); every other note keeps its stored fields and the aliases
-/// link resolution reads. Otherwise every note is hydrated.
-fn load_scoped_note_index(
+/// The page rows of `query` in path order: its `FROM` selection (every
+/// readable note without `FROM`) minus what a leading `WHERE` decides as
+/// non-matches from stored fields. Those rows and `this` are hydrated; no
+/// other note is loaded. With several `FROM` clauses evaluation reports the
+/// error.
+fn select_candidate_rows(
     paths: &VaultPaths,
     query: &DqlQuery,
     current_file: Option<&str>,
-    guard: &dyn PermissionGuard,
+    lookup: &IndexedNoteLookup<'_>,
     filter: &PermissionFilter,
-) -> Result<(HashMap<String, NoteRecord>, HashSet<String>), DqlEvalError> {
+) -> Result<Vec<String>, DqlEvalError> {
     let compiled = compile_dql(query);
     let mut sources = compiled
         .commands
@@ -231,39 +216,21 @@ fn load_scoped_note_index(
             _ => None,
         });
     let (source, None) = (sources.next(), sources.next()) else {
-        // Evaluation reports the extra FROM clauses.
-        let index = load_note_index_with_guard(paths, guard)?;
-        let all = index
-            .values()
-            .map(|note| note.document_path.clone())
-            .collect();
-        return Ok((index, all));
+        return Ok(Vec::new());
     };
-    let mut note_lookup = load_note_index_with_guard_deferring_hydration(paths, guard)?;
-    let all_notes = sorted_notes(&note_lookup);
-    let mut selected = match source {
-        Some(source) => source_paths(
-            paths,
-            source,
-            current_file,
-            &note_lookup,
-            &all_notes,
-            Some(filter),
-        )?,
-        None => all_notes
-            .iter()
-            .map(|note| note.document_path.clone())
-            .collect(),
+    let mut rows = match source {
+        Some(source) => source_paths(paths, source, current_file, lookup, Some(filter))?
+            .into_iter()
+            .collect::<Vec<_>>(),
+        None => lookup.paths().map(ToString::to_string).collect(),
     };
-    // Rows a leading `WHERE` decides as non-matches from stored fields are
-    // removed before anything reads their file objects.
+    rows.sort();
     if let Some(where_clause) = leading_page_where(query.query_type, &compiled) {
-        let this = current_file
-            .and_then(|path| note_lookup.values().find(|note| note.document_path == path));
+        lookup.prefetch_stored(rows.iter().map(String::as_str).chain(current_file));
+        let this = current_file.and_then(|path| lookup.note_at(path));
         let predicate = where_predicate_with_this(where_clause, this);
-        let decided_out = all_notes
-            .iter()
-            .filter(|note| {
+        rows.retain(|path| {
+            lookup.note_at(path).is_none_or(|note| {
                 predicate.decide(
                     Dialect::Dataview,
                     &RecordValues {
@@ -272,22 +239,12 @@ fn load_scoped_note_index(
                         name: &note.file_name,
                         ext: &note.file_ext,
                     },
-                ) == Decision::NoMatch
+                ) != Decision::NoMatch
             })
-            .map(|note| note.document_path.clone())
-            .collect::<Vec<_>>();
-        for path in decided_out {
-            selected.remove(&path);
-        }
+        });
     }
-    selected.extend(current_file.map(ToString::to_string));
-    hydrate_note_index_entries(
-        paths,
-        NoteIndexReadScope::Guard(guard),
-        &mut note_lookup,
-        &selected,
-    )?;
-    Ok((note_lookup, selected))
+    lookup.prefetch_hydrated(rows.iter().map(String::as_str).chain(current_file));
+    Ok(rows)
 }
 
 /// The predicate of a `WHERE` that sees the page rows exactly as `FROM`
@@ -423,23 +380,24 @@ pub(crate) fn evaluate_dql_with_note_index_and_config(
         current_file,
         filter,
         config,
-        note_lookup,
-        NoteIndexScope::Unchecked,
+        &DqlNotes::Unchecked(note_lookup),
     )
 }
 
-#[allow(clippy::too_many_lines)]
-/// Whether a note index passed to DQL evaluation is already limited to the
-/// read scope.
-#[derive(Clone, Copy)]
-pub(crate) enum NoteIndexScope<'a> {
-    /// Loaded through the same filter or guard. Its notes may be partially
-    /// hydrated (no tags), so they are not checked again; `lazy` then
-    /// hydrates other notes when expressions dereference them (QRY.3).
-    Authorized { lazy: Option<&'a dyn NoteLookup> },
-    /// Supplied by the caller; notes outside the filter are dropped, which
-    /// needs their tags.
-    Unchecked,
+/// The notes a DQL evaluation reads.
+pub(crate) enum DqlNotes<'a> {
+    /// A note map loaded through the query's own read scope; not checked
+    /// again.
+    Authorized(&'a HashMap<String, NoteRecord>),
+    /// A caller-supplied map; notes outside the read filter are dropped,
+    /// which needs their tags.
+    Unchecked(&'a HashMap<String, NoteRecord>),
+    /// Identity facts with notes loaded on demand (QRY.4); `rows` are the
+    /// page rows in path order, already hydrated.
+    Indexed {
+        lookup: &'a IndexedNoteLookup<'a>,
+        rows: Vec<String>,
+    },
 }
 
 /// A copy of `note_lookup` without the notes outside `filter`, or `None`
@@ -448,7 +406,6 @@ pub(crate) enum NoteIndexScope<'a> {
 fn notes_outside_scope_removed(
     note_lookup: &HashMap<String, NoteRecord>,
     filter: Option<&PermissionFilter>,
-    index_scope: NoteIndexScope<'_>,
 ) -> Option<HashMap<String, NoteRecord>> {
     let allowed = |note: &NoteRecord| {
         filter.is_none_or(|filter| {
@@ -457,9 +414,7 @@ fn notes_outside_scope_removed(
                 .is_allowed_with_tags(&note.document_path, &note.tags)
         })
     };
-    (matches!(index_scope, NoteIndexScope::Unchecked)
-        && note_lookup.values().any(|note| !allowed(note)))
-    .then(|| {
+    note_lookup.values().any(|note| !allowed(note)).then(|| {
         note_lookup
             .iter()
             .filter(|(_, note)| allowed(note))
@@ -469,26 +424,32 @@ fn notes_outside_scope_removed(
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     paths: &VaultPaths,
     query: &DqlQuery,
     current_file: Option<&str>,
     filter: Option<&PermissionFilter>,
     config: &VaultConfig,
-    note_lookup: &HashMap<String, NoteRecord>,
-    index_scope: NoteIndexScope<'_>,
+    notes: &DqlNotes<'_>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let compiled = compile_dql(query);
     let mut diagnostics = DqlDiagnosticCollector::default();
-    let filtered_note_lookup = notes_outside_scope_removed(note_lookup, filter, index_scope);
-    let note_lookup = filtered_note_lookup.as_ref().unwrap_or(note_lookup);
-    let all_notes = sorted_notes(note_lookup);
-    // Expressions dereference other notes through the lazy lookup when the
-    // index was loaded deferred (QRY.3); sources and rows use the index.
-    let lookup: &dyn NoteLookup = match index_scope {
-        NoteIndexScope::Authorized { lazy: Some(lazy) } => lazy,
-        _ => note_lookup,
+    let filtered_note_lookup = match notes {
+        DqlNotes::Unchecked(map) => notes_outside_scope_removed(map, filter),
+        _ => None,
+    };
+    let note_map = match notes {
+        DqlNotes::Authorized(map) | DqlNotes::Unchecked(map) => {
+            Some(filtered_note_lookup.as_ref().unwrap_or(map))
+        }
+        DqlNotes::Indexed { .. } => None,
+    };
+    let lookup: &dyn NoteLookup = match (notes, note_map) {
+        (DqlNotes::Indexed { lookup, .. }, _) => *lookup,
+        (_, Some(map)) => map,
+        (_, None) => unreachable!("maps are kept above"),
     };
     let from_sources = compiled
         .commands
@@ -505,24 +466,34 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
         ));
     }
 
-    let mut rows = if let Some(source) = from_sources.first() {
-        rows_for_source(
-            paths,
-            query,
-            source,
-            current_file,
-            note_lookup,
-            &all_notes,
-            filter,
-        )?
-    } else {
-        default_rows(query, &all_notes)
-    };
     // Resolve the note that contains the query, used as the `this` reference in expressions.
     // When the query is embedded in a note (e.g. a Dataview code block), `current_file` names
     // that note so `WHERE file.name != this.file.name` can filter it out.
-    let source_note =
-        current_file.and_then(|path| note_lookup.values().find(|n| n.document_path == path));
+    let (mut rows, source_note) = match (notes, note_map) {
+        (DqlNotes::Indexed { lookup, rows }, _) => {
+            let notes = rows
+                .iter()
+                .filter_map(|path| lookup.hydrated_at(path))
+                .collect::<Vec<_>>();
+            (
+                default_rows(query, &notes),
+                current_file.and_then(|path| lookup.hydrated_at(path)),
+            )
+        }
+        (_, Some(map)) => {
+            let all_notes = sorted_notes(map);
+            let rows = if let Some(source) = from_sources.first() {
+                rows_for_source(paths, query, source, current_file, map, &all_notes, filter)?
+            } else {
+                default_rows(query, &all_notes)
+            };
+            (
+                rows,
+                current_file.and_then(|path| map.values().find(|n| n.document_path == path)),
+            )
+        }
+        (_, None) => unreachable!("maps are kept above"),
+    };
     let mut page_rows_are_pristine = query.query_type != super::DqlQueryType::Task;
 
     for command in &compiled.commands {
@@ -810,7 +781,7 @@ fn rows_for_source(
     all_notes: &[&NoteRecord],
     filter: Option<&PermissionFilter>,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
-    let source_paths = source_paths(paths, source, current_file, note_lookup, all_notes, filter)?;
+    let source_paths = source_paths(paths, source, current_file, note_lookup, filter)?;
     // `all_notes` is already sorted by path.
     let notes = all_notes
         .iter()
@@ -959,7 +930,7 @@ pub(crate) fn select_source_paths(
     paths: &VaultPaths,
     source: &str,
     current_file: Option<&str>,
-    note_lookup: &HashMap<String, NoteRecord>,
+    note_lookup: &dyn NoteLookup,
     permission_filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, DqlEvalError> {
     let query = parse_dql(&format!("LIST FROM {source}")).map_err(DqlEvalError::Parse)?;
@@ -973,19 +944,8 @@ pub(crate) fn select_source_paths(
             "expected a Dataview source".to_string(),
         ));
     };
-    let all_notes = sorted_notes(note_lookup);
-    let mut selected = source_paths(
-        paths,
-        source,
-        current_file,
-        note_lookup,
-        &all_notes,
-        permission_filter,
-    )?;
-    let readable = all_notes
-        .iter()
-        .map(|note| note.document_path.as_str())
-        .collect::<HashSet<_>>();
+    let mut selected = source_paths(paths, source, current_file, note_lookup, permission_filter)?;
+    let readable = note_lookup.paths().collect::<HashSet<_>>();
     selected.retain(|path| readable.contains(path.as_str()));
     Ok(selected)
 }
@@ -995,11 +955,10 @@ fn source_paths(
     paths: &VaultPaths,
     source: &CompiledDqlSourceExpr,
     current_file: Option<&str>,
-    note_lookup: &HashMap<String, NoteRecord>,
-    all_notes: &[&NoteRecord],
+    note_lookup: &dyn NoteLookup,
     permission_filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, DqlEvalError> {
-    let source = resolve_source(source, current_file, note_lookup, all_notes)?;
+    let source = resolve_source(source, current_file, note_lookup)?;
     let database =
         CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
     let permission_sql =
@@ -1040,13 +999,12 @@ fn source_paths(
 fn resolve_source(
     source: &CompiledDqlSourceExpr,
     current_file: Option<&str>,
-    note_lookup: &HashMap<String, NoteRecord>,
-    all_notes: &[&NoteRecord],
+    note_lookup: &dyn NoteLookup,
 ) -> Result<SourceExpr, DqlEvalError> {
-    let resolve = |inner| resolve_source(inner, current_file, note_lookup, all_notes);
+    let resolve = |inner| resolve_source(inner, current_file, note_lookup);
     Ok(match source {
         CompiledDqlSourceExpr::Tag(tag) => SourceExpr::Tag(tag.clone()),
-        CompiledDqlSourceExpr::Path(path) => path_source(path, all_notes),
+        CompiledDqlSourceExpr::Path(path) => path_source(path, note_lookup),
         CompiledDqlSourceExpr::IncomingLink(target) => SourceExpr::LinksTo(
             resolve_source_target(target, current_file, note_lookup)?
                 .document_id
@@ -1067,7 +1025,7 @@ fn resolve_source(
     })
 }
 
-fn path_source(path: &str, all_notes: &[&NoteRecord]) -> SourceExpr {
+fn path_source(path: &str, note_lookup: &dyn NoteLookup) -> SourceExpr {
     if Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
@@ -1078,12 +1036,12 @@ fn path_source(path: &str, all_notes: &[&NoteRecord]) -> SourceExpr {
     let normalized = path.trim_end_matches('/');
     let folder_prefix = format!("{normalized}/");
     let exact_file = format!("{normalized}.md");
-    let folder_exists = all_notes
-        .iter()
-        .any(|candidate| candidate.document_path.starts_with(&folder_prefix));
-    let file_exists = all_notes.iter().any(|candidate| {
-        candidate.document_path == normalized || candidate.document_path == exact_file
-    });
+    let folder_exists = note_lookup
+        .paths()
+        .any(|candidate| candidate.starts_with(&folder_prefix));
+    let file_exists = note_lookup
+        .paths()
+        .any(|candidate| candidate == normalized || candidate == exact_file);
 
     if (path.contains('/') && file_exists) || !folder_exists {
         SourceExpr::Or(vec![
@@ -1098,7 +1056,7 @@ fn path_source(path: &str, all_notes: &[&NoteRecord]) -> SourceExpr {
 fn resolve_source_target<'a>(
     target: &DqlLinkTarget,
     current_file: Option<&str>,
-    note_lookup: &'a HashMap<String, NoteRecord>,
+    note_lookup: &'a dyn NoteLookup,
 ) -> Result<&'a NoteRecord, DqlEvalError> {
     match target {
         DqlLinkTarget::SelfReference => {
@@ -1107,12 +1065,9 @@ fn resolve_source_target<'a>(
                     "self-referential FROM sources require a current note context".to_string(),
                 )
             })?;
-            note_lookup
-                .values()
-                .find(|note| note.document_path == current_file)
-                .ok_or_else(|| {
-                    DqlEvalError::Message(format!("current note is not indexed: {current_file}"))
-                })
+            note_lookup.note_at(current_file).ok_or_else(|| {
+                DqlEvalError::Message(format!("current note is not indexed: {current_file}"))
+            })
         }
         DqlLinkTarget::Wikilink(raw) => {
             let source_path = current_file.unwrap_or_default();
@@ -1890,7 +1845,7 @@ LIMIT 1"#,
         );
         let filter = guard.read_filter();
         let config = load_vault_config(&paths).config;
-        let full = load_note_index_with_guard(&paths, &guard).unwrap();
+        let full = crate::properties::load_note_index_with_guard(&paths, &guard).unwrap();
         for (source, reaches) in [
             (
                 "TABLE length(file.lists) AS lists, length(file.tasks) AS tasks FROM \"A\"",
@@ -1968,8 +1923,7 @@ LIMIT 1"#,
                 Some("Here.md"),
                 Some(&filter),
                 &config,
-                &full,
-                NoteIndexScope::Unchecked,
+                &DqlNotes::Unchecked(&full),
             )
             .unwrap();
             assert_eq!(
@@ -1978,22 +1932,17 @@ LIMIT 1"#,
                 "{source}"
             );
         }
-        // Lists load only for the FROM selection and `this`.
+        // Only the FROM selection and `this` load and hydrate.
         let query = parse_dql("LIST FROM \"A\"").unwrap();
-        let scoped =
-            load_scoped_note_index(&paths, &query, Some("Here.md"), &guard, &filter).unwrap();
-        let lists = |name: &str| {
-            scoped
-                .0
-                .values()
-                .find(|note| note.document_path == name)
-                .unwrap()
-                .list_items
-                .len()
-        };
-        assert_eq!(lists("A/One.md"), 3);
-        assert_eq!(lists("Here.md"), 2);
-        assert_eq!(lists("B/Two.md"), 0);
+        let lookup =
+            crate::properties::load_indexed_note_lookup(&paths, NoteIndexReadScope::Guard(&guard))
+                .unwrap();
+        let rows =
+            select_candidate_rows(&paths, &query, Some("Here.md"), &lookup, &filter).unwrap();
+        assert_eq!(rows, ["A/One.md", "A/Three.md"]);
+        assert!(lookup.is_hydrated("A/One.md") && lookup.is_hydrated("Here.md"));
+        assert!(!lookup.is_hydrated("B/Two.md"));
+        assert_eq!(lookup.hydrated_at("A/One.md").unwrap().list_items.len(), 3);
     }
 
     #[test]

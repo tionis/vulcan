@@ -128,6 +128,11 @@ scope the first time it is needed and memoizes it; after a bounded number of dis
 hydrates the rest in one batch, so no query costs more than eager hydration. A hydration
 failure fails the query rather than exposing a note without its file object.
 
+`IndexedNoteLookup` goes further (QRY.4): it holds only the readable identity facts from the
+narrow `note_query` table and loads stored fields and file objects per note on demand, so a
+query loads its candidates, `this`, and what its expressions reach, never the rest of the vault.
+Guarded DQL uses it.
+
 Frontends pick the cheapest correct universe: DQL hydrates its `FROM` selection (bounded by a
 leading `WHERE`) and `this`, and dereferences lazily; Bases defers when no filter or formula can
 reach another note's file object; the Tasks DSL hydrates task-bearing notes; DataviewJS hydrates
