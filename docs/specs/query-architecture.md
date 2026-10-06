@@ -201,9 +201,12 @@ search filters), the Tasks DSL (hydration of task-bearing notes), and DataviewJS
 candidates in one SQL query over `note_query` (source, the predicate's possible-match rendering,
 and the read scope), decisions on the candidates' stored properties without loading any note,
 and hydration of what the frontend's residual and output need (every row, only undecided rows,
-or named paths). Frontends keep their residual programs: DQL commands, Bases views, Tasks
+or named paths). DQL page queries whose expressions read no row's hydrated file-object fields
+(tags, links, inlinks, tasks, lists, or the whole file object or row) load their rows with
+stored fields only. Frontends keep their residual programs: DQL commands, Bases views, Tasks
 filters and layout. Each run reports a `QueryPlanExplain` (candidate path, candidates, decided
-matches and exclusions, residual rows, hydrated notes, stage timings), surfaced by `--explain`
+matches and exclusions, residual rows, rows loaded with stored fields only, hydrated notes, stage
+timings), surfaced by `--explain`
 (`query`, `query --language dql`, `bases eval`) and the Tasks `explain` instruction.
 
 ### 4.6 Retained host sessions

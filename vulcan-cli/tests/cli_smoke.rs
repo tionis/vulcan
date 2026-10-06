@@ -14333,6 +14333,11 @@ fn explain_reports_note_plans_for_every_frontend() {
     let explained = json(&["query", "--language", "dql", "--explain", dql]);
     check(&explained["plan"], "dql");
     assert_eq!(explained["plan"]["decided_matches"], 1);
+    // `LIST` reads no file object, so its row loads stored fields only.
+    assert_eq!(
+        (&explained["plan"]["stored"], &explained["plan"]["hydrated"]),
+        (&Value::from(1), &Value::from(0))
+    );
     assert!(json(&["query", "--language", "dql", dql])
         .get("plan")
         .is_none());

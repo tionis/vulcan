@@ -7331,7 +7331,10 @@ pub(crate) fn render_query_plan_lines(plan: &vulcan_core::plan::QueryPlanExplain
             "decided: {} matches, {} excluded; {} left to the {} evaluator",
             plan.decided_matches, plan.decided_out, plan.residual, plan.frontend
         ),
-        format!("hydrated: {} notes", plan.hydrated),
+        format!(
+            "loaded: {} notes with stored fields only, {} hydrated",
+            plan.stored, plan.hydrated
+        ),
         format!(
             "stages: {}",
             plan.stages

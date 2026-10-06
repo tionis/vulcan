@@ -201,6 +201,7 @@ pub fn evaluate_dql_with_guard_and_plan(
         &config,
         &DqlNotes::Indexed {
             lookup: &lookup,
+            hydrated: planned.rows_hydrated,
             rows: planned.rows,
         },
     );
@@ -237,6 +238,7 @@ fn select_candidate_rows(
         return Ok(crate::plan::PlannedRows {
             rows: Vec::new(),
             undecided: HashSet::new(),
+            rows_hydrated: true,
             explain: crate::plan::QueryPlanExplain {
                 frontend: "dql".to_string(),
                 candidate_path: "none: several FROM clauses".to_string(),
@@ -244,6 +246,7 @@ fn select_candidate_rows(
                 decided_matches: 0,
                 decided_out: 0,
                 residual: 0,
+                stored: 0,
                 hydrated: 0,
                 stages: Vec::new(),
             },
@@ -264,7 +267,11 @@ fn select_candidate_rows(
         markdown_only: source.is_some(),
         source,
         predicate,
-        hydration: crate::plan::Hydration::Rows,
+        hydration: if reads_row_file_objects(query) {
+            crate::plan::Hydration::Rows
+        } else {
+            crate::plan::Hydration::Stored
+        },
         also_hydrate: current_file.map(ToString::to_string).into_iter().collect(),
     };
     Ok(crate::plan::execute_note_plan(
@@ -273,6 +280,118 @@ fn select_candidate_rows(
         &plan,
         Some(filter),
     )?)
+}
+
+/// File-object fields a stored note record carries; the rest (tags, links,
+/// inlinks, tasks, lists) need hydration.
+const STORED_FILE_FIELDS: &[&str] = &[
+    "path",
+    "name",
+    "basename",
+    "ext",
+    "folder",
+    "link",
+    "size",
+    "mtime",
+    "ctime",
+    "mday",
+    "cday",
+    "day",
+    "frontmatter",
+    "properties",
+    "starred",
+    "aliases",
+];
+
+/// File methods that read stored fields only.
+const STORED_FILE_METHODS: &[&str] = &["asLink", "hasProperty", "inFolder"];
+
+/// Whether evaluating `query` may read a page row's hydrated file-object
+/// fields; when not, rows load their stored fields only. Task queries
+/// always do. `this` and notes reached through links hydrate on demand
+/// through the lookup, so only the row's own file object (`file`,
+/// `row.file`, `rows.file`, or any other base that could be a row) and
+/// whole rows count. Anything not recognized as stored counts.
+fn reads_row_file_objects(query: &DqlQuery) -> bool {
+    if query.query_type == super::DqlQueryType::Task {
+        return true;
+    }
+    let commands = query.commands.iter().flat_map(|command| match command {
+        DqlDataCommand::Where(expr) => vec![expr],
+        DqlDataCommand::Sort(keys) => keys.iter().map(|key| &key.expr).collect(),
+        DqlDataCommand::GroupBy(named) | DqlDataCommand::Flatten(named) => vec![&named.expr],
+        DqlDataCommand::From(_) | DqlDataCommand::Limit(_) => Vec::new(),
+    });
+    query
+        .table_columns
+        .iter()
+        .map(|column| &column.expr)
+        .chain(&query.list_expression)
+        .chain(&query.calendar_expression)
+        .chain(commands)
+        .any(reads_file_object)
+}
+
+/// A file object that may be a row's: `file`, or `<base>.file` for any
+/// base except `this`.
+fn is_row_file(expr: &Expr) -> bool {
+    match expr {
+        Expr::Identifier(name) => normalize_field_name(name) == "file",
+        Expr::FieldAccess(base, field) => normalize_field_name(field) == "file" && !is_this(base),
+        _ => false,
+    }
+}
+
+fn is_whole_row(expr: &Expr) -> bool {
+    matches!(expr, Expr::Identifier(name) if matches!(normalize_field_name(name).as_str(), "row" | "rows"))
+}
+
+fn reads_file_object(expr: &Expr) -> bool {
+    // The base of a row's file object: identifiers name rows, `this`, or
+    // link-valued fields, none of which is a file object itself.
+    let base_reads = |file: &Expr| match file {
+        Expr::FieldAccess(base, _) if !matches!(**base, Expr::Identifier(_)) => {
+            reads_file_object(base)
+        }
+        _ => false,
+    };
+    match expr {
+        Expr::FieldAccess(file, field) if is_row_file(file) => {
+            !STORED_FILE_FIELDS.contains(&canonical_file_field_name(field).as_str())
+                || base_reads(file)
+        }
+        Expr::MethodCall(file, method, args) if is_row_file(file) => {
+            !STORED_FILE_METHODS.contains(&method.as_str())
+                || args.iter().any(reads_file_object)
+                || base_reads(file)
+        }
+        expr if is_row_file(expr) || is_whole_row(expr) => true,
+        // `row.status` reads a field, not the whole row.
+        Expr::FieldAccess(base, _) if is_whole_row(base) => false,
+        Expr::FieldAccess(base, _) => reads_file_object(base),
+        Expr::IndexAccess(base, index) => {
+            is_row_file(base)
+                || is_whole_row(base)
+                || reads_file_object(base)
+                || reads_file_object(index)
+        }
+        Expr::Array(items) => items.iter().any(reads_file_object),
+        Expr::Object(fields) => fields.iter().any(|(_, value)| reads_file_object(value)),
+        Expr::BinaryOp(left, _, right) => reads_file_object(left) || reads_file_object(right),
+        Expr::UnaryOp(_, operand) => reads_file_object(operand),
+        Expr::FunctionCall(_, args) => args.iter().any(reads_file_object),
+        Expr::MethodCall(base, _, args) => {
+            reads_file_object(base) || args.iter().any(reads_file_object)
+        }
+        Expr::Lambda(_, body) => reads_file_object(body),
+        Expr::Null
+        | Expr::Bool(_)
+        | Expr::Number(_)
+        | Expr::Str(_)
+        | Expr::Regex { .. }
+        | Expr::Identifier(_)
+        | Expr::FormulaRef(_) => false,
+    }
 }
 
 /// The predicate of a `WHERE` that sees the page rows exactly as `FROM`
@@ -425,6 +544,8 @@ pub(crate) enum DqlNotes<'a> {
     Indexed {
         lookup: &'a IndexedNoteLookup<'a>,
         rows: Vec<String>,
+        /// Whether `rows` are hydrated, or carry stored fields only.
+        hydrated: bool,
     },
 }
 
@@ -498,10 +619,23 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     // When the query is embedded in a note (e.g. a Dataview code block), `current_file` names
     // that note so `WHERE file.name != this.file.name` can filter it out.
     let (mut rows, source_note) = match (notes, note_map) {
-        (DqlNotes::Indexed { lookup, rows }, _) => {
+        (
+            DqlNotes::Indexed {
+                lookup,
+                rows,
+                hydrated,
+            },
+            _,
+        ) => {
             let notes = rows
                 .iter()
-                .filter_map(|path| lookup.hydrated_at(path))
+                .filter_map(|path| {
+                    if *hydrated {
+                        lookup.hydrated_at(path)
+                    } else {
+                        lookup.note_at(path)
+                    }
+                })
                 .collect::<Vec<_>>();
             (
                 default_rows(query, &notes),
@@ -1916,6 +2050,35 @@ LIMIT 1"#,
                 "TABLE file.tags AS tags WHERE file.name != this.file.name AND status = \"open\"",
                 false,
             ),
+            // Stored fields only; rows are not hydrated.
+            (
+                "TABLE status, file.name, file.size, file.link, file.day FROM \"A\" SORT file.mtime",
+                false,
+            ),
+            ("LIST FROM #t", false),
+            (
+                "TABLE file.frontmatter.status AS fm, file.aliases AS al FROM \"B\"",
+                false,
+            ),
+            ("LIST WHERE file.hasProperty(\"status\")", false),
+            (
+                "TABLE rows.file.link AS links FROM \"A\" GROUP BY status",
+                false,
+            ),
+            ("TABLE this.file.tasks.text AS here FROM \"A\"", false),
+            // Whole rows and file objects, or hydrated fields reached any
+            // other way, hydrate.
+            ("TABLE file FROM \"A\"", false),
+            ("TABLE rows FROM \"A\" GROUP BY status", false),
+            (
+                "TABLE map(rows, (r) => r.file.tags) AS t FROM \"A\" GROUP BY status",
+                false,
+            ),
+            ("TABLE row.file.tags AS t FROM \"A\"", false),
+            ("TABLE file[\"tags\"] AS t FROM \"A\"", false),
+            ("TABLE rows.file.tags AS t FROM \"A\" GROUP BY status", false),
+            ("TABLE file.etags AS t FROM \"B\"", false),
+            ("LIST WHERE file.hasTag(\"t\")", false),
         ] {
             let query = parse_dql(source).unwrap();
             // Reaching another note's file object used to force full
@@ -1945,13 +2108,59 @@ LIMIT 1"#,
         let planned =
             select_candidate_rows(&paths, &query, Some("Here.md"), &lookup, &filter).unwrap();
         assert_eq!(planned.rows, ["A/One.md", "A/Three.md"]);
+        // `LIST` reads no file object: rows load stored fields only.
         assert_eq!(
-            (planned.explain.candidates, planned.explain.hydrated),
-            (2, 2)
+            (
+                planned.explain.candidates,
+                planned.explain.stored,
+                planned.explain.hydrated
+            ),
+            (2, 2, 0)
         );
-        assert!(lookup.is_hydrated("A/One.md") && lookup.is_hydrated("Here.md"));
+        assert!(!planned.rows_hydrated);
+        assert!(!lookup.is_hydrated("A/One.md") && lookup.is_hydrated("Here.md"));
         assert!(!lookup.is_hydrated("B/Two.md"));
+        let query = parse_dql("TABLE length(file.lists) FROM \"A\"").unwrap();
+        let planned =
+            select_candidate_rows(&paths, &query, Some("Here.md"), &lookup, &filter).unwrap();
+        assert_eq!((planned.explain.stored, planned.explain.hydrated), (0, 2));
         assert_eq!(lookup.hydrated_at("A/One.md").unwrap().list_items.len(), 3);
+    }
+
+    #[test]
+    fn row_file_object_reads_are_recognized() {
+        let reads = |source: &str| reads_row_file_objects(&parse_dql(source).unwrap());
+        for source in [
+            "LIST",
+            "TABLE status, file.name, file.mtime FROM \"A\" SORT file.path",
+            "TABLE this.file.tags, parent.status FROM \"A\"",
+            "TABLE rows.file.link, rows.status GROUP BY status",
+            "LIST WHERE file.inFolder(\"A\") AND file.hasProperty(\"x\")",
+            "TABLE row.status, file.frontmatter.x",
+            "CALENDAR file.day",
+        ] {
+            assert!(!reads(source), "{source}");
+        }
+        for source in [
+            "TASK",
+            "TABLE file",
+            "TABLE file.tags",
+            "TABLE file.outlinks",
+            "TABLE file.in-links",
+            "TABLE row",
+            "TABLE rows GROUP BY status",
+            "TABLE rows.file GROUP BY status",
+            "TABLE row.file.lists",
+            "TABLE map(rows, (r) => r.file.tasks) GROUP BY status",
+            "TABLE file[\"tags\"]",
+            "TABLE file[x]",
+            "LIST WHERE file.hasTag(\"t\")",
+            "TABLE x FLATTEN file.tags AS x",
+            "LIST SORT length(file.inlinks)",
+            "TABLE link(file.path).file.tags",
+        ] {
+            assert!(reads(source), "{source}");
+        }
     }
 
     #[test]

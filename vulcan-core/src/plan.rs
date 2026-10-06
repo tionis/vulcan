@@ -42,6 +42,9 @@ pub(crate) struct NotePlan<'a> {
 pub(crate) enum Hydration<'a> {
     /// Every row that remains after decisions.
     Rows,
+    /// Every remaining row, with stored fields only: the frontend reads no
+    /// row's tags, links, tasks, or lists.
+    Stored,
     /// Only rows the predicate leaves undecided: the residual reads them,
     /// and the output needs paths only.
     Undecided,
@@ -63,6 +66,9 @@ pub struct QueryPlanExplain {
     pub decided_out: usize,
     /// Candidates left for the frontend's residual.
     pub residual: usize,
+    /// Rows loaded with stored fields only, never hydrated.
+    #[serde(default)]
+    pub stored: usize,
     /// Notes whose file objects were hydrated.
     pub hydrated: usize,
     pub stages: Vec<QueryPlanStage>,
@@ -80,6 +86,8 @@ pub(crate) struct PlannedRows {
     pub rows: Vec<String>,
     /// Rows the predicate left undecided.
     pub undecided: HashSet<String>,
+    /// Whether rows were hydrated rather than loaded with stored fields.
+    pub rows_hydrated: bool,
     pub explain: QueryPlanExplain,
 }
 
@@ -135,8 +143,15 @@ pub(crate) fn execute_note_plan(
     stage("decide", started);
 
     let started = Instant::now();
+    let stored = if matches!(plan.hydration, Hydration::Stored) {
+        lookup.prefetch_stored(candidates.iter().map(String::as_str));
+        candidates.len()
+    } else {
+        0
+    };
     let hydrate = match &plan.hydration {
         Hydration::Rows => candidates.clone(),
+        Hydration::Stored => Vec::new(),
         Hydration::Undecided => candidates
             .iter()
             .filter(|path| undecided.contains(*path))
@@ -164,11 +179,13 @@ pub(crate) fn execute_note_plan(
             decided_matches,
             decided_out,
             residual: undecided.len(),
+            stored,
             hydrated: hydrate.len(),
             stages,
         },
         rows: candidates,
         undecided,
+        rows_hydrated: !matches!(plan.hydration, Hydration::Stored),
     })
 }
 
