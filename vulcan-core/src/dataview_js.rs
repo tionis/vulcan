@@ -315,6 +315,9 @@ mod runtime {
         paths: VaultPaths,
         current_file: Option<String>,
         note_index: Mutex<JsNoteIndex>,
+        /// Universes replaced by reloads after mutations, kept so lazy page
+        /// fields keep reading the snapshot their page came from.
+        retired_note_indexes: Mutex<Vec<JsNoteIndex>>,
         periodic_config: crate::PeriodicConfig,
         inbox_config: crate::InboxConfig,
         web_config: WebConfig,
@@ -336,6 +339,11 @@ mod runtime {
         by_path: HashMap<String, String>,
         hydrated: HashSet<String>,
         complete: bool,
+        /// Distinguishes this universe from those it replaced.
+        generation: usize,
+        /// Page selections returned with lazy file fields; the first lazy
+        /// read in a selection hydrates all of it.
+        page_sets: Vec<Vec<String>>,
     }
 
     /// What a runtime call reads from the page universe.
@@ -349,7 +357,7 @@ mod runtime {
     }
 
     impl JsNoteIndex {
-        fn new(notes: HashMap<String, NoteRecord>) -> Self {
+        fn new(notes: HashMap<String, NoteRecord>, generation: usize) -> Self {
             let by_path = notes
                 .iter()
                 .map(|(key, note)| (note.document_path.clone(), key.clone()))
@@ -359,6 +367,8 @@ mod runtime {
                 by_path,
                 hydrated: HashSet::new(),
                 complete: false,
+                generation,
+                page_sets: Vec::new(),
             }
         }
 
@@ -832,7 +842,8 @@ function __vulcanReviveFileMetadata(file) {
   if (!file || typeof file !== "object" || Array.isArray(file)) {
     return file;
   }
-  const revived = { ...file };
+  // Copy descriptors so lazy fields stay lazy.
+  const revived = Object.defineProperties({}, Object.getOwnPropertyDescriptors(file));
   for (const key of ["day", "mday", "cday"]) {
     if (typeof revived[key] === "string") {
       const millis = __vulcan_date_millis(revived[key]);
@@ -842,6 +853,52 @@ function __vulcanReviveFileMetadata(file) {
     }
   }
   return revived;
+}
+
+const __vulcanLazyFileFields = ["etags", "inlinks", "lists", "outlinks", "tags", "tasks"];
+
+// A file object whose hydrated fields load on first read: memoized,
+// enumerable, and assignable like plain data, in serialization key order.
+function __vulcanLazyFile(file, generation, set) {
+  const path = file.path;
+  const result = {};
+  const keys = [...Object.keys(file), ...__vulcanLazyFileFields].sort();
+  for (const key of keys) {
+    if (!__vulcanLazyFileFields.includes(key)) {
+      result[key] = file[key];
+      continue;
+    }
+    const settle = (target, value) => {
+      Object.defineProperty(target, key, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+      return value;
+    };
+    Object.defineProperty(result, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        return settle(
+          this,
+          JSON.parse(__vulcan_page_file_field_json(generation, set, path, key))
+        );
+      },
+      set(value) {
+        settle(this, value);
+      },
+    });
+  }
+  return result;
+}
+
+function __vulcanLazyPages(source) {
+  const { generation, set, pages } = JSON.parse(__vulcan_lazy_pages_json(source));
+  return pages.map((page) =>
+    page && page.file ? { ...page, file: __vulcanLazyFile(page.file, generation, set) } : page
+  );
 }
 
 function __vulcanRevivePage(page) {
@@ -1906,7 +1963,7 @@ const __vulcanPrivateEval = globalThis.eval;
 
 const dv = {
   pages(source) {
-    return new DataArray(JSON.parse(__vulcan_pages_json(source)).map(__vulcanRevivePage));
+    return new DataArray(__vulcanLazyPages(source).map(__vulcanRevivePage));
   },
   page(path) {
     return __vulcanRevivePage(JSON.parse(__vulcan_page_json(path)));
@@ -3617,7 +3674,8 @@ globalThis.Function = undefined;
             let state = Arc::new(JsEvalState {
                 paths: paths.clone(),
                 current_file: current_file.map(ToOwned::to_owned),
-                note_index: Mutex::new(JsNoteIndex::new(note_index)),
+                note_index: Mutex::new(JsNoteIndex::new(note_index, 0)),
+                retired_note_indexes: Mutex::new(Vec::new()),
                 periodic_config: loaded_config.periodic.clone(),
                 inbox_config: loaded_config.inbox.clone(),
                 web_config: loaded_config.web.clone(),
@@ -3743,6 +3801,49 @@ globalThis.Function = undefined;
                         },
                     )
                 }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let lazy_pages_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_lazy_pages_json",
+                Func::from(move |ctx: Ctx<'_>, source: Option<String>| {
+                    let mut note_index = lazy_pages_state.note_index.lock().map_err(|_| {
+                        Exception::throw_message(&ctx, "DataviewJS note index lock poisoned")
+                    })?;
+                    let (_, selected) =
+                        select_pages(&lazy_pages_state, &note_index, source.as_deref())
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    let pages = lazy_pages_for_paths(&note_index, &selected);
+                    note_index.page_sets.push(selected);
+                    to_json_string(
+                        &ctx,
+                        serde_json::json!({
+                            "generation": note_index.generation,
+                            "set": note_index.page_sets.len() - 1,
+                            "pages": pages,
+                        }),
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let page_field_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_page_file_field_json",
+                Func::from(
+                    move |ctx: Ctx<'_>,
+                          generation: usize,
+                          set: usize,
+                          path: String,
+                          key: String| {
+                        read_lazy_page_field(&page_field_state, generation, set, &path, &key)
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
+                            .and_then(|value| to_json_string(&ctx, value))
+                    },
+                ),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
@@ -4588,7 +4689,15 @@ globalThis.Function = undefined;
         let mut current = state.note_index.lock().map_err(|_| {
             DataviewJsError::Message("DataviewJS note index lock poisoned".to_string())
         })?;
-        *current = JsNoteIndex::new(note_index);
+        let generation = current.generation + 1;
+        let retired = std::mem::replace(&mut *current, JsNoteIndex::new(note_index, generation));
+        state
+            .retired_note_indexes
+            .lock()
+            .map_err(|_| {
+                DataviewJsError::Message("DataviewJS note index lock poisoned".to_string())
+            })?
+            .push(retired);
         Ok(())
     }
 
@@ -6116,6 +6225,63 @@ globalThis.Function = undefined;
         pages
     }
 
+    /// File-object fields read from hydrated rows (tags, links, tasks,
+    /// lists); lazy page objects omit them until first read.
+    const LAZY_FILE_FIELDS: [&str; 6] = ["etags", "inlinks", "lists", "outlinks", "tags", "tasks"];
+
+    /// Page objects for `paths` without [`LAZY_FILE_FIELDS`], from stored
+    /// fields only.
+    fn lazy_pages_for_paths(note_index: &JsNoteIndex, paths: &[String]) -> Vec<Value> {
+        let mut pages = pages_for_paths(note_index, paths);
+        for page in &mut pages {
+            if let Some(Value::Object(file)) = page.get_mut("file") {
+                for key in LAZY_FILE_FIELDS {
+                    file.remove(key);
+                }
+            }
+        }
+        pages
+    }
+
+    /// One lazy file field of a page from a lazy page set, hydrating the
+    /// whole set on first read, in the universe the page came from.
+    fn read_lazy_page_field(
+        state: &JsEvalState,
+        generation: usize,
+        set: usize,
+        path: &str,
+        key: &str,
+    ) -> Result<Value, DataviewJsError> {
+        if !LAZY_FILE_FIELDS.contains(&key) {
+            return Err(DataviewJsError::Message(format!(
+                "`{key}` is not a lazy page field"
+            )));
+        }
+        let poisoned =
+            || DataviewJsError::Message("DataviewJS note index lock poisoned".to_string());
+        let mut current = state.note_index.lock().map_err(|_| poisoned())?;
+        let mut retired = state.retired_note_indexes.lock().map_err(|_| poisoned())?;
+        let note_index = if current.generation == generation {
+            &mut *current
+        } else {
+            retired
+                .iter_mut()
+                .find(|index| index.generation == generation)
+                .ok_or_else(|| DataviewJsError::Message("unknown page generation".to_string()))?
+        };
+        if !note_index.hydrated.contains(path) && !note_index.complete {
+            let selection = note_index
+                .page_sets
+                .get(set)
+                .cloned()
+                .ok_or_else(|| DataviewJsError::Message("unknown page set".to_string()))?;
+            note_index.hydrate(state, IndexNeed::Paths(selection))?;
+        }
+        Ok(note_index
+            .note(path)
+            .map_or(Value::Null, |note| FileMetadataResolver::field(note, key)))
+    }
+
     fn resolve_page_path(paths: &VaultPaths, file: &str) -> Result<String, DataviewJsError> {
         resolve_note_reference(paths, file)
             .map(|resolved| resolved.path)
@@ -6791,6 +6957,60 @@ globalThis.Function = undefined;
                     );
                 }
             }
+        }
+
+        #[test]
+        fn lazy_page_fields_serialize_like_eager_pages() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+            for (path, contents) in [
+                (
+                    "A/One.md",
+                    "---\ntags: [t]\nstatus: open\ndue: 2026-01-02\n---\n#inline [[Two]]\n- [ ] task one\n- item\n",
+                ),
+                ("A/2026-01-01.md", "---\ntags: [t/sub]\n---\n[[One]]\n- [x] done\n"),
+                ("B/Two.md", "---\naliases: [Deux]\n---\n[[One]]\n"),
+            ] {
+                let target = vault_root.join(path);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::write(target, contents).unwrap();
+            }
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let check = |script: &str| {
+                let result = evaluate_dataview_js(&paths, script, Some("A/One.md"))
+                    .unwrap_or_else(|error| panic!("{script}: {error}"));
+                assert_eq!(
+                    result.outputs,
+                    vec![DataviewJsOutput::Paragraph {
+                        text: "ok".to_string()
+                    }],
+                    "{script}"
+                );
+            };
+            for source in ["'\"A\"'", "'#t'", "'[[One]]'", "null", "'\"B\" or #t'"] {
+                check(&format!(
+                    "const eager = JSON.parse(__vulcan_pages_json({source})).map(__vulcanRevivePage);
+                     const lazy = dv.pages({source}).array();
+                     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+                     if (!same(lazy, eager)) throw new Error(JSON.stringify([lazy, eager]));
+                     const keys = (pages) => pages.map((p) => Object.keys(p.file).join());
+                     if (!same(keys(dv.pages({source}).array()), keys(eager))) throw new Error('order');
+                     if (!same(dv.pages({source}).array().map((p) => ({{...p.file}})), eager.map((p) => p.file)))
+                       throw new Error('spread');
+                     dv.paragraph('ok');"
+                ));
+            }
+            check(
+                "const page = dv.pages('\"A\"').array()[0];
+                 page.file.tags = ['x'];
+                 if (page.file.tags.join() !== 'x') throw new Error('assign');
+                 const other = dv.pages('\"A\"').array()[0];
+                 if (other.file.tags.join() === 'x') throw new Error('shared');
+                 if (other.file.day.toFormat('yyyy-MM-dd') !== '2026-01-01') throw new Error('day');
+                 dv.paragraph('ok');",
+            );
         }
 
         #[test]
