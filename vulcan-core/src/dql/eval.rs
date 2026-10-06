@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::cache::CacheDatabase;
 use crate::config::{load_vault_config, VaultConfig};
+use crate::expression::ast::Expr;
 use crate::expression::eval::{
     compare_values, evaluate, is_truthy, parse_wikilink_target,
     resolve_note_reference as resolve_lookup_note_reference, value_to_display, EvalContext,
@@ -17,9 +18,10 @@ use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
 use crate::permissions::{combine_cte_fragments, PermissionFilter, PermissionGuard};
 use crate::properties::{
-    build_note_filter_clause_from_expressions, load_note_index_with_filter,
-    load_note_index_with_guard, FilterExpression, FilterField, FilterOperator, FilterValue,
-    NoteRecord, ParsedFilter, PropertyError,
+    build_note_filter_clause_from_expressions, hydrate_note_list_items,
+    load_note_index_with_filter, load_note_index_with_guard,
+    load_note_index_with_guard_deferring_lists, FilterExpression, FilterField, FilterOperator,
+    FilterValue, NoteRecord, ParsedFilter, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
 
@@ -166,16 +168,115 @@ pub fn evaluate_dql_with_guard(
     guard: &dyn PermissionGuard,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let config = load_vault_config(paths).config;
-    let note_lookup = load_note_index_with_guard(paths, guard)?;
+    let query = parse_dql(source).map_err(DqlEvalError::Parse)?;
     let filter = guard.read_filter();
-    evaluate_dql_with_note_index_and_config(
+    let note_lookup = load_scoped_note_index(paths, &query, current_file, guard, &filter)?;
+    evaluate_parsed_dql_with_note_index_and_config(
         paths,
-        source,
+        &query,
         current_file,
         Some(&filter),
         &config,
         &note_lookup,
     )
+}
+
+/// Load the note index `query` needs. List items, the most voluminous part,
+/// are loaded only for the notes its `FROM` selects and `this` when no
+/// expression can reach another note's file object; otherwise, and without
+/// `FROM`, every note is hydrated.
+fn load_scoped_note_index(
+    paths: &VaultPaths,
+    query: &DqlQuery,
+    current_file: Option<&str>,
+    guard: &dyn PermissionGuard,
+    filter: &PermissionFilter,
+) -> Result<HashMap<String, NoteRecord>, DqlEvalError> {
+    let compiled = compile_dql(query);
+    let mut sources = compiled
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            CompiledDqlCommand::From(source) => Some(source),
+            _ => None,
+        });
+    let (Some(source), None) = (sources.next(), sources.next()) else {
+        return Ok(load_note_index_with_guard(paths, guard)?);
+    };
+    if query_reaches_other_file_objects(query) {
+        return Ok(load_note_index_with_guard(paths, guard)?);
+    }
+    let mut note_lookup = load_note_index_with_guard_deferring_lists(paths, guard)?;
+    let all_notes = sorted_notes(&note_lookup);
+    let mut selected = source_paths(
+        paths,
+        source,
+        current_file,
+        &note_lookup,
+        &all_notes,
+        Some(filter),
+    )?;
+    selected.extend(current_file.map(ToString::to_string));
+    hydrate_note_list_items(paths, &mut note_lookup, &selected)?;
+    Ok(note_lookup)
+}
+
+/// Whether evaluating `query` can build the file object (and so read list
+/// items) of a note other than its rows and `this`: `.file` on anything but
+/// `this`, `asFile()`, or indexing that could name `file`. Conservative.
+fn query_reaches_other_file_objects(query: &DqlQuery) -> bool {
+    let commands = query.commands.iter().flat_map(|command| match command {
+        DqlDataCommand::Where(expr) => vec![expr],
+        DqlDataCommand::Sort(keys) => keys.iter().map(|key| &key.expr).collect(),
+        DqlDataCommand::GroupBy(named) | DqlDataCommand::Flatten(named) => vec![&named.expr],
+        DqlDataCommand::From(_) | DqlDataCommand::Limit(_) => Vec::new(),
+    });
+    query
+        .table_columns
+        .iter()
+        .map(|column| &column.expr)
+        .chain(query.list_expression.iter())
+        .chain(query.calendar_expression.iter())
+        .chain(commands)
+        .any(expr_reaches_other_file_objects)
+}
+
+fn expr_reaches_other_file_objects(expr: &Expr) -> bool {
+    match expr {
+        Expr::FieldAccess(base, field) => {
+            (field.eq_ignore_ascii_case("file")
+                && !matches!(&**base, Expr::Identifier(name) if name.eq_ignore_ascii_case("this")))
+                || expr_reaches_other_file_objects(base)
+        }
+        Expr::IndexAccess(base, key) => {
+            !matches!(&**key, Expr::Number(_) | Expr::Str(_))
+                || matches!(&**key, Expr::Str(name) if name.eq_ignore_ascii_case("file"))
+                || expr_reaches_other_file_objects(base)
+        }
+        Expr::MethodCall(base, method, args) => {
+            method.eq_ignore_ascii_case("asFile")
+                || expr_reaches_other_file_objects(base)
+                || args.iter().any(expr_reaches_other_file_objects)
+        }
+        Expr::FunctionCall(_, args) | Expr::Array(args) => {
+            args.iter().any(expr_reaches_other_file_objects)
+        }
+        Expr::Object(fields) => fields
+            .iter()
+            .any(|(_, value)| expr_reaches_other_file_objects(value)),
+        Expr::BinaryOp(left, _, right) => {
+            expr_reaches_other_file_objects(left) || expr_reaches_other_file_objects(right)
+        }
+        Expr::UnaryOp(_, operand) => expr_reaches_other_file_objects(operand),
+        Expr::Lambda(_, body) => expr_reaches_other_file_objects(body),
+        Expr::FormulaRef(_) => true,
+        Expr::Null
+        | Expr::Bool(_)
+        | Expr::Number(_)
+        | Expr::Str(_)
+        | Expr::Regex { .. }
+        | Expr::Identifier(_) => false,
+    }
 }
 
 pub(crate) fn evaluate_dql_with_note_index_and_config(
@@ -209,16 +310,20 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let compiled = compile_dql(query);
     let mut diagnostics = DqlDiagnosticCollector::default();
-    let filtered_note_lookup = filter.map(|filter| {
+    // Tag-aware, matching the SQL scope; a path-only check would drop notes
+    // granted by tag. Indexes loaded through the same scope are copied only
+    // when some note is actually outside it.
+    let allowed = |note: &NoteRecord| {
+        filter.is_none_or(|filter| {
+            filter
+                .path_permission()
+                .is_allowed_with_tags(&note.document_path, &note.tags)
+        })
+    };
+    let filtered_note_lookup = note_lookup.values().any(|note| !allowed(note)).then(|| {
         note_lookup
             .iter()
-            // Tag-aware, matching the SQL scope; a path-only check would
-            // drop notes granted by tag.
-            .filter(|(_, note)| {
-                filter
-                    .path_permission()
-                    .is_allowed_with_tags(&note.document_path, &note.tags)
-            })
+            .filter(|(_, note)| allowed(note))
             .map(|(path, note)| (path.clone(), note.clone()))
             .collect::<HashMap<_, _>>()
     });
@@ -534,16 +639,19 @@ impl ExecutionRow {
     }
 }
 
-fn sorted_notes(note_lookup: &HashMap<String, NoteRecord>) -> Vec<NoteRecord> {
-    let mut notes = note_lookup.values().cloned().collect::<Vec<_>>();
+fn sorted_notes(note_lookup: &HashMap<String, NoteRecord>) -> Vec<&NoteRecord> {
+    let mut notes = note_lookup.values().collect::<Vec<_>>();
     notes.sort_by(|left, right| left.document_path.cmp(&right.document_path));
     notes
 }
 
-fn default_rows(query: &DqlQuery, notes: &[NoteRecord]) -> Vec<ExecutionRow> {
+fn default_rows(query: &DqlQuery, notes: &[&NoteRecord]) -> Vec<ExecutionRow> {
     match query.query_type {
-        super::DqlQueryType::Task => notes.iter().flat_map(task_rows_for_note).collect(),
-        _ => notes.iter().map(ExecutionRow::page).collect(),
+        super::DqlQueryType::Task => notes
+            .iter()
+            .flat_map(|note| task_rows_for_note(note))
+            .collect(),
+        _ => notes.iter().map(|note| ExecutionRow::page(note)).collect(),
     }
 }
 
@@ -553,21 +661,17 @@ fn rows_for_source(
     source: &CompiledDqlSourceExpr,
     current_file: Option<&str>,
     note_lookup: &HashMap<String, NoteRecord>,
-    all_notes: &[NoteRecord],
+    all_notes: &[&NoteRecord],
     filter: Option<&PermissionFilter>,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let source_paths = source_paths(paths, source, current_file, note_lookup, all_notes, filter)?;
-    let mut notes = all_notes
+    // `all_notes` is already sorted by path.
+    let notes = all_notes
         .iter()
+        .copied()
         .filter(|note| source_paths.contains(note.document_path.as_str()))
-        .cloned()
         .collect::<Vec<_>>();
-    notes.sort_by(|left, right| left.document_path.cmp(&right.document_path));
-
-    Ok(match query.query_type {
-        super::DqlQueryType::Task => notes.iter().flat_map(task_rows_for_note).collect(),
-        _ => notes.iter().map(ExecutionRow::page).collect(),
-    })
+    Ok(default_rows(query, &notes))
 }
 
 fn task_rows_for_note(note: &NoteRecord) -> Vec<ExecutionRow> {
@@ -716,7 +820,7 @@ fn source_paths(
     source: &CompiledDqlSourceExpr,
     current_file: Option<&str>,
     note_lookup: &HashMap<String, NoteRecord>,
-    all_notes: &[NoteRecord],
+    all_notes: &[&NoteRecord],
     permission_filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, DqlEvalError> {
     Ok(match source {
@@ -792,7 +896,7 @@ fn source_paths(
     })
 }
 
-fn path_source_filter(path: &str, all_notes: &[NoteRecord]) -> FilterExpression {
+fn path_source_filter(path: &str, all_notes: &[&NoteRecord]) -> FilterExpression {
     if Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
@@ -1547,6 +1651,91 @@ LIMIT 1"#,
             Value::String("backlog".to_string())
         );
         assert_eq!(result.rows[0]["priority"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn scoped_list_hydration_equals_full_hydration() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, contents) in [
+            (
+                "A/One.md",
+                "---\ntags: [t]\nstatus: open\nparent: '[[Two]]'\n---\n- item [[Two]]\n- [ ] task one\n  - child\n",
+            ),
+            ("A/Three.md", "---\nstatus: open\n---\n- a\n- [x] done\n"),
+            ("B/Two.md", "---\ntags: [t]\n---\n- b item\n- [ ] task two\n"),
+            ("Here.md", "- here\n- [ ] here task\n[[One]]\n"),
+        ] {
+            let target = root.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        let guard = crate::permissions::ProfilePermissionGuard::new(
+            &paths,
+            crate::permissions::resolve_permission_profile(&paths, None).unwrap(),
+        );
+        let filter = guard.read_filter();
+        let config = load_vault_config(&paths).config;
+        let full = load_note_index_with_guard(&paths, &guard).unwrap();
+        for (source, reaches) in [
+            (
+                "TABLE length(file.lists) AS lists, length(file.tasks) AS tasks FROM \"A\"",
+                false,
+            ),
+            ("TASK FROM \"A\"", false),
+            ("LIST length(file.lists) FROM #t", false),
+            ("TABLE length(this.file.lists) AS here FROM \"A\"", false),
+            ("TABLE length(parent.file.lists) AS parent FROM \"A\"", true),
+            (
+                "TABLE map(file.outlinks, (l) => length(l.file.lists)) AS out FROM \"A\"",
+                true,
+            ),
+            (
+                "TABLE rows.file.lists AS lists FROM \"A\" GROUP BY status",
+                true,
+            ),
+            ("TABLE length(file.lists) AS lists", false),
+        ] {
+            let query = parse_dql(source).unwrap();
+            assert_eq!(
+                query_reaches_other_file_objects(&query),
+                reaches,
+                "{source}"
+            );
+            let scoped = evaluate_dql_with_guard(&paths, source, Some("Here.md"), &guard).unwrap();
+            let expected = evaluate_parsed_dql_with_note_index_and_config(
+                &paths,
+                &query,
+                Some("Here.md"),
+                Some(&filter),
+                &config,
+                &full,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&scoped).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+                "{source}"
+            );
+        }
+        // Lists load only for the FROM selection and `this`.
+        let query = parse_dql("LIST FROM \"A\"").unwrap();
+        let scoped =
+            load_scoped_note_index(&paths, &query, Some("Here.md"), &guard, &filter).unwrap();
+        let lists = |name: &str| {
+            scoped
+                .values()
+                .find(|note| note.document_path == name)
+                .unwrap()
+                .list_items
+                .len()
+        };
+        assert_eq!(lists("A/One.md"), 3);
+        assert_eq!(lists("Here.md"), 2);
+        assert_eq!(lists("B/Two.md"), 0);
     }
 
     #[test]

@@ -633,6 +633,7 @@ fn query_notes_with_scope(
         &mut doc_ids_and_notes,
         filter,
         readable_sources.as_ref(),
+        true,
     )?;
 
     let mut notes: Vec<NoteRecord> = doc_ids_and_notes
@@ -733,7 +734,7 @@ pub fn load_note_index_with_filter(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
-    load_note_index_with_read_scope(paths, filter, None)
+    load_note_index_with_read_scope(paths, filter, None, true)
 }
 
 /// Apply static document grants and per-path policy before constructing the
@@ -742,13 +743,55 @@ pub fn load_note_index_with_guard(
     paths: &VaultPaths,
     guard: &dyn PermissionGuard,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
-    load_note_index_with_read_scope(paths, Some(&guard.read_filter()), Some(guard))
+    load_note_index_with_read_scope(paths, Some(&guard.read_filter()), Some(guard), true)
 }
 
+/// [`load_note_index_with_guard`] without list items, the most voluminous
+/// hydration. Callers that can bound which notes' lists they read fill them
+/// with [`hydrate_note_list_items`]; every other field is complete.
+pub fn load_note_index_with_guard_deferring_lists(
+    paths: &VaultPaths,
+    guard: &dyn PermissionGuard,
+) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+    load_note_index_with_read_scope(paths, Some(&guard.read_filter()), Some(guard), false)
+}
+
+/// Load list items for the notes at `note_paths` in an index from
+/// [`load_note_index_with_guard_deferring_lists`].
+#[allow(clippy::implicit_hasher)]
+pub fn hydrate_note_list_items(
+    paths: &VaultPaths,
+    note_index: &mut HashMap<String, NoteRecord>,
+    note_paths: &HashSet<String>,
+) -> Result<(), PropertyError> {
+    let database = open_existing_cache(paths)?;
+    let doc_ids = note_index
+        .values()
+        .filter(|note| note_paths.contains(&note.document_path))
+        .map(|note| note.document_id.clone())
+        .collect::<Vec<_>>();
+    if doc_ids.is_empty() {
+        return Ok(());
+    }
+    let mut lists = load_list_item_map(
+        database.connection(),
+        &doc_ids.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?;
+    for note in note_index.values_mut() {
+        if let Some(mut list_items) = lists.remove(&note.document_id) {
+            list_items.sort_by_key(|item| (item.line_number, item.byte_offset));
+            note.list_items = list_items;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 fn load_note_index_with_read_scope(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
     guard: Option<&dyn PermissionGuard>,
+    include_lists: bool,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -788,53 +831,65 @@ fn load_note_index_with_read_scope(
             row.get::<_, Option<String>>(9)?,
         ))
     })?;
-    let mut doc_ids_and_notes = Vec::new();
+    // Policy hooks may be stateful, so they are consulted in order; parsing
+    // stored JSON and YAML and reading creation times run in parallel.
+    let mut admitted = Vec::new();
     for row in rows {
-        let (
-            document_id,
-            path,
-            file_name,
-            file_ext,
-            file_mtime,
-            file_size,
-            props_json,
-            raw_yaml,
-            periodic_type,
-            periodic_date,
-        ) = row?;
+        let row = row?;
         // SQL already checked document tags as well as paths. Repeating
         // check_read_path here would incorrectly reject tag-only grants.
-        if !policy_allows_indexed_note(guard, &path)? {
-            continue;
+        if policy_allows_indexed_note(guard, &row.1)? {
+            admitted.push(row);
         }
-        let properties =
-            serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
-        doc_ids_and_notes.push((
-            document_id.clone(),
-            NoteRecord {
-                document_id,
-                document_path: path.clone(),
-                file_name,
-                file_ext,
-                file_mtime,
-                file_ctime: file_ctime_for_document(&vault_root, &path, file_mtime),
-                file_size,
-                properties,
-                tags: vec![],
-                links: vec![],
-                starred: bookmarked_paths.contains(&path),
-                inlinks: vec![],
-                aliases: vec![],
-                frontmatter: parse_frontmatter_json_object(&raw_yaml),
-                periodic_type,
-                periodic_date,
-                list_items: vec![],
-                tasks: vec![],
-                raw_inline_expressions: vec![],
-                inline_expressions: vec![],
-            },
-        ));
     }
+    let mut doc_ids_and_notes = {
+        use rayon::prelude::*;
+        admitted
+            .into_par_iter()
+            .map(
+                |(
+                    document_id,
+                    path,
+                    file_name,
+                    file_ext,
+                    file_mtime,
+                    file_size,
+                    props_json,
+                    raw_yaml,
+                    periodic_type,
+                    periodic_date,
+                )| {
+                    let properties = serde_json::from_str(&props_json)
+                        .unwrap_or(Value::Object(serde_json::Map::default()));
+                    (
+                        document_id.clone(),
+                        NoteRecord {
+                            document_id,
+                            document_path: path.clone(),
+                            file_name,
+                            file_ext,
+                            file_mtime,
+                            file_ctime: file_ctime_for_document(&vault_root, &path, file_mtime),
+                            file_size,
+                            properties,
+                            tags: vec![],
+                            links: vec![],
+                            starred: bookmarked_paths.contains(&path),
+                            inlinks: vec![],
+                            aliases: vec![],
+                            frontmatter: parse_frontmatter_json_object(&raw_yaml),
+                            periodic_type,
+                            periodic_date,
+                            list_items: vec![],
+                            tasks: vec![],
+                            raw_inline_expressions: vec![],
+                            inline_expressions: vec![],
+                        },
+                    )
+                },
+            )
+            .collect::<Vec<_>>()
+    };
 
     // Preserve the complete authorized source universe, not only task-bearing
     // notes or the eventual query results. Reuse the same policy decisions for
@@ -851,6 +906,7 @@ fn load_note_index_with_read_scope(
         &mut doc_ids_and_notes,
         filter,
         readable_sources.as_ref(),
+        include_lists,
     )?;
 
     Ok(build_note_lookup_index(
@@ -969,6 +1025,7 @@ fn hydrate_note_records(
     doc_ids_and_notes: &mut Vec<(String, NoteRecord)>,
     filter: Option<&PermissionFilter>,
     readable_sources: Option<&HashSet<String>>,
+    include_lists: bool,
 ) -> Result<(), rusqlite::Error> {
     if doc_ids_and_notes.is_empty() {
         return Ok(());
@@ -1057,69 +1114,11 @@ fn hydrate_note_records(
             .push(synthetic_file_link(&source_path, &source_ext));
     }
 
-    let mut list_item_map: HashMap<String, Vec<NoteListItemRecord>> = HashMap::new();
-    let list_item_sql = format!(
-        "SELECT id, document_id, text, tags_json, outlinks_json, line_number, line_count, \
-         byte_offset, section_heading, parent_item_id, is_task, block_id, annotated, symbol \
-         FROM list_items WHERE document_id IN ({placeholders})"
-    );
-    let mut list_item_stmt = connection.prepare(&list_item_sql)?;
-    let list_item_rows = list_item_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
-        Ok((
-            row.get::<_, String>(1)?,
-            (
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, i64>(10)? != 0,
-                row.get::<_, Option<String>>(11)?,
-                row.get::<_, i64>(12)? != 0,
-                row.get::<_, String>(13)?,
-            ),
-        ))
-    })?;
-    for list_item_row in list_item_rows {
-        let (
-            doc_id,
-            (
-                id,
-                text,
-                tags_json,
-                outlinks_json,
-                line_number,
-                line_count,
-                byte_offset,
-                section_heading,
-                parent_item_id,
-                is_task,
-                block_id,
-                annotated,
-                symbol,
-            ),
-        ) = list_item_row?;
-        let list_item = NoteListItemRecord {
-            id,
-            text,
-            tags: parse_json_string_array(&tags_json)?,
-            outlinks: parse_json_string_array(&outlinks_json)?,
-            line_number,
-            line_count,
-            byte_offset,
-            section_heading,
-            parent_item_id,
-            is_task,
-            block_id,
-            annotated,
-            symbol,
-        };
-        list_item_map.entry(doc_id).or_default().push(list_item);
-    }
+    let mut list_item_map = if include_lists {
+        load_list_item_map(connection, &doc_ids)?
+    } else {
+        HashMap::new()
+    };
 
     let mut task_ids_by_doc: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_records: HashMap<String, NoteTaskRecord> = HashMap::new();
@@ -1268,6 +1267,78 @@ fn hydrate_note_records(
     }
 
     Ok(())
+}
+
+/// List items of the given documents, unsorted, keyed by document id.
+fn load_list_item_map(
+    connection: &rusqlite::Connection,
+    doc_ids: &[&str],
+) -> Result<HashMap<String, Vec<NoteListItemRecord>>, rusqlite::Error> {
+    let placeholders = doc_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let mut list_item_map: HashMap<String, Vec<NoteListItemRecord>> = HashMap::new();
+    let list_item_sql = format!(
+        "SELECT id, document_id, text, tags_json, outlinks_json, line_number, line_count, \
+         byte_offset, section_heading, parent_item_id, is_task, block_id, annotated, symbol \
+         FROM list_items WHERE document_id IN ({placeholders})"
+    );
+    let mut list_item_stmt = connection.prepare(&list_item_sql)?;
+    let list_item_rows = list_item_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(1)?,
+            (
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, i64>(10)? != 0,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, i64>(12)? != 0,
+                row.get::<_, String>(13)?,
+            ),
+        ))
+    })?;
+    for list_item_row in list_item_rows {
+        let (
+            doc_id,
+            (
+                id,
+                text,
+                tags_json,
+                outlinks_json,
+                line_number,
+                line_count,
+                byte_offset,
+                section_heading,
+                parent_item_id,
+                is_task,
+                block_id,
+                annotated,
+                symbol,
+            ),
+        ) = list_item_row?;
+        let list_item = NoteListItemRecord {
+            id,
+            text,
+            tags: parse_json_string_array(&tags_json)?,
+            outlinks: parse_json_string_array(&outlinks_json)?,
+            line_number,
+            line_count,
+            byte_offset,
+            section_heading,
+            parent_item_id,
+            is_task,
+            block_id,
+            annotated,
+            symbol,
+        };
+        list_item_map.entry(doc_id).or_default().push(list_item);
+    }
+    Ok(list_item_map)
 }
 
 fn build_tasknote_task_record(
