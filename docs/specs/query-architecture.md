@@ -82,6 +82,11 @@ Observations:
    counters.
 6. **Every step is gated by equivalence.** Each migration keeps results identical on the
    fixture vaults and on representative user-shaped vaults, and records before/after timings.
+   Where the previous behavior was accidental (for example SQL that disagreed with the
+   frontend's own evaluator), the step instead fixes it deliberately, with a regression test
+   and a skill review.
+7. **One filter semantics per expression family.** Vulcan is pre-alpha, so semantics are
+   chosen for coherence rather than preserved for compatibility (§4.7).
 
 ## 4. Target architecture
 
@@ -154,6 +159,26 @@ prefixes all compile into it. Candidate selection for a source runs in SQL again
 Execution is: candidates (§4.1) → freshness proof → hydrate the residual's groups for candidates →
 residual evaluation by the frontend → ordering, using SQL-extracted keys where available →
 page → hydrate output groups for the page only.
+
+### 4.7 Filter language
+
+There are two expression families: the Vulcan expression language (Dataview DQL, Bases, and
+Vulcan's own filters) and CEL (mdbase). Each family has exactly one semantics, defined by its
+evaluator.
+
+- **The note filter DSL is surface syntax.** `key op value` filters (`ls`/`query --where`,
+  `QueryAst` predicates, search filters, saved reports, and simple `.base` comparisons) compile
+  to the Vulcan expression AST and mean exactly what that expression means. For example, a
+  missing property is `null`, so `status != done` also selects notes without a status; a key
+  that both frontmatter and an inline field set is a list; `starts_with` is a byte-exact,
+  case-sensitive prefix; `exists` is `!= null`; `contains` and `has_tag` follow the
+  evaluator's list and nested-tag rules.
+- **SQL only narrows.** No consumer runs a filter as exact SQL. Filters lower to shared
+  predicate atoms (§4.3), whose SQL removes decided non-matches before loading; everything
+  else is evaluated.
+- **Sources are not filters.** Folder, path, tag, type, and link selection belong to the source
+  algebra (§4.4) with their own exact semantics, such as byte-exact folder prefixes and nested
+  tags, and may run entirely in SQL.
 
 ### 4.6 Retained host sessions
 

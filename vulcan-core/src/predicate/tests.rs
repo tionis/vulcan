@@ -71,9 +71,10 @@ fn sql_possible(predicate: &Predicate, note: &NoteRecord) -> bool {
         .query_row(
             &format!("SELECT {clause} FROM record"),
             rusqlite::params_from_iter(params),
-            |row| row.get::<_, bool>(0),
+            |row| row.get::<_, Option<bool>>(0),
         )
         .unwrap()
+        .unwrap_or_else(|| panic!("NULL decision for {predicate:?} on {}", note.properties))
 }
 
 /// Every decided record agrees with the evaluator, and SQL excludes exactly
@@ -334,5 +335,35 @@ fn dialects_combine_conjunctions_by_their_own_rules() {
     assert_eq!(
         atom("i", Literal::Integer(3)).decide(Dialect::Dataview, &record),
         Decision::Undecided
+    );
+}
+
+#[test]
+fn dataview_prefix_atoms_agree_with_the_evaluator_and_sql() {
+    let prefixes = ["", "a", "é", "2026", "[[", "%", "_", "A"];
+    for value in values() {
+        let properties = value.map_or_else(|| json!({}), |value| json!({ "k": value }));
+        let note = note(properties, "folder/%_é.md", "%_é", "md");
+        for prefix in prefixes {
+            check(&format!("startswith(k, \"{prefix}\")"), &note);
+        }
+    }
+    for (path, name, ext) in [("folder/n.md", "n", "md"), ("Folder%/a_b.md", "a_b", "md")] {
+        let note = note(json!({}), path, name, ext);
+        for field in ["file.path", "file.name", "file.ext"] {
+            for prefix in [
+                "", "folder/", "Folder", "folder%", "Folder%/", "a_", "a%", "m",
+            ] {
+                check(&format!("startswith({field}, \"{prefix}\")"), &note);
+            }
+        }
+    }
+    let note = note(json!({"k": "abc"}), "folder/n.md", "n", "md");
+    assert_eq!(check("startswith(k, \"ab\")", &note), Decision::Match);
+    assert_eq!(check("startswith(k, \"AB\")", &note), Decision::NoMatch);
+    // LIKE wildcards are literal characters.
+    assert_eq!(
+        check("startswith(file.path, \"f%\")", &note),
+        Decision::NoMatch
     );
 }

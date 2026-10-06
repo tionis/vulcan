@@ -182,6 +182,18 @@ impl Predicate {
                 }
                 Self::Any(children)
             }
+            // `startswith(field, "prefix")`: byte-exact on strings, applied
+            // element-wise to lists, and null (falsy) for other kinds.
+            Expr::FunctionCall(name, args) if name == "startswith" && args.len() == 2 => {
+                match (dataview_field(&args[0]), &args[1]) {
+                    (Some(field), Expr::Str(prefix)) => Self::Atom(Atom {
+                        field,
+                        comparison: Comparison::StartsWith,
+                        literal: Literal::Text(prefix.clone()),
+                    }),
+                    _ => Self::Unknown,
+                }
+            }
             Expr::BinaryOp(left, operator, right) => {
                 let Some(comparison) = Comparison::from_binop(*operator) else {
                     return Self::Unknown;
@@ -365,9 +377,11 @@ impl Atom {
         if dialect == Dialect::Cel {
             return self.decide_cel(record);
         }
-        if matches!(self.literal, Literal::Integer(_)) || self.comparison == Comparison::StartsWith
-        {
+        if matches!(self.literal, Literal::Integer(_)) {
             return Decision::Undecided;
+        }
+        if self.comparison == Comparison::StartsWith {
+            return self.decide_dataview_prefix(record);
         }
         if matches!(self.literal, Literal::Number(literal) if literal.abs() >= EXACT_INTEGER_BOUND)
         {
@@ -434,6 +448,27 @@ impl Atom {
         }
     }
 
+    fn decide_dataview_prefix(&self, record: &RecordValues<'_>) -> Decision {
+        let Literal::Text(prefix) = &self.literal else {
+            return Decision::Undecided;
+        };
+        let text = match &self.field {
+            Field::FilePath => record.path,
+            Field::FileName => record.name,
+            Field::FileExt => record.ext,
+            Field::Property(key) => match record.properties.get(key) {
+                None | Some(Value::Array(_)) => return Decision::Undecided,
+                Some(Value::String(text)) => text,
+                Some(_) => return Decision::NoMatch,
+            },
+        };
+        if text.as_bytes().starts_with(prefix.as_bytes()) {
+            Decision::Match
+        } else {
+            Decision::NoMatch
+        }
+    }
+
     /// CEL: decided only for a value of exactly the literal's type; strings
     /// containing NUL stay with CEL.
     fn decide_cel(&self, record: &RecordValues<'_>) -> Decision {
@@ -490,9 +525,11 @@ impl Atom {
         params: &mut Vec<SqlValue>,
     ) -> String {
         assert_eq!(dialect, Dialect::Dataview, "CEL renders decision parts");
-        if matches!(self.literal, Literal::Integer(_)) || self.comparison == Comparison::StartsWith
-        {
+        if matches!(self.literal, Literal::Integer(_)) {
             return "1".to_string();
+        }
+        if self.comparison == Comparison::StartsWith {
+            return self.render_dataview_prefix(columns, params);
         }
         let column = match &self.field {
             Field::Property(key) => return self.render_property(columns.properties, key, params),
@@ -509,6 +546,51 @@ impl Atom {
             Literal::Bool(_) => bool_sql(self.comparison == Comparison::NotEqual),
             Literal::Number(_) | Literal::Integer(_) => "1".to_string(),
         }
+    }
+
+    /// Plain `?` placeholders in textual order, like [`Self::render_property`].
+    fn render_dataview_prefix(
+        &self,
+        columns: &SqlColumns<'_>,
+        params: &mut Vec<SqlValue>,
+    ) -> String {
+        let Literal::Text(prefix) = &self.literal else {
+            return "1".to_string();
+        };
+        let prefix_of = |text: &str, params: &mut Vec<SqlValue>| {
+            // `substr` of an empty blob is NULL; every string has this prefix.
+            if prefix.is_empty() {
+                return "1".to_string();
+            }
+            params.push(SqlValue::Text(prefix.clone()));
+            params.push(SqlValue::Text(prefix.clone()));
+            // `substr` of an empty blob is NULL, so compare NULL-safely.
+            format!("(substr(CAST({text} AS BLOB), 1, length(CAST(? AS BLOB))) IS CAST(? AS BLOB))")
+        };
+        let column = match &self.field {
+            Field::FilePath => columns.path,
+            Field::FileName => columns.name,
+            Field::FileExt => columns.ext,
+            Field::Property(key) => {
+                let json = columns.properties;
+                let path = json_path(key);
+                for _ in 0..3 {
+                    params.push(SqlValue::Text(path.clone()));
+                }
+                let prefix_sql = if prefix.is_empty() {
+                    "1".to_string()
+                } else {
+                    params.push(SqlValue::Text(path));
+                    prefix_of(&format!("json_extract({json}, ?)"), params)
+                };
+                // Missing key or list: undecided; text: the prefix; else null.
+                return format!(
+                    "(json_type({json}, ?) IS NULL OR json_type({json}, ?) = 'array' \
+                     OR (json_type({json}, ?) = 'text' AND {prefix_sql}))"
+                );
+            }
+        };
+        prefix_of(column, params)
     }
 
     /// Renders with plain `?` placeholders, pushing each parameter in the
@@ -621,11 +703,19 @@ impl Predicate {
                 }
             };
             valid.push(format!("({guard})"));
+            if atom.comparison == Comparison::StartsWith
+                && matches!(&atom.literal, Literal::Text(prefix) if prefix.is_empty())
+            {
+                // Every string has the empty prefix (and `substr` of an empty
+                // blob is NULL).
+                matches.push("(1)".to_string());
+                continue;
+            }
             params.push(literal);
             let parameter = format!("?{}", params.len());
             let sql = if atom.comparison == Comparison::StartsWith {
                 format!(
-                    "substr(CAST({value} AS BLOB), 1, length(CAST({parameter} AS BLOB))) = CAST({parameter} AS BLOB)"
+                    "substr(CAST({value} AS BLOB), 1, length(CAST({parameter} AS BLOB))) IS CAST({parameter} AS BLOB)"
                 )
             } else {
                 format!(

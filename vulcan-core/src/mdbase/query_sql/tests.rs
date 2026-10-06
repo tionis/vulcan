@@ -242,6 +242,7 @@ fn in_memory_decisions_equal_the_sql_lowering() {
         "status < 'p'",
         "status >= 'op'",
         "status.startsWith('op')",
+        "status.startsWith('')",
         "status == 2",
         "status > -6",
         "status <= 9007199254740993",
