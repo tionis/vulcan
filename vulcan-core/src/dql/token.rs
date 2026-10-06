@@ -186,7 +186,10 @@ impl<'a> DqlTokenizer<'a> {
             _ => {
                 return Err(format!(
                     "unexpected character '{}' at position {}",
-                    char::from(ch),
+                    self.source[self.pos..]
+                        .chars()
+                        .next()
+                        .unwrap_or(char::from(ch)),
                     self.pos
                 ));
             }
@@ -207,29 +210,33 @@ impl<'a> DqlTokenizer<'a> {
 
     fn read_string(&mut self, quote: u8) -> Result<DqlToken, String> {
         self.pos += 1;
-        let mut value = String::new();
+        // Quotes and escapes are ASCII, so collecting raw bytes never splits
+        // a multi-byte character and the result stays valid UTF-8.
+        let mut bytes = Vec::new();
         while self.pos < self.bytes.len() {
             let ch = self.bytes[self.pos];
             if ch == quote {
                 self.pos += 1;
-                return Ok(DqlToken::Str(value));
+                return Ok(DqlToken::Str(String::from_utf8(bytes).unwrap_or_else(
+                    |error| String::from_utf8_lossy(error.as_bytes()).into_owned(),
+                )));
             }
             if ch == b'\\' && self.pos + 1 < self.bytes.len() {
                 self.pos += 1;
                 let escaped = self.bytes[self.pos];
                 match escaped {
-                    b'n' => value.push('\n'),
-                    b't' => value.push('\t'),
-                    b'r' => value.push('\r'),
-                    b'\\' => value.push('\\'),
-                    _ if escaped == quote => value.push(char::from(quote)),
+                    b'n' => bytes.push(b'\n'),
+                    b't' => bytes.push(b'\t'),
+                    b'r' => bytes.push(b'\r'),
+                    b'\\' => bytes.push(b'\\'),
+                    _ if escaped == quote => bytes.push(quote),
                     _ => {
-                        value.push('\\');
-                        value.push(char::from(escaped));
+                        bytes.push(b'\\');
+                        bytes.push(escaped);
                     }
                 }
             } else {
-                value.push(char::from(ch));
+                bytes.push(ch);
             }
             self.pos += 1;
         }
@@ -624,6 +631,20 @@ mod tests {
                 DqlToken::RParen,
                 DqlToken::Gt,
                 DqlToken::Number(0.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn string_literals_keep_non_ascii_text() {
+        assert_eq!(
+            tokenize(r#"LIST FROM "Café/é" WHERE x = '雪\'s'"#)
+                .into_iter()
+                .filter(|token| matches!(token, DqlToken::Str(_)))
+                .collect::<Vec<_>>(),
+            vec![
+                DqlToken::Str("Café/é".to_string()),
+                DqlToken::Str("雪's".to_string()),
             ]
         );
     }

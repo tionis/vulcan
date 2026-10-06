@@ -8540,6 +8540,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 #### QRY.1 Shared predicate atoms with dialects
 
+- [x] Fix non-ASCII string and regex literals in the Dataview/Bases expression and DQL tokenizers, found by the QRY.1 differential test: bytes were pushed as Latin-1 characters, so `FROM "Café"`, `status = "brûlée"`, and similar filters matched nothing. Tokenizer and end-to-end regression tests cover strings, escapes, regexes, and error messages.
 - [ ] Introduce one predicate atom representation (field, comparison, literal, dialect, bounded conjunction and three-valued disjunction) with one SQL renderer and one in-memory decider per atom, deciding only type-certain values and leaving the rest undecided.
 - [ ] Enumerate Dataview/Bases comparison semantics (coercions of numbers in strings, dates, durations, links, null and missing, list membership, string versus number ordering) and CEL semantics per atom; uncertain combinations stay undecided.
 - [ ] Port `MdbaseSqlPredicate` onto the shared atoms with the CEL dialect; the existing SQL/in-memory/CEL differential tests pass unchanged.

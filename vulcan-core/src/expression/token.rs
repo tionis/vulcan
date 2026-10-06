@@ -245,7 +245,10 @@ impl<'a> Tokenizer<'a> {
             _ => {
                 return Err(format!(
                     "unexpected character '{}' at position {}",
-                    char::from(ch),
+                    self.source[self.pos..]
+                        .chars()
+                        .next()
+                        .unwrap_or(char::from(ch)),
                     self.pos
                 ));
             }
@@ -265,29 +268,31 @@ impl<'a> Tokenizer<'a> {
 
     fn read_string(&mut self, quote: u8) -> Result<Token, String> {
         self.pos += 1; // skip opening quote
-        let mut s = String::new();
+                       // Quotes and escapes are ASCII, so collecting raw bytes never splits
+                       // a multi-byte character and the result stays valid UTF-8.
+        let mut bytes = Vec::new();
         while self.pos < self.bytes.len() {
             let ch = self.bytes[self.pos];
             if ch == quote {
                 self.pos += 1;
-                return Ok(Token::Str(s));
+                return Ok(Token::Str(utf8(bytes)));
             }
             if ch == b'\\' && self.pos + 1 < self.bytes.len() {
                 self.pos += 1;
                 let escaped = self.bytes[self.pos];
                 match escaped {
-                    b'n' => s.push('\n'),
-                    b't' => s.push('\t'),
-                    b'r' => s.push('\r'),
-                    b'\\' => s.push('\\'),
-                    _ if escaped == quote => s.push(char::from(quote)),
+                    b'n' => bytes.push(b'\n'),
+                    b't' => bytes.push(b'\t'),
+                    b'r' => bytes.push(b'\r'),
+                    b'\\' => bytes.push(b'\\'),
+                    _ if escaped == quote => bytes.push(quote),
                     _ => {
-                        s.push('\\');
-                        s.push(char::from(escaped));
+                        bytes.push(b'\\');
+                        bytes.push(escaped);
                     }
                 }
             } else {
-                s.push(char::from(ch));
+                bytes.push(ch);
             }
             self.pos += 1;
         }
@@ -465,7 +470,7 @@ impl<'a> Tokenizer<'a> {
 
     fn read_regex(&mut self) -> Result<Token, String> {
         // pos is already past the opening `/`
-        let mut pattern = String::new();
+        let mut pattern = Vec::new();
         while self.pos < self.bytes.len() {
             let ch = self.bytes[self.pos];
             if ch == b'/' {
@@ -477,19 +482,25 @@ impl<'a> Tokenizer<'a> {
                     self.pos += 1;
                 }
                 self.last_was_value = true;
-                return Ok(Token::Regex(pattern, flags));
+                return Ok(Token::Regex(utf8(pattern), flags));
             }
             if ch == b'\\' && self.pos + 1 < self.bytes.len() {
-                pattern.push(char::from(ch));
+                pattern.push(ch);
                 self.pos += 1;
-                pattern.push(char::from(self.bytes[self.pos]));
+                pattern.push(self.bytes[self.pos]);
             } else {
-                pattern.push(char::from(ch));
+                pattern.push(ch);
             }
             self.pos += 1;
         }
         Err("unterminated regex literal".to_string())
     }
+}
+
+/// Decode bytes cut from valid UTF-8 source at ASCII boundaries.
+fn utf8(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
 fn is_ident_start(ch: u8) -> bool {
@@ -591,6 +602,28 @@ mod tests {
                 Token::Str("world".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn string_and_regex_literals_keep_non_ascii_text() {
+        assert_eq!(
+            tokenize(r#""Café/é" + '雪\'s' + "\é""#),
+            vec![
+                Token::Str("Café/é".to_string()),
+                Token::Plus,
+                Token::Str("雪's".to_string()),
+                Token::Plus,
+                Token::Str("\\é".to_string()),
+            ]
+        );
+        assert_eq!(
+            tokenize("/ü\\/ß/i"),
+            vec![Token::Regex("ü\\/ß".to_string(), "i".to_string())]
+        );
+        assert!(Tokenizer::new("§")
+            .next_token()
+            .unwrap_err()
+            .contains("'§'"));
     }
 
     #[test]

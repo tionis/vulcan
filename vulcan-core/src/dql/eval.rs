@@ -1654,6 +1654,26 @@ LIMIT 1"#,
     }
 
     #[test]
+    fn non_ascii_sources_and_literals_select_their_notes() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        fs::create_dir_all(root.join("Café")).unwrap();
+        fs::write(root.join("Café/Crème.md"), "---\nstatus: brûlée\n---\n").unwrap();
+        fs::write(root.join("Other.md"), "---\nstatus: brûlée\n---\n").unwrap();
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        for source in [
+            "LIST FROM \"Café\"",
+            "LIST FROM \"Café\" WHERE status = \"brûlée\"",
+            "LIST WHERE file.folder = \"Café\"",
+        ] {
+            let result = evaluate_dql(&paths, source, None).expect("query should evaluate");
+            assert_eq!(result.result_count, 1, "{source}");
+        }
+    }
+
+    #[test]
     fn scoped_list_hydration_equals_full_hydration() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let root = temp_dir.path();
