@@ -8,8 +8,8 @@ use crate::paths::{
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::properties::{
     build_note_lookup_index, load_note_index_with_filter, load_note_index_with_guard,
-    parse_note_filter_expression, query_notes_in_authorized_scope, query_notes_with_filter,
-    FilterField, FilterOperator, FilterValue,
+    parse_note_filter_expression, query_notes_with_semantics, FilterField, FilterOperator,
+    FilterValue, NoteFilterSemantics,
 };
 use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
@@ -174,17 +174,35 @@ fn query_source_notes(
     request: &BasesSourceRequest,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<Vec<NoteRecord>, BasesError> {
+    // Base filters are expressions: comparisons keep the evaluator's
+    // semantics (a missing property is null), not the note filter DSL's.
     let query = NoteQuery {
-        filters: request.filters.clone(),
+        filters: request
+            .filters
+            .iter()
+            .map(|filter| match parse_note_filter_expression(filter) {
+                Ok(parsed)
+                    if matches!(
+                        (&parsed.field, parsed.operator),
+                        (FilterField::FilePath, FilterOperator::StartsWith)
+                            | (FilterField::FileTags, FilterOperator::HasTag)
+                    ) =>
+                {
+                    filter.clone()
+                }
+                _ => filter_to_expression_string(filter),
+            })
+            .collect(),
         sort_by: None,
         sort_descending: false,
     };
-    match authorized_index {
-        Some(index) => {
-            query_notes_in_authorized_scope(paths, &query, request.read_filter.as_ref(), index)
-        }
-        None => query_notes_with_filter(paths, &query, request.read_filter.as_ref()),
-    }
+    query_notes_with_semantics(
+        paths,
+        &query,
+        request.read_filter.as_ref(),
+        authorized_index,
+        NoteFilterSemantics::Expression,
+    )
     .map(|report| report.notes)
     .map_err(BasesError::Property)
 }
@@ -2628,6 +2646,65 @@ mod tests {
         assert!(report.views[0].formulas.contains_key("isOverdue"));
         assert!(report.views[0].formulas.contains_key("urgencyScore"));
         assert!(report.views[0].formulas.contains_key("efficiencyRatio"));
+    }
+
+    #[test]
+    fn base_comparison_filters_use_expression_semantics() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        std::fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, contents) in [
+            ("A.md", "---\nstatus: done\npriority: 3\n---\n"),
+            ("B.md", "no frontmatter\n"),
+            ("C.md", "---\nstatus: open\npriority: 1\n---\n"),
+            ("D.md", "---\nstatus:\n---\n"),
+            ("E.md", "---\nstatus: [done]\n---\n"),
+        ] {
+            std::fs::write(root.join(path), contents).unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let names = |filter: &str| {
+            std::fs::write(
+                root.join("view.base"),
+                format!(
+                    "filters:\n  and:\n    - '{filter}'\nviews:\n  - type: table\n    name: all\n"
+                ),
+            )
+            .unwrap();
+            let report = evaluate_base_file(&paths, "view.base").expect("base eval should succeed");
+            assert!(
+                report.diagnostics.is_empty(),
+                "{filter}: {:?}",
+                report.diagnostics
+            );
+            let mut names = report.views[0]
+                .rows
+                .iter()
+                .map(|row| row.file_name.clone())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        // A missing property is null, as when the evaluator decides.
+        assert_eq!(names("status != \"done\""), ["B", "C", "D", "E"]);
+        assert_eq!(names("status is not \"done\""), ["B", "C", "D", "E"]);
+        assert_eq!(names("status == \"done\""), ["A"]);
+        // Simple and preserved (evaluated) forms agree.
+        for filter in [
+            "status != \"done\"",
+            "status == \"open\"",
+            "priority > 1",
+            "priority <= 1",
+            "status != null",
+            "file.name == \"C\"",
+        ] {
+            assert_eq!(
+                names(filter),
+                names(&format!("{filter} && true")),
+                "{filter}"
+            );
+        }
     }
 
     #[test]

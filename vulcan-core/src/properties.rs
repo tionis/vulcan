@@ -518,12 +518,53 @@ pub fn query_notes_in_authorized_scope(
     query_notes_with_scope(paths, query, filter, Some(authorized_index))
 }
 
-#[allow(clippy::too_many_lines)]
+/// How [`NoteQuery`] filter strings are interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoteFilterSemantics {
+    /// The note filter DSL: `key op value` filters run as SQL over
+    /// `property_values`; other strings are expressions.
+    NoteQuery,
+    /// Every filter is a Dataview/Bases expression with the evaluator's
+    /// semantics, except folder-prefix and tag-membership filters. The
+    /// shared predicate removes decided non-matches in SQL and every other
+    /// note is evaluated (QRY.1).
+    Expression,
+}
+
+/// [`query_notes_with_filter`] or [`query_notes_in_authorized_scope`] with
+/// explicit filter semantics.
+pub(crate) fn query_notes_with_semantics(
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+    semantics: NoteFilterSemantics,
+) -> Result<NotesReport, PropertyError> {
+    query_notes_with_scope_and_semantics(paths, query, filter, authorized_index, semantics)
+}
+
 fn query_notes_with_scope(
     paths: &VaultPaths,
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
+) -> Result<NotesReport, PropertyError> {
+    query_notes_with_scope_and_semantics(
+        paths,
+        query,
+        filter,
+        authorized_index,
+        NoteFilterSemantics::NoteQuery,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn query_notes_with_scope_and_semantics(
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+    semantics: NoteFilterSemantics,
 ) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -531,7 +572,7 @@ fn query_notes_with_scope(
     let vault_root = paths.vault_root().to_path_buf();
     let config = crate::load_vault_config(paths).config;
 
-    let (sql_filters, post_filters) = partition_note_query_filters(&query.filters)?;
+    let (sql_filters, post_filters) = partition_note_query_filters(&query.filters, semantics)?;
 
     let NoteFilterSql {
         cte,
@@ -543,7 +584,7 @@ fn query_notes_with_scope(
         .unwrap_or_default();
     // Permission CTE bindings precede filter CTE and WHERE bindings in SQL.
     let combined_cte = combine_cte_fragments([permission_sql.cte.clone(), cte]);
-    let params = permission_sql
+    let mut params = permission_sql
         .params
         .into_iter()
         .map(SqlValue::Text)
@@ -569,6 +610,27 @@ fn query_notes_with_scope(
     );
     sql.push_str(&filter_clause);
     sql.push_str(&permission_sql.clause);
+    // Decided non-matches of expression filters never load; the clause's
+    // plain placeholders follow every other binding.
+    for post_filter in &post_filters {
+        let NotePostFilter::Expression { expr, .. } = post_filter else {
+            continue;
+        };
+        let predicate = crate::predicate::Predicate::lower_dataview(expr);
+        if semantics == NoteFilterSemantics::Expression && predicate.is_useful() {
+            sql.push_str(" AND ");
+            sql.push_str(&predicate.render_possible_match(
+                crate::predicate::Dialect::Dataview,
+                &crate::predicate::SqlColumns {
+                    properties: "COALESCE(properties.canonical_json, '{}')",
+                    path: "documents.path",
+                    name: "documents.filename",
+                    ext: "documents.extension",
+                },
+                &mut params,
+            ));
+        }
+    }
     sql.push_str(" ORDER BY documents.path ASC");
 
     let mut statement = connection.prepare(&sql)?;
@@ -2383,12 +2445,21 @@ enum NotePostFilter {
 
 fn partition_note_query_filters(
     filters: &[String],
+    semantics: NoteFilterSemantics,
 ) -> Result<PartitionedNoteQueryFilters, PropertyError> {
     let mut sql_filters = Vec::new();
     let mut post_filters = Vec::new();
 
     for filter in filters {
-        if let Ok(parsed) = parse_filter_expression(filter) {
+        let parsed = parse_filter_expression(filter).ok().filter(|parsed| {
+            semantics == NoteFilterSemantics::NoteQuery
+                || matches!(
+                    (&parsed.field, parsed.operator),
+                    (FilterField::FilePath, FilterOperator::StartsWith)
+                        | (FilterField::FileTags, FilterOperator::HasTag)
+                )
+        });
+        if let Some(parsed) = parsed {
             if parsed.field == FilterField::FileCtime {
                 let expr = Parser::new(filter)
                     .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?

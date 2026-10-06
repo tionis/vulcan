@@ -11,10 +11,6 @@
 //! per dialect and are differentially tested against each other and against
 //! the frontend evaluator.
 
-// The SQL rendering is exercised by the differential tests; stores adopt it
-// as their candidate selection moves onto shared atoms (QRY.1, QRY.2).
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::expression::ast::{BinOp, Expr};
 use crate::expression::functions::{parse_date_like_string, parse_duration_string};
 use rusqlite::types::Value as SqlValue;
