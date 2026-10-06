@@ -1,5 +1,104 @@
 use rusqlite::Transaction;
 
+/// The narrow note query table (QRY.4): one row per document with its
+/// identity facts (path, file name, aliases), freshness evidence (stat
+/// fingerprint, revision, parser version), file metadata, JSONB properties,
+/// and tag membership, maintained by triggers from the normalized tables so
+/// it is rebuilt with them. Scans record stat fingerprints on `documents`.
+pub fn apply_schema_v27(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "ALTER TABLE documents ADD COLUMN stat_fingerprint BLOB;
+         CREATE TABLE note_query (
+             document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+             path TEXT NOT NULL UNIQUE,
+             filename TEXT NOT NULL,
+             extension TEXT NOT NULL,
+             stat_fingerprint BLOB,
+             revision BLOB NOT NULL,
+             parser_version INTEGER NOT NULL,
+             file_size INTEGER NOT NULL,
+             file_mtime INTEGER NOT NULL,
+             file_ctime INTEGER,
+             properties BLOB,
+             tags TEXT NOT NULL DEFAULT '[]',
+             aliases TEXT NOT NULL DEFAULT '[]'
+         );
+         CREATE INDEX idx_note_query_filename ON note_query(filename);
+         INSERT INTO note_query (
+             document_id, path, filename, extension, stat_fingerprint, revision,
+             parser_version, file_size, file_mtime, file_ctime, properties, tags, aliases
+         )
+         SELECT documents.id, documents.path, documents.filename, documents.extension,
+                documents.stat_fingerprint, documents.content_hash, documents.parser_version,
+                documents.file_size, documents.file_mtime, documents.file_ctime,
+                (SELECT jsonb(canonical_json) FROM properties
+                 WHERE properties.document_id = documents.id),
+                (SELECT json_group_array(tag_text) FROM
+                    (SELECT tag_text FROM tags WHERE tags.document_id = documents.id
+                     ORDER BY tags.rowid)),
+                (SELECT json_group_array(alias_text) FROM
+                    (SELECT alias_text FROM aliases WHERE aliases.document_id = documents.id
+                     ORDER BY aliases.rowid))
+         FROM documents;
+         CREATE TRIGGER note_query_document_insert AFTER INSERT ON documents BEGIN
+             INSERT INTO note_query (
+                 document_id, path, filename, extension, stat_fingerprint, revision,
+                 parser_version, file_size, file_mtime, file_ctime
+             ) VALUES (
+                 new.id, new.path, new.filename, new.extension, new.stat_fingerprint,
+                 new.content_hash, new.parser_version, new.file_size, new.file_mtime,
+                 new.file_ctime
+             );
+         END;
+         CREATE TRIGGER note_query_document_update AFTER UPDATE ON documents BEGIN
+             UPDATE note_query SET
+                 path = new.path, filename = new.filename, extension = new.extension,
+                 stat_fingerprint = new.stat_fingerprint, revision = new.content_hash,
+                 parser_version = new.parser_version, file_size = new.file_size,
+                 file_mtime = new.file_mtime, file_ctime = new.file_ctime
+             WHERE document_id = new.id;
+         END;
+         CREATE TRIGGER note_query_document_delete AFTER DELETE ON documents BEGIN
+             DELETE FROM note_query WHERE document_id = old.id;
+         END;
+         CREATE TRIGGER note_query_properties_insert AFTER INSERT ON properties BEGIN
+             UPDATE note_query SET properties = jsonb(new.canonical_json)
+             WHERE document_id = new.document_id;
+         END;
+         CREATE TRIGGER note_query_properties_update AFTER UPDATE ON properties BEGIN
+             UPDATE note_query SET properties = jsonb(new.canonical_json)
+             WHERE document_id = new.document_id;
+         END;
+         CREATE TRIGGER note_query_properties_delete AFTER DELETE ON properties BEGIN
+             UPDATE note_query SET properties = NULL WHERE document_id = old.document_id;
+         END;
+         CREATE TRIGGER note_query_tags_insert AFTER INSERT ON tags BEGIN
+             UPDATE note_query SET tags = (
+                 SELECT json_group_array(tag_text) FROM (SELECT tag_text FROM tags
+                     WHERE tags.document_id = new.document_id ORDER BY tags.rowid))
+             WHERE document_id = new.document_id;
+         END;
+         CREATE TRIGGER note_query_tags_delete AFTER DELETE ON tags BEGIN
+             UPDATE note_query SET tags = (
+                 SELECT json_group_array(tag_text) FROM (SELECT tag_text FROM tags
+                     WHERE tags.document_id = old.document_id ORDER BY tags.rowid))
+             WHERE document_id = old.document_id;
+         END;
+         CREATE TRIGGER note_query_aliases_insert AFTER INSERT ON aliases BEGIN
+             UPDATE note_query SET aliases = (
+                 SELECT json_group_array(alias_text) FROM (SELECT alias_text FROM aliases
+                     WHERE aliases.document_id = new.document_id ORDER BY aliases.rowid))
+             WHERE document_id = new.document_id;
+         END;
+         CREATE TRIGGER note_query_aliases_delete AFTER DELETE ON aliases BEGIN
+             UPDATE note_query SET aliases = (
+                 SELECT json_group_array(alias_text) FROM (SELECT alias_text FROM aliases
+                     WHERE aliases.document_id = old.document_id ORDER BY aliases.rowid))
+             WHERE document_id = old.document_id;
+         END;",
+    )
+}
+
 /// Record `file.ctime` at scan time so note queries need no per-note
 /// `stat`. Existing rows stay NULL until the next scan records them;
 /// readers fall back to the filesystem meanwhile.

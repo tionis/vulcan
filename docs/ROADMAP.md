@@ -8583,7 +8583,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 #### QRY.4 Note store freshness and narrow query table
 
-- [ ] Add a rebuildable, trigger-maintained narrow note query table (stat fingerprint, revision, JSONB properties, tag and link membership, file metadata, identity facts) with an additive migration.
+- [x] Add a rebuildable, trigger-maintained narrow note query table with an additive migration (schema v27): `note_query` holds identity facts (path, file name, aliases), freshness evidence (stat fingerprint, revision, parser version), file metadata, JSONB properties, and tag membership, maintained by triggers on `documents`, `properties`, `tags`, and `aliases` and backfilled from them; link membership stays in the indexed `links` table, which sources already query. Scans record the shared stat fingerprint (`vulcan-core::fingerprint`, also used by mdbase) and re-hash a file whose fingerprint changed even when its size and mtime did not, so same-tick edits are no longer missed. Tests compare `note_query` with a recomputation from the base tables across full and incremental scans, edits, renames, deletions, and the migration backfill. A full rebuild of the 2,941-note vault costs about 12% more (2.66 → 3.0 s).
 - [ ] Prove note freshness with the mdbase stat-fingerprint machinery (parallel walk, merge-join, documented same-tick limit), falling back to the existing incremental scan on any miss.
 - [ ] Execute plans whose residual is empty or bounded by the candidates directly over the narrow table, hydrating only the page.
 - [ ] Acceptance: indexed-versus-scanned differential tests across edits, renames, deletions, and permission scopes; warm folder, tag, and property queries need no per-request incremental scan.

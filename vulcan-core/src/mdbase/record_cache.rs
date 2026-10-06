@@ -1984,38 +1984,9 @@ fn read_record_source_stably(
     Ok((source, after))
 }
 
-/// Identity and change evidence for one regular file: device, inode, size,
-/// modification time, and status-change time in nanoseconds. Unlike mtime,
-/// ctime cannot be restored by ordinary tools, so a same-size edit with a
-/// restored mtime still changes the fingerprint. Unavailable off Unix.
-#[cfg(unix)]
+/// See [`crate::fingerprint::stat_fingerprint`].
 pub(super) fn stat_fingerprint(metadata: &fs::Metadata) -> Option<MdbaseStatFingerprint> {
-    use std::os::unix::fs::MetadataExt;
-
-    let nanoseconds = |seconds: i64, nanoseconds: i64| {
-        seconds
-            .saturating_mul(1_000_000_000)
-            .saturating_add(nanoseconds)
-    };
-    metadata.is_file().then(|| {
-        let mut fingerprint = [0; 40];
-        let fields = [
-            metadata.dev().to_be_bytes(),
-            metadata.ino().to_be_bytes(),
-            metadata.size().to_be_bytes(),
-            nanoseconds(metadata.mtime(), metadata.mtime_nsec()).to_be_bytes(),
-            nanoseconds(metadata.ctime(), metadata.ctime_nsec()).to_be_bytes(),
-        ];
-        for (chunk, field) in fingerprint.chunks_exact_mut(8).zip(fields) {
-            chunk.copy_from_slice(&field);
-        }
-        fingerprint
-    })
-}
-
-#[cfg(not(unix))]
-pub(super) fn stat_fingerprint(_metadata: &fs::Metadata) -> Option<MdbaseStatFingerprint> {
-    None
+    crate::fingerprint::stat_fingerprint(metadata)
 }
 
 /// Read a projection only when both its source revision and dependency set are current.

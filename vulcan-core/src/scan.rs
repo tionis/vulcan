@@ -184,6 +184,8 @@ struct DiscoveredFile {
     file_mtime: i64,
     /// Birth time, else modification time, as `file.ctime` reports it.
     file_ctime: i64,
+    /// Freshness evidence (QRY.4); `None` off Unix.
+    stat_fingerprint: Option<crate::fingerprint::StatFingerprint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +195,8 @@ struct CachedDocument {
     file_mtime: i64,
     /// `None` until a scan records it (caches from before schema v26).
     file_ctime: Option<i64>,
+    /// `None` until a scan records it (caches from before schema v27).
+    stat_fingerprint: Option<Vec<u8>>,
     content_hash: Vec<u8>,
     parser_version: u32,
 }
@@ -642,7 +646,7 @@ fn watched_inventory(
     if changed.is_empty() {
         return Ok(None);
     }
-    let mut statement = connection.prepare("SELECT id, file_size, file_mtime, content_hash, parser_version, file_ctime FROM documents WHERE path = ?1")?;
+    let mut statement = connection.prepare("SELECT id, file_size, file_mtime, content_hash, parser_version, file_ctime, stat_fingerprint FROM documents WHERE path = ?1")?;
     let mut files = Vec::new();
     let mut cached = HashMap::new();
     let root = fs::canonicalize(paths.vault_root())?;
@@ -664,6 +668,7 @@ fn watched_inventory(
                     file_size: row.get(1)?,
                     file_mtime: row.get(2)?,
                     file_ctime: row.get(5)?,
+                    stat_fingerprint: row.get(6)?,
                     content_hash: row.get(3)?,
                     parser_version: row.get(4)?,
                 })
@@ -701,6 +706,7 @@ fn watched_inventory(
             })?,
             file_mtime: system_time_to_millis(metadata.modified()?, &absolute_path)?,
             file_ctime: file_ctime_millis(&metadata, &absolute_path)?,
+            stat_fingerprint: crate::fingerprint::stat_fingerprint(&metadata),
             absolute_path,
         });
         // A native write signal is evidence even when size and timestamp were
@@ -739,14 +745,16 @@ fn prepare_incremental_file(
 
     if let Some(cached) = cached {
         // Determine hash: reuse cached if mtime+size unchanged, otherwise read+hash.
-        let (hash, content_bytes) =
-            if cached.file_size == file.file_size && cached.file_mtime == file.file_mtime {
-                (cached.content_hash.clone(), None)
-            } else {
-                let bytes = fs::read(&file.absolute_path)?;
-                let hash = blake3::hash(&bytes).as_bytes().to_vec();
-                (hash, Some(bytes))
-            };
+        let (hash, content_bytes) = if cached.file_size == file.file_size
+            && cached.file_mtime == file.file_mtime
+            && fingerprint_matches(cached, file)
+        {
+            (cached.content_hash.clone(), None)
+        } else {
+            let bytes = fs::read(&file.absolute_path)?;
+            let hash = blake3::hash(&bytes).as_bytes().to_vec();
+            (hash, Some(bytes))
+        };
 
         let needs_reindex = hash != cached.content_hash || cached.parser_version != current_version;
 
@@ -906,6 +914,7 @@ fn apply_incremental_scan(
                 if cached.file_size == file.file_size
                     && cached.file_mtime == file.file_mtime
                     && cached.file_ctime == Some(file.file_ctime)
+                    && fingerprint_matches(cached, file)
                     && cached.parser_version == expected_version =>
             {
                 result.summary.unchanged += 1;
@@ -1428,6 +1437,7 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
                     file_size,
                     file_mtime,
                     file_ctime: file_ctime_millis(&metadata, path).unwrap_or(file_mtime),
+                    stat_fingerprint: crate::fingerprint::stat_fingerprint(&metadata),
                 });
 
             ignore::WalkState::Continue
@@ -1539,6 +1549,17 @@ fn system_time_to_millis(time: SystemTime, path: &Path) -> Result<i64, ScanError
     })
 }
 
+/// Whether a cached document's stat fingerprint is the file's. A changed
+/// fingerprint with the same size and mtime (a same-tick edit, or a file
+/// replaced in place) re-hashes the file; without a fingerprint on this
+/// platform, size and mtime decide alone.
+fn fingerprint_matches(cached: &CachedDocument, file: &DiscoveredFile) -> bool {
+    match &file.stat_fingerprint {
+        Some(fingerprint) => cached.stat_fingerprint.as_deref() == Some(fingerprint.as_slice()),
+        None => true,
+    }
+}
+
 /// `file.ctime`: the birth time where the platform records one, else the
 /// modification time.
 fn file_ctime_millis(metadata: &fs::Metadata, path: &Path) -> Result<i64, ScanError> {
@@ -1557,7 +1578,8 @@ fn load_cached_documents(
 ) -> Result<HashMap<String, CachedDocument>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "
-        SELECT id, path, file_size, file_mtime, content_hash, parser_version, file_ctime
+        SELECT id, path, file_size, file_mtime, content_hash, parser_version, file_ctime,
+               stat_fingerprint
         FROM documents
         ",
     )?;
@@ -1569,6 +1591,7 @@ fn load_cached_documents(
                 file_size: row.get(2)?,
                 file_mtime: row.get(3)?,
                 file_ctime: row.get(6)?,
+                stat_fingerprint: row.get(7)?,
                 content_hash: row.get(4)?,
                 parser_version: row.get(5)?,
             },
@@ -1602,9 +1625,10 @@ fn insert_or_update_document(
             file_mtime,
             parser_version,
             indexed_at,
-            file_ctime
+            file_ctime,
+            stat_fingerprint
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         ON CONFLICT(path) DO UPDATE SET
             filename = excluded.filename,
             extension = excluded.extension,
@@ -1616,7 +1640,8 @@ fn insert_or_update_document(
             file_mtime = excluded.file_mtime,
             parser_version = excluded.parser_version,
             indexed_at = excluded.indexed_at,
-            file_ctime = excluded.file_ctime
+            file_ctime = excluded.file_ctime,
+            stat_fingerprint = excluded.stat_fingerprint
         ",
         params![
             id,
@@ -1636,6 +1661,7 @@ fn insert_or_update_document(
             parser_version,
             current_timestamp()?,
             file.file_ctime,
+            file.stat_fingerprint.map(Vec::from),
         ],
     )?;
 
@@ -1695,7 +1721,8 @@ fn update_document_metadata(
             extension = ?3,
             file_size = ?4,
             file_mtime = ?5,
-            file_ctime = ?6
+            file_ctime = ?6,
+            stat_fingerprint = ?7
         WHERE id = ?1
         ",
         params![
@@ -1704,7 +1731,8 @@ fn update_document_metadata(
             file.extension,
             file.file_size,
             file.file_mtime,
-            file.file_ctime
+            file.file_ctime,
+            file.stat_fingerprint.map(Vec::from)
         ],
     )?;
 
@@ -4873,6 +4901,131 @@ mod tests {
             scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
         assert_eq!((summary.updated, summary.unchanged), (0, 3));
         assert_eq!(ctimes(&paths), recorded);
+    }
+
+    /// `note_query` as recomputed from the normalized tables.
+    fn note_query_drift(paths: &VaultPaths) -> Vec<String> {
+        let database = CacheDatabase::open(paths).unwrap();
+        let mut statement = database
+            .connection()
+            .prepare(
+                "WITH expected AS (
+                     SELECT documents.id AS document_id, documents.path, documents.filename,
+                            documents.extension, documents.stat_fingerprint,
+                            documents.content_hash AS revision, documents.parser_version,
+                            documents.file_size, documents.file_mtime, documents.file_ctime,
+                            (SELECT json(canonical_json) FROM properties
+                             WHERE properties.document_id = documents.id) AS properties,
+                            (SELECT json_group_array(tag_text) FROM
+                                (SELECT tag_text FROM tags WHERE tags.document_id = documents.id
+                                 ORDER BY tags.rowid)) AS tags,
+                            (SELECT json_group_array(alias_text) FROM
+                                (SELECT alias_text FROM aliases
+                                 WHERE aliases.document_id = documents.id
+                                 ORDER BY aliases.rowid)) AS aliases
+                     FROM documents),
+                 actual AS (
+                     SELECT document_id, path, filename, extension, stat_fingerprint, revision,
+                            parser_version, file_size, file_mtime, file_ctime,
+                            json(properties) AS properties, tags, aliases
+                     FROM note_query)
+                 SELECT 'missing ' || path FROM (SELECT * FROM expected EXCEPT SELECT * FROM actual)
+                 UNION ALL
+                 SELECT 'extra ' || path FROM (SELECT * FROM actual EXCEPT SELECT * FROM expected)",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn note_query_rows_follow_the_normalized_tables() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        assert_eq!(note_query_drift(&paths), Vec::<String>::new());
+        let count = |paths: &VaultPaths| {
+            CacheDatabase::open(paths)
+                .unwrap()
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM note_query WHERE stat_fingerprint IS NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        if cfg!(unix) {
+            assert_eq!(count(&paths), 0, "every file has a fingerprint");
+        }
+
+        fs::write(
+            vault_root.join("New.md"),
+            "---\naliases: [Fresh]\ntags: [n]\n---\n#x\n",
+        )
+        .unwrap();
+        fs::write(
+            vault_root.join("Dashboard.md"),
+            "---\nstatus: changed\n---\n#retagged\n",
+        )
+        .unwrap();
+        let renamed = fs::read_dir(vault_root.join("Projects"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::rename(&renamed, vault_root.join("Moved.md")).unwrap();
+        scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        assert_eq!(note_query_drift(&paths), Vec::<String>::new());
+
+        fs::remove_file(vault_root.join("New.md")).unwrap();
+        scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        assert_eq!(note_query_drift(&paths), Vec::<String>::new());
+        scan_vault(&paths, ScanMode::Full).expect("rebuild should succeed");
+        assert_eq!(note_query_drift(&paths), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_size_edits_with_restored_mtimes_are_rescanned() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        fs::write(vault_root.join("Note.md"), "---\nstatus: aaaa\n---\n").unwrap();
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let mtime = fs::metadata(vault_root.join("Note.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        fs::write(vault_root.join("Note.md"), "---\nstatus: bbbb\n---\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(vault_root.join("Note.md"))
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        assert_eq!(summary.updated, 1, "{summary:?}");
+        let status: String = CacheDatabase::open(&paths)
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT json_extract(properties, '$.status') FROM note_query",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "bbbb");
+        assert_eq!(note_query_drift(&paths), Vec::<String>::new());
     }
 
     #[test]

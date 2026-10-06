@@ -64,6 +64,7 @@ pub mod exchange;
 pub mod expression;
 mod extraction;
 mod file_metadata;
+pub mod fingerprint;
 pub mod folder_notes;
 pub mod git;
 pub mod graph;
@@ -388,4 +389,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 8;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 26;
+pub const SCHEMA_VERSION: u32 = 27;

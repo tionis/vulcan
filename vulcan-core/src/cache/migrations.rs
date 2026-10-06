@@ -50,6 +50,8 @@ impl MigrationRegistry {
     }
 
     #[must_use]
+    // One entry per schema version.
+    #[allow(clippy::too_many_lines)]
     pub fn schema_v1() -> Self {
         Self::new(vec![
             Migration::new(1, "create cache schema v1", schema::apply_schema_v1),
@@ -149,6 +151,11 @@ impl MigrationRegistry {
                 26,
                 "record file creation times at scan time",
                 schema::apply_schema_v26,
+            ),
+            Migration::new(
+                27,
+                "add the narrow note query table and stat fingerprints",
+                schema::apply_schema_v27,
             ),
         ])
     }
@@ -644,6 +651,75 @@ mod tests {
             })
             .expect("row should remain readable");
         assert_eq!(row, (7, "unknown".to_string()));
+    }
+
+    #[test]
+    fn note_query_migration_backfills_existing_documents() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let mut old_registry = MigrationRegistry::schema_v1();
+        old_registry.migrations.retain(|migration| migration.version <= 26);
+        old_registry.migrate(&mut connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO documents (id, path, filename, extension, content_hash,
+                     raw_frontmatter, file_size, file_mtime, parser_version, indexed_at, file_ctime)
+                 VALUES ('d1', 'A.md', 'A', 'md', X'01', NULL, 3, 4, 1, '1', 5),
+                        ('d2', 'B/C.md', 'C', 'md', X'02', NULL, 6, 7, 1, '1', NULL);
+                 INSERT INTO properties VALUES ('d1', 'status: open', '{\"status\":\"open\"}');
+                 INSERT INTO tags VALUES ('t1', 'd1', 'x'), ('t2', 'd1', 'y/z');
+                 INSERT INTO aliases VALUES ('a1', 'd2', 'See');",
+            )
+            .unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        let rows = connection
+            .prepare(
+                "SELECT path, filename, revision, file_ctime, json(properties), tags, aliases,
+                        stat_fingerprint IS NULL
+                 FROM note_query ORDER BY path",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, bool>(7)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "A.md".to_string(),
+                    "A".to_string(),
+                    vec![1],
+                    Some(5),
+                    Some("{\"status\":\"open\"}".to_string()),
+                    "[\"x\",\"y/z\"]".to_string(),
+                    "[]".to_string(),
+                    true,
+                ),
+                (
+                    "B/C.md".to_string(),
+                    "C".to_string(),
+                    vec![2],
+                    None,
+                    None,
+                    "[]".to_string(),
+                    "[\"See\"]".to_string(),
+                    true,
+                ),
+            ]
+        );
     }
 
     #[test]
