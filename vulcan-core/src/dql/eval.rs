@@ -16,7 +16,7 @@ use crate::expression::eval::{
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
-use crate::permissions::{combine_cte_fragments, PermissionFilter, PermissionGuard};
+use crate::permissions::{PermissionFilter, PermissionGuard};
 use crate::predicate::{Decision, Dialect, Predicate, RecordValues};
 use crate::properties::{
     build_note_filter_clause_from_expressions, hydrate_note_list_items,
@@ -1027,12 +1027,9 @@ fn matching_note_paths_for_filters(
         CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
     let filter_sql = build_note_filter_clause_from_expressions(filters)?;
     let permission_sql = filter.map(|filter| filter.document_scope_sql("_permission_documents"));
-    let mut sql = combine_cte_fragments([
-        permission_sql
-            .as_ref()
-            .map_or_else(String::new, |sql| sql.cte.clone()),
-        filter_sql.cte,
-    ]);
+    let mut sql = permission_sql
+        .as_ref()
+        .map_or_else(String::new, |sql| sql.cte.clone());
     sql.push_str(
         "SELECT documents.path
         FROM documents

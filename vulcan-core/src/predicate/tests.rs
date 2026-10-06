@@ -280,10 +280,16 @@ fn json_paths_select_exact_keys_with_any_spelling() {
         "n",
         "md",
     );
-    for source in ["`due date` = \"a\"", "`a.b` = \"d\""] {
-        if Parser::new(source).and_then(Parser::parse).is_ok() {
-            check(source, &note);
-        }
+    for (source, expected) in [
+        (r#"note["due date"] = "a""#, Decision::Match),
+        (r#"note["quo\"te"] = "b""#, Decision::Match),
+        (r#"note["back\\slash"] != "c""#, Decision::NoMatch),
+        (r#"note["a.b"] = "x""#, Decision::NoMatch),
+        (r#"startswith(note["due date"], "a")"#, Decision::Match),
+    ] {
+        let expr = Parser::new(source).unwrap().parse().unwrap();
+        assert!(Predicate::lower_dataview(&expr).is_useful(), "{source}");
+        assert_eq!(check(source, &note), expected, "{source}");
     }
     for (key, literal) in [("quo\"te", "b"), ("back\\slash", "c"), ("a.b", "d")] {
         let predicate = Predicate::Atom(Atom {

@@ -334,6 +334,15 @@ fn dataview_field(expr: &Expr) -> Option<Field> {
             (!matches!(normalized.as_str(), "this" | "file" | "note"))
                 .then(|| Field::Property(name.clone()))
         }
+        // `note["key"]` resolves like the bare identifier `key`.
+        Expr::IndexAccess(receiver, index) => match (receiver.as_ref(), index.as_ref()) {
+            (Expr::Identifier(name), Expr::Str(key))
+                if crate::expression::eval::normalize_field_name(name) == "note" =>
+            {
+                Some(Field::Property(key.clone()))
+            }
+            _ => None,
+        },
         Expr::FieldAccess(receiver, field) => {
             let Expr::Identifier(name) = receiver.as_ref() else {
                 return None;

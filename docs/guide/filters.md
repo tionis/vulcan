@@ -1,9 +1,8 @@
 # Typed Filters
 
-Vulcan uses one filter language across `query --where`, `ls --where`, saved reports, Bases, and
-query-driven mutation commands. Filters select indexed notes by property or file metadata; they
-are separate from full-text search expressions and from Dataview DQL. (`search --where` still
-uses its previous exact-SQL interpretation and is being moved onto the same semantics.)
+Vulcan uses one filter language across `query --where`, `search --where`, `ls --where`, saved
+reports, Bases, and query-driven mutation commands. Filters select indexed notes by property or
+file metadata; they are separate from full-text search expressions and from Dataview DQL.
 
 ## Filter shape
 
@@ -116,7 +115,9 @@ Always preview a mutating command with `--dry-run` when it supports one.
 - Use the [native query DSL](query-dsl.md) for one structured expression with projection,
   ordering, limits, or offsets.
 - Use `search` for ranked note text and add `--where` only when metadata should narrow those
-  results.
+  results. Filters select notes before ranking and `--limit` apply. Search's inline bracket
+  filters are the same filters: `[key]` is `key != null` and `[key:a OR b]` is
+  `key = a || key = b`, for any key spelling.
 - Use `vulcan query --language dql` for Dataview Query Language. DQL has a different grammar and
   should not be copied into `--where`.
 

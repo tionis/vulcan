@@ -5,9 +5,7 @@ use crate::expression::parse::Parser;
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::synthetic_file_link;
 use crate::parser::{parse_document, types::InlineFieldKind};
-use crate::permissions::{
-    combine_cte_fragments, PermissionError, PermissionFilter, PermissionGuard,
-};
+use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::tasknotes::{extract_tasknote, tasknotes_priority_weight, tasknotes_status_state};
 use crate::{CacheDatabase, CacheError, VaultConfig, VaultPaths};
 use regex::Regex;
@@ -518,12 +516,58 @@ pub fn query_notes_in_authorized_scope(
     query_notes_with_scope(paths, query, filter, Some(authorized_index))
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn query_notes_with_scope(
     paths: &VaultPaths,
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
+) -> Result<NotesReport, PropertyError> {
+    query_notes_core(
+        paths,
+        query,
+        filter,
+        authorized_index,
+        NoteQueryOutput::Notes,
+    )
+}
+
+/// Paths of the readable notes matching `filters`, with the semantics of
+/// [`query_notes`]. Decided matches are never hydrated.
+pub(crate) fn note_paths_matching_filters(
+    paths: &VaultPaths,
+    filters: &[String],
+    filter: Option<&PermissionFilter>,
+) -> Result<HashSet<String>, PropertyError> {
+    let query = NoteQuery {
+        filters: filters.to_vec(),
+        sort_by: None,
+        sort_descending: false,
+    };
+    Ok(
+        query_notes_core(paths, &query, filter, None, NoteQueryOutput::Paths)?
+            .notes
+            .into_iter()
+            .map(|note| note.document_path)
+            .collect(),
+    )
+}
+
+/// What [`query_notes_core`] must produce for each matching note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoteQueryOutput {
+    /// Fully hydrated records in query order.
+    Notes,
+    /// Only `document_path` is meaningful; rows are unsorted.
+    Paths,
+}
+
+#[allow(clippy::too_many_lines)]
+fn query_notes_core(
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+    output: NoteQueryOutput,
 ) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -534,15 +578,14 @@ pub(crate) fn query_notes_with_scope(
     let compiled = compile_note_filters(&query.filters)?;
 
     let NoteFilterSql {
-        cte,
         clause: filter_clause,
         params: filter_params,
     } = build_note_filter_clause_from_expressions(&compiled.sources)?;
     let permission_sql = filter
         .map(|filter| filter.document_scope_sql("_permission_documents"))
         .unwrap_or_default();
-    // Permission CTE bindings precede filter CTE and WHERE bindings in SQL.
-    let combined_cte = combine_cte_fragments([permission_sql.cte.clone(), cte]);
+    // Permission CTE bindings precede WHERE bindings in SQL.
+    let combined_cte = permission_sql.cte.clone();
     let mut params = permission_sql
         .params
         .into_iter()
@@ -675,8 +718,13 @@ pub(crate) fn query_notes_with_scope(
         }
     });
 
-    // Frontmatter and filesystem ctimes are read only for remaining rows.
-    let mut doc_ids_and_notes = rows
+    // Frontmatter, filesystem ctimes, and hydration are read only for rows
+    // that remain and need them: every row for full output, else only the
+    // rows evaluation reads.
+    let (to_hydrate, decided_matches): (Vec<_>, Vec<_>) = rows
+        .into_iter()
+        .partition(|(doc_id, _, _)| output == NoteQueryOutput::Notes || undecided.contains(doc_id));
+    let mut doc_ids_and_notes = to_hydrate
         .into_iter()
         .map(|(doc_id, mut note, raw_yaml)| {
             note.frontmatter = parse_frontmatter_json_object(&raw_yaml);
@@ -738,6 +786,16 @@ pub(crate) fn query_notes_with_scope(
             }
         }
         notes = filtered;
+    }
+
+    if output == NoteQueryOutput::Paths {
+        notes.extend(decided_matches.into_iter().map(|(_, note, _)| note));
+        return Ok(NotesReport {
+            filters: query.filters.clone(),
+            sort_by: None,
+            sort_descending: false,
+            notes,
+        });
     }
 
     if let Some(sort_by) = query.sort_by.as_deref() {
@@ -1616,11 +1674,9 @@ fn typed_property_json_value(
     }
 }
 
-/// The result of building a filter clause.
-/// `cte` is an optional `WITH ...` prefix to prepend before `SELECT`.
-/// `clause` is an `AND ...` fragment appended to the WHERE clause.
+/// A source filter clause: an `AND ...` fragment for the WHERE clause and its
+/// bindings, in order.
 pub(crate) struct NoteFilterSql {
-    pub cte: String,
     pub clause: String,
     pub params: Vec<SqlValue>,
 }
@@ -1628,84 +1684,13 @@ pub(crate) struct NoteFilterSql {
 pub(crate) fn build_note_filter_clause_from_expressions(
     filters: &[FilterExpression],
 ) -> Result<NoteFilterSql, PropertyError> {
-    // Separate has_tag filters (grouped by property key) from all other filters.
-    // Multiple has_tag filters on the same key are combined via INTERSECT on
-    // property_list_items — much faster than correlated EXISTS for large result sets.
-    let mut has_tag_by_key: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    let mut other_filters: Vec<&FilterExpression> = Vec::new();
-
-    for filter in filters {
-        if let FilterExpression::Condition(ParsedFilter {
-            field: FilterField::Property(key),
-            operator: FilterOperator::HasTag,
-            value: FilterValue::Text(value),
-        }) = filter
-        {
-            has_tag_by_key
-                .entry(key.clone())
-                .or_default()
-                .push(value.clone());
-        } else {
-            other_filters.push(filter);
-        }
-    }
-
-    let mut cte = String::new();
     let mut clause = String::new();
     let mut params = Vec::<SqlValue>::new();
-
-    // Generate CTEs + IN(INTERSECT) for has_tag groups
-    if !has_tag_by_key.is_empty() {
-        let mut cte_names: Vec<String> = Vec::new();
-        let mut cte_index = 0usize;
-
-        cte.push_str("WITH ");
-        for (key_index, (key, tags)) in has_tag_by_key.iter().enumerate() {
-            for tag in tags {
-                let cte_name = format!("_hts{cte_index}");
-                cte_names.push(cte_name.clone());
-                if cte_index > 0 {
-                    cte.push_str(", ");
-                }
-                cte.push_str(&cte_name);
-                cte.push_str(" AS (SELECT document_id FROM property_list_items WHERE key = ? AND value_text = ?");
-                params.push(SqlValue::Text(key.clone()));
-                params.push(SqlValue::Text(tag.clone()));
-                // Also capture nested subtags via range (e.g. "Femdom/" .. "Femdom0")
-                cte.push_str(" UNION ALL SELECT document_id FROM property_list_items WHERE key = ? AND value_text >= ? AND value_text < ?)");
-                params.push(SqlValue::Text(key.clone()));
-                params.push(SqlValue::Text(format!("{tag}/")));
-                params.push(SqlValue::Text(format!("{tag}0")));
-                cte_index += 1;
-            }
-            let _ = key_index; // suppress unused warning
-        }
-        cte.push(' ');
-
-        // IN (INTERSECT of all CTEs)
-        clause.push_str(" AND documents.id IN (");
-        for (i, name) in cte_names.iter().enumerate() {
-            if i > 0 {
-                clause.push_str(" INTERSECT ");
-            }
-            clause.push_str("SELECT document_id FROM ");
-            clause.push_str(name);
-        }
-        clause.push(')');
-    }
-
-    // Regular WHERE fragments for non-has_tag filters
-    for filter in &other_filters {
+    for filter in filters {
         clause.push_str(" AND ");
         clause.push_str(&filter_expression_sql_clause(filter, &mut params)?);
     }
-
-    Ok(NoteFilterSql {
-        cte,
-        clause,
-        params,
-    })
+    Ok(NoteFilterSql { clause, params })
 }
 
 pub(crate) fn rebuild_property_catalog(
@@ -2323,7 +2308,6 @@ pub(crate) enum FilterOperator {
     Gte,
     Lt,
     Lte,
-    Exists,
     StartsWith,
     Contains,
     HasTag,
@@ -2480,7 +2464,7 @@ pub(crate) fn note_filter_expression_source(filter: &str) -> Result<String, Prop
         return Ok(filter.to_string());
     };
     let field = match &parsed.field {
-        FilterField::Property(key) => key.clone(),
+        FilterField::Property(key) => property_expression_source(key),
         FilterField::FilePath => "file.path".to_string(),
         FilterField::FileName => "file.name".to_string(),
         FilterField::FileExt => "file.ext".to_string(),
@@ -2488,15 +2472,7 @@ pub(crate) fn note_filter_expression_source(filter: &str) -> Result<String, Prop
         FilterField::FileCtime => "file.ctime".to_string(),
         FilterField::FileTags => "file.tags".to_string(),
     };
-    let value = match &parsed.value {
-        FilterValue::Null => "null".to_string(),
-        FilterValue::Bool(value) => value.to_string(),
-        FilterValue::Number(value) => serde_json::Number::from_f64(*value)
-            .map_or_else(|| value.to_string(), |value| value.to_string()),
-        FilterValue::Date(value) | FilterValue::Text(value) => {
-            serde_json::to_string(value).expect("strings serialize")
-        }
-    };
+    let value = filter_value_source(&parsed.value);
     let comparison = |operator: &str| Ok(format!("{field} {operator} {value}"));
     match parsed.operator {
         FilterOperator::Eq => comparison("=="),
@@ -2505,7 +2481,6 @@ pub(crate) fn note_filter_expression_source(filter: &str) -> Result<String, Prop
         FilterOperator::Gte => comparison(">="),
         FilterOperator::Lt => comparison("<"),
         FilterOperator::Lte => comparison("<="),
-        FilterOperator::Exists => Ok(format!("{field} != null")),
         FilterOperator::StartsWith => Ok(format!("startswith({field}, {value})")),
         FilterOperator::Contains | FilterOperator::HasTag if is_tag_source(&parsed) => {
             Ok(format!("file.hasTag({value})"))
@@ -2532,6 +2507,48 @@ pub(crate) fn note_filter_expression_source(filter: &str) -> Result<String, Prop
                 serde_json::to_string(&pattern).expect("strings serialize")
             ))
         }
+    }
+}
+
+fn filter_value_source(value: &FilterValue) -> String {
+    match value {
+        FilterValue::Null => "null".to_string(),
+        FilterValue::Bool(value) => value.to_string(),
+        FilterValue::Number(value) => serde_json::Number::from_f64(*value)
+            .map_or_else(|| value.to_string(), |value| value.to_string()),
+        FilterValue::Date(value) | FilterValue::Text(value) => {
+            serde_json::to_string(value).expect("strings serialize")
+        }
+    }
+}
+
+/// `key == value` for any property key spelling, with the value read like a
+/// note filter value.
+pub(crate) fn property_equals_source(key: &str, value: &str) -> String {
+    format!(
+        "{} == {}",
+        property_expression_source(key),
+        filter_value_source(&parse_filter_value(value))
+    )
+}
+
+/// A property reference in expression syntax: the bare key when it reads
+/// back as that identifier, else `note["key"]`, which resolves the same way.
+pub(crate) fn property_expression_source(key: &str) -> String {
+    let bare = Parser::new(key)
+        .and_then(Parser::parse)
+        .is_ok_and(|expr| matches!(&expr, Expr::Identifier(name) if name == key))
+        && !matches!(
+            crate::expression::eval::normalize_field_name(key).as_str(),
+            "this" | "file" | "note"
+        );
+    if bare {
+        key.to_string()
+    } else {
+        format!(
+            "note[{}]",
+            serde_json::to_string(key).expect("strings serialize")
+        )
     }
 }
 
@@ -2623,68 +2640,20 @@ fn is_wikilink_literal(value: &str) -> bool {
     (value.starts_with("[[") || value.starts_with("![[")) && value.ends_with("]]")
 }
 
+/// SQL for the filter shapes that are sources (query-architecture §4.7):
+/// tags and file paths. Property comparisons are expressions, never SQL.
 fn filter_sql_clause(
     filter: &ParsedFilter,
     params: &mut Vec<SqlValue>,
 ) -> Result<String, PropertyError> {
     match (&filter.field, filter.operator, &filter.value) {
-        (FilterField::Property(key), FilterOperator::Exists, _) => {
-            params.push(SqlValue::Text(key.clone()));
-            Ok(property_exists_clause())
-        }
-        (FilterField::Property(key), FilterOperator::Contains, FilterValue::Text(value)) => {
-            params.push(SqlValue::Text(key.clone()));
-            params.push(SqlValue::Text(value.clone()));
-            Ok(
-                "EXISTS (SELECT 1 FROM property_list_items WHERE property_list_items.document_id = documents.id AND property_list_items.key = ? AND property_list_items.value_text = ?)".to_string(),
-            )
-        }
-        (FilterField::Property(key), FilterOperator::HasTag, FilterValue::Text(value)) => {
-            // Use UNION ALL so SQLite seeks the (key, value_text) index for
-            // both the exact match and the nested-tag prefix range, instead of
-            // falling back to a per-document tag scan.
-            // Range: value_text >= "tag/" AND value_text < "tag0"  ('0' is the
-            // character after '/' in ASCII, so this captures all "tag/…" entries)
-            params.push(SqlValue::Text(key.clone()));
-            params.push(SqlValue::Text(value.clone()));
-            params.push(SqlValue::Text(key.clone()));
-            params.push(SqlValue::Text(format!("{value}/")));
-            params.push(SqlValue::Text(format!("{value}0")));
-            Ok("EXISTS (\
-                    SELECT 1 FROM property_list_items \
-                    WHERE property_list_items.document_id = documents.id \
-                    AND property_list_items.key = ? AND property_list_items.value_text = ? \
-                    UNION ALL \
-                    SELECT 1 FROM property_list_items \
-                    WHERE property_list_items.document_id = documents.id \
-                    AND property_list_items.key = ? \
-                    AND property_list_items.value_text >= ? AND property_list_items.value_text < ? \
-                )"
-            .to_string())
-        }
-        (FilterField::Property(key), FilterOperator::StartsWith, FilterValue::Text(value)) => {
-            params.push(SqlValue::Text(key.clone()));
-            params.push(SqlValue::Text(format!("{value}%")));
-            Ok(property_effective_clause("pv.value_text LIKE ?"))
-        }
-        (FilterField::Property(key), operator, value) => {
-            property_scalar_clause(key, operator, value, params)
-        }
         (FilterField::FileTags, FilterOperator::Contains | FilterOperator::HasTag, value) => {
             file_tags_clause(filter.operator, value, params)
         }
-        (field, FilterOperator::Contains | FilterOperator::HasTag | FilterOperator::Exists, _) => {
-            Err(PropertyError::InvalidFilter(match field {
-                FilterField::Property(key) => key.clone(),
-                FilterField::FilePath => "file.path".to_string(),
-                FilterField::FileName => "file.name".to_string(),
-                FilterField::FileExt => "file.ext".to_string(),
-                FilterField::FileMtime => "file.mtime".to_string(),
-                FilterField::FileCtime => "file.ctime".to_string(),
-                FilterField::FileTags => "file.tags".to_string(),
-            }))
-        }
-        (field, operator, value) => Ok(file_field_clause(field, operator, value, params)?),
+        (FilterField::Property(key), _, _) => Err(PropertyError::InvalidFilter(format!(
+            "{key} is a property; property filters are expressions"
+        ))),
+        (field, operator, value) => file_field_clause(field, operator, value, params),
     }
 }
 
@@ -2702,85 +2671,6 @@ fn filter_expression_sql_clause(
             Ok(format!("({})", clauses.join(" OR ")))
         }
     }
-}
-
-fn property_scalar_clause(
-    key: &str,
-    operator: FilterOperator,
-    value: &FilterValue,
-    params: &mut Vec<SqlValue>,
-) -> Result<String, PropertyError> {
-    match value {
-        FilterValue::Null => {
-            let _ = sql_comparator(operator)?;
-            params.push(SqlValue::Text(key.to_string()));
-            Ok(property_effective_clause("pv.value_type = 'null'"))
-        }
-        FilterValue::Bool(value_bool) => {
-            let comparator = sql_comparator(operator)?;
-            params.push(SqlValue::Text(key.to_string()));
-            params.push(SqlValue::Integer(i64::from(*value_bool)));
-            Ok(property_effective_clause(&format!(
-                "pv.value_bool {comparator} ?"
-            )))
-        }
-        FilterValue::Number(value_number) => {
-            let comparator = sql_comparator(operator)?;
-            params.push(SqlValue::Text(key.to_string()));
-            params.push(SqlValue::Real(*value_number));
-            Ok(property_effective_clause(&format!(
-                "pv.value_number {comparator} ?"
-            )))
-        }
-        FilterValue::Date(value_date) => {
-            let comparator = sql_comparator(operator)?;
-            params.push(SqlValue::Text(key.to_string()));
-            params.push(SqlValue::Text(value_date.clone()));
-            Ok(property_effective_clause(&format!(
-                "pv.value_date {comparator} ?"
-            )))
-        }
-        FilterValue::Text(value_text) => {
-            params.push(SqlValue::Text(key.to_string()));
-            if operator == FilterOperator::StartsWith {
-                params.push(SqlValue::Text(format!("{value_text}%")));
-                Ok(property_effective_clause("pv.value_text LIKE ?"))
-            } else {
-                let comparator = sql_comparator(operator)?;
-                params.push(SqlValue::Text(value_text.clone()));
-                Ok(property_effective_clause(&format!(
-                    "pv.value_text {comparator} ?"
-                )))
-            }
-        }
-    }
-}
-
-fn property_exists_clause() -> String {
-    "EXISTS (SELECT 1 FROM property_values pv WHERE pv.document_id = documents.id AND pv.key = ?)"
-        .to_string()
-}
-
-fn property_effective_clause(predicate: &str) -> String {
-    format!(
-        "EXISTS (
-            SELECT 1
-            FROM property_values pv
-            WHERE pv.document_id = documents.id
-              AND pv.key = ?
-              AND (
-                    pv.origin = 'frontmatter'
-                    OR NOT EXISTS (
-                        SELECT 1
-                        FROM property_values pv_front
-                        WHERE pv_front.document_id = documents.id
-                          AND pv_front.key = pv.key
-                          AND pv_front.origin = 'frontmatter'
-                    )
-              )
-              AND {predicate}
-        )"
-    )
 }
 
 fn file_field_clause(
@@ -2886,9 +2776,6 @@ fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyErro
         FilterOperator::Gte => Ok(">="),
         FilterOperator::Lt => Ok("<"),
         FilterOperator::Lte => Ok("<="),
-        FilterOperator::Exists => Err(PropertyError::InvalidFilter(
-            "exists is an internal-only filter operator".to_string(),
-        )),
         FilterOperator::StartsWith => Err(PropertyError::InvalidFilter(
             "starts_with only supports text fields".to_string(),
         )),

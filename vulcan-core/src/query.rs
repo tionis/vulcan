@@ -220,8 +220,7 @@ impl QueryPredicate {
         };
         let operator = match parsed.operator {
             FilterOperator::Eq => QueryOperator::Eq,
-            // `exists` is `!= null`.
-            FilterOperator::Ne | FilterOperator::Exists => QueryOperator::Ne,
+            FilterOperator::Ne => QueryOperator::Ne,
             FilterOperator::Gt => QueryOperator::Gt,
             FilterOperator::Gte => QueryOperator::Gte,
             FilterOperator::Lt => QueryOperator::Lt,
@@ -232,13 +231,11 @@ impl QueryPredicate {
             FilterOperator::Matches => QueryOperator::Matches,
             FilterOperator::MatchesI => QueryOperator::MatchesI,
         };
-        let value = match (&parsed.value, parsed.operator) {
-            (_, FilterOperator::Exists) | (FilterValue::Null, _) => QueryValue::Null,
-            (FilterValue::Bool(value), _) => QueryValue::Bool(*value),
-            (FilterValue::Number(value), _) => QueryValue::Number(*value),
-            (FilterValue::Date(value) | FilterValue::Text(value), _) => {
-                QueryValue::Text(value.clone())
-            }
+        let value = match &parsed.value {
+            FilterValue::Null => QueryValue::Null,
+            FilterValue::Bool(value) => QueryValue::Bool(*value),
+            FilterValue::Number(value) => QueryValue::Number(*value),
+            FilterValue::Date(value) | FilterValue::Text(value) => QueryValue::Text(value.clone()),
         };
         Self {
             field,

@@ -1,7 +1,6 @@
-use crate::permissions::{combine_cte_fragments, PermissionFilter};
+use crate::permissions::PermissionFilter;
 use crate::properties::{
-    build_note_filter_clause_from_expressions, parse_note_filter_expression, FilterExpression,
-    FilterField, FilterOperator, FilterValue, ParsedFilter,
+    note_paths_matching_filters, property_equals_source, property_expression_source,
 };
 #[cfg(feature = "vectors")]
 use crate::vector::query_hybrid_candidates;
@@ -257,7 +256,11 @@ struct PreparedSearchQuery {
     path_prefix: Option<String>,
     has_property: Option<String>,
     filters: Vec<String>,
-    filter_expressions: Vec<FilterExpression>,
+    /// `--where` and bracket filters, as note filter strings.
+    note_filters: Vec<String>,
+    /// Readable notes matching `note_filters` (and the read scope); `None`
+    /// when there are no note filters.
+    filter_paths: Option<HashSet<String>>,
     sort: SearchSort,
     match_case: Option<bool>,
     file_terms: Vec<String>,
@@ -334,7 +337,7 @@ struct InlineFilterState {
     path_prefix: Option<String>,
     has_property: Option<String>,
     filters: Vec<String>,
-    filter_expressions: Vec<FilterExpression>,
+    filter_expressions: Vec<String>,
     invalid_filter: Option<String>,
     file_terms: Vec<String>,
     content_terms: Vec<SearchTerm>,
@@ -367,6 +370,13 @@ pub fn search_vault_with_filter(
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let mut prepared = prepare_search_query(query)?;
+    if !prepared.note_filters.is_empty() {
+        prepared.filter_paths = Some(note_paths_matching_filters(
+            paths,
+            &prepared.note_filters,
+            filter,
+        )?);
+    }
     let mut hits = execute_search(paths, connection, query, &prepared, filter)?;
 
     if hits.is_empty() && query.fuzzy && !query.raw_query {
@@ -527,12 +537,11 @@ fn keyword_search_hits(
     } else {
         limit
     };
-    let filter_sql = build_note_filter_clause_from_expressions(&prepared.filter_expressions)?;
     let permission_sql = filter
         .map(|filter| filter.document_scope_sql("_permission_documents"))
         .unwrap_or_default();
     let use_fts = !full_scan_for_regex && !candidate_query.trim().is_empty();
-    let mut sql = combine_cte_fragments([filter_sql.cte, permission_sql.cte.clone()]);
+    let mut sql = permission_sql.cte.clone();
     if use_fts {
         let _ = write!(
             sql,
@@ -610,10 +619,15 @@ fn keyword_search_hits(
         sql.push_str(" AND documents.filename LIKE ?");
         params.push(SqlValue::Text(format!("%{term}%")));
     }
-    sql.push_str(&filter_sql.clause);
+    // Note filters select documents before ranking and limits apply.
+    if let Some(filter_paths) = prepared.filter_paths.as_ref() {
+        sql.push_str(" AND documents.path IN (SELECT value FROM json_each(?))");
+        params.push(SqlValue::Text(
+            serde_json::to_string(filter_paths).expect("paths serialize"),
+        ));
+    }
     sql.push_str(&permission_sql.clause);
     sql.push_str(keyword_order_clause(sort, use_fts));
-    params.extend(filter_sql.params.clone());
     sql.push_str(" LIMIT ?");
     params.push(SqlValue::Integer(candidate_limit));
 
@@ -1368,7 +1382,7 @@ fn hybrid_search_hits(
         &prepared.semantic_text,
         candidate_limit,
     )?;
-    let filtered_paths = matching_note_paths(connection, &prepared.filter_expressions, filter)?;
+    let filtered_paths = matching_note_paths(connection, prepared, filter)?;
     let filtered_vector_hits =
         batch_filter_vector_hits(connection, vector_hits, prepared, filtered_paths.as_ref())?;
 
@@ -1786,33 +1800,26 @@ fn batch_filter_vector_hits(
 #[cfg(feature = "vectors")]
 fn matching_note_paths(
     connection: &Connection,
-    filters: &[FilterExpression],
+    prepared: &PreparedSearchQuery,
     filter: Option<&PermissionFilter>,
 ) -> Result<Option<HashSet<String>>, SearchError> {
-    if filters.is_empty() && filter.is_none() {
-        return Ok(None);
+    if let Some(filter_paths) = prepared.filter_paths.as_ref() {
+        // Already limited to the read scope.
+        return Ok(Some(filter_paths.clone()));
     }
-    let filter_sql = build_note_filter_clause_from_expressions(filters)?;
-    let permission_sql = filter
-        .map(|filter| filter.document_scope_sql("_permission_documents"))
-        .unwrap_or_default();
-    let mut sql = combine_cte_fragments([filter_sql.cte, permission_sql.cte.clone()]);
+    let Some(filter) = filter else {
+        return Ok(None);
+    };
+    let permission_sql = filter.document_scope_sql("_permission_documents");
+    let mut sql = permission_sql.cte;
     sql.push_str(
         "SELECT documents.path
         FROM documents
-        LEFT JOIN properties ON properties.document_id = documents.id
         WHERE documents.extension = 'md'",
     );
-    sql.push_str(&filter_sql.clause);
     sql.push_str(&permission_sql.clause);
     let mut statement = connection.prepare(&sql)?;
-    let params = permission_sql
-        .params
-        .into_iter()
-        .map(SqlValue::Text)
-        .chain(filter_sql.params)
-        .collect::<Vec<_>>();
-    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+    let rows = statement.query_map(params_from_iter(permission_sql.params.iter()), |row| {
         row.get::<_, String>(0)
     })?;
     Ok(Some(rows.collect::<Result<HashSet<_>, _>>()?))
@@ -1831,7 +1838,6 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
                 "global match-case is not supported with --raw-query".to_string(),
             ));
         }
-        let filter_expressions = parse_search_filter_expressions(&query.filters)?;
         return Ok(PreparedSearchQuery {
             effective_query: trimmed.to_string(),
             semantic_text: trimmed.to_string(),
@@ -1839,7 +1845,8 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
             path_prefix: query.path_prefix.clone(),
             has_property: query.has_property.clone(),
             filters: query.filters.clone(),
-            filter_expressions,
+            note_filters: query.filters.clone(),
+            filter_paths: None,
             sort: query.sort.unwrap_or_default(),
             match_case: query.match_case,
             file_terms: Vec::new(),
@@ -1859,7 +1866,7 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
 
     let tokens = lex_search_query(trimmed);
     let expression = parse_search_expression(&tokens)?;
-    let mut filter_expressions = parse_search_filter_expressions(&query.filters)?;
+    let mut note_filters = query.filters.clone();
     let mut filter_state = InlineFilterState::default();
     let filtered_expression = extract_inline_filters(expression, &mut filter_state, false);
     if let Some(error) = filter_state.invalid_filter.take() {
@@ -1890,7 +1897,7 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
     let semantic_text = semantic_parts.join(" ");
     let mut filters = query.filters.clone();
     filters.extend(filter_state.filters);
-    filter_expressions.extend(filter_state.filter_expressions);
+    note_filters.extend(filter_state.filter_expressions);
 
     Ok(PreparedSearchQuery {
         effective_query,
@@ -1899,7 +1906,8 @@ fn prepare_search_query(query: &SearchQuery) -> Result<PreparedSearchQuery, Sear
         path_prefix: query.path_prefix.clone().or(filter_state.path_prefix),
         has_property: query.has_property.clone().or(filter_state.has_property),
         filters,
-        filter_expressions,
+        note_filters,
+        filter_paths: None,
         sort: query.sort.unwrap_or_default(),
         match_case: query.match_case,
         file_terms: filter_state.file_terms,
@@ -2060,17 +2068,9 @@ fn inline_filter_value<'a>(token: &'a str, key: &str) -> Option<&'a str> {
     }
 }
 
-fn parse_search_filter_expressions(
-    filters: &[String],
-) -> Result<Vec<FilterExpression>, SearchError> {
-    filters
-        .iter()
-        .map(|filter| parse_note_filter_expression(filter).map(FilterExpression::Condition))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(SearchError::from)
-}
-
-fn parse_bracket_filter_expression(raw: &str) -> Result<FilterExpression, SearchError> {
+/// A bracket property filter as a note filter expression: `[key]` is
+/// `key != null` and `[key:a|b]` is `key == a || key == b`.
+fn bracket_filter_expression(raw: &str) -> Result<String, SearchError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(SearchError::InvalidQuery(
@@ -2079,11 +2079,7 @@ fn parse_bracket_filter_expression(raw: &str) -> Result<FilterExpression, Search
     }
 
     let Some((key, raw_value)) = trimmed.split_once(':') else {
-        return Ok(FilterExpression::Condition(ParsedFilter {
-            field: FilterField::Property(trimmed.to_string()),
-            operator: FilterOperator::Exists,
-            value: FilterValue::Null,
-        }));
+        return Ok(format!("{} != null", property_expression_source(trimmed)));
     };
     let key = key.trim();
     if key.is_empty() {
@@ -2098,18 +2094,11 @@ fn parse_bracket_filter_expression(raw: &str) -> Result<FilterExpression, Search
             "invalid bracket property filter: [{raw}]"
         )));
     }
-
-    if values.len() == 1 {
-        return Ok(FilterExpression::Condition(parse_note_filter_expression(
-            &format!("{key} = {}", values[0]),
-        )?));
-    }
-
-    let mut filters = Vec::new();
-    for value in values {
-        filters.push(parse_note_filter_expression(&format!("{key} = {value}"))?);
-    }
-    Ok(FilterExpression::Any(filters))
+    Ok(values
+        .iter()
+        .map(|value| format!("({})", property_equals_source(key, value)))
+        .collect::<Vec<_>>()
+        .join(" || "))
 }
 
 fn split_bracket_filter_values(text: &str) -> Vec<String> {
@@ -2435,7 +2424,7 @@ fn extract_inline_filters(
                 return None;
             }
 
-            match parse_bracket_filter_expression(&filter) {
+            match bracket_filter_expression(&filter) {
                 Ok(filter_expression) => {
                     state.filters.push(format!("[{filter}]"));
                     state.filter_expressions.push(filter_expression);
@@ -4307,6 +4296,63 @@ mod tests {
         assert_eq!(
             bracket_or_paths,
             vec!["Backlog.md".to_string(), "Done.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn search_filters_mean_their_expressions_and_precede_limits() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        for (path, contents) in [
+            // The densest match ranks first but is filtered out.
+            (
+                "Done.md",
+                "---\nstatus: done\n---\nrelease release release release\n",
+            ),
+            (
+                "Open.md",
+                "---\nstatus: open\ndue date: soon\n---\nrelease notes\n",
+            ),
+            ("None.md", "release plan\n"),
+        ] {
+            std::fs::write(vault_root.join(path), contents).expect("note should be written");
+        }
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let search = |text: &str, filters: &[&str], limit: Option<usize>| {
+            let mut found = search_vault(
+                &paths,
+                &SearchQuery {
+                    text: text.to_string(),
+                    filters: filters.iter().map(|filter| (*filter).to_string()).collect(),
+                    limit,
+                    ..SearchQuery::default()
+                },
+            )
+            .expect("search should succeed")
+            .hits
+            .into_iter()
+            .map(|hit| hit.document_path)
+            .collect::<Vec<_>>();
+            found.sort();
+            found.dedup();
+            found
+        };
+        // A missing status is null, so `!=` keeps notes without one.
+        assert_eq!(
+            search("release", &["status != done"], None),
+            ["None.md", "Open.md"]
+        );
+        // Limits apply to filtered hits, not to the ranked candidates.
+        assert_eq!(search("release", &["status != done"], Some(1)).len(), 1);
+        assert_eq!(search("release", &["status = done"], Some(1)), ["Done.md"]);
+        // Bracket filters accept any key spelling.
+        assert_eq!(search("release [due date]", &[], None), ["Open.md"]);
+        assert_eq!(search("release [due date:soon]", &[], None), ["Open.md"]);
+        assert_eq!(
+            search("release", &["status = \"open\" || status = null"], None),
+            ["None.md", "Open.md"]
         );
     }
 
