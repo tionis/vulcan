@@ -19,12 +19,11 @@ use crate::paths::VaultPaths;
 use crate::permissions::{PermissionFilter, PermissionGuard};
 use crate::predicate::{Decision, Dialect, Predicate, RecordValues};
 use crate::properties::{
-    build_note_filter_clause_from_expressions, hydrate_note_list_items,
-    load_note_index_with_filter, load_note_index_with_guard,
-    load_note_index_with_guard_deferring_lists, FilterExpression, FilterField, FilterOperator,
-    FilterValue, NoteRecord, ParsedFilter, PropertyError,
+    hydrate_note_list_items, load_note_index_with_filter, load_note_index_with_guard,
+    load_note_index_with_guard_deferring_lists, NoteRecord, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
+use crate::source::{SourceColumns, SourceExpr};
 
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
 use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr};
@@ -792,6 +791,7 @@ fn descendant_task_ids(rows: &[(bool, ExecutionRow)], roots: &HashSet<String>) -
     included
 }
 
+/// The readable notes a `FROM` clause selects, in one query.
 fn source_paths(
     paths: &VaultPaths,
     source: &CompiledDqlSourceExpr,
@@ -800,89 +800,80 @@ fn source_paths(
     all_notes: &[&NoteRecord],
     permission_filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, DqlEvalError> {
-    Ok(match source {
-        CompiledDqlSourceExpr::Filter(filter) => {
-            matching_note_paths_for_filters(paths, std::slice::from_ref(filter), permission_filter)?
-        }
-        CompiledDqlSourceExpr::Path(path) => matching_note_paths_for_filters(
-            paths,
-            &[path_source_filter(path, all_notes)],
-            permission_filter,
-        )?,
-        CompiledDqlSourceExpr::IncomingLink(target) => {
-            let target_note = resolve_source_target(target, current_file, note_lookup)?;
-            incoming_link_sources(paths, target_note)?
-        }
-        CompiledDqlSourceExpr::OutgoingLink(target) => {
-            let target_note = resolve_source_target(target, current_file, note_lookup)?;
-            outgoing_link_sources(paths, target_note)?
-        }
-        CompiledDqlSourceExpr::Not(inner) => {
-            let inner_paths = source_paths(
-                paths,
-                inner,
-                current_file,
-                note_lookup,
-                all_notes,
-                permission_filter,
-            )?;
-            all_notes
+    let source = resolve_source(source, current_file, note_lookup, all_notes)?;
+    let database =
+        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let permission_sql =
+        permission_filter.map(|filter| filter.document_scope_sql("_permission_documents"));
+    let mut params = permission_sql
+        .as_ref()
+        .map(|sql| {
+            sql.params
                 .iter()
-                .filter(|note| !inner_paths.contains(note.document_path.as_str()))
-                .map(|note| note.document_path.clone())
-                .collect()
-        }
+                .cloned()
+                .map(rusqlite::types::Value::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut sql = permission_sql
+        .as_ref()
+        .map_or_else(String::new, |sql| sql.cte.clone());
+    sql.push_str("SELECT documents.path FROM documents WHERE documents.extension = 'md' AND ");
+    sql.push_str(&source.render_sql(&SourceColumns::DOCUMENTS, &mut params));
+    if let Some(permission_sql) = permission_sql.as_ref() {
+        sql.push_str(&permission_sql.clause);
+    }
+    let mut statement = database
+        .connection()
+        .prepare(&sql)
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| DqlEvalError::Message(error.to_string()))
+}
+
+/// Resolve DQL's vault-dependent sources: a path names a folder or a file
+/// depending on what exists, and link sources name resolved notes.
+fn resolve_source(
+    source: &CompiledDqlSourceExpr,
+    current_file: Option<&str>,
+    note_lookup: &HashMap<String, NoteRecord>,
+    all_notes: &[&NoteRecord],
+) -> Result<SourceExpr, DqlEvalError> {
+    let resolve = |inner| resolve_source(inner, current_file, note_lookup, all_notes);
+    Ok(match source {
+        CompiledDqlSourceExpr::Tag(tag) => SourceExpr::Tag(tag.clone()),
+        CompiledDqlSourceExpr::Path(path) => path_source(path, all_notes),
+        CompiledDqlSourceExpr::IncomingLink(target) => SourceExpr::LinksTo(
+            resolve_source_target(target, current_file, note_lookup)?
+                .document_id
+                .clone(),
+        ),
+        CompiledDqlSourceExpr::OutgoingLink(target) => SourceExpr::LinkedFrom(
+            resolve_source_target(target, current_file, note_lookup)?
+                .document_id
+                .clone(),
+        ),
+        CompiledDqlSourceExpr::Not(inner) => SourceExpr::Not(Box::new(resolve(inner)?)),
         CompiledDqlSourceExpr::And(left, right) => {
-            let left_paths = source_paths(
-                paths,
-                left,
-                current_file,
-                note_lookup,
-                all_notes,
-                permission_filter,
-            )?;
-            let right_paths = source_paths(
-                paths,
-                right,
-                current_file,
-                note_lookup,
-                all_notes,
-                permission_filter,
-            )?;
-            left_paths.intersection(&right_paths).cloned().collect()
+            SourceExpr::And(vec![resolve(left)?, resolve(right)?])
         }
         CompiledDqlSourceExpr::Or(left, right) => {
-            let mut left_paths = source_paths(
-                paths,
-                left,
-                current_file,
-                note_lookup,
-                all_notes,
-                permission_filter,
-            )?;
-            left_paths.extend(source_paths(
-                paths,
-                right,
-                current_file,
-                note_lookup,
-                all_notes,
-                permission_filter,
-            )?);
-            left_paths
+            SourceExpr::Or(vec![resolve(left)?, resolve(right)?])
         }
     })
 }
 
-fn path_source_filter(path: &str, all_notes: &[&NoteRecord]) -> FilterExpression {
+fn path_source(path: &str, all_notes: &[&NoteRecord]) -> SourceExpr {
     if Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
     {
-        return FilterExpression::Condition(ParsedFilter {
-            field: FilterField::FilePath,
-            operator: FilterOperator::Eq,
-            value: FilterValue::Text(path.to_string()),
-        });
+        return SourceExpr::Path(path.to_string());
     }
 
     let normalized = path.trim_end_matches('/');
@@ -895,39 +886,13 @@ fn path_source_filter(path: &str, all_notes: &[&NoteRecord]) -> FilterExpression
         candidate.document_path == normalized || candidate.document_path == exact_file
     });
 
-    if path.contains('/') && file_exists {
-        exact_path_filter(normalized, &exact_file)
-    } else if folder_exists {
-        FilterExpression::Condition(ParsedFilter {
-            field: FilterField::FilePath,
-            operator: FilterOperator::StartsWith,
-            value: FilterValue::Text(folder_prefix),
-        })
-    } else {
-        exact_path_filter(normalized, &exact_file)
-    }
-}
-
-fn exact_path_filter(normalized: &str, exact_file: &str) -> FilterExpression {
-    if normalized == exact_file {
-        FilterExpression::Condition(ParsedFilter {
-            field: FilterField::FilePath,
-            operator: FilterOperator::Eq,
-            value: FilterValue::Text(normalized.to_string()),
-        })
-    } else {
-        FilterExpression::Any(vec![
-            ParsedFilter {
-                field: FilterField::FilePath,
-                operator: FilterOperator::Eq,
-                value: FilterValue::Text(normalized.to_string()),
-            },
-            ParsedFilter {
-                field: FilterField::FilePath,
-                operator: FilterOperator::Eq,
-                value: FilterValue::Text(exact_file.to_string()),
-            },
+    if (path.contains('/') && file_exists) || !folder_exists {
+        SourceExpr::Or(vec![
+            SourceExpr::Path(normalized.to_string()),
+            SourceExpr::Path(exact_file),
         ])
+    } else {
+        SourceExpr::Folder(normalized.to_string())
     }
 }
 
@@ -958,110 +923,6 @@ fn resolve_source_target<'a>(
             })
         }
     }
-}
-
-fn incoming_link_sources(
-    paths: &VaultPaths,
-    target_note: &NoteRecord,
-) -> Result<HashSet<String>, DqlEvalError> {
-    let database =
-        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let mut statement = database
-        .connection()
-        .prepare(
-            "
-            SELECT source.path
-            FROM links
-            JOIN documents AS source ON source.id = links.source_document_id
-            WHERE links.resolved_target_id = ?1
-            ORDER BY source.path
-            ",
-        )
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let rows = statement
-        .query_map([target_note.document_id.as_str()], |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    rows.collect::<Result<HashSet<_>, _>>()
-        .map_err(|error| DqlEvalError::Message(error.to_string()))
-}
-
-fn outgoing_link_sources(
-    paths: &VaultPaths,
-    target_note: &NoteRecord,
-) -> Result<HashSet<String>, DqlEvalError> {
-    let database =
-        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let mut statement = database
-        .connection()
-        .prepare(
-            "
-            SELECT target.path
-            FROM links
-            JOIN documents AS target ON target.id = links.resolved_target_id
-            WHERE links.source_document_id = ?1
-            ORDER BY target.path
-            ",
-        )
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let rows = statement
-        .query_map([target_note.document_id.as_str()], |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    rows.collect::<Result<HashSet<_>, _>>()
-        .map_err(|error| DqlEvalError::Message(error.to_string()))
-}
-
-fn matching_note_paths_for_filters(
-    paths: &VaultPaths,
-    filters: &[FilterExpression],
-    filter: Option<&PermissionFilter>,
-) -> Result<HashSet<String>, DqlEvalError> {
-    if filters.is_empty() {
-        return Ok(HashSet::new());
-    }
-
-    let database =
-        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let filter_sql = build_note_filter_clause_from_expressions(filters)?;
-    let permission_sql = filter.map(|filter| filter.document_scope_sql("_permission_documents"));
-    let mut sql = permission_sql
-        .as_ref()
-        .map_or_else(String::new, |sql| sql.cte.clone());
-    sql.push_str(
-        "SELECT documents.path
-        FROM documents
-        LEFT JOIN properties ON properties.document_id = documents.id
-        WHERE documents.extension = 'md'",
-    );
-    sql.push_str(&filter_sql.clause);
-    if let Some(permission_sql) = permission_sql.as_ref() {
-        sql.push_str(&permission_sql.clause);
-    }
-    let mut params = Vec::new();
-    if let Some(permission_sql) = permission_sql.as_ref() {
-        params.extend(
-            permission_sql
-                .params
-                .iter()
-                .cloned()
-                .map(rusqlite::types::Value::from),
-        );
-    }
-    params.extend(filter_sql.params);
-    let mut statement = database
-        .connection()
-        .prepare(&sql)
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    rows.collect::<Result<HashSet<_>, _>>()
-        .map_err(|error| DqlEvalError::Message(error.to_string()))
 }
 
 fn compare_sort_key_lists(left: &[Value], right: &[Value], keys: &[super::DqlSortKey]) -> Ordering {
@@ -1724,6 +1585,41 @@ LIMIT 1"#,
             let result = evaluate_dql(&paths, source, None).expect("query should evaluate");
             assert_eq!(result.result_count, 1, "{source}");
         }
+    }
+
+    #[test]
+    fn from_sources_select_byte_exact_folders_and_nested_tags() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, contents) in [
+            ("Projects/A.md", "#project\n[[B]]\n"),
+            ("projects/B.md", "#project/sub\n"),
+            ("A_b/C.md", "#projects\n[[A]]\n"),
+            ("Axb/D.md", "[[A]]\n"),
+        ] {
+            let target = root.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        let count = |source: &str| {
+            evaluate_dql(&paths, source, None)
+                .expect("query should evaluate")
+                .result_count
+        };
+        // Folders are byte-exact: no case folding, and `_` is not a wildcard.
+        assert_eq!(count("LIST FROM \"projects\""), 1);
+        assert_eq!(count("LIST FROM \"Projects\""), 1);
+        assert_eq!(count("LIST FROM \"A_b\""), 1);
+        // Tags include nested tags but not tags sharing a prefix.
+        assert_eq!(count("LIST FROM #project"), 2);
+        // Combinations and link sources resolve in one query.
+        assert_eq!(count("LIST FROM #project AND -\"projects\""), 1);
+        assert_eq!(count("LIST FROM [[A]]"), 2);
+        assert_eq!(count("LIST FROM outgoing([[A]])"), 1);
+        assert_eq!(count("LIST FROM [[A]] AND -#projects"), 1);
     }
 
     #[test]

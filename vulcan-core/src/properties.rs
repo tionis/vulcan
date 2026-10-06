@@ -577,10 +577,6 @@ fn query_notes_core(
 
     let compiled = compile_note_filters(&query.filters)?;
 
-    let NoteFilterSql {
-        clause: filter_clause,
-        params: filter_params,
-    } = build_note_filter_clause_from_expressions(&compiled.sources)?;
     let permission_sql = filter
         .map(|filter| filter.document_scope_sql("_permission_documents"))
         .unwrap_or_default();
@@ -590,7 +586,6 @@ fn query_notes_core(
         .params
         .into_iter()
         .map(SqlValue::Text)
-        .chain(filter_params)
         .collect::<Vec<_>>();
 
     let mut sql = combined_cte;
@@ -610,7 +605,10 @@ fn query_notes_core(
         LEFT JOIN properties ON properties.document_id = documents.id
         WHERE documents.extension = 'md'",
     );
-    sql.push_str(&filter_clause);
+    for source in &compiled.sources {
+        sql.push_str(" AND ");
+        sql.push_str(&source.render_sql(&crate::source::SourceColumns::DOCUMENTS, &mut params));
+    }
     sql.push_str(&permission_sql.clause);
     // Decided non-matches of expression filters never load; the clause's
     // plain placeholders follow every other binding.
@@ -1674,25 +1672,6 @@ fn typed_property_json_value(
     }
 }
 
-/// A source filter clause: an `AND ...` fragment for the WHERE clause and its
-/// bindings, in order.
-pub(crate) struct NoteFilterSql {
-    pub clause: String,
-    pub params: Vec<SqlValue>,
-}
-
-pub(crate) fn build_note_filter_clause_from_expressions(
-    filters: &[FilterExpression],
-) -> Result<NoteFilterSql, PropertyError> {
-    let mut clause = String::new();
-    let mut params = Vec::<SqlValue>::new();
-    for filter in filters {
-        clause.push_str(" AND ");
-        clause.push_str(&filter_expression_sql_clause(filter, &mut params)?);
-    }
-    Ok(NoteFilterSql { clause, params })
-}
-
 pub(crate) fn rebuild_property_catalog(
     transaction: &rusqlite::Transaction<'_>,
     configured_types: &BTreeMap<String, String>,
@@ -2331,12 +2310,6 @@ pub(crate) struct ParsedFilter {
     pub value: FilterValue,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum FilterExpression {
-    Condition(ParsedFilter),
-    Any(Vec<ParsedFilter>),
-}
-
 pub(crate) fn parse_note_filter_expression(filter: &str) -> Result<ParsedFilter, PropertyError> {
     parse_filter_expression(filter)
 }
@@ -2407,7 +2380,7 @@ fn is_legacy_filter_field(field: &str) -> bool {
 /// [`NoteQuery`] filters compiled per query-architecture §4.7: tag sources
 /// run exactly in SQL, and every other filter is a Vulcan expression.
 struct CompiledNoteFilters {
-    sources: Vec<FilterExpression>,
+    sources: Vec<crate::source::SourceExpr>,
     expressions: Vec<CompiledExpressionFilter>,
 }
 
@@ -2423,8 +2396,9 @@ fn compile_note_filters(filters: &[String]) -> Result<CompiledNoteFilters, Prope
     let mut expressions = Vec::new();
     for filter in filters {
         if let Ok(parsed) = parse_filter_expression(filter) {
-            if is_tag_source(&parsed) {
-                sources.push(FilterExpression::Condition(parsed));
+            if let (true, FilterValue::Text(tag)) = (is_tag_source(&parsed), &parsed.value) {
+                let tag = tag.strip_prefix('#').unwrap_or(tag);
+                sources.push(crate::source::SourceExpr::Tag(tag.to_string()));
                 continue;
             }
         }
@@ -2640,160 +2614,6 @@ fn is_wikilink_literal(value: &str) -> bool {
     (value.starts_with("[[") || value.starts_with("![[")) && value.ends_with("]]")
 }
 
-/// SQL for the filter shapes that are sources (query-architecture §4.7):
-/// tags and file paths. Property comparisons are expressions, never SQL.
-fn filter_sql_clause(
-    filter: &ParsedFilter,
-    params: &mut Vec<SqlValue>,
-) -> Result<String, PropertyError> {
-    match (&filter.field, filter.operator, &filter.value) {
-        (FilterField::FileTags, FilterOperator::Contains | FilterOperator::HasTag, value) => {
-            file_tags_clause(filter.operator, value, params)
-        }
-        (FilterField::Property(key), _, _) => Err(PropertyError::InvalidFilter(format!(
-            "{key} is a property; property filters are expressions"
-        ))),
-        (field, operator, value) => file_field_clause(field, operator, value, params),
-    }
-}
-
-fn filter_expression_sql_clause(
-    filter: &FilterExpression,
-    params: &mut Vec<SqlValue>,
-) -> Result<String, PropertyError> {
-    match filter {
-        FilterExpression::Condition(condition) => filter_sql_clause(condition, params),
-        FilterExpression::Any(filters) => {
-            let mut clauses = Vec::new();
-            for condition in filters {
-                clauses.push(filter_sql_clause(condition, params)?);
-            }
-            Ok(format!("({})", clauses.join(" OR ")))
-        }
-    }
-}
-
-fn file_field_clause(
-    field: &FilterField,
-    operator: FilterOperator,
-    value: &FilterValue,
-    params: &mut Vec<SqlValue>,
-) -> Result<String, PropertyError> {
-    let (column, sql_value) = match (field, value) {
-        (FilterField::FilePath, FilterValue::Text(value)) => {
-            ("documents.path", SqlValue::Text(value.clone()))
-        }
-        (FilterField::FileName, FilterValue::Text(value)) => {
-            ("documents.filename", SqlValue::Text(value.clone()))
-        }
-        (FilterField::FileExt, FilterValue::Text(value)) => {
-            ("documents.extension", SqlValue::Text(value.clone()))
-        }
-        (FilterField::FileMtime, FilterValue::Number(value)) => (
-            "documents.file_mtime",
-            SqlValue::Integer(number_to_i64(*value).ok_or_else(|| {
-                PropertyError::InvalidFilter("file.mtime expects an integer value".to_string())
-            })?),
-        ),
-        (FilterField::FileCtime, _) => {
-            return Err(PropertyError::InvalidFilter(
-                "file.ctime is evaluated after filesystem metadata is loaded".to_string(),
-            ));
-        }
-        (FilterField::FileTags, FilterValue::Text(_)) => {
-            return file_tags_clause(operator, value, params);
-        }
-        _ => {
-            return Err(PropertyError::InvalidFilter(match field {
-                FilterField::Property(key) => key.clone(),
-                FilterField::FilePath => "file.path".to_string(),
-                FilterField::FileName => "file.name".to_string(),
-                FilterField::FileExt => "file.ext".to_string(),
-                FilterField::FileMtime => "file.mtime".to_string(),
-                FilterField::FileCtime => "file.ctime".to_string(),
-                FilterField::FileTags => "file.tags".to_string(),
-            }))
-        }
-    };
-    params.push(sql_value);
-    match operator {
-        FilterOperator::StartsWith => {
-            let SqlValue::Text(value) = params.pop().expect("starts_with param should exist")
-            else {
-                unreachable!("starts_with only accepts text values");
-            };
-            params.push(SqlValue::Text(format!("{value}%")));
-            Ok(format!("{column} LIKE ?"))
-        }
-        _ => Ok(format!("{column} {} ?", sql_comparator(operator)?)),
-    }
-}
-
-fn file_tags_clause(
-    operator: FilterOperator,
-    value: &FilterValue,
-    params: &mut Vec<SqlValue>,
-) -> Result<String, PropertyError> {
-    let FilterValue::Text(value_text) = value else {
-        return Err(PropertyError::InvalidFilter(
-            "file.tags filters expect text values".to_string(),
-        ));
-    };
-    let normalized = value_text.strip_prefix('#').unwrap_or(value_text.as_str());
-    match operator {
-        FilterOperator::Contains => {
-            params.push(SqlValue::Text(normalized.to_string()));
-            Ok(
-                "EXISTS (SELECT 1 FROM tags WHERE tags.document_id = documents.id AND tags.tag_text = ?)"
-                    .to_string(),
-            )
-        }
-        FilterOperator::HasTag => {
-            params.push(SqlValue::Text(normalized.to_string()));
-            params.push(SqlValue::Text(format!("{normalized}/")));
-            params.push(SqlValue::Text(format!("{normalized}0")));
-            Ok("EXISTS (\
-                    SELECT 1 FROM tags \
-                    WHERE tags.document_id = documents.id AND tags.tag_text = ? \
-                    UNION ALL \
-                    SELECT 1 FROM tags \
-                    WHERE tags.document_id = documents.id \
-                    AND tags.tag_text >= ? AND tags.tag_text < ? \
-                )"
-            .to_string())
-        }
-        _ => Err(PropertyError::InvalidFilter(
-            "file.tags only supports contains and has_tag".to_string(),
-        )),
-    }
-}
-
-fn sql_comparator(operator: FilterOperator) -> Result<&'static str, PropertyError> {
-    match operator {
-        FilterOperator::Eq => Ok("="),
-        FilterOperator::Ne => Ok("<>"),
-        FilterOperator::Gt => Ok(">"),
-        FilterOperator::Gte => Ok(">="),
-        FilterOperator::Lt => Ok("<"),
-        FilterOperator::Lte => Ok("<="),
-        FilterOperator::StartsWith => Err(PropertyError::InvalidFilter(
-            "starts_with only supports text fields".to_string(),
-        )),
-        FilterOperator::Contains => Err(PropertyError::InvalidFilter(
-            "contains only supports property lists".to_string(),
-        )),
-        FilterOperator::HasTag => Err(PropertyError::InvalidFilter(
-            "has_tag only supports property lists".to_string(),
-        )),
-        FilterOperator::Matches => Err(PropertyError::InvalidFilter(
-            "matches is applied after hydration, not as a raw SQL comparator".to_string(),
-        )),
-        FilterOperator::MatchesI => Err(PropertyError::InvalidFilter(
-            "matches_i is applied after hydration, not as a raw SQL comparator".to_string(),
-        )),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum SortKey {
     Null,
@@ -2849,14 +2669,6 @@ fn sort_key_rank(key: &SortKey) -> u8 {
         SortKey::Number(_) => 3,
         SortKey::Text(_) => 4,
     }
-}
-
-fn number_to_i64(value: f64) -> Option<i64> {
-    if !value.is_finite() || value.fract() != 0.0 {
-        return None;
-    }
-
-    format!("{value:.0}").parse::<i64>().ok()
 }
 
 #[cfg(test)]

@@ -97,6 +97,7 @@ pub mod saved_queries;
 pub mod scan;
 pub mod search;
 pub mod selection;
+pub(crate) mod source;
 pub mod suggestions;
 pub mod tasknotes;
 pub mod tasks;

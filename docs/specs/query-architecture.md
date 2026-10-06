@@ -145,6 +145,13 @@ incoming and outgoing link (including `this`), and `and`/`or`/`not`. DQL `FROM`,
 sources, Bases folder and tag filters, Tasks path and tag filters, and mdbase `types` and path
 prefixes all compile into it. Candidate selection for a source runs in SQL against the store.
 
+`vulcan-core::source::SourceExpr` implements the note-store part: folder, exact path, tag,
+links-to, linked-from, and `and`/`or`/`not`, rendered as one SQL boolean that is never NULL, so
+`not` is the complement within the query's readable notes. Folders and tags are byte-exact
+(`folder/` ≤ path < `folder0` under BINARY collation; a tag or `tag/…`). Frontends resolve
+vault-dependent syntax first: DQL turns a `FROM "x"` path into a folder or a file by what
+exists, and link targets (including `this`) into document ids.
+
 ### 4.5 Shared logical plan
 
 `StructuredQueryPlan` becomes the plan every frontend compiles into. It holds:

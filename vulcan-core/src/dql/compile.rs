@@ -1,6 +1,5 @@
 use crate::expression::ast::Expr;
 use crate::predicate::Predicate;
-use crate::properties::{FilterExpression, FilterField, FilterOperator, FilterValue, ParsedFilter};
 
 use super::ast::{
     DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery, DqlQueryType, DqlSortKey,
@@ -36,7 +35,9 @@ pub(crate) struct CompiledWhereClause {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CompiledDqlSourceExpr {
-    Filter(FilterExpression),
+    /// A tag without `#`, including nested tags.
+    Tag(String),
+    /// A folder or file, resolved against the vault when evaluated.
     Path(String),
     IncomingLink(DqlLinkTarget),
     OutgoingLink(DqlLinkTarget),
@@ -77,11 +78,7 @@ pub(crate) fn compile_dql(query: &DqlQuery) -> CompiledDqlQuery {
 fn compile_source(source: &DqlSourceExpr) -> CompiledDqlSourceExpr {
     match source {
         DqlSourceExpr::Tag(tag) => {
-            CompiledDqlSourceExpr::Filter(FilterExpression::Condition(ParsedFilter {
-                field: FilterField::FileTags,
-                operator: FilterOperator::HasTag,
-                value: FilterValue::Text(tag.strip_prefix('#').unwrap_or(tag.as_str()).to_string()),
-            }))
+            CompiledDqlSourceExpr::Tag(tag.strip_prefix('#').unwrap_or(tag.as_str()).to_string())
         }
         DqlSourceExpr::Path(path) => CompiledDqlSourceExpr::Path(path.clone()),
         DqlSourceExpr::IncomingLink(target) => CompiledDqlSourceExpr::IncomingLink(target.clone()),
@@ -114,13 +111,7 @@ mod tests {
             compiled.commands,
             vec![CompiledDqlCommand::From(CompiledDqlSourceExpr::Or(
                 Box::new(CompiledDqlSourceExpr::And(
-                    Box::new(CompiledDqlSourceExpr::Filter(FilterExpression::Condition(
-                        ParsedFilter {
-                            field: FilterField::FileTags,
-                            operator: FilterOperator::HasTag,
-                            value: FilterValue::Text("project".to_string()),
-                        }
-                    ))),
+                    Box::new(CompiledDqlSourceExpr::Tag("project".to_string())),
                     Box::new(CompiledDqlSourceExpr::Path("Projects".to_string())),
                 )),
                 Box::new(CompiledDqlSourceExpr::OutgoingLink(
