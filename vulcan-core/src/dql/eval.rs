@@ -938,6 +938,44 @@ fn descendant_task_ids(rows: &[(bool, ExecutionRow)], roots: &HashSet<String>) -
     included
 }
 
+/// The notes a Dataview source string (what follows `FROM`) selects within
+/// `note_lookup`, the caller's readable universe, in one query (QRY.2). Used
+/// by `DataviewJS` `dv.pages(source)`.
+pub(crate) fn select_source_paths(
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
+    note_lookup: &HashMap<String, NoteRecord>,
+    permission_filter: Option<&PermissionFilter>,
+) -> Result<HashSet<String>, DqlEvalError> {
+    let query = parse_dql(&format!("LIST FROM {source}")).map_err(DqlEvalError::Parse)?;
+    let compiled = compile_dql(&query);
+    let Some(CompiledDqlCommand::From(source)) = compiled
+        .commands
+        .iter()
+        .find(|command| matches!(command, CompiledDqlCommand::From(_)))
+    else {
+        return Err(DqlEvalError::Message(
+            "expected a Dataview source".to_string(),
+        ));
+    };
+    let all_notes = sorted_notes(note_lookup);
+    let mut selected = source_paths(
+        paths,
+        source,
+        current_file,
+        note_lookup,
+        &all_notes,
+        permission_filter,
+    )?;
+    let readable = all_notes
+        .iter()
+        .map(|note| note.document_path.as_str())
+        .collect::<HashSet<_>>();
+    selected.retain(|path| readable.contains(path.as_str()));
+    Ok(selected)
+}
+
 /// The readable notes a `FROM` clause selects, in one query.
 fn source_paths(
     paths: &VaultPaths,

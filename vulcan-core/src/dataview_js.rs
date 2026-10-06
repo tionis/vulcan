@@ -293,7 +293,7 @@ mod runtime {
         resolve_periodic_note, today_utc_string,
     };
     use crate::permissions::{resolve_permission_profile, PermissionGuard, ProfilePermissionGuard};
-    use crate::properties::{load_note_index, NoteRecord};
+    use crate::properties::NoteRecord;
     use crate::refactor::{
         merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property,
         set_note_property,
@@ -314,7 +314,7 @@ mod runtime {
     struct JsEvalState {
         paths: VaultPaths,
         current_file: Option<String>,
-        note_index: Mutex<HashMap<String, NoteRecord>>,
+        note_index: Mutex<JsNoteIndex>,
         periodic_config: crate::PeriodicConfig,
         inbox_config: crate::InboxConfig,
         web_config: WebConfig,
@@ -326,6 +326,77 @@ mod runtime {
         transaction: Mutex<Option<JsTransactionState>>,
         tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
         mutation_committer: Option<Arc<dyn DataviewJsMutationCommitter>>,
+    }
+
+    /// The runtime's page universe (QRY.3): every readable note with stored
+    /// fields and aliases, hydrated on demand where a page object or helper
+    /// needs its file object (tags, links, inlinks, tasks, lists).
+    struct JsNoteIndex {
+        notes: HashMap<String, NoteRecord>,
+        by_path: HashMap<String, String>,
+        hydrated: HashSet<String>,
+        complete: bool,
+    }
+
+    /// What a runtime call reads from the page universe.
+    enum IndexNeed {
+        /// Stored fields only.
+        Nothing,
+        /// The file objects of these paths.
+        Paths(Vec<String>),
+        /// Every note's file object.
+        All,
+    }
+
+    impl JsNoteIndex {
+        fn new(notes: HashMap<String, NoteRecord>) -> Self {
+            let by_path = notes
+                .iter()
+                .map(|(key, note)| (note.document_path.clone(), key.clone()))
+                .collect();
+            Self {
+                notes,
+                by_path,
+                hydrated: HashSet::new(),
+                complete: false,
+            }
+        }
+
+        fn note(&self, path: &str) -> Option<&NoteRecord> {
+            self.by_path.get(path).and_then(|key| self.notes.get(key))
+        }
+
+        fn hydrate(&mut self, state: &JsEvalState, need: IndexNeed) -> Result<(), DataviewJsError> {
+            let wanted = match need {
+                IndexNeed::Nothing => return Ok(()),
+                IndexNeed::All if self.complete => return Ok(()),
+                IndexNeed::All => {
+                    self.complete = true;
+                    self.by_path.keys().cloned().collect::<Vec<_>>()
+                }
+                IndexNeed::Paths(paths) => paths,
+            };
+            let missing = wanted
+                .into_iter()
+                .filter(|path| self.by_path.contains_key(path) && !self.hydrated.contains(path))
+                .collect::<HashSet<_>>();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let scope = state.permissions.as_ref().map_or(
+                crate::properties::NoteIndexReadScope::Filter(None),
+                |guard| crate::properties::NoteIndexReadScope::Guard(guard),
+            );
+            crate::properties::hydrate_note_index_entries(
+                &state.paths,
+                scope,
+                &mut self.notes,
+                &missing,
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            self.hydrated.extend(missing);
+            Ok(())
+        }
     }
 
     #[derive(Debug, Default)]
@@ -3546,7 +3617,7 @@ globalThis.Function = undefined;
             let state = Arc::new(JsEvalState {
                 paths: paths.clone(),
                 current_file: current_file.map(ToOwned::to_owned),
-                note_index: Mutex::new(note_index),
+                note_index: Mutex::new(JsNoteIndex::new(note_index)),
                 periodic_config: loaded_config.periodic.clone(),
                 inbox_config: loaded_config.inbox.clone(),
                 web_config: loaded_config.web.clone(),
@@ -3663,18 +3734,14 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_pages_json",
                 Func::from(move |ctx: Ctx<'_>, source: Option<String>| {
-                    with_note_index(&pages_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            load_pages_from_source(
-                                &pages_state.paths,
-                                note_index,
-                                pages_state.current_file.as_deref(),
-                                source.as_deref(),
-                            )
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                        )
-                    })
+                    with_note_index(
+                        &pages_state,
+                        &ctx,
+                        |note_index| select_pages(&pages_state, note_index, source.as_deref()),
+                        |note_index, selected| {
+                            to_json_string(&ctx, pages_for_paths(note_index, &selected))
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3684,17 +3751,20 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_page_json",
                 Func::from(move |ctx: Ctx<'_>, path: String| {
-                    with_note_index(&single_page_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            page_object_by_reference(
-                                &single_page_state.paths,
-                                note_index,
-                                &path,
+                    with_note_index(
+                        &single_page_state,
+                        &ctx,
+                        |_| {
+                            let resolved = resolve_page_path(&single_page_state.paths, &path)?;
+                            Ok((IndexNeed::Paths(vec![resolved.clone()]), resolved))
+                        },
+                        |note_index, resolved| {
+                            to_json_string(
+                                &ctx,
+                                note_index.note(&resolved).map_or(Value::Null, page_object),
                             )
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                        )
-                    })
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3704,22 +3774,39 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_current_json",
                 Func::from(move |ctx: Ctx<'_>| {
-                    with_note_index(&current_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            current_state
-                                .current_file
-                                .as_deref()
-                                .map(|path| {
-                                    page_object_by_reference(&current_state.paths, note_index, path)
-                                })
-                                .transpose()
-                                .map_err(|error| {
-                                    Exception::throw_message(&ctx, &error.to_string())
-                                })?
-                                .unwrap_or(Value::Null),
-                        )
-                    })
+                    with_note_index(
+                        &current_state,
+                        &ctx,
+                        |_| {
+                            Ok((
+                                IndexNeed::Paths(
+                                    current_state.current_file.iter().cloned().collect(),
+                                ),
+                                (),
+                            ))
+                        },
+                        |note_index, ()| {
+                            let note_index = &note_index.notes;
+                            to_json_string(
+                                &ctx,
+                                current_state
+                                    .current_file
+                                    .as_deref()
+                                    .map(|path| {
+                                        page_object_by_reference(
+                                            &current_state.paths,
+                                            note_index,
+                                            path,
+                                        )
+                                    })
+                                    .transpose()
+                                    .map_err(|error| {
+                                        Exception::throw_message(&ctx, &error.to_string())
+                                    })?
+                                    .unwrap_or(Value::Null),
+                            )
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3729,14 +3816,20 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_note_details_json",
                 Func::from(move |ctx: Ctx<'_>, path: String| {
-                    with_note_index(&note_details_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            load_note_details(&note_details_state, note_index, &path).map_err(
-                                |error| Exception::throw_message(&ctx, &error.to_string()),
-                            )?,
-                        )
-                    })
+                    with_note_index(
+                        &note_details_state,
+                        &ctx,
+                        |_| Ok((IndexNeed::All, ())),
+                        |note_index, ()| {
+                            let note_index = &note_index.notes;
+                            to_json_string(
+                                &ctx,
+                                load_note_details(&note_details_state, note_index, &path).map_err(
+                                    |error| Exception::throw_message(&ctx, &error.to_string()),
+                                )?,
+                            )
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3747,14 +3840,19 @@ globalThis.Function = undefined;
                 "__vulcan_note_read_json",
                 Func::from(move |ctx: Ctx<'_>, path: String, options_json: String| {
                     let options = parse_json_string::<crate::NoteReadOptions>(&ctx, &options_json)?;
-                    with_note_index(&note_read_state, &ctx, |_note_index| {
-                        to_json_string(
-                            &ctx,
-                            read_note_selection(&note_read_state, &path, &options).map_err(
-                                |error| Exception::throw_message(&ctx, &error.to_string()),
-                            )?,
-                        )
-                    })
+                    with_note_index(
+                        &note_read_state,
+                        &ctx,
+                        |_| Ok((IndexNeed::Nothing, ())),
+                        |_note_index, ()| {
+                            to_json_string(
+                                &ctx,
+                                read_note_selection(&note_read_state, &path, &options).map_err(
+                                    |error| Exception::throw_message(&ctx, &error.to_string()),
+                                )?,
+                            )
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3764,19 +3862,27 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_note_links_json",
                 Func::from(move |ctx: Ctx<'_>, path: String, direction: String| {
-                    with_note_index(&note_links_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            load_note_relationships(
-                                &note_links_state.paths,
-                                note_index,
-                                &path,
-                                &direction,
-                                note_links_state.permissions.as_ref(),
+                    with_note_index(
+                        &note_links_state,
+                        &ctx,
+                        |_| Ok((IndexNeed::All, ())),
+                        |note_index, ()| {
+                            let note_index = &note_index.notes;
+                            to_json_string(
+                                &ctx,
+                                load_note_relationships(
+                                    &note_links_state.paths,
+                                    note_index,
+                                    &path,
+                                    &direction,
+                                    note_links_state.permissions.as_ref(),
+                                )
+                                .map_err(|error| {
+                                    Exception::throw_message(&ctx, &error.to_string())
+                                })?,
                             )
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                        )
-                    })
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3786,19 +3892,27 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_note_neighbors_json",
                 Func::from(move |ctx: Ctx<'_>, path: String, depth: i32| {
-                    with_note_index(&note_neighbors_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            load_note_neighbors(
-                                &note_neighbors_state.paths,
-                                note_index,
-                                &path,
-                                depth,
-                                note_neighbors_state.permissions.as_ref(),
+                    with_note_index(
+                        &note_neighbors_state,
+                        &ctx,
+                        |_| Ok((IndexNeed::All, ())),
+                        |note_index, ()| {
+                            let note_index = &note_index.notes;
+                            to_json_string(
+                                &ctx,
+                                load_note_neighbors(
+                                    &note_neighbors_state.paths,
+                                    note_index,
+                                    &path,
+                                    depth,
+                                    note_neighbors_state.permissions.as_ref(),
+                                )
+                                .map_err(|error| {
+                                    Exception::throw_message(&ctx, &error.to_string())
+                                })?,
                             )
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                        )
-                    })
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3819,20 +3933,28 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_vault_daily_json",
                 Func::from(move |ctx: Ctx<'_>, date: String| {
-                    with_note_index(&vault_daily_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            load_daily_page_object(
-                                &vault_daily_state.paths,
-                                &vault_daily_state.periodic_config,
-                                note_index,
-                                &date,
-                                vault_daily_state.deterministic_static,
-                                "vault.daily.get()",
+                    with_note_index(
+                        &vault_daily_state,
+                        &ctx,
+                        |_| Ok((IndexNeed::All, ())),
+                        |note_index, ()| {
+                            let note_index = &note_index.notes;
+                            to_json_string(
+                                &ctx,
+                                load_daily_page_object(
+                                    &vault_daily_state.paths,
+                                    &vault_daily_state.periodic_config,
+                                    note_index,
+                                    &date,
+                                    vault_daily_state.deterministic_static,
+                                    "vault.daily.get()",
+                                )
+                                .map_err(|error| {
+                                    Exception::throw_message(&ctx, &error.to_string())
+                                })?,
                             )
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                        )
-                    })
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -3868,20 +3990,28 @@ globalThis.Function = undefined;
             .set(
                 "__vulcan_vault_daily_range_json",
                 Func::from(move |ctx: Ctx<'_>, from: String, to: String| {
-                    with_note_index(&vault_daily_range_state, &ctx, |note_index| {
-                        to_json_string(
-                            &ctx,
-                            load_daily_range_objects(
-                                &vault_daily_range_state.paths,
-                                note_index,
-                                &from,
-                                &to,
-                                vault_daily_range_state.deterministic_static,
-                                "vault.daily.range()",
+                    with_note_index(
+                        &vault_daily_range_state,
+                        &ctx,
+                        |_| Ok((IndexNeed::All, ())),
+                        |note_index, ()| {
+                            let note_index = &note_index.notes;
+                            to_json_string(
+                                &ctx,
+                                load_daily_range_objects(
+                                    &vault_daily_range_state.paths,
+                                    note_index,
+                                    &from,
+                                    &to,
+                                    vault_daily_range_state.deterministic_static,
+                                    "vault.daily.range()",
+                                )
+                                .map_err(|error| {
+                                    Exception::throw_message(&ctx, &error.to_string())
+                                })?,
                             )
-                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
-                        )
-                    })
+                        },
+                    )
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -4416,16 +4546,24 @@ globalThis.Function = undefined;
         Ok(())
     }
 
-    fn with_note_index<T>(
+    /// Run `f` over the page universe after hydrating what `select` says
+    /// the call reads; `select` sees stored fields only.
+    fn with_note_index<S, T>(
         state: &JsEvalState,
         ctx: &Ctx<'_>,
-        f: impl FnOnce(&HashMap<String, NoteRecord>) -> rquickjs::Result<T>,
+        select: impl FnOnce(&JsNoteIndex) -> Result<(IndexNeed, S), DataviewJsError>,
+        f: impl FnOnce(&JsNoteIndex, S) -> rquickjs::Result<T>,
     ) -> rquickjs::Result<T> {
-        let note_index = state
+        let mut note_index = state
             .note_index
             .lock()
             .map_err(|_| Exception::throw_message(ctx, "DataviewJS note index lock poisoned"))?;
-        f(&note_index)
+        let (need, selection) = select(&note_index)
+            .map_err(|error| Exception::throw_message(ctx, &error.to_string()))?;
+        note_index
+            .hydrate(state, need)
+            .map_err(|error| Exception::throw_message(ctx, &error.to_string()))?;
+        f(&note_index, selection)
     }
 
     /// Load the page universe under the runtime's read authority. Path/tag
@@ -4437,8 +4575,10 @@ globalThis.Function = undefined;
         permissions: Option<&ProfilePermissionGuard>,
     ) -> Result<HashMap<String, NoteRecord>, DataviewJsError> {
         match permissions {
-            Some(guard) => crate::properties::load_note_index_with_guard(paths, guard),
-            None => load_note_index(paths),
+            Some(guard) => {
+                crate::properties::load_note_index_with_guard_deferring_hydration(paths, guard)
+            }
+            None => crate::properties::load_note_index_with_filter_deferring_hydration(paths, None),
         }
         .map_err(|error| DataviewJsError::Message(error.to_string()))
     }
@@ -4448,7 +4588,7 @@ globalThis.Function = undefined;
         let mut current = state.note_index.lock().map_err(|_| {
             DataviewJsError::Message("DataviewJS note index lock poisoned".to_string())
         })?;
-        *current = note_index;
+        *current = JsNoteIndex::new(note_index);
         Ok(())
     }
 
@@ -5639,10 +5779,12 @@ globalThis.Function = undefined;
     }
 
     fn mutation_note_response(state: &JsEvalState, path: &str) -> Result<Value, DataviewJsError> {
-        let note_index = state.note_index.lock().map_err(|_| {
+        let mut note_index = state.note_index.lock().map_err(|_| {
             DataviewJsError::Message("DataviewJS note index lock poisoned".to_string())
         })?;
-        let note = note_by_path(&note_index, path)
+        note_index.hydrate(state, IndexNeed::Paths(vec![path.to_string()]))?;
+        let note = note_index
+            .note(path)
             .ok_or_else(|| DataviewJsError::Message(format!("note is not indexed: {path}")))?;
         Ok(serde_json::json!({
             "note": page_object(note),
@@ -5926,35 +6068,41 @@ globalThis.Function = undefined;
         fetch_web(&state.web_config, url, mode).map_err(DataviewJsError::Message)
     }
 
-    fn load_pages_from_source(
-        paths: &VaultPaths,
-        note_index: &HashMap<String, NoteRecord>,
-        current_file: Option<&str>,
+    /// The paths `dv.pages(source)` returns, sorted: every readable note
+    /// without a source, else the source's selection within the runtime's
+    /// readable universe (QRY.2), so hidden notes neither appear nor resolve.
+    fn select_pages(
+        state: &JsEvalState,
+        note_index: &JsNoteIndex,
         source: Option<&str>,
-    ) -> Result<Vec<Value>, DataviewJsError> {
-        let mut notes = if let Some(source) = source.filter(|value| !value.trim().is_empty()) {
-            let result = evaluate_dql(
-                paths,
-                &format!("TABLE WITHOUT ID file.path AS path FROM {source}"),
-                current_file,
-            )
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-            result
-                .rows
-                .iter()
-                .filter_map(|row| row.get("path").and_then(Value::as_str))
-                .filter_map(|path| note_by_path(note_index, path))
-                .map(page_object)
-                .collect::<Vec<_>>()
-        } else {
-            let mut notes = note_index.values().cloned().collect::<Vec<_>>();
-            notes.sort_by(|left, right| left.document_path.cmp(&right.document_path));
-            notes
-                .into_iter()
-                .map(|note| page_object(&note))
-                .collect::<Vec<_>>()
+    ) -> Result<(IndexNeed, Vec<String>), DataviewJsError> {
+        let Some(source) = source.filter(|value| !value.trim().is_empty()) else {
+            let mut all = note_index.by_path.keys().cloned().collect::<Vec<_>>();
+            all.sort();
+            return Ok((IndexNeed::All, all));
         };
-        notes.sort_by(|left, right| {
+        let filter = state.permissions.as_ref().map(PermissionGuard::read_filter);
+        let mut selected = crate::dql::select_source_paths(
+            &state.paths,
+            source,
+            state.current_file.as_deref(),
+            &note_index.notes,
+            filter.as_ref(),
+        )
+        .map_err(|error| DataviewJsError::Message(error.to_string()))?
+        .into_iter()
+        .collect::<Vec<_>>();
+        selected.sort();
+        Ok((IndexNeed::Paths(selected.clone()), selected))
+    }
+
+    fn pages_for_paths(note_index: &JsNoteIndex, paths: &[String]) -> Vec<Value> {
+        let mut pages = paths
+            .iter()
+            .filter_map(|path| note_index.note(path))
+            .map(page_object)
+            .collect::<Vec<_>>();
+        pages.sort_by(|left, right| {
             compare_json_ordering(
                 left.get("file")
                     .and_then(|file| file.get("path"))
@@ -5965,7 +6113,13 @@ globalThis.Function = undefined;
                     .unwrap_or(&Value::Null),
             )
         });
-        Ok(notes)
+        pages
+    }
+
+    fn resolve_page_path(paths: &VaultPaths, file: &str) -> Result<String, DataviewJsError> {
+        resolve_note_reference(paths, file)
+            .map(|resolved| resolved.path)
+            .or_else(|_| normalize_note_path_for_write(paths, file))
     }
 
     fn page_object_by_reference(
@@ -6572,6 +6726,71 @@ globalThis.Function = undefined;
             assert!(
                 matches!(&result.outputs[1], DataviewJsOutput::Query { result } if result.query_type == crate::dql::DqlQueryType::Table && result.result_count == 2)
             );
+        }
+
+        #[test]
+        fn lazy_page_hydration_equals_eager_hydration() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+            for (path, contents) in [
+                (
+                    "A/One.md",
+                    "---\ntags: [t, visible]\nstatus: open\nup: '[[Two]]'\n---\n[[Two]]\n- [ ] task one\n- item\n",
+                ),
+                ("A/Three.md", "---\ntags: [visible]\n---\n[[Deux]]\n- [x] done\n"),
+                (
+                    "B/Two.md",
+                    "---\ntags: [t, visible]\naliases: [Deux]\nup: '[[One]]'\n---\n[[One]]\n",
+                ),
+                ("Hidden.md", "---\ntags: [t]\n---\n[[One]] [[Two]]\n"),
+            ] {
+                let target = vault_root.join(path);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::write(target, contents).unwrap();
+            }
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let mut scoped = crate::permissions::resolve_permission_profile(&paths, None).unwrap();
+            scoped.grant.read = crate::permissions::PathPermission {
+                allow: vec![crate::permissions::ResourceSpecifier::Tag("visible".into())],
+                deny: Vec::new(),
+            };
+            let describe =
+                "(p) => p ? [p.file.path, p.file.tags, p.file.inlinks, p.file.outlinks, \
+                p.file.tasks.length, p.file.lists.length, p.up] : null";
+            for snippet in [
+                "dv.pages('\"A\"').map(describe).array()",
+                "dv.pages('#t').map(describe).array()",
+                "dv.pages('[[One]]').map(describe).array()",
+                "dv.pages('#t and -\"A\"').map(describe).array()",
+                "describe(dv.page('Deux'))",
+                "describe(dv.current())",
+                "dv.pages('\"A\"').map((p) => p.up ? describe(dv.page(String(p.up))) : null).array()",
+                "dv.pages().map(describe).array()",
+            ] {
+                for permissions in [None, Some(scoped.clone())] {
+                    let run = |prefix: &str| {
+                        evaluate_dataview_js_with_options(
+                            &paths,
+                            &format!("const describe = {describe}; {prefix} dv.paragraph(JSON.stringify({snippet}));"),
+                            Some("A/One.md"),
+                            DataviewJsEvalOptions {
+                                resolved_permissions: permissions.clone(),
+                                ..DataviewJsEvalOptions::default()
+                            },
+                        )
+                        .unwrap_or_else(|error| panic!("{snippet}: {error}"))
+                        .outputs
+                    };
+                    assert_eq!(
+                        run(""),
+                        run("dv.pages();"),
+                        "{snippet} scoped={}",
+                        permissions.is_some()
+                    );
+                }
+            }
         }
 
         #[test]

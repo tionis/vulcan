@@ -8,11 +8,11 @@ pub use ast::{
     DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery, DqlQueryType,
     DqlSortDirection, DqlSortKey, DqlSourceExpr,
 };
-pub(crate) use eval::evaluate_dql_with_note_index_and_config;
 pub use eval::{
     evaluate_dql, evaluate_dql_with_filter, evaluate_dql_with_guard, evaluate_parsed_dql,
     evaluate_parsed_dql_with_filter, load_dataview_blocks, DataviewBlockRecord, DqlEvalError,
     DqlQueryResult,
 };
+pub(crate) use eval::{evaluate_dql_with_note_index_and_config, select_source_paths};
 pub use parse::{parse_dql, parse_dql_with_diagnostics, DqlDiagnostic, DqlParseOutput};
 pub use token::{DqlToken, DqlTokenizer};
