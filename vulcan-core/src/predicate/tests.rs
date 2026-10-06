@@ -204,9 +204,17 @@ fn dataview_file_field_atoms_agree_with_the_evaluator_and_sql() {
         ("folder/n.md", "n", "md"),
         ("Daily/2026-01-01.md", "2026-01-01", "md"),
         ("é/b.canvas", "b", "canvas"),
+        ("Top.md", "Top", "md"),
+        ("folder/sub/x.md", "x", "md"),
     ] {
         let note = note(json!({}), path, name, ext);
-        for field in ["file.path", "file.name", "file.basename", "file.ext"] {
+        for field in [
+            "file.path",
+            "file.name",
+            "file.basename",
+            "file.ext",
+            "file.folder",
+        ] {
             for literal in literals() {
                 for operator in OPERATORS {
                     check(&format!("{field} {operator} {literal}"), &note);
@@ -219,6 +227,16 @@ fn dataview_file_field_atoms_agree_with_the_evaluator_and_sql() {
             "{path}"
         );
         assert_eq!(check("file.name = \"other\"", &note), Decision::NoMatch);
+        for folder in ["", "folder", "folder/sub", "é", "fold"] {
+            for operator in OPERATORS {
+                assert_ne!(
+                    check(&format!("file.folder {operator} \"{folder}\""), &note),
+                    Decision::Undecided,
+                    "{path} {operator} {folder}"
+                );
+            }
+            check(&format!("startswith(file.folder, \"{folder}\")"), &note);
+        }
     }
 }
 

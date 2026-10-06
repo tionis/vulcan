@@ -117,6 +117,14 @@ pub(crate) enum Field {
     FilePath,
     FileName,
     FileExt,
+    /// The path's parent folder (`""` at the root), as `file.folder`.
+    /// Decided in memory; SQL narrows equality to the folder's subtree.
+    FileFolder,
+}
+
+/// `file.folder` as the evaluator computes it.
+fn folder_of(path: &str) -> &str {
+    path.rfind('/').map_or("", |index| &path[..index])
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -369,6 +377,7 @@ fn dataview_field(expr: &Expr) -> Option<Field> {
                 "path" => Some(Field::FilePath),
                 "name" | "basename" => Some(Field::FileName),
                 "ext" => Some(Field::FileExt),
+                "folder" => Some(Field::FileFolder),
                 _ => None,
             }
         }
@@ -431,6 +440,7 @@ impl Atom {
             Field::FilePath => return self.decide_text(record.path),
             Field::FileName => return self.decide_text(record.name),
             Field::FileExt => return self.decide_text(record.ext),
+            Field::FileFolder => return self.decide_text(folder_of(record.path)),
         };
         let decided = match (&self.literal, value) {
             // Null orders before every value and equals only null.
@@ -512,6 +522,7 @@ impl Atom {
             Field::FilePath => record.path,
             Field::FileName => record.name,
             Field::FileExt => record.ext,
+            Field::FileFolder => folder_of(record.path),
             Field::Property(key) => match dataview_property(record.properties, key) {
                 None | Some(Value::Array(_)) => return Decision::Undecided,
                 Some(Value::String(text)) => text,
@@ -548,7 +559,7 @@ impl Atom {
                 },
                 _ => return Decision::Undecided,
             },
-            Field::FileName | Field::FileExt => return Decision::Undecided,
+            Field::FileName | Field::FileExt | Field::FileFolder => return Decision::Undecided,
         };
         let matched = match (&self.literal, value) {
             (Literal::Text(literal), Scalar::Text(text)) if !text.contains('\0') => {
@@ -597,6 +608,7 @@ impl Atom {
         }
         let column = match &self.field {
             Field::Property(key) => return self.render_property(columns.properties, key, params),
+            Field::FileFolder => return self.render_folder(columns.path, params),
             Field::FilePath => columns.path,
             Field::FileName => columns.name,
             Field::FileExt => columns.ext,
@@ -609,6 +621,22 @@ impl Atom {
             Literal::Null => bool_sql(self.comparison.holds(std::cmp::Ordering::Greater)),
             Literal::Bool(_) => bool_sql(self.comparison == Comparison::NotEqual),
             Literal::Number(_) | Literal::Integer(_) => "1".to_string(),
+        }
+    }
+
+    /// `file.folder = "f"` holds only for paths under `f/` (or without a
+    /// `/` for the root); every other comparison stays possible.
+    fn render_folder(&self, path: &str, params: &mut Vec<SqlValue>) -> String {
+        match (&self.literal, self.comparison) {
+            (Literal::Text(folder), Comparison::Equal) if folder.is_empty() => {
+                format!("(instr({path}, '/') = 0)")
+            }
+            (Literal::Text(folder), Comparison::Equal) => {
+                params.push(SqlValue::Text(format!("{folder}/")));
+                params.push(SqlValue::Text(format!("{folder}0")));
+                format!("({path} >= ? AND {path} < ?)")
+            }
+            _ => "1".to_string(),
         }
     }
 
@@ -635,6 +663,7 @@ impl Atom {
             Field::FilePath => columns.path,
             Field::FileName => columns.name,
             Field::FileExt => columns.ext,
+            Field::FileFolder => return "1".to_string(),
             Field::Property(key) => {
                 let json = columns.properties;
                 let path = json_path(key);
