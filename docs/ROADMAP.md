@@ -6701,6 +6701,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Reuse the canonical query AST for outgoing local selection and define connector-owned, capability-checked remote selectors for inbound enumeration. Omitted local queries follow the established full-vault export default only when the route type makes that safe; inbound routes always require an explicit remote scope and local destination.
 - [ ] Plan every route deterministically before mutation. Detect unsafe paths, local and remote identity collisions, case/Unicode conflicts, duplicate ownership, excluded/unresolved links, missing assets, unsupported capabilities, unrepresentable hierarchy, excessive deletion, and lossy transformations.
 - [ ] Reuse ordered publication transforms for outbound projections and introduce explicit inbound normalization rules. A route transform changes the transferred representation, never the source note implicitly; pull-generated Markdown becomes canonical only after the planned write succeeds.
+- [ ] Let inbound routes render imported bodies and frontmatter with named Knap templates (KNP.6) instead of introducing connector-specific mapping formats.
 - [ ] Add `integration route list|show|validate|plan|run|status` and `integration run [<route>...]|--all`, with stable human/JSON reports and mutation-free dry runs. Keep existing `publish outline` and export commands as compatible focused surfaces over shared internals rather than forcing immediate CLI migration.
 
 ### 15.4 Durable identity, reconciliation, and conflict policy
@@ -8327,7 +8328,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ## Capability tracks and connector appendices
 
-The MDB, QRY, and OBS tracks preserve candidate implementation research and acceptance criteria without extending the Phase 9 completion gate. The SB appendix is a promoted connector-specific plan referenced by Phases 12 and 15. None forms a serial queue: schedule bounded slices through the numbered phase that owns their daemon, sync, UI, or runtime infrastructure.
+The MDB, QRY, OBS, and KNP tracks preserve candidate implementation research and acceptance criteria without extending the Phase 9 completion gate. The SB appendix is a promoted connector-specific plan referenced by Phases 12 and 15. None forms a serial queue: schedule bounded slices through the numbered phase that owns their daemon, sync, UI, or runtime infrastructure.
 
 ### MDB: mdbase typed Markdown collection interoperability (formerly 9.32)
 
@@ -8710,6 +8711,55 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - **CardDAV and contact synchronization:** defer to Phases 12/15; OBS.5 covers deterministic local Markdown/vCard interchange only.
 - **Editor-only compatibility:** Wikilink Types and @ Symbol autocomplete, Auto Link Title paste interception, LanguageTool inline feedback, contact forms/actions, and other cursor/clipboard/command-palette behavior belong in Phase 14.
 - **HedgeDoc live/bidirectional synchronization:** remain delegated to HedgeSync. A later daemon integration may supervise its CLI as an external process, but HedgeDoc content must not become a second Vulcan cache or an implicit input to unrelated publication flows.
+
+---
+
+### KNP: Knap data-to-Markdown templates
+
+**Goal:** Adopt [Knap](https://knap.md) as Vulcan's user-editable language for rendering structured data, such as remote connector documents, fetched web pages, and JSON payloads, into note bodies and frontmatter. Use the same renderer to run existing Obsidian Web Clipper templates headlessly. Knap is the MIT-licensed template language behind Obsidian Web Clipper and Obsidian Importer, and upstream encourages other-language implementations through portable rendering fixtures.
+
+**Compatibility boundary:** Knap renders only the data it is given. It is not a third note-creation template system: Templater remains the engine for vault-context templates (`tp.*`), and QuickAdd capture formats keep their existing semantics. The renderer is native Rust in `vulcan-core`, synchronous, and independent of the `js_runtime` feature; Vulcan does not embed the npm package. Unsupported filters, syntax, or template fields produce structured diagnostics, never silent passthrough. Rendered output becomes canonical only through existing atomic note-write, inbox, or route workflows with `--dry-run`, JSON reports, and normal permission checks. Durable remote identity stays outside rendered note content unless a user template explicitly writes it.
+
+**Depends on:** Phase 9.13 QuickAdd/inbox capture, the Phase 9.18 web tools and permission profiles, and Phase 15.3/15.5 route configuration and pull planning for KNP.6.
+
+**Upstream reference:** [obsidianmd/knap](https://github.com/obsidianmd/knap). The project is young and its syntax and filters may change. KNP.1 pins a reviewed commit and its fixtures; later upstream changes are adopted deliberately, not tracked automatically.
+
+**Delivery placement:** KNP.1–KNP.4 form an independently useful headless renderer. KNP.5 is plugin-compatibility work and KNP.6 belongs to Phase 15 import routes. The track as a whole never blocks the daemon.
+
+#### KNP.1 Specification pinning and conformance harness
+
+- [ ] Pin a reviewed upstream commit and vendor its portable rendering fixtures with provenance and license metadata. Run them through a harness with an explicit per-fixture skip list that states the reason for every skip, such as a deferred HTML filter.
+- [ ] Record the semantics Vulcan must match: JavaScript-style truthiness, `??`, `contains`, `loop.*` and legacy `item_index`, `set` scoping, comments, whitespace handling, undefined-variable behavior, filter argument syntax, and error reporting.
+- [ ] Audit the proposed CLI, config, JSON, and skill surfaces so they use stable Vulcan capability names, with "Knap" naming the template language and "Web Clipper" appearing only at import and compatibility selection.
+
+#### KNP.2 Core renderer
+
+- [ ] Add a tokenizer, parser, and evaluator in `vulcan-core` for variables and paths, filter chains with arguments, `if`/`elseif`/`else`, `for` with loop values, `set`, comments, and nesting, keeping source spans for diagnostics.
+- [ ] Bound evaluation by output size, loop iterations, and `template` filter recursion depth. Report limit violations as structured errors.
+- [ ] Reuse Vulcan's value model where it fits, but keep Knap truthiness and comparison semantics separate from the Bases/Dataview expression evaluator so neither dialect drifts.
+
+#### KNP.3 Filters
+
+- [ ] Implement the formatting, text, number, and collection filters. Markdown-producing filters such as `wikilink`, `embed`, `callout`, `footnote`, `table`, `yaml`, and `yaml_property` must produce output that Vulcan's parser indexes as intended, with round-trip tests through the indexer.
+- [ ] Specify the date filters (`date`, `date_modify`, `duration`) against upstream's JavaScript `Date` behavior using Vulcan's existing date handling. Fixtures cover time zones, offsets, DST transitions, ISO 8601 durations, and invalid input.
+- [ ] Until KNP.5 lands, the HTML cleanup and parsing filters fail rendering with a stable diagnostic code instead of passing input through.
+
+#### KNP.4 Headless surfaces
+
+- [ ] Add a render command that reads a template file and JSON data from a file or stdin, prints Markdown, or creates a note through existing note-create workflows. It supports `--dry-run`, `--output json`, non-interactive operation, and permission checks.
+- [ ] Expose the renderer to `vulcan run` scripts and MCP only where a concrete workflow needs it, using the same limits and diagnostics.
+- [ ] Do a skill-impact review and update the relevant bundled skills when the surface lands.
+
+#### KNP.5 Web Clipper template compatibility
+
+- [ ] Import Web Clipper template exports (note name, destination path, properties, content template, and triggers, with exact field names pinned in KNP.1) as vault-local capture templates. Report unsupported fields, such as browser-only selector variables or interpreter/LLM prompt variables, as diagnostics.
+- [ ] Add a headless clip workflow: an explicit fetch under the `net` permission, readable-content and metadata extraction into Clipper-compatible variable names, rendering, then note creation through the inbox/capture workflows. Network access happens only on explicit commands.
+- [ ] Implement the HTML cleanup and parsing filters on a Rust HTML parser with bounded input, then remove them from the KNP.1 skip list.
+
+#### KNP.6 Import route rendering
+
+- [ ] Let Phase 15 import routes name Knap templates that render body and frontmatter from each connector's documented data object, with bundled connector defaults. Route dry-run plans show the rendered output.
+- [ ] Changes to a route template surface as planned local diffs under the route's conflict policy, never as silent overwrites of managed notes. Bindings and reconciliation state remain in durable route state, not in rendered frontmatter.
 
 ---
 
