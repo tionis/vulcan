@@ -912,6 +912,49 @@ pub fn load_note_index_with_filter_deferring_hydration(
     load_note_index_with_read_scope(paths, filter, None, NoteIndexHydration::AliasesOnly)
 }
 
+/// The note index a Tasks query reads: every readable note with stored
+/// fields and aliases, fully hydrated only where it carries tasks
+/// (Markdown tasks, or a `TaskNotes` task derived from its properties). Task
+/// rows, their notes' fields, and `blocked` dependencies come only from
+/// those notes.
+pub fn load_task_note_index(
+    paths: &VaultPaths,
+    scope: NoteIndexReadScope<'_>,
+) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+    let mut index = match scope {
+        NoteIndexReadScope::Filter(filter) => {
+            load_note_index_with_filter_deferring_hydration(paths, filter)?
+        }
+        NoteIndexReadScope::Guard(guard) => {
+            load_note_index_with_guard_deferring_hydration(paths, guard)?
+        }
+    };
+    let database = open_existing_cache(paths)?;
+    let mut statement = database.connection().prepare(
+        "SELECT DISTINCT documents.path FROM tasks JOIN documents ON documents.id = tasks.document_id",
+    )?;
+    let mut task_paths = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    let config = crate::load_vault_config(paths).config;
+    task_paths.extend(
+        index
+            .values()
+            .filter(|note| {
+                extract_tasknote(
+                    &note.document_path,
+                    &note.file_name,
+                    &note.properties,
+                    &config.tasknotes,
+                )
+                .is_some()
+            })
+            .map(|note| note.document_path.clone()),
+    );
+    hydrate_note_index_entries(paths, scope, &mut index, &task_paths)?;
+    Ok(index)
+}
+
 /// The read scope an index was loaded with, for hydrating its entries.
 #[derive(Clone, Copy)]
 pub enum NoteIndexReadScope<'a> {

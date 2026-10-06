@@ -1613,6 +1613,15 @@ impl TaskReadScope<'_> {
         Ok(())
     }
 
+    /// The index Tasks queries read: only task-bearing notes are hydrated.
+    fn load_tasks(self, paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, AppError> {
+        let scope = match self {
+            Self::Filter(filter) => vulcan_core::properties::NoteIndexReadScope::Filter(filter),
+            Self::Guard(guard) => vulcan_core::properties::NoteIndexReadScope::Guard(guard),
+        };
+        vulcan_core::properties::load_task_note_index(paths, scope).map_err(AppError::operation)
+    }
+
     fn load(self, paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, AppError> {
         match self {
             Self::Filter(filter) => {
@@ -1675,7 +1684,7 @@ pub fn build_tasks_eval_report(
     let _read_guard = consistent_task_read(paths)?;
     let blocks =
         load_tasks_blocks(paths, &request.file, request.block).map_err(AppError::operation)?;
-    let notes = TaskReadScope::Filter(None).load(paths)?;
+    let notes = TaskReadScope::Filter(None).load_tasks(paths)?;
     Ok(evaluate_tasks_blocks(paths, &request.file, blocks, &notes))
 }
 
@@ -1701,8 +1710,11 @@ pub fn build_tasks_eval_report_with_guard(
         // Resolve the source and derive every block result from one set of read
         // decisions. A failed policy/index read is an operation error, never a
         // successful report containing only block-level syntax diagnostics.
-        let notes = vulcan_core::properties::load_note_index_with_guard(paths, &decisions)
-            .map_err(AppError::operation)?;
+        let notes = vulcan_core::properties::load_task_note_index(
+            paths,
+            vulcan_core::properties::NoteIndexReadScope::Guard(&decisions),
+        )
+        .map_err(AppError::operation)?;
         Ok(evaluate_tasks_blocks(paths, &request.file, blocks, &notes))
     })();
     scope.recheck(paths)?;
@@ -3045,7 +3057,7 @@ fn build_tasks_query_result_with_options(
     let effective_source = tasks_query_source(&config, source, include_global_query);
     // Parse before loading records, preserving syntax-error precedence.
     parse_tasks_query(&effective_source).map_err(AppError::operation)?;
-    let note_index = scope.load(paths)?;
+    let note_index = scope.load_tasks(paths)?;
     let mut result =
         vulcan_core::tasks::evaluate_tasks_query_with_note_index(&effective_source, &note_index)
             .map_err(AppError::operation)?;
@@ -5520,7 +5532,7 @@ fn load_tasknote_records_with_scope(
     scope: TaskReadScope<'_>,
 ) -> Result<Vec<TaskNoteRecord>, AppError> {
     let config = load_vault_config(paths).config;
-    let note_index = scope.load(paths)?;
+    let note_index = scope.load_tasks(paths)?;
     let mut records = note_index
         .into_values()
         .filter_map(|note| {

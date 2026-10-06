@@ -10,7 +10,7 @@ use crate::expression::functions::parse_date_like_string;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
 use crate::permissions::PermissionFilter;
-use crate::properties::{load_note_index_with_filter, NoteRecord};
+use crate::properties::{load_task_note_index, NoteIndexReadScope, NoteRecord};
 
 use super::{
     parse_tasks_query, TasksDateRelation, TasksError, TasksFilter, TasksQuery, TasksQueryCommand,
@@ -90,7 +90,7 @@ pub fn evaluate_parsed_tasks_query_with_filter(
     query: &TasksQuery,
     filter: Option<&PermissionFilter>,
 ) -> Result<TasksQueryResult, TasksError> {
-    let note_index = load_note_index_with_filter(paths, filter)?;
+    let note_index = load_task_note_index(paths, NoteIndexReadScope::Filter(filter))?;
     Ok(evaluate_parsed_tasks_query_with_note_index(
         query,
         &note_index,
@@ -732,6 +732,56 @@ mod tests {
             .expect("cached tasks query should succeed");
 
         assert_eq!(cached, one_shot);
+    }
+
+    #[test]
+    fn task_scoped_index_matches_full_index() {
+        let queries = [
+            "not done",
+            "done",
+            "path includes Tasks\ngroup by path",
+            "not done\nsort by due reverse\ngroup by status.type\nlimit 2\nshow urgency",
+            "is blocked",
+            "is not blocked\nsort by priority",
+            "tags include #work",
+            "description includes a\ngroup by heading",
+            "has due date\nsort by due",
+            "(not done) OR (is recurring)",
+        ];
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        for fixture in ["tasknotes", "dataview", "eval"] {
+            let vault_root = temp_dir.path().join(fixture);
+            std::fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+            if fixture == "eval" {
+                write_eval_fixture(&vault_root);
+            } else {
+                copy_fixture_vault(fixture, &vault_root);
+            }
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+            let full = load_note_index(&paths).unwrap();
+            let scoped = crate::properties::load_task_note_index(
+                &paths,
+                crate::properties::NoteIndexReadScope::Filter(None),
+            )
+            .unwrap();
+            let mut compared = 0;
+            for source in queries {
+                let expected = evaluate_tasks_query_with_note_index(source, &full);
+                let actual = evaluate_tasks_query_with_note_index(source, &scoped);
+                match (expected, actual) {
+                    (Ok(expected), Ok(actual)) => {
+                        compared += expected.tasks.len();
+                        assert_eq!(actual, expected, "{fixture}: {source}");
+                    }
+                    (Err(expected), Err(actual)) => {
+                        assert_eq!(actual.to_string(), expected.to_string());
+                    }
+                    (expected, actual) => panic!("{fixture}: {source}: {expected:?} vs {actual:?}"),
+                }
+            }
+            assert!(compared > 0, "{fixture}");
+        }
     }
 
     fn task_texts(result: &TasksQueryResult) -> Vec<String> {
