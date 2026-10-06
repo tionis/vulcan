@@ -520,7 +520,7 @@ fn resolve_property(ctx: &EvalContext, name: &str) -> Value {
     resolve_property_for_note(ctx.note, name)
 }
 
-fn normalized_object_field<'a>(
+pub(crate) fn normalized_object_field<'a>(
     object: &'a serde_json::Map<String, Value>,
     field: &str,
 ) -> Option<&'a Value> {

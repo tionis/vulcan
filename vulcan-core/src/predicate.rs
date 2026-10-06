@@ -368,6 +368,15 @@ fn plain_dataview_string(text: &str) -> bool {
     parse_date_like_string(text).is_none() && parse_duration_string(text).is_none()
 }
 
+/// The value the Dataview evaluator reads for a property: the exact key,
+/// else a key with the same normalized name, else null. SQL reads only the
+/// exact key, so it treats a missing exact key as possible.
+fn dataview_property<'a>(properties: &'a Value, key: &str) -> Option<&'a Value> {
+    static NULL: Value = Value::Null;
+    let map = properties.as_object()?;
+    Some(crate::expression::eval::normalized_object_field(map, key).unwrap_or(&NULL))
+}
+
 /// Integers beyond this are compared through `f64` by the evaluator and
 /// exactly by SQL; such values are left undecided.
 const EXACT_INTEGER_BOUND: f64 = 9_007_199_254_740_992.0;
@@ -388,12 +397,10 @@ impl Atom {
             return Decision::Undecided;
         }
         let value = match &self.field {
-            Field::Property(key) => {
-                match record.properties.as_object().and_then(|map| map.get(key)) {
-                    Some(value) => value,
-                    None => return Decision::Undecided,
-                }
-            }
+            Field::Property(key) => match dataview_property(record.properties, key) {
+                Some(value) => value,
+                None => return Decision::Undecided,
+            },
             Field::FilePath => return self.decide_text(record.path),
             Field::FileName => return self.decide_text(record.name),
             Field::FileExt => return self.decide_text(record.ext),
@@ -406,8 +413,11 @@ impl Atom {
             (Literal::Text(literal), Value::String(text)) => {
                 self.comparison.holds(text.as_str().cmp(literal.as_str()))
             }
-            // Strings may be dates or durations compared with integers.
-            (Literal::Number(_), Value::String(_)) => return Decision::Undecided,
+            // Date- and duration-like strings compare with integers; other
+            // strings are a different kind.
+            (Literal::Number(_), Value::String(text)) if !plain_dataview_string(text) => {
+                return Decision::Undecided
+            }
             (Literal::Number(literal), Value::Number(number)) => {
                 let Some(number) = number.as_f64() else {
                     return Decision::Undecided;
@@ -456,7 +466,7 @@ impl Atom {
             Field::FilePath => record.path,
             Field::FileName => record.name,
             Field::FileExt => record.ext,
-            Field::Property(key) => match record.properties.get(key) {
+            Field::Property(key) => match dataview_property(record.properties, key) {
                 None | Some(Value::Array(_)) => return Decision::Undecided,
                 Some(Value::String(text)) => text,
                 Some(_) => return Decision::NoMatch,

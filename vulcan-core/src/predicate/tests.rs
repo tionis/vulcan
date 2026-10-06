@@ -97,13 +97,23 @@ fn check(source: &str, note: &NoteRecord) -> Decision {
         Decision::NoMatch => assert_eq!(truth, Some(false), "{source} on {}", note.properties),
         Decision::Undecided => {}
     }
-    assert_eq!(
-        sql_possible(&predicate, note),
-        decision != Decision::NoMatch,
-        "{source} on {}",
-        note.properties
-    );
+    // SQL only narrows: it may keep decided non-matches (it reads exact keys
+    // and leaves strings compared with numbers to the evaluator), but never
+    // excludes anything else.
+    if !sql_possible(&predicate, note) {
+        assert_eq!(
+            decision,
+            Decision::NoMatch,
+            "{source} on {}",
+            note.properties
+        );
+        SQL_EXCLUDED.with(|count| count.set(count.get() + 1));
+    }
     decision
+}
+
+thread_local! {
+    static SQL_EXCLUDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn values() -> Vec<Option<Value>> {
@@ -181,8 +191,11 @@ fn dataview_property_atoms_agree_with_the_evaluator_and_sql() {
             }
         }
     }
-    // The matrix must exercise decisions, not just undecided atoms.
+    // The matrix must exercise decisions, not just undecided atoms, and SQL
+    // must exclude most decided non-matches.
     assert!(decided > 2_000, "{decided}");
+    let excluded = SQL_EXCLUDED.with(std::cell::Cell::get);
+    assert!(excluded >= 1_782, "{excluded}");
 }
 
 #[test]
@@ -228,8 +241,14 @@ fn unlowered_parts_bound_what_combinations_decide() {
         ("k = \"a\" || length(k) > 5", Decision::Match),
         // Nested groups follow the same rules.
         ("(k = \"b\" || n = 3) && length(k) > 0", Decision::NoMatch),
+        // A missing property is null.
         ("missing = \"a\" && k = \"b\"", Decision::NoMatch),
-        ("missing = \"a\" && k = \"a\"", Decision::Undecided),
+        ("missing = \"a\" && k = \"a\"", Decision::NoMatch),
+        ("missing != \"a\" && k = \"a\"", Decision::Match),
+        ("missing = null", Decision::Match),
+        // The evaluator also finds keys by normalized name.
+        ("K = \"a\"", Decision::Match),
+        ("startswith(K, \"a\")", Decision::Match),
     ] {
         assert_eq!(check(source, &note), expected, "{source}");
     }

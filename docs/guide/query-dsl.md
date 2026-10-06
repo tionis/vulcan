@@ -34,7 +34,7 @@ support tag sources, but it is a separate language.
 The DSL accepts the same typed fields, values, and operators as [`--where` filters](filters.md):
 
 ```text
-=  >  >=  <  <=  starts_with  contains  matches  matches_i
+=  !=  >  >=  <  <=  starts_with  contains  has_tag  matches  matches_i
 ```
 
 Join predicates with `and`:

@@ -1,17 +1,21 @@
 # Typed Filters
 
-Vulcan uses one typed predicate grammar across `query --where`, `search --where`,
-`ls --where`, saved reports, and query-driven mutation commands. Filters select indexed notes by
-property or file metadata; they are separate from full-text search expressions and from Dataview
-DQL.
+Vulcan uses one filter language across `query --where`, `ls --where`, saved reports, Bases, and
+query-driven mutation commands. Filters select indexed notes by property or file metadata; they
+are separate from full-text search expressions and from Dataview DQL. (`search --where` still
+uses its previous exact-SQL interpretation and is being moved onto the same semantics.)
 
 ## Filter shape
 
-Each `--where` value contains exactly one predicate:
+Each `--where` value is one predicate or one Vulcan expression:
 
 ```text
 <field> <operator> <value>
+status = "done" || priority > 2
 ```
+
+A predicate is shorthand for the expression it names, so both forms mean exactly what the
+expression evaluator says (the same evaluator Bases and Dataview expressions use).
 
 Repeat the flag to combine predicates with logical `AND`:
 
@@ -21,8 +25,8 @@ vulcan query \
   --where 'due <= 2026-04-01'
 ```
 
-The shortcut grammar does not currently support `OR`, parentheses, or `and` inside one `--where`
-value. Use the native query DSL when several predicates should be written in one expression.
+Write `OR`, parentheses, and negation inside one `--where` value as an expression with `||`,
+`&&`, and `!`. A predicate's value must be one literal; quote values containing whitespace.
 
 ## Fields
 
@@ -33,9 +37,13 @@ also exposes these file fields:
 - `file.name`
 - `file.ext`
 - `file.mtime`
+- `file.ctime`
+- `file.tags`
 
 Use explicit `file.*` names for filesystem metadata. Other names address frontmatter or inline
-properties.
+properties, matched like the expression evaluator matches them (exact key first, then a key with
+the same normalized name such as `Due Date` for `due-date`). When frontmatter and an inline field
+both set a key, its value is a list of every value.
 
 ## Operators
 
@@ -44,17 +52,21 @@ The supported operators are:
 | Operator | Intended use |
 | --- | --- |
 | `=` | Equality, including booleans and `null` |
+| `!=` | Inequality; a missing property is `null` |
 | `>` | Greater than |
 | `>=` | Greater than or equal |
 | `<` | Less than |
 | `<=` | Less than or equal |
-| `starts_with` | Text-prefix matching |
-| `contains` | Membership in list-valued properties such as `tags` |
-| `matches` | Case-sensitive Rust regular expression over text |
-| `matches_i` | Case-insensitive Rust regular expression over text |
+| `starts_with` | Byte-exact, case-sensitive text prefix (no wildcards) |
+| `contains` | Like `contains()`: a list element, or a substring of text |
+| `has_tag` | `file.tags` only: the tag or a tag nested under it |
+| `matches` | Case-sensitive Rust regular expression search over text or list elements |
+| `matches_i` | Case-insensitive Rust regular expression search over text or list elements |
 
-There is no `!=`, `ends_with`, `in`, `not in`, `is null`, or `is not null` operator. Test null with
-`field = null`; select non-null values using a more specific positive predicate.
+A missing property is `null`: `status != done` also selects notes without a status, and
+`field != null` selects notes that set the field. Values of different kinds are unequal and
+unordered, so `priority > 1` does not match the text `"2"`. `file.tags contains tag` is the same
+tag selection as `has_tag`. Use an expression for anything else, such as `!contains(tags, "x")`.
 
 ## Values
 
@@ -81,6 +93,9 @@ vulcan query --where 'file.path starts_with "Projects/"'
 vulcan query --where 'file.name matches "^2026-"'
 vulcan query --where 'owner matches_i "^(eric|sam)$"'
 vulcan query --where 'archived = null'
+vulcan query --where 'status != done'
+vulcan query --where 'file.tags has_tag project'
+vulcan query --where 'status = "active" || length(owner) > 0'
 ```
 
 Filters compose with commands that provide their own selection or mutation behavior:

@@ -493,8 +493,7 @@ pub fn query(
             let notes_report =
                 query_notes_with_filter(paths, &note_query, Some(&guard.read_filter()))
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
-            let ast = QueryAst::from_note_query(&note_query)
-                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+            let ast = QueryAst::from_note_query(&note_query);
             QueryReport {
                 query: ast,
                 notes: notes_report.notes,

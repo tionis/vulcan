@@ -185,7 +185,7 @@ pub(crate) fn handle_query_command(
             };
             let notes_report = query_notes_with_filter(paths, &note_query, read_filter.as_ref())
                 .map_err(CliError::operation)?;
-            let ast = QueryAst::from_note_query(&note_query).map_err(CliError::operation)?;
+            let ast = QueryAst::from_note_query(&note_query);
             QueryReport {
                 query: ast,
                 notes: notes_report.notes,
@@ -251,7 +251,7 @@ pub(crate) fn handle_ls_command(
     let read_filter = selected_read_permission_filter(cli, paths)?;
     let notes_report = query_notes_with_filter(paths, &note_query, read_filter.as_ref())
         .map_err(CliError::operation)?;
-    let ast = QueryAst::from_note_query(&note_query).map_err(CliError::operation)?;
+    let ast = QueryAst::from_note_query(&note_query);
     let export = crate::resolve_cli_export(export)?;
     crate::print_query_report(
         paths,

@@ -729,8 +729,9 @@ mod tests {
         let filters = builtin_help_topic("filters").expect("filters topic");
         assert!(filters.body.starts_with("# Typed Filters"));
         assert!(filters.body.contains("`matches_i`"));
-        assert!(filters.body.contains("`field = null`"));
-        assert!(filters.body.contains("There is no `!=`"));
+        assert!(filters.body.contains("`field != null`"));
+        assert!(filters.body.contains("A missing property is `null`"));
+        assert!(filters.body.contains("`has_tag`"));
 
         let dsl = builtin_help_topic("query-dsl").expect("query-dsl topic");
         assert!(dsl.body.starts_with("# Native Query DSL"));
@@ -745,6 +746,7 @@ mod tests {
             "from notes where status = active and due <= 2026-04-01",
             "from notes where status = active select file.path, owner, due",
             "from notes order by file.path asc limit 25 offset 50",
+            "from notes where status != done and file.tags has_tag project",
         ] {
             QueryAst::from_dsl(example)
                 .unwrap_or_else(|error| panic!("documented query {example:?} failed: {error}"));

@@ -8,8 +8,7 @@ use crate::paths::{
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::properties::{
     build_note_lookup_index, load_note_index_with_filter, load_note_index_with_guard,
-    parse_note_filter_expression, query_notes_with_semantics, FilterField, FilterOperator,
-    FilterValue, NoteFilterSemantics,
+    note_filter_expression_source, query_notes_with_scope,
 };
 use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
@@ -174,34 +173,16 @@ fn query_source_notes(
     request: &BasesSourceRequest,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<Vec<NoteRecord>, BasesError> {
-    // Base filters are expressions: comparisons keep the evaluator's
-    // semantics (a missing property is null), not the note filter DSL's.
     let query = NoteQuery {
-        filters: request
-            .filters
-            .iter()
-            .map(|filter| match parse_note_filter_expression(filter) {
-                Ok(parsed)
-                    if matches!(
-                        (&parsed.field, parsed.operator),
-                        (FilterField::FilePath, FilterOperator::StartsWith)
-                            | (FilterField::FileTags, FilterOperator::HasTag)
-                    ) =>
-                {
-                    filter.clone()
-                }
-                _ => filter_to_expression_string(filter),
-            })
-            .collect(),
+        filters: request.filters.clone(),
         sort_by: None,
         sort_descending: false,
     };
-    query_notes_with_semantics(
+    query_notes_with_scope(
         paths,
         &query,
         request.read_filter.as_ref(),
         authorized_index,
-        NoteFilterSemantics::Expression,
     )
     .map(|report| report.notes)
     .map_err(BasesError::Property)
@@ -1464,14 +1445,14 @@ fn parse_base_filter_clause(
             if clauses.is_empty() {
                 return None;
             }
-            return Some(join_filter_clauses(clauses, "&&"));
+            return join_filter_clauses(path, &clauses, "&&", diagnostics);
         }
         if let Some(or_filters) = mapping.get(serde_yaml::Value::String("or".to_string())) {
             let clauses = parse_base_filters(&format!("{path}.or"), or_filters, diagnostics);
             if clauses.is_empty() {
                 return None;
             }
-            return Some(join_filter_clauses(clauses, "||"));
+            return join_filter_clauses(path, &clauses, "||", diagnostics);
         }
 
         diagnostics.push(BasesDiagnostic {
@@ -1633,119 +1614,25 @@ fn normalize_base_expression(expression: &str) -> String {
         .replace(" is ", " == ")
 }
 
-fn join_filter_clauses(clauses: Vec<String>, operator: &str) -> String {
-    clauses
-        .into_iter()
-        .map(|clause| format!("({})", filter_to_expression_string(&clause)))
-        .collect::<Vec<_>>()
-        .join(&format!(" {operator} "))
-}
-
-fn filter_to_expression_string(filter: &str) -> String {
-    parse_note_filter_expression(filter).map_or_else(
-        |_| filter.to_string(),
-        |parsed| render_expression_filter(&parsed),
-    )
-}
-
-fn render_expression_filter(parsed: &crate::properties::ParsedFilter) -> String {
-    let field = render_expression_filter_field(&parsed.field);
-    match parsed.operator {
-        FilterOperator::Eq => {
-            format!(
-                "{field} == {}",
-                render_expression_filter_value(&parsed.value)
-            )
+fn join_filter_clauses(
+    path: &str,
+    clauses: &[String],
+    operator: &str,
+    diagnostics: &mut Vec<BasesDiagnostic>,
+) -> Option<String> {
+    let sources = clauses
+        .iter()
+        .map(|clause| note_filter_expression_source(clause).map(|source| format!("({source})")))
+        .collect::<Result<Vec<_>, _>>();
+    match sources {
+        Ok(sources) => Some(sources.join(&format!(" {operator} "))),
+        Err(error) => {
+            diagnostics.push(BasesDiagnostic {
+                path: Some(path.to_string()),
+                message: error.to_string(),
+            });
+            None
         }
-        FilterOperator::Ne => {
-            format!(
-                "{field} != {}",
-                render_expression_filter_value(&parsed.value)
-            )
-        }
-        FilterOperator::Gt => {
-            format!(
-                "{field} > {}",
-                render_expression_filter_value(&parsed.value)
-            )
-        }
-        FilterOperator::Gte => {
-            format!(
-                "{field} >= {}",
-                render_expression_filter_value(&parsed.value)
-            )
-        }
-        FilterOperator::Lt => {
-            format!(
-                "{field} < {}",
-                render_expression_filter_value(&parsed.value)
-            )
-        }
-        FilterOperator::Lte => {
-            format!(
-                "{field} <= {}",
-                render_expression_filter_value(&parsed.value)
-            )
-        }
-        FilterOperator::Exists => format!("{field} != null"),
-        FilterOperator::StartsWith => format!(
-            "startswith({field}, {})",
-            render_expression_filter_value(&parsed.value)
-        ),
-        FilterOperator::Contains | FilterOperator::HasTag => format!(
-            "contains({field}, {})",
-            render_expression_filter_value(&parsed.value)
-        ),
-        FilterOperator::Matches | FilterOperator::MatchesI => filter_to_expression_string_match(
-            &field,
-            &parsed.value,
-            parsed.operator == FilterOperator::MatchesI,
-        ),
-    }
-}
-
-fn render_expression_filter_field(field: &FilterField) -> String {
-    match field {
-        FilterField::Property(key) => key.clone(),
-        FilterField::FilePath => "file.path".to_string(),
-        FilterField::FileName => "file.name".to_string(),
-        FilterField::FileExt => "file.ext".to_string(),
-        FilterField::FileMtime => "file.mtime".to_string(),
-        FilterField::FileCtime => "file.ctime".to_string(),
-        FilterField::FileTags => "file.tags".to_string(),
-    }
-}
-
-fn render_expression_filter_value(value: &FilterValue) -> String {
-    match value {
-        FilterValue::Null => "null".to_string(),
-        FilterValue::Bool(value) => value.to_string(),
-        FilterValue::Number(value) => serde_json::Number::from_f64(*value)
-            .map_or_else(|| value.to_string(), |value| value.to_string()),
-        FilterValue::Date(value) | FilterValue::Text(value) => {
-            serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""))
-        }
-    }
-}
-
-fn filter_to_expression_string_match(
-    field: &str,
-    value: &FilterValue,
-    case_insensitive: bool,
-) -> String {
-    match value {
-        FilterValue::Date(value) | FilterValue::Text(value) => {
-            let pattern = if case_insensitive {
-                format!("(?i:{value})")
-            } else {
-                value.clone()
-            };
-            format!(
-                "regexmatch({field}, {})",
-                serde_json::to_string(&pattern).unwrap_or_default()
-            )
-        }
-        _ => format!("{field} != null"),
     }
 }
 

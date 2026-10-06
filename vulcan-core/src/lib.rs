@@ -280,10 +280,10 @@ pub use properties::{
 pub use query::{
     execute_query, execute_query_dsl, execute_query_json, execute_query_report,
     execute_query_report_with_filter, execute_query_with_filter, QueryAst, QueryError,
-    QueryExpressionLanguage, QueryExpressionSpec, QueryFrontmatterMode, QueryNamedExpression,
-    QueryOperator, QueryOrderKey, QueryPredicate, QueryProjection, QueryReport, QuerySelection,
-    QuerySort, QuerySource, QuerySummarySpec, QueryValue, StructuredQueryGroupMeta,
-    StructuredQueryPageMeta, StructuredQueryPlan,
+    QueryExpressionLanguage, QueryExpressionSpec, QueryFilter, QueryFrontmatterMode,
+    QueryNamedExpression, QueryOperator, QueryOrderKey, QueryPredicate, QueryProjection,
+    QueryReport, QuerySelection, QuerySort, QuerySource, QuerySummarySpec, QueryValue,
+    StructuredQueryGroupMeta, StructuredQueryPageMeta, StructuredQueryPlan,
 };
 pub use refactor::{
     bulk_set_property, bulk_set_property_on_paths, merge_tags, plan_property_mutations_on_paths,

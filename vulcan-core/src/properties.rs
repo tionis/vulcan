@@ -518,53 +518,12 @@ pub fn query_notes_in_authorized_scope(
     query_notes_with_scope(paths, query, filter, Some(authorized_index))
 }
 
-/// How [`NoteQuery`] filter strings are interpreted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NoteFilterSemantics {
-    /// The note filter DSL: `key op value` filters run as SQL over
-    /// `property_values`; other strings are expressions.
-    NoteQuery,
-    /// Every filter is a Dataview/Bases expression with the evaluator's
-    /// semantics, except folder-prefix and tag-membership filters. The
-    /// shared predicate removes decided non-matches in SQL and every other
-    /// note is evaluated (QRY.1).
-    Expression,
-}
-
-/// [`query_notes_with_filter`] or [`query_notes_in_authorized_scope`] with
-/// explicit filter semantics.
-pub(crate) fn query_notes_with_semantics(
-    paths: &VaultPaths,
-    query: &NoteQuery,
-    filter: Option<&PermissionFilter>,
-    authorized_index: Option<&HashMap<String, NoteRecord>>,
-    semantics: NoteFilterSemantics,
-) -> Result<NotesReport, PropertyError> {
-    query_notes_with_scope_and_semantics(paths, query, filter, authorized_index, semantics)
-}
-
-fn query_notes_with_scope(
-    paths: &VaultPaths,
-    query: &NoteQuery,
-    filter: Option<&PermissionFilter>,
-    authorized_index: Option<&HashMap<String, NoteRecord>>,
-) -> Result<NotesReport, PropertyError> {
-    query_notes_with_scope_and_semantics(
-        paths,
-        query,
-        filter,
-        authorized_index,
-        NoteFilterSemantics::NoteQuery,
-    )
-}
-
 #[allow(clippy::too_many_lines)]
-fn query_notes_with_scope_and_semantics(
+pub(crate) fn query_notes_with_scope(
     paths: &VaultPaths,
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
-    semantics: NoteFilterSemantics,
 ) -> Result<NotesReport, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -572,13 +531,13 @@ fn query_notes_with_scope_and_semantics(
     let vault_root = paths.vault_root().to_path_buf();
     let config = crate::load_vault_config(paths).config;
 
-    let (sql_filters, post_filters) = partition_note_query_filters(&query.filters, semantics)?;
+    let compiled = compile_note_filters(&query.filters)?;
 
     let NoteFilterSql {
         cte,
         clause: filter_clause,
         params: filter_params,
-    } = build_note_filter_clause(&sql_filters)?;
+    } = build_note_filter_clause_from_expressions(&compiled.sources)?;
     let permission_sql = filter
         .map(|filter| filter.document_scope_sql("_permission_documents"))
         .unwrap_or_default();
@@ -612,14 +571,10 @@ fn query_notes_with_scope_and_semantics(
     sql.push_str(&permission_sql.clause);
     // Decided non-matches of expression filters never load; the clause's
     // plain placeholders follow every other binding.
-    for post_filter in &post_filters {
-        let NotePostFilter::Expression { expr, .. } = post_filter else {
-            continue;
-        };
-        let predicate = crate::predicate::Predicate::lower_dataview(expr);
-        if semantics == NoteFilterSemantics::Expression && predicate.is_useful() {
+    for expression in &compiled.expressions {
+        if expression.predicate.is_useful() {
             sql.push_str(" AND ");
-            sql.push_str(&predicate.render_possible_match(
+            sql.push_str(&expression.predicate.render_possible_match(
                 crate::predicate::Dialect::Dataview,
                 &crate::predicate::SqlColumns {
                     properties: "COALESCE(properties.canonical_json, '{}')",
@@ -636,7 +591,7 @@ fn query_notes_with_scope_and_semantics(
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(
         params_from_iter(params.iter()),
-        |row| -> Result<(String, NoteRecord), rusqlite::Error> {
+        |row| -> Result<(String, NoteRecord, String), rusqlite::Error> {
             let doc_id: String = row.get(0)?;
             let document_path: String = row.get(1)?;
             let file_mtime: i64 = row.get(4)?;
@@ -659,7 +614,7 @@ fn query_notes_with_scope_and_semantics(
                     file_name: row.get(2)?,
                     file_ext: row.get(3)?,
                     file_mtime,
-                    file_ctime: file_ctime_for_document(&vault_root, &document_path, file_mtime),
+                    file_ctime: file_mtime,
                     file_size: row.get(5)?,
                     properties,
                     tags: Vec::new(),
@@ -667,7 +622,9 @@ fn query_notes_with_scope_and_semantics(
                     starred: bookmarked_paths.contains(&document_path),
                     inlinks: Vec::new(),
                     aliases: Vec::new(),
-                    frontmatter: parse_frontmatter_json_object(&raw_yaml),
+                    // Parsed from the raw YAML after decided non-matches
+                    // are dropped.
+                    frontmatter: Value::Null,
                     periodic_type,
                     periodic_date,
                     list_items: Vec::new(),
@@ -675,10 +632,11 @@ fn query_notes_with_scope_and_semantics(
                     raw_inline_expressions: Vec::new(),
                     inline_expressions: Vec::new(),
                 },
+                raw_yaml,
             ))
         },
     )?;
-    let mut doc_ids_and_notes: Vec<(String, NoteRecord)> = rows.collect::<Result<Vec<_>, _>>()?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
     let readable_sources = authorized_index.map(|index| {
         index
             .values()
@@ -686,8 +644,47 @@ fn query_notes_with_scope_and_semantics(
             .collect::<HashSet<_>>()
     });
     if let Some(readable_sources) = readable_sources.as_ref() {
-        doc_ids_and_notes.retain(|(_, note)| readable_sources.contains(&note.document_path));
+        rows.retain(|(_, note, _)| readable_sources.contains(&note.document_path));
     }
+
+    // Decide rows before hydrating them: decided non-matches never hydrate,
+    // and decided matches skip evaluation. The filters form one ordered
+    // conjunction, so nothing after an undecided filter excludes a row.
+    let conjunction = crate::predicate::Predicate::All(
+        compiled
+            .expressions
+            .iter()
+            .map(|expression| expression.predicate.clone())
+            .collect(),
+    );
+    let mut undecided = HashSet::new();
+    rows.retain(|(doc_id, note, _)| {
+        let record = crate::predicate::RecordValues {
+            properties: &note.properties,
+            path: &note.document_path,
+            name: &note.file_name,
+            ext: &note.file_ext,
+        };
+        match conjunction.decide(crate::predicate::Dialect::Dataview, &record) {
+            crate::predicate::Decision::Match => true,
+            crate::predicate::Decision::NoMatch => false,
+            crate::predicate::Decision::Undecided => {
+                undecided.insert(doc_id.clone());
+                true
+            }
+        }
+    });
+
+    // Frontmatter and filesystem ctimes are read only for remaining rows.
+    let mut doc_ids_and_notes = rows
+        .into_iter()
+        .map(|(doc_id, mut note, raw_yaml)| {
+            note.frontmatter = parse_frontmatter_json_object(&raw_yaml);
+            note.file_ctime =
+                file_ctime_for_document(&vault_root, &note.document_path, note.file_mtime);
+            (doc_id, note)
+        })
+        .collect::<Vec<_>>();
 
     hydrate_note_records(
         connection,
@@ -709,33 +706,31 @@ fn query_notes_with_scope_and_semantics(
             None => Ok(Cow::Owned(load_note_index_with_filter(paths, filter)?)),
         }
     };
+    // Undecided rows are evaluated; the lookup index loads only for them.
     let mut note_index = None;
-    if !post_filters.is_empty() {
-        let loaded_note_index = load_index()?;
+    if !undecided.is_empty() {
         let formulas = BTreeMap::new();
-        let mut filtered = Vec::with_capacity(notes.len());
         let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
+        let mut filtered = Vec::with_capacity(notes.len());
         for note in notes {
+            if !undecided.contains(&note.document_id) {
+                filtered.push(note);
+                continue;
+            }
+            if note_index.is_none() {
+                note_index = Some(load_index()?);
+            }
+            let index = note_index.as_ref().expect("index loaded above");
+            let ctx = EvalContext::new(&note, &formulas)
+                .with_note_lookup(index)
+                .with_time_zone(time_zone);
             let mut keep = true;
-            for filter in &post_filters {
-                match filter {
-                    NotePostFilter::Expression { filter, expr } => {
-                        let ctx = EvalContext::new(&note, &formulas)
-                            .with_note_lookup(&loaded_note_index)
-                            .with_time_zone(time_zone);
-                        let value = evaluate(expr, &ctx)
-                            .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
-                        if !expression_filter_matches(&value) {
-                            keep = false;
-                            break;
-                        }
-                    }
-                    NotePostFilter::Regex { field, regex } => {
-                        if !regex_filter_matches_note(&note, field, regex) {
-                            keep = false;
-                            break;
-                        }
-                    }
+            for expression in &compiled.expressions {
+                let value = evaluate(&expression.expr, &ctx)
+                    .map_err(|_| PropertyError::InvalidFilter(expression.filter.clone()))?;
+                if !expression_filter_matches(&value) {
+                    keep = false;
+                    break;
                 }
             }
             if keep {
@@ -743,7 +738,6 @@ fn query_notes_with_scope_and_semantics(
             }
         }
         notes = filtered;
-        note_index = Some(loaded_note_index);
     }
 
     if let Some(sort_by) = query.sort_by.as_deref() {
@@ -1631,15 +1625,6 @@ pub(crate) struct NoteFilterSql {
     pub params: Vec<SqlValue>,
 }
 
-pub(crate) fn build_note_filter_clause(filters: &[String]) -> Result<NoteFilterSql, PropertyError> {
-    let parsed = filters
-        .iter()
-        .map(|filter| parse_filter_expression(filter).map(FilterExpression::Condition))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    build_note_filter_clause_from_expressions(&parsed)
-}
-
 pub(crate) fn build_note_filter_clause_from_expressions(
     filters: &[FilterExpression],
 ) -> Result<NoteFilterSql, PropertyError> {
@@ -2435,114 +2420,125 @@ fn is_legacy_filter_field(field: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
 }
 
-type PartitionedNoteQueryFilters = (Vec<String>, Vec<NotePostFilter>);
+/// [`NoteQuery`] filters compiled per query-architecture §4.7: tag sources
+/// run exactly in SQL, and every other filter is a Vulcan expression.
+struct CompiledNoteFilters {
+    sources: Vec<FilterExpression>,
+    expressions: Vec<CompiledExpressionFilter>,
+}
 
 #[derive(Debug)]
-enum NotePostFilter {
-    Expression { filter: String, expr: Expr },
-    Regex { field: FilterField, regex: Regex },
+struct CompiledExpressionFilter {
+    filter: String,
+    expr: Expr,
+    predicate: crate::predicate::Predicate,
 }
 
-fn partition_note_query_filters(
-    filters: &[String],
-    semantics: NoteFilterSemantics,
-) -> Result<PartitionedNoteQueryFilters, PropertyError> {
-    let mut sql_filters = Vec::new();
-    let mut post_filters = Vec::new();
-
+fn compile_note_filters(filters: &[String]) -> Result<CompiledNoteFilters, PropertyError> {
+    let mut sources = Vec::new();
+    let mut expressions = Vec::new();
     for filter in filters {
-        let parsed = parse_filter_expression(filter).ok().filter(|parsed| {
-            semantics == NoteFilterSemantics::NoteQuery
-                || matches!(
-                    (&parsed.field, parsed.operator),
-                    (FilterField::FilePath, FilterOperator::StartsWith)
-                        | (FilterField::FileTags, FilterOperator::HasTag)
-                )
-        });
-        if let Some(parsed) = parsed {
-            if parsed.field == FilterField::FileCtime {
-                let expr = Parser::new(filter)
-                    .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?
-                    .parse()
-                    .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
-                post_filters.push(NotePostFilter::Expression {
-                    filter: filter.clone(),
-                    expr,
-                });
+        if let Ok(parsed) = parse_filter_expression(filter) {
+            if is_tag_source(&parsed) {
+                sources.push(FilterExpression::Condition(parsed));
                 continue;
             }
-            if matches!(
-                parsed.operator,
-                FilterOperator::Matches | FilterOperator::MatchesI
-            ) {
-                post_filters.push(build_regex_post_filter(filter, parsed)?);
-            } else {
-                sql_filters.push(filter.clone());
-            }
-            continue;
         }
-
-        let expr = Parser::new(filter)
-            .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?
-            .parse()
+        let source = note_filter_expression_source(filter)?;
+        let expr = Parser::new(&source)
+            .and_then(Parser::parse)
             .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
-        post_filters.push(NotePostFilter::Expression {
+        let predicate = crate::predicate::Predicate::lower_dataview(&expr);
+        expressions.push(CompiledExpressionFilter {
             filter: filter.clone(),
             expr,
+            predicate,
         });
     }
-
-    Ok((sql_filters, post_filters))
+    Ok(CompiledNoteFilters {
+        sources,
+        expressions,
+    })
 }
 
-fn build_regex_post_filter(
-    filter: &str,
-    parsed: ParsedFilter,
-) -> Result<NotePostFilter, PropertyError> {
-    let FilterValue::Text(pattern) = parsed.value else {
-        return Err(PropertyError::InvalidFilter(format!(
-            "{filter} (regex filters require a text pattern)"
-        )));
-    };
-    let regex = Regex::new(&if parsed.operator == FilterOperator::MatchesI {
-        format!("(?i:{pattern})")
-    } else {
-        pattern
-    })
-    .map_err(|error| PropertyError::InvalidFilter(format!("{filter} ({error})")))?;
+/// `file.tags has_tag t` and `file.tags contains t` select notes tagged `t`
+/// or a tag nested under it.
+fn is_tag_source(parsed: &ParsedFilter) -> bool {
+    parsed.field == FilterField::FileTags
+        && matches!(
+            parsed.operator,
+            FilterOperator::HasTag | FilterOperator::Contains
+        )
+        && matches!(parsed.value, FilterValue::Text(_))
+}
 
-    Ok(NotePostFilter::Regex {
-        field: parsed.field,
-        regex,
-    })
+/// The Vulcan expression a note filter means (query-architecture §4.7):
+/// `key op value` filters are surface syntax for an expression, and any
+/// other filter already is one.
+pub(crate) fn note_filter_expression_source(filter: &str) -> Result<String, PropertyError> {
+    let Ok(parsed) = parse_filter_expression(filter) else {
+        return Ok(filter.to_string());
+    };
+    let field = match &parsed.field {
+        FilterField::Property(key) => key.clone(),
+        FilterField::FilePath => "file.path".to_string(),
+        FilterField::FileName => "file.name".to_string(),
+        FilterField::FileExt => "file.ext".to_string(),
+        FilterField::FileMtime => "file.mtime".to_string(),
+        FilterField::FileCtime => "file.ctime".to_string(),
+        FilterField::FileTags => "file.tags".to_string(),
+    };
+    let value = match &parsed.value {
+        FilterValue::Null => "null".to_string(),
+        FilterValue::Bool(value) => value.to_string(),
+        FilterValue::Number(value) => serde_json::Number::from_f64(*value)
+            .map_or_else(|| value.to_string(), |value| value.to_string()),
+        FilterValue::Date(value) | FilterValue::Text(value) => {
+            serde_json::to_string(value).expect("strings serialize")
+        }
+    };
+    let comparison = |operator: &str| Ok(format!("{field} {operator} {value}"));
+    match parsed.operator {
+        FilterOperator::Eq => comparison("=="),
+        FilterOperator::Ne => comparison("!="),
+        FilterOperator::Gt => comparison(">"),
+        FilterOperator::Gte => comparison(">="),
+        FilterOperator::Lt => comparison("<"),
+        FilterOperator::Lte => comparison("<="),
+        FilterOperator::Exists => Ok(format!("{field} != null")),
+        FilterOperator::StartsWith => Ok(format!("startswith({field}, {value})")),
+        FilterOperator::Contains | FilterOperator::HasTag if is_tag_source(&parsed) => {
+            Ok(format!("file.hasTag({value})"))
+        }
+        FilterOperator::Contains => Ok(format!("contains({field}, {value})")),
+        FilterOperator::HasTag => Err(PropertyError::InvalidFilter(format!(
+            "{filter} (has_tag selects file.tags; use contains for list properties)"
+        ))),
+        FilterOperator::Matches | FilterOperator::MatchesI => {
+            let FilterValue::Text(pattern) = &parsed.value else {
+                return Err(PropertyError::InvalidFilter(format!(
+                    "{filter} (regex filters require a text pattern)"
+                )));
+            };
+            let pattern = if parsed.operator == FilterOperator::MatchesI {
+                format!("(?i:{pattern})")
+            } else {
+                pattern.clone()
+            };
+            Regex::new(&pattern)
+                .map_err(|error| PropertyError::InvalidFilter(format!("{filter} ({error})")))?;
+            Ok(format!(
+                "regextest({}, {field})",
+                serde_json::to_string(&pattern).expect("strings serialize")
+            ))
+        }
+    }
 }
 
 fn expression_filter_matches(value: &Value) -> bool {
     match value {
         Value::Array(values) => values.iter().any(expression_filter_matches),
         value => is_truthy(value),
-    }
-}
-
-fn regex_filter_matches_note(note: &NoteRecord, field: &FilterField, regex: &Regex) -> bool {
-    regex_filter_values(note, field).any(|value| regex.is_match(value))
-}
-
-fn regex_filter_values<'a>(
-    note: &'a NoteRecord,
-    field: &'a FilterField,
-) -> Box<dyn Iterator<Item = &'a str> + 'a> {
-    match field {
-        FilterField::Property(key) => match note.properties.get(key) {
-            Some(Value::String(value)) => Box::new(std::iter::once(value.as_str())),
-            Some(Value::Array(values)) => Box::new(values.iter().filter_map(Value::as_str)),
-            _ => Box::new(std::iter::empty()),
-        },
-        FilterField::FilePath => Box::new(std::iter::once(note.document_path.as_str())),
-        FilterField::FileName => Box::new(std::iter::once(note.file_name.as_str())),
-        FilterField::FileExt => Box::new(std::iter::once(note.file_ext.as_str())),
-        FilterField::FileTags => Box::new(note.tags.iter().map(String::as_str)),
-        FilterField::FileMtime | FilterField::FileCtime => Box::new(std::iter::empty()),
     }
 }
 
@@ -2585,15 +2581,14 @@ fn parse_filter_value(value: &str) -> FilterValue {
     }
 }
 
+/// The text of one quoted literal; `"a" || b = "c"` is not one.
 fn strip_quotes(value: &str) -> Option<&str> {
-    if value.len() >= 2
-        && ((value.starts_with('"') && value.ends_with('"'))
-            || (value.starts_with('\'') && value.ends_with('\'')))
-    {
-        Some(&value[1..value.len() - 1])
-    } else {
-        None
-    }
+    let quote = value
+        .chars()
+        .next()
+        .filter(|quote| matches!(quote, '"' | '\''))?;
+    let inner = value.strip_prefix(quote)?.strip_suffix(quote)?;
+    (!inner.contains(quote)).then_some(inner)
 }
 
 fn is_sql_literal_filter_value(value: &str) -> bool {
@@ -3198,12 +3193,11 @@ mod tests {
                 allow: vec![allow],
                 deny: vec![ResourceSpecifier::Note("Public/Denied.md".into())],
             });
-            for with_filter_cte in [false, true] {
+            for with_filter in [false, true] {
                 let mut scoped_query = query.clone();
-                if with_filter_cte {
-                    scoped_query
-                        .filters
-                        .push("categories has_tag project".into());
+                if with_filter {
+                    // Predicate bindings follow the permission bindings.
+                    scoped_query.filters.push("file.name != \"Other\"".into());
                 }
                 let scoped = query_notes_with_filter(&paths, &scoped_query, Some(&filter)).unwrap();
                 assert_eq!(scoped.notes.len(), 1);
@@ -3707,8 +3701,105 @@ mod tests {
                 .iter()
                 .map(|note| note.document_path.clone())
                 .collect::<Vec<_>>(),
-            vec!["Dashboard.md".to_string(), "Projects/Alpha.md".to_string()]
+            vec!["Projects/Alpha.md".to_string()]
         );
+    }
+
+    #[test]
+    fn note_filters_mean_their_expressions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::create_dir_all(vault_root.join("Folder%")).expect("folder should be created");
+        for (path, contents) in [
+            ("None.md", "# None\n"),
+            ("Done.md", "---\nstatus: done\ntags: [a/b]\n---\n"),
+            ("Open.md", "---\nstatus: open\nrank: 2\n---\n"),
+            ("Upper.md", "---\nstatus: Open\nrank: null\n---\n"),
+            ("List.md", "---\nstatus: [open, done]\nrank: 10\n---\n"),
+            ("Folder%/Inner.md", "---\nstatus: openly\n---\n#a\n"),
+        ] {
+            fs::write(vault_root.join(path), contents).expect("note should be written");
+        }
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let run = |filter: &str| {
+            query_notes(
+                &paths,
+                &NoteQuery {
+                    filters: vec![filter.to_string()],
+                    sort_by: None,
+                    sort_descending: false,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{filter}: {error}"))
+            .notes
+            .into_iter()
+            .map(|note| note.document_path)
+            .collect::<Vec<_>>()
+        };
+        for (filter, expected) in [
+            // A missing property is null.
+            (
+                "status != done",
+                vec![
+                    "Folder%/Inner.md",
+                    "List.md",
+                    "None.md",
+                    "Open.md",
+                    "Upper.md",
+                ],
+            ),
+            ("status = open", vec!["Open.md"]),
+            ("rank > 1", vec!["List.md", "Open.md"]),
+            (
+                "rank = null",
+                vec!["Done.md", "Folder%/Inner.md", "None.md", "Upper.md"],
+            ),
+            ("rank != null", vec!["List.md", "Open.md"]),
+            // Prefixes are byte-exact and case-sensitive, with no wildcards.
+            (
+                "status starts_with open",
+                vec!["Folder%/Inner.md", "List.md", "Open.md"],
+            ),
+            ("file.path starts_with Folder%/", vec!["Folder%/Inner.md"]),
+            ("file.path starts_with folder", vec![]),
+            ("file.path starts_with F_lder", vec![]),
+            (
+                "status contains open",
+                vec!["Folder%/Inner.md", "List.md", "Open.md"],
+            ),
+            ("status matches ^open$", vec!["List.md", "Open.md"]),
+            (
+                "status matches_i ^open$",
+                vec!["List.md", "Open.md", "Upper.md"],
+            ),
+            // Tags are a source: the tag or one nested under it.
+            ("file.tags has_tag a", vec!["Done.md", "Folder%/Inner.md"]),
+            ("file.tags contains #a/b", vec!["Done.md"]),
+            // A value is one quoted literal; anything else is an expression.
+            ("status = \"done\" || rank = 2", vec!["Done.md", "Open.md"]),
+        ] {
+            let mut actual = run(filter);
+            actual.sort();
+            assert_eq!(actual, expected, "{filter}");
+            // The lowered and SQL-narrowed form equals full evaluation.
+            let source = note_filter_expression_source(filter).expect("filter compiles");
+            let mut evaluated = run(&format!("({source}) && length(\"x\") > 0"));
+            evaluated.sort();
+            assert_eq!(evaluated, expected, "{filter} as {source}");
+        }
+        assert!(matches!(
+            query_notes(
+                &paths,
+                &NoteQuery {
+                    filters: vec!["status has_tag open".to_string()],
+                    sort_by: None,
+                    sort_descending: false,
+                },
+            ),
+            Err(PropertyError::InvalidFilter(_))
+        ));
     }
 
     #[test]
@@ -3870,7 +3961,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_fields_merge_into_properties_but_frontmatter_wins_filters() {
+    fn inline_fields_merge_into_properties_and_filters_see_the_merged_value() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
@@ -3899,17 +3990,21 @@ mod tests {
             vec!["Dashboard.md".to_string()]
         );
         assert!(query_paths(&["status = done"], None).is_empty());
+        // `priority` is `[2, 3]`: filters compare the merged value, which
+        // contains 2 but does not equal it.
+        assert!(query_paths(&["priority = 2"], None).is_empty());
         assert_eq!(
-            query_paths(&["priority = 2"], None),
+            query_paths(&["priority contains 2"], None),
             vec!["Dashboard.md".to_string()]
         );
         assert_eq!(
             query_paths(&["month = 2026-04"], None),
             vec!["Dashboard.md".to_string()]
         );
+        // Dashboard's `reviewed: true` and `reviewed:: false` make a list.
         assert_eq!(
             query_paths(&["reviewed = true"], None),
-            vec!["Dashboard.md".to_string(), "Projects/Alpha.md".to_string()]
+            vec!["Projects/Alpha.md".to_string()]
         );
 
         let all_notes = query_notes(

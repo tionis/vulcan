@@ -75,12 +75,14 @@ impl Display for QuerySource {
 #[serde(rename_all = "snake_case")]
 pub enum QueryOperator {
     Eq,
+    Ne,
     Gt,
     Gte,
     Lt,
     Lte,
     StartsWith,
     Contains,
+    HasTag,
     Matches,
     MatchesI,
 }
@@ -89,12 +91,14 @@ impl Display for QueryOperator {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Eq => "=",
+            Self::Ne => "!=",
             Self::Gt => ">",
             Self::Gte => ">=",
             Self::Lt => "<",
             Self::Lte => "<=",
             Self::StartsWith => "starts_with",
             Self::Contains => "contains",
+            Self::HasTag => "has_tag",
             Self::Matches => "matches",
             Self::MatchesI => "matches_i",
         })
@@ -131,7 +135,7 @@ pub struct QueryPredicate {
 }
 
 impl QueryPredicate {
-    /// Render back to the legacy filter string format understood by `build_note_filter_clause`.
+    /// Render as a note filter string (query-architecture §4.7).
     #[must_use]
     pub fn to_filter_string(&self) -> String {
         let value_str = match &self.value {
@@ -147,6 +151,100 @@ impl QueryPredicate {
             }
         };
         format!("{} {} {}", self.field, self.operator, value_str)
+    }
+}
+
+/// One filter of a [`QueryAst`]: a structured `field op value` predicate or a
+/// Vulcan expression. Both mean the expression they compile to
+/// (query-architecture §4.7), and filters combine as an ordered conjunction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum QueryFilter {
+    Predicate(QueryPredicate),
+    Expression { expression: String },
+}
+
+impl QueryFilter {
+    /// Parse a note filter string, preferring the structured form.
+    #[must_use]
+    pub fn from_filter_string(filter: &str) -> Self {
+        crate::properties::parse_note_filter_expression(filter).map_or_else(
+            |_| Self::Expression {
+                expression: filter.to_string(),
+            },
+            |parsed| Self::Predicate(QueryPredicate::from_parsed(&parsed)),
+        )
+    }
+
+    /// Render as a note filter string. An expression that would read as a
+    /// structured predicate is parenthesized.
+    #[must_use]
+    pub fn to_filter_string(&self) -> String {
+        match self {
+            Self::Predicate(predicate) => predicate.to_filter_string(),
+            Self::Expression { expression }
+                if crate::properties::parse_note_filter_expression(expression).is_ok() =>
+            {
+                format!("({expression})")
+            }
+            Self::Expression { expression } => expression.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn as_predicate(&self) -> Option<&QueryPredicate> {
+        match self {
+            Self::Predicate(predicate) => Some(predicate),
+            Self::Expression { .. } => None,
+        }
+    }
+}
+
+impl From<QueryPredicate> for QueryFilter {
+    fn from(predicate: QueryPredicate) -> Self {
+        Self::Predicate(predicate)
+    }
+}
+
+impl QueryPredicate {
+    fn from_parsed(parsed: &crate::properties::ParsedFilter) -> Self {
+        use crate::properties::{FilterField, FilterOperator, FilterValue};
+        let field = match &parsed.field {
+            FilterField::Property(key) => key.clone(),
+            FilterField::FilePath => "file.path".to_string(),
+            FilterField::FileName => "file.name".to_string(),
+            FilterField::FileExt => "file.ext".to_string(),
+            FilterField::FileMtime => "file.mtime".to_string(),
+            FilterField::FileCtime => "file.ctime".to_string(),
+            FilterField::FileTags => "file.tags".to_string(),
+        };
+        let operator = match parsed.operator {
+            FilterOperator::Eq => QueryOperator::Eq,
+            // `exists` is `!= null`.
+            FilterOperator::Ne | FilterOperator::Exists => QueryOperator::Ne,
+            FilterOperator::Gt => QueryOperator::Gt,
+            FilterOperator::Gte => QueryOperator::Gte,
+            FilterOperator::Lt => QueryOperator::Lt,
+            FilterOperator::Lte => QueryOperator::Lte,
+            FilterOperator::StartsWith => QueryOperator::StartsWith,
+            FilterOperator::Contains => QueryOperator::Contains,
+            FilterOperator::HasTag => QueryOperator::HasTag,
+            FilterOperator::Matches => QueryOperator::Matches,
+            FilterOperator::MatchesI => QueryOperator::MatchesI,
+        };
+        let value = match (&parsed.value, parsed.operator) {
+            (_, FilterOperator::Exists) | (FilterValue::Null, _) => QueryValue::Null,
+            (FilterValue::Bool(value), _) => QueryValue::Bool(*value),
+            (FilterValue::Number(value), _) => QueryValue::Number(*value),
+            (FilterValue::Date(value) | FilterValue::Text(value), _) => {
+                QueryValue::Text(value.clone())
+            }
+        };
+        Self {
+            field,
+            operator,
+            value,
+        }
     }
 }
 
@@ -296,7 +394,7 @@ pub struct StructuredQueryPageMeta {
 pub struct QueryAst {
     pub source: QuerySource,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub predicates: Vec<QueryPredicate>,
+    pub predicates: Vec<QueryFilter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<QuerySort>,
     #[serde(default)]
@@ -314,14 +412,15 @@ fn is_zero(n: &usize) -> bool {
 
 impl QueryAst {
     /// Build from the existing `NoteQuery` filter string format.
-    pub fn from_note_query(query: &NoteQuery) -> Result<Self, QueryError> {
+    #[must_use]
+    pub fn from_note_query(query: &NoteQuery) -> Self {
         let predicates = query
             .filters
             .iter()
-            .map(|f| parse_predicate_from_filter_string(f))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|filter| QueryFilter::from_filter_string(filter))
+            .collect();
 
-        Ok(Self {
+        Self {
             source: QuerySource::Notes,
             predicates,
             sort: query.sort_by.as_deref().map(|field| QuerySort {
@@ -331,18 +430,17 @@ impl QueryAst {
             projection: QueryProjection::All,
             limit: None,
             offset: 0,
-        })
+        }
     }
 
     /// Convert this AST back to a `NoteQuery` compatible form.
     ///
-    /// The filter strings produced are compatible with `build_note_filter_clause`.
     pub fn to_note_query(&self) -> NoteQuery {
         NoteQuery {
             filters: self
                 .predicates
                 .iter()
-                .map(QueryPredicate::to_filter_string)
+                .map(QueryFilter::to_filter_string)
                 .collect(),
             sort_by: self.sort.as_ref().map(|s| s.field.clone()),
             sort_descending: self.sort.as_ref().is_some_and(|s| s.descending),
@@ -413,34 +511,7 @@ pub fn execute_query_json(paths: &VaultPaths, json: &str) -> Result<NotesReport,
     execute_query(paths, &ast)
 }
 
-// ── Predicate parser ──────────────────────────────────────────────────────────
-
-/// Parse a predicate from the existing filter string format, e.g. `"status = done"`.
-fn parse_predicate_from_filter_string(filter: &str) -> Result<QueryPredicate, QueryError> {
-    for (separator, operator) in [
-        (" matches_i ", QueryOperator::MatchesI),
-        (" matches ", QueryOperator::Matches),
-        (" contains ", QueryOperator::Contains),
-        (" starts_with ", QueryOperator::StartsWith),
-        (" >= ", QueryOperator::Gte),
-        (" <= ", QueryOperator::Lte),
-        (" = ", QueryOperator::Eq),
-        (" > ", QueryOperator::Gt),
-        (" < ", QueryOperator::Lt),
-    ] {
-        if let Some((field, value)) = filter.split_once(separator) {
-            return Ok(QueryPredicate {
-                field: field.trim().to_string(),
-                operator,
-                value: parse_query_value(value.trim()),
-            });
-        }
-    }
-
-    Err(QueryError::InvalidDsl(format!(
-        "cannot parse predicate from filter string: {filter:?}"
-    )))
-}
+// ── Predicate values ──────────────────────────────────────────────────────────
 
 fn parse_query_value(value: &str) -> QueryValue {
     // strip quotes
@@ -594,12 +665,12 @@ impl<'a> DslParser<'a> {
         })
     }
 
-    fn parse_predicate_list(&mut self) -> Result<Vec<QueryPredicate>, QueryError> {
+    fn parse_predicate_list(&mut self) -> Result<Vec<QueryFilter>, QueryError> {
         let mut predicates = Vec::new();
-        predicates.push(self.parse_predicate()?);
+        predicates.push(self.parse_predicate()?.into());
         while let Some("and") = self.peek_lower().as_deref() {
             self.consume();
-            predicates.push(self.parse_predicate()?);
+            predicates.push(self.parse_predicate()?.into());
         }
         Ok(predicates)
     }
@@ -615,17 +686,19 @@ impl<'a> DslParser<'a> {
             .ok_or_else(|| QueryError::InvalidDsl("expected operator".to_string()))?;
         let operator = match op_str.to_ascii_lowercase().as_str() {
             "=" => QueryOperator::Eq,
+            "!=" => QueryOperator::Ne,
             ">" => QueryOperator::Gt,
             ">=" => QueryOperator::Gte,
             "<" => QueryOperator::Lt,
             "<=" => QueryOperator::Lte,
             "starts_with" => QueryOperator::StartsWith,
             "contains" => QueryOperator::Contains,
+            "has_tag" => QueryOperator::HasTag,
             "matches" => QueryOperator::Matches,
             "matches_i" => QueryOperator::MatchesI,
             other => {
                 return Err(QueryError::InvalidDsl(format!(
-                    "unknown operator {other:?}; expected =, >, >=, <, <=, starts_with, contains, matches, or matches_i"
+                    "unknown operator {other:?}; expected =, !=, >, >=, <, <=, starts_with, contains, has_tag, matches, or matches_i"
                 )));
             }
         };
@@ -737,14 +810,24 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    fn predicate(ast: &QueryAst, index: usize) -> &QueryPredicate {
+        ast.predicates[index]
+            .as_predicate()
+            .expect("filter should be a structured predicate")
+    }
+
     fn field_strategy() -> impl Strategy<Value = String> {
         prop_oneof![
             Just("status".to_string()),
             Just("priority".to_string()),
             Just("file.path".to_string()),
             Just("file.name".to_string()),
+            // `file.*` and `properties.*` spellings are canonicalized.
             proptest::string::string_regex("[A-Za-z][A-Za-z0-9_.]{0,10}")
-                .expect("field regex should be valid"),
+                .expect("field regex should be valid")
+                .prop_filter("reserved prefix", |field| {
+                    !field.starts_with("file.") && !field.starts_with("properties.")
+                }),
         ]
     }
 
@@ -764,12 +847,14 @@ mod tests {
             field_strategy(),
             prop_oneof![
                 Just(QueryOperator::Eq),
+                Just(QueryOperator::Ne),
                 Just(QueryOperator::Gt),
                 Just(QueryOperator::Gte),
                 Just(QueryOperator::Lt),
                 Just(QueryOperator::Lte),
                 Just(QueryOperator::StartsWith),
                 Just(QueryOperator::Contains),
+                Just(QueryOperator::HasTag),
                 Just(QueryOperator::Matches),
                 Just(QueryOperator::MatchesI),
             ],
@@ -780,6 +865,20 @@ mod tests {
                 operator,
                 value,
             })
+    }
+
+    fn filter_strategy() -> impl Strategy<Value = QueryFilter> {
+        prop_oneof![
+            4 => predicate_strategy().prop_map(QueryFilter::from),
+            1 => prop_oneof![
+                Just("length(status) > 2"),
+                Just("status == other && x"),
+                Just("file.size > 3"),
+            ]
+            .prop_map(|expression| QueryFilter::Expression {
+                expression: expression.to_string(),
+            }),
+        ]
     }
 
     fn sort_strategy() -> impl Strategy<Value = QuerySort> {
@@ -810,10 +909,10 @@ mod tests {
     fn dsl_where_eq() {
         let ast = QueryAst::from_dsl("from notes where status = done").unwrap();
         assert_eq!(ast.predicates.len(), 1);
-        assert_eq!(ast.predicates[0].field, "status");
-        assert_eq!(ast.predicates[0].operator, QueryOperator::Eq);
+        assert_eq!(predicate(&ast, 0).field, "status");
+        assert_eq!(predicate(&ast, 0).operator, QueryOperator::Eq);
         assert_eq!(
-            ast.predicates[0].value,
+            predicate(&ast, 0).value,
             QueryValue::Text("done".to_string())
         );
     }
@@ -822,7 +921,7 @@ mod tests {
     fn dsl_where_quoted_value() {
         let ast = QueryAst::from_dsl("from notes where status = \"In Progress\"").unwrap();
         assert_eq!(
-            ast.predicates[0].value,
+            predicate(&ast, 0).value,
             QueryValue::Text("In Progress".to_string())
         );
     }
@@ -831,18 +930,18 @@ mod tests {
     fn dsl_where_multiple_and() {
         let ast = QueryAst::from_dsl("from notes where status = done and priority > 2").unwrap();
         assert_eq!(ast.predicates.len(), 2);
-        assert_eq!(ast.predicates[1].field, "priority");
-        assert_eq!(ast.predicates[1].operator, QueryOperator::Gt);
-        assert_eq!(ast.predicates[1].value, QueryValue::Number(2.0));
+        assert_eq!(predicate(&ast, 1).field, "priority");
+        assert_eq!(predicate(&ast, 1).operator, QueryOperator::Gt);
+        assert_eq!(predicate(&ast, 1).value, QueryValue::Number(2.0));
     }
 
     #[test]
     fn dsl_where_matches_operator() {
         let ast = QueryAst::from_dsl("from notes where file.name matches \"^2026-\"").unwrap();
         assert_eq!(ast.predicates.len(), 1);
-        assert_eq!(ast.predicates[0].operator, QueryOperator::Matches);
+        assert_eq!(predicate(&ast, 0).operator, QueryOperator::Matches);
         assert_eq!(
-            ast.predicates[0].value,
+            predicate(&ast, 0).value,
             QueryValue::Text("^2026-".to_string())
         );
     }
@@ -851,9 +950,9 @@ mod tests {
     fn dsl_where_matches_i_operator() {
         let ast = QueryAst::from_dsl("from notes where owner matches_i \"alice\"").unwrap();
         assert_eq!(ast.predicates.len(), 1);
-        assert_eq!(ast.predicates[0].operator, QueryOperator::MatchesI);
+        assert_eq!(predicate(&ast, 0).operator, QueryOperator::MatchesI);
         assert_eq!(
-            ast.predicates[0].value,
+            predicate(&ast, 0).value,
             QueryValue::Text("alice".to_string())
         );
     }
@@ -894,21 +993,21 @@ mod tests {
     #[test]
     fn dsl_boolean_value() {
         let ast = QueryAst::from_dsl("from notes where reviewed = true").unwrap();
-        assert_eq!(ast.predicates[0].value, QueryValue::Bool(true));
+        assert_eq!(predicate(&ast, 0).value, QueryValue::Bool(true));
     }
 
     #[test]
     fn dsl_null_value() {
         let ast = QueryAst::from_dsl("from notes where due = null").unwrap();
-        assert_eq!(ast.predicates[0].value, QueryValue::Null);
+        assert_eq!(predicate(&ast, 0).value, QueryValue::Null);
     }
 
     #[test]
     fn dsl_contains_operator() {
         let ast = QueryAst::from_dsl("from notes where tags contains sprint").unwrap();
-        assert_eq!(ast.predicates[0].operator, QueryOperator::Contains);
+        assert_eq!(predicate(&ast, 0).operator, QueryOperator::Contains);
         assert_eq!(
-            ast.predicates[0].value,
+            predicate(&ast, 0).value,
             QueryValue::Text("sprint".to_string())
         );
     }
@@ -917,9 +1016,9 @@ mod tests {
     fn dsl_starts_with_operator() {
         let ast =
             QueryAst::from_dsl("from notes where file.path starts_with \"Projects/\"").unwrap();
-        assert_eq!(ast.predicates[0].operator, QueryOperator::StartsWith);
+        assert_eq!(predicate(&ast, 0).operator, QueryOperator::StartsWith);
         assert_eq!(
-            ast.predicates[0].value,
+            predicate(&ast, 0).value,
             QueryValue::Text("Projects/".to_string())
         );
     }
@@ -942,11 +1041,17 @@ mod tests {
     fn json_round_trip_simple() {
         let ast = QueryAst {
             source: QuerySource::Notes,
-            predicates: vec![QueryPredicate {
-                field: "status".to_string(),
-                operator: QueryOperator::Eq,
-                value: QueryValue::Text("done".to_string()),
-            }],
+            predicates: vec![
+                QueryPredicate {
+                    field: "status".to_string(),
+                    operator: QueryOperator::Eq,
+                    value: QueryValue::Text("done".to_string()),
+                }
+                .into(),
+                QueryFilter::Expression {
+                    expression: "length(status) > 2".to_string(),
+                },
+            ],
             sort: Some(QuerySort {
                 field: "file.mtime".to_string(),
                 descending: true,
@@ -974,10 +1079,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ast.predicates.len(), 1);
-        assert_eq!(ast.predicates[0].field, "status");
-        assert_eq!(ast.predicates[0].operator, QueryOperator::Eq);
+        assert_eq!(predicate(&ast, 0).field, "status");
+        assert_eq!(predicate(&ast, 0).operator, QueryOperator::Eq);
         assert_eq!(
-            ast.predicates[0].value,
+            predicate(&ast, 0).value,
             QueryValue::Text("done".to_string())
         );
     }
@@ -1010,7 +1115,7 @@ mod tests {
             sort_by: Some("file.mtime".to_string()),
             sort_descending: true,
         };
-        let ast = QueryAst::from_note_query(&nq).unwrap();
+        let ast = QueryAst::from_note_query(&nq);
         assert_eq!(ast.predicates.len(), 2);
         assert_eq!(ast.sort.as_ref().unwrap().field, "file.mtime");
         assert!(ast.sort.as_ref().unwrap().descending);
@@ -1018,35 +1123,58 @@ mod tests {
         let back = ast.to_note_query();
         // Filter strings may not be byte-for-byte identical (values get re-quoted)
         // but they must parse to the same predicates
-        let ast2 = QueryAst::from_note_query(&back).unwrap();
+        let ast2 = QueryAst::from_note_query(&back);
         assert_eq!(ast.predicates, ast2.predicates);
         assert_eq!(ast.sort, ast2.sort);
     }
 
     #[test]
-    fn predicate_to_filter_string_roundtrip() {
-        let cases = [
+    fn filter_strings_roundtrip_through_the_canonical_parser() {
+        for case in [
             "status = done",
+            "status != done",
             "priority >= 2",
             "reviewed = true",
             "due = null",
             "tags contains sprint",
+            "file.tags has_tag project",
             "file.path starts_with \"Projects/\"",
-        ];
-        for case in cases {
-            let pred = parse_predicate_from_filter_string(case)
-                .unwrap_or_else(|_| panic!("should parse: {case}"));
-            let rendered = pred.to_filter_string();
-            let pred2 = parse_predicate_from_filter_string(&rendered)
-                .unwrap_or_else(|_| panic!("should re-parse: {rendered}"));
-            assert_eq!(pred, pred2, "round-trip failed for: {case}");
+            "file.extension = md",
+        ] {
+            let filter = QueryFilter::from_filter_string(case);
+            assert!(filter.as_predicate().is_some(), "{case}");
+            assert_eq!(
+                QueryFilter::from_filter_string(&filter.to_filter_string()),
+                filter,
+                "{case}"
+            );
         }
+        for case in [
+            "length(status) > 2",
+            "status = other_field && x",
+            "file.size > 3",
+        ] {
+            let filter = QueryFilter::from_filter_string(case);
+            assert_eq!(
+                filter,
+                QueryFilter::Expression {
+                    expression: case.to_string()
+                }
+            );
+            assert_eq!(filter.to_filter_string(), case);
+        }
+        // A JSON expression that looks like a predicate stays an expression.
+        let ast = QueryAst::from_json(
+            r#"{"source":"notes","predicates":[{"expression":"status = done"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ast.to_note_query().filters, vec!["(status = done)"]);
     }
 
     proptest! {
         #[test]
         fn query_ast_json_roundtrips_for_generated_inputs(
-            predicates in prop::collection::vec(predicate_strategy(), 0..5),
+            predicates in prop::collection::vec(filter_strategy(), 0..5),
             sort in prop::option::of(sort_strategy()),
             projection in projection_strategy(),
             limit in prop::option::of(0_usize..32),
@@ -1070,7 +1198,7 @@ mod tests {
 
         #[test]
         fn note_query_conversion_roundtrips_generated_predicates_and_sorts(
-            predicates in prop::collection::vec(predicate_strategy(), 0..5),
+            predicates in prop::collection::vec(filter_strategy(), 0..5),
             sort in prop::option::of(sort_strategy()),
         ) {
             let ast = QueryAst {
@@ -1082,8 +1210,7 @@ mod tests {
                 offset: 0,
             };
 
-            let reparsed = QueryAst::from_note_query(&ast.to_note_query())
-                .expect("rendered note query should parse back into the canonical AST");
+            let reparsed = QueryAst::from_note_query(&ast.to_note_query());
 
             prop_assert_eq!(reparsed.predicates, ast.predicates);
             prop_assert_eq!(reparsed.sort, ast.sort);

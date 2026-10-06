@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, native queries, canonical mdbase collection queries, filters, and structured note listing.
-version: 6
+version: 7
 tools:
   - search
   - query
@@ -40,8 +40,10 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - DQL accepts only `query`, `engine`, `limit`, and `offset`; use structural query mode for path, filename, field projection, or property inclusion controls.
 - Default rows use a compact allowlist and omit properties, frontmatter, links, tasks, and inline-expression payloads unless explicitly projected.
 - Regex predicates live in the query/filter world as `matches` and `matches_i`; they are not the same as FTS search syntax.
-- A single `--where` value is one predicate. Repeat `--where` for `AND`; it does not accept `OR`,
-  parentheses, `!=`, `in`, or `is null` (`field = null` is supported).
+- A `--where` value is one predicate (`status != done`) or one expression
+  (`status = "a" || priority > 2`); repeat `--where` for `AND`. Predicates mean their expression:
+  a missing property is null, so `status != done` includes notes without a status, and a key set
+  by both frontmatter and an inline field is a list.
 - If the result set is surprising, inspect the filter first before adding more conditions.
 - MDB queries never return results from records that changed on disk. A cached record is reused only when its file identity and change time match the bytes that were indexed; otherwise readable sources are reconciled before returning. In an initialized vault, unrestricted queries may populate or repair the rebuildable cache without changing notes. Uninitialized collections remain source-only and are not initialized as a query side effect. Restricted queries reuse matching cached records or read authorized sources without publishing a partial collection. A `stale_state` error means records changed during preparation: retry after the edit finishes, rather than trusting the previous cache. `--refresh off` does not bypass this MDB check.
 - Simple metadata queries run from the index without loading note bodies: type selection, `where` conjunctions (`&&`) of field or `file.path` comparisons and `startsWith` against literals, field selections, ordering, and limits. Expression selections, projections, grouping, summaries, `include_body`, `||`, and other filter forms still evaluate every visible record. Prefer the simple shape for frequent list queries rather than assuming a small response is cheap.

@@ -2786,6 +2786,39 @@ fn query_fields_aligned_table_output_in_tty_mode() {
 }
 
 #[test]
+fn ls_where_filters_mean_their_expressions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root.to_str().expect("valid utf-8");
+    let ls = |filter: &str| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root_str,
+                "--output",
+                "json",
+                "ls",
+                "--where",
+                filter,
+            ])
+            .assert()
+            .success();
+        parse_stdout_json_lines(&assert)
+            .into_iter()
+            .map(|row| row.as_str().expect("ls rows are paths").to_string())
+            .collect::<Vec<_>>()
+    };
+    // Only Alpha has a status; a missing status is null, so `!=` keeps the rest.
+    assert_eq!(ls("status != active"), ["Home.md", "People/Bob.md"]);
+    assert_eq!(ls("status = active"), ["Projects/Alpha.md"]);
+    assert_eq!(ls("length(status) > 3"), ["Projects/Alpha.md"]);
+    assert!(ls("file.path starts_with projects/").is_empty());
+}
+
+#[test]
 fn tags_command_lists_and_filters_indexed_tags() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -17781,7 +17814,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .success()
         .stdout(predicate::str::contains("--file"));
     assert!(vault_query.contains("Native query DSL starts with `from notes`"));
-    assert!(vault_query.contains("A single `--where` value is one predicate"));
+    assert!(vault_query.contains("A `--where` value is one predicate (`status != done`)"));
     assert!(vault_query.contains("vulcan repair ordinary-write status"));
     let graph_exploration =
         fs::read_to_string(vault_root.join(".agents/skills/graph-exploration/SKILL.md"))

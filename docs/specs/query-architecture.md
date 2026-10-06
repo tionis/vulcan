@@ -160,6 +160,12 @@ Execution is: candidates (§4.1) → freshness proof → hydrate the residual's 
 residual evaluation by the frontend → ordering, using SQL-extracted keys where available →
 page → hydrate output groups for the page only.
 
+### 4.6 Retained host sessions
+
+The daemon's mdbase query session (per-scope proofs, retained decoded rows bound to row
+versions, single-flight proving, lock-free reads with pre-write proofs) generalizes to note
+stores, so every frontend served by the daemon gets the same warm path.
+
 ### 4.7 Filter language
 
 There are two expression families: the Vulcan expression language (Dataview DQL, Bases, and
@@ -171,20 +177,21 @@ evaluator.
   to the Vulcan expression AST and mean exactly what that expression means. For example, a
   missing property is `null`, so `status != done` also selects notes without a status; a key
   that both frontmatter and an inline field set is a list; `starts_with` is a byte-exact,
-  case-sensitive prefix; `exists` is `!= null`; `contains` and `has_tag` follow the
-  evaluator's list and nested-tag rules.
+  case-sensitive prefix; `exists` is `!= null`; `contains` is the evaluator's `contains()`;
+  `matches` is a regex search over text or list elements. A predicate value is one literal;
+  any other `--where` value is itself an expression. `QueryAst` filters are ordered predicates
+  or expressions.
 - **SQL only narrows.** No consumer runs a filter as exact SQL. Filters lower to shared
-  predicate atoms (§4.3), whose SQL removes decided non-matches before loading; everything
-  else is evaluated.
+  predicate atoms (§4.3), whose SQL removes decided non-matches before loading. The in-memory
+  decider then decides each loaded row before anything else is read for it (hydration, raw
+  frontmatter, filesystem metadata); only undecided rows are evaluated, and only they load
+  the lookup index. The decider resolves keys as the evaluator does (exact, then normalized
+  name, else null), so it decides more than SQL, which reads exact keys only.
 - **Sources are not filters.** Folder, path, tag, type, and link selection belong to the source
   algebra (§4.4) with their own exact semantics, such as byte-exact folder prefixes and nested
-  tags, and may run entirely in SQL.
-
-### 4.6 Retained host sessions
-
-The daemon's mdbase query session (per-scope proofs, retained decoded rows bound to row
-versions, single-flight proving, lock-free reads with pre-write proofs) generalizes to note
-stores, so every frontend served by the daemon gets the same warm path.
+  tags, and may run entirely in SQL. `file.tags has_tag t` (and `file.tags contains t`) is such
+  a tag source: notes tagged `t` or a tag nested under it, the same selection as
+  `file.hasTag(t)`. `has_tag` on any other field is an error.
 
 ## 5. Migration plan
 
