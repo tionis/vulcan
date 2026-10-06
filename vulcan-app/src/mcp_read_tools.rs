@@ -499,6 +499,7 @@ pub fn query(
                 notes: notes_report.notes,
                 selection: None,
                 selection_provenance: Vec::new(),
+                plan: None,
             }
         }
         (Some(_), Some(_)) => unreachable!("checked above"),
@@ -837,6 +838,7 @@ mod tests {
             shown_fields: Vec::new(),
             short_mode: false,
             plan: None,
+            note_plan: None,
         };
         filter_tasks_query_report(&guard, &mut report);
         assert!(report.tasks.is_empty());

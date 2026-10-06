@@ -1615,11 +1615,26 @@ impl TaskReadScope<'_> {
 
     /// The index Tasks queries read: only task-bearing notes are hydrated.
     fn load_tasks(self, paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, AppError> {
+        self.load_tasks_with_plan(paths).map(|(index, _)| index)
+    }
+
+    /// [`Self::load_tasks`] with the note plan that loaded it (QRY.5).
+    fn load_tasks_with_plan(
+        self,
+        paths: &VaultPaths,
+    ) -> Result<
+        (
+            HashMap<String, NoteRecord>,
+            vulcan_core::plan::QueryPlanExplain,
+        ),
+        AppError,
+    > {
         let scope = match self {
             Self::Filter(filter) => vulcan_core::properties::NoteIndexReadScope::Filter(filter),
             Self::Guard(guard) => vulcan_core::properties::NoteIndexReadScope::Guard(guard),
         };
-        vulcan_core::properties::load_task_note_index(paths, scope).map_err(AppError::operation)
+        vulcan_core::properties::load_task_note_index_with_plan(paths, scope)
+            .map_err(AppError::operation)
     }
 
     fn load(self, paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, AppError> {
@@ -3057,10 +3072,14 @@ fn build_tasks_query_result_with_options(
     let effective_source = tasks_query_source(&config, source, include_global_query);
     // Parse before loading records, preserving syntax-error precedence.
     parse_tasks_query(&effective_source).map_err(AppError::operation)?;
-    let note_index = scope.load_tasks(paths)?;
+    let (note_index, note_plan) = scope.load_tasks_with_plan(paths)?;
     let mut result =
         vulcan_core::tasks::evaluate_tasks_query_with_note_index(&effective_source, &note_index)
             .map_err(AppError::operation)?;
+    // The Tasks `explain` instruction also reports how the tasks were loaded.
+    if result.plan.is_some() {
+        result.note_plan = Some(note_plan);
+    }
     strip_global_filter_from_output(&mut result, &config);
     Ok(result)
 }
@@ -3164,6 +3183,7 @@ fn build_tasks_list_dql_filter(
             shown_fields: Vec::new(),
             short_mode: false,
             plan: None,
+            note_plan: None,
         }
     } else {
         let layout_query = parse_tasks_query(layout_source).map_err(AppError::operation)?;

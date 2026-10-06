@@ -2789,6 +2789,20 @@
                 ]
               },
               {
+                "help": "Report each view's note plan: candidates, decisions, hydration, timings",
+                "id": "explain",
+                "long": "explain",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPLAIN"
+                ]
+              },
+              {
                 "help": "Write query rows to a CSV or JSONL file",
                 "id": "export",
                 "long": "export",

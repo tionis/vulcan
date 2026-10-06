@@ -47,7 +47,15 @@ struct Calls {
 fn lookup(count: usize, calls: &Calls) -> IndexedNoteLookup<'_> {
     IndexedNoteLookup::new(
         identities(count),
-        Box::new(move |paths| {
+        Box::new(move |paths: Option<&[&str]>| {
+            let paths = paths.map_or_else(
+                || {
+                    (0..count)
+                        .map(|index| format!("n{index}.md"))
+                        .collect::<Vec<_>>()
+                },
+                |paths| paths.iter().map(ToString::to_string).collect(),
+            );
             calls.stored.borrow_mut().push(paths.len());
             Ok(paths.iter().map(|path| note(path)).collect())
         }),
@@ -108,6 +116,23 @@ fn prefetches_load_in_batches_and_many_misses_load_the_rest() {
     assert_eq!(stored.len(), 1 + LAZY_LOAD_LIMIT + 1);
     assert_eq!(stored[1..=LAZY_LOAD_LIMIT], vec![1; LAZY_LOAD_LIMIT][..]);
     assert_eq!(*stored.last().unwrap(), 10 - 3);
+}
+
+#[test]
+fn loading_most_of_the_universe_scans_it() {
+    let calls = calls();
+    let lookup = lookup(10, &calls);
+    lookup.prefetch_stored(
+        (0..8)
+            .map(|index| format!("n{index}.md"))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(String::as_str),
+    );
+    // Eight of ten notes load through one scan of every readable note.
+    assert_eq!(*calls.stored.borrow(), [10]);
+    assert!(lookup.note_at("n9.md").is_some());
+    assert_eq!(*calls.stored.borrow(), [10]);
 }
 
 #[test]

@@ -1108,6 +1108,7 @@ fn write_sqlite_export_writes_expected_schema_and_rows() {
         notes: vec![note.clone()],
         selection: None,
         selection_provenance: Vec::new(),
+        plan: None,
     };
     let notes = vec![ExportedNoteDocument {
         note,

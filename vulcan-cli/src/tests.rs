@@ -5769,6 +5769,7 @@ fn parses_links_and_backlinks_commands() {
         Command::Bases {
             command: BasesCommand::Eval {
                 file: "release.base".to_string(),
+                explain: false,
                 export: ExportArgs::default(),
             },
         }

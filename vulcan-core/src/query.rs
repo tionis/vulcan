@@ -779,6 +779,10 @@ pub struct QueryReport {
     /// Per-clause/seed reasons that selected each note.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selection_provenance: Vec<crate::selection::SelectionProvenance>,
+    /// The note plan behind `notes` (QRY.5); callers keep it only for
+    /// `--explain` output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::plan::QueryPlanExplain>,
 }
 
 /// Execute a `QueryAst` and return a `QueryReport` (AST + results).
@@ -791,12 +795,25 @@ pub fn execute_query_report_with_filter(
     ast: QueryAst,
     filter: Option<&PermissionFilter>,
 ) -> Result<QueryReport, QueryError> {
+    let mut report = execute_query_report_explained(paths, ast, filter)?;
+    report.plan = None;
+    Ok(report)
+}
+
+/// [`execute_query_report_with_filter`], keeping the note plan for
+/// `--explain` output (QRY.5).
+pub fn execute_query_report_explained(
+    paths: &VaultPaths,
+    ast: QueryAst,
+    filter: Option<&PermissionFilter>,
+) -> Result<QueryReport, QueryError> {
     let report = execute_query_with_filter(paths, &ast, filter)?;
     Ok(QueryReport {
         query: ast,
         notes: report.notes,
         selection: None,
         selection_provenance: Vec::new(),
+        plan: report.plan,
     })
 }
 

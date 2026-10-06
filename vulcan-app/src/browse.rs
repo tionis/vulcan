@@ -8,7 +8,6 @@ use std::process::Command as ProcessCommand;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     doctor_vault as core_doctor_vault, evaluate_base_file as core_evaluate_base_file,
-    evaluate_base_file_with_guard as core_evaluate_base_file_with_guard,
     evaluate_dataview_js_query as core_evaluate_dataview_js_query,
     evaluate_dataview_js_with_options as core_evaluate_dataview_js_with_options,
     evaluate_dql as core_evaluate_dql, evaluate_dql_with_filter as core_evaluate_dql_with_filter,
@@ -154,13 +153,24 @@ pub fn evaluate_base_file_with_guard(
     path: &str,
     guard: &ProfilePermissionGuard,
 ) -> Result<BasesEvalReport, AppError> {
+    evaluate_base_file_with_guard_and_plan(paths, path, guard, false)
+}
+
+/// [`evaluate_base_file_with_guard`], reporting each view's note plan when
+/// `explain` is set (QRY.5).
+pub fn evaluate_base_file_with_guard_and_plan(
+    paths: &VaultPaths,
+    path: &str,
+    guard: &ProfilePermissionGuard,
+    explain: bool,
+) -> Result<BasesEvalReport, AppError> {
     recheck_read_authority(paths, guard, "bases")?;
     let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
     recheck_read_authority(paths, &snapshot, "bases")?;
     let report = {
         let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
             .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-        core_evaluate_base_file_with_guard(paths, path, &snapshot)
+        vulcan_core::bases::evaluate_base_file_with_guard_and_plan(paths, path, &snapshot, explain)
     };
     recheck_read_authority(paths, &snapshot, "bases")?;
     report.map_err(AppError::operation)
@@ -267,13 +277,31 @@ pub fn build_dataview_query_report_with_guard(
     source_path: Option<&str>,
     guard: &ProfilePermissionGuard,
 ) -> Result<DqlQueryResult, AppError> {
+    build_dataview_query_report_with_guard_and_plan(paths, source, source_path, guard, false)
+}
+
+/// [`build_dataview_query_report_with_guard`], reporting the note plan in
+/// `DqlQueryResult::plan` when `explain` is set (QRY.5).
+pub fn build_dataview_query_report_with_guard_and_plan(
+    paths: &VaultPaths,
+    source: &str,
+    source_path: Option<&str>,
+    guard: &ProfilePermissionGuard,
+    explain: bool,
+) -> Result<DqlQueryResult, AppError> {
     recheck_read_authority(paths, guard, "dataview")?;
     let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
     recheck_read_authority(paths, &snapshot, "dataview")?;
     let result = {
         let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
             .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-        core_evaluate_dql_with_guard(paths, source, source_path, &snapshot)
+        vulcan_core::dql::evaluate_dql_with_guard_and_plan(
+            paths,
+            source,
+            source_path,
+            &snapshot,
+            explain,
+        )
     };
     recheck_read_authority(paths, &snapshot, "dataview")?;
     result.map_err(AppError::operation)

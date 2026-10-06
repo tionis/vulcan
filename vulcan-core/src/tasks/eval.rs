@@ -28,6 +28,10 @@ pub struct TasksQueryResult {
     pub short_mode: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<TasksQuery>,
+    /// The note plan that loaded the tasks, reported with the Tasks
+    /// `explain` instruction (QRY.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_plan: Option<crate::plan::QueryPlanExplain>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -225,6 +229,7 @@ fn build_tasks_query_result(
         shown_fields,
         short_mode,
         plan: explain.then(|| query.clone()),
+        note_plan: None,
     }
 }
 

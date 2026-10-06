@@ -1347,6 +1347,11 @@ pub enum BasesCommand {
     Eval {
         #[arg(help = "Vault-relative path to the .base file to evaluate")]
         file: String,
+        #[arg(
+            long,
+            help = "Report each view's note plan: candidates, decisions, hydration, timings"
+        )]
+        explain: bool,
         #[command(flatten)]
         export: ExportArgs,
     },

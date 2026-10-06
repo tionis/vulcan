@@ -14294,6 +14294,67 @@ fn tasks_list_dql_filter_keeps_sort_and_group_options() {
 }
 
 #[test]
+fn explain_reports_note_plans_for_every_frontend() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::write(
+        vault_root.join("Projects/view.base"),
+        "filters:\n  and:\n    - 'status == \"active\"'\nviews:\n  - type: table\n    name: all\n",
+    )
+    .unwrap();
+    fs::write(vault_root.join("Tasks.md"), "- [ ] one\n- [x] two\n").unwrap();
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("valid utf-8");
+    let json = |args: &[&str]| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(["--vault", vault, "--output", "json"])
+            .args(args)
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    let check = |plan: &Value, frontend: &str| {
+        assert_eq!(plan["frontend"], frontend, "{plan}");
+        assert!(plan["candidates"].as_u64().is_some(), "{plan}");
+        assert!(plan["hydrated"].as_u64().is_some(), "{plan}");
+        let stages = plan["stages"].as_array().expect("stages");
+        assert_eq!(
+            stages
+                .iter()
+                .map(|stage| stage["name"].clone())
+                .collect::<Vec<_>>(),
+            ["candidates", "decide", "hydrate"]
+        );
+    };
+
+    let dql = "LIST FROM \"Projects\" WHERE status = \"active\"";
+    let explained = json(&["query", "--language", "dql", "--explain", dql]);
+    check(&explained["plan"], "dql");
+    assert_eq!(explained["plan"]["decided_matches"], 1);
+    assert!(json(&["query", "--language", "dql", dql])
+        .get("plan")
+        .is_none());
+
+    let explained = json(&["query", "--explain", "--where", "status = active"]);
+    check(&explained["plan"], "notes");
+    assert_eq!(explained["notes"].as_array().map(Vec::len), Some(1));
+
+    let explained = json(&["bases", "eval", "Projects/view.base", "--explain"]);
+    check(&explained["views"][0]["plan"], "notes");
+    assert!(json(&["bases", "eval", "Projects/view.base"])["views"][0]
+        .get("plan")
+        .is_none());
+
+    let explained = json(&["tasks", "query", "not done\nexplain"]);
+    check(&explained["note_plan"], "tasks");
+    assert!(json(&["tasks", "query", "not done"])
+        .get("note_plan")
+        .is_none());
+}
+
+#[test]
 fn tasks_list_dql_filters_agree_with_full_index_evaluation() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -17870,6 +17931,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(vault_query.contains("Native query DSL starts with `from notes`"));
     assert!(vault_query.contains("A `--where` value is one predicate (`status != done`)"));
     assert!(vault_query.contains("vulcan repair ordinary-write status"));
+    assert!(vault_query.contains("the note plan reports how candidates were selected"));
     let graph_exploration =
         fs::read_to_string(vault_root.join(".agents/skills/graph-exploration/SKILL.md"))
             .expect("graph exploration skill should be readable");

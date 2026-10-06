@@ -520,6 +520,7 @@ pub fn selection_report_as_query_report(
         notes: report.notes,
         selection: Some(report.selection),
         selection_provenance: report.provenance,
+        plan: None,
     })
 }
 

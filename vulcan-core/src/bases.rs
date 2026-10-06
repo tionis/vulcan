@@ -124,6 +124,9 @@ pub struct BasesEvaluatedView {
     pub columns: Vec<BasesColumn>,
     pub group_by: Option<BasesGroupBy>,
     pub rows: Vec<BasesRow>,
+    /// The note plan behind `rows`, when explaining (QRY.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::plan::QueryPlanExplain>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -168,6 +171,22 @@ pub trait BasesSource: Send + Sync {
         let _ = authorized_index;
         self.rows(paths, request)
     }
+
+    /// [`BasesSource::rows`], or [`BasesSource::rows_in_scope`] with an
+    /// authorized universe, plus the note plan that produced the rows for
+    /// `--explain` output (QRY.5). The default reports no plan.
+    fn rows_planned(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+        authorized_index: Option<&HashMap<String, NoteRecord>>,
+    ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+        match authorized_index {
+            Some(index) => self.rows_in_scope(paths, request, index),
+            None => self.rows(paths, request),
+        }
+        .map(|rows| (rows, None))
+    }
 }
 
 fn query_source_notes(
@@ -175,6 +194,14 @@ fn query_source_notes(
     request: &BasesSourceRequest,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<Vec<NoteRecord>, BasesError> {
+    query_source_notes_planned(paths, request, authorized_index).map(|(rows, _)| rows)
+}
+
+fn query_source_notes_planned(
+    paths: &VaultPaths,
+    request: &BasesSourceRequest,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let query = NoteQuery {
         filters: request.filters.clone(),
         sort_by: None,
@@ -186,7 +213,7 @@ fn query_source_notes(
         request.read_filter.as_ref(),
         authorized_index,
     )
-    .map(|report| report.notes)
+    .map(|report| (report.notes, report.plan))
     .map_err(BasesError::Property)
 }
 
@@ -210,6 +237,15 @@ impl BasesSource for FileSource {
     ) -> Result<Vec<NoteRecord>, BasesError> {
         query_source_notes(paths, request, Some(authorized_index))
     }
+
+    fn rows_planned(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+        authorized_index: Option<&HashMap<String, NoteRecord>>,
+    ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+        query_source_notes_planned(paths, request, authorized_index)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -232,6 +268,15 @@ impl BasesSource for TaskNotesSource {
     ) -> Result<Vec<NoteRecord>, BasesError> {
         tasknote_source_rows(paths, request, Some(authorized_index))
     }
+
+    fn rows_planned(
+        &self,
+        paths: &VaultPaths,
+        request: &BasesSourceRequest,
+        authorized_index: Option<&HashMap<String, NoteRecord>>,
+    ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+        tasknote_source_rows_planned(paths, request, authorized_index)
+    }
 }
 
 fn tasknote_source_rows(
@@ -239,9 +284,17 @@ fn tasknote_source_rows(
     request: &BasesSourceRequest,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<Vec<NoteRecord>, BasesError> {
+    tasknote_source_rows_planned(paths, request, authorized_index).map(|(rows, _)| rows)
+}
+
+fn tasknote_source_rows_planned(
+    paths: &VaultPaths,
+    request: &BasesSourceRequest,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let config = load_vault_config(paths).config;
     let include_archived = tasknotes_source_include_archived(request.config.as_ref());
-    let mut rows = query_source_notes(paths, request, authorized_index)?;
+    let (mut rows, plan) = query_source_notes_planned(paths, request, authorized_index)?;
     rows.retain(|note| {
         extract_tasknote(
             &note.document_path,
@@ -251,12 +304,14 @@ fn tasknote_source_rows(
         )
         .is_some_and(|tasknote| include_archived || !tasknote.archived)
     });
-    Ok(rows)
+    Ok((rows, plan))
 }
 
 #[derive(Default)]
 pub struct BasesEvaluator {
     sources: HashMap<String, Arc<dyn BasesSource>>,
+    /// Report each view's note plan (QRY.5).
+    explain: bool,
 }
 
 impl BasesEvaluator {
@@ -266,6 +321,13 @@ impl BasesEvaluator {
         evaluator.register_source("file", FileSource);
         evaluator.register_source("tasknotes", TaskNotesSource);
         evaluator
+    }
+
+    /// Report each view's note plan in [`BasesEvaluatedView::plan`].
+    #[must_use]
+    pub fn with_explain(mut self, explain: bool) -> Self {
+        self.explain = explain;
+        self
     }
 
     pub fn register_source<S>(&mut self, name: &str, source: S) -> Option<Arc<dyn BasesSource>>
@@ -1060,6 +1122,19 @@ pub fn evaluate_base_file_with_guard(
     BasesEvaluator::new().evaluate_file_with_guard(paths, relative_path, guard)
 }
 
+/// [`evaluate_base_file_with_guard`], reporting each view's note plan when
+/// `explain` is set (QRY.5).
+pub fn evaluate_base_file_with_guard_and_plan(
+    paths: &VaultPaths,
+    relative_path: &str,
+    guard: &dyn PermissionGuard,
+    explain: bool,
+) -> Result<BasesEvalReport, BasesError> {
+    BasesEvaluator::new()
+        .with_explain(explain)
+        .evaluate_file_with_guard(paths, relative_path, guard)
+}
+
 pub fn inspect_base_file(
     paths: &VaultPaths,
     relative_path: &str,
@@ -1103,18 +1178,27 @@ fn evaluate_base_view(
         config: source.config.clone(),
         read_filter: read_filter.cloned(),
     };
+    let mut plan = None;
     let source_rows = match context.guard {
         Some(guard) => {
             let authorized_index = context.note_index(paths)?;
-            match source_impl.rows_in_scope(paths, &request, authorized_index) {
-                Ok(rows) => context.hydrate_rows(paths, &rows).and_then(|()| {
-                    let authorized_index = context.note_index(paths)?;
-                    authorize_guarded_rows(paths, rows, guard, authorized_index)
-                }),
+            match source_impl.rows_planned(paths, &request, Some(authorized_index)) {
+                Ok((rows, rows_plan)) => {
+                    plan = rows_plan;
+                    context.hydrate_rows(paths, &rows).and_then(|()| {
+                        let authorized_index = context.note_index(paths)?;
+                        authorize_guarded_rows(paths, rows, guard, authorized_index)
+                    })
+                }
                 Err(error) => Err(error),
             }
         }
-        None => source_impl.rows(paths, &request),
+        None => source_impl
+            .rows_planned(paths, &request, None)
+            .map(|(rows, rows_plan)| {
+                plan = rows_plan;
+                rows
+            }),
     };
     let diagnostics = &mut *context.diagnostics;
     let notes = match source_rows {
@@ -1211,6 +1295,7 @@ fn evaluate_base_view(
             descending: group_by.descending,
         }),
         rows,
+        plan: plan.filter(|_| evaluator.explain),
     }))
 }
 

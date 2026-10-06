@@ -153,8 +153,10 @@ impl<S: BuildHasher> NoteLookup for HashMap<String, NoteRecord, S> {
     }
 }
 
-/// Loads stored-field records for the given paths, in any order.
-pub type StoredNoteLoader<'a> = Box<dyn Fn(&[&str]) -> Result<Vec<NoteRecord>, PropertyError> + 'a>;
+/// Loads stored-field records for the given paths (`None`: every readable
+/// note, in one scan), in any order.
+pub type StoredNoteLoader<'a> =
+    Box<dyn Fn(Option<&[&str]>) -> Result<Vec<NoteRecord>, PropertyError> + 'a>;
 
 /// Hydrates stored-field records (tags, links, inlinks, tasks, lists),
 /// returning them in any order.
@@ -189,9 +191,22 @@ pub struct IndexedNoteLookup<'a> {
     stored_misses: Cell<usize>,
     hydrated_misses: Cell<usize>,
     error: RefCell<Option<PropertyError>>,
+    database: Option<std::rc::Rc<crate::CacheDatabase>>,
 }
 
 impl<'a> IndexedNoteLookup<'a> {
+    /// Share the cache connection the loaders use with planner queries.
+    #[must_use]
+    pub fn with_database(mut self, database: std::rc::Rc<crate::CacheDatabase>) -> Self {
+        self.database = Some(database);
+        self
+    }
+
+    /// The cache connection the loaders use, if shared.
+    pub fn database(&self) -> Option<&crate::CacheDatabase> {
+        self.database.as_deref()
+    }
+
     #[must_use]
     pub fn new(
         identities: Vec<IndexedIdentity>,
@@ -219,6 +234,7 @@ impl<'a> IndexedNoteLookup<'a> {
             stored_misses: Cell::new(0),
             hydrated_misses: Cell::new(0),
             error: RefCell::new(None),
+            database: None,
         }
     }
 
@@ -267,10 +283,15 @@ impl<'a> IndexedNoteLookup<'a> {
             .iter()
             .map(|index| self.identities[*index].path.as_str())
             .collect::<Vec<_>>();
-        match (self.load_stored)(&paths) {
+        // Loading most of the universe scans it instead of listing paths.
+        let wanted = (paths.len() * 2 < self.identities.len()).then_some(paths.as_slice());
+        match (self.load_stored)(wanted) {
             Ok(records) => {
                 for mut record in records {
                     if let Some(index) = self.by_path.get(&record.document_path) {
+                        if self.stored[*index].get().is_some() {
+                            continue;
+                        }
                         record.aliases.clone_from(&self.identities[*index].aliases);
                         let _ = self.stored[*index].set(record);
                     }
@@ -343,6 +364,32 @@ impl<'a> IndexedNoteLookup<'a> {
             });
         }
         self.hydrated[index].get()
+    }
+
+    /// Every readable note keyed like `build_note_lookup_index`: hydrated
+    /// where it was hydrated, stored fields otherwise. Loads any note not yet
+    /// loaded.
+    pub fn into_index(self) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+        let missing = (0..self.identities.len())
+            .filter(|index| {
+                self.stored[*index].get().is_none() && self.hydrated[*index].get().is_none()
+            })
+            .collect::<Vec<_>>();
+        self.load_stored_batch(&missing);
+        if let Some(error) = self.take_error() {
+            return Err(error);
+        }
+        Ok(self
+            .identities
+            .into_iter()
+            .zip(self.stored.into_iter().zip(self.hydrated))
+            .filter_map(|(identity, (stored, hydrated))| {
+                hydrated
+                    .into_inner()
+                    .or_else(|| stored.into_inner())
+                    .map(|note| (identity.key, note))
+            })
+            .collect())
     }
 
     /// Whether the note at `path` has been hydrated.

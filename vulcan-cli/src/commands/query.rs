@@ -14,10 +14,10 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use vulcan_app::properties::apply_bulk_property_mutation;
 use vulcan_core::{
-    execute_query_report_with_filter, list_properties, list_query_fields, load_vault_config,
-    query_backlinks_with_filter, query_links_with_filter, query_notes_with_filter,
-    search_vault_with_filter, NamedCount, NoteQuery, PermissionGuard, PropertyCatalogEntry,
-    QueryAst, QueryReport, SearchQuery, VaultPaths,
+    list_properties, list_query_fields, load_vault_config, query_backlinks_with_filter,
+    query_links_with_filter, query_notes_with_filter, search_vault_with_filter, NamedCount,
+    NoteQuery, PermissionGuard, PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery,
+    VaultPaths,
 };
 
 fn consistent_read_guard(
@@ -133,8 +133,8 @@ pub(crate) fn handle_query_command(
             eprintln!("(detected as Dataview query)");
         }
         let guard = crate::selected_permission_guard(cli, paths)?;
-        let result = vulcan_app::browse::build_dataview_query_report_with_guard(
-            paths, dql_source, None, &guard,
+        let result = vulcan_app::browse::build_dataview_query_report_with_guard_and_plan(
+            paths, dql_source, None, &guard, explain,
         )
         .map_err(CliError::operation)?;
         let display_result_count = load_vault_config(paths)
@@ -164,7 +164,7 @@ pub(crate) fn handle_query_command(
                 ));
             }
             let ast = QueryAst::from_dsl(dsl).map_err(CliError::operation)?;
-            execute_query_report_with_filter(paths, ast, read_filter.as_ref())
+            vulcan_core::execute_query_report_explained(paths, ast, read_filter.as_ref())
                 .map_err(CliError::operation)?
         }
         (None, Some(json)) => {
@@ -174,7 +174,7 @@ pub(crate) fn handle_query_command(
                 ));
             }
             let ast = QueryAst::from_json(json).map_err(CliError::operation)?;
-            execute_query_report_with_filter(paths, ast, read_filter.as_ref())
+            vulcan_core::execute_query_report_explained(paths, ast, read_filter.as_ref())
                 .map_err(CliError::operation)?
         }
         (None, None) => {
@@ -191,9 +191,15 @@ pub(crate) fn handle_query_command(
                 notes: notes_report.notes,
                 selection: None,
                 selection_provenance: Vec::new(),
+                plan: notes_report.plan,
             }
         }
     };
+    // The plan carries timings; only `--explain` reports it.
+    let mut report = report;
+    if !explain {
+        report.plan = None;
+    }
     let effective_controls = ListOutputControls {
         limit: list_controls.limit.or(report.query.limit),
         offset: if list_controls.offset > 0 {
@@ -261,6 +267,7 @@ pub(crate) fn handle_ls_command(
             notes: notes_report.notes,
             selection: None,
             selection_provenance: Vec::new(),
+            plan: None,
         },
         list_controls,
         crate::QueryReportRenderOptions {

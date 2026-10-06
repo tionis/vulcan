@@ -53,6 +53,18 @@ pub(crate) fn print_bases_report(
                     use_color,
                 )?;
             }
+            for view in &report.views {
+                if let Some(plan) = view.plan.as_ref() {
+                    println!(
+                        "{} {}",
+                        palette.cyan("Query plan:"),
+                        view.name.as_deref().unwrap_or("(unnamed view)")
+                    );
+                    for line in crate::render_query_plan_lines(plan) {
+                        println!("  {line}");
+                    }
+                }
+            }
 
             export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
             Ok(())
@@ -361,10 +373,16 @@ pub(crate) fn handle_bases_command(
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
     match command {
-        BasesCommand::Eval { file, export } => {
+        BasesCommand::Eval {
+            file,
+            explain,
+            export,
+        } => {
             let guard = crate::selected_permission_guard(cli, paths)?;
-            let report =
-                evaluate_base_file_with_guard(paths, file, &guard).map_err(CliError::operation)?;
+            let report = vulcan_app::browse::evaluate_base_file_with_guard_and_plan(
+                paths, file, &guard, *explain,
+            )
+            .map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             print_bases_report(
                 cli.output,

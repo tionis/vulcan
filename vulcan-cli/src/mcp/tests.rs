@@ -145,6 +145,7 @@ fn restricted_mcp_read_reports_exclude_denied_task_paths() {
         shown_fields: Vec::new(),
         short_mode: false,
         plan: None,
+        note_plan: None,
     };
 
     mcp_read_tools::filter_tasks_query_report(&guard, &mut report);

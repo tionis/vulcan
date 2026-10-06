@@ -4,6 +4,7 @@ use crate::expression::functions::parse_duration_string;
 use crate::expression::parse::Parser;
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::synthetic_file_link;
+use crate::note_lookup::NoteLookup as _;
 use crate::parser::{parse_document, types::InlineFieldKind};
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::tasknotes::{extract_tasknote, tasknotes_priority_weight, tasknotes_status_state};
@@ -14,7 +15,6 @@ use rusqlite::types::Type as SqlType;
 use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
@@ -164,6 +164,9 @@ pub struct NotesReport {
     pub sort_by: Option<String>,
     pub sort_descending: bool,
     pub notes: Vec<NoteRecord>,
+    /// The note plan that produced `notes` (QRY.5); surfaced by `--explain`.
+    #[serde(skip)]
+    pub plan: Option<crate::plan::QueryPlanExplain>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -522,13 +525,16 @@ pub(crate) fn query_notes_with_scope(
     filter: Option<&PermissionFilter>,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
 ) -> Result<NotesReport, PropertyError> {
-    query_notes_core(
+    match query_notes_core(
         paths,
         query,
         filter,
         authorized_index,
         NoteQueryOutput::Notes,
-    )
+    )? {
+        NoteQueryOutcome::Notes(report) => Ok(report),
+        NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
+    }
 }
 
 /// Paths of the readable notes matching `filters`, with the semantics of
@@ -543,21 +549,65 @@ pub(crate) fn note_paths_matching_filters(
         sort_by: None,
         sort_descending: false,
     };
-    Ok(
-        query_notes_core(paths, &query, filter, None, NoteQueryOutput::Paths)?
+    match query_notes_core(paths, &query, filter, None, NoteQueryOutput::Paths)? {
+        NoteQueryOutcome::Paths(paths) => Ok(paths),
+        NoteQueryOutcome::Notes(report) => Ok(report
             .notes
             .into_iter()
             .map(|note| note.document_path)
-            .collect(),
-    )
+            .collect()),
+    }
 }
 
-/// Row fields read only for rows that remain after deciding filters.
-struct DeferredNoteFields {
-    raw_yaml: String,
-    /// The scan-recorded `file.ctime`; NULL in caches not rescanned since
-    /// schema v26, which fall back to the filesystem.
-    file_ctime: Option<i64>,
+/// The plan's rows that the filters' expressions keep: decided matches as
+/// they are, undecided rows evaluated against `lookup`. Paths-only output
+/// keeps decided matches as paths without loading them.
+fn evaluate_planned_rows(
+    lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
+    planned: &crate::plan::PlannedRows,
+    compiled: &CompiledNoteFilters,
+    config: &VaultConfig,
+    output: NoteQueryOutput,
+) -> Result<(Vec<NoteRecord>, Vec<String>), PropertyError> {
+    let formulas = BTreeMap::new();
+    let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
+    let mut notes = Vec::with_capacity(planned.rows.len());
+    let mut matched_paths = Vec::new();
+    for path in &planned.rows {
+        if output == NoteQueryOutput::Paths && !planned.undecided.contains(path) {
+            // A decided match needs nothing but its path.
+            matched_paths.push(path.clone());
+            continue;
+        }
+        let Some(note) = lookup.hydrated_at(path) else {
+            continue;
+        };
+        if planned.undecided.contains(path) {
+            let ctx = EvalContext::new(note, &formulas)
+                .with_note_lookup(lookup)
+                .with_time_zone(time_zone);
+            let mut keep = true;
+            for expression in &compiled.expressions {
+                let value = evaluate(&expression.expr, &ctx)
+                    .map_err(|_| PropertyError::InvalidFilter(expression.filter.clone()))?;
+                if !expression_filter_matches(&value) {
+                    keep = false;
+                    break;
+                }
+            }
+            if !keep {
+                continue;
+            }
+        }
+        notes.push(note.clone());
+    }
+    Ok((notes, matched_paths))
+}
+
+/// What [`query_notes_core`] produced.
+enum NoteQueryOutcome {
+    Notes(NotesReport),
+    Paths(HashSet<String>),
 }
 
 /// What [`query_notes_core`] must produce for each matching note.
@@ -569,244 +619,64 @@ enum NoteQueryOutput {
     Paths,
 }
 
-#[allow(clippy::too_many_lines)]
+/// The note filter frontend over the shared planner (QRY.5): tag and
+/// folder sources select candidates, the filters' predicate atoms decide
+/// them on stored fields, and only undecided rows evaluate their
+/// expressions, against a lookup that loads other notes on demand.
 fn query_notes_core(
     paths: &VaultPaths,
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
     output: NoteQueryOutput,
-) -> Result<NotesReport, PropertyError> {
-    let database = open_existing_cache(paths)?;
-    let connection = database.connection();
-    let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
-    let vault_root = paths.vault_root().to_path_buf();
+) -> Result<NoteQueryOutcome, PropertyError> {
     let config = crate::load_vault_config(paths).config;
-
     let compiled = compile_note_filters(&query.filters)?;
-
-    let permission_sql = filter
-        .map(|filter| filter.document_scope_sql("_permission_documents"))
-        .unwrap_or_default();
-    // Permission CTE bindings precede WHERE bindings in SQL.
-    let combined_cte = permission_sql.cte.clone();
-    let mut params = permission_sql
-        .params
-        .into_iter()
-        .map(SqlValue::Text)
-        .collect::<Vec<_>>();
-
-    let mut sql = combined_cte;
-    sql.push_str(
-        "SELECT
-            documents.id,
-            documents.path,
-            documents.filename,
-            documents.extension,
-            documents.file_mtime,
-            documents.file_size,
-            COALESCE(properties.canonical_json, '{}'),
-            COALESCE(properties.raw_yaml, ''),
-            documents.periodic_type,
-            documents.periodic_date,
-            documents.file_ctime
-        FROM documents
-        LEFT JOIN properties ON properties.document_id = documents.id
-        WHERE documents.extension = 'md'",
-    );
-    for source in &compiled.sources {
-        sql.push_str(" AND ");
-        sql.push_str(&source.render_sql(&crate::source::SourceColumns::DOCUMENTS, &mut params));
-    }
-    sql.push_str(&permission_sql.clause);
-    // Decided non-matches of expression filters never load; the clause's
-    // plain placeholders follow every other binding.
-    for expression in &compiled.expressions {
-        if expression.predicate.is_useful() {
-            sql.push_str(" AND ");
-            sql.push_str(&expression.predicate.render_possible_match(
-                crate::predicate::Dialect::Dataview,
-                &crate::predicate::SqlColumns {
-                    properties: "COALESCE(properties.canonical_json, '{}')",
-                    path: "documents.path",
-                    name: "documents.filename",
-                    ext: "documents.extension",
-                },
-                &mut params,
-            ));
-        }
-    }
-    sql.push_str(" ORDER BY documents.path ASC");
-
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(
-        params_from_iter(params.iter()),
-        |row| -> Result<(String, NoteRecord, DeferredNoteFields), rusqlite::Error> {
-            let doc_id: String = row.get(0)?;
-            let document_path: String = row.get(1)?;
-            let file_mtime: i64 = row.get(4)?;
-            let canonical_json: String = row.get(6)?;
-            let raw_yaml: String = row.get(7)?;
-            let periodic_type: Option<String> = row.get(8)?;
-            let periodic_date: Option<String> = row.get(9)?;
-            let properties = serde_json::from_str::<Value>(&canonical_json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    6,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })?;
-            Ok((
-                doc_id.clone(),
-                NoteRecord {
-                    document_id: doc_id.clone(),
-                    document_path: document_path.clone(),
-                    file_name: row.get(2)?,
-                    file_ext: row.get(3)?,
-                    file_mtime,
-                    file_ctime: file_mtime,
-                    file_size: row.get(5)?,
-                    properties,
-                    tags: Vec::new(),
-                    links: Vec::new(),
-                    starred: bookmarked_paths.contains(&document_path),
-                    inlinks: Vec::new(),
-                    aliases: Vec::new(),
-                    // Parsed from the raw YAML after decided non-matches
-                    // are dropped.
-                    frontmatter: Value::Null,
-                    periodic_type,
-                    periodic_date,
-                    list_items: Vec::new(),
-                    tasks: Vec::new(),
-                    raw_inline_expressions: Vec::new(),
-                    inline_expressions: Vec::new(),
-                },
-                DeferredNoteFields {
-                    raw_yaml,
-                    file_ctime: row.get(10)?,
-                },
-            ))
-        },
-    )?;
-    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
-    let readable_sources = authorized_index.map(|index| {
+    let within = authorized_index.map(|index| {
         index
             .values()
             .map(|note| note.document_path.clone())
             .collect::<HashSet<_>>()
     });
-    if let Some(readable_sources) = readable_sources.as_ref() {
-        rows.retain(|(_, note, _)| readable_sources.contains(&note.document_path));
-    }
-
-    // Decide rows before hydrating them: decided non-matches never hydrate,
-    // and decided matches skip evaluation. The filters form one ordered
-    // conjunction, so nothing after an undecided filter excludes a row.
-    let conjunction = crate::predicate::Predicate::All(
-        compiled
-            .expressions
-            .iter()
-            .map(|expression| expression.predicate.clone())
-            .collect(),
-    );
-    let mut undecided = HashSet::new();
-    rows.retain(|(doc_id, note, _)| {
-        let record = crate::predicate::RecordValues {
-            properties: &note.properties,
-            path: &note.document_path,
-            name: &note.file_name,
-            ext: &note.file_ext,
-        };
-        match conjunction.decide(crate::predicate::Dialect::Dataview, &record) {
-            crate::predicate::Decision::Match => true,
-            crate::predicate::Decision::NoMatch => false,
-            crate::predicate::Decision::Undecided => {
-                undecided.insert(doc_id.clone());
-                true
-            }
-        }
-    });
-
-    // Frontmatter, filesystem ctimes, and hydration are read only for rows
-    // that remain and need them: every row for full output, else only the
-    // rows evaluation reads.
-    let (to_hydrate, decided_matches): (Vec<_>, Vec<_>) = rows
-        .into_iter()
-        .partition(|(doc_id, _, _)| output == NoteQueryOutput::Notes || undecided.contains(doc_id));
-    let mut doc_ids_and_notes = to_hydrate
-        .into_iter()
-        .map(|(doc_id, mut note, deferred)| {
-            note.frontmatter = parse_frontmatter_json_object(&deferred.raw_yaml);
-            note.file_ctime = deferred.file_ctime.unwrap_or_else(|| {
-                file_ctime_for_document(&vault_root, &note.document_path, note.file_mtime)
-            });
-            (doc_id, note)
-        })
-        .collect::<Vec<_>>();
-
-    hydrate_note_records(
-        connection,
-        &config,
-        &mut doc_ids_and_notes,
-        filter,
-        readable_sources.as_ref(),
-        true,
+    let lookup = load_indexed_note_lookup_within(
+        paths,
+        NoteIndexReadScope::Filter(filter),
+        within.as_ref(),
     )?;
-
-    let mut notes: Vec<NoteRecord> = doc_ids_and_notes
-        .into_iter()
-        .map(|(_, note)| note)
-        .collect();
-
-    let load_index = || -> Result<Cow<'_, HashMap<String, NoteRecord>>, PropertyError> {
-        match authorized_index {
-            Some(index) => Ok(Cow::Borrowed(index)),
-            None => Ok(Cow::Owned(load_note_index_with_filter(paths, filter)?)),
-        }
+    let plan = crate::plan::NotePlan {
+        frontend: "notes",
+        source: match compiled.sources.len() {
+            0 => None,
+            1 => compiled.sources.first().cloned(),
+            _ => Some(crate::source::SourceExpr::And(compiled.sources.clone())),
+        },
+        markdown_only: true,
+        // The filters form one ordered conjunction, so nothing after an
+        // undecided filter excludes a row.
+        predicate: crate::predicate::Predicate::All(
+            compiled
+                .expressions
+                .iter()
+                .map(|expression| expression.predicate.clone())
+                .collect(),
+        ),
+        hydration: match output {
+            NoteQueryOutput::Notes => crate::plan::Hydration::Rows,
+            NoteQueryOutput::Paths => crate::plan::Hydration::Undecided,
+        },
+        also_hydrate: Vec::new(),
     };
-    // Undecided rows are evaluated; the lookup index loads only for them.
-    let mut note_index = None;
-    if !undecided.is_empty() {
-        let formulas = BTreeMap::new();
-        let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
-        let mut filtered = Vec::with_capacity(notes.len());
-        for note in notes {
-            if !undecided.contains(&note.document_id) {
-                filtered.push(note);
-                continue;
-            }
-            if note_index.is_none() {
-                note_index = Some(load_index()?);
-            }
-            let index = note_index.as_ref().expect("index loaded above");
-            let ctx = EvalContext::new(&note, &formulas)
-                .with_note_lookup(&**index)
-                .with_time_zone(time_zone);
-            let mut keep = true;
-            for expression in &compiled.expressions {
-                let value = evaluate(&expression.expr, &ctx)
-                    .map_err(|_| PropertyError::InvalidFilter(expression.filter.clone()))?;
-                if !expression_filter_matches(&value) {
-                    keep = false;
-                    break;
-                }
-            }
-            if keep {
-                filtered.push(note);
-            }
-        }
-        notes = filtered;
+    let planned = crate::plan::execute_note_plan(paths, &lookup, &plan, filter)?;
+
+    let (mut notes, mut matched_paths) =
+        evaluate_planned_rows(&lookup, &planned, &compiled, &config, output)?;
+    if let Some(error) = lookup.take_error() {
+        return Err(error);
     }
 
     if output == NoteQueryOutput::Paths {
-        notes.extend(decided_matches.into_iter().map(|(_, note, _)| note));
-        return Ok(NotesReport {
-            filters: query.filters.clone(),
-            sort_by: None,
-            sort_descending: false,
-            notes,
-        });
+        matched_paths.extend(notes.into_iter().map(|note| note.document_path));
+        return Ok(NoteQueryOutcome::Paths(matched_paths.into_iter().collect()));
     }
 
     if let Some(sort_by) = query.sort_by.as_deref() {
@@ -823,26 +693,22 @@ fn query_notes_core(
             ordering.then_with(|| left.document_path.cmp(&right.document_path))
         });
     }
-
-    if notes
-        .iter()
-        .any(|note| !note.raw_inline_expressions.is_empty())
-    {
-        let loaded_note_index = match note_index {
-            Some(index) => index,
-            None => load_index()?,
-        };
-        for note in &mut notes {
-            note.inline_expressions = evaluate_note_inline_expressions(note, &loaded_note_index);
+    for note in &mut notes {
+        if !note.raw_inline_expressions.is_empty() {
+            note.inline_expressions = evaluate_note_inline_expressions(note, &lookup);
         }
     }
+    if let Some(error) = lookup.take_error() {
+        return Err(error);
+    }
 
-    Ok(NotesReport {
+    Ok(NoteQueryOutcome::Notes(NotesReport {
         filters: query.filters.clone(),
         sort_by: query.sort_by.clone(),
         sort_descending: query.sort_descending,
         notes,
-    })
+        plan: Some(planned.explain),
+    }))
 }
 
 /// Load all notes using collision-safe expression lookup keys.
@@ -921,25 +787,34 @@ pub fn load_task_note_index(
     paths: &VaultPaths,
     scope: NoteIndexReadScope<'_>,
 ) -> Result<HashMap<String, NoteRecord>, PropertyError> {
-    let mut index = match scope {
-        NoteIndexReadScope::Filter(filter) => {
-            load_note_index_with_filter_deferring_hydration(paths, filter)?
-        }
-        NoteIndexReadScope::Guard(guard) => {
-            load_note_index_with_guard_deferring_hydration(paths, guard)?
-        }
+    load_task_note_index_with_plan(paths, scope).map(|(index, _)| index)
+}
+
+/// [`load_task_note_index`] with the note plan that built it (QRY.5): every
+/// readable document as a candidate, nothing decided, and hydration of the
+/// task-bearing notes.
+pub fn load_task_note_index_with_plan(
+    paths: &VaultPaths,
+    scope: NoteIndexReadScope<'_>,
+) -> Result<(HashMap<String, NoteRecord>, crate::plan::QueryPlanExplain), PropertyError> {
+    let lookup = load_indexed_note_lookup(paths, scope)?;
+    let mut task_paths = {
+        let database = lookup
+            .database()
+            .expect("the indexed lookup shares its connection");
+        let mut statement = database.connection().prepare(
+            "SELECT DISTINCT documents.path FROM tasks \
+             JOIN documents ON documents.id = tasks.document_id",
+        )?;
+        let task_paths = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<HashSet<_>, _>>()?;
+        task_paths
     };
-    let database = open_existing_cache(paths)?;
-    let mut statement = database.connection().prepare(
-        "SELECT DISTINCT documents.path FROM tasks JOIN documents ON documents.id = tasks.document_id",
-    )?;
-    let mut task_paths = statement
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<HashSet<_>, _>>()?;
     let config = crate::load_vault_config(paths).config;
     task_paths.extend(
-        index
-            .values()
+        lookup
+            .notes()
             .filter(|note| {
                 extract_tasknote(
                     &note.document_path,
@@ -951,8 +826,24 @@ pub fn load_task_note_index(
             })
             .map(|note| note.document_path.clone()),
     );
-    hydrate_note_index_entries(paths, scope, &mut index, &task_paths)?;
-    Ok(index)
+    let filter = match scope {
+        NoteIndexReadScope::Filter(filter) => filter.cloned(),
+        NoteIndexReadScope::Guard(guard) => Some(guard.read_filter()),
+    };
+    let planned = crate::plan::execute_note_plan(
+        paths,
+        &lookup,
+        &crate::plan::NotePlan {
+            frontend: "tasks",
+            source: None,
+            markdown_only: false,
+            predicate: crate::predicate::Predicate::Unknown,
+            hydration: crate::plan::Hydration::Paths(&task_paths),
+            also_hydrate: Vec::new(),
+        },
+        filter.as_ref(),
+    )?;
+    Ok((lookup.into_index()?, planned.explain))
 }
 
 /// The read scope an index was loaded with, for hydrating its entries.
@@ -1014,31 +905,29 @@ pub fn hydrate_note_index_entries(
     Ok(())
 }
 
-/// A note lookup over identity facts (QRY.4) for the readable universe of
-/// `scope`: grants and the policy hook select identities exactly as
-/// [`load_note_index_with_guard`] selects notes, keys are the same, and no
-/// note's fields load until a query prefetches, reads, or dereferences it.
-pub fn load_indexed_note_lookup<'a>(
-    paths: &'a VaultPaths,
-    scope: NoteIndexReadScope<'a>,
-) -> Result<crate::note_lookup::IndexedNoteLookup<'a>, PropertyError> {
-    let (filter, guard) = match scope {
-        NoteIndexReadScope::Filter(filter) => (filter.cloned(), None),
-        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), Some(guard)),
-    };
-    let database = open_existing_cache(paths)?;
+/// The readable identities (path, lookup key, file name, aliases) under
+/// `filter`, the policy hook, and `within`, in path order.
+fn load_note_identities(
+    database: &CacheDatabase,
+    filter: Option<&PermissionFilter>,
+    guard: Option<&dyn PermissionGuard>,
+    within: Option<&HashSet<String>>,
+) -> Result<Vec<crate::note_lookup::IndexedIdentity>, PropertyError> {
     let permission_sql = filter
-        .as_ref()
         .map(|filter| filter.document_scope_sql("_note_identity_permission"))
         .unwrap_or_default();
     let mut sql = permission_sql.cte;
-    sql.push_str(
-        "SELECT note_query.path, note_query.filename, note_query.aliases \
-         FROM documents JOIN note_query ON note_query.document_id = documents.id \
-         WHERE 1 = 1",
-    );
-    sql.push_str(&permission_sql.clause);
-    sql.push_str(" ORDER BY note_query.path");
+    if filter.is_some() {
+        sql.push_str(
+            "SELECT note_query.path, note_query.filename, note_query.aliases \
+             FROM documents JOIN note_query ON note_query.document_id = documents.id \
+             WHERE 1 = 1",
+        );
+        sql.push_str(&permission_sql.clause);
+    } else {
+        sql.push_str("SELECT path, filename, aliases FROM note_query");
+    }
+    sql.push_str(" ORDER BY 1");
     let mut statement = database.connection().prepare(&sql)?;
     let rows = statement.query_map(params_from_iter(permission_sql.params.iter()), |row| {
         Ok((
@@ -1050,11 +939,19 @@ pub fn load_indexed_note_lookup<'a>(
     let mut admitted = Vec::new();
     for row in rows {
         let (path, file_name, aliases) = row?;
+        if within.is_some_and(|within| !within.contains(&path)) {
+            continue;
+        }
         if policy_allows_indexed_note(guard, &path)? {
-            let aliases = serde_json::from_str::<Vec<String>>(&aliases).unwrap_or_default();
+            let aliases = if aliases == "[]" {
+                Vec::new()
+            } else {
+                serde_json::from_str::<Vec<String>>(&aliases).unwrap_or_default()
+            };
             admitted.push((path, file_name, aliases));
         }
     }
+    drop(statement);
     let mut counts = HashMap::<&str, usize>::new();
     for (_, file_name, _) in &admitted {
         *counts.entry(file_name.as_str()).or_default() += 1;
@@ -1064,7 +961,7 @@ pub fn load_indexed_note_lookup<'a>(
         .filter(|(_, count)| *count > 1)
         .map(|(name, _)| name.to_string())
         .collect::<HashSet<_>>();
-    let identities = admitted
+    Ok(admitted
         .into_iter()
         .map(
             |(path, file_name, aliases)| crate::note_lookup::IndexedIdentity {
@@ -1078,62 +975,117 @@ pub fn load_indexed_note_lookup<'a>(
                 aliases,
             },
         )
-        .collect::<Vec<_>>();
-    let universe = identities
-        .iter()
-        .map(|identity| identity.path.clone())
-        .collect::<HashSet<_>>();
-    let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
-    let load_stored = move |document_paths: &[&str]| -> Result<Vec<NoteRecord>, PropertyError> {
-        let database = open_existing_cache(paths)?;
-        let mut statement = database.connection().prepare(&format!(
-            "SELECT {STORED_NOTE_COLUMNS} \
-             FROM documents LEFT JOIN properties ON properties.document_id = documents.id \
-             WHERE documents.path IN (SELECT value FROM json_each(?1))"
-        ))?;
-        let wanted = serde_json::to_string(document_paths).expect("paths serialize");
-        let rows = statement
-            .query_map([wanted], stored_note_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows
-            .into_iter()
-            .map(|row| stored_note_record(row, paths.vault_root(), &bookmarked_paths).1)
-            .collect())
+        .collect::<Vec<_>>())
+}
+
+/// A note lookup over identity facts (QRY.4) for the readable universe of
+/// `scope`: grants and the policy hook select identities exactly as
+/// [`load_note_index_with_guard`] selects notes, keys are the same, and no
+/// note's fields load until a query prefetches, reads, or dereferences it.
+pub fn load_indexed_note_lookup<'a>(
+    paths: &'a VaultPaths,
+    scope: NoteIndexReadScope<'a>,
+) -> Result<crate::note_lookup::IndexedNoteLookup<'a>, PropertyError> {
+    load_indexed_note_lookup_within(paths, scope, None)
+}
+
+/// [`load_indexed_note_lookup`] restricted to `within`, an already
+/// authorized universe (for example a Bases evaluation's), which also
+/// bounds incoming links.
+pub(crate) fn load_indexed_note_lookup_within<'a>(
+    paths: &'a VaultPaths,
+    scope: NoteIndexReadScope<'a>,
+    within: Option<&HashSet<String>>,
+) -> Result<crate::note_lookup::IndexedNoteLookup<'a>, PropertyError> {
+    let (filter, guard) = match scope {
+        NoteIndexReadScope::Filter(filter) => (filter.cloned(), None),
+        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), Some(guard)),
     };
+    let database = open_existing_cache(paths)?;
+    let identities = load_note_identities(&database, filter.as_ref(), guard, within)?;
+    let policy_scoped = guard.is_some_and(PermissionGuard::has_policy_hook) || within.is_some();
+    let readable_sources = policy_scoped.then(|| {
+        identities
+            .iter()
+            .map(|identity| identity.path.clone())
+            .collect::<HashSet<_>>()
+    });
+    let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
+    // One connection and one configuration serve every load of this lookup.
+    let database = std::rc::Rc::new(database);
+    let config = std::rc::Rc::new(crate::load_vault_config(paths).config);
+    let stored_database = std::rc::Rc::clone(&database);
+    let load_stored =
+        move |document_paths: Option<&[&str]>| -> Result<Vec<NoteRecord>, PropertyError> {
+            use rayon::prelude::*;
+            let connection = stored_database.connection();
+            let rows = if let Some(document_paths) = document_paths {
+                let mut statement = connection.prepare_cached(&format!(
+                    "SELECT {STORED_NOTE_COLUMNS} \
+                         FROM documents LEFT JOIN properties \
+                         ON properties.document_id = documents.id \
+                         WHERE documents.path IN (SELECT value FROM json_each(?1))"
+                ))?;
+                let wanted = serde_json::to_string(document_paths).expect("paths serialize");
+                let rows = statement
+                    .query_map([wanted], stored_note_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            } else {
+                let mut statement = connection.prepare_cached(&format!(
+                    "SELECT {STORED_NOTE_COLUMNS} \
+                         FROM documents LEFT JOIN properties \
+                         ON properties.document_id = documents.id"
+                ))?;
+                let rows = statement
+                    .query_map([], stored_note_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            };
+            Ok(rows
+                .into_par_iter()
+                .map(|row| stored_note_record(row, paths.vault_root(), &bookmarked_paths).1)
+                .collect())
+        };
+    let shared = std::rc::Rc::clone(&database);
     Ok(crate::note_lookup::IndexedNoteLookup::new(
         identities,
         Box::new(load_stored),
-        Box::new(move |notes| hydrate_note_copies(paths, scope, &universe, notes)),
-    ))
+        Box::new(move |notes| {
+            hydrate_note_copies(
+                database.connection(),
+                &config,
+                filter.as_ref(),
+                readable_sources.as_ref(),
+                notes,
+            )
+        }),
+    )
+    .with_database(shared))
 }
 
-/// Hydrated copies of `notes` under `scope`; `universe` is the readable
-/// note universe incoming links may come from when a policy hook scopes it.
+/// Hydrated copies of `notes` under `filter`; incoming links come only from
+/// `readable_sources` when a policy hook or an authorized universe scopes
+/// them.
 pub(crate) fn hydrate_note_copies(
-    paths: &VaultPaths,
-    scope: NoteIndexReadScope<'_>,
-    universe: &HashSet<String>,
+    connection: &rusqlite::Connection,
+    config: &VaultConfig,
+    filter: Option<&PermissionFilter>,
+    readable_sources: Option<&HashSet<String>>,
     notes: Vec<NoteRecord>,
 ) -> Result<Vec<NoteRecord>, PropertyError> {
     if notes.is_empty() {
         return Ok(notes);
     }
-    let (filter, policy_scoped) = match scope {
-        NoteIndexReadScope::Filter(filter) => (filter.cloned(), false),
-        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), guard.has_policy_hook()),
-    };
-    let readable_sources = policy_scoped.then_some(universe);
     let mut doc_ids_and_notes = notes
         .into_iter()
         .map(|note| (note.document_id.clone(), note))
         .collect::<Vec<_>>();
-    let database = open_existing_cache(paths)?;
-    let config = crate::load_vault_config(paths).config;
     hydrate_note_records(
-        database.connection(),
-        &config,
+        connection,
+        config,
         &mut doc_ids_and_notes,
-        filter.as_ref(),
+        filter,
         readable_sources,
         true,
     )?;
@@ -1918,7 +1870,7 @@ fn tasknote_completion_anchor(tasknote: &crate::IndexedTaskNote) -> Option<Strin
 #[must_use]
 pub fn evaluate_note_inline_expressions(
     note: &NoteRecord,
-    note_lookup: &HashMap<String, NoteRecord, std::collections::hash_map::RandomState>,
+    note_lookup: &dyn crate::note_lookup::NoteLookup,
 ) -> Vec<EvaluatedInlineExpression> {
     let formulas = BTreeMap::new();
     note.raw_inline_expressions

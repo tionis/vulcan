@@ -1368,6 +1368,7 @@ fn plan_site(
             notes: selected.selected.clone(),
             selection: None,
             selection_provenance: Vec::new(),
+            plan: None,
         };
         let prepared = prepare_export_data(
             paths,

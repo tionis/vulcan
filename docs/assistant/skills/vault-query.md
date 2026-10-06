@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, native queries, canonical mdbase collection queries, filters, and structured note listing.
-version: 7
+version: 8
 tools:
   - search
   - query
@@ -45,6 +45,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
   a missing property is null, so `status != done` includes notes without a status, and a key set
   by both frontmatter and an inline field is a list.
 - If the result set is surprising, inspect the filter first before adding more conditions.
+- When a note query is slow or selects unexpectedly, add `--explain` (`query`, `query --language dql`, `bases eval`) or the Tasks `explain` instruction: the note plan reports how candidates were selected (SQL source, predicate atoms, or every note), how many the shared atoms decided or excluded, how many the frontend evaluated, how many notes were hydrated, and per-stage timings. Timings make it unsuitable for snapshot comparisons.
 - MDB queries never return results from records that changed on disk. A cached record is reused only when its file identity and change time match the bytes that were indexed; otherwise readable sources are reconciled before returning. In an initialized vault, unrestricted queries may populate or repair the rebuildable cache without changing notes. Uninitialized collections remain source-only and are not initialized as a query side effect. Restricted queries reuse matching cached records or read authorized sources without publishing a partial collection. A `stale_state` error means records changed during preparation: retry after the edit finishes, rather than trusting the previous cache. `--refresh off` does not bypass this MDB check.
 - Simple metadata queries run from the index without loading note bodies: type selection, `where` conjunctions (`&&`) of field or `file.path` comparisons and `startsWith` against literals, field selections, ordering, and limits. Expression selections, projections, grouping, summaries, `include_body`, `||`, and other filter forms still evaluate every visible record. Prefer the simple shape for frequent list queries rather than assuming a small response is cheap.
 - Cache reuse additionally needs read authority for `mdbase.lock.yaml`, even when absent. Without that grant, queries retain the existing authorized source-only path without probing the lockfile; do not widen a user's permissions merely to enable caching.

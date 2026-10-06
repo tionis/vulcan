@@ -1228,6 +1228,7 @@ mod tests {
                             group_value: Some(json!("Weapons")),
                         },
                     ],
+                    plan: None,
                 },
                 BasesEvaluatedView {
                     name: Some("Flat".to_string()),
@@ -1250,6 +1251,7 @@ mod tests {
                         cells: BTreeMap::from([("rating".to_string(), json!(3))]),
                         group_value: None,
                     }],
+                    plan: None,
                 },
             ],
             diagnostics: vec![BasesDiagnostic {

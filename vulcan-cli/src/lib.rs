@@ -7314,6 +7314,36 @@ fn should_render_query_ast(output: OutputFormat, explain: bool, verbose: bool) -
 }
 
 #[allow(clippy::too_many_lines)]
+/// Human lines for a note plan (`--explain`, QRY.5).
+pub(crate) fn render_query_plan_lines(plan: &vulcan_core::plan::QueryPlanExplain) -> Vec<String> {
+    let millis = |micros: u64| {
+        #[allow(clippy::cast_precision_loss)]
+        let millis = micros as f64 / 1000.0;
+        format!("{millis:.1} ms")
+    };
+    vec![
+        format!("frontend: {}", plan.frontend),
+        format!(
+            "candidates: {} via {}",
+            plan.candidates, plan.candidate_path
+        ),
+        format!(
+            "decided: {} matches, {} excluded; {} left to the {} evaluator",
+            plan.decided_matches, plan.decided_out, plan.residual, plan.frontend
+        ),
+        format!("hydrated: {} notes", plan.hydrated),
+        format!(
+            "stages: {}",
+            plan.stages
+                .iter()
+                .map(|stage| format!("{} {}", stage.name, millis(stage.micros)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ]
+}
+
+#[allow(clippy::too_many_lines)]
 fn print_query_report(
     paths: &VaultPaths,
     output: OutputFormat,
@@ -7367,6 +7397,13 @@ fn print_query_report(
                     .unwrap_or_else(|_| "{}".to_string());
                 println!("{}", palette.cyan("Query AST:"));
                 println!("{ast_json}");
+                println!();
+            }
+            if let (true, Some(plan)) = (options.explain, report.plan.as_ref()) {
+                println!("{}", palette.cyan("Query plan:"));
+                for line in render_query_plan_lines(plan) {
+                    println!("  {line}");
+                }
                 println!();
             }
             match options.format {
@@ -7441,10 +7478,13 @@ fn print_query_report(
                 }
             };
             if should_render_query_ast(output, options.explain, options.verbose) {
-                let payload = serde_json::json!({
+                let mut payload = serde_json::json!({
                     "query": report.query,
                     "notes": rows,
                 });
+                if let (true, Some(plan)) = (options.explain, report.plan.as_ref()) {
+                    payload["plan"] = serde_json::to_value(plan).unwrap_or(Value::Null);
+                }
                 export_rows(
                     std::slice::from_ref(&payload),
                     list_controls.fields.as_deref(),
@@ -8725,6 +8765,15 @@ fn render_dql_query_markdown(result: &DqlQueryResult, show_result_count: bool) -
     let diagnostics = render_dql_diagnostics_markdown(&result.diagnostics);
     if !diagnostics.is_empty() {
         sections.push(diagnostics);
+    }
+    if let Some(plan) = result.plan.as_ref() {
+        let mut lines = vec!["**Query plan**".to_string(), String::new()];
+        lines.extend(
+            render_query_plan_lines(plan)
+                .into_iter()
+                .map(|line| format!("- {line}")),
+        );
+        sections.push(lines.join("\n"));
     }
     sections.join("\n\n")
 }

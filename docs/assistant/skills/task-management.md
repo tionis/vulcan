@@ -1,7 +1,7 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 10
+version: 11
 tools:
   - tasks_query
   - query
@@ -22,6 +22,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 ## Recommended Flow
 
 - Use `tasks query` or `tasks list` to inspect existing task state before mutating anything.
+- Add the Tasks `explain` instruction to a `tasks query` to see the parsed query and, as `note_plan`, how many notes were scanned and hydrated to load the tasks.
 - Use `tasks show <path-or-name>` for one TaskNotes note's current details and body; an exact path disambiguates multiple readable notes with the same filename or alias.
 - Use `tasks eval <file> [--block <zero-based-index>]` for indexed Tasks query blocks in a note.
 - Reach for `tasks create`, `tasks complete`, `tasks next`, or `tasks blocked` when the workflow is task-specific.

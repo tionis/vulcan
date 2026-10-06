@@ -192,6 +192,20 @@ Execution is: candidates (§4.1) → freshness proof → hydrate the residual's 
 residual evaluation by the frontend → ordering, using SQL-extracted keys where available →
 page → hydrate output groups for the page only.
 
+Decision (QRY.5): `StructuredQueryPlan` stays the serialized interchange format (mdbase plans
+and `QueryAst` JSON); the one executable planner for note stores is `vulcan-core::plan::NotePlan`.
+Every note frontend compiles into it: DQL (`FROM` source, leading `WHERE` atoms with `this`
+bound), the note filter language (`QueryAst`, `ls`/`query --where`, saved reports, Bases,
+search filters), the Tasks DSL (hydration of task-bearing notes), and DataviewJS page selection
+(the source stage). `execute_note_plan` runs the shared stages over an `IndexedNoteLookup`:
+candidates in one SQL query over `note_query` (source, the predicate's possible-match rendering,
+and the read scope), decisions on the candidates' stored properties without loading any note,
+and hydration of what the frontend's residual and output need (every row, only undecided rows,
+or named paths). Frontends keep their residual programs: DQL commands, Bases views, Tasks
+filters and layout. Each run reports a `QueryPlanExplain` (candidate path, candidates, decided
+matches and exclusions, residual rows, hydrated notes, stage timings), surfaced by `--explain`
+(`query`, `query --language dql`, `bases eval`) and the Tasks `explain` instruction.
+
 ### 4.6 Retained host sessions
 
 The daemon's mdbase query session (per-scope proofs, retained decoded rows bound to row

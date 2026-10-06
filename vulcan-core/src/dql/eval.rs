@@ -22,7 +22,7 @@ use crate::properties::{
     load_note_index_with_filter, NoteIndexReadScope, NoteRecord, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
-use crate::source::{SourceColumns, SourceExpr};
+use crate::source::SourceExpr;
 
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
 use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr, CompiledWhereClause};
@@ -63,6 +63,9 @@ pub struct DqlQueryResult {
     pub result_count: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<DqlDiagnostic>,
+    /// The note plan, when explaining (QRY.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::plan::QueryPlanExplain>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -169,6 +172,18 @@ pub fn evaluate_dql_with_guard(
     current_file: Option<&str>,
     guard: &dyn PermissionGuard,
 ) -> Result<DqlQueryResult, DqlEvalError> {
+    evaluate_dql_with_guard_and_plan(paths, source, current_file, guard, false)
+}
+
+/// [`evaluate_dql_with_guard`], reporting the note plan in
+/// [`DqlQueryResult::plan`] when `explain` is set (QRY.5).
+pub fn evaluate_dql_with_guard_and_plan(
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
+    guard: &dyn PermissionGuard,
+    explain: bool,
+) -> Result<DqlQueryResult, DqlEvalError> {
     let config = load_vault_config(paths).config;
     let query = parse_dql(source).map_err(DqlEvalError::Parse)?;
     let filter = guard.read_filter();
@@ -177,7 +192,7 @@ pub fn evaluate_dql_with_guard(
     // only when an expression reads or dereferences them.
     let lookup =
         crate::properties::load_indexed_note_lookup(paths, NoteIndexReadScope::Guard(guard))?;
-    let rows = select_candidate_rows(paths, &query, current_file, &lookup, &filter)?;
+    let planned = select_candidate_rows(paths, &query, current_file, &lookup, &filter)?;
     let result = evaluate_parsed_dql_with_note_index_and_config(
         paths,
         &query,
@@ -186,27 +201,30 @@ pub fn evaluate_dql_with_guard(
         &config,
         &DqlNotes::Indexed {
             lookup: &lookup,
-            rows,
+            rows: planned.rows,
         },
     );
     if let Some(error) = lookup.take_error() {
         return Err(error.into());
     }
-    result
+    let mut result = result?;
+    if explain {
+        result.plan = Some(planned.explain);
+    }
+    Ok(result)
 }
 
-/// The page rows of `query` in path order: its `FROM` selection (every
-/// readable note without `FROM`) minus what a leading `WHERE` decides as
-/// non-matches from stored fields. Those rows and `this` are hydrated; no
-/// other note is loaded. With several `FROM` clauses evaluation reports the
-/// error.
+/// The page rows of `query` as a [`crate::plan::NotePlan`]: its `FROM`
+/// source (every readable document without `FROM`), a leading `WHERE`
+/// decided on stored fields, and hydration of the remaining rows and
+/// `this`. With several `FROM` clauses evaluation reports the error.
 fn select_candidate_rows(
     paths: &VaultPaths,
     query: &DqlQuery,
     current_file: Option<&str>,
     lookup: &IndexedNoteLookup<'_>,
     filter: &PermissionFilter,
-) -> Result<Vec<String>, DqlEvalError> {
+) -> Result<crate::plan::PlannedRows, DqlEvalError> {
     let compiled = compile_dql(query);
     let mut sources = compiled
         .commands
@@ -216,35 +234,45 @@ fn select_candidate_rows(
             _ => None,
         });
     let (source, None) = (sources.next(), sources.next()) else {
-        return Ok(Vec::new());
-    };
-    let mut rows = match source {
-        Some(source) => source_paths(paths, source, current_file, lookup, Some(filter))?
-            .into_iter()
-            .collect::<Vec<_>>(),
-        None => lookup.paths().map(ToString::to_string).collect(),
-    };
-    rows.sort();
-    if let Some(where_clause) = leading_page_where(query.query_type, &compiled) {
-        lookup.prefetch_stored(rows.iter().map(String::as_str).chain(current_file));
-        let this = current_file.and_then(|path| lookup.note_at(path));
-        let predicate = where_predicate_with_this(where_clause, this);
-        rows.retain(|path| {
-            lookup.note_at(path).is_none_or(|note| {
-                predicate.decide(
-                    Dialect::Dataview,
-                    &RecordValues {
-                        properties: &note.properties,
-                        path: &note.document_path,
-                        name: &note.file_name,
-                        ext: &note.file_ext,
-                    },
-                ) != Decision::NoMatch
-            })
+        return Ok(crate::plan::PlannedRows {
+            rows: Vec::new(),
+            undecided: HashSet::new(),
+            explain: crate::plan::QueryPlanExplain {
+                frontend: "dql".to_string(),
+                candidate_path: "none: several FROM clauses".to_string(),
+                candidates: 0,
+                decided_matches: 0,
+                decided_out: 0,
+                residual: 0,
+                hydrated: 0,
+                stages: Vec::new(),
+            },
         });
-    }
-    lookup.prefetch_hydrated(rows.iter().map(String::as_str).chain(current_file));
-    Ok(rows)
+    };
+    let source = source
+        .map(|source| resolve_source(source, current_file, lookup))
+        .transpose()?;
+    let predicate = match leading_page_where(query.query_type, &compiled) {
+        Some(where_clause) => {
+            let this = current_file.and_then(|path| lookup.note_at(path));
+            where_predicate_with_this(where_clause, this).into_owned()
+        }
+        None => Predicate::Unknown,
+    };
+    let plan = crate::plan::NotePlan {
+        frontend: "dql",
+        markdown_only: source.is_some(),
+        source,
+        predicate,
+        hydration: crate::plan::Hydration::Rows,
+        also_hydrate: current_file.map(ToString::to_string).into_iter().collect(),
+    };
+    Ok(crate::plan::execute_note_plan(
+        paths,
+        lookup,
+        &plan,
+        Some(filter),
+    )?)
 }
 
 /// The predicate of a `WHERE` that sees the page rows exactly as `FROM`
@@ -959,39 +987,12 @@ fn source_paths(
     permission_filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, DqlEvalError> {
     let source = resolve_source(source, current_file, note_lookup)?;
-    let database =
-        CacheDatabase::open(paths).map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let permission_sql =
-        permission_filter.map(|filter| filter.document_scope_sql("_permission_documents"));
-    let mut params = permission_sql
-        .as_ref()
-        .map(|sql| {
-            sql.params
-                .iter()
-                .cloned()
-                .map(rusqlite::types::Value::from)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let mut sql = permission_sql
-        .as_ref()
-        .map_or_else(String::new, |sql| sql.cte.clone());
-    sql.push_str("SELECT documents.path FROM documents WHERE documents.extension = 'md' AND ");
-    sql.push_str(&source.render_sql(&SourceColumns::DOCUMENTS, &mut params));
-    if let Some(permission_sql) = permission_sql.as_ref() {
-        sql.push_str(&permission_sql.clause);
-    }
-    let mut statement = database
-        .connection()
-        .prepare(&sql)
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| DqlEvalError::Message(error.to_string()))?;
-    rows.collect::<Result<HashSet<_>, _>>()
-        .map_err(|error| DqlEvalError::Message(error.to_string()))
+    Ok(crate::plan::source_candidates(
+        paths,
+        &source,
+        true,
+        permission_filter,
+    )?)
 }
 
 /// Resolve DQL's vault-dependent sources: a path names a folder or a file
@@ -1339,6 +1340,7 @@ fn render_table_result(
         columns,
         rows: rendered_rows,
         diagnostics: Vec::new(),
+        plan: None,
     })
 }
 
@@ -1444,6 +1446,7 @@ fn render_list_result(
         columns,
         rows: rendered_rows,
         diagnostics: Vec::new(),
+        plan: None,
     })
 }
 
@@ -1481,6 +1484,7 @@ fn render_task_result(
         columns,
         rows: rendered_rows,
         diagnostics: Vec::new(),
+        plan: None,
     }
 }
 
@@ -1534,6 +1538,7 @@ fn render_calendar_result(
         columns: vec!["date".to_string(), primary_column_name.to_string()],
         rows: rendered_rows,
         diagnostics: Vec::new(),
+        plan: None,
     })
 }
 
@@ -1937,9 +1942,13 @@ LIMIT 1"#,
         let lookup =
             crate::properties::load_indexed_note_lookup(&paths, NoteIndexReadScope::Guard(&guard))
                 .unwrap();
-        let rows =
+        let planned =
             select_candidate_rows(&paths, &query, Some("Here.md"), &lookup, &filter).unwrap();
-        assert_eq!(rows, ["A/One.md", "A/Three.md"]);
+        assert_eq!(planned.rows, ["A/One.md", "A/Three.md"]);
+        assert_eq!(
+            (planned.explain.candidates, planned.explain.hydrated),
+            (2, 2)
+        );
         assert!(lookup.is_hydrated("A/One.md") && lookup.is_hydrated("Here.md"));
         assert!(!lookup.is_hydrated("B/Two.md"));
         assert_eq!(lookup.hydrated_at("A/One.md").unwrap().list_items.len(), 3);
